@@ -10,11 +10,11 @@
 export type Category = 'search' | 'ingest' | 'llm' | 'agents' | 'image';
 
 export const CATEGORY_META: Record<Category, { label: string; em?: string; lead: string; thumbClass: string }> = {
-  search: { label: 'Vector ', em: 'Indexes', lead: 'Embed your documents, store vectors, answer by meaning.', thumbClass: 'search' },
-  ingest: { label: 'Custom ', em: 'Building Blocks', lead: 'Bring your own source, target, or parser. Same declarative flow.', thumbClass: 'ingest' },
+  search: { label: 'Semantic ', em: 'Search', lead: 'Embed your documents, store the vectors, and answer by meaning.', thumbClass: 'search' },
+  ingest: { label: 'Ingest ', em: '& Transform', lead: 'Bring your own source, target, or parser — move and reshape data with the same declarative flow.', thumbClass: 'ingest' },
   llm: { label: 'Structured ', em: 'Extraction', lead: 'LLM-extract typed, structured data from code and documents — with instructor, BAML, or DSPy.', thumbClass: 'llm' },
   agents: { label: 'Knowledge ', em: 'Graphs', lead: 'Give agents a persistent, graph-shaped memory from conversations, meetings, products.', thumbClass: 'agents' },
-  image: { label: 'Multimodal', lead: 'Images, PDFs, slides, faces — same flow, different encoder.', thumbClass: 'pink' },
+  image: { label: 'Multimodal ', em: 'Search', lead: 'Search images, PDFs, slides, and faces by meaning — the same vector index, a different encoder.', thumbClass: 'pink' },
 };
 
 export type ExampleCard = {
@@ -24,7 +24,6 @@ export type ExampleCard = {
   category: Category;
   thumbClass?: string;
   thumbLabel: string;
-  motif?: string;                    // raw inline SVG markup for the thumb
   description: string;
   tags: Array<{ kind: 'src' | 'tgt' | 'llm' | 'ops' | 'lvl'; label: string }>;
   footMeta: string;
@@ -32,13 +31,6 @@ export type ExampleCard = {
   featured?: boolean;
 };
 
-const MOTIFS = {
-  repos: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="14" y="18" width="20" height="34" rx="2"/><rect x="40" y="18" width="20" height="34" rx="2"/><rect x="66" y="18" width="20" height="34" rx="2"/><path d="M92 35 L106 35 M98 30 L106 35 L98 40" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-  pdfToMd: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="18" y="14" width="30" height="42" rx="2"/><path d="M54 35 L70 35 M62 29 L70 35 L62 41" stroke-linecap="round" stroke-linejoin="round"/><rect x="74" y="14" width="30" height="42" rx="2"/><path d="M80 24 L98 24 M80 32 L94 32 M80 40 L98 40 M80 48 L88 48"/></svg>`,
-  codeChunks: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="14" y="12" width="34" height="46" rx="2"/><path d="M20 22 L42 22 M20 30 L36 30 M20 38 L42 38 M20 46 L32 46" stroke-width="1.2"/><path d="M54 24 L70 24 M62 18 L70 24 L62 30" stroke-linecap="round" stroke-linejoin="round"/><path d="M54 46 L70 46 M62 40 L70 46 L62 52" stroke-linecap="round" stroke-linejoin="round"/><rect x="76" y="14" width="30" height="18" rx="2" fill="currentColor" opacity="0.14"/><rect x="76" y="38" width="30" height="18" rx="2" fill="currentColor" opacity="0.14"/><circle cx="91" cy="23" r="2.5" fill="currentColor"/><circle cx="91" cy="47" r="2.5" fill="currentColor"/></svg>`,
-  textVec: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="12" y="16" width="26" height="38" rx="2"/><path d="M17 25 L33 25 M17 32 L29 32 M17 39 L33 39 M17 46 L25 46" stroke-width="1.2"/><path d="M44 35 L56 35 M50 30 L56 35 L50 40" stroke-linecap="round" stroke-linejoin="round"/><circle cx="66" cy="24" r="2.4" fill="currentColor"/><circle cx="78" cy="24" r="2.4" fill="currentColor"/><circle cx="66" cy="35" r="2.4" fill="currentColor"/><circle cx="78" cy="35" r="2.4" fill="currentColor"/><circle cx="66" cy="46" r="2.4" fill="currentColor"/><circle cx="78" cy="46" r="2.4" fill="currentColor"/><path d="M86 35 L98 35 M92 30 L98 35 L92 40" stroke-linecap="round" stroke-linejoin="round"/><circle cx="106" cy="31" r="7"/><path d="M111 36 L116 41" stroke-linecap="round"/></svg>`,
-  graph: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M34 20 L58 36 M86 19 L64 36 M34 50 L56 41 M86 51 L66 40 M36 19 L84 18"/><circle cx="30" cy="18" r="6"/><circle cx="90" cy="17" r="6"/><circle cx="28" cy="52" r="6"/><circle cx="92" cy="52" r="6"/><circle cx="61" cy="38" r="8" fill="currentColor" opacity="0.14"/><circle cx="61" cy="38" r="8"/></svg>`,
-} as const;
 
 export const examples: ExampleCard[] = [
   {
@@ -47,7 +39,6 @@ export const examples: ExampleCard[] = [
     index: '01 / 32',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
-    motif: MOTIFS.textVec,
     description: 'Chunk Markdown files, embed each chunk, store the vectors in Postgres, and search them in plain English. The simplest end-to-end vector index — the best place to start.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -64,7 +55,6 @@ export const examples: ExampleCard[] = [
     index: '02 / 32',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
-    motif: MOTIFS.codeChunks,
     description: 'Walk a repo, split by syntax with Tree-sitter, embed, and query your codebase in English. A live vector index for AI coding agents, in ~100 lines.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -81,7 +71,6 @@ export const examples: ExampleCard[] = [
     index: '03 / 32',
     category: 'llm',
     thumbLabel: 'Code · structured output',
-    motif: MOTIFS.repos,
     description: 'Walk many Python repos, LLM-extract a typed summary per file — classes, functions, Mermaid call graphs — and aggregate into an always-fresh wiki page per project. The flagship v1 walkthrough.',
     tags: [
       { kind: 'src', label: 'Multi-repo' },
@@ -100,7 +89,6 @@ export const examples: ExampleCard[] = [
     index: '04 / 32',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
-    motif: MOTIFS.pdfToMd,
     description: 'Incremental PDF → Markdown conversion pipeline. Custom building blocks over a folder of PDFs.',
     tags: [
       { kind: 'src', label: 'PDF' },
@@ -116,7 +104,6 @@ export const examples: ExampleCard[] = [
     index: '05 / 32',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
-    motif: MOTIFS.graph,
     description: 'Turn YouTube podcasts into a queryable knowledge graph — diarized transcription, two-step LLM extraction, embedding-based entity resolution, and a SurrealDB graph.',
     tags: [
       { kind: 'src', label: 'YouTube' },
@@ -134,7 +121,6 @@ export const examples: ExampleCard[] = [
     index: '06 / 32',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
-    motif: MOTIFS.graph,
     description: 'Turn a folder of Markdown docs into a Neo4j concept graph — LLM-extracted (subject, predicate, object) triples that stay in sync as the docs change.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -151,7 +137,6 @@ export const examples: ExampleCard[] = [
     index: '07 / 32',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
-    motif: MOTIFS.graph,
     description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph — LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution, kept in sync as notes change.',
     tags: [
       { kind: 'src', label: 'Google Drive' },
@@ -169,7 +154,6 @@ export const examples: ExampleCard[] = [
     index: '08 / 32',
     category: 'ingest',
     thumbLabel: 'CSV · live Kafka target',
-    motif: MOTIFS.pdfToMd,
     description: 'Watch a folder of CSV files and publish each row as a JSON message to a Kafka topic — declarative target states, only-changed-rows produces, and live mode in ~60 lines.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -186,7 +170,6 @@ export const examples: ExampleCard[] = [
     index: '09 / 32',
     category: 'search',
     thumbLabel: 'PDF · docling + embeddings',
-    motif: MOTIFS.textVec,
     description: 'Convert local PDFs to Markdown with docling on a GPU runner, chunk, embed, and store the vectors in Postgres — then query in natural language. A vector index over your documents.',
     tags: [
       { kind: 'src', label: 'PDF' },
@@ -203,7 +186,6 @@ export const examples: ExampleCard[] = [
     index: '10 / 32',
     category: 'image',
     thumbLabel: 'Images · CLIP + Qdrant',
-    motif: MOTIFS.textVec,
     description: 'Embed images with CLIP, store the vectors in Qdrant, and search your photos in natural language through a FastAPI + React app — live updates, no tags or captions.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -218,9 +200,8 @@ export const examples: ExampleCard[] = [
     slug: 'audio-to-text',
     title: "Audio to *Text*",
     index: '11 / 32',
-    category: 'image',
+    category: 'ingest',
     thumbLabel: "Audio \u00b7 LiteLLM",
-    motif: MOTIFS.textVec,
     description: "Transcribe local audio files with a LiteLLM speech-to-text model and store one transcript row per file in Postgres, keyed by filename.",
     tags: [
       { kind: 'src', label: "Audio files" },
@@ -238,7 +219,6 @@ export const examples: ExampleCard[] = [
     index: '12 / 32',
     category: 'llm',
     thumbLabel: "HN API \u00b7 LLM topics",
-    motif: MOTIFS.textVec,
     description: "Scrape recent HackerNews threads and comments via the Algolia HN API, extract topics with an LLM, and rank what is trending in Postgres.",
     tags: [
       { kind: 'src', label: "HackerNews API" },
@@ -256,7 +236,6 @@ export const examples: ExampleCard[] = [
     index: '13 / 32',
     category: 'llm',
     thumbLabel: "PDF \u00b7 LLM extract",
-    motif: MOTIFS.pdfToMd,
     description: "LLM-extract title, authors, and abstract from academic PDFs into typed rows, embed them, and store it all in Postgres with pgvector.",
     tags: [
       { kind: 'src', label: "PDF" },
@@ -274,7 +253,6 @@ export const examples: ExampleCard[] = [
     index: '14 / 32',
     category: 'llm',
     thumbLabel: "PDF \u00b7 BAML",
-    motif: MOTIFS.pdfToMd,
     description: "Extract schema-validated patient records from intake-form PDFs with one type-safe BAML Gemini-vision call per file, writing a JSON file per form.",
     tags: [
       { kind: 'src', label: "PDF" },
@@ -292,7 +270,6 @@ export const examples: ExampleCard[] = [
     index: '15 / 32',
     category: 'llm',
     thumbLabel: "PDF \u00b7 DSPy",
-    motif: MOTIFS.pdfToMd,
     description: "Render patient intake PDFs to images and extract a typed Patient with a DSPy ChainOfThought vision module on Gemini, writing one validated JSON file per form.",
     tags: [
       { kind: 'src', label: "PDF" },
@@ -311,7 +288,6 @@ export const examples: ExampleCard[] = [
     index: '16 / 32',
     category: 'ingest',
     thumbLabel: "Postgres \u00b7 pgvector",
-    motif: MOTIFS.textVec,
     description: "Read rows from an existing Postgres table, derive fields, embed each row, and write the vectors back to Postgres with pgvector.",
     tags: [
       { kind: 'src', label: "Postgres" },
@@ -329,7 +305,6 @@ export const examples: ExampleCard[] = [
     index: '17 / 32',
     category: 'ingest',
     thumbLabel: "Markdown \u00b7 markdown-it",
-    motif: MOTIFS.pdfToMd,
     description: "The smallest end-to-end CocoIndex pipeline \u2014 watch a folder of Markdown, render each file to HTML, and write the outputs to a local folder incrementally.",
     tags: [
       { kind: 'src', label: "Local files" },
@@ -347,7 +322,6 @@ export const examples: ExampleCard[] = [
     index: '18 / 32',
     category: 'ingest',
     thumbLabel: "Kafka \u00b7 dispatch",
-    motif: MOTIFS.textVec,
     description: "Consume JSON messages off a Kafka topic and dispatch each one \u2014 by its shape \u2014 into the matching LanceDB table.",
     tags: [
       { kind: 'src', label: "Kafka" },
@@ -364,7 +338,6 @@ export const examples: ExampleCard[] = [
     index: '19 / 32',
     category: 'search',
     thumbLabel: "Entire \u00b7 Embeddings",
-    motif: MOTIFS.textVec,
     description: "Index AI coding sessions captured by Entire \u2014 transcripts, prompts, and context summaries \u2014 into Postgres for natural-language semantic search.",
     tags: [
       { kind: 'src', label: "Entire sessions" },
@@ -382,7 +355,6 @@ export const examples: ExampleCard[] = [
     index: '20 / 32',
     category: 'image',
     thumbLabel: "Images \u00b7 ColPali",
-    motif: MOTIFS.textVec,
     description: "Embed images and queries into multi-vector ColPali bags of patch vectors, store them in Qdrant, and rank with late-interaction MaxSim through a FastAPI app.",
     tags: [
       { kind: 'src', label: "Images" },
@@ -400,7 +372,6 @@ export const examples: ExampleCard[] = [
     index: '21 / 32',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Qdrant",
-    motif: MOTIFS.textVec,
     description: "The Semantic Search 101 pipeline pointed at Qdrant \u2014 chunk Markdown, embed locally, and upsert the vectors into a managed Qdrant collection.",
     tags: [
       { kind: 'src', label: "Markdown" },
@@ -417,7 +388,6 @@ export const examples: ExampleCard[] = [
     index: '22 / 32',
     category: 'search',
     thumbLabel: "Markdown \u00b7 LanceDB",
-    motif: MOTIFS.textVec,
     description: "The Semantic Search 101 pipeline with LanceDB as the target \u2014 chunk Markdown, embed each chunk, and store the vectors in an embedded, file-based store with no server to run.",
     tags: [
       { kind: 'src', label: "Markdown" },
@@ -435,7 +405,6 @@ export const examples: ExampleCard[] = [
     index: '23 / 32',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Turbopuffer",
-    motif: MOTIFS.textVec,
     description: "Chunk Markdown, embed each chunk, and upsert the vectors into a managed Turbopuffer namespace \u2014 the Semantic Search 101 pipeline pointed at a serverless vector store.",
     tags: [
       { kind: 'src', label: "Markdown" },
@@ -452,7 +421,6 @@ export const examples: ExampleCard[] = [
     index: '24 / 32',
     category: 'search',
     thumbLabel: "S3 \u00b7 pgvector",
-    motif: MOTIFS.textVec,
     description: "The Semantic Search 101 pipeline with an Amazon S3 bucket as the source instead of a local folder.",
     tags: [
       { kind: 'src', label: "Amazon S3" },
@@ -470,7 +438,6 @@ export const examples: ExampleCard[] = [
     index: '25 / 32',
     category: 'search',
     thumbLabel: "Google Drive \u00b7 Embed",
-    motif: MOTIFS.textVec,
     description: "The Semantic Search 101 pipeline with Google Drive as the source \u2014 chunk and embed every document and store the vectors in Postgres with pgvector.",
     tags: [
       { kind: 'src', label: "Google Drive" },
@@ -487,7 +454,6 @@ export const examples: ExampleCard[] = [
     index: '26 / 32',
     category: 'search',
     thumbLabel: "OCI \u00b7 pgvector",
-    motif: MOTIFS.textVec,
     description: "Chunk and embed Markdown objects from an Oracle Cloud (OCI) Object Storage bucket into Postgres/pgvector, with optional live updates via OCI Streaming.",
     tags: [
       { kind: 'src', label: "OCI Object Storage" },
@@ -505,7 +471,6 @@ export const examples: ExampleCard[] = [
     index: '27 / 32',
     category: 'image',
     thumbLabel: 'Photos · face embeddings',
-    motif: MOTIFS.textVec,
     description: 'Detect every face in a folder of photos, embed each into a 128-d vector with face_recognition (dlib), and index them in Qdrant — then search your photos by face.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -522,7 +487,6 @@ export const examples: ExampleCard[] = [
     index: '28 / 32',
     category: 'agents',
     thumbLabel: 'Products · taxonomy graph',
-    motif: MOTIFS.graph,
     description: 'LLM-extract what each product is and what pairs with it from product docs, into a Neo4j graph of products and taxonomies that powers "customers also bought" recommendations.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -539,7 +503,6 @@ export const examples: ExampleCard[] = [
     index: '29 / 32',
     category: 'llm',
     thumbLabel: 'PDF manuals · typed records',
-    motif: MOTIFS.pdfToMd,
     description: 'Convert PDF manuals to Markdown with docling, LLM-extract a typed module summary (classes, methods, arguments), and store one structured record per manual in Postgres.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -556,7 +519,6 @@ export const examples: ExampleCard[] = [
     index: '30 / 32',
     category: 'image',
     thumbLabel: 'PDFs + images · ColPali',
-    motif: MOTIFS.textVec,
     description: 'Index PDFs and images as page screenshots with the ColPali multi-vector model — no OCR, no chunking — into Qdrant with MaxSim, and search the visual content by text.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -573,7 +535,6 @@ export const examples: ExampleCard[] = [
     index: '31 / 32',
     category: 'image',
     thumbLabel: 'Slides · vision + TTS',
-    motif: MOTIFS.textVec,
     description: 'Render each slide, write speaker notes with a vision LLM, narrate them with Piper TTS locally, and embed the notes into LanceDB — search a deck by meaning and play back the narration.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -590,7 +551,6 @@ export const examples: ExampleCard[] = [
     index: '32 / 32',
     category: 'search',
     thumbLabel: 'Filings · vector + full-text',
-    motif: MOTIFS.textVec,
     description: 'Scrub, chunk, embed, and tag multi-format SEC filings into Apache Doris with both a vector and a full-text index — then retrieve with hybrid (semantic + keyword) RRF search.',
     tags: [
       { kind: 'src', label: 'Local FS' },
@@ -603,10 +563,13 @@ export const examples: ExampleCard[] = [
   },
 ];
 
-export const featuredSlug = 'multi-codebase-summarization';
 
-// Featured examples still show up in their home category grid — when the
-// catalog is small, hiding them leaves categories visibly empty.
+// Comprehensive homepage-style card illustration per example, served from the
+// blobs image repo and co-located with the example's other images at
+// docs-v1/img/examples/<slug>/. Generated by blobs/_diagrams-src/_cards/gen-cards.mjs.
+export const exampleCardImg = (slug: string): string =>
+  `https://cocoindex.io/blobs/docs-v1/img/examples/${slug}/card.svg`;
+
 export const byCategory = (cat: Category): ExampleCard[] =>
   examples.filter((e) => e.category === cat);
 

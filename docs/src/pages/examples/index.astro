@@ -11,18 +11,15 @@ import Analytics from '../../components/Analytics.astro';
 import ScarfPixel from '../../components/ScarfPixel.astro';
 import Foot from '../../components/Foot.astro';
 import ExampleCard from '../../components/examples/ExampleCard.astro';
-import FeaturedCard from '../../components/examples/FeaturedCard.astro';
 import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
 import {
   examples,
   byCategory,
-  findExample,
   CATEGORY_META,
   SIDEBAR_TARGETS,
   SIDEBAR_SOURCES,
   SIDEBAR_LLMS,
   POPULAR,
-  featuredSlug,
   type Category,
 } from '../../data/examples';
 import { titleText } from '../../consts';
@@ -30,10 +27,11 @@ import type { SidebarItem } from '../../data/docs-sidebar';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
 const exampleHref = (slug: string) => `${base}/examples/${slug}/`;
-const featured = findExample(featuredSlug)!;
 
 // Category order and counts, computed from the data.
-const CAT_ORDER: Category[] = ['search', 'ingest', 'llm', 'agents', 'image'];
+// Ordered by outcome: the two search categories first, then the LLM-output
+// categories, then the data-movement plumbing last.
+const CAT_ORDER: Category[] = ['search', 'image', 'llm', 'agents', 'ingest'];
 const catCount = (c: Category) => examples.filter((e) => e.category === c).length;
 // Categories with no examples yet (e.g. 'image') stay out of the chips and
 // side-nav — their grid sections already render nothing, so a chip or anchor
@@ -177,7 +175,6 @@ const breadcrumbLd = {
             <span class="ct">{total} examples</span>
           </div>
           <ol id="sideList">
-            <li data-target="section.feat"><a href="#feat-scroll" data-cat="featured"><span class="cat-dot"></span>Featured<span class="count">★</span></a></li>
             {activeCats.map((c) => (
               <li data-target={`#cat-${c}`}>
                 <a href={`#cat-${c}`} data-cat={c}>
@@ -224,12 +221,6 @@ const breadcrumbLd = {
         </aside>
 
         <div class="col-main">
-          <!-- ═══════════ FEATURED ═══════════ -->
-          <section class="feat" id="feat-scroll">
-            <div class="feat-eyebrow">★ Featured</div>
-            <FeaturedCard ex={featured} href={exampleHref(featured.slug)} />
-          </section>
-
           <!-- ═══════════ CATEGORY SECTIONS ═══════════ -->
           {CAT_ORDER.map((cat, ci) => {
             const items = byCategory(cat);
@@ -271,20 +262,15 @@ const breadcrumbLd = {
       (function(){
         const chips = document.querySelectorAll('#filters .t-filter');
         const sections = document.querySelectorAll('section.cat[data-cat]');
-        const feat = document.querySelector('section.feat');
 
         chips.forEach((chip) => chip.addEventListener('click', () => {
           const f = chip.dataset.filter;
           chips.forEach((c) => c.classList.toggle('on', c === chip));
           if (f === 'all') {
             sections.forEach((s) => s.style.display = '');
-            if (feat) feat.style.display = '';
             return;
           }
           sections.forEach((s) => s.style.display = (s.dataset.cat === f ? '' : 'none'));
-          // The featured card is an LLM-extraction example — keep it visible
-          // when that filter is active, hide otherwise.
-          if (feat) feat.style.display = (f === 'llm' ? '' : 'none');
         }));
       })();
 
@@ -311,6 +297,25 @@ const breadcrumbLd = {
 
     <style is:global>
       @import '@cocoindex/brand/examples.css';
+
+      /* ── Homepage-style cards: the thumb is a comprehensive pipeline SVG
+         (blobs repo), with title + tech tags baked into the artwork. ── */
+      body.ex-listing .ex-art {
+        position: relative; aspect-ratio: 480 / 300; overflow: hidden;
+        /* Homepage card surface: maroon-ink warmed with 10% lavender → deep plum. */
+        background: color-mix(in oklab, var(--maroon-ink) 90%, #C9A0FF 10%);
+        border-bottom: 1px solid var(--rule);
+      }
+      body.ex-listing .ex-art-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      body.ex-listing .ex-open {
+        position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+        padding: 9px 16px; font-family: var(--mono); font-size: var(--text-xs);
+        letter-spacing: 0.12em; text-transform: uppercase; font-weight: 700; color: var(--cream);
+        background: linear-gradient(to top, color-mix(in oklab, var(--maroon-ink) 92%, transparent), transparent);
+        transform: translateY(100%); opacity: 0;
+        transition: transform var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+      }
+      body.ex-listing .ex-card:hover .ex-open { transform: translateY(0); opacity: 1; }
     </style>
     <Foot />
     <Analytics />
