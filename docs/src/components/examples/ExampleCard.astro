@@ -12,8 +12,11 @@ interface Props {
 }
 const { ex, href } = Astro.props;
 const title = titleText(ex.title);
+// Facet values for the side-nav filters (By target / source / LLM).
+const facetVals = (kind: 'tgt' | 'src' | 'llm') =>
+  ex.tags.filter((t) => t.kind === kind).map((t) => t.label).join('|');
 ---
-<a class="ex-card" href={href}>
+<a class="ex-card" href={href} data-tgt={facetVals('tgt')} data-src={facetVals('src')} data-llm={facetVals('llm')}>
   <div class="ex-art">
     <img class="ex-art-img" src={exampleCardImg(ex.slug)} alt={`${title} pipeline`} width="480" height="300" loading="lazy" decoding="async" data-card={ex.slug} />
     <span class="ex-open">Open example →</span>

@@ -1,5 +1,7 @@
 ---
 import '../styles/globals.css';
+import '@cocoindex/brand/doc-card.css';
+import DocCard from '@cocoindex/brand/DocCard.astro';
 import Topbar from '../components/Topbar.astro';
 import Sidebar from '../components/Sidebar.astro';
 import MobileSheet from '../components/MobileSheet.astro';
@@ -25,26 +27,26 @@ const canonical = new URL(`${base}/`, SITE_URL).toString();
 // "Start here" entry points — labels and slugs match the sidebar exactly.
 const startCards = [
   { slug: 'getting_started/quickstart', label: 'Quickstart', meta: '5 min',
-    body: 'Build your first pipeline end to end — convert PDFs to Markdown and watch only changed files reprocess.', icon: 'rocket' },
+    body: 'Build your first pipeline end to end — convert PDFs to Markdown and watch only changed files reprocess.', icon: 'rocket', accent: 'coral' },
   { slug: 'getting_started/installation', label: 'Installation', meta: 'Setup',
-    body: 'Install the package and the Rust engine. Python 3.10+, pip / uv / poetry.', icon: 'download' },
+    body: 'Install the package and the Rust engine. Python 3.10+, pip / uv / poetry.', icon: 'download', accent: 'peach' },
   { slug: 'programming_guide/core_concepts', label: 'Core Concepts', meta: 'Mental model',
-    body: 'App, processing components, target states, and how incremental syncing works.', icon: 'concept' },
+    body: 'App, processing components, target states, and how incremental syncing works.', icon: 'concept', accent: 'palm' },
   { slug: 'getting_started/ai_coding_agents', label: 'Use with AI coding agents', meta: 'Skill',
-    body: 'Drop in the CocoIndex skill so Claude Code or Cursor writes correct v1 flows.', icon: 'agent' },
-];
+    body: 'Drop in the CocoIndex skill so Claude Code or Cursor writes correct v1 flows.', icon: 'agent', accent: 'lavender' },
+] as const;
 
 // What you can build — each links to runnable examples or the product page.
 const buildCards = [
-  { href: doc('examples/index-codebase'), title: 'Semantic & vector search',
+  { href: doc('examples/index-codebase'), title: 'Semantic & vector search', icon: 'search', accent: 'coral',
     body: 'Chunk, embed, and index documents or code into pgvector, Qdrant, LanceDB, or Turbopuffer.', meta: 'RAG · retrieval' },
-  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j', title: 'Knowledge graphs',
+  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j', title: 'Knowledge graphs', icon: 'graph', accent: 'palm',
     body: 'Extract entities and relationships into Neo4j, FalkorDB, or SurrealDB — structured context for agents.', meta: 'Entities · relations' },
-  { href: CODE, title: 'Live code index',
+  { href: CODE, title: 'Live code index', icon: 'code', accent: 'peach',
     body: 'AST-aware semantic chunks and call graphs kept fresh on every commit, served over MCP.', meta: 'CocoIndex Code' },
-  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy', title: 'Structured extraction',
+  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy', title: 'Structured extraction', icon: 'extract', accent: 'lavender',
     body: 'Turn PDFs, transcripts, and inboxes into typed rows with LLM extraction and entity resolution.', meta: 'Ingest · transform' },
-];
+] as const;
 
 // Building blocks — connectors and ops straight from the sidebar.
 const sources = [
@@ -75,10 +77,20 @@ const targets = [
 ];
 
 const ICONS: Record<string, string> = {
+  // start here
   rocket: '<path d="M4.5 16.5 12 4l7.5 12.5"/><path d="M12 4v16"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   concept: '<circle cx="12" cy="12" r="3"/><path d="M5 12H2m20 0h-3M12 5V2m0 20v-3M7 7 5 5m14 14-2-2M17 7l2-2M5 19l2-2"/>',
   agent: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3M9 9l-2 2 2 2m6-4 2 2-2 2"/>',
+  // what you can build
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m21 21-5-5"/><circle cx="10.5" cy="10.5" r="1.6" fill="currentColor" stroke="none"/>',
+  graph: '<circle cx="5" cy="6" r="2.4"/><circle cx="19" cy="6" r="2.4"/><circle cx="12" cy="18" r="2.4"/><path d="M7.2 7 10.8 16M16.8 7 13.2 16M7.4 6h9.2"/>',
+  code: '<path d="m9 8-4 4 4 4"/><path d="m15 8 4 4-4 4"/><path d="M13 5 11 19" stroke-opacity="0.5"/>',
+  extract: '<path d="M13 3v4a1 1 0 0 0 1 1h4"/><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M9 13h6M9 17h6"/>',
+  // community
+  github: '<path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.3 2.6 5.3 2.9 5.3 2.9a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 3.8 9.3c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/>',
+  discord: '<path d="M18 5a18 18 0 0 0-4.5-1.4l-.3.6a14 14 0 0 1 4 2 16 16 0 0 0-12.4 0 14 14 0 0 1 4-2l-.3-.6A18 18 0 0 0 4 5C1.6 8.5 1 12 1.2 15.4A18 18 0 0 0 6.7 18l.7-1a12 12 0 0 1-1.9-.9l.5-.4a13 13 0 0 0 11 0l.5.4a12 12 0 0 1-1.9.9l.7 1a18 18 0 0 0 5.5-2.6C21.2 11.5 20.2 8 18 5z"/><circle cx="8.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.5" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/>',
 };
 ---
 <!doctype html>
@@ -106,7 +118,6 @@ const ICONS: Record<string, string> = {
         <section class="dh-hero">
           <div class="hero-grid">
             <div class="hero-copy">
-              <span class="t-eyebrow"><span class="dt" aria-hidden="true"></span>Documentation · v1</span>
               <h1 class="hero-h" set:html={titleMarkup('Fresh data views for *agents.*')} />
               <p class="hero-sub">
                 CocoIndex is an ultra-performant framework for building data pipelines for AI, with
@@ -161,14 +172,7 @@ const ICONS: Record<string, string> = {
           </div>
           <div class="card-grid four">
             {startCards.map((c) => (
-              <a class="card" href={doc(c.slug)}>
-                <span class="ico" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" set:html={ICONS[c.icon]} />
-                </span>
-                <h3>{c.label} <span class="ar">→</span></h3>
-                <p>{c.body}</p>
-                <span class="meta">{c.meta}</span>
-              </a>
+              <DocCard href={doc(c.slug)} title={c.label} body={c.body} meta={c.meta} icon={ICONS[c.icon]} accent={c.accent} />
             ))}
           </div>
         </section>
@@ -207,11 +211,7 @@ const ICONS: Record<string, string> = {
           </div>
           <div class="card-grid four">
             {buildCards.map((c) => (
-              <a class="card build" href={c.href}>
-                <h3>{c.title} <span class="ar">→</span></h3>
-                <p>{c.body}</p>
-                <span class="meta">{c.meta}</span>
-              </a>
+              <DocCard href={c.href} title={c.title} body={c.body} meta={c.meta} icon={ICONS[c.icon]} accent={c.accent} />
             ))}
           </div>
         </section>
@@ -295,9 +295,9 @@ app.update_blocking()</code></pre>
             <p>An incremental engine for agents — Apache-2.0, built fully in the open.</p>
           </div>
           <div class="card-grid four">
-            <a class="card build" href={GITHUB_REPO}><h3>GitHub <span class="ar">→</span></h3><p>Star the repo, read the source, open an issue.</p></a>
-            <a class="card build" href={DISCORD_URL}><h3>Discord <span class="ar">→</span></h3><p>Showcase, release notes, and help from maintainers.</p></a>
-            <a class="card build" href={EXAMPLES}><h3>Examples <span class="ar">→</span></h3><p>Runnable recipes you can clone, run, and bend to your data.</p></a>
+            <DocCard href={GITHUB_REPO} title="GitHub" body="Star the repo, read the source, open an issue." icon={ICONS.github} accent="coral" />
+            <DocCard href={DISCORD_URL} title="Discord" body="Showcase, release notes, and help from maintainers." icon={ICONS.discord} accent="lavender" />
+            <DocCard href={EXAMPLES} title="Examples" body="Runnable recipes you can clone, run, and bend to your data." icon={ICONS.grid} accent="palm" />
           </div>
         </section>
       </main>
@@ -439,47 +439,8 @@ app.update_blocking()</code></pre>
       /* card grid — auto-fit so it always fits the (narrower) main column */
       body.docs-home .card-grid { display: grid; gap: 16px; }
       body.docs-home .card-grid.four { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
-      body.docs-home .card {
-        position: relative; overflow: hidden;
-        display: block; background: var(--cream); border: 1px solid var(--rule);
-        border-radius: 12px; padding: 22px; text-decoration: none; color: var(--maroon-ink);
-        transition: border-color .18s ease;
-      }
-      /* Corner-dots hover motif — matches the homepage (.integ / .code-feat)
-         and the blog list rows: a bottom-right radial-gradient dot field that
-         fades in. No drop-shadow, no lift. */
-      body.docs-home .card::before {
-        content: ""; position: absolute; inset: auto 0 0 auto;
-        width: 200px; height: 120px;
-        background-image: radial-gradient(circle, rgba(190, 81, 51, 0.45) 1.2px, transparent 1.6px);
-        background-size: 9px 9px; background-position: 100% 100%;
-        opacity: 0; transition: opacity .25s ease; pointer-events: none;
-        -webkit-mask-image: radial-gradient(circle at 100% 100%, #000 0%, transparent 75%);
-                mask-image: radial-gradient(circle at 100% 100%, #000 0%, transparent 75%);
-      }
-      body.docs-home .card > * { position: relative; z-index: 1; }
-      body.docs-home .card:hover { border-color: rgba(190, 81, 51, 0.4); text-decoration: none; }
-      /* On hover the dot-field simply fades in — no motion. */
-      body.docs-home .card:hover::before {
-        opacity: 1;
-      }
-      body.docs-home .card .ico {
-        width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center;
-        background: color-mix(in oklab, var(--coral) 12%, var(--cream)); color: var(--coral); margin-bottom: 16px;
-      }
-      body.docs-home .card .ico svg { width: 20px; height: 20px; }
-      body.docs-home .card h3 {
-        margin: 0 0 6px; font-size: var(--text-base); font-weight: 600; letter-spacing: -0.01em;
-        display: flex; align-items: center; gap: 6px; color: var(--maroon-ink);
-      }
-      body.docs-home .card h3 .ar { color: var(--coral); transition: transform .18s ease; }
-      body.docs-home .card:hover h3 .ar { transform: translateX(3px); }
-      body.docs-home .card p { margin: 0; font-size: var(--text-sm); color: var(--muted); line-height: 1.55; }
-      body.docs-home .card .meta {
-        display: block; margin-top: 14px; font-family: var(--mono); font-size: var(--text-xs);
-        letter-spacing: 0.1em; text-transform: uppercase; color: var(--coral);
-      }
-      body.docs-home .card.build h3 { font-size: var(--text-base); }
+      /* The cards are now the shared <DocCard> (@cocoindex/brand/doc-card.css):
+         hum-07 lift + accent tint + springy icon tile, multi-accent per card. */
 
       /* steps */
       body.docs-home .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
@@ -543,9 +504,7 @@ app.update_blocking()</code></pre>
         body.docs-home .hero-grid { grid-template-columns: 1fr; gap: 32px; }
         body.docs-home .split { grid-template-columns: 1fr; gap: 26px; }
       }
-      @media (prefers-reduced-motion: reduce) {
-        body.docs-home .card, body.docs-home .card h3 .ar { transition: none; }
-      }
+      /* DocCard handles its own reduced-motion (doc-card.css). */
     </style>
 
     <Foot />
