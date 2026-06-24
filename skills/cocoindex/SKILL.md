@@ -49,8 +49,8 @@ This creates: `main.py`, `pyproject.toml`, `README.md`. The generated `main.py` 
 # For vector embeddings with PostgreSQL
 dependencies = ["cocoindex>=1.0.0", "sentence-transformers", "asyncpg"]
 
-# For LLM extraction
-dependencies = ["cocoindex>=1.0.0", "litellm", "instructor", "pydantic>=2.0"]
+# For LLM extraction (add "instructor" only if you use the instructor style)
+dependencies = ["cocoindex>=1.0.0", "litellm", "pydantic>=2.0"]
 ```
 
 See [references/setup_project.md](references/setup_project.md) for complete examples.
@@ -314,25 +314,31 @@ app = coco.App(coco.AppConfig(name="Embedding"), app_main, sourcedir=pathlib.Pat
 ### Pattern 3: LLM-Based Extraction
 
 ```python
-import instructor
-from pydantic import BaseModel
+import os
 from litellm import acompletion
+from pydantic import BaseModel
 
-_instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.JSON)
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
 class ExtractionResult(BaseModel):
     title: str
     topics: list[str]
 
-@coco.fn(memo=True)  # Memo avoids re-calling LLM
+@coco.fn(memo=True)  # Memo avoids re-calling LLM when input + code are unchanged
 async def extract_and_store(content: str, message_id: int, table) -> None:
-    result = await _instructor_client.chat.completions.create(
-        model="gpt-4",
-        response_model=ExtractionResult,
+    response = await acompletion(
+        model=LLM_MODEL,
         messages=[{"role": "user", "content": f"Extract topics: {content}"}],
+        response_format=ExtractionResult,  # structured output via the provider
     )
+    result = ExtractionResult.model_validate_json(response.choices[0].message.content)
     table.declare_row(row=Message(id=message_id, title=result.title, content=content))
 ```
+
+This mirrors the `hn_trending_topics` example. For more ergonomic structured
+output you can instead use [`instructor`](https://python.useinstructor.com/)
+(`instructor.from_litellm(acompletion)`), as `meeting_notes_graph_neo4j` does —
+add `instructor` to your dependencies if you go that route.
 
 ## Connectors and Operations
 

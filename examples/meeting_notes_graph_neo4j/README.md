@@ -100,6 +100,8 @@ pip install -e .
 cocoindex update main
 ```
 
+> First run downloads the `snowflake-arctic-embed-xs` model (~90 MB) from Hugging Face for the entity-resolution step and caches it locally, so the initial invocation needs network access. The LLM extraction additionally calls your configured `LLM_MODEL` (OpenAI by default), which does require an API key.
+
 **4. Explore the graph** — open [Neo4j Browser](http://localhost:7474) (`neo4j` / `cocoindex`) and ask:
 
 ```cypher

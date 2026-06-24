@@ -67,6 +67,7 @@ from cocoindex.resources.id import IdGenerator
 
 DATABASE_URL = os.getenv("POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex")
 TABLE_NAME = "doc_embeddings"
+PG_SCHEMA_NAME = "coco_examples"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 PG_DB = coco.ContextKey[asyncpg.Pool]("text_embedding_db")
@@ -160,6 +161,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         table_schema=await postgres.TableSchema.from_class(
             DocEmbedding, primary_key=["id"],
         ),
+        pg_schema_name=PG_SCHEMA_NAME,
     )
     target_table.declare_vector_index(column="embedding")
 
@@ -213,7 +215,7 @@ async def query_once(pool, embedder, query: str, *, top_k: int = 5) -> None:
         rows = await conn.fetch(
             f"""
             SELECT filename, text, embedding <=> $1 AS distance
-            FROM "{TABLE_NAME}"
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
             ORDER BY distance ASC
             LIMIT $2
             """,

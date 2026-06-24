@@ -108,6 +108,8 @@ cocoindex update main          # catch-up: scan, sync, exit
 cocoindex update -L main       # live: keep watching for file changes
 ```
 
+> First run downloads the `all-MiniLM-L6-v2` model (~90 MB) from Hugging Face and caches it locally, so the initial invocation needs network access and takes a bit longer. No API key is required.
+
 **4. Search** — embeds your query with the *same* model and returns the nearest chunks by pgvector cosine distance:
 
 ```sh

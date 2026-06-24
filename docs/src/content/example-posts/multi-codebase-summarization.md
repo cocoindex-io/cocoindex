@@ -105,7 +105,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
 
 app = coco.App(
-    "MultiCodebaseSummarization",
+    coco.AppConfig(name="MultiCodebaseSummarization"),
     app_main,
     root_dir=pathlib.Path("./projects"),
     output_dir=pathlib.Path("./output"),

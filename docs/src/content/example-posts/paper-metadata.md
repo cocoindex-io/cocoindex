@@ -66,6 +66,58 @@ class PaperMetadataModel(BaseModel):
     abstract: str
 ```
 
+## Imports and configuration
+
+Imports, the table/schema names, and two shared helpers: `_abstract_splitter`
+(a sentence-aware splitter for abstracts) and `openai_client()` (a cached
+client). The dataclasses and flow below build on these.
+
+```python title="main.py"
+import asyncio
+import functools
+import io
+import os
+import pathlib
+import sys
+import uuid
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
+
+import asyncpg
+from numpy.typing import NDArray
+from openai import OpenAI
+from pypdf import PdfReader, PdfWriter
+
+import cocoindex as coco
+from cocoindex.connectors import localfs, postgres
+from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
+from models import AuthorModel, PaperMetadataModel
+
+TABLE_METADATA = "paper_metadata"
+TABLE_AUTHOR_PAPERS = "author_papers"
+TABLE_EMBEDDINGS = "metadata_embeddings"
+PG_SCHEMA_NAME = "coco_examples_v1"
+LLM_MODEL = "gpt-4o"
+TOP_K = 5
+
+_abstract_splitter = RecursiveSplitter(
+    custom_languages=[
+        CustomLanguageConfig(
+            language_name="abstract",
+            separators_regex=[r"[.?!]+\s+", r"[:;]\s+", r",\s+", r"\s+"],
+        )
+    ]
+)
+
+
+@functools.cache
+def openai_client() -> OpenAI:
+    return OpenAI()
+```
+
 ## Define the data and shared resources
 
 Each output table maps to one dataclass: `PaperMetadataRow` is one row per paper, `AuthorPaperRow` is one row per (author, paper) pair — an index you can join against — and `MetadataEmbeddingRow` is one embedded chunk of text. `coco_lifespan` provides the [shared resources](https://cocoindex.io/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.

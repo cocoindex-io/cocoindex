@@ -108,7 +108,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
             database=os.environ.get("NEO4J_DATABASE", "neo4j"),
         ),
     )
-    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5.4"))
+    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     yield
 ```
 

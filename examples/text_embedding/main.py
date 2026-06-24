@@ -8,7 +8,7 @@ Index (use `-L` for live mode, omit for one-shot catch-up):
 Query the index:
     python main.py "your query"
 
-Pipeline: walk markdown files -> chunk -> embed -> store in pgvector (no vector index).
+Pipeline: walk markdown files -> chunk -> embed -> store in pgvector with a vector index.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ app = coco.App(
 
 
 # ============================================================================
-# Query demo (no vector index)
+# Query demo (cosine distance over the pgvector index)
 # ============================================================================
 
 

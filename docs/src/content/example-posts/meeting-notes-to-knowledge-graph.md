@@ -120,7 +120,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
             database=os.environ.get("NEO4J_DATABASE", "neo4j"),
         ),
     )
-    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5.4"))
+    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     builder.provide(RESOLUTION_LLM_MODEL, os.environ.get("RESOLUTION_LLM_MODEL", "openai/gpt-5-mini"))
     builder.provide(EMBEDDER, SentenceTransformerEmbedder("Snowflake/snowflake-arctic-embed-xs"))
     yield
@@ -379,7 +379,7 @@ export GOOGLE_DRIVE_ROOT_FOLDER_IDS=folderId1,folderId2
 export NEO4J_URI=bolt://localhost:7687
 export NEO4J_USER=neo4j
 export NEO4J_PASSWORD=cocoindex
-export LLM_MODEL=openai/gpt-5.4
+export LLM_MODEL=openai/gpt-5-mini
 export RESOLUTION_LLM_MODEL=openai/gpt-5-mini         # smaller model for entity resolution
 ```
 

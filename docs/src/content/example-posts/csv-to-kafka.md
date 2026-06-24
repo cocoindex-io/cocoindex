@@ -64,11 +64,24 @@ You [declare the transformation logic](https://cocoindex.io/docs/programming_gui
 The Kafka producer is created once at app startup in a [`lifespan`](https://cocoindex.io/docs/programming_guide/context/) hook and stashed in a [`ContextKey`](https://cocoindex.io/docs/programming_guide/context/), so the rest of the pipeline can grab it without threading it through every call:
 
 ```python title="main.py"
-import cocoindex as coco
-from cocoindex.connectors import kafka, localfs
+import csv
+import io
+import json
+import os
+from collections.abc import AsyncIterator
+
 from confluent_kafka.aio import AIOProducer
 
+import cocoindex as coco
+from cocoindex.connectors import kafka, localfs
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
 KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("kafka_producer")
+
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "cocoindex-csv-rows")
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_SASL_USERNAME = os.environ.get("KAFKA_SASL_USERNAME", "")
+KAFKA_SASL_PASSWORD = os.environ.get("KAFKA_SASL_PASSWORD", "")
 
 
 @coco.lifespan
