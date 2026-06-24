@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
+import pathlib
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -37,10 +38,11 @@ import litellm
 import pydantic
 
 import cocoindex as coco
-from cocoindex.connectors import falkordb, google_drive
+from cocoindex.connectors import falkordb, google_drive, localfs
 from cocoindex.ops.entity_resolution import ResolvedEntities, resolve_entities
 from cocoindex.ops.entity_resolution.llm_resolver import LlmPairResolver
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 litellm.drop_params = True
@@ -238,7 +240,7 @@ class MeetingExtraction:
 
 @coco.fn(memo=True)
 async def process_file(
-    file: google_drive.DriveFile,
+    file: FileLike,
     meeting_table: falkordb.TableTarget[Meeting],
     task_table: falkordb.TableTarget[Task],
     decided_rel: falkordb.RelationTarget[Any],
@@ -377,19 +379,29 @@ async def app_main() -> None:
     )
 
     # --- Phase 1: per-file extraction ---
-    credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
+    # Read notes from Google Drive when it's configured; otherwise fall back to
+    # the bundled sample_notes/ folder so the example runs without a Drive setup.
+    credential_path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_CREDENTIAL")
     root_folder_ids = [
         folder.strip()
-        for folder in os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
+        for folder in os.environ.get("GOOGLE_DRIVE_ROOT_FOLDER_IDS", "").split(",")
         if folder.strip()
     ]
-    source = google_drive.GoogleDriveSource(
-        service_account_credential_path=credential_path,
-        root_folder_ids=root_folder_ids,
-    )
+    if credential_path and root_folder_ids:
+        source_items = google_drive.GoogleDriveSource(
+            service_account_credential_path=credential_path,
+            root_folder_ids=root_folder_ids,
+        ).items()
+    else:
+        print("Google Drive not configured — reading the bundled ./sample_notes folder.")
+        source_items = localfs.walk_dir(
+            pathlib.Path("./sample_notes"),
+            recursive=True,
+            path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+        ).items()
 
     file_coros = []
-    async for path_key, file in source.items():
+    async for path_key, file in source_items:
         file_coros.append(
             coco.use_mount(
                 coco.component_subpath("file", path_key),

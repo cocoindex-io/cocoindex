@@ -87,12 +87,17 @@ Extraction is [instructor](https://github.com/instructor-ai/instructor) over [Li
 docker run -d -p 6379:6379 -p 3000:3000 --name cocoindex-falkordb falkordb/falkordb:latest
 ```
 
-**2. Configure & install** — this source reads notes from one or more Google Drive folders shared with a service account (see [Setting up a service account](https://cocoindex.io/docs/connectors/google_drive/#setting-up-a-service-account)):
+**2. Configure & install** — out of the box this reads the bundled
+[`sample_notes/`](sample_notes) folder, so you only need an `OPENAI_API_KEY`:
 
 ```sh
-cp .env.example .env     # set OPENAI_API_KEY, GOOGLE_SERVICE_ACCOUNT_CREDENTIAL, GOOGLE_DRIVE_ROOT_FOLDER_IDS
+cp .env.example .env     # set OPENAI_API_KEY
 pip install -e .
 ```
+
+To ingest your own notes from Google Drive instead, set
+`GOOGLE_SERVICE_ACCOUNT_CREDENTIAL` and `GOOGLE_DRIVE_ROOT_FOLDER_IDS` in `.env`
+(see [Setting up a service account](https://cocoindex.io/docs/connectors/google_drive/#setting-up-a-service-account)); when both are set the example reads from Drive, otherwise it falls back to `sample_notes/`.
 
 Both the extraction and resolution models default to `openai/gpt-5-mini`; override `LLM_MODEL` / `RESOLUTION_LLM_MODEL` for any [LiteLLM provider](https://docs.litellm.ai/docs/providers). `FALKORDB_URI` and `FALKORDB_GRAPH` default to `falkor://localhost:6379` and `meeting_notes`.
 
