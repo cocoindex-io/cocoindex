@@ -109,3 +109,20 @@ class StablePath:
 
 
 ROOT_PATH = StablePath()
+
+
+def build_selector_path(*parts: StableKey) -> core.StablePath:
+    """Build a ``core.StablePath`` from *parts* for use in ``component_selector``.
+
+    Each part must be a valid ``StableKey`` (``str``, ``int``, ``Symbol``, etc.).
+    Glob wildcards like ``"*"`` can be passed as string parts.
+
+    Example::
+
+        path = build_selector_path(Symbol("process"), "*.md")
+        app.update(component_selector=[path])
+    """
+    path = _ROOT_PATH
+    for part in parts:
+        path = path.concat(part)
+    return path

@@ -66,7 +66,7 @@ class UpdateHandle(Generic[R]):
         self._core_handle: core.UpdateHandle | None = None
         self._main_fn = main_fn  # used for return type inspection
         self._preview = preview
-        self._component_selector: tuple[str, ...] | None = None
+        self._component_selector: tuple[core.StablePath, ...] | None = None
 
     async def _ensure_started(self) -> core.UpdateHandle:
         if self._core_handle is None:
@@ -293,7 +293,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
-        component_selector: list[str] | None = None,
+        component_selector: list[core.StablePath] | None = None,
     ) -> UpdateHandle[R]:
         """
         Start an update and return a handle for tracking progress and awaiting the result.
@@ -307,9 +307,11 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 The handle's result will be a list of raw action objects.
-            component_selector: Optional list of ``fnmatch``-style glob patterns
-                to select which components to execute. Only ``mount_each``
-                children whose selector path matches any pattern are mounted.
+            component_selector: Optional list of ``core.StablePath`` values
+                describing which components to select. All components are
+                still mounted (to preserve unselected outputs), but component
+                functions can check :func:`get_component_selector` to decide
+                whether to skip expensive work.
                 ``use_mount`` and the root component always run.
 
         Returns:
@@ -345,7 +347,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
-        component_selector: list[str] | None = None,
+        component_selector: list[core.StablePath] | None = None,
     ) -> R | list[Any]:
         """
         Update the app synchronously (run the app once to process all pending changes).
@@ -359,9 +361,11 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 Returns a list of raw action objects instead of the main function result.
-            component_selector: Optional list of ``fnmatch``-style glob patterns
-                to select which components to execute. Only ``mount_each``
-                children whose selector path matches any pattern are mounted.
+            component_selector: Optional list of ``core.StablePath`` values
+                describing which components to select. All components are
+                still mounted (to preserve unselected outputs), but component
+                functions can check :func:`get_component_selector` to decide
+                whether to skip expensive work.
                 ``use_mount`` and the root component always run.
 
         Returns:

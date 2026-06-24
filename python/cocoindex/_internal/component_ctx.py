@@ -48,7 +48,7 @@ _context_var: ContextVar[ComponentContext] = ContextVar("coco_component_context"
 # ContextVar of the event-loop task that called App.update(). However,
 # they DO share the same thread (the asyncio event-loop thread), so a
 # plain module-level variable works across this boundary.
-_current_component_selector: tuple[str, ...] | None = None
+_current_component_selector: tuple[core.StablePath, ...] | None = None
 
 MountKind: TypeAlias = Literal[
     "mount", "mount_each", "delete_background", "process_live"
@@ -366,16 +366,16 @@ def get_context_from_ctx() -> ComponentContext:
     )
 
 
-def get_component_selector() -> tuple[str, ...] | None:
+def get_component_selector() -> tuple[core.StablePath, ...] | None:
     """Return the active component selector, or ``None`` if not set.
 
     The component selector is set by :meth:`App.update()` when a
     ``component_selector`` argument is provided. It is a tuple of
-    ``fnmatch``-style glob patterns that select which components to
-    execute.
+    ``core.StablePath`` values describing which components to select.
+    Components can check this to decide whether to skip expensive work.
 
     Returns:
-        Tuple of selector patterns, or ``None`` (run everything).
+        Tuple of ``core.StablePath`` values, or ``None`` (run everything).
     """
     return _current_component_selector
 
