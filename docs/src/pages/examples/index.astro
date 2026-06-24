@@ -188,17 +188,17 @@ const breadcrumbLd = {
 
           <div class="side-group">
             <h6>By target</h6>
-            <div class="tags-row">{SIDEBAR_TARGETS.map((t) => <span class="t-pill">{t}</span>)}</div>
+            <div class="tags-row">{SIDEBAR_TARGETS.map((t) => <button type="button" class="t-pill" data-facet="tgt" data-value={t}>{t}</button>)}</div>
           </div>
 
           <div class="side-group">
             <h6>By source</h6>
-            <div class="tags-row">{SIDEBAR_SOURCES.map((t) => <span class="t-pill">{t}</span>)}</div>
+            <div class="tags-row">{SIDEBAR_SOURCES.map((t) => <button type="button" class="t-pill" data-facet="src" data-value={t}>{t}</button>)}</div>
           </div>
 
           <div class="side-group">
             <h6>By LLM</h6>
-            <div class="tags-row">{SIDEBAR_LLMS.map((t) => <span class="t-pill">{t}</span>)}</div>
+            <div class="tags-row">{SIDEBAR_LLMS.map((t) => <button type="button" class="t-pill" data-facet="llm" data-value={t}>{t}</button>)}</div>
           </div>
 
           <div class="side-group">
@@ -258,20 +258,43 @@ const breadcrumbLd = {
     </div>
 
     <script is:inline>
-      // Category filter chips — toggle visibility of category sections.
+      // Filters — category chips (top) toggle whole category sections; the side
+      // facet pills (By target / source / LLM) filter individual cards by tag and
+      // hide now-empty sections. Two modes; picking a facet resets category to All.
       (function(){
-        const chips = document.querySelectorAll('#filters .t-filter');
-        const sections = document.querySelectorAll('section.cat[data-cat]');
+        const catChips = Array.from(document.querySelectorAll('#filters .t-filter'));
+        const facetPills = Array.from(document.querySelectorAll('.side-group .t-pill[data-facet]'));
+        const sections = Array.from(document.querySelectorAll('section.cat[data-cat]'));
+        const cards = Array.from(document.querySelectorAll('.ex-card'));
+        let cat = 'all';
+        let facet = null; // { facet: 'tgt'|'src'|'llm', value }
 
-        chips.forEach((chip) => chip.addEventListener('click', () => {
-          const f = chip.dataset.filter;
-          chips.forEach((c) => c.classList.toggle('on', c === chip));
-          if (f === 'all') {
-            sections.forEach((s) => s.style.display = '');
-            return;
+        function render(){
+          if (facet){
+            cards.forEach((c) => {
+              const vals = (c.getAttribute('data-' + facet.facet) || '').split('|');
+              c.style.display = vals.indexOf(facet.value) > -1 ? '' : 'none';
+            });
+            sections.forEach((s) => {
+              const any = Array.from(s.querySelectorAll('.ex-card')).some((c) => c.style.display !== 'none');
+              s.style.display = any ? '' : 'none';
+            });
+          } else {
+            cards.forEach((c) => { c.style.display = ''; });
+            sections.forEach((s) => { s.style.display = (cat === 'all' || s.dataset.cat === cat) ? '' : 'none'; });
           }
-          sections.forEach((s) => s.style.display = (s.dataset.cat === f ? '' : 'none'));
+          catChips.forEach((c) => c.classList.toggle('on', c.dataset.filter === cat));
+          facetPills.forEach((p) => p.classList.toggle('on', !!facet && p.dataset.facet === facet.facet && p.dataset.value === facet.value));
+        }
+
+        catChips.forEach((chip) => chip.addEventListener('click', () => { cat = chip.dataset.filter; facet = null; render(); }));
+        facetPills.forEach((pill) => pill.addEventListener('click', () => {
+          const same = facet && facet.facet === pill.dataset.facet && facet.value === pill.dataset.value;
+          facet = same ? null : { facet: pill.dataset.facet, value: pill.dataset.value };
+          if (facet) cat = 'all';
+          render();
         }));
+        render();
       })();
 
       // Highlight the active category in the side nav based on scroll.
