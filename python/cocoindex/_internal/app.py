@@ -104,10 +104,11 @@ class UpdateHandle(Generic[R]):
         """
         if self._preview:
             raise TypeError("watch() is not supported when preview=True")
-        # Set the selector BEFORE spawning the tokio task (inside _init),
-        # so that Python callbacks see it regardless of when they run.
-        prev_selector = _component_ctx_module._current_component_selector
-        _component_ctx_module._current_component_selector = self._component_selector
+        # Publish the selector via the ContextVar transport bridge so
+        # _enter_component_context() can snap it into each root
+        # ComponentContext. Token-based set/reset is safe for concurrent
+        # update() calls — each call has its own token.
+        token = _component_ctx_module._selector_var.set(self._component_selector)
         try:
             handle = await self._ensure_started()
             last_version = 0
@@ -138,14 +139,11 @@ class UpdateHandle(Generic[R]):
                     status = UpdateStatus.READY if snap.ready else UpdateStatus.RUNNING
                     yield UpdateSnapshot(stats=snap.stats, status=status, result=None)
         finally:
-            _component_ctx_module._current_component_selector = prev_selector
+            _component_ctx_module._selector_var.reset(token)
 
     async def result(self) -> R:
         """Await the update result. Raises on error."""
-        # Set the selector BEFORE spawning the tokio task (inside _init),
-        # so that Python callbacks see it regardless of when they run.
-        prev_selector = _component_ctx_module._current_component_selector
-        _component_ctx_module._current_component_selector = self._component_selector
+        token = _component_ctx_module._selector_var.set(self._component_selector)
         try:
             handle = await self._ensure_started()
             if self._preview:
@@ -153,7 +151,7 @@ class UpdateHandle(Generic[R]):
                 return handle.take_preview_actions()  # type: ignore[return-value]
             pyvalue: Any = await handle.result()
         finally:
-            _component_ctx_module._current_component_selector = prev_selector
+            _component_ctx_module._selector_var.reset(token)
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
     def __await__(self) -> Any:
@@ -371,8 +369,6 @@ class App(Generic[P, R]):
         Returns:
             The result of the main function, or a list of actions in preview mode.
         """
-        global _current_component_selector
-
         selector = tuple(component_selector) if component_selector else None
 
         env, core_app = self._get_core_env_app_sync()
@@ -382,8 +378,7 @@ class App(Generic[P, R]):
         )
         report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
 
-        prev_selector = _component_ctx_module._current_component_selector
-        _component_ctx_module._current_component_selector = selector
+        token = _component_ctx_module._selector_var.set(selector)
         try:
             pyvalue: Any = core_app.update(
                 processor,
@@ -395,7 +390,7 @@ class App(Generic[P, R]):
                 preview=preview,
             )
         finally:
-            _component_ctx_module._current_component_selector = prev_selector
+            _component_ctx_module._selector_var.reset(token)
 
         if preview:
             return pyvalue  # type: ignore[no-any-return]
