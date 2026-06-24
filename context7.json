@@ -12,10 +12,5 @@
     "Functions with memo=True must have full type annotations on all parameters and the return value.",
     "There is no `cocoindex setup` step in v1: run apps with `cocoindex update` (add --live for live mode) or `app.update_blocking()` in Python.",
     "Full docs index for agents: https://cocoindex.io/docs/llms.txt (docs pages and example walkthroughs have raw-Markdown twins: replace the trailing slash with .md)."
-  ],
-  "previousVersions": [
-    {
-      "tag": "v0.3.39"
-    }
   ]
 }

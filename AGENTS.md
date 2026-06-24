@@ -160,6 +160,12 @@ Changes are applied atomically per component. If a source item is deleted (path 
 ### Example
 
 ```python
+import pathlib
+
+import cocoindex as coco
+from cocoindex.connectors import localfs
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
 @coco.fn(memo=True)
 async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     html = _markdown_it.render(await file.read_text())
@@ -171,7 +177,9 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     target = await coco.use_mount(localfs.declare_dir_target, outdir)
 
     files = localfs.walk_dir(
-        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
     await coco.mount_each(process_file, files.items(), target)
 
@@ -292,6 +300,23 @@ The current codebase is for CocoIndex v1, which is a fundamental redesign from C
 ## Docs diagrams
 
 All diagrams embedded in docs pages are built as inline Astro components under `docs/src/components/diagrams/`, not exported SVG files. See [docs/src/components/diagrams/README.md](docs/src/components/diagrams/README.md) for the palette, primitives, shared CSS classes, animation conventions, and step-by-step authoring guidelines. Follow that guide for any new or updated diagram.
+
+## Agent Tooling
+
+### Semantic code search over this repo (`cocoindex-code` MCP)
+
+This repo ships a Model Context Protocol server for AST-aware semantic search over its own
+codebase. It is registered for both OpenCode (`opencode.json`) and Claude Code / any
+`.mcp.json`-aware client (`.mcp.json`). Both launch it the same way:
+
+```bash
+uvx --with cocoindex>=1.0.6 cocoindex-code@latest
+```
+
+It exposes a single `search` tool (semantic query over code chunks; incrementally re-indexes
+before each search). Prefer it over blind `grep` when locating where a concept lives. The same
+package provides a `ccc` CLI for searching/indexing from the terminal. Source:
+[github.com/cocoindex-io/cocoindex-code](https://github.com/cocoindex-io/cocoindex-code).
 
 ## Agent Playbooks
 

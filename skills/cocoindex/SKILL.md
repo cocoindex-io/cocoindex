@@ -41,7 +41,7 @@ cocoindex init my-project
 cd my-project
 ```
 
-This creates: `main.py`, `pyproject.toml`, `.env`, `README.md`.
+This creates: `main.py`, `pyproject.toml`, `README.md`. The generated `main.py` sets the database location in its lifespan via `builder.settings.db_path = pathlib.Path("./cocoindex.db")`.
 
 ### Add Dependencies
 
@@ -58,8 +58,7 @@ See [references/setup_project.md](references/setup_project.md) for complete exam
 ### Run the Pipeline
 
 ```bash
-pip install -e .
-cocoindex update main.py
+uv run cocoindex update main.py   # or: pip install -e . && cocoindex update main.py
 ```
 
 ## Core Concepts
@@ -166,12 +165,12 @@ Generate stable, unique identifiers that persist across incremental updates:
 from cocoindex.resources.id import generate_id, IdGenerator
 
 # Deterministic: same dep -> same ID
-chunk_id = await generate_id(chunk.content)
+chunk_id = await generate_id(chunk.text)
 
 # Always distinct: each call -> new ID, even with same dep
 id_gen = IdGenerator()
 for chunk in chunks:
-    chunk_id = await id_gen.next_id(chunk.content)
+    chunk_id = await id_gen.next_id(chunk.text)
 ```
 
 ### 7. Catch-Up vs Live Mode
