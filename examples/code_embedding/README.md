@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://cocoindex.io/docs/examples/index-codebase/" title="Index your codebase for AI agents with CocoIndex — Tree-sitter chunking, embeddings, and a live pgvector index">
-    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png" alt="Index your codebase for AI agents with CocoIndex and Tree-sitter — language-aware chunking, embeddings, semantic search, and a live vector index in plain async Python" width="100%" draggable="false"/>
+    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.svg" alt="Index your codebase for AI agents with CocoIndex and Tree-sitter — language-aware chunking, embeddings, semantic search, and a live vector index in plain async Python" width="100%" draggable="false"/>
   </a>
 </p>
 
@@ -43,10 +43,6 @@ query: "where do we embed chunks?"
 ## How it works
 
 Walk a repo → detect language → split along the **syntax tree** with Tree-sitter → embed each chunk → upsert into Postgres (pgvector). With `live=True`, the source keeps watching and the index stays fresh as you code.
-
-<p align="center">
-  <img src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/flow-v1.png" alt="CocoIndex code-embedding flow: localfs.walk_dir source → per-file processing component (detect language, Tree-sitter RecursiveSplitter, coco.map → embed each chunk → declare CodeEmbedding rows) → Postgres pgvector target with a cosine vector index" width="70%"/>
-</p>
 
 The whole indexing path is the snippet below — read it top-to-bottom in [`main.py`](main.py):
 
@@ -91,10 +87,6 @@ async def app_main(sourcedir: pathlib.Path) -> None:
 - **Plain Python, your stack.** Swap the embedding model (12k+ on Hugging Face), the chunking, or the [vector store](https://cocoindex.io/docs/). No DSL.
 - **Consistent index & query.** The same embedder is shared by the indexing and query paths, so what you index is what you search.
 
-<p align="center">
-  <img src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/incremental-diff.png" alt="A file edited and re-chunked: unchanged chunks are reused with no re-embedding, a removed chunk's row is deleted, and a new chunk is embedded and inserted" width="78%"/>
-</p>
-
 ## Run it
 
 **1. Postgres + pgvector.** If you don't have one, start a local instance with the compose file in this repo:
@@ -123,21 +115,11 @@ cocoindex update -L main    # live: catch up, then keep watching for edits
 python main.py "embedding"
 ```
 
-<p align="center">
-  <img src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/search-results.png" alt="Semantic search results in the terminal: similarity score, filename, matched line range, and the code snippet" width="80%"/>
-</p>
-
 Each result carries `start_line`/`end_line`, so hits point straight at the lines that matched. Query uses pgvector's `<=>` cosine distance, turned into a similarity score.
 
 ## Want it production-ready, not DIY?
 
 [**CocoIndex Code**](https://github.com/cocoindex-io/cocoindex-code) is this exact pipeline — AST-aware chunking, incremental re-index, local embeddings — hardened and packaged as a CLI and an MCP server you can plug straight into a coding or code-review agent.
-
-<p align="center">
-  <a href="https://github.com/cocoindex-io/cocoindex-code" title="CocoIndex Code — semantic code search for coding agents, as a CLI and MCP server">
-    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cocoindex-code.png" alt="CocoIndex Code — semantic code search for coding agents, as a CLI and MCP server" width="80%"/>
-  </a>
-</p>
 
 ```sh
 npx skills add cocoindex-io/cocoindex-code     # Claude Code skill, then /ccc
@@ -151,3 +133,5 @@ ccc index && ccc search "where we embed chunks" # CLI
   If this made your agents smarter, <a href="https://github.com/cocoindex-io/cocoindex"><b>give CocoIndex a star ⭐</b></a> — it helps a lot.<br/>
   <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/docs/examples/index-codebase/">Walkthrough</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
 </p>
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=7f27e85b-be3a-411a-b612-0b9d53711814&page=examples/code_embedding" alt="" width="1" height="1" />

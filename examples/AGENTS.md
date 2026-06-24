@@ -108,19 +108,26 @@ A walkthrough URL means there's a step-by-step guide at
 - `amazon_s3_embedding` / `gdrive_text_embedding` / `oci_object_storage_embedding` — same flow, remote source (S3 / Google Drive / OCI).
 - `postgres_source` — read from an existing Postgres table as the source.
 - `entire_session_search` — semantic search over AI coding sessions captured by Entire.
+- `sec_edgar_analytics` — multi-format SEC filings → Apache Doris with a vector **and** a full-text index; hybrid (semantic + keyword) RRF search. *(walkthrough: sec-edgar-analytics)*
 
 ### Multimodal
 - `image_search` — CLIP embeddings + Qdrant, queried via FastAPI + React.
 - `image_search_colpali` — ColPali multi-vector model + Qdrant MaxSim.
+- `multi_format_indexing` — PDFs + images as page screenshots → ColPali → Qdrant; no OCR, no chunking. *(walkthrough: multi-format-indexing)*
+- `face_recognition` — detect faces (dlib) → 128-d embeddings → Qdrant face search. *(walkthrough: face-recognition)*
 - `audio_to_text` — transcribe audio with LiteLLM → Postgres.
+- `slides_to_speech` — slides → vision-LLM notes → Piper TTS narration → LanceDB semantic search. *(walkthrough: slides-to-speech)*
 
 ### Structured extraction (LLM / BAML / DSPy)
 - `multi_codebase_summarization` — LLM per-file summaries across many repos. *(walkthrough: multi-codebase-summarization)*
 - `hn_trending_topics` — scrape HackerNews → LLM topic extraction → Postgres.
+- `manuals_llm_extraction` — PDF manuals → Markdown (docling) → typed module records → Postgres. *(walkthrough: manuals-llm-extraction)*
 - `patient_intake_extraction_baml` / `patient_intake_extraction_dspy` — structured PDF extraction with BAML / DSPy (Gemini vision).
 
 ### Knowledge graphs
 - `conversation_to_knowledge` — YouTube podcasts → SurrealDB knowledge graph. *(walkthrough: podcast-to-knowledge-graph)*
+- `docs_to_knowledge_graph` — Markdown docs → Neo4j concept graph of LLM-extracted triples. *(walkthrough: docs-to-knowledge-graph)*
+- `product_recommendation` — product catalog → LLM taxonomy extraction → Neo4j recommendation graph. *(walkthrough: product-recommendation)*
 - `meeting_notes_graph_neo4j` / `meeting_notes_graph_falkordb` — Google Drive meeting notes → Neo4j / FalkorDB graph.
 
 ### Custom sources / targets / streaming
