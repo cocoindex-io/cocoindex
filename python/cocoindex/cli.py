@@ -1190,14 +1190,7 @@ def init(project_name: str | None, dir: str | None) -> None:
 
 @cli.command()
 def skill() -> None:
-    """
-    Print how to install the CocoIndex skill for AI coding agents.
-
-    CocoIndex v1 is a redesign from v0. Coding agents (Claude Code, Cursor,
-    Codex, etc.) that lack this context tend to emit the deprecated v0 API. The
-    skill teaches the correct v1 API. This command prints the install recipe so
-    an agent (or you) can set it up in the current project.
-    """
+    """Print how to install the CocoIndex skill for AI coding agents."""
     click.echo(
         "CocoIndex v1 is a ground-up redesign from v0. Install the skill so AI\n"
         "coding agents write the v1 API instead of the deprecated v0 DSL.\n"
