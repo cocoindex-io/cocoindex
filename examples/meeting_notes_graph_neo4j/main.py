@@ -81,7 +81,7 @@ async def coco_lifespan(
             database=os.environ.get("NEO4J_DATABASE", "neo4j"),
         ),
     )
-    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5.4"))
+    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     builder.provide(
         RESOLUTION_LLM_MODEL,
         os.environ.get("RESOLUTION_LLM_MODEL", "openai/gpt-5-mini"),

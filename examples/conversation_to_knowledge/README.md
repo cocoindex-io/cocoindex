@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/" title="Turn podcasts into a knowledge graph with LLM and CocoIndex — transcription, LLM extraction, entity resolution, and a SurrealDB graph">
-    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/cover.png" alt="Turn podcasts into a knowledge graph with LLM and CocoIndex — podcast episodes transcribed, extracted, and resolved into a graph of people, statements, technologies, and organizations" width="100%" draggable="false"/>
+    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/cover.svg" alt="Turn podcasts into a knowledge graph with LLM and CocoIndex — podcast episodes transcribed, extracted, and resolved into a graph of people, statements, technologies, and organizations" width="100%" draggable="false"/>
   </a>
 </p>
 
@@ -33,10 +33,6 @@ You declare the graph in native Python and your own types — `target_state = tr
 ## How it works
 
 Read YouTube URLs → fetch & transcribe (yt-dlp + AssemblyAI diarization) → extract speakers, statements, and mentioned entities with an LLM → resolve duplicate people/techs/orgs with embeddings + LLM → declare nodes and relationships into SurrealDB.
-
-<p align="center">
-  <img src="https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/pipeline-overview.png" alt="Pipeline: YouTube URLs → Phase 1 per-session processing (fetch transcript, identify speakers with LLM, extract statements with LLM) → Phase 2 entity resolution (embedding similarity + LLM confirmation) → Phase 3 knowledge base creation (canonical entities, relationships) → SurrealDB knowledge graph" width="100%"/>
-</p>
 
 The whole graph is declared as **target states** — read it in [`conv_knowledge/app.py`](conv_knowledge/app.py):
 
@@ -102,7 +98,7 @@ export SURREALDB_DB="yt_conversations"
 export SURREALDB_USER="root"
 export SURREALDB_PASS="root"
 export INPUT_DIR="./input"
-export LLM_MODEL="openai/gpt-5.4"
+export LLM_MODEL="openai/gpt-5-mini"
 export RESOLUTION_LLM_MODEL="openai/gpt-5-mini"
 ```
 
@@ -137,15 +133,7 @@ SELECT name,
 FROM tech ORDER BY person_count DESC LIMIT 10;
 ```
 
-<p align="center">
-  <img src="https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/surreal_top_mentioned_tech.png" alt="Surrealist query results: technologies ranked by how many distinct people mentioned them — artificial intelligence, language model, machine learning, AI agent, and more" width="85%"/>
-</p>
-
-The graph is small and expressive — `session`, `statement`, `person`, `tech`, `org` nodes, joined by `session_statement`, `person_session`, `person_statement`, and the polymorphic `statement_mentions`:
-
-<p align="center">
-  <img src="https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/schema.png" alt="Knowledge graph schema: session, statement, person, tech, and org nodes connected by session_statement, person_session, person_statement, and statement_mentions relationships" width="80%"/>
-</p>
+The graph is small and expressive — `session`, `statement`, `person`, `tech`, `org` nodes, joined by `session_statement`, `person_session`, `person_statement`, and the polymorphic `statement_mentions`.
 
 ## More graph examples
 
@@ -157,3 +145,5 @@ Building graphs from other sources? See [meeting notes → Neo4j](https://github
   If this turned hours of podcasts into something you can actually query, <a href="https://github.com/cocoindex-io/cocoindex"><b>give CocoIndex a star ⭐</b></a> — it helps a lot.<br/>
   <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/">Tutorial</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
 </p>
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=7f27e85b-be3a-411a-b612-0b9d53711814&page=examples/conversation_to_knowledge" alt="" width="1" height="1" />

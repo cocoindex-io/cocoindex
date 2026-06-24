@@ -76,7 +76,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     )
     # LiteLLM-prefixed model id. Defaults to OpenAI; set LLM_MODEL=ollama/llama3.2
     # (or any LiteLLM provider) to run the extraction locally.
-    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5.4"))
+    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     yield
 
 

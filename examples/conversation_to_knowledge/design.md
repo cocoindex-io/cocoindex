@@ -10,7 +10,7 @@ Convert podcast sessions (from YouTube) into a structured knowledge graph stored
 |---------|--------|-----------|
 | Audio download | `yt-dlp` | Standard, reliable YouTube downloader |
 | Transcription + diarization | AssemblyAI | Single API call gives speaker-labeled transcript with utterances. No file size / duration limits. No GPU needed |
-| LLM (extraction) | `instructor` + `litellm` → **`openai/gpt-5.4`** (configurable via `LLM_MODEL` in `.env`) | Strong model for structured extraction from transcripts |
+| LLM (extraction) | `instructor` + `litellm` → **`openai/gpt-5-mini`** (configurable via `LLM_MODEL` in `.env`) | Strong model for structured extraction from transcripts |
 | LLM (entity resolution) | `instructor` + `litellm` → **`openai/gpt-5-mini`** (configurable via `RESOLUTION_LLM_MODEL` in `.env`) | Lighter model sufficient for simple entity deduplication decisions |
 | Embedding (entity resolution) | `sentence-transformers/all-MiniLM-L6-v2` | Fast, good for short entity name similarity |
 | In-memory vector search | `faiss-cpu` (`IndexFlatIP`) | SIMD-optimized exact search with incremental `add()`; no GPU needed |
@@ -566,7 +566,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     ))
     builder.provide(EMBEDDER, SentenceTransformerEmbedder(
         "sentence-transformers/all-MiniLM-L6-v2"))
-    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5.4"))
+    builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     builder.provide(RESOLUTION_LLM_MODEL, os.environ.get("RESOLUTION_LLM_MODEL", "openai/gpt-5-mini"))
     yield
 ```
@@ -581,7 +581,7 @@ SURREALDB_URL=ws://localhost:8000/rpc
 # Optional (with defaults)
 SURREALDB_USER=root
 SURREALDB_PASS=root
-LLM_MODEL=openai/gpt-5.4
+LLM_MODEL=openai/gpt-5-mini
 RESOLUTION_LLM_MODEL=openai/gpt-5-mini
 ```
 
