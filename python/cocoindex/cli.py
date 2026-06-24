@@ -384,7 +384,7 @@ def _create_project_files(project_name: str, project_dir: str) -> None:
     project_path.mkdir(parents=True, exist_ok=True)
 
     # Create main.py
-    main_py_content = f'''# CocoIndex v1 app. v1 is a ground-up redesign from v0 — if you are an AI agent,
+    main_py_content = f'''# CocoIndex v1 app. v1 is a ground-up redesign from v0. If you are an AI agent,
 # install the skill first (https://cocoindex.io/docs/skill.md) so you write the
 # v1 API and not the deprecated v0 DSL. Full docs: https://cocoindex.io/docs/llms-full.txt
 """CocoIndex app template."""
@@ -446,7 +446,7 @@ app = coco.App(
     app_main,
 )
 '''
-    (project_path / "main.py").write_text(main_py_content)
+    (project_path / "main.py").write_text(main_py_content, encoding="utf-8")
 
     # Create pyproject.toml
     pyproject_toml_content = f"""[project]
@@ -458,7 +458,9 @@ dependencies = [
     "cocoindex>={coco.__version__}",
 ]
 """
-    (project_path / "pyproject.toml").write_text(pyproject_toml_content)
+    (project_path / "pyproject.toml").write_text(
+        pyproject_toml_content, encoding="utf-8"
+    )
 
     # Create README.md
     readme_content = f"""# {project_name}
@@ -493,7 +495,7 @@ For Cursor, copy `SKILL.md` into `.cursor/rules/`. Machine-readable docs:
 - `pyproject.toml` - Project metadata and dependencies
 - `AGENTS.md` - Guidance coding agents read automatically (points to the skill)
 """
-    (project_path / "README.md").write_text(readme_content)
+    (project_path / "README.md").write_text(readme_content, encoding="utf-8")
 
     # Create AGENTS.md — coding agents read this automatically; route them to the
     # v1 skill before they write any CocoIndex code (v0 hallucination is the
@@ -507,8 +509,8 @@ CocoIndex project.
 
 CocoIndex v1 is a fundamental redesign from v0. Without context, LLMs tend to
 hallucinate the v0 flow-builder DSL and deprecated decorators
-(`@cocoindex.flow_def`, `add_collector`, `flow_builder`, …) — none of which
-exist in v1. Install the official skill first; it teaches the correct v1 API
+(`@cocoindex.flow_def`, `add_collector`, `flow_builder`, and friends) that do
+not exist in v1. Install the official skill first; it teaches the correct v1 API
 (or run `cocoindex skill`):
 
 ```sh
@@ -537,7 +539,7 @@ cocoindex update -L main.py     # live mode: catch up, then watch for changes
 - Everything (docs + example walkthroughs): <https://cocoindex.io/docs/llms-full.txt>
 - Runnable examples: <https://github.com/cocoindex-io/cocoindex/tree/main/examples>
 """
-    (project_path / "AGENTS.md").write_text(agents_md_content)
+    (project_path / "AGENTS.md").write_text(agents_md_content, encoding="utf-8")
 
 
 async def _print_tree_streaming(
@@ -1192,9 +1194,9 @@ def skill() -> None:
     Print how to install the CocoIndex skill for AI coding agents.
 
     CocoIndex v1 is a redesign from v0. Coding agents (Claude Code, Cursor,
-    Codex, …) that lack this context tend to emit the deprecated v0 API. The
+    Codex, etc.) that lack this context tend to emit the deprecated v0 API. The
     skill teaches the correct v1 API. This command prints the install recipe so
-    an agent — or you — can set it up in the current project.
+    an agent (or you) can set it up in the current project.
     """
     click.echo(
         "CocoIndex v1 is a ground-up redesign from v0. Install the skill so AI\n"
