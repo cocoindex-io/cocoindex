@@ -1,5 +1,9 @@
 """Integration tests for coco.use_state() — persistent per-component state."""
 
+import dataclasses
+from typing import NamedTuple
+
+import msgspec
 import pytest
 import cocoindex as coco
 
@@ -595,3 +599,293 @@ def test_use_state_raises_inside_component_subpath_block() -> None:
     _source_items[:] = ["a"]
     app.update_blocking()
     assert _raised["a"] is True
+
+
+@dataclasses.dataclass
+class _Cursor:
+    pos: int
+    tag: str
+
+
+def test_use_state_type_hint_deserializes_into_dataclass() -> None:
+    _source_items.clear()
+    _captured.clear()
+
+    @coco.fn
+    def _process(item: str) -> None:
+        s = coco.use_state("cur", type_hint=_Cursor, initial_value=_Cursor(0, "init"))
+        v = s.value
+        assert isinstance(v, _Cursor), f"expected _Cursor, got {type(v)}"
+        _captured[item] = v
+        s.value = _Cursor(v.pos + 1, "next")
+
+    @coco.fn
+    async def _root_typed(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_type_hint", environment=coco_env),
+        _root_typed,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _Cursor)
+    assert (loaded.pos, loaded.tag) == (0, "init")
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _Cursor)
+    assert (loaded.pos, loaded.tag) == (1, "next")
+
+
+def test_use_state_type_hint_without_initial() -> None:
+    _source_items.clear()
+    _captured.clear()
+
+    @coco.fn
+    def _process(item: str) -> None:
+        s = coco.use_state("cur", type_hint=_Cursor)
+        v = s.value
+        _captured[item] = v
+        s.value = _Cursor(42, "set")
+
+    @coco.fn
+    async def _root_no_initial(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_type_hint_no_initial", environment=coco_env),
+        _root_no_initial,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()
+    assert _captured["a"] is None
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _Cursor)
+    assert (loaded.pos, loaded.tag) == (42, "set")
+
+
+def test_use_state_type_hint_with_positional_none_initial() -> None:
+    _source_items.clear()
+    _captured.clear()
+
+    @coco.fn
+    def _process(item: str) -> None:
+        # Exercises the overload: use_state(key, None, *, type_hint=...)
+        s = coco.use_state("cur", None, type_hint=_Cursor)
+        v = s.value
+        _captured[item] = v
+        s.value = _Cursor(99, "pos")
+
+    @coco.fn
+    async def _root(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(
+            name="use_state_type_hint_positional_none", environment=coco_env
+        ),
+        _root,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()
+    assert _captured["a"] is None
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _Cursor)
+    assert (loaded.pos, loaded.tag) == (99, "pos")
+
+
+class _Point(NamedTuple):
+    x: int
+    y: int
+
+
+def test_use_state_type_hint_deserializes_into_namedtuple() -> None:
+    _source_items.clear()
+    _captured.clear()
+
+    @coco.fn
+    def _process(item: str) -> None:
+        s = coco.use_state("pt", type_hint=_Point, initial_value=_Point(1, 2))
+        v = s.value
+        assert isinstance(v, _Point), f"expected _Point, got {type(v)}"
+        _captured[item] = v
+        s.value = _Point(v.x + 1, v.y + 1)
+
+    @coco.fn
+    async def _root_typed(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_type_hint_namedtuple", environment=coco_env),
+        _root_typed,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _Point)
+    assert loaded == _Point(1, 2)
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _Point)
+    assert loaded == _Point(2, 3)
+
+
+class _MsgSpecPoint(msgspec.Struct):
+    x: int
+    y: int
+
+
+def test_use_state_type_hint_deserializes_into_msgspec_struct() -> None:
+    _source_items.clear()
+    _captured.clear()
+
+    @coco.fn
+    def _process(item: str) -> None:
+        s = coco.use_state(
+            "pt", type_hint=_MsgSpecPoint, initial_value=_MsgSpecPoint(1, 2)
+        )
+        v = s.value
+        assert isinstance(v, _MsgSpecPoint), f"expected _MsgSpecPoint, got {type(v)}"
+        _captured[item] = v
+        s.value = _MsgSpecPoint(v.x + 1, v.y + 1)
+
+    @coco.fn
+    async def _root_typed(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_type_hint_msgspec", environment=coco_env),
+        _root_typed,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _MsgSpecPoint)
+    assert (loaded.x, loaded.y) == (1, 2)
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _MsgSpecPoint)
+    assert (loaded.x, loaded.y) == (2, 3)
+
+
+def test_use_state_type_hint_deserializes_into_pydantic_model() -> None:
+    pydantic = pytest.importorskip("pydantic")
+
+    class _PydanticPoint(pydantic.BaseModel):  # type: ignore[name-defined, misc]
+        x: int
+        y: int
+
+    _source_items.clear()
+    _captured.clear()
+
+    @coco.fn
+    def _process(item: str) -> None:
+        s = coco.use_state(
+            "pt", type_hint=_PydanticPoint, initial_value=_PydanticPoint(x=1, y=2)
+        )
+        v = s.value
+        assert isinstance(v, _PydanticPoint), f"expected _PydanticPoint, got {type(v)}"
+        _captured[item] = v
+        s.value = _PydanticPoint(x=v.x + 1, y=v.y + 1)
+
+    @coco.fn
+    async def _root_typed(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_type_hint_pydantic", environment=coco_env),
+        _root_typed,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _PydanticPoint)
+    assert (loaded.x, loaded.y) == (1, 2)
+
+    app.update_blocking()
+    loaded = _captured["a"]
+    assert isinstance(loaded, _PydanticPoint)
+    assert (loaded.x, loaded.y) == (2, 3)
+
+
+def test_use_state_type_hint_mismatch_raises_deserialization_error() -> None:
+    _source_items.clear()
+    _captured.clear()
+
+    captured: list[BaseException] = []
+    _store_mode: list[bool] = [True]  # mutable flag to switch behavior between runs
+
+    @coco.fn
+    def _process_store_int(item: str) -> None:
+        # Store an int without any type hint.
+        s = coco.use_state("cur", 123)
+        _captured[item] = s.value
+
+    @coco.fn
+    def _process_load_as_cursor(item: str) -> None:
+        # On the next run, try to deserialize the stored int as a _Cursor.
+        s = coco.use_state("cur", type_hint=_Cursor)
+        _captured[item] = s.value  # should raise DeserializationError
+
+    @coco.fn
+    async def _root_mismatch(items: list[str]) -> None:
+        def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            captured.append(exc)
+
+        async with coco.exception_handler(handler):
+            for item in items:
+                if _store_mode[0]:
+                    await coco.mount(
+                        coco.component_subpath(item), _process_store_int, item
+                    )
+                else:
+                    await coco.mount(
+                        coco.component_subpath(item), _process_load_as_cursor, item
+                    )
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_type_hint_mismatch", environment=coco_env),
+        _root_mismatch,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    # First run: store the int.
+    app.update_blocking()
+    assert _captured["a"] == 123
+
+    # Second run: attempt to load as _Cursor; should fail with DeserializationError.
+    _store_mode[0] = False
+    _captured.clear()
+    captured.clear()
+    app.update_blocking()
+    assert len(captured) == 1
+    exc_text = str(captured[0])
+    assert "DeserializationError" in exc_text
+    assert "use_state key 'cur'" in exc_text
