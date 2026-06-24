@@ -20,7 +20,7 @@ from confluent_kafka.aio import AIOConsumer
 import cocoindex as coco
 from cocoindex.connectors import kafka, lancedb
 
-KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "csv-rows")
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "cocoindex-csv-rows")
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_GROUP_ID = os.environ.get("KAFKA_GROUP_ID", "kafka-to-lancedb")
 KAFKA_SASL_USERNAME = os.environ.get("KAFKA_SASL_USERNAME", "")
