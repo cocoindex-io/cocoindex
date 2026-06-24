@@ -54,12 +54,14 @@ cocoindex update main         # catch-up: scan sources, sync, exit
 cocoindex update -L main      # live mode: catch up, then watch for changes (where supported)
 ```
 
-Use the example's README as the source of truth. Known exceptions:
+`cocoindex update main` and `cocoindex update main.py` are equivalent (the CLI
+strips the `.py` and skips the `if __name__ == "__main__"` block either way), so
+the form a given README uses doesn't matter — don't treat `.py` as a per-example
+requirement. Use the example's README as the source of truth. The genuinely
+different invocations are:
 
-- `multi_codebase_summarization`, `audio_to_text`,
-  `patient_intake_extraction_baml`, `patient_intake_extraction_dspy`:
-  `cocoindex update main.py`
-- `conversation_to_knowledge`: `cocoindex update conv_knowledge.app`
+- `conversation_to_knowledge`: the app lives in a subpackage, so run
+  `cocoindex update conv_knowledge.app` (or the path `conv_knowledge/app.py`).
 - `image_search`, `image_search_colpali`: start the API with
   `python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000`; it runs the
   CocoIndex app in live mode, then start the frontend from `frontend/`.

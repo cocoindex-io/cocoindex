@@ -66,7 +66,7 @@
   <a href="https://cocoindex.io/cocoindex-code" title="CocoIndex-code — flagship MCP server for AI coding agents: AST-aware, incremental, semantic code index. Claude Code and Cursor see your whole repo instantly."><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/cocoindex-code-hero-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/cocoindex-code-hero-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/cocoindex-code-hero-light.svg" alt="CocoIndex-code — flagship MCP server for AI coding agents. AST-aware incremental semantic code index that keeps live call graphs, symbols, vectors, and chunks fresh on every commit. 70% fewer tokens per turn, 80-90% cache hits on re-index, sub-second freshness. Supports Python, TypeScript, Rust, and Go. Features: Δ-only incremental processing, semantic search by meaning (not grep), call graphs and blast-radius analysis, global repo view for duplicates and architecture. Build coding agents (generate, refactor) and code-review agents (catch, approve). One install — Claude Code, Cursor, and other MCP-aware agents see your whole repository instantly. Keywords: MCP server, coding agent, code intelligence, AST chunking, semantic code search, call graph, vector embedding, repository context, Claude Code, Cursor, incremental indexing, blast radius." width="100%"/></picture></a>
 </p>
 
-<p align="center"><a href="examples"><b>See all 20+ examples · updated every week →</b></a></p>
+<p align="center"><a href="examples"><b>See all 30+ examples · updated every week →</b></a></p>
 
 <br/>
 
@@ -180,7 +180,7 @@ coco.App(coco.AppConfig(name="docs"), main, src="./docs").update_blocking()
 
 <h2 align="center">What can you <em>build?</em></h2>
 
-<p align="center"><a href="examples" title="Browse all 20+ CocoIndex examples on GitHub — code, PDF, HN, knowledge graph, podcast, CSV-to-Kafka, image, and more"><b>See all 20+ examples · updated every week →</b></a></p>
+<p align="center"><a href="examples" title="Browse all 30+ CocoIndex examples on GitHub — code, PDF, HN, knowledge graph, podcast, CSV-to-Kafka, image, and more"><b>See all 30+ examples · updated every week →</b></a></p>
 
 <p align="center"><b>Working starters from <a href="examples">the examples tree</a> — clone, plug your source, ship.</b></p>
 
