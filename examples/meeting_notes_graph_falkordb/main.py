@@ -394,9 +394,16 @@ async def app_main() -> None:
             root_folder_ids=root_folder_ids,
         ).items()
     else:
-        print(
-            "Google Drive not configured — reading the bundled ./sample_notes folder."
-        )
+        if credential_path or root_folder_ids:
+            print(
+                "Warning: set BOTH GOOGLE_SERVICE_ACCOUNT_CREDENTIAL and "
+                "GOOGLE_DRIVE_ROOT_FOLDER_IDS to read from Google Drive. Falling "
+                "back to the bundled ./sample_notes folder."
+            )
+        else:
+            print(
+                "Google Drive not configured; reading the bundled ./sample_notes folder."
+            )
         source_items = localfs.walk_dir(
             pathlib.Path("./sample_notes"),
             recursive=True,

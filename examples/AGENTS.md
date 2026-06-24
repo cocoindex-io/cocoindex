@@ -56,7 +56,7 @@ cocoindex update -L main      # live mode: catch up, then watch for changes (whe
 
 `cocoindex update main` and `cocoindex update main.py` are equivalent (the CLI
 strips the `.py` and skips the `if __name__ == "__main__"` block either way), so
-the form a given README uses doesn't matter — don't treat `.py` as a per-example
+the form a given README uses doesn't matter; don't treat `.py` as a per-example
 requirement. Use the example's README as the source of truth. The genuinely
 different invocations are:
 

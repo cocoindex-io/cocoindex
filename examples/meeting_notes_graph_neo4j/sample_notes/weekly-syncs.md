@@ -1,4 +1,4 @@
-## 2024-02-05 — Weekly Engineering Sync
+## 2024-02-05 - Weekly Engineering Sync
 
 Organizer: Daniel Okafor. Attendees: Priya, Sam Lee, A. Chen.
 
@@ -9,7 +9,7 @@ Action items:
 - Sam Lee to fix the flaky billing test.
 - Priya Nair to review the migration plan.
 
-## 2024-02-12 — Billing Revamp Kickoff
+## 2024-02-12 - Billing Revamp Kickoff
 
 Organized by Priya Nair. Attendees: Daniel, Sam, Alice.
 

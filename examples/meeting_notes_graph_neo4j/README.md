@@ -87,7 +87,7 @@ Extraction is [instructor](https://github.com/instructor-ai/instructor) over [Li
 docker run -d -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/cocoindex --name cocoindex-neo4j neo4j:5.26-community
 ```
 
-**2. Configure & install** — out of the box this reads the bundled
+**2. Configure & install**. Out of the box this reads the bundled
 [`sample_notes/`](sample_notes) folder, so you only need an `OPENAI_API_KEY`:
 
 ```sh

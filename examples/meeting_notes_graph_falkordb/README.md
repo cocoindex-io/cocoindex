@@ -87,7 +87,7 @@ Extraction is [instructor](https://github.com/instructor-ai/instructor) over [Li
 docker run -d -p 6379:6379 -p 3000:3000 --name cocoindex-falkordb falkordb/falkordb:latest
 ```
 
-**2. Configure & install** — out of the box this reads the bundled
+**2. Configure & install**. Out of the box this reads the bundled
 [`sample_notes/`](sample_notes) folder, so you only need an `OPENAI_API_KEY`:
 
 ```sh

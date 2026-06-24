@@ -1,4 +1,4 @@
-## 2024-01-15 — Q1 Product Planning
+## 2024-01-15 - Q1 Product Planning
 
 Organizer: Alice Chen (Head of Product). Attendees: Bob Martinez, Priya Nair, and Daniel Okafor.
 
@@ -11,7 +11,7 @@ Action items:
 - Priya to size the billing revamp.
 - Daniel will pull together the churn cohort analysis.
 
-## 2024-01-29 — Onboarding Spec Review
+## 2024-01-29 - Onboarding Spec Review
 
 Led by Alice. Present: Bob, Priya Nair.
 

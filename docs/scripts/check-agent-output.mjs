@@ -141,7 +141,7 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
 // 6. A model id used as a quoted default in a walkthrough must appear in the
 //    example it documents. A default the walkthrough hard-codes but the
 //    example's source doesn't use is drift an agent copies into a broken
-//    default — exactly how `openai/gpt-5.4` outlived its fix in the example
+//    default; exactly how `openai/gpt-5.4` outlived its fix in the example
 //    main.py. Only quoted literals (`"openai/gpt-5-mini"`) are checked, so prose
 //    that lists alternatives (`or LLM_MODEL=ollama/llama3.2`) is not flagged.
 const CATALOG = read(here('../src/data/examples.ts'));

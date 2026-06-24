@@ -337,8 +337,7 @@ async def extract_and_store(content: str, message_id: int, table) -> None:
 
 This mirrors the `hn_trending_topics` example. For more ergonomic structured
 output you can instead use [`instructor`](https://python.useinstructor.com/)
-(`instructor.from_litellm(acompletion)`), as `meeting_notes_graph_neo4j` does —
-add `instructor` to your dependencies if you go that route.
+(`instructor.from_litellm(acompletion)`), as `meeting_notes_graph_neo4j` does. Add `instructor` to your dependencies if you go that route.
 
 ## Connectors and Operations
 

@@ -497,7 +497,7 @@ For Cursor, copy `SKILL.md` into `.cursor/rules/`. Machine-readable docs:
 """
     (project_path / "README.md").write_text(readme_content, encoding="utf-8")
 
-    # Create AGENTS.md — coding agents read this automatically; route them to the
+    # Create AGENTS.md. Coding agents read this automatically; route them to the
     # v1 skill before they write any CocoIndex code (v0 hallucination is the
     # default failure mode without it).
     agents_md_content = f"""# AGENTS.md
