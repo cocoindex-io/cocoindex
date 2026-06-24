@@ -29,7 +29,7 @@ import datetime
 import os
 import pathlib
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -387,13 +387,16 @@ async def app_main() -> None:
         for folder in os.environ.get("GOOGLE_DRIVE_ROOT_FOLDER_IDS", "").split(",")
         if folder.strip()
     ]
+    source_items: AsyncIterable[tuple[str, FileLike]]
     if credential_path and root_folder_ids:
         source_items = google_drive.GoogleDriveSource(
             service_account_credential_path=credential_path,
             root_folder_ids=root_folder_ids,
         ).items()
     else:
-        print("Google Drive not configured — reading the bundled ./sample_notes folder.")
+        print(
+            "Google Drive not configured — reading the bundled ./sample_notes folder."
+        )
         source_items = localfs.walk_dir(
             pathlib.Path("./sample_notes"),
             recursive=True,
