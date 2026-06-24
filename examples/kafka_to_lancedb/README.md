@@ -85,7 +85,7 @@ The line worth pausing on is `declare_row` — deliberately *not* `upsert()`. A 
 
 > Needs a running Kafka broker with a topic to consume. The easy way to populate it: run [csv-to-kafka](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka) first.
 
-**1. Configure & install** — point `KAFKA_TOPIC` at the topic csv-to-kafka produced (its default is `cocoindex-csv-rows`):
+**1. Configure & install** — both examples default to the same `KAFKA_TOPIC` (`cocoindex-csv-rows`), so the producer and consumer line up out of the box; override it in `.env` only if you changed it on the producer side:
 
 ```sh
 cp .env.example .env     # set KAFKA_BOOTSTRAP_SERVERS / KAFKA_TOPIC / LANCEDB_URI (+ SASL for a managed broker)
