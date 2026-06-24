@@ -1204,7 +1204,9 @@ async def _dummy_leaf_component() -> None:
 async def _declare_transition_to_component() -> None:
     with coco.component_subpath("transition_test"):
         if not _transition_to_component_mode:
-            single_dict_provider = await coco.mount_target(DictsTarget.dict_target("D1"))
+            single_dict_provider = await coco.mount_target(
+                DictsTarget.dict_target("D1")
+            )
             for key, value in _mount_target_source_data.get("D1", {}).items():
                 coco.declare_target_state(single_dict_provider.target_state(key, value))
         else:
@@ -1218,7 +1220,9 @@ def test_directory_to_component_transition() -> None:
     _transition_to_component_mode = False
 
     app = coco.App(
-        coco.AppConfig(name="test_directory_to_component_transition", environment=coco_env),
+        coco.AppConfig(
+            name="test_directory_to_component_transition", environment=coco_env
+        ),
         _declare_transition_to_component,
     )
 
