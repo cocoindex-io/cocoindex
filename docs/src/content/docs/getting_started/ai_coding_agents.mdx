@@ -23,20 +23,21 @@ CocoIndex v1 is a fundamental redesign from v0. Without context, an LLM trained 
 
 Claude Code auto-loads skills from `.claude/skills/` in the current project, or from `~/.claude/skills/` globally.
 
-Project-local install (recommended for repos that build with CocoIndex):
+Project-local install (recommended for repos that build with CocoIndex) — fetch the hosted skill directly:
 
 ```sh
-mkdir -p .claude/skills
-git clone --depth=1 https://github.com/cocoindex-io/cocoindex.git /tmp/cocoindex-skill
-cp -r /tmp/cocoindex-skill/skills/cocoindex .claude/skills/
+mkdir -p .claude/skills/cocoindex/references
+curl -fsSL https://cocoindex.io/docs/skill.md -o .claude/skills/cocoindex/SKILL.md
+for f in api_reference connectors patterns setup_database setup_project; do
+  curl -fsSL https://cocoindex.io/docs/references/$f.md -o .claude/skills/cocoindex/references/$f.md
+done
 ```
 
-Global install:
+If you already have the `cocoindex` package installed, `cocoindex skill` prints this same recipe. For a global install, target `~/.claude/skills/cocoindex` instead. Prefer `git`? Clone the repo and copy the folder:
 
 ```sh
-mkdir -p ~/.claude/skills
 git clone --depth=1 https://github.com/cocoindex-io/cocoindex.git /tmp/cocoindex-skill
-cp -r /tmp/cocoindex-skill/skills/cocoindex ~/.claude/skills/
+mkdir -p .claude/skills && cp -r /tmp/cocoindex-skill/skills/cocoindex .claude/skills/
 ```
 
 Once installed, Claude Code picks up the skill automatically when you ask it to build or modify a CocoIndex pipeline.

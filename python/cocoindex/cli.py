@@ -33,6 +33,16 @@ from cocoindex.inspect import (
 from cocoindex._internal.stable_path import StablePath
 
 
+# Copy-paste recipe that installs the v1 authoring skill for AI coding agents.
+# Shared by `cocoindex skill` and the `cocoindex init` scaffold so the two never
+# drift. The hosted skill lives at https://cocoindex.io/docs/skill.md.
+_SKILL_INSTALL_SH = """mkdir -p .claude/skills/cocoindex/references
+curl -fsSL https://cocoindex.io/docs/skill.md -o .claude/skills/cocoindex/SKILL.md
+for f in api_reference connectors patterns setup_database setup_project; do
+  curl -fsSL https://cocoindex.io/docs/references/$f.md -o .claude/skills/cocoindex/references/$f.md
+done"""
+
+
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
@@ -374,7 +384,10 @@ def _create_project_files(project_name: str, project_dir: str) -> None:
     project_path.mkdir(parents=True, exist_ok=True)
 
     # Create main.py
-    main_py_content = f'''"""CocoIndex app template."""
+    main_py_content = f'''# CocoIndex v1 app. v1 is a ground-up redesign from v0 — if you are an AI agent,
+# install the skill first (https://cocoindex.io/docs/skill.md) so you write the
+# v1 API and not the deprecated v0 DSL. Full docs: https://cocoindex.io/docs/llms-full.txt
+"""CocoIndex app template."""
 import pathlib
 from typing import Iterator
 
@@ -459,12 +472,72 @@ Run the app:
 uv run cocoindex update main.py
 ```
 
+## Building with an AI coding agent
+
+CocoIndex v1 is a redesign from v0; without context, coding agents tend to write
+the deprecated v0 API. Install the official skill first so the agent writes v1
+(or just run `cocoindex skill`):
+
+```bash
+{_SKILL_INSTALL_SH}
+```
+
+For Cursor, copy `SKILL.md` into `.cursor/rules/`. Machine-readable docs:
+<https://cocoindex.io/docs/llms.txt> (index) and
+<https://cocoindex.io/docs/llms-full.txt> (everything). See also the bundled
+`AGENTS.md`, which coding agents read automatically.
+
 ## Project Structure
 
 - `main.py` - Main application file with your CocoIndex app definition
 - `pyproject.toml` - Project metadata and dependencies
+- `AGENTS.md` - Guidance coding agents read automatically (points to the skill)
 """
     (project_path / "README.md").write_text(readme_content)
+
+    # Create AGENTS.md — coding agents read this automatically; route them to the
+    # v1 skill before they write any CocoIndex code (v0 hallucination is the
+    # default failure mode without it).
+    agents_md_content = f"""# AGENTS.md
+
+Guidance for AI coding agents (Claude Code, Cursor, Codex, etc.) working in this
+CocoIndex project.
+
+## Before you write CocoIndex code: install the skill
+
+CocoIndex v1 is a fundamental redesign from v0. Without context, LLMs tend to
+hallucinate the v0 flow-builder DSL and deprecated decorators
+(`@cocoindex.flow_def`, `add_collector`, `flow_builder`, …) — none of which
+exist in v1. Install the official skill first; it teaches the correct v1 API
+(or run `cocoindex skill`):
+
+```sh
+{_SKILL_INSTALL_SH}
+```
+
+For Cursor, copy `SKILL.md` into `.cursor/rules/`.
+
+## The v1 mental model
+
+`target_state = transform(source_state)`. You declare what the target should
+look like; the engine keeps it in sync, reprocessing only what changed. Key
+APIs: `@coco.fn`, `@coco.lifespan`, `coco.App` / `coco.AppConfig`,
+`mount` / `use_mount` / `mount_each`, `ContextKey`, target-state declarations.
+
+## Running
+
+```sh
+cocoindex update main.py        # catch-up: scan sources, sync, exit
+cocoindex update -L main.py     # live mode: catch up, then watch for changes
+```
+
+## Docs
+
+- Index: <https://cocoindex.io/docs/llms.txt>
+- Everything (docs + example walkthroughs): <https://cocoindex.io/docs/llms-full.txt>
+- Runnable examples: <https://github.com/cocoindex-io/cocoindex/tree/main/examples>
+"""
+    (project_path / "AGENTS.md").write_text(agents_md_content)
 
 
 async def _print_tree_streaming(
@@ -1111,6 +1184,34 @@ def init(project_name: str | None, dir: str | None) -> None:
             click.echo("  1. uv run cocoindex update main.py")
     except Exception as e:
         raise click.ClickException(f"Failed to create project: {e}") from e
+
+
+@cli.command()
+def skill() -> None:
+    """
+    Print how to install the CocoIndex skill for AI coding agents.
+
+    CocoIndex v1 is a redesign from v0. Coding agents (Claude Code, Cursor,
+    Codex, …) that lack this context tend to emit the deprecated v0 API. The
+    skill teaches the correct v1 API. This command prints the install recipe so
+    an agent — or you — can set it up in the current project.
+    """
+    click.echo(
+        "CocoIndex v1 is a ground-up redesign from v0. Install the skill so AI\n"
+        "coding agents write the v1 API instead of the deprecated v0 DSL.\n"
+        "\n"
+        "Claude Code / any agent (run from your project root):\n"
+    )
+    for line in _SKILL_INSTALL_SH.splitlines():
+        click.echo(f"  {line}")
+    click.echo(
+        "\nCursor: copy the downloaded SKILL.md into .cursor/rules/.\n"
+        "\nMachine-readable docs:\n"
+        "  index:      https://cocoindex.io/docs/llms.txt\n"
+        "  everything: https://cocoindex.io/docs/llms-full.txt\n"
+        "  hosted skill: https://cocoindex.io/docs/skill.md\n"
+        "  examples:   https://github.com/cocoindex-io/cocoindex/tree/main/examples"
+    )
 
 
 if __name__ == "__main__":

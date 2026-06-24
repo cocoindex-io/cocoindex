@@ -86,6 +86,7 @@ const claudeHref = `https://claude.ai/new?q=${encodeURIComponent(aiPrompt)}`;
 // the "Copy skill install" item (our analog to Mintlify's "Copy MCP install").
 // Fetches the references/ companions too so the skill's relative links resolve.
 const referencesUrl = new URL(`${base}/references`, SITE_URL).toString();
+const llmsTxtUrl = new URL(`${base}/llms.txt`, SITE_URL).toString();
 const skillInstallCmd =
   `mkdir -p .claude/skills/cocoindex/references && curl -fsSL ${SKILL_MD_URL} -o .claude/skills/cocoindex/SKILL.md && ` +
   `for f in ${skillReferenceNames().join(' ')}; do curl -fsSL ${referencesUrl}/$f.md -o .claude/skills/cocoindex/references/$f.md; done`;
@@ -157,6 +158,10 @@ const breadcrumbLd = {
     <!-- Raw-Markdown twin of this page, for agents that prefer Markdown over
          scraping HTML. Advertised here so they don't have to guess the URL. -->
     <link rel="alternate" type="text/markdown" href={mdAbs} title="Markdown" />
+
+    <!-- The llms.txt index for the whole docs site, so an agent landing on any
+         page can discover the full machine-readable corpus without guessing. -->
+    <link rel="alternate" type="text/plain" href={llmsTxtUrl} title="llms.txt (docs index for LLMs)" />
 
     <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
     <meta property="og:type" content="article" />

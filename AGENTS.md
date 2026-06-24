@@ -3,6 +3,12 @@
 This file provides guidance to coding agents working with code in this repository.
 Claude Code compatibility is kept through `CLAUDE.md`, which imports this file.
 
+> **Using CocoIndex to build a pipeline (not modifying the engine)?** This file
+> is for contributors to CocoIndex itself. To *use* CocoIndex, read the v1
+> authoring skill at [`skills/cocoindex/SKILL.md`](skills/cocoindex/SKILL.md)
+> first — without it, agents tend to emit the deprecated v0 DSL. See also
+> [`examples/AGENTS.md`](examples/AGENTS.md) and <https://cocoindex.io/docs/llms-full.txt>.
+
 ## Build and Test Commands
 
 This project uses [uv](https://docs.astral.sh/uv/) for Python project management.
