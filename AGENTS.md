@@ -303,19 +303,28 @@ All diagrams embedded in docs pages are built as inline Astro components under `
 
 ## Agent Tooling
 
-### Semantic code search over this repo (`cocoindex-code` MCP)
+### Semantic code search over this repo (`cocoindex-code`)
 
-This repo ships a Model Context Protocol server for AST-aware semantic search over its own
-codebase. It is registered for both OpenCode (`opencode.json`) and Claude Code / any
-`.mcp.json`-aware client (`.mcp.json`). Both launch it the same way:
+To find where a concept lives, prefer semantic search over blind `grep`. This repo keeps a local
+`cocoindex-code` index; query it from any agent's shell with the `ccc` CLI:
 
 ```bash
-uvx --with cocoindex>=1.0.6 cocoindex-code@latest
+ccc search "where is X handled"      # semantic search; add --refresh to reindex first
 ```
 
-It exposes a single `search` tool (semantic query over code chunks; incrementally re-indexes
-before each search). Prefer it over blind `grep` when locating where a concept lives. The same
-package provides a `ccc` CLI for searching/indexing from the terminal. Source:
+If `ccc search` reports no index, set it up once:
+
+```bash
+command -v ccc >/dev/null || uv tool install 'cocoindex-code[full]'   # per machine; local embeddings, no API key
+ccc init -f && ccc index                                             # repo-scoped index (first build ~1-2 min)
+```
+
+Everything is local — SQLite index, local embeddings, no keys — and a background daemon keeps it
+fresh. On a brand-new machine `ccc init` asks once for an embedding provider; choose the local
+default. The `-f` matters: if a parent directory is also a `ccc` project, plain `ccc init` refuses
+and search silently uses the parent's index, so run `ccc status` to confirm the root is this repo.
+We register no MCP server on purpose — an `ccc mcp` mode exists, but the CLI costs no context until
+invoked and behaves the same across agents. Source:
 [github.com/cocoindex-io/cocoindex-code](https://github.com/cocoindex-io/cocoindex-code).
 
 ## Agent Playbooks
