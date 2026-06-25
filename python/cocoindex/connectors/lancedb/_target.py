@@ -1266,7 +1266,8 @@ def table_target(
         num_transactions_before_optimize: Number of successful row mutation batches
             before scheduling a background ``table.optimize()``.
         write_batch_size: Optional maximum number of row actions per LanceDB
-            write call. ``None`` applies each CocoIndex sink batch as one write.
+            write call. ``None`` disables LanceDB-side chunking, so each
+            batch received from the CocoIndex core is sent as one write.
 
     Returns:
         A TargetState that can be passed to ``mount_target()``.
@@ -1307,7 +1308,8 @@ def declare_table_target(
         num_transactions_before_optimize: Number of successful row mutation batches
             before scheduling a background ``table.optimize()``.
         write_batch_size: Optional maximum number of row actions per LanceDB
-            write call. ``None`` applies each CocoIndex sink batch as one write.
+            write call. ``None`` disables LanceDB-side chunking, so each
+            batch received from the CocoIndex core is sent as one write.
 
     Returns:
         A TableTarget that can be used to declare rows.
@@ -1347,7 +1349,8 @@ async def mount_table_target(
         num_transactions_before_optimize: Number of successful row mutation batches
             before scheduling a background ``table.optimize()``.
         write_batch_size: Optional maximum number of row actions per LanceDB
-            write call. ``None`` applies each CocoIndex sink batch as one write.
+            write call. ``None`` disables LanceDB-side chunking, so each
+            batch received from the CocoIndex core is sent as one write.
 
     Returns:
         A TableTarget that can be used to declare rows.
