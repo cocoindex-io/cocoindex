@@ -56,10 +56,20 @@ impl<'de> Deserialize<'de> for StableKey {
             Str(String),
             // Intentionally before Array to preserve StableKey::Bytes roundtrip in formats
             // (like JSON) where bytes can be represented as a sequence of integers.
+            // `serde_bytes` makes this consume a native byte string too (msgpack
+            // `bin`, the state-store format) — a plain `Vec<u8>` only deserializes
+            // via `deserialize_seq`, so a `bin` would fail to match any variant.
+            #[serde(with = "serde_bytes")]
             Bytes(Vec<u8>),
-            Uuid { uuid: uuid::Uuid },
-            Fp { fp: utils::fingerprint::Fingerprint },
-            Sym { sym: String },
+            Uuid {
+                uuid: uuid::Uuid,
+            },
+            Fp {
+                fp: utils::fingerprint::Fingerprint,
+            },
+            Sym {
+                sym: String,
+            },
             Array(Vec<Repr>),
         }
 
@@ -462,5 +472,29 @@ mod tests {
 
         let roundtrip: StablePath = serde_json::from_value(got).expect("deserialize");
         assert_eq!(roundtrip, path);
+    }
+
+    #[test]
+    fn serde_msgpack_bytes_roundtrip() {
+        // `StableKey::Bytes` must survive a serde msgpack round-trip — it rides
+        // inside component paths and target-state keys, which may embed raw
+        // bytes. msgpack serializes a `Vec<u8>` as a native `bin`, so the
+        // deserializer has to accept a `bin` (not just an int sequence).
+        for key in [
+            StableKey::Bytes(Arc::from(&b"\x00\x01\xff sha"[..])),
+            // A nested array carrying a symbol, strings, and a raw-bytes key.
+            StableKey::Array(Arc::from(vec![
+                StableKey::Array(Arc::from(vec![
+                    StableKey::Symbol(Arc::from("obj")),
+                    StableKey::Str(Arc::from("tenant")),
+                ])),
+                StableKey::Str(Arc::from("src/main.rs")),
+                StableKey::Bytes(Arc::from(&[0xde, 0xad, 0xbe, 0xef][..])),
+            ])),
+        ] {
+            let bytes = rmp_serde::to_vec_named(&key).expect("encode");
+            let decoded: StableKey = rmp_serde::from_slice(&bytes).expect("decode bytes key");
+            assert_eq!(decoded, key);
+        }
     }
 }
