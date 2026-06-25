@@ -81,11 +81,15 @@ impl AppStore {
     /// amortization.
     pub(super) async fn run_in_batcher<F>(&self, body: F) -> Result<()>
     where
-        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
             + Send
+            + Sync
             + 'static,
     {
-        self.run_in_batcher_typed::<(), _>(move |wtxn| Box::pin(async move { body(wtxn).await }))
+        // Call `body(wtxn)` directly (borrowing `body` via its `Fn` impl) rather
+        // than capturing it in an `async move` block. This keeps the outer closure
+        // `Fn` (retryable) instead of `FnOnce`.
+        self.run_in_batcher_typed::<(), _>(move |wtxn| body(wtxn))
             .await
     }
 
@@ -95,8 +99,9 @@ impl AppStore {
     pub(super) async fn run_in_batcher_typed<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
-        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
+            + Sync
             + 'static,
     {
         self.storage.run_txn(body).await
@@ -315,6 +320,9 @@ impl AppStore {
         let parent = parent.clone();
         let relative = relative.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let parent = parent.clone();
+            let relative = relative.clone();
             Box::pin(async move { app_store.delete_tombstone(wtxn, &parent, &relative).await })
         })
         .await
@@ -335,6 +343,8 @@ impl AppStore {
         let app_store = self.clone();
         let path = path.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
             Box::pin(async move {
                 let Some((parent, key)) = path.as_ref().split_parent() else {
                     return Ok(());
@@ -365,6 +375,9 @@ impl AppStore {
         let path = component_path.clone();
         let encoded = encoded.to_vec();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            let encoded = encoded.clone();
             Box::pin(async move {
                 app_store
                     .write_component_memo_raw(wtxn, &path, &encoded)
@@ -384,6 +397,8 @@ impl AppStore {
         let app_store = self.clone();
         let path = path.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
             Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
         })
         .await
@@ -412,6 +427,8 @@ impl AppStore {
         let app_store = self.clone();
         let key = key.clone();
         self.run_in_batcher_typed(move |wtxn| {
+            let app_store = app_store.clone();
+            let key = key.clone();
             Box::pin(async move { app_store.reserve_id_range_in_txn(wtxn, &key, count).await })
         })
         .await
@@ -854,6 +871,10 @@ impl AppStore {
         let user_key = user_key.clone();
         let value = value.to_vec();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            let user_key = user_key.clone();
+            let value = value.clone();
             Box::pin(async move {
                 app_store
                     .write_user_state(wtxn, &path, kind, &user_key, &value)

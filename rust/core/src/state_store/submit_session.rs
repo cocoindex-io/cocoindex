@@ -461,8 +461,17 @@ impl AppStore {
     ) -> Result<()> {
         let app_store = self.clone();
         let component_path = component_path.clone();
+        // Wrap non-Clone values in `Arc` so the closure stays `Fn` (retryable on
+        // `MDB_MAP_FULL`). `CommitPlan` and `ExistenceReconciler` are read-only inside
+        // the body, so `Arc`-sharing is safe.
+        let plan = Arc::new(plan);
+        let existence_reconciler = Arc::new(existence_reconciler);
         self.storage
             .run_txn(move |wtxn: &mut WriteTxn<'_>| {
+                let app_store = app_store.clone();
+                let component_path = component_path.clone();
+                let plan = Arc::clone(&plan);
+                let existence_reconciler = Arc::clone(&existence_reconciler);
                 Box::pin(async move {
                     if let Some(bytes) = plan.new_tracking_info.as_ref() {
                         app_store
@@ -473,25 +482,27 @@ impl AppStore {
                             .delete_tracking_info(wtxn, &component_path)
                             .await?;
                     }
-                    for (target_path, owner_path) in plan.target_owners_to_upsert {
+                    for (target_path, owner_path) in &plan.target_owners_to_upsert {
                         app_store
-                            .upsert_target_state_owner(wtxn, &target_path, &owner_path)
+                            .upsert_target_state_owner(wtxn, target_path, owner_path)
                             .await?;
                     }
-                    for target_path in plan.target_owners_to_delete {
+                    for target_path in &plan.target_owners_to_delete {
                         app_store
-                            .delete_target_state_owner(wtxn, &target_path)
+                            .delete_target_state_owner(wtxn, target_path)
                             .await?;
                     }
                     if plan.fn_memo_clear_all_first {
                         app_store.delete_all_fn_memos(wtxn, &component_path).await?;
                     }
-                    for fp in plan.fn_memo_deletes {
-                        app_store.delete_fn_memo(wtxn, &component_path, fp).await?;
-                    }
-                    for (fp, bytes) in plan.fn_memo_writes {
+                    for fp in &plan.fn_memo_deletes {
                         app_store
-                            .write_fn_memo_raw(wtxn, &component_path, fp, &bytes)
+                            .delete_fn_memo(wtxn, &component_path, *fp)
+                            .await?;
+                    }
+                    for (fp, bytes) in &plan.fn_memo_writes {
+                        app_store
+                            .write_fn_memo_raw(wtxn, &component_path, *fp, bytes)
                             .await?;
                     }
                     if plan.user_state_clear_all_first {
@@ -504,19 +515,19 @@ impl AppStore {
                             .delete_user_states_of_kind(wtxn, &component_path, StateKind::Live)
                             .await?;
                     }
-                    for key in plan.user_state_deletes {
+                    for key in &plan.user_state_deletes {
                         app_store
-                            .delete_user_state(wtxn, &component_path, StateKind::Regular, &key)
+                            .delete_user_state(wtxn, &component_path, StateKind::Regular, key)
                             .await?;
                     }
-                    for (key, bytes) in plan.user_state_writes {
+                    for (key, bytes) in &plan.user_state_writes {
                         app_store
                             .write_user_state(
                                 wtxn,
                                 &component_path,
                                 StateKind::Regular,
-                                &key,
-                                &bytes,
+                                key,
+                                bytes,
                             )
                             .await?;
                     }

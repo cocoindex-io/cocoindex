@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
+const MAP_SIZE_GROWTH_FACTOR: usize = 2;
 
 /// Sync sibling of [`AppStore::read_txn`]'s `MDB_READERS_FULL` retry,
 /// for use inside `spawn_blocking` where the async retry helper isn't
@@ -125,15 +126,77 @@ struct StorageInner {
 /// Type-erased body for a batched write transaction. Each body returns a
 /// future that runs against the shared `WriteTxn` and resolves to a boxed
 /// output. The future is bound to the borrow of the txn (`'a`).
+///
+/// `Fn + Sync` (not `FnOnce`) so the batcher can retry the entire batch on
+/// `MDB_MAP_FULL`: the env is resized between attempts, then every body is
+/// called again with a fresh write transaction. Callers must therefore
+/// ensure their closures are side-effect–free on the captured state (i.e.
+/// they may be invoked more than once). In practice all callers clone `Arc`
+/// handles inside the closure and do not move-out of captures, so this is
+/// already satisfied.
+///
+/// `Sync` is required because `try_run_once` holds `&[TxnBody]` across
+/// `await` points; for `&T` to be `Send`, `T` must be `Sync`.
 type TxnBody = Box<
-    dyn for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
-        + Send,
+    dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
+        + Send
+        + Sync,
 >;
+
+/// Returns `true` if `err` is an LMDB `MDB_MAP_FULL` error.
+fn is_map_full(err: &Error) -> bool {
+    let inner = err.without_contexts();
+    if let Error::Internal(anyhow_err) = inner {
+        return matches!(
+            anyhow_err.downcast_ref::<heed::Error>(),
+            Some(heed::Error::Mdb(heed::MdbError::MapFull))
+        );
+    }
+    false
+}
 
 /// `Runner` implementation that opens a single write txn, runs each batched
 /// body against it (awaiting in turn), then commits.
+///
+/// When a `MDB_MAP_FULL` error occurs (either from a put inside a body or
+/// from the final commit), the write txn is automatically dropped (aborted),
+/// the map size is doubled via `env.resize`, and the whole batch is retried.
+/// Safety: `resize` requires no active write transactions; by the time we
+/// call it the failed write txn has already been dropped. Read transactions
+/// may be active concurrently, but for a single-process LMDB environment
+/// (which CocoIndex always is) this is safe.
 struct TxnRunner {
     db_env: heed::Env<heed::WithoutTls>,
+    /// Current map size in bytes. Updated atomically when the env is resized.
+    current_map_size: Arc<std::sync::Mutex<usize>>,
+}
+
+impl TxnRunner {
+    /// Attempts one write-txn pass over `inputs`. If any body or the final
+    /// commit returns an error the write txn is aborted and the error
+    /// propagates. On `MapFull` the caller should resize and retry.
+    async fn try_run_once(
+        &self,
+        inputs: &[TxnBody],
+    ) -> Result<Vec<Box<dyn Any + Send>>> {
+        let mut outputs = Vec::with_capacity(inputs.len());
+        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
+        for body in inputs {
+            outputs.push(body(&mut wtxn).await?);
+        }
+        wtxn.into_inner().commit()?;
+        Ok(outputs)
+    }
+
+    /// Doubles the tracked map size (aligned to page), stores it, and
+    /// returns the new value.
+    fn next_map_size(&self) -> usize {
+        let mut size = self.current_map_size.lock().unwrap();
+        let new_size =
+            align_map_size_to_page(size.saturating_mul(MAP_SIZE_GROWTH_FACTOR));
+        *size = new_size;
+        new_size
+    }
 }
 
 #[async_trait]
@@ -145,13 +208,24 @@ impl Runner for TxnRunner {
         &self,
         inputs: Vec<TxnBody>,
     ) -> Result<impl ExactSizeIterator<Item = Box<dyn Any + Send>>> {
-        let mut outputs = Vec::with_capacity(inputs.len());
-        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
-        for body in inputs {
-            outputs.push(body(&mut wtxn).await?);
+        loop {
+            match self.try_run_once(&inputs).await {
+                Ok(outputs) => return Ok(outputs.into_iter()),
+                Err(e) if is_map_full(&e) => {
+                    let new_size = self.next_map_size();
+                    warn!(
+                        "LMDB map full, auto-resizing to {} bytes and retrying",
+                        new_size
+                    );
+                    // Safety: the write txn that hit MapFull was already
+                    // dropped (error path of try_run_once). We are the sole
+                    // writer (enforced by the Batcher), so no write
+                    // transactions are active right now.
+                    unsafe { self.db_env.resize(new_size)?; }
+                }
+                Err(e) => return Err(e),
+            }
         }
-        wtxn.into_inner().commit()?;
-        Ok(outputs.into_iter())
     }
 }
 
@@ -187,9 +261,11 @@ impl Storage {
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
         }
+        let current_map_size = Arc::new(std::sync::Mutex::new(map_size));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
+                current_map_size,
             },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
@@ -202,9 +278,11 @@ impl Storage {
     /// Construct a `Storage` from an already-open `heed::Env`. Used in tests
     /// where the env is created directly without going through `StorageSettings`.
     pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
+        let current_map_size = Arc::new(std::sync::Mutex::new(db_env.info().map_size));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
+                current_map_size,
             },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
@@ -255,13 +333,20 @@ impl Storage {
     pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
-        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
+            + Sync
             + 'static,
     {
+        // Call `body(wtxn)` rather than wrapping in `async move { body(wtxn).await }`.
+        // The latter would move `body` into the async block, making the outer closure
+        // `FnOnce`. By calling `body(wtxn)` directly we borrow `body` (via its `Fn`
+        // impl) and only move the returned `future` into the mapping async block,
+        // keeping the outer closure `Fn` (retryable on `MDB_MAP_FULL`).
         let erased: TxnBody = Box::new(move |wtxn| {
+            let future = body(wtxn);
             Box::pin(async move {
-                let value = body(wtxn).await?;
+                let value = future.await?;
                 Ok(Box::new(value) as Box<dyn Any + Send>)
             })
         });
