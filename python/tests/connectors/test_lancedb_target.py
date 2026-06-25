@@ -368,6 +368,47 @@ async def test_add_multiple_columns_in_place(lancedb_dir: Path) -> None:
 
 @pytest.mark.asyncio
 @requires_lancedb
+async def test_row_handler_applies_configured_write_batch_size() -> None:
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
+        num_transactions_before_optimize=50,
+        write_batch_size=2,
+    )
+    fake_conn = _FakeAsyncConnection()
+    upsert_batch_sizes: list[int] = []
+    delete_batch_sizes: list[int] = []
+
+    async def record_upserts(table: Any, upserts: list[Any]) -> None:
+        upsert_batch_sizes.append(len(upserts))
+
+    async def record_deletes(table: Any, deletes: list[Any]) -> None:
+        delete_batch_sizes.append(len(deletes))
+
+    handler._execute_upserts = record_upserts  # type: ignore[method-assign]
+    handler._execute_deletes = record_deletes  # type: ignore[method-assign]
+    handler._conn = cast(Any, fake_conn)
+
+    await handler._apply_actions(
+        cast(Any, _FakeContextProvider(fake_conn)),
+        [
+            _target._RowAction(key=("u1",), value={"id": "u1", "name": "A"}),
+            _target._RowAction(key=("u2",), value={"id": "u2", "name": "B"}),
+            _target._RowAction(key=("u3",), value={"id": "u3", "name": "C"}),
+            _target._RowAction(key=("d1",), value=None),
+            _target._RowAction(key=("d2",), value=None),
+            _target._RowAction(key=("d3",), value=None),
+        ],
+    )
+
+    assert fake_conn.table.optimize_count == 0
+    assert upsert_batch_sizes == [2, 1]
+    assert delete_batch_sizes == [2, 1]
+
+
+@pytest.mark.asyncio
+@requires_lancedb
 async def test_row_handler_optimizes_after_configured_mutation_count() -> None:
     table_schema = lancedb.TableSchema(
         columns={
@@ -528,6 +569,17 @@ def test_table_target_rejects_non_positive_optimize_interval() -> None:
             table_name="test_table",
             table_schema=_make_table_schema(),
             num_transactions_before_optimize=0,
+        )
+
+
+@requires_lancedb
+def test_table_target_rejects_non_positive_write_batch_size() -> None:
+    with pytest.raises(ValueError, match="write_batch_size must be positive"):
+        lancedb.table_target(
+            db=cast(Any, None),
+            table_name="test_table",
+            table_schema=_make_table_schema(),
+            write_batch_size=0,
         )
 
 

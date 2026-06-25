@@ -329,12 +329,25 @@ impl<Prof: EngineProfile> TargetActionBatchState<Prof> {
             return;
         }
 
+        let actions_len = actions.len();
         let result = sink
             .apply(host_runtime_ctx, host_ctx, actions)
             .await
             .and_then(|handlers| {
-                if handlers.is_some() {
-                    client_bail!("leaf target action sink unexpectedly returned child handlers");
+                if let Some(handlers) = handlers {
+                    if handlers.len() != actions_len {
+                        client_bail!(
+                            "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
+                            actions_len,
+                            handlers.len(),
+                        );
+                    }
+                    // Orphan deletes for container targets have no child
+                    // provider to fulfill, but their sink still returns an
+                    // all-None handler list.
+                    if handlers.into_iter().any(|handler| handler.is_some()) {
+                        client_bail!("target action sink returned child handlers without child providers");
+                    }
                 }
                 Ok(())
             })
