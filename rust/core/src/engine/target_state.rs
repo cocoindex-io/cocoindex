@@ -15,7 +15,7 @@ pub struct ChildTargetDef<Prof: EngineProfile> {
 }
 
 #[async_trait]
-pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
+pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + Clone + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
     /// Run the logic to apply the action.

@@ -1,12 +1,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::mem;
 
+use cocoindex_utils::error::SharedResultExt;
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
-use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
+use crate::engine::target_state::{
+    TargetActionSink as _, TargetStateProvider, TargetStateProviderRegistry,
+};
 use crate::prelude::*;
 
 use crate::state::stable_path::StableKey;
@@ -35,6 +39,7 @@ struct AppContextInner<Prof: EngineProfile> {
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    target_action_batcher: TargetActionBatcher<Prof>,
     /// Cancellation token for in-flight app operations. Wrapped in a `Mutex` so
     /// it can be replaced with a fresh child of the global token after a
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
@@ -75,6 +80,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
+                target_action_batcher: TargetActionBatcher::new(),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
@@ -134,6 +140,18 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         self.inner.inflight_semaphore.as_ref()
     }
 
+    pub async fn apply_leaf_target_actions(
+        &self,
+        host_ctx: Arc<Prof::HostCtx>,
+        sink: Prof::TargetActionSink,
+        actions: Vec<Prof::TargetAction>,
+    ) -> Result<()> {
+        self.inner
+            .target_action_batcher
+            .apply(self.env().host_runtime_ctx(), host_ctx, sink, actions)
+            .await
+    }
+
     /// Returns a clone of the current app-level cancellation token.
     ///
     /// The clone stays valid even if the slot is later refreshed via
@@ -163,6 +181,195 @@ impl<Prof: EngineProfile> AppContext<Prof> {
             .id_sequencer_manager
             .next_id(self.inner.env.storage(), &self.inner.app_store, key)
             .await
+    }
+}
+
+/// App-level coalescer for leaf target actions that target the same sink.
+struct TargetActionBatcher<Prof: EngineProfile> {
+    states:
+        Arc<tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>>,
+}
+
+impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
+    fn new() -> Self {
+        Self {
+            states: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn apply(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        sink: Prof::TargetActionSink,
+        actions: Vec<Prof::TargetAction>,
+    ) -> Result<()> {
+        if actions.is_empty() {
+            return Ok(());
+        }
+        // Keep one pending queue per sink so different connectors don't block
+        // each other, while sibling components using the same sink can coalesce.
+        let (state, states) = {
+            let mut states = self.states.lock().await;
+            let state = states
+                .entry(sink.clone())
+                .or_insert_with(|| Arc::new(TargetActionBatchState::new()))
+                .clone();
+            (state, Arc::clone(&self.states))
+        };
+        state
+            .enqueue(host_runtime_ctx, host_ctx, sink, actions, states)
+            .await
+    }
+}
+
+struct TargetActionBatchState<Prof: EngineProfile> {
+    pending: tokio::sync::Mutex<TargetActionBatchPending<Prof>>,
+    // Sink calls for a given sink stay ordered even if a second flush is
+    // scheduled while the first one is still applying.
+    flush_lock: tokio::sync::Mutex<()>,
+}
+
+struct TargetActionBatchPending<Prof: EngineProfile> {
+    entries: Vec<TargetActionBatchEntry<Prof>>,
+    // True when a debounce task has already been spawned for `entries`.
+    scheduled: bool,
+}
+
+struct TargetActionBatchEntry<Prof: EngineProfile> {
+    actions: Vec<Prof::TargetAction>,
+    waiter: oneshot::Sender<utils::error::SharedResult<()>>,
+}
+
+impl<Prof: EngineProfile> TargetActionBatchState<Prof> {
+    fn new() -> Self {
+        Self {
+            pending: tokio::sync::Mutex::new(TargetActionBatchPending {
+                entries: Vec::new(),
+                scheduled: false,
+            }),
+            flush_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    async fn enqueue(
+        self: Arc<Self>,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        sink: Prof::TargetActionSink,
+        actions: Vec<Prof::TargetAction>,
+        states: Arc<
+            tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>,
+        >,
+    ) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        let should_schedule = {
+            let mut pending = self.pending.lock().await;
+            pending.entries.push(TargetActionBatchEntry {
+                actions,
+                waiter: tx,
+            });
+            if pending.scheduled {
+                false
+            } else {
+                pending.scheduled = true;
+                true
+            }
+        };
+
+        if should_schedule {
+            let state = Arc::clone(&self);
+            let host_runtime_ctx = host_runtime_ctx.clone();
+            crate::engine::runtime::get_runtime().spawn(async move {
+                // Let concurrently finishing sibling components join this
+                // sink batch without adding meaningful latency to lone writes.
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                state.flush(&host_runtime_ctx, host_ctx, sink, states).await;
+            });
+        }
+
+        rx.await
+            .map_err(|_| internal_error!("target action batcher dropped result sender"))?
+            .into_result()
+    }
+
+    async fn flush(
+        self: Arc<Self>,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        sink: Prof::TargetActionSink,
+        states: Arc<
+            tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>,
+        >,
+    ) {
+        let _flush_guard = self.flush_lock.lock().await;
+        let entries = {
+            let mut pending = self.pending.lock().await;
+            // New entries arriving after this point schedule the next debounce
+            // window instead of being folded into the in-flight sink call.
+            pending.scheduled = false;
+            mem::take(&mut pending.entries)
+        };
+        if entries.is_empty() {
+            return;
+        }
+        let mut actions = Vec::new();
+        let mut waiters = Vec::new();
+        for mut entry in entries {
+            // If the caller was cancelled while waiting for the debounce, don't
+            // apply work nobody is waiting to commit.
+            if entry.waiter.is_closed() {
+                continue;
+            }
+            actions.append(&mut entry.actions);
+            waiters.push(entry.waiter);
+        }
+        if waiters.is_empty() {
+            self.remove_if_idle(states, &sink).await;
+            return;
+        }
+
+        let result = sink
+            .apply(host_runtime_ctx, host_ctx, actions)
+            .await
+            .and_then(|handlers| {
+                if handlers.is_some() {
+                    client_bail!("leaf target action sink unexpectedly returned child handlers");
+                }
+                Ok(())
+            })
+            .map_err(utils::error::SharedError::from);
+
+        // Every component waiting on this batch observes the same sink outcome.
+        for waiter in waiters {
+            let _ = waiter.send(match &result {
+                Ok(()) => Ok(()),
+                Err(err) => Err(err.clone()),
+            });
+        }
+
+        self.remove_if_idle(states, &sink).await;
+    }
+
+    async fn remove_if_idle(
+        self: &Arc<Self>,
+        states: Arc<
+            tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>,
+        >,
+        sink: &Prof::TargetActionSink,
+    ) {
+        // Drop idle queues so short-lived closure sinks from one update don't
+        // remain strongly referenced by the app context.
+        let mut states = states.lock().await;
+        let pending = self.pending.lock().await;
+        if pending.entries.is_empty()
+            && !pending.scheduled
+            && states
+                .get(sink)
+                .is_some_and(|state| Arc::ptr_eq(state, &self))
+        {
+            states.remove(sink);
+        }
     }
 }
 

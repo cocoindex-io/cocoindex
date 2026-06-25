@@ -21,8 +21,13 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 type Log = Arc<Mutex<Vec<String>>>;
+type BatchSizes = Arc<Mutex<Vec<usize>>>;
 
 fn new_log() -> Log {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
+fn new_batch_sizes() -> BatchSizes {
     Arc::new(Mutex::new(Vec::new()))
 }
 
@@ -64,6 +69,34 @@ fn recording_sink(log: Log) -> TargetActionSink<RowAction> {
     TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
         let log = log.clone();
         async move {
+            let mut log = log.lock().unwrap();
+            for action in actions {
+                let (verb, row) = match action {
+                    TargetAction::Create(r) => ("create", r),
+                    TargetAction::Update(r) => ("update", r),
+                    TargetAction::Delete(r) => ("delete", r),
+                };
+                log.push(match row.value {
+                    Some(v) => format!("{verb} {}={}", row.key, v),
+                    None => format!("{verb} {}", row.key),
+                });
+            }
+            Ok(())
+        }
+    })
+}
+
+/// Like `recording_sink`, but also records each sink invocation's batch size.
+/// Used by batching tests to assert that sibling components share sink calls.
+fn recording_sink_with_batch_sizes(
+    log: Log,
+    batch_sizes: BatchSizes,
+) -> TargetActionSink<RowAction> {
+    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
+        let log = log.clone();
+        let batch_sizes = batch_sizes.clone();
+        async move {
+            batch_sizes.lock().unwrap().push(actions.len());
             let mut log = log.lock().unwrap();
             for action in actions {
                 let (verb, row) = match action {
@@ -239,6 +272,65 @@ async fn target_states_declared_inside_components() {
     // Drop component "y" → its target row is reconciled away.
     run(&app, log.clone(), vec!["x"]).await;
     assert_eq!(drain_sorted(&log), vec!["delete y"]);
+}
+
+#[tokio::test]
+async fn mount_each_leaf_target_actions_batch_across_components() {
+    let (app, _dir) = temp_app("component_target_batches").await;
+    let log = new_log();
+    let batch_sizes = new_batch_sizes();
+    let items: Vec<i64> = (0..50).collect();
+
+    app.update({
+        let log = log.clone();
+        let batch_sizes = batch_sizes.clone();
+        move |ctx| {
+            let log = log.clone();
+            let batch_sizes = batch_sizes.clone();
+            let items = items.clone();
+            async move {
+                let provider = Arc::new(register_root_target_states_provider(
+                    &ctx,
+                    "test/component-batches",
+                    RowHandler {
+                        sink: recording_sink_with_batch_sizes(log, batch_sizes),
+                    },
+                )?);
+                ctx.mount_each(
+                    items,
+                    |item| item.to_string(),
+                    move |child, item| {
+                        let provider = provider.clone();
+                        async move {
+                            declare_target_state(
+                                &child,
+                                provider.target_state(item, format!("val-{item}")),
+                            )?;
+                            Ok::<(), cocoindex::Error>(())
+                        }
+                    },
+                )
+                .await?;
+                Ok(())
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(drain_sorted(&log).len(), 50);
+    let sizes = batch_sizes.lock().unwrap().clone();
+    // The exact grouping is scheduler-dependent; the contract is fewer sink
+    // calls than changed sibling components, while still applying every row.
+    assert_eq!(sizes.iter().sum::<usize>(), 50);
+    assert!(
+        sizes.iter().any(|size| *size > 1),
+        "expected at least one multi-action target sink batch, got {sizes:?}"
+    );
+    assert!(
+        sizes.len() < 50,
+        "expected fewer sink calls than changed components, got {sizes:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
