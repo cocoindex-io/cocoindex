@@ -15,8 +15,11 @@ pub struct ChildTargetDef<Prof: EngineProfile> {
 }
 
 #[async_trait]
-pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + Clone + 'static {
+pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
+
+    /// Identity key used for in-process batching.
+    fn batch_key(&self) -> usize;
 
     /// Run the logic to apply the action.
     ///

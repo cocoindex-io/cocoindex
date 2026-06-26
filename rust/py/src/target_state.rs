@@ -64,6 +64,10 @@ fn get_core_field(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 
 #[async_trait]
 impl TargetActionSink<PyEngineProfile> for PyTargetActionSink {
+    fn batch_key(&self) -> usize {
+        self.key
+    }
+
     async fn apply(
         &self,
         host_runtime_ctx: &PyAsyncContext,

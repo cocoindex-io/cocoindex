@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::mem;
+use std::sync::Weak;
 
-use cocoindex_utils::error::SharedResultExt;
+use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
@@ -186,14 +186,13 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 /// App-level coalescer for leaf target actions that target the same sink.
 struct TargetActionBatcher<Prof: EngineProfile> {
-    states:
-        Arc<tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>>,
+    batchers: std::sync::Mutex<HashMap<usize, Weak<Batcher<TargetActionRunner<Prof>>>>>,
 }
 
 impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
     fn new() -> Self {
         Self {
-            states: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            batchers: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -207,131 +206,59 @@ impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
         if actions.is_empty() {
             return Ok(());
         }
-        // Keep one pending queue per sink so different connectors don't block
-        // each other, while sibling components using the same sink can coalesce.
-        let (state, states) = {
-            let mut states = self.states.lock().await;
-            let state = states
-                .entry(sink.clone())
-                .or_insert_with(|| Arc::new(TargetActionBatchState::new()))
-                .clone();
-            (state, Arc::clone(&self.states))
-        };
-        state
-            .enqueue(host_runtime_ctx, host_ctx, sink, actions, states)
-            .await
-    }
-}
-
-struct TargetActionBatchState<Prof: EngineProfile> {
-    pending: tokio::sync::Mutex<TargetActionBatchPending<Prof>>,
-    // Sink calls for a given sink stay ordered even if a second flush is
-    // scheduled while the first one is still applying.
-    flush_lock: tokio::sync::Mutex<()>,
-}
-
-struct TargetActionBatchPending<Prof: EngineProfile> {
-    entries: Vec<TargetActionBatchEntry<Prof>>,
-    // True when a debounce task has already been spawned for `entries`.
-    scheduled: bool,
-}
-
-struct TargetActionBatchEntry<Prof: EngineProfile> {
-    actions: Vec<Prof::TargetAction>,
-    waiter: oneshot::Sender<utils::error::SharedResult<()>>,
-}
-
-impl<Prof: EngineProfile> TargetActionBatchState<Prof> {
-    fn new() -> Self {
-        Self {
-            pending: tokio::sync::Mutex::new(TargetActionBatchPending {
-                entries: Vec::new(),
-                scheduled: false,
-            }),
-            flush_lock: tokio::sync::Mutex::new(()),
-        }
-    }
-
-    async fn enqueue(
-        self: Arc<Self>,
-        host_runtime_ctx: &Prof::HostRuntimeCtx,
-        host_ctx: Arc<Prof::HostCtx>,
-        sink: Prof::TargetActionSink,
-        actions: Vec<Prof::TargetAction>,
-        states: Arc<
-            tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>,
-        >,
-    ) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        let should_schedule = {
-            let mut pending = self.pending.lock().await;
-            pending.entries.push(TargetActionBatchEntry {
-                actions,
-                waiter: tx,
-            });
-            if pending.scheduled {
-                false
+        let key = sink.batch_key();
+        let batcher = {
+            let mut batchers = self.batchers.lock().unwrap();
+            // Drop dead weak handles so the registry follows live sinks.
+            batchers.retain(|_, batcher| batcher.strong_count() > 0);
+            if let Some(batcher) = batchers.get(&key).and_then(Weak::upgrade) {
+                batcher
             } else {
-                pending.scheduled = true;
-                true
+                let batcher = Arc::new(Batcher::new(
+                    TargetActionRunner {
+                        host_runtime_ctx: host_runtime_ctx.clone(),
+                        host_ctx,
+                        sink,
+                    },
+                    Arc::new(BatchQueue::new()),
+                    BatchingOptions::default(),
+                ));
+                // The map only keeps a weak handle. In-flight callers hold the
+                // strong Arcs; once a wave drains, the batcher and its captured
+                // sink closure can be dropped. A live Weak pins the sink through
+                // the batcher value, so pointer-key reuse cannot alias while it
+                // can still upgrade.
+                batchers.insert(key, Arc::downgrade(&batcher));
+                batcher
             }
         };
-
-        if should_schedule {
-            let state = Arc::clone(&self);
-            let host_runtime_ctx = host_runtime_ctx.clone();
-            crate::engine::runtime::get_runtime().spawn(async move {
-                // Let concurrently finishing sibling components join this
-                // sink batch without adding meaningful latency to lone writes.
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                state.flush(&host_runtime_ctx, host_ctx, sink, states).await;
-            });
-        }
-
-        rx.await
-            .map_err(|_| internal_error!("target action batcher dropped result sender"))?
-            .into_result()
+        batcher.run(actions).await
     }
+}
 
-    async fn flush(
-        self: Arc<Self>,
-        host_runtime_ctx: &Prof::HostRuntimeCtx,
-        host_ctx: Arc<Prof::HostCtx>,
-        sink: Prof::TargetActionSink,
-        states: Arc<
-            tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>,
-        >,
-    ) {
-        let _flush_guard = self.flush_lock.lock().await;
-        let entries = {
-            let mut pending = self.pending.lock().await;
-            // New entries arriving after this point schedule the next debounce
-            // window instead of being folded into the in-flight sink call.
-            pending.scheduled = false;
-            mem::take(&mut pending.entries)
-        };
-        if entries.is_empty() {
-            return;
-        }
+struct TargetActionRunner<Prof: EngineProfile> {
+    host_runtime_ctx: Prof::HostRuntimeCtx,
+    host_ctx: Arc<Prof::HostCtx>,
+    sink: Prof::TargetActionSink,
+}
+
+#[async_trait]
+impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
+    type Input = Vec<Prof::TargetAction>;
+    type Output = ();
+
+    async fn run(&self, inputs: Vec<Self::Input>) -> Result<impl ExactSizeIterator<Item = ()>> {
+        let num_inputs = inputs.len();
+        // Each input is one component's reconciled actions; the sink wants one
+        // flat action list for the external write.
         let mut actions = Vec::new();
-        let mut waiters = Vec::new();
-        for mut entry in entries {
-            // If the caller was cancelled while waiting for the debounce, don't
-            // apply work nobody is waiting to commit.
-            if entry.waiter.is_closed() {
-                continue;
-            }
-            actions.append(&mut entry.actions);
-            waiters.push(entry.waiter);
-        }
-        if waiters.is_empty() {
-            self.remove_if_idle(states, &sink).await;
-            return;
+        for mut input in inputs {
+            actions.append(&mut input);
         }
 
         let actions_len = actions.len();
-        let result = sink
-            .apply(host_runtime_ctx, host_ctx, actions)
+        self.sink
+            .apply(&self.host_runtime_ctx, Arc::clone(&self.host_ctx), actions)
             .await
             .and_then(|handlers| {
                 if let Some(handlers) = handlers {
@@ -346,43 +273,15 @@ impl<Prof: EngineProfile> TargetActionBatchState<Prof> {
                     // provider to fulfill, but their sink still returns an
                     // all-None handler list.
                     if handlers.into_iter().any(|handler| handler.is_some()) {
-                        client_bail!("target action sink returned child handlers without child providers");
+                        client_bail!(
+                            "target action sink returned child handlers without child providers"
+                        );
                     }
                 }
                 Ok(())
-            })
-            .map_err(utils::error::SharedError::from);
+            })?;
 
-        // Every component waiting on this batch observes the same sink outcome.
-        for waiter in waiters {
-            let _ = waiter.send(match &result {
-                Ok(()) => Ok(()),
-                Err(err) => Err(err.clone()),
-            });
-        }
-
-        self.remove_if_idle(states, &sink).await;
-    }
-
-    async fn remove_if_idle(
-        self: &Arc<Self>,
-        states: Arc<
-            tokio::sync::Mutex<HashMap<Prof::TargetActionSink, Arc<TargetActionBatchState<Prof>>>>,
-        >,
-        sink: &Prof::TargetActionSink,
-    ) {
-        // Drop idle queues so short-lived closure sinks from one update don't
-        // remain strongly referenced by the app context.
-        let mut states = states.lock().await;
-        let pending = self.pending.lock().await;
-        if pending.entries.is_empty()
-            && !pending.scheduled
-            && states
-                .get(sink)
-                .is_some_and(|state| Arc::ptr_eq(state, &self))
-        {
-            states.remove(sink);
-        }
+        Ok(vec![(); num_inputs].into_iter())
     }
 }
 
