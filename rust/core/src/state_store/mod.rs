@@ -20,4 +20,4 @@ pub use submit_session::{
     PrecommitClaimTargetsResult, PrecommitReadPlan, PrecommitReadResult, PrecommitSession,
     PrecommitWritePlan, reconcile_child_existence,
 };
-pub use txn::WriteTxn;
+pub use txn::{ReadTxn, WriteTxn};

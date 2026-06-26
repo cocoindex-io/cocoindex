@@ -35,7 +35,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::txn::WriteTxn;
+use crate::state_store::txn::{ReadTxn, WriteTxn};
 
 /// LMDB database handle. Keys and values are opaque bytes; logical
 /// key/value schemas live in [`crate::state::db_schema`].
@@ -111,7 +111,11 @@ impl AppStore {
     /// (two-phase: short retry → clear stale readers → retry
     /// indefinitely). Used by the standalone read methods and by the
     /// streaming inspection iter.
-    pub async fn read_txn(&self) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+    ///
+    /// The returned [`ReadTxn`] holds a coordinator read guard until it is
+    /// dropped, so callers must not keep it open longer than needed.
+    pub async fn read_txn<'a>(&'a self) -> Result<ReadTxn<'a>> {
+        let guard = self.storage.txn_coordinator().read_owned().await;
         let env = &self.env;
         let try_open = || async {
             match env.read_txn() {
@@ -127,20 +131,20 @@ impl AppStore {
         };
 
         // Phase 1: short timeout for transient concurrency.
-        match cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE1).await {
-            Ok(txn) => return Ok(txn),
+        let txn = match cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE1).await {
+            Ok(txn) => txn,
             Err(e) if !e.is_retryable => return Err(e.into()),
-            Err(_) => {}
-        }
-
-        // Phase 2: clear stale readers, then retry indefinitely.
-        let cleared = env.clear_stale_readers()?;
-        if cleared > 0 {
-            warn!("Cleared {cleared} stale LMDB readers");
-        }
-        cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE2)
-            .await
-            .map_err(Into::into)
+            Err(_) => {
+                let cleared = env.clear_stale_readers()?;
+                if cleared > 0 {
+                    warn!("Cleared {cleared} stale LMDB readers");
+                }
+                cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE2)
+                    .await
+                    .map_err(Into::<Error>::into)?
+            }
+        };
+        Ok(ReadTxn::new(guard, txn))
     }
 }
 
@@ -249,7 +253,7 @@ impl AppStore {
     pub async fn read_tracking_info(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_tracking_info(path)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(self.db().get(&*rtxn, &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write pre-serialized tracking info. Callers serialize externally so
@@ -281,11 +285,13 @@ impl AppStore {
     /// iff it equals `self_token`, write back. Opens its own write txn
     /// (standalone — no caller-provided handle). Idempotent.
     pub async fn clear_staged_tracking(&self, path: &StablePath, self_token: u128) -> Result<()> {
+        let coord = self.storage.txn_coordinator();
         let env = self.env.clone();
         let path = path.clone();
         let db = self.db();
         let key = key_tracking_info(&path)?;
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let _guard = coord.blocking_read();
             let mut wtxn = env.write_txn()?;
             let Some(bytes) = db.get(&wtxn, &key)? else {
                 return Ok(());
@@ -413,7 +419,7 @@ impl AppStore {
         let rtxn = self.read_txn().await?;
         let parent_owned: StablePath = parent_path.into();
         let cex_key = key_child_existence(&parent_owned, key)?;
-        let Some(bytes) = self.db().get(&rtxn, &cex_key)? else {
+        let Some(bytes) = self.db().get(&*rtxn, &cex_key)? else {
             return Ok(None);
         };
         let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
@@ -455,7 +461,7 @@ impl AppStore {
     pub async fn read_component_memo(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_component_memo(path)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(self.db().get(&*rtxn, &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write a pre-serialized component memo. Callers serialize externally
@@ -633,7 +639,7 @@ impl AppStore {
         let rtxn = self.read_txn().await?;
         let prefix = key_tombstone_prefix(parent)?;
         let mut out = Vec::new();
-        for entry in self.db().prefix_iter(&rtxn, &prefix)? {
+        for entry in self.db().prefix_iter(&*rtxn, &prefix)? {
             let (raw_key, _) = entry?;
             let relative: StablePath = storekey::decode(raw_key[prefix.len()..].as_ref())?;
             out.push(relative);
@@ -838,7 +844,7 @@ impl AppStore {
     ) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_user_state(path, kind, user_key)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(self.db().get(&*rtxn, &key)?.map(<[u8]>::to_vec))
     }
 
     pub async fn write_user_state(
@@ -941,7 +947,7 @@ impl AppStore {
         // Function memos, keyed by fingerprint.
         let fp_prefix = key_fn_memo_prefix(path)?;
         let mut memos = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &fp_prefix)? {
+        for entry in db.prefix_iter(&*rtxn, &fp_prefix)? {
             let (raw_key, raw_val) = entry?;
             let fp: Fingerprint = storekey::decode(raw_key[fp_prefix.len()..].as_ref())?;
             memos.push((fp, raw_val.to_vec()));
@@ -950,7 +956,7 @@ impl AppStore {
         // User states, keyed by stable key.
         let us_prefix = key_user_state_prefix(path, StateKind::Regular)?;
         let mut states = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &us_prefix)? {
+        for entry in db.prefix_iter(&*rtxn, &us_prefix)? {
             let (raw_key, raw_val) = entry?;
             let user_key: StableKey = storekey::decode(raw_key[us_prefix.len()..].as_ref())?;
             states.push((user_key, raw_val.to_vec()));
@@ -1293,7 +1299,7 @@ impl AppStore {
         let db = self.db();
         let mut out = Vec::new();
         let mut last_prefix: Option<Vec<u8>> = None;
-        for entry in db.prefix_iter(&rtxn, &encoded_key_prefix)? {
+        for entry in db.prefix_iter(&*rtxn, &encoded_key_prefix)? {
             let (raw_key, _) = entry?;
             if let Some(last_prefix) = &last_prefix
                 && raw_key.starts_with(last_prefix)
