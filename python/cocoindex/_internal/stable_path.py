@@ -94,19 +94,6 @@ class StablePath:
         """
         return self._core.parts()
 
-    def selector_path(self) -> str:
-        """
-        Return a human-readable path string for use with component selectors.
-
-        Each StableKey part is converted to a clean, unquoted string and
-        joined with ``/``. For example, a path with Symbol("process") and
-        Str("doc.md") produces ``"process/doc.md"``.
-
-        Returns:
-            Selector-ready path string (e.g. ``"process/doc.md"``).
-        """
-        return stable_path_to_selector(self._core)
-
 
 ROOT_PATH = StablePath()
 
