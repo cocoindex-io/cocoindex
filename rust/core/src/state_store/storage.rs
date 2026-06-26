@@ -167,8 +167,6 @@ fn is_map_full(err: &Error) -> bool {
 /// (which CocoIndex always is) this is safe.
 struct TxnRunner {
     db_env: heed::Env<heed::WithoutTls>,
-    /// Current map size in bytes. Updated atomically when the env is resized.
-    current_map_size: Arc<std::sync::Mutex<usize>>,
 }
 
 impl TxnRunner {
@@ -188,14 +186,17 @@ impl TxnRunner {
         Ok(outputs)
     }
 
-    /// Doubles the tracked map size (aligned to page), stores it, and
-    /// returns the new value.
-    fn next_map_size(&self) -> usize {
-        let mut size = self.current_map_size.lock().unwrap();
-        let new_size =
-            align_map_size_to_page(size.saturating_mul(MAP_SIZE_GROWTH_FACTOR));
-        *size = new_size;
-        new_size
+    /// Doubles the env's current map size (aligned to page) and returns the
+    /// new value. Reads from `db_env.info().map_size` so there is no separate
+    /// cached size to keep in sync.
+    fn next_map_size(&self) -> Result<usize> {
+        let current = self.db_env.info().map_size;
+        let doubled = current.checked_mul(MAP_SIZE_GROWTH_FACTOR).ok_or_else(|| {
+            internal_error!(
+                "LMDB map size overflow while doubling: current={current} bytes"
+            )
+        })?;
+        Ok(align_map_size_to_page(doubled))
     }
 }
 
@@ -212,7 +213,7 @@ impl Runner for TxnRunner {
             match self.try_run_once(&inputs).await {
                 Ok(outputs) => return Ok(outputs.into_iter()),
                 Err(e) if is_map_full(&e) => {
-                    let new_size = self.next_map_size();
+                    let new_size = self.next_map_size()?;
                     warn!(
                         "LMDB map full, auto-resizing to {} bytes and retrying",
                         new_size
@@ -261,11 +262,9 @@ impl Storage {
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
         }
-        let current_map_size = Arc::new(std::sync::Mutex::new(map_size));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
-                current_map_size,
             },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
@@ -278,11 +277,9 @@ impl Storage {
     /// Construct a `Storage` from an already-open `heed::Env`. Used in tests
     /// where the env is created directly without going through `StorageSettings`.
     pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
-        let current_map_size = Arc::new(std::sync::Mutex::new(db_env.info().map_size));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
-                current_map_size,
             },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
@@ -546,5 +543,92 @@ mod tests {
             lmdb_map_size: 4 * 1024 * 1024 + 1,
         };
         Storage::new(&settings).await.unwrap();
+    }
+
+    /// Integration test for `MDB_MAP_FULL` auto-resize on the `Storage::run_txn`
+    /// path: one batched write txn is filled past the map limit, the runner
+    /// doubles the map, retries the same body, and commits. Run via
+    /// `dev/test_lmdb_auto_resize.sh`.
+    #[tokio::test]
+    async fn auto_resizes_on_map_full() {
+        let dir = TempDir::new().unwrap();
+        let page = page_size::get();
+        // Deliberately tiny, page-aligned map. Large enough for env metadata and
+        // `create_app_store` (direct write txn, not the batcher).
+        let initial_map_size = align_map_size_to_page(page * 16);
+
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: initial_map_size,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+        let app_store = storage.create_app_store("resize_test").await.unwrap();
+        assert_eq!(
+            app_store.env.info().map_size,
+            initial_map_size,
+            "initial map size should match configured value"
+        );
+
+        // One payload pattern; 16 KiB per key. Total raw value bytes exceed the
+        // initial map once LMDB btree/metadata overhead is included, so a single
+        // `run_txn` body should hit MapFull on put or commit, trigger resize,
+        // and succeed only after retry.
+        const PAYLOAD_LEN: usize = 16 * 1024;
+        const WRITE_COUNT: usize = 64;
+        let payload = vec![0xAB_u8; PAYLOAD_LEN];
+        let entries: Vec<(String, Vec<u8>)> = (0..WRITE_COUNT)
+            .map(|i| (format!("key_{i:04}"), payload.clone()))
+            .collect();
+
+        let app_store_for_txn = app_store.clone();
+        let entries_for_txn = entries.clone();
+        storage
+            .run_txn(move |wtxn| {
+                let app_store = app_store_for_txn.clone();
+                let entries = entries_for_txn.clone();
+                Box::pin(async move {
+                    for (key, value) in &entries {
+                        app_store.db().put(wtxn, key.as_bytes(), value)?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .expect("single run_txn should succeed after MapFull resize-and-retry");
+
+        let final_map_size = app_store.env.info().map_size;
+        let expected_min_final =
+            align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
+        assert!(
+            final_map_size > initial_map_size,
+            "map size must grow after MapFull: initial={initial_map_size}, final={final_map_size}"
+        );
+        assert!(
+            final_map_size >= expected_min_final,
+            "map size should at least double: initial={initial_map_size}, \
+             final={final_map_size}, expected>={expected_min_final}"
+        );
+
+        eprintln!(
+            "auto_resizes_on_map_full: initial_map_size={initial_map_size} \
+             final_map_size={final_map_size} writes={WRITE_COUNT} \
+             bytes_per_key={PAYLOAD_LEN}"
+        );
+
+        // Read back first, middle, and last keys; verify full payload bytes.
+        let rtxn = app_store.env.read_txn().unwrap();
+        for key in ["key_0000", "key_0031", "key_0063"] {
+            let bytes = app_store
+                .db()
+                .get(&rtxn, key.as_bytes())
+                .unwrap()
+                .unwrap_or_else(|| panic!("{key} should exist after successful commit"));
+            assert_eq!(
+                bytes.as_ref(),
+                payload.as_slice(),
+                "{key} payload should match what was written"
+            );
+        }
     }
 }
