@@ -5,6 +5,10 @@ description: >
   embeddings. Learn how to declare them through connector APIs, nest container
   targets, and rely on CocoIndex to sync minimal creates, updates, and deletes.
 ---
+:::note[Prerequisite]
+This page builds on [Core Concepts](./core_concepts), which introduces target states and the declarative *target state = transform(source state)* model **with diagrams**. If the ideas below feel abstract, start there.
+:::
+
 A **target state** represents what you want to exist in an external system. You *declare* target states in your code; CocoIndex keeps them in sync with your intent — creating, updating, or removing them as needed.
 
 :::note[Terminology]
@@ -95,7 +99,7 @@ Targets like `DirTarget` and `TableTarget` have two statuses: **pending** (just 
 
 ## How CocoIndex syncs target states
 
-Under the hood, CocoIndex compares your declared target states with the previous run and applies the minimal changes needed:
+Under the hood, CocoIndex compares your declared target states with the previous run and applies the minimal changes needed — the same create/update/delete sync the [change-scenario diagrams in Core Concepts](./core_concepts#processing-component) walk through, viewed per target state:
 
 <table>
   <thead>

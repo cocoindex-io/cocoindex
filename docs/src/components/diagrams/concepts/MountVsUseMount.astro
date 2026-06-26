@@ -1,0 +1,67 @@
+---
+import DiagramFrame from '../primitives/DiagramFrame.astro';
+import ProcessingComponent from '../primitives/ProcessingComponent.astro';
+import FlowArrow from '../primitives/FlowArrow.astro';
+
+// Two ways a parent component brings a child into being:
+//   mount()     → parent takes no value back; child runs & refreshes independently.
+//   use_mount() → parent consumes the child's return value; the two are coupled.
+// The visual story is the edge: use_mount has a value returning up; mount doesn't.
+const MARGIN = 20;
+const BOX_W = 140, BOX_H = 50;
+
+const PARENT_Y = 48;
+const VGAP = 54;
+const CHILD_Y = PARENT_Y + BOX_H + VGAP;          // 152
+const TITLE_Y = PARENT_Y - 18;                    // 30
+const CAP_Y = CHILD_Y + BOX_H + 26;               // 228
+
+const P1_CX = MARGIN + BOX_W / 2;                 // 90  (mount panel center)
+const PANEL_GAP = 86;
+const BOX2_X = P1_CX + BOX_W / 2 + PANEL_GAP;     // 246
+const P2_CX = BOX2_X + BOX_W / 2;                 // 316 (use_mount panel center)
+const DIVIDER_X = (P1_CX + BOX_W / 2 + BOX2_X) / 2; // 203
+
+// value-return curve (use_mount only), bowing to the right of the boxes
+const BOX2_R = P2_CX + BOX_W / 2;                 // 386
+const RET_BOW = 32;
+const RET_X = BOX2_R + RET_BOW;                   // 418
+const PARENT_MID = PARENT_Y + BOX_H / 2;          // 73
+const CHILD_MID = CHILD_Y + BOX_H / 2;            // 177
+const RET_MID_Y = (PARENT_MID + CHILD_MID) / 2;   // 125
+const VALUE_LABEL_X = RET_X + 10;                 // 428
+
+const VB_W = VALUE_LABEL_X + 54;                  // ~482
+const VB_H = CAP_Y + 14;                          // 242
+
+const box1L = P1_CX - BOX_W / 2;                  // 20
+---
+<DiagramFrame
+  viewBox={`0 0 ${VB_W} ${VB_H}`}
+  maxWidth={540}
+  title="mount() versus use_mount()"
+  desc="With mount, the parent takes no value from the child, so the child runs and refreshes independently. With use_mount, the parent consumes the child's returned value, which couples the two."
+>
+  {/* soft divider between the two cases */}
+  <line
+    x1={DIVIDER_X} y1={TITLE_Y - 6} x2={DIVIDER_X} y2={CAP_Y}
+    stroke="var(--rule-strong, rgba(42,18,27,0.35))"
+    stroke-width="1" stroke-dasharray="2 6" opacity="0.45"
+  />
+
+  {/* ── mount(): nothing returns, child is independent ── */}
+  <text class="dg-label dg-label--mono" x={P1_CX} y={TITLE_Y}>mount()</text>
+  <ProcessingComponent x={box1L} y={PARENT_Y} w={BOX_W} h={BOX_H} label="parent" />
+  <FlowArrow d={`M ${P1_CX} ${PARENT_Y + BOX_H} L ${P1_CX} ${CHILD_Y}`} />
+  <ProcessingComponent x={box1L} y={CHILD_Y} w={BOX_W} h={BOX_H} label="child" />
+  <text class="dg-label dg-label--small" x={P1_CX} y={CAP_Y}>refreshes independently</text>
+
+  {/* ── use_mount(): value flows back up, the two are coupled ── */}
+  <text class="dg-label dg-label--mono" x={P2_CX} y={TITLE_Y}>use_mount()</text>
+  <ProcessingComponent x={BOX2_X} y={PARENT_Y} w={BOX_W} h={BOX_H} label="parent" />
+  <FlowArrow d={`M ${P2_CX} ${PARENT_Y + BOX_H} L ${P2_CX} ${CHILD_Y}`} />
+  <ProcessingComponent x={BOX2_X} y={CHILD_Y} w={BOX_W} h={BOX_H} label="child" />
+  <FlowArrow d={`M ${BOX2_R} ${CHILD_MID} C ${RET_X} ${CHILD_MID}, ${RET_X} ${PARENT_MID}, ${BOX2_R} ${PARENT_MID}`} />
+  <text class="dg-label dg-label--caps dg-label--left" x={VALUE_LABEL_X} y={RET_MID_Y}>value</text>
+  <text class="dg-label dg-label--small" x={P2_CX} y={CAP_Y}>coupled to parent</text>
+</DiagramFrame>

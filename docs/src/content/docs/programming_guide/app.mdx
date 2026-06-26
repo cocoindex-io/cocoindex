@@ -5,6 +5,10 @@ description: >
   trigger updates, configure the database path, and wire up lifespan-managed
   resources.
 ---
+:::note[Prerequisite]
+This page builds on [Core Concepts](./core_concepts), which introduces the App and the source → transform → target-state model **with diagrams**. If the App model feels abstract, start there.
+:::
+
 An **App** is the top-level runnable unit in CocoIndex.
 It names your pipeline and binds a main function with its parameters. When you call `app.update()`, CocoIndex runs that main function as the root [processing component](./processing_component) which can mount child processing components to do work and declare target states.
 
@@ -80,7 +84,7 @@ An App is the top-level runner and entry point. A **processing component** is th
 
 This is why `app.update()` does not "run everything from scratch": CocoIndex uses the component path tree to decide what can be reused and what must re-run.
 
-For example, an app that processes files might mount one component per file:
+For example, an app that processes files might mount one component per file — the per-file fan-out from [Core Concepts](./core_concepts#processing-component), shown here as a path tree:
 
 ```text
 (root)                         ← app_main component
