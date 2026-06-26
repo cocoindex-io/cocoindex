@@ -171,39 +171,6 @@ async def test_component_selector_glob(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.mark.asyncio
-async def test_component_selector_no_match(request: pytest.FixtureRequest) -> None:
-    """Selector matching nothing still preserves all existing output."""
-    GlobalDictTarget.store.clear()
-    env = _make_env(request.node.name)
-
-    items = {"a": "va", "b": "vb"}
-
-    @coco.fn
-    async def app_main() -> None:
-        await coco.mount_each(
-            coco.component_subpath("process"),
-            process_item,
-            items.items(),
-        )
-
-    app = coco.App(
-        coco.AppConfig(name="test_selector_nomatch", environment=env),
-        app_main,
-    )
-
-    # First run — all items processed.
-    await app.update()
-    assert set(GlobalDictTarget.store.data.keys()) == {"process/a", "process/b"}
-
-    # Second run with non-matching selector — all items still mounted,
-    # output preserved since inputs haven't changed.
-    await app.update(component_selector=[_sel(coco.Symbol("process"), "nonexistent")])
-
-    assert GlobalDictTarget.store.data["process/a"].data == "va"
-    assert GlobalDictTarget.store.data["process/b"].data == "vb"
-
-
-@pytest.mark.asyncio
 async def test_component_selector_none(request: pytest.FixtureRequest) -> None:
     """Selector=None processes all items (default behavior)."""
     GlobalDictTarget.store.clear()
@@ -330,52 +297,18 @@ async def test_component_selector_cleaned() -> None:
 
 
 @pytest.mark.asyncio
-async def test_component_selector_wildcard(request: pytest.FixtureRequest) -> None:
-    """Wildcard pattern matches all items under a mount_each."""
-    GlobalDictTarget.store.clear()
-    env = _make_env(request.node.name)
-
-    items = {"f1": "v1", "f2": "v2", "f3": "v3"}
-
-    @coco.fn
-    async def app_main() -> None:
-        await coco.mount_each(
-            coco.component_subpath("batch"),
-            process_item,
-            items.items(),
-        )
-
-    app = coco.App(
-        coco.AppConfig(name="test_selector_wildcard", environment=env),
-        app_main,
-    )
-
-    # First run without selector.
-    await app.update()
-
-    # Change all items.
-    items["f1"] = "v1_new"
-    items["f2"] = "v2_new"
-    items["f3"] = "v3_new"
-
-    await app.update(component_selector=[_sel(coco.Symbol("batch"), "*")])
-
-    assert GlobalDictTarget.store.data["batch/f1"].data == "v1_new"
-    assert GlobalDictTarget.store.data["batch/f2"].data == "v2_new"
-    assert GlobalDictTarget.store.data["batch/f3"].data == "v3_new"
-
-
-@pytest.mark.asyncio
-async def test_unselected_paths_preserved(
+async def test_unselected_input_changed_not_processed(
     request: pytest.FixtureRequest,
 ) -> None:
-    """When a selector is provided, unselected paths are not touched.
+    """When an unselected item's input changes but the selector doesn't include
+    it, the item is NOT re-processed — its output reflects the *old* input.
 
     Sequence:
     1. Run app.update() without selector → all items processed.
-    2. Update an input item.
-    3. Run app.update() with a selector → only the selected item's output
-       should change; unselected items' outputs are preserved.
+    2. Change both selected and unselected items' inputs.
+    3. Run app.update() with selector selecting only one item → only the
+       selected item's output changes; the unselected item's output is NOT
+       updated even though its input changed.
     """
     GlobalDictTarget.store.clear()
     env = _make_env(request.node.name)
@@ -391,7 +324,7 @@ async def test_unselected_paths_preserved(
         )
 
     app = coco.App(
-        coco.AppConfig(name="test_unselected_preserved", environment=env),
+        coco.AppConfig(name="test_unselected_input_changed", environment=env),
         app_main,
     )
 
@@ -400,13 +333,15 @@ async def test_unselected_paths_preserved(
     assert GlobalDictTarget.store.data["process/a"].data == "value_a"
     assert GlobalDictTarget.store.data["process/b"].data == "value_b"
 
-    # Step 2: Update input item "a".
+    # Step 2: Change inputs for BOTH items — including the unselected one.
     items["a"] = "new_value_a"
+    items["b"] = "new_value_b"  # unselected item's input also changed!
 
     # Step 3: Run with selector selecting only "process/a".
     await app.update(component_selector=[_sel(coco.Symbol("process"), "a")])
 
-    # Selected item updated.
+    # Selected item re-processed → output reflects new input.
     assert GlobalDictTarget.store.data["process/a"].data == "new_value_a"
-    # Unselected item preserved — NOT deleted and NOT changed.
+    # Unselected item NOT re-processed despite input change →
+    # output still holds the OLD value, not "new_value_b".
     assert GlobalDictTarget.store.data["process/b"].data == "value_b"

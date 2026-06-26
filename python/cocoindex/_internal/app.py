@@ -320,6 +320,7 @@ class App(Generic[P, R]):
 
         async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
+            env._component_selector = selector
             root_path = core.StablePath()
             processor = create_core_component_processor(
                 self._main_fn, env, root_path, self._app_args, self._app_kwargs
@@ -372,6 +373,7 @@ class App(Generic[P, R]):
         selector = tuple(component_selector) if component_selector else None
 
         env, core_app = self._get_core_env_app_sync()
+        env._component_selector = selector
         root_path = core.StablePath()
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs

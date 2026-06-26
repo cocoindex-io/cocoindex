@@ -354,7 +354,7 @@ def _enter_component_context(
         else None
     )
     context = ComponentContext(
-        env, path, comp_ctx, fn_ctx, base_chain, _selector_var.get(None)
+        env, path, comp_ctx, fn_ctx, base_chain, env._component_selector
     )
     tok = _context_var.set(context)
     try:

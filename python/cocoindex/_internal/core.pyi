@@ -370,6 +370,8 @@ async def mount_async(
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
     handler_callback: Any | None = None,
+    *,
+    skip: bool = False,
 ) -> ComponentMountHandle: ...
 async def use_mount_async(
     processor: ComponentProcessor[T_co],
