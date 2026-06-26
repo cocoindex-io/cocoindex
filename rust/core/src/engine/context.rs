@@ -9,7 +9,7 @@ use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{
-    TargetActionSink as _, TargetStateProvider, TargetStateProviderRegistry,
+    TargetActionSink as _, TargetActionSinkKeeper, TargetStateProvider, TargetStateProviderRegistry,
 };
 use crate::prelude::*;
 
@@ -143,7 +143,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     pub async fn apply_leaf_target_actions(
         &self,
         host_ctx: Arc<Prof::HostCtx>,
-        sink: Prof::TargetActionSink,
+        sink: Arc<TargetActionSinkKeeper<Prof>>,
         actions: Vec<Prof::TargetAction>,
     ) -> Result<()> {
         self.inner
@@ -186,13 +186,25 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 /// App-level coalescer for leaf target actions that target the same sink.
 struct TargetActionBatcher<Prof: EngineProfile> {
-    batchers: std::sync::Mutex<HashMap<usize, Weak<Batcher<TargetActionRunner<Prof>>>>>,
+    inner: Arc<TargetActionBatcherInner<Prof>>,
+}
+
+struct TargetActionBatcherInner<Prof: EngineProfile> {
+    batchers: std::sync::Mutex<HashMap<usize, TargetActionBatcherEntry<Prof>>>,
+}
+
+struct TargetActionBatcherEntry<Prof: EngineProfile> {
+    keeper_id: usize,
+    sink: Weak<TargetActionSinkKeeper<Prof>>,
+    batcher: Arc<Batcher<TargetActionRunner<Prof>>>,
 }
 
 impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
     fn new() -> Self {
         Self {
-            batchers: std::sync::Mutex::new(HashMap::new()),
+            inner: Arc::new(TargetActionBatcherInner {
+                batchers: std::sync::Mutex::new(HashMap::new()),
+            }),
         }
     }
 
@@ -200,64 +212,94 @@ impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        sink: Prof::TargetActionSink,
+        sink: Arc<TargetActionSinkKeeper<Prof>>,
         actions: Vec<Prof::TargetAction>,
     ) -> Result<()> {
         if actions.is_empty() {
             return Ok(());
         }
-        let key = sink.batch_key();
+        let key = sink.reclaimable_key();
+        let keeper_id = Arc::as_ptr(&sink) as usize;
         let batcher = {
-            let mut batchers = self.batchers.lock().unwrap();
-            // Drop dead weak handles so the registry follows live sinks.
-            batchers.retain(|_, batcher| batcher.strong_count() > 0);
-            if let Some(batcher) = batchers.get(&key).and_then(Weak::upgrade) {
-                batcher
+            let mut batchers = self.inner.batchers.lock().unwrap();
+            if let Some(entry) = batchers.get(&key)
+                && entry
+                    .sink
+                    .upgrade()
+                    .is_some_and(|existing| existing.reclaimable_key() == key)
+            {
+                Arc::clone(&entry.batcher)
             } else {
                 let batcher = Arc::new(Batcher::new(
                     TargetActionRunner {
                         host_runtime_ctx: host_runtime_ctx.clone(),
                         host_ctx,
-                        sink,
                     },
                     Arc::new(BatchQueue::new()),
                     BatchingOptions::default(),
                 ));
-                // The map only keeps a weak handle. In-flight callers hold the
-                // strong Arcs; once a wave drains, the batcher and its captured
-                // sink closure can be dropped. A live Weak pins the sink through
-                // the batcher value, so pointer-key reuse cannot alias while it
-                // can still upgrade.
-                batchers.insert(key, Arc::downgrade(&batcher));
+                batchers.insert(
+                    key,
+                    TargetActionBatcherEntry {
+                        keeper_id,
+                        sink: Arc::downgrade(&sink),
+                        batcher: Arc::clone(&batcher),
+                    },
+                );
+
+                let weak_inner = Arc::downgrade(&self.inner);
+                sink.register_cleanup(move || {
+                    if let Some(inner) = weak_inner.upgrade() {
+                        let mut batchers = inner.batchers.lock().unwrap();
+                        // The reclaimable key may be reused after this sink is
+                        // gone, so only remove the entry still owned by this
+                        // keeper allocation.
+                        if batchers
+                            .get(&key)
+                            .is_some_and(|entry| entry.keeper_id == keeper_id)
+                        {
+                            batchers.remove(&key);
+                        }
+                    }
+                });
+
                 batcher
             }
         };
-        batcher.run(actions).await
+        batcher.run(TargetActionRunnerInput { sink, actions }).await
     }
+}
+
+struct TargetActionRunnerInput<Prof: EngineProfile> {
+    sink: Arc<TargetActionSinkKeeper<Prof>>,
+    actions: Vec<Prof::TargetAction>,
 }
 
 struct TargetActionRunner<Prof: EngineProfile> {
     host_runtime_ctx: Prof::HostRuntimeCtx,
     host_ctx: Arc<Prof::HostCtx>,
-    sink: Prof::TargetActionSink,
 }
 
 #[async_trait]
 impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
-    type Input = Vec<Prof::TargetAction>;
+    type Input = TargetActionRunnerInput<Prof>;
     type Output = ();
 
     async fn run(&self, inputs: Vec<Self::Input>) -> Result<impl ExactSizeIterator<Item = ()>> {
         let num_inputs = inputs.len();
+        let mut input_iter = inputs.into_iter();
+        let Some(first_input) = input_iter.next() else {
+            return Ok(Vec::new().into_iter());
+        };
+        let TargetActionRunnerInput { sink, mut actions } = first_input;
         // Each input is one component's reconciled actions; the sink wants one
         // flat action list for the external write.
-        let mut actions = Vec::new();
-        for mut input in inputs {
-            actions.append(&mut input);
+        for mut input in input_iter {
+            actions.append(&mut input.actions);
         }
 
         let actions_len = actions.len();
-        self.sink
+        sink.sink()
             .apply(&self.host_runtime_ctx, Arc::clone(&self.host_ctx), actions)
             .await
             .and_then(|handlers| {

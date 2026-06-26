@@ -8,7 +8,7 @@ use crate::{
     },
 };
 
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 
 pub struct ChildTargetDef<Prof: EngineProfile> {
     pub handler: Prof::TargetHdl,
@@ -18,8 +18,11 @@ pub struct ChildTargetDef<Prof: EngineProfile> {
 pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    /// Identity key used for in-process batching.
-    fn batch_key(&self) -> usize;
+    /// Reclaimable identity key used for in-process batching.
+    ///
+    /// The key may be derived from an underlying callback or closure address, so
+    /// it is only valid while the sink itself is alive.
+    fn reclaimable_key(&self) -> usize;
 
     /// Run the logic to apply the action.
     ///
@@ -32,6 +35,62 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'stat
     ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
 }
 
+type TargetActionSinkCleanup = Box<dyn Fn() + Send + Sync + 'static>;
+
+/// Owns a target action sink and any cleanup hooks tied to its lifetime.
+pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
+    sink: Prof::TargetActionSink,
+    reclaimable_key: usize,
+    cleanups: parking_lot::Mutex<Vec<TargetActionSinkCleanup>>,
+}
+
+impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
+    pub fn new(sink: Prof::TargetActionSink) -> Arc<Self> {
+        Arc::new(Self {
+            reclaimable_key: sink.reclaimable_key(),
+            sink,
+            cleanups: parking_lot::Mutex::new(Vec::new()),
+        })
+    }
+
+    pub fn sink(&self) -> &Prof::TargetActionSink {
+        &self.sink
+    }
+
+    pub fn reclaimable_key(&self) -> usize {
+        self.reclaimable_key
+    }
+
+    pub(crate) fn register_cleanup(&self, cleanup: impl Fn() + Send + Sync + 'static) {
+        self.cleanups.lock().push(Box::new(cleanup));
+    }
+}
+
+impl<Prof: EngineProfile> Drop for TargetActionSinkKeeper<Prof> {
+    fn drop(&mut self) {
+        let cleanups = std::mem::take(&mut *self.cleanups.lock());
+        for cleanup in cleanups {
+            cleanup();
+        }
+    }
+}
+
+impl<Prof: EngineProfile> PartialEq for TargetActionSinkKeeper<Prof> {
+    fn eq(&self, other: &Self) -> bool {
+        // Preserve the pre-existing sink grouping semantics: clones/wrappers
+        // around the same live callback share the same reclaimable key.
+        self.reclaimable_key == other.reclaimable_key
+    }
+}
+
+impl<Prof: EngineProfile> Eq for TargetActionSinkKeeper<Prof> {}
+
+impl<Prof: EngineProfile> Hash for TargetActionSinkKeeper<Prof> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.reclaimable_key.hash(state);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildInvalidation {
     Destructive,
@@ -40,7 +99,7 @@ pub enum ChildInvalidation {
 
 pub struct TargetReconcileOutput<Prof: EngineProfile> {
     pub action: Prof::TargetAction,
-    pub sink: Prof::TargetActionSink,
+    pub sink: Arc<TargetActionSinkKeeper<Prof>>,
     pub tracking_record: Option<Prof::TargetStateTrackingRecord>,
     pub child_invalidation: Option<ChildInvalidation>,
 }

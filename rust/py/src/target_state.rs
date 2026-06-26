@@ -3,8 +3,8 @@ use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
-    ChildInvalidation, ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
-    TargetStateProvider, TargetStateProviderRegistry,
+    ChildInvalidation, ChildTargetDef, TargetActionSink, TargetActionSinkKeeper, TargetHandler,
+    TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
 };
 use pyo3::types::{PyList, PySequence, PyTuple};
 
@@ -19,6 +19,10 @@ use crate::value::PyStoredValue;
 #[pyclass(name = "TargetActionSink")]
 #[derive(Clone)]
 pub struct PyTargetActionSink {
+    keeper: Arc<TargetActionSinkKeeper<PyEngineProfile>>,
+}
+
+pub struct PyTargetActionSinkInner {
     key: usize,
     callback: PyCallback,
 }
@@ -27,30 +31,36 @@ pub struct PyTargetActionSink {
 impl PyTargetActionSink {
     #[staticmethod]
     pub fn new_sync(callback: Py<PyAny>) -> Self {
-        Self {
+        let inner = PyTargetActionSinkInner {
             key: callback.as_ptr() as usize,
             callback: PyCallback::Sync(Arc::new(callback)),
+        };
+        Self {
+            keeper: TargetActionSinkKeeper::new(inner),
         }
     }
 
     #[staticmethod]
     pub fn new_async(callback: Py<PyAny>) -> Self {
-        Self {
+        let inner = PyTargetActionSinkInner {
             key: callback.as_ptr() as usize,
             callback: PyCallback::Async(Arc::new(callback)),
+        };
+        Self {
+            keeper: TargetActionSinkKeeper::new(inner),
         }
     }
 }
 
-impl PartialEq for PyTargetActionSink {
+impl PartialEq for PyTargetActionSinkInner {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
     }
 }
 
-impl Eq for PyTargetActionSink {}
+impl Eq for PyTargetActionSinkInner {}
 
-impl Hash for PyTargetActionSink {
+impl Hash for PyTargetActionSinkInner {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.key.hash(state);
     }
@@ -63,8 +73,8 @@ fn get_core_field(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 }
 
 #[async_trait]
-impl TargetActionSink<PyEngineProfile> for PyTargetActionSink {
-    fn batch_key(&self) -> usize {
+impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
+    fn reclaimable_key(&self) -> usize {
         self.key
     }
 
@@ -160,7 +170,9 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                 };
                 Some(TargetReconcileOutput {
                     action,
-                    sink: get_core_field(py, sink)?.extract::<PyTargetActionSink>(py)?,
+                    sink: get_core_field(py, sink)?
+                        .extract::<PyTargetActionSink>(py)?
+                        .keeper,
                     tracking_record: if non_existence.is(&state) {
                         None
                     } else {

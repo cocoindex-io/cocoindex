@@ -292,7 +292,7 @@ impl std::hash::Hash for BoxedSink {
 
 #[async_trait]
 impl TargetActionSink<RustProfile> for BoxedSink {
-    fn batch_key(&self) -> usize {
+    fn reclaimable_key(&self) -> usize {
         self.key
     }
 
