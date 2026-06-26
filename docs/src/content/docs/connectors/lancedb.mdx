@@ -81,7 +81,6 @@ def declare_table_target(
     *,
     managed_by: Literal["system", "user"] = "system",
     num_transactions_before_optimize: int = 50,
-    write_batch_size: int | None = None,
 ) -> TableTarget[RowT, coco.PendingS]
 ```
 
@@ -92,11 +91,8 @@ def declare_table_target(
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 - `num_transactions_before_optimize` — Number of successful row mutation batches before scheduling a background LanceDB `table.optimize()` call.
-- `write_batch_size` — Optional maximum number of row actions per LanceDB write call. Leave as `None` to disable LanceDB-side chunking, so each batch received from the CocoIndex core is sent as one write.
 
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await lancedb.mount_table_target(LANCE_DB, table_name, table_schema)` to resolve.
-
-`write_batch_size` is a connector-level chunking control. CocoIndex may coalesce row actions from sibling components before invoking the LanceDB sink; this option limits how many of those actions are sent to LanceDB in each write. There is no fixed default core sink batch size.
 
 #### Rows (child states)
 

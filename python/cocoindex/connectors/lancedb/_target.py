@@ -17,7 +17,6 @@ from typing import (
     Callable,
     Collection,
     Generic,
-    Iterator,
     Literal,
     NamedTuple,
     Sequence,
@@ -203,17 +202,6 @@ class ColumnDef(NamedTuple):
 
 # Type variable for row type
 RowT = TypeVar("RowT", default=dict[str, Any])
-_ChunkT = TypeVar("_ChunkT")
-
-
-def _iter_chunks(
-    items: Sequence[_ChunkT], batch_size: int | None
-) -> Iterator[Sequence[_ChunkT]]:
-    if batch_size is None:
-        yield items
-        return
-    for i in range(0, len(items), batch_size):
-        yield items[i : i + batch_size]
 
 
 @dataclass(slots=True)
@@ -368,7 +356,6 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _table_name: str
     _table_schema: TableSchema
     _num_transactions_before_optimize: int
-    _write_batch_size: int | None
     _num_applied_mutations: int
     _optimize_lock: asyncio.Lock
     _optimize_task: asyncio.Task[None] | None
@@ -380,13 +367,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         table_schema: TableSchema,
         num_transactions_before_optimize: int,
-        write_batch_size: int | None = None,
     ) -> None:
         self._conn = conn
         self._table_name = table_name
         self._table_schema = table_schema
         self._num_transactions_before_optimize = num_transactions_before_optimize
-        self._write_batch_size = write_batch_size
         self._num_applied_mutations = 0
         self._optimize_lock = asyncio.Lock()
         self._optimize_task = None
@@ -412,14 +397,12 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table = await self._conn.open_table(self._table_name)
 
         # Process upserts
-        for batch in _iter_chunks(upserts, self._write_batch_size):
-            if batch:
-                await self._execute_upserts(table, list(batch))
+        if upserts:
+            await self._execute_upserts(table, upserts)
 
         # Process deletes
-        for batch in _iter_chunks(deletes, self._write_batch_size):
-            if batch:
-                await self._execute_deletes(table, list(batch))
+        if deletes:
+            await self._execute_deletes(table, deletes)
 
         await self._maybe_optimize(table)
 
@@ -794,7 +777,6 @@ class _TableSpec:
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     num_transactions_before_optimize: int = 50
-    write_batch_size: int | None = None
 
 
 class _ColumnState(msgspec.Struct, frozen=True, array_like=True):
@@ -895,7 +877,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     table_name=key.table_name,
                     table_schema=spec.table_schema,
                     num_transactions_before_optimize=spec.num_transactions_before_optimize,
-                    write_batch_size=spec.write_batch_size,
                 )
                 outputs[i] = coco.ChildTargetDef(handler=handler)
 
@@ -1250,7 +1231,6 @@ def table_target(
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     num_transactions_before_optimize: int = 50,
-    write_batch_size: int | None = None,
 ) -> coco.TargetState[_RowHandler]:
     """
     Create a TargetState for a LanceDB table target.
@@ -1265,24 +1245,18 @@ def table_target(
         managed_by: Whether the table is managed by "system" or "user".
         num_transactions_before_optimize: Number of successful row mutation batches
             before scheduling a background ``table.optimize()``.
-        write_batch_size: Optional maximum number of row actions per LanceDB
-            write call. ``None`` disables LanceDB-side chunking, so each
-            batch received from the CocoIndex core is sent as one write.
 
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
     if num_transactions_before_optimize <= 0:
         raise ValueError("num_transactions_before_optimize must be positive")
-    if write_batch_size is not None and write_batch_size <= 0:
-        raise ValueError("write_batch_size must be positive")
 
     key = _TableKey(db_key=db.key, table_name=table_name)
     spec = _TableSpec(
         table_schema=table_schema,
         managed_by=managed_by,
         num_transactions_before_optimize=num_transactions_before_optimize,
-        write_batch_size=write_batch_size,
     )
     return _table_provider.target_state(key, spec)
 
@@ -1294,7 +1268,6 @@ def declare_table_target(
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     num_transactions_before_optimize: int = 50,
-    write_batch_size: int | None = None,
 ) -> TableTarget[RowT, coco.PendingS]:
     """
     Create a TableTarget for writing rows to a LanceDB table.
@@ -1307,9 +1280,6 @@ def declare_table_target(
                     or "user" (table must exist, CocoIndex only manages rows).
         num_transactions_before_optimize: Number of successful row mutation batches
             before scheduling a background ``table.optimize()``.
-        write_batch_size: Optional maximum number of row actions per LanceDB
-            write call. ``None`` disables LanceDB-side chunking, so each
-            batch received from the CocoIndex core is sent as one write.
 
     Returns:
         A TableTarget that can be used to declare rows.
@@ -1321,7 +1291,6 @@ def declare_table_target(
             table_schema,
             managed_by=managed_by,
             num_transactions_before_optimize=num_transactions_before_optimize,
-            write_batch_size=write_batch_size,
         )
     )
     return TableTarget(provider, table_schema)
@@ -1334,7 +1303,6 @@ async def mount_table_target(
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     num_transactions_before_optimize: int = 50,
-    write_batch_size: int | None = None,
 ) -> TableTarget[RowT]:
     """
     Mount a table target and return a ready-to-use TableTarget.
@@ -1348,9 +1316,6 @@ async def mount_table_target(
         managed_by: Whether the table is managed by "system" or "user".
         num_transactions_before_optimize: Number of successful row mutation batches
             before scheduling a background ``table.optimize()``.
-        write_batch_size: Optional maximum number of row actions per LanceDB
-            write call. ``None`` disables LanceDB-side chunking, so each
-            batch received from the CocoIndex core is sent as one write.
 
     Returns:
         A TableTarget that can be used to declare rows.
@@ -1362,7 +1327,6 @@ async def mount_table_target(
             table_schema,
             managed_by=managed_by,
             num_transactions_before_optimize=num_transactions_before_optimize,
-            write_batch_size=write_batch_size,
         )
     )
     return TableTarget(provider, table_schema)
