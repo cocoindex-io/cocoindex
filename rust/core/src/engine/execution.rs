@@ -14,8 +14,8 @@ use crate::engine::context::{
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
-    ChildInvalidation, TargetActionSink as _, TargetActionSinkKeeper, TargetHandler,
-    TargetStateProvider, TargetStateProviderRegistry,
+    ChildInvalidation, TargetActionSinkKeeper, TargetHandler, TargetStateProvider,
+    TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::ChildStablePathSet;
@@ -1604,16 +1604,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // subsequent precommit doesn't see a stale token from this
     // attempt.
     let sink_result: Result<()> = async {
-        let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in actions_by_sinks {
+            let handlers = comp_ctx
+                .app_ctx()
+                .apply_target_actions(Arc::clone(comp_ctx.host_ctx()), sink, input.actions)
+                .await?;
             if let Some(child_providers) = input.child_providers {
-                // Container targets must return child handlers in the same
-                // order as their actions, so they cannot be coalesced with
-                // independent component submits.
-                let handlers = sink
-                    .sink()
-                    .apply(host_runtime_ctx, Arc::clone(comp_ctx.host_ctx()), input.actions)
-                    .await?;
                 let Some(handlers) = handlers else {
                     client_bail!("expect child providers returned by Sink");
                 };
@@ -1639,12 +1635,18 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     }
                 }
             } else {
-                // Leaf target actions have no per-action return value; batch
-                // them across sibling components when they share the sink.
-                comp_ctx
-                    .app_ctx()
-                    .apply_leaf_target_actions(Arc::clone(comp_ctx.host_ctx()), sink, input.actions)
-                    .await?;
+                // Orphan deletes for container targets have no child provider
+                // to fulfill, but their sink still returns an all-None handler
+                // list.
+                if handlers
+                    .into_iter()
+                    .flatten()
+                    .any(|handler| handler.is_some())
+                {
+                    client_bail!(
+                        "target action sink returned child handlers without child providers"
+                    );
+                }
             }
         }
         Ok(())

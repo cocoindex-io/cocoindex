@@ -1,14 +1,20 @@
 use crate::prelude::*;
 
 use crate::{
-    engine::{context::ComponentProcessorContext, profile::EngineProfile},
+    engine::{
+        context::{ComponentProcessorContext, TargetActionBatcher},
+        profile::EngineProfile,
+    },
     state::{
         stable_path::StableKey,
         target_state_path::{TargetStatePath, TargetStateProviderGeneration},
     },
 };
 
-use std::hash::{Hash, Hasher};
+use std::{
+    hash::{Hash, Hasher},
+    sync::OnceLock,
+};
 
 pub struct ChildTargetDef<Prof: EngineProfile> {
     pub handler: Prof::TargetHdl,
@@ -35,13 +41,11 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'stat
     ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
 }
 
-type TargetActionSinkCleanup = Box<dyn Fn() + Send + Sync + 'static>;
-
 /// Owns a target action sink and any cleanup hooks tied to its lifetime.
 pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
     sink: Prof::TargetActionSink,
     reclaimable_key: usize,
-    cleanups: parking_lot::Mutex<Vec<TargetActionSinkCleanup>>,
+    batcher: OnceLock<TargetActionBatcher<Prof>>,
 }
 
 impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
@@ -49,7 +53,7 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         Arc::new(Self {
             reclaimable_key: sink.reclaimable_key(),
             sink,
-            cleanups: parking_lot::Mutex::new(Vec::new()),
+            batcher: OnceLock::new(),
         })
     }
 
@@ -61,16 +65,15 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         self.reclaimable_key
     }
 
-    pub(crate) fn register_cleanup(&self, cleanup: impl Fn() + Send + Sync + 'static) {
-        self.cleanups.lock().push(Box::new(cleanup));
+    pub(crate) fn register_batcher(&self, batcher: TargetActionBatcher<Prof>) {
+        self.batcher.set(batcher).ok();
     }
 }
 
 impl<Prof: EngineProfile> Drop for TargetActionSinkKeeper<Prof> {
     fn drop(&mut self) {
-        let cleanups = std::mem::take(&mut *self.cleanups.lock());
-        for cleanup in cleanups {
-            cleanup();
+        if let Some(batcher) = self.batcher.get() {
+            batcher.remove(self.reclaimable_key);
         }
     }
 }

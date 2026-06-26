@@ -9,7 +9,7 @@ use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{
-    TargetActionSink as _, TargetActionSinkKeeper, TargetStateProvider, TargetStateProviderRegistry,
+    ChildTargetDef, TargetActionSinkKeeper, TargetStateProvider, TargetStateProviderRegistry,
 };
 use crate::prelude::*;
 
@@ -140,12 +140,12 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         self.inner.inflight_semaphore.as_ref()
     }
 
-    pub async fn apply_leaf_target_actions(
+    pub async fn apply_target_actions(
         &self,
         host_ctx: Arc<Prof::HostCtx>,
         sink: Arc<TargetActionSinkKeeper<Prof>>,
         actions: Vec<Prof::TargetAction>,
-    ) -> Result<()> {
+    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
         self.inner
             .target_action_batcher
             .apply(self.env().host_runtime_ctx(), host_ctx, sink, actions)
@@ -185,7 +185,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 }
 
 /// App-level coalescer for leaf target actions that target the same sink.
-struct TargetActionBatcher<Prof: EngineProfile> {
+pub(crate) struct TargetActionBatcher<Prof: EngineProfile> {
     inner: Arc<TargetActionBatcherInner<Prof>>,
 }
 
@@ -194,9 +194,16 @@ struct TargetActionBatcherInner<Prof: EngineProfile> {
 }
 
 struct TargetActionBatcherEntry<Prof: EngineProfile> {
-    keeper_id: usize,
     sink: Weak<TargetActionSinkKeeper<Prof>>,
     batcher: Arc<Batcher<TargetActionRunner<Prof>>>,
+}
+
+impl<Prof: EngineProfile> Clone for TargetActionBatcher<Prof> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
@@ -208,25 +215,25 @@ impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
         }
     }
 
+    pub(crate) fn remove(&self, key: usize) {
+        self.inner.batchers.lock().unwrap().remove(&key);
+    }
+
     async fn apply(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
         sink: Arc<TargetActionSinkKeeper<Prof>>,
         actions: Vec<Prof::TargetAction>,
-    ) -> Result<()> {
+    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
         if actions.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let key = sink.reclaimable_key();
-        let keeper_id = Arc::as_ptr(&sink) as usize;
         let batcher = {
             let mut batchers = self.inner.batchers.lock().unwrap();
             if let Some(entry) = batchers.get(&key)
-                && entry
-                    .sink
-                    .upgrade()
-                    .is_some_and(|existing| existing.reclaimable_key() == key)
+                && entry.sink.upgrade().is_some()
             {
                 Arc::clone(&entry.batcher)
             } else {
@@ -241,27 +248,11 @@ impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
                 batchers.insert(
                     key,
                     TargetActionBatcherEntry {
-                        keeper_id,
                         sink: Arc::downgrade(&sink),
                         batcher: Arc::clone(&batcher),
                     },
                 );
-
-                let weak_inner = Arc::downgrade(&self.inner);
-                sink.register_cleanup(move || {
-                    if let Some(inner) = weak_inner.upgrade() {
-                        let mut batchers = inner.batchers.lock().unwrap();
-                        // The reclaimable key may be reused after this sink is
-                        // gone, so only remove the entry still owned by this
-                        // keeper allocation.
-                        if batchers
-                            .get(&key)
-                            .is_some_and(|entry| entry.keeper_id == keeper_id)
-                        {
-                            batchers.remove(&key);
-                        }
-                    }
-                });
+                sink.register_batcher(self.clone());
 
                 batcher
             }
@@ -283,47 +274,56 @@ struct TargetActionRunner<Prof: EngineProfile> {
 #[async_trait]
 impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
     type Input = TargetActionRunnerInput<Prof>;
-    type Output = ();
+    type Output = Option<Vec<Option<ChildTargetDef<Prof>>>>;
 
-    async fn run(&self, inputs: Vec<Self::Input>) -> Result<impl ExactSizeIterator<Item = ()>> {
+    async fn run(
+        &self,
+        inputs: Vec<Self::Input>,
+    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
         let num_inputs = inputs.len();
         let mut input_iter = inputs.into_iter();
         let Some(first_input) = input_iter.next() else {
             return Ok(Vec::new().into_iter());
         };
         let TargetActionRunnerInput { sink, mut actions } = first_input;
+        let mut action_counts = Vec::with_capacity(num_inputs);
+        action_counts.push(actions.len());
         // Each input is one component's reconciled actions; the sink wants one
         // flat action list for the external write.
         for mut input in input_iter {
+            action_counts.push(input.actions.len());
             actions.append(&mut input.actions);
         }
 
         let actions_len = actions.len();
-        sink.sink()
-            .apply(&self.host_runtime_ctx, Arc::clone(&self.host_ctx), actions)
-            .await
-            .and_then(|handlers| {
-                if let Some(handlers) = handlers {
-                    if handlers.len() != actions_len {
-                        client_bail!(
-                            "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                            actions_len,
-                            handlers.len(),
-                        );
-                    }
-                    // Orphan deletes for container targets have no child
-                    // provider to fulfill, but their sink still returns an
-                    // all-None handler list.
-                    if handlers.into_iter().any(|handler| handler.is_some()) {
-                        client_bail!(
-                            "target action sink returned child handlers without child providers"
-                        );
-                    }
-                }
-                Ok(())
-            })?;
+        let handlers = crate::engine::target_state::TargetActionSink::apply(
+            sink.sink(),
+            &self.host_runtime_ctx,
+            Arc::clone(&self.host_ctx),
+            actions,
+        )
+        .await?;
 
-        Ok(vec![(); num_inputs].into_iter())
+        let outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> = if let Some(handlers) =
+            handlers
+        {
+            if handlers.len() != actions_len {
+                client_bail!(
+                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
+                    actions_len,
+                    handlers.len(),
+                );
+            }
+            let mut handlers = handlers.into_iter();
+            action_counts
+                .into_iter()
+                .map(|count| Some(handlers.by_ref().take(count).collect()))
+                .collect()
+        } else {
+            std::iter::repeat_with(|| None).take(num_inputs).collect()
+        };
+
+        Ok(outputs.into_iter())
     }
 }
 
