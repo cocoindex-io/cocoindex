@@ -496,9 +496,7 @@ impl AppStore {
                         app_store.delete_all_fn_memos(wtxn, &component_path).await?;
                     }
                     for fp in &plan.fn_memo_deletes {
-                        app_store
-                            .delete_fn_memo(wtxn, &component_path, *fp)
-                            .await?;
+                        app_store.delete_fn_memo(wtxn, &component_path, *fp).await?;
                     }
                     for (fp, bytes) in &plan.fn_memo_writes {
                         app_store
@@ -522,13 +520,7 @@ impl AppStore {
                     }
                     for (key, bytes) in &plan.user_state_writes {
                         app_store
-                            .write_user_state(
-                                wtxn,
-                                &component_path,
-                                StateKind::Regular,
-                                key,
-                                bytes,
-                            )
+                            .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
                             .await?;
                     }
                     existence_reconciler(wtxn).await?;
