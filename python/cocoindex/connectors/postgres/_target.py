@@ -13,6 +13,7 @@ import datetime
 import decimal
 import ipaddress
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from typing import (
     NamedTuple,
     Sequence,
 )
+
 
 from typing_extensions import TypeVar
 
@@ -55,6 +57,8 @@ import msgspec
 
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+
+logger = logging.getLogger(__name__)
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -1140,18 +1144,27 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 # inside a savepoint; if it fails, fall back to drop+add.
                 try:
                     async with conn.transaction():
-                        nullable = "" if desired_col.nullable else " NOT NULL"
+                        set_null = (
+                            "DROP NOT NULL" if desired_col.nullable else "SET NOT NULL"
+                        )
                         await conn.execute(
                             f"ALTER TABLE {qualified_name} "
-                            f'ALTER COLUMN "{col_name}" TYPE {desired_col.type}{nullable}'
+                            f'ALTER COLUMN "{col_name}" TYPE {desired_col.type}, '
+                            f'ALTER COLUMN "{col_name}" {set_null}'
                         )
                 except asyncpg.PostgresError:
+                    logger.warning(
+                        f"PostgreSQL type conversion for column {col_name!r} failed. "
+                        f"Recreating column. Existing data will be lost."
+                    )
+
+                    nullable = "" if desired_col.nullable else " NOT NULL"
                     await conn.execute(
                         f'ALTER TABLE {qualified_name} DROP COLUMN IF EXISTS "{col_name}"'
                     )
                     await conn.execute(
                         f"ALTER TABLE {qualified_name} "
-                        f'ADD COLUMN "{col_name}" {desired_col.type}'
+                        f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
                     )
 
     def reconcile(
