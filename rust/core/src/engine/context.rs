@@ -6,9 +6,7 @@ use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup}
 use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
-use crate::engine::target_state::{
-    ChildTargetDef, TargetActionSinkKeeper, TargetStateProvider, TargetStateProviderRegistry,
-};
+use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
 use crate::state::stable_path::StableKey;
@@ -134,16 +132,6 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
     pub fn inflight_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
         self.inner.inflight_semaphore.as_ref()
-    }
-
-    pub async fn apply_target_actions(
-        &self,
-        host_ctx: Arc<Prof::HostCtx>,
-        sink: TargetActionSinkKeeper<Prof>,
-        actions: Vec<Prof::TargetAction>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
-        sink.apply(self.env().host_runtime_ctx(), host_ctx, actions)
-            .await
     }
 
     /// Returns a clone of the current app-level cancellation token.

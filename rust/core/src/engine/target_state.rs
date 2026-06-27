@@ -34,6 +34,7 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
 }
 
 /// Cloneable handle to a target action sink and its per-sink batcher.
+#[derive(Clone)]
 pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
     inner: Arc<TargetActionSinkKeeperInner<Prof>>,
 }
@@ -41,14 +42,6 @@ pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
 struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
     sink: Prof::TargetActionSink,
     batcher: Batcher<TargetActionRunner<Prof>>,
-}
-
-impl<Prof: EngineProfile> Clone for TargetActionSinkKeeper<Prof> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
 }
 
 impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {

@@ -98,8 +98,8 @@ fn recording_sink_with_batch_sizes(
         let batch_sizes = batch_sizes.clone();
         async move {
             batch_sizes.lock().unwrap().push(actions.len());
-            // Keep the first sink call in flight long enough for sibling
-            // components to queue behind the shared target-action batcher.
+            // Keep sink calls in flight long enough for sibling components to
+            // queue behind the shared target-action batcher.
             sleep(Duration::from_millis(20)).await;
             let mut log = log.lock().unwrap();
             for action in actions {

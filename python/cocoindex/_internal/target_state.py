@@ -141,7 +141,7 @@ class AsyncTargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
 
 
 class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
-    __slots__ = ("_core", "__weakref__")
+    __slots__ = ("_core",)
     _core: core.TargetActionSink
 
     def __init__(self, core_action_sink: core.TargetActionSink):
