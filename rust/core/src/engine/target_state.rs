@@ -1,19 +1,17 @@
 use crate::prelude::*;
 
 use crate::{
-    engine::{
-        context::{ComponentProcessorContext, TargetActionBatcher},
-        profile::EngineProfile,
-    },
+    engine::{context::ComponentProcessorContext, profile::EngineProfile},
     state::{
         stable_path::StableKey,
         target_state_path::{TargetStatePath, TargetStateProviderGeneration},
     },
 };
 
+use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use std::{
     hash::{Hash, Hasher},
-    sync::OnceLock,
+    marker::PhantomData,
 };
 
 pub struct ChildTargetDef<Prof: EngineProfile> {
@@ -21,14 +19,8 @@ pub struct ChildTargetDef<Prof: EngineProfile> {
 }
 
 #[async_trait]
-pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
+pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
-
-    /// Reclaimable identity key used for in-process batching.
-    ///
-    /// The key may be derived from an underlying callback or closure address, so
-    /// it is only valid while the sink itself is alive.
-    fn reclaimable_key(&self) -> usize;
 
     /// Run the logic to apply the action.
     ///
@@ -41,48 +33,66 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'stat
     ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
 }
 
-/// Owns a target action sink and any cleanup hooks tied to its lifetime.
+/// Cloneable handle to a target action sink and its per-sink batcher.
 pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
+    inner: Arc<TargetActionSinkKeeperInner<Prof>>,
+}
+
+struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
     sink: Prof::TargetActionSink,
-    reclaimable_key: usize,
-    batcher: OnceLock<TargetActionBatcher<Prof>>,
+    batcher: Batcher<TargetActionRunner<Prof>>,
+}
+
+impl<Prof: EngineProfile> Clone for TargetActionSinkKeeper<Prof> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
-    pub fn new(sink: Prof::TargetActionSink) -> Arc<Self> {
-        Arc::new(Self {
-            reclaimable_key: sink.reclaimable_key(),
-            sink,
-            batcher: OnceLock::new(),
-        })
+    pub fn new(sink: Prof::TargetActionSink) -> Self {
+        Self {
+            inner: Arc::new(TargetActionSinkKeeperInner {
+                sink,
+                batcher: Batcher::new(
+                    TargetActionRunner(PhantomData),
+                    Arc::new(BatchQueue::new()),
+                    BatchingOptions::default(),
+                ),
+            }),
+        }
     }
 
     pub fn sink(&self) -> &Prof::TargetActionSink {
-        &self.sink
+        &self.inner.sink
     }
 
-    pub fn reclaimable_key(&self) -> usize {
-        self.reclaimable_key
-    }
-
-    pub(crate) fn register_batcher(&self, batcher: TargetActionBatcher<Prof>) {
-        self.batcher.set(batcher).ok();
-    }
-}
-
-impl<Prof: EngineProfile> Drop for TargetActionSinkKeeper<Prof> {
-    fn drop(&mut self) {
-        if let Some(batcher) = self.batcher.get() {
-            batcher.remove(self.reclaimable_key);
+    pub(crate) async fn apply(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: Vec<Prof::TargetAction>,
+    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
+        if actions.is_empty() {
+            return Ok(None);
         }
+        self.inner
+            .batcher
+            .run(TargetActionRunnerInput {
+                keeper: self.clone(),
+                host_runtime_ctx: host_runtime_ctx.clone(),
+                host_ctx,
+                actions,
+            })
+            .await
     }
 }
 
 impl<Prof: EngineProfile> PartialEq for TargetActionSinkKeeper<Prof> {
     fn eq(&self, other: &Self) -> bool {
-        // Preserve the pre-existing sink grouping semantics: clones/wrappers
-        // around the same live callback share the same reclaimable key.
-        self.reclaimable_key == other.reclaimable_key
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
@@ -90,7 +100,74 @@ impl<Prof: EngineProfile> Eq for TargetActionSinkKeeper<Prof> {}
 
 impl<Prof: EngineProfile> Hash for TargetActionSinkKeeper<Prof> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.reclaimable_key.hash(state);
+        Arc::as_ptr(&self.inner).hash(state);
+    }
+}
+
+struct TargetActionRunnerInput<Prof: EngineProfile> {
+    keeper: TargetActionSinkKeeper<Prof>,
+    host_runtime_ctx: Prof::HostRuntimeCtx,
+    host_ctx: Arc<Prof::HostCtx>,
+    actions: Vec<Prof::TargetAction>,
+}
+
+struct TargetActionRunner<Prof: EngineProfile>(PhantomData<fn() -> Prof>);
+
+#[async_trait]
+impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
+    type Input = TargetActionRunnerInput<Prof>;
+    type Output = Option<Vec<Option<ChildTargetDef<Prof>>>>;
+
+    async fn run(
+        &self,
+        inputs: Vec<Self::Input>,
+    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
+        let num_inputs = inputs.len();
+        let mut input_iter = inputs.into_iter();
+        let Some(first_input) = input_iter.next() else {
+            return Ok(Vec::new().into_iter());
+        };
+        let TargetActionRunnerInput {
+            keeper,
+            host_runtime_ctx,
+            host_ctx,
+            mut actions,
+        } = first_input;
+        let mut action_counts = Vec::with_capacity(num_inputs);
+        action_counts.push(actions.len());
+        // Each input is one component's reconciled actions; the sink wants one
+        // flat action list for the external write.
+        for mut input in input_iter {
+            action_counts.push(input.actions.len());
+            actions.append(&mut input.actions);
+        }
+
+        let actions_len = actions.len();
+        let handlers = keeper
+            .sink()
+            .apply(&host_runtime_ctx, host_ctx, actions)
+            .await?;
+
+        let outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> = if let Some(handlers) =
+            handlers
+        {
+            if handlers.len() != actions_len {
+                client_bail!(
+                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
+                    actions_len,
+                    handlers.len(),
+                );
+            }
+            let mut handlers = handlers.into_iter();
+            action_counts
+                .into_iter()
+                .map(|count| Some(handlers.by_ref().take(count).collect()))
+                .collect()
+        } else {
+            std::iter::repeat_with(|| None).take(num_inputs).collect()
+        };
+
+        Ok(outputs.into_iter())
     }
 }
 
@@ -102,7 +179,7 @@ pub enum ChildInvalidation {
 
 pub struct TargetReconcileOutput<Prof: EngineProfile> {
     pub action: Prof::TargetAction,
-    pub sink: Arc<TargetActionSinkKeeper<Prof>>,
+    pub sink: TargetActionSinkKeeper<Prof>,
     pub tracking_record: Option<Prof::TargetStateTrackingRecord>,
     pub child_invalidation: Option<ChildInvalidation>,
 }

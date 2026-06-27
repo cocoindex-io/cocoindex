@@ -183,7 +183,7 @@ impl ChildTargetDef {
 
 #[derive(Clone)]
 pub struct TargetActionSink<A> {
-    inner: Arc<TargetActionSinkKeeper<RustProfile>>,
+    inner: TargetActionSinkKeeper<RustProfile>,
     _action: PhantomData<fn() -> A>,
 }
 

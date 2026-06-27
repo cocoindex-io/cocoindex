@@ -621,7 +621,7 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 struct PreCommitOutput<Prof: EngineProfile> {
     curr_version: Option<u64>,
     previously_exists: bool,
-    actions_by_sinks: HashMap<Arc<TargetActionSinkKeeper<Prof>>, SinkInput<Prof>>,
+    actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
     /// Name of the processor to be deleted; caller passes it to `collect_processor_name_name_for_del`.
     processor_name_for_del: Option<String>,
     /// Provider generations to apply (via
@@ -694,7 +694,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     prior_owners: BTreeMap<TargetStatePath, Option<StablePath>>,
     preempted_owner_states: BTreeMap<StablePath, OwnerStateForPreempt>,
 ) -> Result<PreCommitOutcome<Prof>> {
-    let mut actions_by_sinks = HashMap::<Arc<TargetActionSinkKeeper<Prof>>, SinkInput<Prof>>::new();
+    let mut actions_by_sinks = HashMap::<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>::new();
     let mut processor_name_for_del: Option<String> = None;
 
     // Flatten `prior_owners` to drop `None` entries (paths with no

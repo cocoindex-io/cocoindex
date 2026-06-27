@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Weak;
 
-use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
@@ -39,7 +37,6 @@ struct AppContextInner<Prof: EngineProfile> {
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
-    target_action_batcher: TargetActionBatcher<Prof>,
     /// Cancellation token for in-flight app operations. Wrapped in a `Mutex` so
     /// it can be replaced with a fresh child of the global token after a
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
@@ -80,7 +77,6 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
-                target_action_batcher: TargetActionBatcher::new(),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
@@ -143,12 +139,10 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     pub async fn apply_target_actions(
         &self,
         host_ctx: Arc<Prof::HostCtx>,
-        sink: Arc<TargetActionSinkKeeper<Prof>>,
+        sink: TargetActionSinkKeeper<Prof>,
         actions: Vec<Prof::TargetAction>,
     ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
-        self.inner
-            .target_action_batcher
-            .apply(self.env().host_runtime_ctx(), host_ctx, sink, actions)
+        sink.apply(self.env().host_runtime_ctx(), host_ctx, actions)
             .await
     }
 
@@ -181,149 +175,6 @@ impl<Prof: EngineProfile> AppContext<Prof> {
             .id_sequencer_manager
             .next_id(self.inner.env.storage(), &self.inner.app_store, key)
             .await
-    }
-}
-
-/// App-level coalescer for leaf target actions that target the same sink.
-pub(crate) struct TargetActionBatcher<Prof: EngineProfile> {
-    inner: Arc<TargetActionBatcherInner<Prof>>,
-}
-
-struct TargetActionBatcherInner<Prof: EngineProfile> {
-    batchers: std::sync::Mutex<HashMap<usize, TargetActionBatcherEntry<Prof>>>,
-}
-
-struct TargetActionBatcherEntry<Prof: EngineProfile> {
-    sink: Weak<TargetActionSinkKeeper<Prof>>,
-    batcher: Arc<Batcher<TargetActionRunner<Prof>>>,
-}
-
-impl<Prof: EngineProfile> Clone for TargetActionBatcher<Prof> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl<Prof: EngineProfile> TargetActionBatcher<Prof> {
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(TargetActionBatcherInner {
-                batchers: std::sync::Mutex::new(HashMap::new()),
-            }),
-        }
-    }
-
-    pub(crate) fn remove(&self, key: usize) {
-        self.inner.batchers.lock().unwrap().remove(&key);
-    }
-
-    async fn apply(
-        &self,
-        host_runtime_ctx: &Prof::HostRuntimeCtx,
-        host_ctx: Arc<Prof::HostCtx>,
-        sink: Arc<TargetActionSinkKeeper<Prof>>,
-        actions: Vec<Prof::TargetAction>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
-        if actions.is_empty() {
-            return Ok(None);
-        }
-        let key = sink.reclaimable_key();
-        let batcher = {
-            let mut batchers = self.inner.batchers.lock().unwrap();
-            if let Some(entry) = batchers.get(&key)
-                && entry.sink.upgrade().is_some()
-            {
-                Arc::clone(&entry.batcher)
-            } else {
-                let batcher = Arc::new(Batcher::new(
-                    TargetActionRunner {
-                        host_runtime_ctx: host_runtime_ctx.clone(),
-                        host_ctx,
-                    },
-                    Arc::new(BatchQueue::new()),
-                    BatchingOptions::default(),
-                ));
-                batchers.insert(
-                    key,
-                    TargetActionBatcherEntry {
-                        sink: Arc::downgrade(&sink),
-                        batcher: Arc::clone(&batcher),
-                    },
-                );
-                sink.register_batcher(self.clone());
-
-                batcher
-            }
-        };
-        batcher.run(TargetActionRunnerInput { sink, actions }).await
-    }
-}
-
-struct TargetActionRunnerInput<Prof: EngineProfile> {
-    sink: Arc<TargetActionSinkKeeper<Prof>>,
-    actions: Vec<Prof::TargetAction>,
-}
-
-struct TargetActionRunner<Prof: EngineProfile> {
-    host_runtime_ctx: Prof::HostRuntimeCtx,
-    host_ctx: Arc<Prof::HostCtx>,
-}
-
-#[async_trait]
-impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
-    type Input = TargetActionRunnerInput<Prof>;
-    type Output = Option<Vec<Option<ChildTargetDef<Prof>>>>;
-
-    async fn run(
-        &self,
-        inputs: Vec<Self::Input>,
-    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
-        let num_inputs = inputs.len();
-        let mut input_iter = inputs.into_iter();
-        let Some(first_input) = input_iter.next() else {
-            return Ok(Vec::new().into_iter());
-        };
-        let TargetActionRunnerInput { sink, mut actions } = first_input;
-        let mut action_counts = Vec::with_capacity(num_inputs);
-        action_counts.push(actions.len());
-        // Each input is one component's reconciled actions; the sink wants one
-        // flat action list for the external write.
-        for mut input in input_iter {
-            action_counts.push(input.actions.len());
-            actions.append(&mut input.actions);
-        }
-
-        let actions_len = actions.len();
-        let handlers = crate::engine::target_state::TargetActionSink::apply(
-            sink.sink(),
-            &self.host_runtime_ctx,
-            Arc::clone(&self.host_ctx),
-            actions,
-        )
-        .await?;
-
-        let outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> = if let Some(handlers) =
-            handlers
-        {
-            if handlers.len() != actions_len {
-                client_bail!(
-                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                    actions_len,
-                    handlers.len(),
-                );
-            }
-            let mut handlers = handlers.into_iter();
-            action_counts
-                .into_iter()
-                .map(|count| Some(handlers.by_ref().take(count).collect()))
-                .collect()
-        } else {
-            std::iter::repeat_with(|| None).take(num_inputs).collect()
-        };
-
-        Ok(outputs.into_iter())
     }
 }
 

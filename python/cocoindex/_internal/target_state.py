@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import (
     Collection,
+    Callable,
     Generic,
     Literal,
     NamedTuple,
@@ -11,7 +12,6 @@ from typing import (
     TypeAlias,
     overload,
 )
-import threading
 import weakref
 from typing_extensions import TypeVar
 
@@ -141,7 +141,7 @@ class AsyncTargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
 
 
 class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
-    __slots__ = ("_core",)
+    __slots__ = ("_core", "__weakref__")
     _core: core.TargetActionSink
 
     def __init__(self, core_action_sink: core.TargetActionSink):
@@ -151,38 +151,82 @@ class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
     def from_fn(
         fn: TargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
     ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
-        canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
-        return TargetActionSink(core.TargetActionSink.new_sync(canonical))
+        return _get_cached_sink(fn, "sync", core.TargetActionSink.new_sync)
 
     @staticmethod
     def from_async_fn(
         fn: AsyncTargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
     ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
-        canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
-        return TargetActionSink(core.TargetActionSink.new_async(canonical))
+        return _get_cached_sink(fn, "async", core.TargetActionSink.new_async)
 
 
-class _ObjectDeduper:
-    __slots__ = ("_lock", "_map")
-    _lock: threading.Lock
-    _map: weakref.WeakValueDictionary[Any, Any]
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._map = weakref.WeakValueDictionary()
-
-    def get_canonical(self, obj: Any) -> Any:
-        with self._lock:
-            value = self._map.get(obj)
-            if value is not None:
-                return value
-
-            self._map[obj] = obj
-            return obj
+_SINK_CACHE_ATTR = "_cocoindex_target_action_sinks"
 
 
-_SYNC_FN_DEDUPER = _ObjectDeduper()
-_ASYNC_FN_DEDUPER = _ObjectDeduper()
+def _get_cached_sink(
+    fn: Any,
+    mode: Literal["sync", "async"],
+    new_core: Callable[[Any], core.TargetActionSink],
+) -> TargetActionSink[Any, Any]:
+    """Reuse one core sink per callable owner so the Rust-side batcher is shared."""
+    owner = getattr(fn, "__self__", None)
+    func = getattr(fn, "__func__", None)
+    cache_key = (mode, func) if owner is not None and func is not None else (mode, None)
+    if owner is None:
+        owner = fn
+        func = None
+
+    try:
+        owner_ref = weakref.ref(owner)
+    except TypeError:
+        return TargetActionSink(new_core(fn))
+
+    cache = getattr(owner, _SINK_CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        try:
+            setattr(owner, _SINK_CACHE_ATTR, cache)
+        except (AttributeError, TypeError):
+            return TargetActionSink(new_core(fn))
+
+    value = cache.get(cache_key)
+    if value is None:
+        callback = _make_weak_sink_callback(owner_ref, func, mode)
+        value = TargetActionSink(new_core(callback))
+        cache[cache_key] = value
+    return value
+
+
+def _make_weak_sink_callback(
+    owner_ref: weakref.ReferenceType[Any],
+    func: Any,
+    mode: Literal["sync", "async"],
+) -> Any:
+    if mode == "sync":
+
+        def sync_callback(
+            context_provider: ContextProvider, actions: Sequence[Any]
+        ) -> Any:
+            owner = owner_ref()
+            if owner is None:
+                raise RuntimeError("target action sink owner has been released")
+            if func is None:
+                return owner(context_provider, actions)
+            return func(owner, context_provider, actions)
+
+        return sync_callback
+
+    async def async_callback(
+        context_provider: ContextProvider, actions: Sequence[Any]
+    ) -> Any:
+        owner = owner_ref()
+        if owner is None:
+            raise RuntimeError("target action sink owner has been released")
+        if func is None:
+            return await owner(context_provider, actions)
+        return await func(owner, context_provider, actions)
+
+    return async_callback
 
 
 class TargetReconcileOutput(

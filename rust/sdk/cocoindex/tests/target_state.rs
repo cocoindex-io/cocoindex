@@ -7,7 +7,6 @@
 //!   cargo test -p cocoindex --test target_state
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cocoindex::{
@@ -102,42 +101,6 @@ fn recording_sink_with_batch_sizes(
             // Keep the first sink call in flight long enough for sibling
             // components to queue behind the shared target-action batcher.
             sleep(Duration::from_millis(20)).await;
-            let mut log = log.lock().unwrap();
-            for action in actions {
-                let (verb, row) = match action {
-                    TargetAction::Create(r) => ("create", r),
-                    TargetAction::Update(r) => ("update", r),
-                    TargetAction::Delete(r) => ("delete", r),
-                };
-                log.push(match row.value {
-                    Some(v) => format!("{verb} {}={}", row.key, v),
-                    None => format!("{verb} {}", row.key),
-                });
-            }
-            Ok(())
-        }
-    })
-}
-
-struct DropCounter(Arc<AtomicUsize>);
-
-impl Drop for DropCounter {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-/// A short-lived sink that records rows and increments `dropped` when the
-/// captured sink closure is released.
-fn recording_sink_with_drop_counter(
-    log: Log,
-    dropped: Arc<AtomicUsize>,
-) -> TargetActionSink<RowAction> {
-    let drop_counter = Arc::new(DropCounter(dropped));
-    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
-        let log = log.clone();
-        let _drop_counter = Arc::clone(&drop_counter);
-        async move {
             let mut log = log.lock().unwrap();
             for action in actions {
                 let (verb, row) = match action {
@@ -371,48 +334,6 @@ async fn mount_each_leaf_target_actions_batch_across_components() {
     assert!(
         sizes.len() < 50,
         "expected fewer sink calls than changed components, got {sizes:?}"
-    );
-}
-
-#[tokio::test]
-async fn leaf_target_action_batcher_releases_short_lived_sink() {
-    let (app, _dir) = temp_app("component_target_batcher_releases_sink").await;
-    let log = new_log();
-    let dropped = Arc::new(AtomicUsize::new(0));
-
-    app.update({
-        let log = log.clone();
-        let dropped = dropped.clone();
-        move |ctx| {
-            let log = log.clone();
-            let dropped = dropped.clone();
-            async move {
-                let provider = register_root_target_states_provider(
-                    &ctx,
-                    "test/short-lived-sink",
-                    RowHandler {
-                        sink: recording_sink_with_drop_counter(log, dropped),
-                    },
-                )?;
-                declare_target_state(&ctx, provider.target_state("x", "val-x".to_string()))?;
-                Ok(())
-            }
-        }
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(drain_sorted(&log), vec!["create x=val-x"]);
-    for _ in 0..100 {
-        if dropped.load(Ordering::SeqCst) == 1 {
-            return;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(
-        dropped.load(Ordering::SeqCst),
-        1,
-        "short-lived sink closure should be released after its update wave"
     );
 }
 

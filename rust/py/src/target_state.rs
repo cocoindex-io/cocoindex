@@ -1,4 +1,3 @@
-use std::hash::{Hash, Hasher};
 use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
 
@@ -19,11 +18,10 @@ use crate::value::PyStoredValue;
 #[pyclass(name = "TargetActionSink")]
 #[derive(Clone)]
 pub struct PyTargetActionSink {
-    keeper: Arc<TargetActionSinkKeeper<PyEngineProfile>>,
+    keeper: TargetActionSinkKeeper<PyEngineProfile>,
 }
 
 pub struct PyTargetActionSinkInner {
-    key: usize,
     callback: PyCallback,
 }
 
@@ -32,7 +30,6 @@ impl PyTargetActionSink {
     #[staticmethod]
     pub fn new_sync(callback: Py<PyAny>) -> Self {
         let inner = PyTargetActionSinkInner {
-            key: callback.as_ptr() as usize,
             callback: PyCallback::Sync(Arc::new(callback)),
         };
         Self {
@@ -43,26 +40,11 @@ impl PyTargetActionSink {
     #[staticmethod]
     pub fn new_async(callback: Py<PyAny>) -> Self {
         let inner = PyTargetActionSinkInner {
-            key: callback.as_ptr() as usize,
             callback: PyCallback::Async(Arc::new(callback)),
         };
         Self {
             keeper: TargetActionSinkKeeper::new(inner),
         }
-    }
-}
-
-impl PartialEq for PyTargetActionSinkInner {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
-    }
-}
-
-impl Eq for PyTargetActionSinkInner {}
-
-impl Hash for PyTargetActionSinkInner {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.key.hash(state);
     }
 }
 
@@ -74,10 +56,6 @@ fn get_core_field(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 
 #[async_trait]
 impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
-    fn reclaimable_key(&self) -> usize {
-        self.key
-    }
-
     async fn apply(
         &self,
         host_runtime_ctx: &PyAsyncContext,
