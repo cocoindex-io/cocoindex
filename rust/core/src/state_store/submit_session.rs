@@ -688,6 +688,13 @@ pub async fn reconcile_child_existence<'a>(
                                 path: level.path.concat_part(curr_key.clone()),
                                 child_path_set: Some(curr_dir_set),
                             });
+                        } else if existing_info.node_type == StablePathNodeType::Directory
+                            && new_node_type == StablePathNodeType::Component
+                        {
+                            queue.push_back(Level {
+                                path: level.path.concat_part(curr_key.clone()),
+                                child_path_set: None,
+                            });
                         }
                         curr_next = curr_iter.next();
                         existing_next = existing_iter.next();

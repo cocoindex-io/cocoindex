@@ -1187,3 +1187,64 @@ def test_preview_rejects_child_target_providers() -> None:
     _source_data["D1"] = {"a": 1}
     with pytest.raises(Exception, match="child target providers"):
         app.update_blocking(preview=True)
+
+
+##################################################################################
+# Test: Directory -> Component transition child existence reconciliation
+##################################################################################
+
+_transition_to_component_mode = False
+
+
+@coco.fn
+async def _dummy_leaf_component() -> None:
+    pass
+
+
+async def _declare_transition_to_component() -> None:
+    with coco.component_subpath("transition_test"):
+        if not _transition_to_component_mode:
+            single_dict_provider = await coco.mount_target(
+                DictsTarget.dict_target("D1")
+            )
+            for key, value in _mount_target_source_data.get("D1", {}).items():
+                coco.declare_target_state(single_dict_provider.target_state(key, value))
+        else:
+            await coco.mount(coco.component_subpath("D1"), _dummy_leaf_component)
+
+
+def test_directory_to_component_transition() -> None:
+    global _transition_to_component_mode
+    DictsTarget.store.clear()
+    _mount_target_source_data.clear()
+    _transition_to_component_mode = False
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_directory_to_component_transition", environment=coco_env
+        ),
+        _declare_transition_to_component,
+    )
+
+    _mount_target_source_data["D1"] = {"a": 1, "b": 2}
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+
+    # Transition from Directory target to Component mount
+    _transition_to_component_mode = True
+    app.update_blocking()
+
+    # The old children should be deleted from the target state
+    assert DictsTarget.store.data == {}
+
+    # Verify stable paths reflect the component is still there, but children are gone
+    paths = coco_inspect.list_stable_paths_sync(app)
+    assert coco.ROOT_PATH in paths
+    assert coco.ROOT_PATH / "transition_test" in paths
+    assert coco.ROOT_PATH / "transition_test" / "D1" in paths
+    assert coco.ROOT_PATH / "transition_test" / "D1" / "a" not in paths

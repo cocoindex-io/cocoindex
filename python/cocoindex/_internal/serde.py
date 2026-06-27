@@ -459,13 +459,15 @@ def serialize(value: Any) -> bytes:
 
 
 @functools.cache
-def _get_deserialize_fn(type_hint: Any) -> DeserializeFn:
-    return make_deserialize_fn(type_hint)
+def get_deserialize_fn(
+    type_hint: Any, source_label: str | None = None
+) -> DeserializeFn:
+    return make_deserialize_fn(type_hint, source_label=source_label)
 
 
 def deserialize(data: bytes, type_hint: Any = Any) -> Any:
     """Deserialize data using the routing-byte protocol."""
-    return _get_deserialize_fn(type_hint)(data)
+    return get_deserialize_fn(type_hint)(data)
 
 
 # ---------------------------------------------------------------------------

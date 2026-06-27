@@ -187,6 +187,21 @@ class FilterDoc:
     embedding: _Embedding
 
 
+@dataclass
+class FtsDoc:
+    id: str
+    body: Annotated[str, zc.ZvecFtsType()]
+    embedding: _Embedding
+
+
+@dataclass
+class FtsTunedDoc:
+    id: str
+    # Deliberately different FTS config from FtsDoc (different tokenizer + filters).
+    body: Annotated[str, zc.ZvecFtsType(tokenizer_name="whitespace", filters=())]
+    embedding: _Embedding
+
+
 # =============================================================================
 # Mutable per-test source state
 # =============================================================================
@@ -344,7 +359,7 @@ def test_dense_vector(conn: Any) -> None:
 
     col = conn.open_existing("test_dense")
     results = col.query(
-        zvec.VectorQuery(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]),
+        zvec.Query(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]),
         topk=5,
     )
     assert [d.id for d in results] == ["1"]
@@ -363,9 +378,68 @@ def test_sparse_vector(conn: Any) -> None:
 
     col = conn.open_existing("test_sparse")
     results = col.query(
-        zvec.VectorQuery(field_name="sparse", vector={1: 0.5, 7: 0.9}), topk=5
+        zvec.Query(field_name="sparse", vector={1: 0.5, 7: 0.9}), topk=5
     )
     assert [d.id for d in results] == ["1"]
+
+
+def test_fts_field(conn: Any) -> None:
+    _reset(FtsDoc, "test_fts")
+    app = _make_app(conn, "test_fts_field")
+
+    _rows.extend(
+        [
+            FtsDoc(id="1", body="the quick brown fox", embedding=_EMB),
+            FtsDoc(id="2", body="a slow green turtle", embedding=_EMB),
+        ]
+    )
+    app.update_blocking()
+
+    # The string value is stored as an ordinary field.
+    assert fetch_doc(conn, "test_fts", "1").fields["body"] == "the quick brown fox"
+
+    # The field is full-text indexed: an FTS match on a tokenized term hits only doc 1.
+    col = conn.open_existing("test_fts")
+    results = col.query(
+        zvec.Query(field_name="body", fts=zvec.Fts(match_string="fox")), topk=5
+    )
+    assert [d.id for d in results] == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_fts_requires_str(conn: Any) -> None:
+    @dataclass
+    class BadFtsDoc:
+        id: str
+        count: Annotated[int, zc.ZvecFtsType()]
+        embedding: _Embedding
+
+    with pytest.raises(ValueError, match="ZvecFtsType"):
+        await zc.CollectionSchema.from_class(BadFtsDoc, primary_key=["id"])
+
+
+@pytest.mark.asyncio
+async def test_fts_config_change_differs_in_tracking(conn: Any) -> None:
+    # A change to FTS config (tokenizer/filters) must change the tracking record,
+    # so the collection is rebuilt rather than silently keeping the old index.
+    from cocoindex.connectors.zvec import _target as _zt
+
+    s_default = await zc.CollectionSchema.from_class(FtsDoc, primary_key=["id"])
+    s_tuned = await zc.CollectionSchema.from_class(FtsTunedDoc, primary_key=["id"])
+
+    default_col = s_default.columns["body"]
+    tuned_col = s_tuned.columns["body"]
+    assert default_col.kind == "fts" and tuned_col.kind == "fts"
+    assert (default_col.tokenizer_name, default_col.filters) == (
+        "standard",
+        ("lowercase",),
+    )
+    assert (tuned_col.tokenizer_name, tuned_col.filters) == ("whitespace", ())
+
+    # The tracking record (used for change detection) must reflect the difference.
+    core_default = _zt._tracking_core_from_spec(_zt._CollectionSpec(schema=s_default))
+    core_tuned = _zt._tracking_core_from_spec(_zt._CollectionSpec(schema=s_tuned))
+    assert core_default != core_tuned
 
 
 def test_multiple_vector_fields(conn: Any) -> None:
@@ -383,7 +457,7 @@ def test_multiple_vector_fields(conn: Any) -> None:
 
     col = conn.open_existing("test_multivec")
     results = col.query(
-        zvec.VectorQuery(field_name="dense", vector=[0.1, 0.2, 0.3, 0.4]), topk=5
+        zvec.Query(field_name="dense", vector=[0.1, 0.2, 0.3, 0.4]), topk=5
     )
     assert [d.id for d in results] == ["1"]
 
@@ -503,7 +577,7 @@ def test_fp16_dense_vector(conn: Any) -> None:
 
     col = conn.open_existing("test_fp16")
     results = col.query(
-        zvec.VectorQuery(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]), topk=5
+        zvec.Query(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]), topk=5
     )
     assert [d.id for d in results] == ["1"]
 
@@ -599,7 +673,7 @@ def test_filter_query(conn: Any) -> None:
 
     col = conn.open_existing("test_filter")
     results = col.query(
-        zvec.VectorQuery(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]),
+        zvec.Query(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]),
         topk=5,
         filter="year > 2000",
     )
