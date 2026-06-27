@@ -10,8 +10,8 @@ use crate::{
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use std::{
+    collections::HashMap,
     hash::{Hash, Hasher},
-    marker::PhantomData,
 };
 
 pub struct ChildTargetDef<Prof: EngineProfile> {
@@ -40,17 +40,18 @@ pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
 }
 
 struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
-    sink: Prof::TargetActionSink,
+    sink: Arc<Prof::TargetActionSink>,
     batcher: Batcher<TargetActionRunner<Prof>>,
 }
 
 impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
     pub fn new(sink: Prof::TargetActionSink) -> Self {
+        let sink = Arc::new(sink);
         Self {
             inner: Arc::new(TargetActionSinkKeeperInner {
-                sink,
+                sink: Arc::clone(&sink),
                 batcher: Batcher::new(
-                    TargetActionRunner(PhantomData),
+                    TargetActionRunner { sink },
                     Arc::new(BatchQueue::new()),
                     BatchingOptions::default(),
                 ),
@@ -74,7 +75,6 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         self.inner
             .batcher
             .run(TargetActionRunnerInput {
-                keeper: self.clone(),
                 host_runtime_ctx: host_runtime_ctx.clone(),
                 host_ctx,
                 actions,
@@ -98,13 +98,35 @@ impl<Prof: EngineProfile> Hash for TargetActionSinkKeeper<Prof> {
 }
 
 struct TargetActionRunnerInput<Prof: EngineProfile> {
-    keeper: TargetActionSinkKeeper<Prof>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
     host_ctx: Arc<Prof::HostCtx>,
     actions: Vec<Prof::TargetAction>,
 }
 
-struct TargetActionRunner<Prof: EngineProfile>(PhantomData<fn() -> Prof>);
+struct TargetActionRunnerContext<Prof: EngineProfile> {
+    host_runtime_ctx: Prof::HostRuntimeCtx,
+    host_ctx: Arc<Prof::HostCtx>,
+}
+
+impl<Prof: EngineProfile> PartialEq for TargetActionRunnerContext<Prof> {
+    fn eq(&self, other: &Self) -> bool {
+        self.host_runtime_ctx == other.host_runtime_ctx
+            && Arc::ptr_eq(&self.host_ctx, &other.host_ctx)
+    }
+}
+
+impl<Prof: EngineProfile> Eq for TargetActionRunnerContext<Prof> {}
+
+impl<Prof: EngineProfile> Hash for TargetActionRunnerContext<Prof> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.host_runtime_ctx.hash(state);
+        Arc::as_ptr(&self.host_ctx).hash(state);
+    }
+}
+
+struct TargetActionRunner<Prof: EngineProfile> {
+    sink: Arc<Prof::TargetActionSink>,
+}
 
 #[async_trait]
 impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
@@ -116,34 +138,47 @@ impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
         inputs: Vec<Self::Input>,
     ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
         let num_inputs = inputs.len();
-        let mut input_iter = inputs.into_iter();
-        let Some(first_input) = input_iter.next() else {
+        if num_inputs == 0 {
             return Ok(Vec::new().into_iter());
-        };
-        let TargetActionRunnerInput {
-            keeper,
-            host_runtime_ctx,
-            host_ctx,
-            mut actions,
-        } = first_input;
-        let mut action_counts = Vec::with_capacity(num_inputs);
-        action_counts.push(actions.len());
-        // Each input is one component's reconciled actions; the sink wants one
-        // flat action list for the external write.
-        for mut input in input_iter {
-            action_counts.push(input.actions.len());
-            actions.append(&mut input.actions);
         }
 
-        let actions_len = actions.len();
-        let handlers = keeper
-            .sink()
-            .apply(&host_runtime_ctx, host_ctx, actions)
-            .await?;
+        let mut groups =
+            HashMap::<TargetActionRunnerContext<Prof>, Vec<(usize, Vec<Prof::TargetAction>)>>::new(
+            );
+        for (input_idx, input) in inputs.into_iter().enumerate() {
+            let context = TargetActionRunnerContext {
+                host_runtime_ctx: input.host_runtime_ctx,
+                host_ctx: input.host_ctx,
+            };
+            groups
+                .entry(context)
+                .or_default()
+                .push((input_idx, input.actions));
+        }
 
-        let outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> = if let Some(handlers) =
-            handlers
-        {
+        let mut outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> =
+            std::iter::repeat_with(|| None).take(num_inputs).collect();
+        for (context, inputs) in groups {
+            let mut actions = Vec::new();
+            let mut action_counts = Vec::with_capacity(inputs.len());
+            let mut input_indexes = Vec::with_capacity(inputs.len());
+
+            // Each input is one component's reconciled actions; the sink wants
+            // one flat action list per compatible host context.
+            for (input_idx, mut input_actions) in inputs {
+                input_indexes.push(input_idx);
+                action_counts.push(input_actions.len());
+                actions.append(&mut input_actions);
+            }
+
+            let actions_len = actions.len();
+            let Some(handlers) = self
+                .sink
+                .apply(&context.host_runtime_ctx, context.host_ctx, actions)
+                .await?
+            else {
+                continue;
+            };
             if handlers.len() != actions_len {
                 client_bail!(
                     "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
@@ -152,13 +187,10 @@ impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
                 );
             }
             let mut handlers = handlers.into_iter();
-            action_counts
-                .into_iter()
-                .map(|count| Some(handlers.by_ref().take(count).collect()))
-                .collect()
-        } else {
-            std::iter::repeat_with(|| None).take(num_inputs).collect()
-        };
+            for (input_idx, count) in std::iter::zip(input_indexes, action_counts) {
+                outputs[input_idx] = Some(handlers.by_ref().take(count).collect());
+            }
+        }
 
         Ok(outputs.into_iter())
     }

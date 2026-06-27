@@ -33,7 +33,7 @@ impl<T: StableFingerprint> StableFingerprint for Arc<T> {
 }
 
 pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'static {
-    type HostRuntimeCtx: Clone + Send + Sync + 'static;
+    type HostRuntimeCtx: Clone + Send + Sync + Eq + Hash + 'static;
     type HostCtx: Send + Sync + 'static;
 
     type ComponentProc: ComponentProcessor<Self>;
