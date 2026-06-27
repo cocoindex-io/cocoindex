@@ -82,6 +82,7 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'Built-in Operations',
     items: [
+      { type: 'doc', slug: 'ops', label: 'Overview' },
       { type: 'doc', slug: 'ops/entity_resolution', label: 'Entity resolution' },
       { type: 'doc', slug: 'ops/litellm', label: 'LiteLLM' },
       { type: 'doc', slug: 'ops/sentence_transformers', label: 'Sentence transformers' },
