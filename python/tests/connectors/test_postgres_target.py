@@ -775,7 +775,7 @@ async def _column_is_nullable(pool: Any, table_name: str, column_name: str) -> b
             table_name,
             column_name,
         )
-        return val == "YES"
+        return bool(val == "YES")
 
 
 @pytest.mark.asyncio
