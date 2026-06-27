@@ -241,7 +241,29 @@ class ZvecVectorDef(NamedTuple):
     sparse: bool = False
 
 
-_ColumnKind = Literal["scalar", "dense", "sparse"]
+class ZvecFtsType(NamedTuple):
+    """Annotation to mark a ``str`` field as full-text (FTS) indexed.
+
+    Requires zvec >= 0.5. The field is stored as a ``STRING`` field with a zvec
+    FTS index, so it can be queried with full-text match expressions directly
+    through zvec. Querying stays outside the connector, which only writes.
+
+    ```python
+    from typing import Annotated
+    from cocoindex.connectors.zvec import ZvecFtsType
+
+    @dataclass
+    class MyRow:
+        body: Annotated[str, ZvecFtsType(tokenizer_name="standard")]
+    ```
+    """
+
+    tokenizer_name: str = "standard"
+    filters: tuple[str, ...] = ("lowercase",)
+    extra_params: str = ""
+
+
+_ColumnKind = Literal["scalar", "dense", "sparse", "fts"]
 
 
 @dataclass(slots=True)
@@ -255,6 +277,9 @@ class _Column:
     metric: str | None = None  # vectors only
     quantize: str | None = None  # dense vectors only
     indexed: bool = False  # scalar fields only (invert index for filtering)
+    tokenizer_name: str | None = None  # fts fields only
+    filters: tuple[str, ...] | None = None  # fts fields only
+    extra_params: str | None = None  # fts fields only
 
 
 _LEAF_SCALAR_MAPPINGS: dict[type, tuple[Any, ValueEncoder | None]] = {
@@ -313,7 +338,11 @@ def _scalar_data_type(type_info: Any) -> tuple[Any, ValueEncoder | None]:
 async def _resolve_column(
     name: str,
     type_hint: Any,
-    override: ZvecType | ZvecVectorDef | res_schema.VectorSchemaProvider | None,
+    override: ZvecType
+    | ZvecVectorDef
+    | ZvecFtsType
+    | res_schema.VectorSchemaProvider
+    | None,
 ) -> _Column:
     type_info = analyze_type_info(type_hint)
 
@@ -331,6 +360,7 @@ async def _resolve_column(
 
     vector_def = next((a for a in annotations if isinstance(a, ZvecVectorDef)), None)
     zvec_type = next((a for a in annotations if isinstance(a, ZvecType)), None)
+    fts_type = next((a for a in annotations if isinstance(a, ZvecFtsType)), None)
 
     # Dense vector: NumPy ndarray with a VectorSchema.
     if vector_schema is not None:
@@ -363,6 +393,27 @@ async def _resolve_column(
         raise ValueError(
             f"Vector column {name!r} requires a VectorSchema (provide it via an "
             "Annotated NDArray or column_overrides)."
+        )
+
+    # Full-text field: str marked with ZvecFtsType.
+    if fts_type is not None:
+        if zvec_type is not None:
+            raise ValueError(
+                f"Column {name!r} cannot combine ZvecFtsType with ZvecType."
+            )
+        if type_info.base_type is not str:
+            raise ValueError(
+                f"ZvecFtsType on column {name!r} requires a str field, got "
+                f"{type_info.base_type!r}."
+            )
+        return _Column(
+            name=name,
+            kind="fts",
+            data_type=_zvec.DataType.STRING,
+            nullable=type_info.nullable,
+            tokenizer_name=fts_type.tokenizer_name,
+            filters=fts_type.filters,
+            extra_params=fts_type.extra_params,
         )
 
     # Scalar field.
@@ -428,7 +479,8 @@ class CollectionSchema(Generic[RowT]):
         primary_key: list[str],
         *,
         column_overrides: dict[
-            str, ZvecType | ZvecVectorDef | res_schema.VectorSchemaProvider
+            str,
+            ZvecType | ZvecVectorDef | ZvecFtsType | res_schema.VectorSchemaProvider,
         ]
         | None = None,
     ) -> "CollectionSchema[RowT]":
@@ -497,6 +549,19 @@ def _build_zvec_schema(collection_name: str, schema: CollectionSchema[Any]) -> A
                     data_type=col.data_type,
                     nullable=col.nullable,
                     index_param=index_param,
+                )
+            )
+        elif col.kind == "fts":
+            fields.append(
+                _zvec.FieldSchema(
+                    name=name,
+                    data_type=col.data_type,
+                    nullable=col.nullable,
+                    index_param=_zvec.FtsIndexParam(
+                        tokenizer_name=col.tokenizer_name or "standard",
+                        filters=list(col.filters or ()),
+                        extra_params=col.extra_params or "",
+                    ),
                 )
             )
         elif col.kind == "dense":
@@ -651,6 +716,9 @@ class _ColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     metric: str | None
     quantize: str | None
     indexed: bool
+    tokenizer_name: str | None
+    filters: tuple[str, ...] | None
+    extra_params: str | None
 
 
 class _CollectionTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
@@ -675,6 +743,9 @@ def _tracking_core_from_spec(spec: _CollectionSpec) -> _CollectionTrackingRecord
             metric=col.metric,
             quantize=col.quantize,
             indexed=col.indexed,
+            tokenizer_name=col.tokenizer_name,
+            filters=col.filters,
+            extra_params=col.extra_params,
         )
         for name, col in sorted(schema.columns.items())
         if name != schema.primary_key
@@ -934,6 +1005,7 @@ __all__ = [
     "CollectionTarget",
     "ManagedConnection",
     "ValueEncoder",
+    "ZvecFtsType",
     "ZvecType",
     "ZvecVectorDef",
     "collection_target",

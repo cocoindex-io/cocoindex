@@ -1102,3 +1102,103 @@ fn trailing_tolerance_skips_delimiters_not_closers() {
         "containment INNER gets the same trailing-delimiter tolerance",
     );
 }
+
+#[test]
+fn single_node_term_matches_anonymous_leaf() {
+    // A keyword/operator is a node like any other — a literal matches it, a `\*` run
+    // spans it (`f(\(A*\))` captures the `,` separators), and a literal alternation
+    // matches it. So a single-node *term* (`\/re/`, `\_`, `\X`) must too, not only named
+    // subtrees. Regex over keyword text now finds the keyword it couldn't before:
+    let kw = matches(
+        lang::typescript(),
+        r"\/if|while/",
+        "function g(x){ if (x) {} while (x) {} }",
+    );
+    let texts: Vec<&str> = kw.iter().map(|m| m.text).collect();
+    assert!(
+        texts.contains(&"if") && texts.contains(&"while"),
+        "regex matches the keyword leaves, got {kw:?}",
+    );
+    // `\_` (the anonymous any-node) matches an operator leaf:
+    assert!(has_kind(
+        &matches(lang::typescript(), r"a \_ b", "let z = a + b;"),
+        "binary_expression",
+    ));
+    // and a named regex capture binds it:
+    assert_eq!(
+        cap(
+            &matches(lang::typescript(), r"a \(OP:/[-+]/\) b", "let z = a + b;"),
+            "OP",
+        )
+        .as_deref(),
+        Some("+"),
+    );
+    // Greedy-largest-first is preserved: a bare `\X` still binds the enclosing *named*
+    // subtree, not a token — the leaf is only a backtrack fallback.
+    assert!(has_kind(
+        &matches(lang::typescript(), r"\X(\*)", "foo(x);"),
+        "call_expression",
+    ));
+    // The leaf fallback is anon-only, so named identifiers aren't double-matched:
+    let asg = matches(lang::typescript(), r"\A = \B", "a = b;");
+    assert!(has_kind(&asg, "assignment_expression"));
+    assert!(
+        !has_kind(&asg, "expression_statement"),
+        "the leaf fallback must not re-report named-leaf nodes",
+    );
+}
+
+#[test]
+fn whole_node_boundary_is() {
+    // `\{ P \}` ("is") requires P to match an *entire* node — no leading/trailing
+    // tolerance — so it's the strict counterpart to the default fragment match, and the
+    // tight end of the scope family (`\{ \}` is ⊂ default fragment ⊂ `\{{ \}}` has).
+    let ts = lang::typescript();
+    // P fills the whole binary_expression; precedence still from the tree, so over
+    // `a + b * c` the whole node is `a + b*c` (\Y = b*c), never the fragment `a + b`.
+    assert!(has_kind(
+        &matches(ts.clone(), r"\{ \X + \Y \}", "let z = a + b;"),
+        "binary_expression",
+    ));
+    let prec = matches(ts.clone(), r"\{ \X + \Y \}", "let z = a + b * c;");
+    assert_eq!(prec.len(), 1);
+    assert_eq!(prec[0].capture_text("Y"), Some("b * c"));
+
+    // The headline query: an `if` with **no `else`**. Whole-node coverage forces P to
+    // span every child, so the else-form (an extra `else_clause` child) is excluded —
+    // while the *default* fragment pattern matches both.
+    let no_else = "function f(c){ if (c) { x(); } }";
+    let with_else = "function f(c){ if (c) { x(); } else { y(); } }";
+    assert!(has_kind(
+        &matches(ts.clone(), r"\{ if (\X) { \Y } \}", no_else),
+        "if_statement",
+    ));
+    assert!(
+        !has_kind(
+            &matches(ts.clone(), r"\{ if (\X) { \Y } \}", with_else),
+            "if_statement"
+        ),
+        "whole-node `is` must exclude the if-with-else (P doesn't span the else_clause)",
+    );
+    assert!(
+        has_kind(
+            &matches(ts.clone(), r"if (\X) { \Y }", with_else),
+            "if_statement"
+        ),
+        "the default fragment pattern still matches the if-with-else",
+    );
+
+    // Nests with containment: a whole `if` that *has* a `return`.
+    assert!(has_kind(
+        &matches(
+            ts.clone(),
+            r"\{ if (\X) \{{ return \Y \}} \}",
+            "function f(c){ if (c) { return a; } }",
+        ),
+        "if_statement",
+    ));
+
+    // Malformed bracket nesting is a compile error (typed open/close pairing).
+    assert!(Pattern::compile(r"\{ a \}}", &ts).is_err());
+    assert!(Pattern::compile(r"\{{ a \}", &ts).is_err());
+}

@@ -210,7 +210,7 @@ async def process_project(
 ## Extract file information with LLM
 
 Now let's take a look at the details for each transformation.
-For file extraction, we define a structure using Pydantic and use [Instructor](https://github.com/jxnl/instructor) to extract with LLMs.
+For file extraction, we define a structure using Pydantic and use [Instructor](https://github.com/567-labs/instructor) to extract with LLMs.
 
 ![Extract files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/extraction.svg)
 

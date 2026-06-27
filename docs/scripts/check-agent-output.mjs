@@ -116,10 +116,16 @@ for (const src of contentFiles(POSTS_SRC)) {
 // 5. Each example's .env.example is a superset of its tracked .env — the
 //    documented `cp .env.example .env` step must never drop a default
 //    (COCOINDEX_DB regressions were shipped exactly this way).
-const envKeys = (text) =>
+// Keys assigned in a .env-style file. For the .env.example template, pass
+// `includeCommented` to also count commented-out assignments (e.g.
+// `# OCI_STREAMING_TOPIC=...`): a copied template still carries that line, so
+// the key is documented even when its default is intentionally left disabled.
+// The real .env is read strictly — only keys it actively sets must be documented.
+const envKeys = (text, { includeCommented = false } = {}) =>
   new Set(
     text
       .split('\n')
+      .map((l) => (includeCommented ? l.replace(/^\s*#+\s*/, '') : l))
       .map((l) => l.replace(/^export\s+/, ''))
       .filter((l) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l))
       .map((l) => l.split('=')[0]),
@@ -128,7 +134,7 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
   const env = join(EXAMPLES_DIR, dir, '.env');
   const tmpl = join(EXAMPLES_DIR, dir, '.env.example');
   if (!existsSync(env) || !existsSync(tmpl)) continue;
-  const tmplKeys = envKeys(read(tmpl));
+  const tmplKeys = envKeys(read(tmpl), { includeCommented: true });
   for (const key of envKeys(read(env))) {
     if (!tmplKeys.has(key))
       errors.push(

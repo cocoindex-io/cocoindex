@@ -1,184 +1,114 @@
 <p align="center">
-    <img src="https://cocoindex.io/images/github.svg" alt="CocoIndex">
+  <a href="https://cocoindex.io/docs/examples/multi-codebase-summarization/" title="Generate a self-updating wiki page for every project in a folder with CocoIndex — structured LLM code analysis, Mermaid diagrams, incremental, in plain async Python">
+    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/cover.svg" alt="Generate a self-updating one-pager wiki for every Python project in a folder with CocoIndex — an LLM extracts public classes, functions, and CocoIndex call graphs per file, aggregates them into a project summary, and writes Markdown with Mermaid diagrams that never goes out of date" width="100%" draggable="false"/>
+  </a>
 </p>
 
-<h1 align="center">Self-Updating Wiki for Your Codebases with LLM</h1>
+<h1 align="center">A <em>self-updating</em> wiki for every codebase in a folder.</h1>
+
+<p align="center">
+  <b>An LLM reads each Python file, extracts its public classes, functions, and CocoIndex call graphs, and aggregates them into a one-pager Markdown wiki per project — in plain async Python.</b><br/>
+  Edit a file, re-run, and only that file is re-analyzed; the wiki stays fresh without going out of date.
+</p>
+
+<p align="center">
+  <strong>Star us&nbsp;❤️&nbsp;→</strong>&nbsp;<a href="https://github.com/cocoindex-io/cocoindex" title="Star CocoIndex on GitHub"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg" alt="Star CocoIndex on GitHub" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
+  <a href="https://cocoindex.io/docs/examples/multi-codebase-summarization/" title="Read the full walkthrough"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg" alt="CocoIndex documentation" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
+  <a href="https://discord.com/invite/zpA9S2DR7s" title="Join the CocoIndex Discord"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg" alt="Join the CocoIndex Discord" height="36" align="absmiddle"/></picture></a>
+</p>
 
 <div align="center">
 
-[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
-[![Documentation](https://img.shields.io/badge/Documentation-394e79?logo=readthedocs&logoColor=00B9FF)](https://cocoindex.io/docs/getting_started/quickstart)
-[![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logoColor=white)](https://opensource.org/licenses/Apache-2.0)
-[![PyPI version](https://img.shields.io/pypi/v/cocoindex?color=5B5BD6)](https://pypi.org/project/cocoindex/)
-<!--[![PyPI - Downloads](https://img.shields.io/pypi/dm/cocoindex)](https://pypistats.org/packages/cocoindex) -->
-[![PyPI Downloads](https://static.pepy.tech/badge/cocoindex/month)](https://pepy.tech/projects/cocoindex)
-[![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
-[![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
-[![Link Check](https://github.com/cocoindex-io/cocoindex/actions/workflows/links.yml/badge.svg)](https://github.com/cocoindex-io/cocoindex/actions/workflows/links.yml)
-[![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
+[![stars](https://img.shields.io/github/stars/cocoindex-io/cocoindex?style=flat-square&label=stars&color=FB6A76)](https://github.com/cocoindex-io/cocoindex)
+[![pypi](https://img.shields.io/pypi/v/cocoindex?style=flat-square&label=pypi&color=E59A63)](https://pypi.org/project/cocoindex/)
+[![discord](https://img.shields.io/discord/1314801574169673738?style=flat-square&logo=discord&logoColor=white&label=discord&color=5865F2)](https://discord.com/invite/zpA9S2DR7s)
+[![license](https://img.shields.io/badge/license-Apache--2.0-5B5BD6?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
 
 </div>
 
-<div align="center">
+<br/>
 
-[Step By Step Tutorial](https://cocoindex.io/docs/examples/multi-codebase-summarization/)
+Your code is the source of truth, but a hand-written wiki drifts the moment someone merges a PR. This pipeline builds your own deep wiki — a one-pager per project that's always fresh, because it's regenerated by [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) instead of by hand. You declare the transformation in native Python — `target_state = transformation(source_state)` — and the Rust engine reprocesses the minimum: switch the model or edit one file, and only what changed is re-analyzed, keeping the wikis current in production.
 
-</div>
+## How it works
 
-<div align="center">
+Each top-level subdirectory is treated as a project. The pipeline extracts a structured `CodebaseInfo` per file with an LLM, aggregates files into a project summary, and writes Markdown with Mermaid diagrams. Read it in [`main.py`](main.py):
 
-Star 🌟 [CocoIndex](https://github.com/cocoindex-io/cocoindex) if you like it!!
+```python
+@coco.fn(memo=True)   # per file — structured LLM extraction, cached by content
+async def extract_file_info(file: FileLike) -> CodebaseInfo:
+    result = await _instructor_client.chat.completions.create(
+        model=LLM_MODEL, response_model=CodebaseInfo,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return CodebaseInfo.model_validate(result.model_dump())
 
-</div>
+@coco.fn(memo=True)   # per project — extract every file, aggregate, write one Markdown page
+async def process_project(project_name: str, files, output_dir: pathlib.Path) -> None:
+    file_infos = await coco.map(extract_file_info, files)         # concurrent extraction
+    project_info = await aggregate_project_info(project_name, file_infos)
+    markdown = generate_markdown(project_name, project_info, file_infos)
+    localfs.declare_file(output_dir / f"{project_name}.md", markdown, create_parent_dirs=True)
 
-<img width="1366" height="768" alt="cover-0a6fa4e51bb8b18149a08c074f2d9ed8" src="https://github.com/user-attachments/assets/ed36f8b9-bf91-4183-beef-321b35ab3505" />
-
-
-
-This example shows how to use [instructor](https://github.com/jxnl/instructor) with Gemini to analyze multiple Python codebases and generate markdown documentation using CocoIndex v1.
-
-<img width="1180" height="1190" alt="image" src="https://github.com/user-attachments/assets/0efbdf7f-8fd3-460c-afd3-417285d42c69" />
-
-
-## What It Does
-
-1. **Scans subdirectories** of a root directory (each expected to be a separate Python project)
-2. **Per-file extraction** using LLM with a unified `CodebaseInfo` model:
-   - Public classes and functions with functionality summaries
-   - CocoIndex app call relationship graphs (Mermaid format)
-   - File-level summaries
-3. **Project aggregation** - combines file-level `CodebaseInfo` into a project-level summary
-4. **Outputs markdown** documentation to `output/PROJECT_NAME.md`
-
-## Key Features
-
-- **Instructor Integration**: Uses instructor library for structured LLM outputs with Pydantic
-- **Unified Data Model**: Same `CodebaseInfo` type for both file-level and project-level extraction
-- **LLM-Generated Mermaid Graphs**: The LLM generates mermaid syntax directly with:
-  - Bold text for `@coco.fn` decorated functions
-  - Thick arrows (`==>`) for `mount`/`use_mount` calls
-- **Incremental Processing**: CocoIndex handles caching - only re-processes changed files
-- **Multi-Project Support**: Processes multiple codebases in parallel
-
-## Output Format
-
-The generated markdown includes:
-
-- **Overview** - High-level project description
-- **Components** - Classes and functions with summaries
-- **CocoIndex Pipeline** - Mermaid diagrams (if CocoIndex is used)
-- **File Details** - Per-file summaries (for multi-file projects)
-
-### Example Mermaid Graph
-
-```mermaid
-graph TD
-    %% App: SampleApp
-    app_main[<b>app_main</b>] ==> process_file[<b>process_file</b>]
-    process_file --> helper_func[helper_func]
+@coco.fn
+async def app_main(root_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
+    for entry in root_dir.resolve().iterdir():
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        files = [f async for f in localfs.walk_dir(entry, recursive=True,
+                 path_matcher=PatternFilePathMatcher(included_patterns=["**/*.py"],
+                                                     excluded_patterns=["**/.*", "**/__pycache__"]))]
+        if files:
+            await coco.mount(coco.component_subpath("project", entry.name),
+                             process_project, entry.name, files, output_dir)
 ```
 
-*Bold = `@coco.fn`, thick arrows (`==>`) = `mount`/`use_mount` calls*
+Extraction is [instructor](https://github.com/instructor-ai/instructor) over [LiteLLM](https://docs.litellm.ai/) with the Pydantic models in [`models.py`](models.py); the LLM emits Mermaid graph syntax directly (bold for `@coco.fn` functions, thick `==>` arrows for `mount`/`use_mount` calls). Each project mounts as its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/), so projects run in parallel and one finishing doesn't wait on the rest.
 
-## Run
+<p align="center">
+  📘 <b><a href="https://cocoindex.io/docs/examples/multi-codebase-summarization/">Full Tutorial →</a></b><br/>
+  Step-by-step walkthrough with the data models, per-project granularity, concurrent extraction, and the Markdown + Mermaid output.
+</p>
 
-### 1. Install dependencies
+## Why it's worth a star ⭐
+
+- **Always fresh, never by hand.** The wiki is a [target state](https://cocoindex.io/docs/programming_guide/target_state/) regenerated from the code — edit a file and the one-pager updates itself; the docs can't drift from the source.
+- **Incremental by default.** `@coco.fn(memo=True)` caches each file's extraction by content, so re-running only re-analyzes changed files. Add a project and only that project is processed.
+- **Concurrent by construction.** `coco.map(extract_file_info, files)` fans every file out at once while staying visible to the pipeline — far faster than sequential LLM calls.
+- **You pick the granularity.** Here it's one wiki page per project directory, but the same shape works per file, per page, or per semantic unit.
+- **Structured outputs, your stack.** One `CodebaseInfo` Pydantic model drives both file- and project-level extraction; swap `LLM_MODEL` for any [LiteLLM provider](https://docs.litellm.ai/docs/providers).
+
+## Run it
+
+**1. Configure & install** — the default model is `gemini/gemini-2.5-flash`:
 
 ```sh
+cp .env.example .env     # set GEMINI_API_KEY (or LLM_MODEL=<provider/model> with its matching key)
 pip install -e .
 ```
 
-### 2. Set up environment variables
-
-Create a `.env` file in the example directory:
-
-```sh
-echo "GEMINI_API_KEY=your_api_key_here" > .env
-```
-
-Replace `your_api_key_here` with your actual Gemini API key.
-
-Optionally, set a different LLM model:
-
-```sh
-echo "LLM_MODEL=gemini/gemini-2.5-flash" >> .env
-```
-
-### 3. Prepare your projects
-
-Create a `projects/` directory with subdirectories for each Python project:
-
-```
-projects/
-├── my_project_1/
-│   ├── main.py
-│   └── utils.py
-├── my_project_2/
-│   └── app.py
-└── ...
-```
-
-### 4. Run the application
+**2. Generate the wiki** — `root_dir` defaults to `../`, so out of the box it documents the CocoIndex `examples/` folder itself, writing one page per example into `./output`:
 
 ```sh
 cocoindex update main.py
 ```
 
-This will:
-1. Scan all subdirectories in `projects/`
-2. Extract information from all `.py` files (excluding `.venv*` directories)
-3. Generate markdown documentation in `output/`
+To document your own code, point `root_dir` in `main.py` at a folder of project subdirectories and re-run.
 
-### 5. Verify the output
+**3. Read the output:**
 
 ```sh
-ls -la output/
-cat output/my_project_1.md
+ls output/
+cat output/code_embedding.md
 ```
 
-## Customization
+Each page has an **Overview**, a **Components** list (★ marks `@coco.fn` functions), a **CocoIndex Pipeline** Mermaid diagram where applicable, and per-file summaries for multi-file projects. Edit a `.py` file and re-run — only that file is re-analyzed, every other file served from the memo cache.
 
-### Change Input/Output Directories
+---
 
-Edit the `app` definition in `main.py`:
+<p align="center">
+  If this kept your codebase docs fresh, <a href="https://github.com/cocoindex-io/cocoindex"><b>give CocoIndex a star ⭐</b></a> — it helps a lot.<br/>
+  <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/docs/examples/multi-codebase-summarization/">Walkthrough</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
+</p>
 
-```python
-app = coco.App(
-    app_main,
-    coco.AppConfig(name="MultiCodebaseSummarization"),
-    root_dir=pathlib.Path("./your_projects_dir"),
-    output_dir=pathlib.Path("./your_output_dir"),
-)
-```
-
-### Use a Different LLM
-
-Set the `LLM_MODEL` environment variable to any LiteLLM-supported model:
-
-```sh
-# OpenAI
-export LLM_MODEL=gpt-4o
-
-# Anthropic
-export LLM_MODEL=anthropic/claude-3-5-sonnet
-
-# Local (Ollama)
-export LLM_MODEL=ollama/llama3.2
-```
-
-## How It Works
-
-```mermaid
-graph TD
-    %% App: MultiCodebaseSummarization
-    app_main[<b>app_main</b>] ==> process_project[<b>process_project</b>]
-    process_project ==> extract_file_info[<b>extract_file_info</b>]
-    process_project ==> aggregate_project_info[<b>aggregate_project_info</b>]
-    process_project --> generate_markdown[generate_markdown]
-```
-
-1. **app_main**: Lists subdirectories, sets up output target, mounts `process_project` for each
-2. **process_project**: Extracts info from each file, aggregates, outputs markdown
-3. **extract_file_info**: Uses instructor + LLM to extract `CodebaseInfo` from each file
-4. **aggregate_project_info**: Combines file `CodebaseInfo` into project-level `CodebaseInfo`
-5. **generate_markdown**: Converts `CodebaseInfo` to markdown and calls `declare_file`
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=7f27e85b-be3a-411a-b612-0b9d53711814&page=examples/multi_codebase_summarization" alt="" width="1" height="1" />

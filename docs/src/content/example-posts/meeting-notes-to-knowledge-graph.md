@@ -1,6 +1,6 @@
 ---
 title: Turn Meeting Notes into a Knowledge Graph
-description: 'Build a self-updating knowledge graph from Google Drive meeting notes with CocoIndex V1 — LLM extraction with instructor + LiteLLM, embedding-based person entity resolution, and a Neo4j graph, in plain async Python.'
+description: 'Build a self-updating knowledge graph from Google Drive meeting notes with CocoIndex V1 — LLM extraction with instructor + LiteLLM, embedding-based person entity resolution, and a Neo4j graph.'
 slug: meeting-notes-to-knowledge-graph
 image: https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/cover.png
 tags: [knowledge-graph, llm-extraction]

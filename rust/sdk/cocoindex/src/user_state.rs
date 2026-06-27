@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
-use crate::profile::RustProfile;
+use crate::profile::{RustProfile, Value};
 
 /// A key identifying a persistent component state. Accepts a string (the common
 /// case) or a [`StableKey`] directly (e.g. a symbol key), mirroring Python's
@@ -89,7 +89,7 @@ impl<T: Serialize> StateHandle<T> {
     /// value held by this handle.
     pub fn set(&mut self, value: T) -> Result<()> {
         self.comp_ctx
-            .update_user_state(&self.key, encode_state(&value)?)
+            .update_user_state(&self.key, Value::from_serializable(&value)?)
             .map_err(Error::from)?;
         self.value = value;
         Ok(())

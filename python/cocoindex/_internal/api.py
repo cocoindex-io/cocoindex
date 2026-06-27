@@ -92,8 +92,9 @@ from .memo_fingerprint import (
 from .serde import (
     unpickle_safe,
     serialize_by_pickle,
-    serialize as _serialize,
-    deserialize as _deserialize,
+    make_deserialize_fn,
+    get_deserialize_fn,
+    DeserializeFn,
 )
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
@@ -637,6 +638,9 @@ def runtime() -> _DualModeRuntime:
 
 _StateT = TypeVar("_StateT")
 
+# State has no static type hint (the handle is generic), so decode as Any.
+_DESERIALIZE_ANY = make_deserialize_fn(Any)
+
 
 class StateHandle(Generic[_StateT]):
     """
@@ -646,33 +650,48 @@ class StateHandle(Generic[_StateT]):
     assign to `.value` to persist a new value for the next run.
     """
 
-    __slots__ = ("_key", "_value", "_core_processor_ctx")
+    __slots__ = ("_key", "_stored", "_deserializer", "_core_processor_ctx")
 
     def __init__(
         self,
         key: StableKey,
-        value: _StateT,
+        stored: core.StoredValue,
+        deserializer: DeserializeFn,
         core_processor_ctx: core.ComponentProcessorContext,
     ) -> None:
         self._key = key
-        self._value = value
+        self._stored = stored
+        self._deserializer = deserializer
         self._core_processor_ctx = core_processor_ctx
 
     @property
     def value(self) -> _StateT:
-        return self._value
+        # Lazy read: object-backed returns directly; bytes-backed deserializes once, cached.
+        return self._stored.get(self._deserializer)  # type: ignore[no-any-return]
 
     @value.setter
     def value(self, new_value: _StateT) -> None:
-        self._core_processor_ctx.update_user_state(self._key, _serialize(new_value))
-        self._value = new_value
+        # Hand the object to Rust without serializing (serialization is deferred
+        # to commit). Keep the returned object-backed cell so later in-run reads
+        # return this value directly.
+        self._stored = self._core_processor_ctx.update_user_state(self._key, new_value)
 
 
 @overload
-def use_state(key: StableKey) -> StateHandle[Any]: ...
+def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]: ...
 @overload
-def use_state(key: StableKey, initial_value: _StateT) -> StateHandle[_StateT]: ...
-def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]:
+def use_state(
+    key: StableKey,
+    initial_value: _StateT | None = None,
+    *,
+    type_hint: type[_StateT],
+) -> StateHandle[_StateT]: ...
+def use_state(
+    key: StableKey,
+    initial_value: Any = None,
+    *,
+    type_hint: type[Any] | None = None,
+) -> StateHandle[Any]:
     """
     Declare a persistent state for the current component.
 
@@ -681,12 +700,26 @@ def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]:
     stored at the end of the previous run. Assign to `handle.value`
     during the run to persist a new value.
 
+    The value is serialized lazily, once, when the component commits — not at
+    assignment. Two consequences: (1) if the value is not serializable, the
+    error surfaces at commit (identifying the state key) rather than at the
+    `handle.value = ...` line; (2) the persisted value reflects the object as it
+    is at commit, so mutating it in place after assignment is captured.
+
     Args:
         key: Unique StableKey within this component (None, bool, int, str,
              bytes, uuid.UUID, Symbol, or a tuple of these). Must be declared
              at most once per component run.
         initial_value: Value to use when no stored state exists for `key`.
                        Defaults to `None`.
+        type_hint: Optional type to deserialize the stored value into. When
+                   provided, `.value` is decoded via the registered
+                   serialization framework (msgspec for dataclasses /
+                   NamedTuples / msgspec.Structs / primitives, pickle for
+                   types decorated with ``@coco.serialize_by_pickle``, pydantic
+                   for ``BaseModel`` subclasses). When omitted, the value is
+                   decoded generically (``Any``) — i.e. whatever object the
+                   deserializer produces from the stored bytes.
 
     Returns:
         A StateHandle wrapping the current value.
@@ -706,6 +739,21 @@ def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]:
                       - If `key` is declared more than once in the same component
                         run: each key maps to exactly one state slot; a second
                         declaration would be ambiguous.
+
+    Example::
+
+        # Plain (value typed as Any)
+        counter = coco.use_state("counter", 0)
+
+        # Typed — handle.value is Cursor, with full type inference
+        @dataclass
+        class Cursor:
+            pos: int
+            tag: str
+
+        cur = coco.use_state("cursor", type_hint=Cursor, initial_value=Cursor(0, "init"))
+        cur.value.pos += 1
+        cur.value = Cursor(cur.value.pos, "next")
     """
     ctx = get_context_from_ctx()
     if ctx._core_path != ctx._core_processor_ctx.stable_path:
@@ -718,12 +766,21 @@ def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]:
             "coco.use_state() cannot be called inside a memoized function"
         )
     try:
-        stored_bytes = ctx._core_processor_ctx.use_state(key, _serialize(initial_value))
+        # initial_value passed unserialized; engine core drops it if a value is
+        # already stored on the previous run for this key.
+        stored = ctx._core_processor_ctx.use_state(key, initial_value)
     except ValueError as e:
         # Rust client errors surface as ValueError; normalize to RuntimeError so
         # all use_state usage errors have a consistent type for callers.
         raise RuntimeError(str(e)) from None
-    return StateHandle(key, _deserialize(stored_bytes), ctx._core_processor_ctx)
+    if type_hint is not None:
+        deserializer = get_deserialize_fn(
+            type_hint,  # type: ignore[arg-type]  # type objects are hashable at runtime
+            source_label=f"use_state key {key!r}",
+        )
+    else:
+        deserializer = _DESERIALIZE_ANY
+    return StateHandle(key, stored, deserializer, ctx._core_processor_ctx)
 
 
 # ============================================================================

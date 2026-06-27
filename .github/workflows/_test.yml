@@ -41,7 +41,7 @@ jobs:
           shell: bash
           run: git config --global core.autocrlf false
 
-        - uses: actions/checkout@v6
+        - uses: actions/checkout@v7
           with:
             fetch-depth: 1
 
@@ -138,7 +138,7 @@ jobs:
     validate-3p-notices:
         runs-on: ubuntu-latest
         steps:
-        - uses: actions/checkout@v6
+        - uses: actions/checkout@v7
           with:
             fetch-depth: 1
         - name: Install Rust toolchain

@@ -23,6 +23,7 @@ tokio-stream = { workspace = true }
 rmp = { workspace = true }
 rmp-serde = { workspace = true }
 rpds = { workspace = true }
+serde_bytes = { workspace = true }
 serde_with = { workspace = true }
 uuid = { workspace = true }
 indexmap = { workspace = true }

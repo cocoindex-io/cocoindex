@@ -1,6 +1,6 @@
 ---
 title: Semantic Search over PDFs
-description: 'Build a vector index from local PDFs with CocoIndex V1 — convert to Markdown with docling on a GPU runner, chunk, embed with sentence-transformers, and store the vectors in Postgres with pgvector, then query in natural language. Plain async Python.'
+description: 'Build a vector index from local PDFs with CocoIndex V1 — convert to Markdown with docling on a GPU runner, chunk, embed with sentence-transformers, and store the vectors in Postgres with pgvector, then query in natural language.'
 slug: pdf-embedding
 image: https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/cover.png
 tags: [vector-index, pdf]

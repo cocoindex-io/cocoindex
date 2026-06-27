@@ -1,6 +1,6 @@
 ---
 title: Search Images by Text
-description: 'Build an image search engine with CocoIndex V1 — embed images with CLIP, store the vectors in Qdrant, and query your photos in natural language through a FastAPI + React app. Plain async Python, live updates.'
+description: 'Build an image search engine with CocoIndex V1 — embed images with CLIP, store the vectors in Qdrant, and query your photos in natural language through a FastAPI + React app.'
 slug: image-search
 image: https://cocoindex.io/blobs/docs-v1/img/examples/image-search/cover.png
 tags: [multimodal, image-search]

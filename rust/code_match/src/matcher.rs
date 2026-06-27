@@ -135,11 +135,17 @@ impl Pattern {
     /// metavar matcher (e.g. an unparseable regex) or unbalanced `\{{` / `\}}`.
     pub fn compile(pattern: &str, cfg: &LangConfig) -> Result<Pattern> {
         let items = lex(pattern, cfg)?;
-        let has_contains = items
-            .iter()
-            .any(|it| matches!(it, PatternItem::ContainsOpen { .. }));
+        // A bounded sub-region (`\{{ \}}` or `\{ \}`) matches its inner pattern against
+        // *several* candidates with different `hi`/`stops`, so the start-independent
+        // `(pi, li)` fail-memo isn't globally sound — disable it (as for containment).
+        let has_brackets = items.iter().any(|it| {
+            matches!(
+                it,
+                PatternItem::ContainsOpen { .. } | PatternItem::WholeOpen { .. }
+            )
+        });
         let no_dups = !detect_dup_names(&items);
-        let use_memo = no_dups && !has_contains;
+        let use_memo = no_dups && !has_brackets;
         Ok(Pattern {
             items,
             cfg: cfg.clone(),
@@ -633,9 +639,10 @@ impl<'s> Ctx<'_, 's> {
                 }
             },
             PatternItem::ContainsOpen { close } => self.match_contains(pi, *close, end, li, hi),
+            PatternItem::WholeOpen { close } => self.match_whole(pi, *close, end, li, hi),
             // Never landed on: the outer DP jumps over `[open+1, close]` to
-            // `close+1`, and an INNER sub-DP stops at `pi == end == close`.
-            PatternItem::ContainsClose => false,
+            // `close+1`, and an INNER/P sub-DP stops at `pi == end == close`.
+            PatternItem::ContainsClose | PatternItem::WholeClose => false,
         };
 
         if !ok && self.use_memo {
@@ -733,6 +740,27 @@ impl<'s> Ctx<'_, 's> {
                 }
             }
         }
+        // A single-node term also matches an **anonymous leaf** (keyword/operator/
+        // punctuation): it is a node like any other — a literal matches it, a `\*` run
+        // spans it, and a literal alternation `\( if | while \)` matches it — so `\X`,
+        // `.`, `\_`, and `\/re/` must too. (Named leaves are already covered by the spans
+        // above, so this only adds the anon ones.) Tried *last*, so the greedy
+        // largest-first preference for named subtrees is unchanged — the bare leaf is a
+        // backtrack fallback (`\/if|while/` matches the `if` keyword; `.` still binds the
+        // enclosing `if_statement` first unless the pattern forces the leaf).
+        let leaf = &idx.leaves[li];
+        if leaf.anon && regex_ok(regex, &self.source[leaf.start_byte..leaf.end_byte]) {
+            let cap = self.make_capture(leaf.start_byte, leaf.end_byte, false);
+            match self.bind(name, cap) {
+                BindResult::Inconsistent => {}
+                bind => {
+                    if self.dp(pi + 1, end, li + 1, hi) {
+                        return true;
+                    }
+                    self.unbind(name, bind);
+                }
+            }
+        }
         false
     }
 
@@ -779,6 +807,39 @@ impl<'s> Ctx<'_, 's> {
                     self.unbind(name, bind);
                 }
             }
+        }
+        false
+    }
+
+    /// `\{ P \}` — whole-node boundary ("is", §5). `P` (`items[pi+1..close]`) must match
+    /// a node starting at `li` **in full** — no leading or trailing tolerance — then the
+    /// outer match continues from that node's end. So `\{ if (\X) { \Y } \}` matches an
+    /// `if` with no `else` (P has to span every child). Tried largest-first and **bounded
+    /// to `spans_by_start[li]`** (the nodes anchored at this leaf), so it stays O(spans·k)
+    /// — no descendant scan, none of the old containment pathology. P's captures thread
+    /// forward; a `bound` snapshot undoes them on a failed attempt.
+    fn match_whole(&mut self, pi: usize, close: usize, end: usize, li: usize, hi: usize) -> bool {
+        let inner = pi + 1; // first item of P
+        let cont = close + 1; // first outer item after `\}`
+        let idx = self.idx;
+        let Some(spans) = idx.spans_by_start.get(li) else {
+            return false;
+        };
+        for sp in spans {
+            let next = sp.end_leaf + 1;
+            if next > hi {
+                continue;
+            }
+            let snapshot = self.bound.clone();
+            // Whole-node: clear `tolerant_end` so the base case requires the match to land
+            // exactly on `next` (the node's end), not at any earlier child boundary.
+            let saved_tol = self.tolerant_end.take();
+            let p_ok = self.dp(inner, close, li, next);
+            self.tolerant_end = saved_tol;
+            if p_ok && self.dp(cont, end, next, hi) {
+                return true;
+            }
+            self.bound = snapshot; // undo P's bindings from a failed attempt
         }
         false
     }

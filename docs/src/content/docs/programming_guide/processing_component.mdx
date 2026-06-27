@@ -5,6 +5,12 @@ description: >
   boundaries for target states. Covers mounting APIs (mount, use_mount,
   mount_each, mount_target), component paths, and granularity tradeoffs.
 ---
+import MountVsUseMount from '/src/components/diagrams/concepts/MountVsUseMount.astro';
+
+:::note[Prerequisite]
+This page builds on [Core Concepts](./core_concepts), which introduces processing components, target states, and incremental sync **with diagrams** — the per-file fan-out and the chunk-embedding pipeline it walks through are referenced throughout this page. If the mounting APIs below feel abstract, start there.
+:::
+
 Most apps process many independent source items — files, rows, or entities. A **Processing Component** is the unit of execution for one: it runs that item's transformation logic and declares the set of **target states** produced for it.
 
 ## Component path
@@ -35,12 +41,16 @@ See [StableKey](./sdk_overview#stablekey) in the SDK Overview for details on wha
 
 ## Mount
 
-Mounting is how you declare (instantiate) a processing component within an app at a specific path, so CocoIndex knows that component exists, should run, and owns a set of target states.
+Mounting is how you declare (instantiate) a processing component within an app at a specific path, so CocoIndex knows that component exists, should run, and owns a set of target states — and can match it against its previous run to sync only what changed.
 
 CocoIndex provides two core mounting APIs:
 
 - **`mount()`** — sets up a processing component in a child path without depending on data from it. This allows the component to refresh independently in live mode.
 - **`use_mount()`** — returns a value from the component's execution to the caller. The component at that path cannot refresh independently without re-executing the caller.
+
+<MountVsUseMount />
+
+**Which one you reach for comes down to a single question: does the caller need a value back?** `use_mount()` consumes the child's return value, which *couples* the two — the call blocks until the child finishes and commits its target states, and the child can't refresh on its own without re-running the caller. `mount()` takes nothing back and returns as soon as the child is scheduled, so the child runs on its own and can [refresh independently in live mode](./live_mode) when its inputs change.
 
 And two sugar APIs that simplify common patterns:
 
@@ -124,6 +134,8 @@ await coco.mount_each(process_file, files.items(), target)
 
 Each item in the iterable is a `(key, value)` tuple. The value is passed as the first argument to the function, and any additional arguments are passed through. Items are mounted under an [auto-derived subpath](#automatic-subpath-derivation) (`Symbol(fn.__name__)`), so the component path for each item is `parent / Symbol("process_file") / key`.
 
+In the static case this is just the keyed-loop form of [`mount()`](#mount) — the same per-file fan-out shown in [Core Concepts](./core_concepts#processing-component). The snippet above is equivalent to looping over the items and calling `mount(coco.component_subpath(coco.Symbol("process_file"), key), process_file, value, target)` for each one. The per-item `key` is what keeps each component's path stable across runs, so the engine matches, updates, and cleans up each item individually.
+
 You can provide an explicit subpath as the first argument:
 
 ```python
@@ -132,7 +144,7 @@ await coco.mount_each(coco.component_subpath("files"), process_file, files.items
 
 Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
 
-When a source connector supports live watching, its `items()` returns a `LiveMapView` or `LiveMapFeed` instead of a plain iterable. `mount_each()` detects this and automatically handles incremental updates — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode).
+It also does one thing a hand-written loop can't: when a source connector supports live watching, its `items()` returns a `LiveMapView` or `LiveMapFeed` instead of a plain iterable, and `mount_each()` detects this and automatically adds, updates, and removes per-item components as the source changes — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode).
 
 ### `mount_target()`
 `mount_target()` mounts a target without requiring an explicit subpath.
@@ -292,4 +304,4 @@ The first argument to the function receives each item; additional arguments are 
 #### When to use `map()` vs `mount_each()`
 
 - Use **`mount_each()`** when each item should be its own processing component — with its own component path, target state ownership, and target states sync boundary.
-- Use **`map()`** when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file.
+- Use **`map()`** when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file — the same within-component chunk work the [chunk-embedding pipeline in Core Concepts](./core_concepts#processing-component) walks through.

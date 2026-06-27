@@ -4,7 +4,7 @@ toc_max_heading_level: 4
 description: >
   Write documents to zvec, an embedded in-process vector database. Covers
   collection setup, declaring documents with dense and sparse vectors plus
-  scalar fields, schema-from-class type mapping, and lifecycle management.
+  scalar and full-text fields, schema-from-class type mapping, and lifecycle management.
 ---
 The `zvec` connector writes documents to [zvec](https://zvec.org), an embedded, in-process vector database. zvec runs inside your application — no server or daemon — and stores each collection in a directory on disk.
 
@@ -122,7 +122,7 @@ async def CollectionSchema.from_class(
     record_type: type[RowT],
     primary_key: list[str],
     *,
-    column_overrides: dict[str, ZvecType | ZvecVectorDef | VectorSchemaProvider] | None = None,
+    column_overrides: dict[str, ZvecType | ZvecVectorDef | ZvecFtsType | VectorSchemaProvider] | None = None,
 ) -> CollectionSchema[RowT]
 ```
 
@@ -194,6 +194,23 @@ class MyRow:
     count: Annotated[int, ZvecType(zvec.DataType.INT32, indexed=False)]
     embedding: Annotated[NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=384)]
 ```
+
+#### ZvecFtsType
+
+Mark a `str` field as full-text (FTS) indexed. The field is stored as a `STRING` field with a zvec FTS index, so you can run full-text match queries against it directly through zvec. Requires zvec >= 0.5.
+
+```python
+from typing import Annotated
+from cocoindex.connectors.zvec import ZvecFtsType
+
+@dataclass
+class Doc:
+    id: str
+    body: Annotated[str, ZvecFtsType(tokenizer_name="standard", filters=("lowercase",))]
+    embedding: Annotated[NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=384)]
+```
+
+`ZvecFtsType` options: `tokenizer_name` (e.g. `"standard"`, `"jieba"`), `filters` (token filters applied after tokenization, default `("lowercase",)`), and `extra_params`. The connector writes the field and its FTS index; querying it (for example with `zvec.Query(field_name=..., fts=zvec.Fts(match_string=...))`) happens directly against zvec, since this connector only handles the write path.
 
 ### Vectors
 
