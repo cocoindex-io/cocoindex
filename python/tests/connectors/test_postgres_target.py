@@ -767,7 +767,9 @@ async def test_postgres_column_drop_retries_after_failed_attempt(
         await _drop_table(pool, table_name)
 
 
-async def _column_is_nullable(pool: Any, table_name: str, column_name: str) -> bool:
+async def _column_is_nullable(
+    pool: "asyncpg.Pool", table_name: str, column_name: str
+) -> bool:
     async with pool.acquire() as conn:
         val = await conn.fetchval(
             "SELECT is_nullable FROM information_schema.columns "
@@ -780,187 +782,171 @@ async def _column_is_nullable(pool: Any, table_name: str, column_name: str) -> b
 
 @pytest.mark.asyncio
 async def test_schema_evolution_compatible_changes(pg_env: _PgEnv) -> None:
-    """Test schema evolution with compatible changes (data preservation)."""
+    """Test schema evolution with compatible type changes preserves data and
+    nullability constraints."""
     pool = pg_env.pool
+    coco_env = pg_env.coco_env
     table_name = _unique_name("schema_evol")
 
-    # State 1: Create initial schema
-    def schema_v1() -> postgres.TableSchema[dict[str, Any]]:
-        columns = {
-            "id": postgres.ColumnDef("text", nullable=False),
-            # NOT NULL -> NOT NULL
-            "col_nn_nn": postgres.ColumnDef("varchar(50)", nullable=False),
-            # nullable -> nullable
-            "col_null_null": postgres.ColumnDef("varchar(50)", nullable=True),
-            # nullable -> NOT NULL (will have data so constraint succeeds)
-            "col_null_nn": postgres.ColumnDef("varchar(50)", nullable=True),
-            # NOT NULL -> nullable
-            "col_nn_null": postgres.ColumnDef("varchar(50)", nullable=False),
-        }
-        return postgres.TableSchema(columns=columns, primary_key=["id"])
+    # Mutable state: toggled between updates to change the schema.
+    use_v2 = False
 
-    async def declare_v1() -> None:
-        table = await coco.use_mount(
-            coco.component_subpath("setup"),
-            postgres.declare_table_target,
-            _PG_DB_KEY,
-            table_name,
-            schema_v1(),
-        )
-        table.declare_row(
-            row={
-                "id": "row1",
-                "col_nn_nn": "data1",
-                "col_null_null": "data2",
-                "col_null_nn": "data3",
-                "col_nn_null": "data4",
-            }
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        if not use_v2:
+            return postgres.TableSchema(
+                columns={
+                    "id": postgres.ColumnDef("text", nullable=False),
+                    "col_nn_nn": postgres.ColumnDef("varchar(50)", nullable=False),
+                    "col_null_null": postgres.ColumnDef("varchar(50)", nullable=True),
+                    "col_null_nn": postgres.ColumnDef("varchar(50)", nullable=True),
+                    "col_nn_null": postgres.ColumnDef("varchar(50)", nullable=False),
+                },
+                primary_key=["id"],
+            )
+        return postgres.TableSchema(
+            columns={
+                "id": postgres.ColumnDef("text", nullable=False),
+                "col_nn_nn": postgres.ColumnDef("text", nullable=False),
+                "col_null_null": postgres.ColumnDef("text", nullable=True),
+                "col_null_nn": postgres.ColumnDef("text", nullable=False),
+                "col_nn_null": postgres.ColumnDef("text", nullable=True),
+            },
+            primary_key=["id"],
         )
 
-    app1 = coco.App(
-        coco.AppConfig(name=f"v1_{table_name}", environment=pg_env.coco_env), declare_v1
-    )
-    await app1.update()
+    try:
 
-    # Verify initial schema
-    assert not await _column_is_nullable(pool, table_name, "col_nn_nn")
-    assert await _column_is_nullable(pool, table_name, "col_null_null")
-    assert await _column_is_nullable(pool, table_name, "col_null_nn")
-    assert not await _column_is_nullable(pool, table_name, "col_nn_null")
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+            table.declare_row(
+                row={
+                    "id": "row1",
+                    "col_nn_nn": "data1",
+                    "col_null_null": "data2",
+                    "col_null_nn": "data3",
+                    "col_nn_null": "data4",
+                }
+            )
 
-    # Verify initial data
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f'SELECT * FROM "{table_name}" WHERE "id" = $1', "row1"
-        )
-        assert row["col_nn_nn"] == "data1"
-
-    # State 2: Evolve schema (change varchar to text)
-    def schema_v2() -> postgres.TableSchema[dict[str, Any]]:
-        columns = {
-            "id": postgres.ColumnDef("text", nullable=False),
-            "col_nn_nn": postgres.ColumnDef("text", nullable=False),
-            "col_null_null": postgres.ColumnDef("text", nullable=True),
-            "col_null_nn": postgres.ColumnDef("text", nullable=False),
-            "col_nn_null": postgres.ColumnDef("text", nullable=True),
-        }
-        return postgres.TableSchema(columns=columns, primary_key=["id"])
-
-    async def declare_v2() -> None:
-        table = await coco.use_mount(
-            coco.component_subpath("setup"),
-            postgres.declare_table_target,
-            _PG_DB_KEY,
-            table_name,
-            schema_v2(),
-        )
-        # Keep same row to avoid deletion
-        table.declare_row(
-            row={
-                "id": "row1",
-                "col_nn_nn": "data1",
-                "col_null_null": "data2",
-                "col_null_nn": "data3",
-                "col_nn_null": "data4",
-            }
+        app = coco.App(
+            coco.AppConfig(name=f"test_schema_evol_{table_name}", environment=coco_env),
+            declare_fn,
         )
 
-    app2 = coco.App(
-        coco.AppConfig(name=f"v2_{table_name}", environment=pg_env.coco_env), declare_v2
-    )
-    await app2.update()
+        # v1: create with varchar(50)
+        await app.update()
+        assert not await _column_is_nullable(pool, table_name, "col_nn_nn")
+        assert await _column_is_nullable(pool, table_name, "col_null_null")
+        assert await _column_is_nullable(pool, table_name, "col_null_nn")
+        assert not await _column_is_nullable(pool, table_name, "col_nn_null")
 
-    # Verify evolved schema (types are now text, check nullability)
-    assert not await _column_is_nullable(pool, table_name, "col_nn_nn")
-    assert await _column_is_nullable(pool, table_name, "col_null_null")
-    assert not await _column_is_nullable(pool, table_name, "col_null_nn")
-    assert await _column_is_nullable(pool, table_name, "col_nn_null")
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT * FROM "{table_name}" WHERE "id" = $1', "row1"
+            )
+            assert row is not None
+            assert row["col_nn_nn"] == "data1"
 
-    # Verify data is preserved (fallback was NOT triggered)
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f'SELECT * FROM "{table_name}" WHERE "id" = $1', "row1"
-        )
-        assert row["col_nn_nn"] == "data1"
+        # v2: evolve to text, flip nullability on two columns
+        use_v2 = True
+        await app.update()
+
+        assert not await _column_is_nullable(pool, table_name, "col_nn_nn")
+        assert await _column_is_nullable(pool, table_name, "col_null_null")
+        assert not await _column_is_nullable(pool, table_name, "col_null_nn")
+        assert await _column_is_nullable(pool, table_name, "col_nn_null")
+
+        # Data must be preserved (no destructive fallback)
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT * FROM "{table_name}" WHERE "id" = $1', "row1"
+            )
+            assert row is not None
+            assert row["col_nn_nn"] == "data1"
+
+    finally:
+        await _drop_table(pool, table_name)
 
 
 @pytest.mark.asyncio
 async def test_schema_evolution_incompatible_fallback(
     pg_env: _PgEnv, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Test schema evolution fallback on incompatible cast (preserves NOT NULL)."""
+    """When a type cast is genuinely incompatible, the fallback recreates the
+    column but must preserve the desired NOT NULL constraint and log a warning."""
     pool = pg_env.pool
+    coco_env = pg_env.coco_env
     table_name = _unique_name("schema_fallback")
 
-    # State 1: Create initial schema
-    def schema_v1() -> postgres.TableSchema[dict[str, Any]]:
-        columns = {
-            "id": postgres.ColumnDef("text", nullable=False),
-            "incompat_col": postgres.ColumnDef("text", nullable=False),
-        }
-        return postgres.TableSchema(columns=columns, primary_key=["id"])
+    use_v2 = False
 
-    async def declare_v1() -> None:
-        table = await coco.use_mount(
-            coco.component_subpath("setup"),
-            postgres.declare_table_target,
-            _PG_DB_KEY,
-            table_name,
-            schema_v1(),
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        if not use_v2:
+            return postgres.TableSchema(
+                columns={
+                    "id": postgres.ColumnDef("text", nullable=False),
+                    "incompat_col": postgres.ColumnDef("text", nullable=False),
+                },
+                primary_key=["id"],
+            )
+        return postgres.TableSchema(
+            columns={
+                "id": postgres.ColumnDef("text", nullable=False),
+                "incompat_col": postgres.ColumnDef("integer", nullable=False),
+            },
+            primary_key=["id"],
         )
-        table.declare_row(row={"id": "row1", "incompat_col": "not_an_int"})
 
-    app1 = coco.App(
-        coco.AppConfig(name=f"v1_{table_name}", environment=pg_env.coco_env), declare_v1
-    )
-    await app1.update()
+    try:
 
-    # Verify initial schema
-    assert not await _column_is_nullable(pool, table_name, "incompat_col")
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+            if not use_v2:
+                table.declare_row(row={"id": "row1", "incompat_col": "not_an_int"})
 
-    # State 2: Evolve schema (incompatible cast: text -> integer without USING)
-    def schema_v2() -> postgres.TableSchema[dict[str, Any]]:
-        columns = {
-            "id": postgres.ColumnDef("text", nullable=False),
-            # Attempt to change type to integer; will fail because data is "not_an_int"
-            "incompat_col": postgres.ColumnDef("integer", nullable=False),
-        }
-        return postgres.TableSchema(columns=columns, primary_key=["id"])
-
-    async def declare_v2() -> None:
-        await coco.use_mount(
-            coco.component_subpath("setup"),
-            postgres.declare_table_target,
-            _PG_DB_KEY,
-            table_name,
-            schema_v2(),
+        app = coco.App(
+            coco.AppConfig(name=f"test_schema_fb_{table_name}", environment=coco_env),
+            declare_fn,
         )
-        # Note: the row component would fail to insert the string into the new integer column
-        # but the column schema change happens first. We'll just omit row declaration to let it drop the row.
-        # This isolates testing the table target schema change.
 
-    app2 = coco.App(
-        coco.AppConfig(name=f"v2_{table_name}", environment=pg_env.coco_env), declare_v2
-    )
+        # v1: text NOT NULL
+        await app.update()
+        assert not await _column_is_nullable(pool, table_name, "incompat_col")
 
-    with caplog.at_level("WARNING"):
-        await app2.update()
+        # v2: integer NOT NULL — incompatible cast triggers fallback
+        use_v2 = True
+        with caplog.at_level("WARNING"):
+            await app.update()
 
-    # Warning log should have been emitted
-    assert any(
-        "Recreating column. Existing data will be lost" in record.message
-        for record in caplog.records
-    )
-
-    # Verify the column was recreated with correct constraint
-    assert not await _column_is_nullable(pool, table_name, "incompat_col")
-
-    # Check that type was updated
-    async with pool.acquire() as conn:
-        val = await conn.fetchval(
-            "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name = $1 AND column_name = $2",
-            table_name,
-            "incompat_col",
+        assert any(
+            "Recreating column. Existing data will be lost" in record.message
+            for record in caplog.records
         )
-        assert val == "integer"
+
+        # Constraint must be preserved after recreation
+        assert not await _column_is_nullable(pool, table_name, "incompat_col")
+
+        # Type must have changed
+        async with pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = $1 AND column_name = $2",
+                table_name,
+                "incompat_col",
+            )
+            assert val == "integer"
+
+    finally:
+        await _drop_table(pool, table_name)
