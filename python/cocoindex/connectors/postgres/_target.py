@@ -1158,13 +1158,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         f"Recreating column. Existing data will be lost."
                     )
 
-                    nullable = "" if desired_col.nullable else " NOT NULL"
                     await conn.execute(
                         f'ALTER TABLE {qualified_name} DROP COLUMN IF EXISTS "{col_name}"'
                     )
                     await conn.execute(
                         f"ALTER TABLE {qualified_name} "
-                        f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
+                        f'ADD COLUMN "{col_name}" {desired_col.type}'
                     )
 
     def reconcile(
