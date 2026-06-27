@@ -74,11 +74,10 @@ impl AppStore {
     /// Run `body` inside a write txn driven by the single-writer
     /// batcher. Concurrent callers coalesce into one underlying
     /// `heed::RwTxn`; bodies within a batch are awaited sequentially.
-    /// Every LMDB write path (session writes and the standalone
-    /// methods alike) goes through this so that no caller opens
-    /// `env.write_txn()` directly — bypassing the batcher would
-    /// serialize each call through heed's writer mutex with no
-    /// amortization.
+    /// Ordinary application data writes go through this (or
+    /// [`crate::state_store::Storage::run_txn`]) so they participate in
+    /// `MDB_MAP_FULL` auto-resize; bypassing the batcher would serialize
+    /// each call through heed's writer mutex with no amortization.
     pub(super) async fn run_in_batcher<F>(&self, body: F) -> Result<()>
     where
         F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
@@ -282,33 +281,32 @@ impl AppStore {
     }
 
     /// Cleanup primitive: read the blob, clear `pending_process_token`
-    /// iff it equals `self_token`, write back. Opens its own write txn
-    /// (standalone — no caller-provided handle). Idempotent.
+    /// iff it equals `self_token`, write back. Routed through the
+    /// single-writer batcher so the write participates in `MDB_MAP_FULL`
+    /// auto-resize and whole-transaction retry. Idempotent.
     pub async fn clear_staged_tracking(&self, path: &StablePath, self_token: u128) -> Result<()> {
-        let coord = self.storage.txn_coordinator();
-        let env = self.env.clone();
+        let app_store = self.clone();
         let path = path.clone();
-        let db = self.db();
-        let key = key_tracking_info(&path)?;
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let _guard = coord.blocking_read();
-            let mut wtxn = env.write_txn()?;
-            let Some(bytes) = db.get(&wtxn, &key)? else {
-                return Ok(());
-            };
-            let mut info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
-                cocoindex_utils::deser::from_msgpack_slice(bytes)?;
-            if info.pending_process_token != Some(self_token) {
-                return Ok(());
-            }
-            info.pending_process_token = None;
-            let new_bytes = rmp_serde::to_vec_named(&info)?;
-            db.put(&mut wtxn, &key, &new_bytes)?;
-            wtxn.commit()?;
-            Ok(())
+        self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            Box::pin(async move {
+                let key = key_tracking_info(&path)?;
+                let Some(bytes) = app_store.db().get(&**wtxn, &key)? else {
+                    return Ok(());
+                };
+                let mut info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
+                    cocoindex_utils::deser::from_msgpack_slice(bytes)?;
+                if info.pending_process_token != Some(self_token) {
+                    return Ok(());
+                }
+                info.pending_process_token = None;
+                let new_bytes = rmp_serde::to_vec_named(&info)?;
+                app_store.db().put(&mut **wtxn, &key, &new_bytes)?;
+                Ok(())
+            })
         })
         .await
-        .map_err(|e| internal_error!("clear_staged_tracking join: {e}"))?
     }
 
     /// Standalone Phase 5 sweep: delete one tombstone. Routed through
@@ -1016,6 +1014,66 @@ mod tests {
     /// result is unused here (these tests write no memos).
     async fn read_regular_states(store: &AppStore, p: &StablePath) -> HashMap<StableKey, Vec<u8>> {
         to_map(store.prefetch_fn_processing_states(p).await.unwrap().1)
+    }
+
+    async fn write_tracking_with_token(store: &AppStore, path: &StablePath, token: Option<u128>) {
+        use crate::state::db_schema::StablePathEntryTrackingInfo;
+        use std::borrow::Cow;
+
+        let mut info = StablePathEntryTrackingInfo::new(Cow::Borrowed("test"));
+        info.pending_process_token = token;
+        let bytes = rmp_serde::to_vec_named(&info).unwrap();
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_tracking_info_raw(&mut wtxn, path, &bytes)
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+    }
+
+    async fn read_pending_process_token(store: &AppStore, path: &StablePath) -> Option<u128> {
+        use crate::state::db_schema::StablePathEntryTrackingInfo;
+
+        let bytes = store.read_tracking_info(path).await.unwrap()?;
+        let info: StablePathEntryTrackingInfo<'_> =
+            cocoindex_utils::deser::from_msgpack_slice(&bytes).unwrap();
+        info.pending_process_token
+    }
+
+    // --- clear_staged_tracking ---------------------------------------------
+
+    #[tokio::test]
+    async fn clear_staged_tracking_clears_matching_token() {
+        let (store, _dir) = make_test_store().await;
+        let path = comp_path("comp");
+        let token = 42u128;
+
+        write_tracking_with_token(&store, &path, Some(token)).await;
+        store.clear_staged_tracking(&path, token).await.unwrap();
+
+        assert_eq!(read_pending_process_token(&store, &path).await, None);
+    }
+
+    #[tokio::test]
+    async fn clear_staged_tracking_leaves_non_matching_token() {
+        let (store, _dir) = make_test_store().await;
+        let path = comp_path("comp");
+        let token = 42u128;
+
+        write_tracking_with_token(&store, &path, Some(token)).await;
+        store.clear_staged_tracking(&path, token + 1).await.unwrap();
+
+        assert_eq!(read_pending_process_token(&store, &path).await, Some(token));
+    }
+
+    #[tokio::test]
+    async fn clear_staged_tracking_missing_entry_is_noop() {
+        let (store, _dir) = make_test_store().await;
+        let path = comp_path("missing");
+
+        store.clear_staged_tracking(&path, 99).await.unwrap();
+
+        assert_eq!(read_pending_process_token(&store, &path).await, None);
     }
 
     // --- user state read-back (via prefetch) -------------------------------

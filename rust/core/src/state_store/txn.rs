@@ -30,10 +30,7 @@ impl<'store> ReadTxn<'store> {
         guard: tokio::sync::OwnedRwLockReadGuard<()>,
         txn: heed::RoTxn<'store, heed::WithoutTls>,
     ) -> Self {
-        Self {
-            txn,
-            _guard: guard,
-        }
+        Self { txn, _guard: guard }
     }
 }
 

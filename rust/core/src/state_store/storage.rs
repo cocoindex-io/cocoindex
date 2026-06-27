@@ -175,10 +175,7 @@ impl TxnRunner {
     /// commit returns an error the write txn and coordinator read guard are
     /// dropped before the error propagates. On `MapFull` the caller should
     /// resize (under the coordinator write guard) and retry.
-    async fn try_run_once(
-        &self,
-        inputs: &[TxnBody],
-    ) -> Result<Vec<Box<dyn Any + Send>>> {
+    async fn try_run_once(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
         let read_guard = self.coord.read().await;
         let mut outputs = Vec::with_capacity(inputs.len());
         let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
@@ -211,9 +208,7 @@ impl TxnRunner {
     fn next_map_size(db_env: &heed::Env<heed::WithoutTls>) -> Result<usize> {
         let current = db_env.info().map_size;
         let doubled = current.checked_mul(MAP_SIZE_GROWTH_FACTOR).ok_or_else(|| {
-            internal_error!(
-                "LMDB map size overflow while doubling: current={current} bytes"
-            )
+            internal_error!("LMDB map size overflow while doubling: current={current} bytes")
         })?;
         Ok(align_map_size_to_page(doubled))
     }
@@ -228,7 +223,9 @@ impl TxnRunner {
         // Safety: `resize_guard` excludes all coordinator-participating LMDB
         // transactions in this process; the failed write txn and its read
         // guard were dropped before this path runs.
-        unsafe { self.db_env.resize(new_size)?; }
+        unsafe {
+            self.db_env.resize(new_size)?;
+        }
         drop(resize_guard);
         Ok(new_size)
     }
@@ -650,8 +647,7 @@ mod tests {
             .expect("single run_txn should succeed after MapFull resize-and-retry");
 
         let final_map_size = app_store.env.info().map_size;
-        let expected_min_final =
-            align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
+        let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
             "map size must grow after MapFull: initial={initial_map_size}, final={final_map_size}"
@@ -770,8 +766,7 @@ mod tests {
             .expect("write should succeed after reader released");
 
         let final_map_size = app_store.env.info().map_size;
-        let expected_min_final =
-            align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
+        let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
             "map size must grow: initial={initial_map_size}, final={final_map_size}"
