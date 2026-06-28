@@ -40,7 +40,6 @@ pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
 }
 
 struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
-    sink: Arc<Prof::TargetActionSink>,
     batcher: Batcher<TargetActionRunner<Prof>>,
 }
 
@@ -49,7 +48,6 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         let sink = Arc::new(sink);
         Self {
             inner: Arc::new(TargetActionSinkKeeperInner {
-                sink: Arc::clone(&sink),
                 batcher: Batcher::new(
                     TargetActionRunner { sink },
                     Arc::new(BatchQueue::new()),
@@ -59,11 +57,7 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         }
     }
 
-    pub fn sink(&self) -> &Prof::TargetActionSink {
-        &self.inner.sink
-    }
-
-    pub(crate) async fn apply(
+    pub async fn apply(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,

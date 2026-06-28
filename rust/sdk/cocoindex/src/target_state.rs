@@ -361,14 +361,11 @@ where
                 }
             })
             .collect::<Result<Vec<_>>>()?;
-        let children = cocoindex_core::engine::target_state::TargetActionSink::apply(
-            self.inner.sink(),
-            &(),
-            Arc::new(crate::ctx::ContextStore::default()),
-            actions,
-        )
-        .await
-        .map_err(|e| crate::error::Error::engine(e.to_string()))?;
+        let children = self
+            .inner
+            .apply(&(), Arc::new(crate::ctx::ContextStore::default()), actions)
+            .await
+            .map_err(|e| crate::error::Error::engine(e.to_string()))?;
         Ok(children.map(|children| {
             children
                 .into_iter()
