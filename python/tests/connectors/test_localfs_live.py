@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 from pathlib import Path
 from typing import Any
 
@@ -137,7 +138,9 @@ async def test_localfs_live_rescan_interval(tmp_path: Path) -> None:
 
     @coco.fn
     async def app_main() -> None:
-        files = localfs.walk_dir(tmp_path, live=True, rescan_interval=2.0)
+        files = localfs.walk_dir(
+            tmp_path, live=True, rescan_interval=datetime.timedelta(seconds=2)
+        )
         await coco.mount_each(process_file, files.items())
 
     app = coco.App(
