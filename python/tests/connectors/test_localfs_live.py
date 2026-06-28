@@ -129,6 +129,87 @@ async def test_localfs_live_add_edit_delete(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_localfs_live_rescan_interval(tmp_path: Path) -> None:
+    """Periodic rescan detects files even with a short rescan interval."""
+    GlobalDictTarget.store.clear()
+
+    (tmp_path / "file1.txt").write_text("content1")
+
+    @coco.fn
+    async def app_main() -> None:
+        files = localfs.walk_dir(tmp_path, live=True, rescan_interval=2.0)
+        await coco.mount_each(process_file, files.items())
+
+    app = coco.App(
+        coco.AppConfig(name="test_localfs_live_rescan", environment=coco_env),
+        app_main,
+    )
+
+    handle = app.update(live=True)
+    update_task = asyncio.create_task(handle.result())
+    await asyncio.sleep(0.5)
+
+    try:
+        file1_key = "file1.txt"
+        await _wait_for_target_keys({file1_key})
+        assert GlobalDictTarget.store.data[file1_key].data == "content1"
+
+        # Add a file — picked up by events or the periodic rescan.
+        (tmp_path / "file2.txt").write_text("content2")
+        file2_key = "file2.txt"
+        await _wait_for_target_keys({file1_key, file2_key})
+        assert GlobalDictTarget.store.data[file2_key].data == "content2"
+
+        # Edit after a rescan cycle should still be detected.
+        await asyncio.sleep(2.5)
+        (tmp_path / "file1.txt").write_text("content1_v2")
+        await _wait_for_value(file1_key, "content1_v2")
+    finally:
+        update_task.cancel()
+        try:
+            await update_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_localfs_live_rescan_none_disables(tmp_path: Path) -> None:
+    """Setting rescan_interval=None disables periodic rescanning."""
+    GlobalDictTarget.store.clear()
+
+    (tmp_path / "a.txt").write_text("aaa")
+
+    @coco.fn
+    async def app_main() -> None:
+        files = localfs.walk_dir(tmp_path, live=True, rescan_interval=None)
+        await coco.mount_each(process_file, files.items())
+
+    app = coco.App(
+        coco.AppConfig(name="test_localfs_live_rescan_none", environment=coco_env),
+        app_main,
+    )
+
+    handle = app.update(live=True)
+    update_task = asyncio.create_task(handle.result())
+    await asyncio.sleep(0.5)
+
+    try:
+        await _wait_for_target_keys({"a.txt"})
+        assert GlobalDictTarget.store.data["a.txt"].data == "aaa"
+
+        # Events still work when periodic rescan is disabled.
+        (tmp_path / "b.txt").write_text("bbb")
+        await _wait_for_target_keys({"a.txt", "b.txt"})
+        assert GlobalDictTarget.store.data["b.txt"].data == "bbb"
+    finally:
+        update_task.cancel()
+        try:
+            await update_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
 async def test_localfs_live_single_watcher(tmp_path: Path) -> None:
     """A second concurrent watch() on one live view fails loudly."""
     items: Any = localfs.walk_dir(tmp_path, live=True).items()

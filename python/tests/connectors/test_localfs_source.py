@@ -288,3 +288,34 @@ class TestDirWalkerWalkSync:
         walker = DirWalker(tmp_path)
         files = list(walker._walk_sync())
         assert files == []
+
+
+# =============================================================================
+# rescan_interval parameter
+# =============================================================================
+
+
+class TestRescanInterval:
+    def test_default_rescan_interval(self, tmp_path: Path) -> None:
+        walker = DirWalker(tmp_path, live=True)
+        assert walker._rescan_interval == 3600.0
+
+    def test_custom_rescan_interval(self, tmp_path: Path) -> None:
+        walker = DirWalker(tmp_path, live=True, rescan_interval=120.0)
+        assert walker._rescan_interval == 120.0
+
+    def test_none_disables_rescan(self, tmp_path: Path) -> None:
+        walker = DirWalker(tmp_path, live=True, rescan_interval=None)
+        assert walker._rescan_interval is None
+
+    def test_walk_dir_passes_rescan_interval(self, tmp_path: Path) -> None:
+        from cocoindex.connectors.localfs._source import walk_dir
+
+        walker = walk_dir(tmp_path, live=True, rescan_interval=300.0)
+        assert walker._rescan_interval == 300.0
+
+    def test_walk_dir_default_rescan_interval(self, tmp_path: Path) -> None:
+        from cocoindex.connectors.localfs._source import walk_dir
+
+        walker = walk_dir(tmp_path, live=True)
+        assert walker._rescan_interval == 3600.0
