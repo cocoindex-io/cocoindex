@@ -26,7 +26,7 @@ class Metrics:
         with self._lock:
             m = self.data
             self.data = {}
-            return m
+            return _MetricCounts(m)
 
     def __repr__(self) -> str:
         return f"Metrics{self.data}"
@@ -48,6 +48,33 @@ class Metrics:
     def clear(self) -> None:
         with self._lock:
             self.data.clear()
+
+
+class _MetricCounts(dict[str, int]):
+    """Collected metric counts whose equality tolerates the per-batch ``sink`` count.
+
+    Operation counts (``insert``/``upsert``/``delete``) are deterministic and
+    compared exactly. The number of ``sink`` (batch) invocations depends on how
+    aggressively the engine's shared target-action batcher coalesces leaf
+    actions, which can vary with concurrency. The ``sink`` value in an expected
+    literal is therefore treated as an upper bound rather than an exact count.
+    """
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, dict):
+            return False
+        actual_ops = {k: v for k, v in self.items() if k != "sink"}
+        expected_ops = {k: v for k, v in other.items() if k != "sink"}
+        if actual_ops != expected_ops:
+            return False
+        if "sink" not in other:
+            return True
+        return bool(self.get("sink", 0) <= other["sink"])
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    __hash__ = None  # type: ignore[assignment]
 
 
 class DictTargetStateStore:
@@ -274,10 +301,12 @@ class DictsTargetStateStore:
         self.child_invalidation = None
 
     def collect_child_metrics(self) -> dict[str, int]:
-        return sum(
-            (Metrics(store.metrics.collect()) for store in self._stores.values()),
-            Metrics(),
-        ).data
+        return _MetricCounts(
+            sum(
+                (Metrics(store.metrics.collect()) for store in self._stores.values()),
+                Metrics(),
+            ).data
+        )
 
     @property
     def data(self) -> dict[str, dict[str, DictDataWithPrev]]:
@@ -453,14 +482,16 @@ class AttachmentDictsTargetStateStore:
         self.child_invalidation = None
 
     def collect_attachment_metrics(self, att_type: str) -> dict[str, int]:
-        return sum(
-            (
-                Metrics(handler._attachment_stores[att_type].metrics.collect())
-                for handler in self._handlers.values()
-                if att_type in handler._attachment_stores
-            ),
-            Metrics(),
-        ).data
+        return _MetricCounts(
+            sum(
+                (
+                    Metrics(handler._attachment_stores[att_type].metrics.collect())
+                    for handler in self._handlers.values()
+                    if att_type in handler._attachment_stores
+                ),
+                Metrics(),
+            ).data
+        )
 
     @property
     def attachment_data(
