@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as _datetime
+import datetime
 import os
-from datetime import datetime
 from pathlib import Path
 from collections.abc import AsyncIterable as _AsyncIterable
 from typing import AsyncIterator, Iterator
@@ -29,7 +28,7 @@ from ._common import FilePath, to_file_path
 def _stat_to_metadata(stat: os.stat_result) -> FileMetadata:
     """Convert an os.stat_result to FileMetadata."""
     seconds, us = divmod(stat.st_mtime_ns // 1_000, 1_000_000)
-    mtime = datetime.fromtimestamp(seconds).replace(microsecond=us)
+    mtime = datetime.datetime.fromtimestamp(seconds).replace(microsecond=us)
     return FileMetadata(size=stat.st_size, modified_time=mtime)
 
 
@@ -67,7 +66,7 @@ class File(_file.FileLike[pathlib.Path]):
         return await asyncio.to_thread(self._read_sync, size)
 
 
-_DEFAULT_RESCAN_INTERVAL: _datetime.timedelta = _datetime.timedelta(hours=1)
+_DEFAULT_RESCAN_INTERVAL: datetime.timedelta = datetime.timedelta(hours=1)
 
 
 class DirWalker:
@@ -86,7 +85,7 @@ class DirWalker:
     _recursive: bool
     _path_matcher: FilePathMatcher
     _live: bool
-    _rescan_interval: _datetime.timedelta | None
+    _rescan_interval: datetime.timedelta | None
 
     def __init__(
         self,
@@ -95,7 +94,7 @@ class DirWalker:
         live: bool = False,
         recursive: bool = False,
         path_matcher: FilePathMatcher | None = None,
-        rescan_interval: _datetime.timedelta | None = _DEFAULT_RESCAN_INTERVAL,
+        rescan_interval: datetime.timedelta | None = _DEFAULT_RESCAN_INTERVAL,
     ) -> None:
         self._root_path = to_file_path(path)
         self._live = live
@@ -355,7 +354,7 @@ def walk_dir(
     live: bool = False,
     recursive: bool = False,
     path_matcher: FilePathMatcher | None = None,
-    rescan_interval: _datetime.timedelta | None = _DEFAULT_RESCAN_INTERVAL,
+    rescan_interval: datetime.timedelta | None = _DEFAULT_RESCAN_INTERVAL,
 ) -> DirWalker:
     """
     Walk through a directory and yield file entries.
