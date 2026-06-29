@@ -36,6 +36,14 @@ struct RowV2 {
     embedding: Vec<f32>,
 }
 
+#[derive(Clone, Serialize)]
+struct RowV2Nullable {
+    id: i64,
+    text: String,
+    summary: Option<String>,
+    embedding: Vec<f32>,
+}
+
 fn schema() -> TableSchema {
     TableSchema::new(
         [
@@ -92,6 +100,17 @@ async fn row_count(db: &LanceDatabase) -> usize {
         .await
         .unwrap()
         .count_rows(None)
+        .await
+        .unwrap()
+}
+
+async fn table_version(db: &LanceDatabase) -> u64 {
+    db.connection()
+        .open_table(TABLE)
+        .execute()
+        .await
+        .unwrap()
+        .version()
         .await
         .unwrap()
 }
@@ -237,6 +256,129 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
     );
     let hit = lancedb::vector_search(&db, TABLE, "embedding", vec![0.0, 1.0, 0.0], 1).await?;
     assert_eq!(hit[0]["summary"], "second");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn lancedb_nullable_schema_only_add_does_not_upsert_rows() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+            for row in [
+                Row {
+                    id: 1,
+                    text: "alpha".to_string(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                },
+                Row {
+                    id: 2,
+                    text: "beta".to_string(),
+                    embedding: vec![0.0, 1.0, 0.0],
+                },
+            ] {
+                table.declare_row(&ctx, &row)?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+
+    let initial_version = table_version(&db).await;
+
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
+            for row in [
+                RowV2Nullable {
+                    id: 1,
+                    text: "alpha".to_string(),
+                    summary: None,
+                    embedding: vec![1.0, 0.0, 0.0],
+                },
+                RowV2Nullable {
+                    id: 2,
+                    text: "beta".to_string(),
+                    summary: None,
+                    embedding: vec![0.0, 1.0, 0.0],
+                },
+            ] {
+                table.declare_row(&ctx, &row)?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+
+    let table = db.connection().open_table(TABLE).execute().await.unwrap();
+    assert!(
+        table
+            .schema()
+            .await
+            .unwrap()
+            .field_with_name("summary")
+            .is_ok(),
+        "nullable column was added"
+    );
+    assert_eq!(row_count(&db).await, 2);
+
+    let schema_only_version = table_version(&db).await;
+    assert_eq!(
+        schema_only_version,
+        initial_version + 1,
+        "schema-only change should only commit the add_columns version"
+    );
+
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
+            for row in [
+                RowV2Nullable {
+                    id: 1,
+                    text: "alpha".to_string(),
+                    summary: None,
+                    embedding: vec![1.0, 0.0, 0.0],
+                },
+                RowV2Nullable {
+                    id: 2,
+                    text: "beta".to_string(),
+                    summary: None,
+                    embedding: vec![0.0, 1.0, 0.0],
+                },
+            ] {
+                table.declare_row(&ctx, &row)?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    assert_eq!(table_version(&db).await, schema_only_version);
 
     Ok(())
 }
