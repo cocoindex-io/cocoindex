@@ -1,0 +1,69 @@
+---
+title: "*Connectors* overview"
+toc_max_heading_level: 4
+description: >
+  The built-in connectors that move data in and out of a CocoIndex flow — object
+  stores, message streams, and relational, vector, and graph databases. Many work
+  as a source, a target, or both.
+---
+A *connector* links a CocoIndex flow to an external system. It plays one or both of two roles:
+
+- **As source** — imports rows into a flow, with change capture so only what actually changed is reprocessed.
+- **As target** — exports [target states](../programming_guide/target_state) from a flow and keeps the external system in sync via incremental upserts and deletions.
+
+Some connectors do both. Each page documents the APIs for whichever roles the system supports, under `## As source` / `## As target` sections.
+
+## Sources
+
+Connectors that feed rows into a flow.
+
+| Connector | Also a target | Reads from |
+|-----------|---------------|------------|
+| [Local filesystem](../connectors/localfs)         | ✅ | Local files and directories, with live watch mode |
+| [Amazon S3](../connectors/amazon_s3)              |    | S3 buckets and S3-compatible stores (MinIO, Tigris) |
+| [Google Drive](../connectors/google_drive)        |    | Shared Google Drive folders via a service account |
+| [OCI Object Storage](../connectors/oci_object_storage) | | Oracle Cloud object storage, driven by OCI Streaming events |
+| [Postgres](../connectors/postgres)                | ✅ | PostgreSQL tables via `PgTableSource` |
+| [Kafka](../connectors/kafka)                      | ✅ | Topics as live keyed maps or raw event streams |
+| [Iggy](../connectors/iggy)                        | ✅ | Apache Iggy topics as live streams or maps |
+
+## Targets
+
+Connectors that export data out of a flow. They're grouped by the kind of store, but most also handle vector search.
+
+### Relational and analytical
+
+| Connector | Also a source | Notes |
+|-----------|---------------|-------|
+| [Postgres](../connectors/postgres)   | ✅ | Relational database with `pgvector` (ivfflat / hnsw) |
+| [Apache Doris](../connectors/doris)  |    | Analytical database, HNSW/IVF vector + inverted full-text indexes |
+| [SQLite](../connectors/sqlite)       |    | Embedded database, optional vector search via `sqlite-vec` |
+
+### Vector databases
+
+| Connector | Notes |
+|-----------|-------|
+| [LanceDB](../connectors/lancedb)         | Embedded vector DB, vector + full-text (FTS) indexes |
+| [Qdrant](../connectors/qdrant)           | Single, named, and multi-vector points with schemaless payloads |
+| [Turbopuffer](../connectors/turbopuffer) | Namespaces with single or named vectors |
+| [Valkey](../connectors/valkey)           | Search indexes with vector similarity (HNSW / FLAT) |
+| [zvec](../connectors/zvec)               | Embedded, in-process vector DB with dense and sparse vectors |
+
+### Property graph
+
+| Connector | Notes |
+|-----------|-------|
+| [Neo4j](../connectors/neo4j)         | Property graph over Bolt — node and relationship tables, vector indexes |
+| [FalkorDB](../connectors/falkordb)   | Redis-backed Cypher graph, per-graph multitenancy, vector indexes |
+| [SurrealDB](../connectors/surrealdb) | Multi-model — normal and relation (edge) tables, vector indexes |
+
+### Message streams
+
+| Connector | Also a source | Notes |
+|-----------|---------------|-------|
+| [Kafka](../connectors/kafka) | ✅ | Produce messages as target states with at-least-once semantics |
+| [Iggy](../connectors/iggy)   | ✅ | Produce messages to Apache Iggy topics |
+
+## Beyond the built-ins
+
+If you need a system that isn't listed here, implement a [custom target connector](../advanced_topics/custom_target_connector) as a building block of your flow.

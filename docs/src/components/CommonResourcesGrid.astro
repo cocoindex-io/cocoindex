@@ -1,0 +1,47 @@
+---
+// Common Resources overview — data only; grid/cards/glyphs from @cocoindex/brand.
+import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
+
+const groups = [
+  {
+    label: 'Types & schema',
+    blurb: 'The exact shapes connectors and operations exchange.',
+    accent: 'coral',
+    cards: [
+      {
+        href: '../common_resources/data_types/',
+        title: 'Data types',
+        glyph: 'types',
+        body: 'Shared models across connectors and ops: FileLike, FilePath, FilePathMatcher, Chunk, and the Embedder protocol.',
+      },
+      {
+        href: '../common_resources/vector_schema/',
+        title: 'Vector schema',
+        glyph: 'vector',
+        body: 'Describe vector columns with VectorSchema and VectorSchemaProvider, including MultiVectorSchema for ColBERT-style models.',
+      },
+    ],
+  },
+  {
+    label: 'Identity & state',
+    blurb: 'Keep IDs stable and bridge producing and consuming logic.',
+    accent: 'palm',
+    cards: [
+      {
+        href: '../common_resources/id_generation/',
+        title: 'Stable ID generation',
+        glyph: 'id',
+        body: 'Generate IDs and UUIDs that stay stable across incremental runs, from pure derivation to stateful sequences.',
+      },
+      {
+        href: '../common_resources/live_map/',
+        title: 'LiveMap',
+        glyph: 'map',
+        body: 'An in-memory keyed collection that bridges producing and consuming logic via target states and LiveMapView.',
+      },
+    ],
+  },
+];
+---
+
+<DocCardGrid groups={groups} ariaLabel="Common resources" />

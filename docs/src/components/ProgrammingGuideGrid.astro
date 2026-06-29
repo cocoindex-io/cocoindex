@@ -1,0 +1,79 @@
+---
+// Programming Guide overview — data only; the grid/cards/glyphs come from
+// @cocoindex/brand (DocCardGrid → DocCard + doc-glyphs). Each group owns an accent.
+import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
+
+const groups = [
+  {
+    label: 'Core building blocks',
+    blurb: 'The pieces you compose into a pipeline, from the App down to a single function.',
+    accent: 'coral',
+    cards: [
+      {
+        href: '../programming_guide/app/',
+        title: 'App',
+        glyph: 'app',
+        body: 'The top-level runnable unit: create one, trigger updates, set the db path, and manage lifespan resources.',
+      },
+      {
+        href: '../programming_guide/target_state/',
+        title: 'Target state',
+        glyph: 'target',
+        body: 'Declare what should exist in an external system and let CocoIndex sync minimal creates, updates, and deletes.',
+      },
+      {
+        href: '../programming_guide/processing_component/',
+        title: 'Processing component',
+        glyph: 'component',
+        body: 'The unit of incremental execution and the sync boundary for target states. Covers the mounting APIs and paths.',
+      },
+      {
+        href: '../programming_guide/function/',
+        title: 'Functions',
+        glyph: 'function',
+        body: 'Decorate Python with @coco.fn so it joins change detection and memoization, with async, batching, and GPU runners.',
+      },
+    ],
+  },
+  {
+    label: 'Resources & runtime',
+    blurb: 'Share what components need, and keep the pipeline reacting after the first run.',
+    accent: 'palm',
+    cards: [
+      {
+        href: '../programming_guide/context/',
+        title: 'Context',
+        glyph: 'context',
+        body: 'Share connections, models, and config across components with ContextKey, provide(), and use_context().',
+      },
+      {
+        href: '../programming_guide/live_mode/',
+        title: 'Live mode',
+        glyph: 'livemode',
+        body: 'Keep an App running after its first sweep so it reacts to source changes continuously.',
+      },
+    ],
+  },
+  {
+    label: 'Under the hood',
+    blurb: 'The mechanics underneath: how values are stored, and how the SDK is laid out.',
+    accent: 'peach',
+    cards: [
+      {
+        href: '../programming_guide/serialization/',
+        title: 'Serialization',
+        glyph: 'serialization',
+        body: 'How memoized returns serialize with msgspec: supported types, required annotations, and custom registration.',
+      },
+      {
+        href: '../programming_guide/sdk_overview/',
+        title: 'SDK overview',
+        glyph: 'sdk',
+        body: 'A tour of the Python SDK: package layout, common types, and how async orchestration composes with sync leaves.',
+      },
+    ],
+  },
+];
+---
+
+<DocCardGrid groups={groups} ariaLabel="Programming guide" />

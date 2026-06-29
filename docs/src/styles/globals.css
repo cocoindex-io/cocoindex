@@ -14,6 +14,10 @@
    lives in one place. Docs-only brand files (home/blog don't import them). */
 @import '@cocoindex/brand/docs-layout.css';
 @import '@cocoindex/brand/docsearch.css';
+/* Section-overview cards (DocCard / DocCardGrid) — the hum-07 color-shift grid
+   used on the docs landing/section overview pages. */
+@import '@cocoindex/brand/doc-card.css';
+@import '@cocoindex/brand/doc-card-grid.css';
 
 /* ─────────────────────────────────────────────────────────────────────────
    Typography — align the display sizes to the Hum-07 brand reference. Fonts
