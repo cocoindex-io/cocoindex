@@ -221,6 +221,61 @@ async def test_add_column_preserves_existing_rows(lancedb_dir: Path) -> None:
 
 @pytest.mark.asyncio
 @requires_lancedb
+async def test_nullable_schema_only_add_does_not_upsert_rows(
+    lancedb_dir: Path,
+) -> None:
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_nullable_schema_only_add"
+    source_rows: list[Any] = []
+    row_type: type[Any] = SimpleRow
+
+    async def declare_table_and_rows() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            lancedb.declare_table_target,
+            LANCEDB_DB,
+            table_name,
+            await lancedb.TableSchema.from_class(row_type, primary_key=["id"]),
+        )
+        for row in source_rows:
+            table.declare_row(row=row)
+
+    env = _make_env(conn, "test_nullable_schema_only_add_does_not_upsert_rows")
+    app = coco.App(
+        coco.AppConfig(name="test_lancedb_nullable_schema_only_add", environment=env),
+        declare_table_and_rows,
+    )
+
+    source_rows = [
+        SimpleRow(id="1", name="Alice"),
+        SimpleRow(id="2", name="Bob"),
+    ]
+    await app.update()
+
+    initial_version = await _read_table_version(conn, table_name)
+
+    row_type = ExtendedRow
+    source_rows = [
+        ExtendedRow(id="1", name="Alice"),
+        ExtendedRow(id="2", name="Bob"),
+    ]
+    await app.update()
+
+    assert await _read_column_names(conn, table_name) == ["id", "name", "extra"]
+    assert sorted(await _read_rows(conn, table_name), key=lambda row: row["id"]) == [
+        {"id": "1", "name": "Alice", "extra": None},
+        {"id": "2", "name": "Bob", "extra": None},
+    ]
+
+    schema_only_version = await _read_table_version(conn, table_name)
+    assert schema_only_version == initial_version + 1
+
+    await app.update()
+    assert await _read_table_version(conn, table_name) == schema_only_version
+
+
+@pytest.mark.asyncio
+@requires_lancedb
 async def test_add_column_keeps_old_rows_before_backfill(lancedb_dir: Path) -> None:
     conn = await lancedb.connect_async(str(lancedb_dir))
     table_name = "test_add_column_existing_rows"
@@ -260,6 +315,190 @@ async def test_add_column_keeps_old_rows_before_backfill(lancedb_dir: Path) -> N
         {"id": "2", "name": "Bob", "extra": "std"},
     ]
     assert "extra" in await _read_column_names(conn, table_name)
+
+
+@requires_lancedb
+def test_row_reconcile_tracks_only_nulls_from_new_nullable_columns() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "extra": None}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is True
+    assert result.tracking_record == fingerprint_object(new_row)
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_non_null_value_for_new_nullable_column() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "extra": "vip"}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_existing_column_change_with_new_null_column() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alicia", "extra": None}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_when_previous_row_may_be_missing() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "extra": None}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        True,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_non_nullable_added_column() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "score": lancedb.ColumnDef(type=pa.float64(), nullable=False),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "score": 1.0}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_row_handler_track_only_actions_do_not_open_table_or_optimize() -> None:
+    conn = _FakeAsyncConnection()
+    handler = _target._RowHandler(
+        conn=cast(Any, conn),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
+        num_transactions_before_optimize=1,
+    )
+
+    await handler._apply_actions(
+        cast(Any, None),
+        [_target._RowAction(key=("1",), value=None, track_only=True)],
+    )
+
+    assert conn.open_table_count == 0
+    assert conn.table.optimize_count == 0
 
 
 @pytest.mark.asyncio
