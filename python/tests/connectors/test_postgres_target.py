@@ -297,6 +297,79 @@ async def test_postgres_declare_vector_index(pg_env: _PgEnv) -> None:
 
 
 @pytest.mark.asyncio
+async def test_postgres_declare_vector_index_recreate_in_non_default_schema(
+    pg_env: _PgEnv,
+) -> None:
+    """Re-creating a vector index in a NON-default schema must not collide.
+
+    Regression: `_apply_actions` dropped the index with an *unqualified* name,
+    which resolves through the connection's `search_path` (default `"$user",
+    public`, excluding a custom schema), so the `DROP INDEX IF EXISTS` silently
+    no-opped while the following `CREATE INDEX ... ON "<schema>"."<table>"` always
+    targets the table's schema — raising `DuplicateTableError`. The method change
+    (ivfflat → hnsw) is what triggers the drop+recreate. The default-schema test
+    above doesn't catch this because `public` is on `search_path`.
+    """
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    schema_name = _unique_name("vecidx_sch")
+    table_name = _unique_name("test_vec_sch")
+    logical_name = "idx1"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
+    index_method = "ivfflat"
+
+    async with pool.acquire() as conn:
+        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(VectorRow, primary_key=["id"]),
+                pg_schema_name=schema_name,
+            )
+            table.declare_row(
+                row=VectorRow(
+                    id="1",
+                    content="hello",
+                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                )
+            )
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="cosine",
+                method=index_method,
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_vec_sch_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        # Run 1: create the ivfflat index in the custom schema.
+        await app.update()
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None and info["amname"] == "ivfflat"
+
+        # Run 2: change the method → drop + recreate. Before the fix this raised
+        # DuplicateTableError because the unqualified DROP missed the custom-schema
+        # index.
+        index_method = "hnsw"
+        await app.update()
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None and info["amname"] == "hnsw"
+
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+
+
+@pytest.mark.asyncio
 async def test_postgres_declare_vector_index_fingerprint_no_change(
     pg_env: _PgEnv,
 ) -> None:
