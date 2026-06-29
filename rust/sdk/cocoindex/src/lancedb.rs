@@ -10,7 +10,7 @@
 //!
 //! Built on the native Rust `lancedb` crate (LanceDB's core is Rust) + Arrow.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
@@ -270,7 +270,7 @@ pub fn declare_table_target(
             table_name,
             schema_fp
         ),
-        RowHandler::new(db.name().to_string(), spec.clone()),
+        RowHandler::new(db.name().to_string(), spec.clone(), HashSet::new()),
     )?;
     Ok(LanceTableTarget {
         table_name: Arc::from(table_name),
@@ -595,11 +595,13 @@ impl TableHandler {
                                 let spec = a.spec.ok_or_else(|| {
                                     Error::engine("LanceDB create/update action missing spec")
                                 })?;
+                                let mut null_backfilled_columns = HashSet::new();
                                 if spec.managed_by.is_system() {
-                                    ensure_table(&db, &spec, a.recreate).await?;
+                                    null_backfilled_columns =
+                                        ensure_table(&db, &spec, a.recreate).await?;
                                 }
                                 out.push(Some(ChildTargetDef::new::<RowState, _>(
-                                    RowHandler::new(db_key.clone(), spec),
+                                    RowHandler::new(db_key.clone(), spec, null_backfilled_columns),
                                 )));
                             }
                             TargetAction::Delete(a) => {
@@ -625,13 +627,19 @@ async fn table_exists(db: &LanceDatabase, table_name: &str) -> Result<bool> {
     Ok(names.iter().any(|n| n == table_name))
 }
 
-async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> Result<()> {
+async fn ensure_table(
+    db: &LanceDatabase,
+    spec: &TableSpec,
+    recreate: bool,
+) -> Result<HashSet<String>> {
     let exists = table_exists(db, &spec.table_name).await?;
     if exists && recreate {
         drop_table(db, &spec.table_name).await?;
     } else if exists {
         match evolve_existing_table(db, spec).await? {
-            TableEvolution::Done => return Ok(()),
+            TableEvolution::Done {
+                null_backfilled_columns,
+            } => return Ok(null_backfilled_columns),
             TableEvolution::Recreate => drop_table(db, &spec.table_name).await?,
         }
     }
@@ -640,11 +648,13 @@ async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> R
         .execute()
         .await
         .map_err(|e| Error::engine(format!("lancedb create table {:?}: {e}", spec.table_name)))?;
-    Ok(())
+    Ok(HashSet::new())
 }
 
 enum TableEvolution {
-    Done,
+    Done {
+        null_backfilled_columns: HashSet<String>,
+    },
     Recreate,
 }
 
@@ -660,6 +670,7 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
         .await
         .map_err(|e| Error::engine(format!("lancedb read schema: {e}")))?;
     let mut add_fields = Vec::new();
+    let mut null_backfilled_columns = HashSet::new();
     for (name, def) in &spec.table_schema.columns {
         match existing.field_with_name(name) {
             Ok(field) => {
@@ -675,6 +686,9 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
                 // type, including fixed-size-list vector columns — so adding a
                 // vector column is additive instead of wiping the table.
                 add_fields.push(Field::new(name, def.col_type.arrow_data_type(), true));
+                if def.nullable {
+                    null_backfilled_columns.insert(name.clone());
+                }
             }
         }
     }
@@ -685,7 +699,9 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
             .await
             .map_err(|e| Error::engine(format!("lancedb add columns: {e}")))?;
     }
-    Ok(TableEvolution::Done)
+    Ok(TableEvolution::Done {
+        null_backfilled_columns,
+    })
 }
 
 async fn drop_table(db: &LanceDatabase, table_name: &str) -> Result<()> {
@@ -713,6 +729,8 @@ pub struct RowState {
 struct RowAction {
     pk: Vec<JsonValue>,
     state: Option<RowState>,
+    #[serde(default)]
+    track_only: bool,
 }
 
 /// Number of applied row-batches (transactions) after which the table is
@@ -728,15 +746,48 @@ struct RowHandler {
     /// row-batches so the table is optimized every
     /// [`TRANSACTIONS_BEFORE_OPTIMIZE`] batches (see [`apply_rows`]).
     optimize_counter: Arc<std::sync::atomic::AtomicU64>,
+    null_backfilled_columns: HashSet<String>,
 }
 
 impl RowHandler {
-    fn new(db_key: String, spec: TableSpec) -> Self {
+    fn new(db_key: String, spec: TableSpec, null_backfilled_columns: HashSet<String>) -> Self {
         Self {
             db_key,
             spec,
             optimize_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            null_backfilled_columns,
         }
+    }
+
+    fn legacy_fingerprint_for_null_backfill(
+        &self,
+        desired: &RowState,
+    ) -> Result<Option<Fingerprint>> {
+        if self.null_backfilled_columns.is_empty() {
+            return Ok(None);
+        }
+
+        let mut legacy_fields = desired.fields.clone();
+        let mut removed_any = false;
+        for col_name in &self.null_backfilled_columns {
+            match legacy_fields.get(col_name) {
+                Some(value) if value.is_null() => {
+                    legacy_fields.remove(col_name);
+                    removed_any = true;
+                }
+                Some(_) => return Ok(None),
+                None => {}
+            }
+        }
+
+        if !removed_any {
+            return Ok(None);
+        }
+        Fingerprint::from(&RowState {
+            fields: legacy_fields,
+        })
+        .map(Some)
+        .map_err(Error::from)
     }
 }
 
@@ -765,8 +816,29 @@ impl TargetHandler<RowState> for RowHandler {
         if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
+        if !prev_may_be_missing
+            && !prev.is_empty()
+            && let Some(desired_state) = desired.as_ref()
+            && let Some(legacy_fp) = self.legacy_fingerprint_for_null_backfill(desired_state)?
+            && prev.iter().any(|p| p == &legacy_fp)
+        {
+            return Ok(Some(TargetReconcileOutput {
+                action: TargetAction::Update(RowAction {
+                    pk,
+                    state: None,
+                    track_only: true,
+                }),
+                sink: self.row_sink(),
+                tracking_record: desired_fp,
+                child_invalidation: None,
+            }));
+        }
         Ok(Some(TargetReconcileOutput {
-            action: TargetAction::Update(RowAction { pk, state: desired }),
+            action: TargetAction::Update(RowAction {
+                pk,
+                state: desired,
+                track_only: false,
+            }),
             sink: self.row_sink(),
             tracking_record: desired_fp,
             child_invalidation: None,
@@ -814,6 +886,9 @@ impl RowHandler {
                             | TargetAction::Update(r)
                             | TargetAction::Delete(r) => r,
                         };
+                        if row.track_only {
+                            continue;
+                        }
                         match row.state {
                             Some(state) => upserts.push(state.fields),
                             None => deletes.push(row.pk),
@@ -1662,6 +1737,206 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("non-nullable LanceDB column"));
+    }
+
+    fn row_state_from_fields(
+        fields: impl IntoIterator<Item = (&'static str, JsonValue)>,
+    ) -> RowState {
+        RowState {
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect(),
+        }
+    }
+
+    fn row_handler(null_backfilled_columns: impl IntoIterator<Item = &'static str>) -> RowHandler {
+        let table_schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Int64)),
+                ("name", ColumnDef::new(ColumnType::Text)),
+                ("summary", ColumnDef::new(ColumnType::Text).nullable()),
+                ("score", ColumnDef::new(ColumnType::Float64)),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        RowHandler::new(
+            "db".to_string(),
+            TableSpec {
+                table_name: "docs".to_string(),
+                table_schema,
+                managed_by: ManagedBy::System,
+            },
+            null_backfilled_columns
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn row_reconcile_tracks_only_nulls_from_new_nullable_columns() {
+        let handler = row_handler(["summary"]);
+        let old_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+        ]);
+        let new_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+            ("summary", JsonValue::Null),
+        ]);
+
+        let result = handler
+            .reconcile(
+                StableKey::Int(1),
+                Some(new_row.clone()),
+                vec![Fingerprint::from(&old_row).unwrap()],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        match result.action {
+            TargetAction::Update(action) => {
+                assert!(action.track_only);
+                assert!(action.state.is_none());
+            }
+            other => panic!("expected update action, got {other:?}"),
+        }
+        assert_eq!(
+            result.tracking_record,
+            Some(Fingerprint::from(&new_row).unwrap())
+        );
+    }
+
+    #[test]
+    fn row_reconcile_upserts_non_null_value_for_new_nullable_column() {
+        let handler = row_handler(["summary"]);
+        let old_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+        ]);
+        let new_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+            ("summary", JsonValue::from("new")),
+        ]);
+
+        let result = handler
+            .reconcile(
+                StableKey::Int(1),
+                Some(new_row.clone()),
+                vec![Fingerprint::from(&old_row).unwrap()],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        match result.action {
+            TargetAction::Update(action) => {
+                assert!(!action.track_only);
+                assert_eq!(action.state, Some(new_row));
+            }
+            other => panic!("expected update action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn row_reconcile_upserts_existing_column_change_with_new_null_column() {
+        let handler = row_handler(["summary"]);
+        let old_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+        ]);
+        let new_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha-updated")),
+            ("summary", JsonValue::Null),
+        ]);
+
+        let result = handler
+            .reconcile(
+                StableKey::Int(1),
+                Some(new_row.clone()),
+                vec![Fingerprint::from(&old_row).unwrap()],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        match result.action {
+            TargetAction::Update(action) => {
+                assert!(!action.track_only);
+                assert_eq!(action.state, Some(new_row));
+            }
+            other => panic!("expected update action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn row_reconcile_upserts_when_previous_row_may_be_missing() {
+        let handler = row_handler(["summary"]);
+        let old_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+        ]);
+        let new_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+            ("summary", JsonValue::Null),
+        ]);
+
+        let result = handler
+            .reconcile(
+                StableKey::Int(1),
+                Some(new_row.clone()),
+                vec![Fingerprint::from(&old_row).unwrap()],
+                true,
+            )
+            .unwrap()
+            .unwrap();
+
+        match result.action {
+            TargetAction::Update(action) => {
+                assert!(!action.track_only);
+                assert_eq!(action.state, Some(new_row));
+            }
+            other => panic!("expected update action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn row_reconcile_upserts_non_nullable_added_column() {
+        let handler = row_handler([]);
+        let old_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+        ]);
+        let new_row = row_state_from_fields([
+            ("id", JsonValue::from(1)),
+            ("name", JsonValue::from("alpha")),
+            ("score", JsonValue::from(1.0)),
+        ]);
+
+        let result = handler
+            .reconcile(
+                StableKey::Int(1),
+                Some(new_row.clone()),
+                vec![Fingerprint::from(&old_row).unwrap()],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        match result.action {
+            TargetAction::Update(action) => {
+                assert!(!action.track_only);
+                assert_eq!(action.state, Some(new_row));
+            }
+            other => panic!("expected update action, got {other:?}"),
+        }
     }
 
     #[test]
