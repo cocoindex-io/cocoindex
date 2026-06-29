@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
@@ -14,9 +16,10 @@ from cocoindex._internal.runner import (
     GPURunner,
     configure_gpu_pool,
     current_gpu,
+    current_gpus,
+    current_gpu_fraction,
+    _detect_num_gpus,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +30,7 @@ def _reset_gpu_pool() -> Iterator[None]:
     _runner_mod._default_gpu_pool = old
 
 
+@pytest.mark.asyncio
 async def test_acquire_returns_gpu_id() -> None:
     pool = GPUPool(num_gpus=2)
     gpu = await pool.acquire(1.0)
@@ -34,6 +38,7 @@ async def test_acquire_returns_gpu_id() -> None:
     await pool.release(gpu, 1.0)
 
 
+@pytest.mark.asyncio
 async def test_acquire_different_gpus() -> None:
     pool = GPUPool(num_gpus=2)
     gpu0 = await pool.acquire(1.0)
@@ -43,6 +48,7 @@ async def test_acquire_different_gpus() -> None:
     await pool.release(gpu1, 1.0)
 
 
+@pytest.mark.asyncio
 async def test_acquire_blocks_when_capacity_full() -> None:
     pool = GPUPool(num_gpus=1)
     gpu = await pool.acquire(1.0)
@@ -57,6 +63,7 @@ async def test_acquire_blocks_when_capacity_full() -> None:
     await pool.release(result, 1.0)
 
 
+@pytest.mark.asyncio
 async def test_fractional_shares_same_gpu() -> None:
     pool = GPUPool(num_gpus=1)
     gpu0 = await pool.acquire(0.5)
@@ -74,6 +81,7 @@ async def test_fractional_shares_same_gpu() -> None:
     await pool.release(result, 0.5)
 
 
+@pytest.mark.asyncio
 async def test_multi_gpu_all_parallel() -> None:
     pool = GPUPool(num_gpus=3)
     tasks = [asyncio.create_task(pool.acquire(1.0)) for _ in range(3)]
@@ -83,11 +91,13 @@ async def test_multi_gpu_all_parallel() -> None:
         await pool.release(g, 1.0)
 
 
+@pytest.mark.asyncio
 async def test_invalid_num_gpus_raises() -> None:
     with pytest.raises(ValueError):
         GPUPool(num_gpus=0)
 
 
+@pytest.mark.asyncio
 async def test_runner_sets_current_gpu_sync() -> None:
     configure_gpu_pool(2)
     seen: list[int | None] = []
@@ -103,6 +113,7 @@ async def test_runner_sets_current_gpu_sync() -> None:
     assert 0 <= seen[0] < 2
 
 
+@pytest.mark.asyncio
 async def test_runner_sets_current_gpu_async() -> None:
     configure_gpu_pool(2)
     seen: list[int | None] = []
@@ -117,6 +128,7 @@ async def test_runner_sets_current_gpu_async() -> None:
     assert seen[0] is not None
 
 
+@pytest.mark.asyncio
 async def test_gpu_call_factory_creates_fraction() -> None:
     base = GPURunner(fraction=1.0)
     half = base(0.5)
@@ -125,6 +137,7 @@ async def test_gpu_call_factory_creates_fraction() -> None:
     assert base._fraction == 1.0
 
 
+@pytest.mark.asyncio
 async def test_invalid_fraction_raises() -> None:
     with pytest.raises(ValueError):
         GPURunner(fraction=0.0)
@@ -132,6 +145,7 @@ async def test_invalid_fraction_raises() -> None:
         GPURunner(fraction=1.5)
 
 
+@pytest.mark.asyncio
 async def test_parallel_runners_assign_different_gpus() -> None:
     configure_gpu_pool(2)
     runner = GPURunner(fraction=1.0)
@@ -148,6 +162,7 @@ async def test_parallel_runners_assign_different_gpus() -> None:
     assert len(set(seen)) == 2
 
 
+@pytest.mark.asyncio
 async def test_fractional_runners_share_gpu() -> None:
     configure_gpu_pool(1)
     runner = GPURunner(fraction=0.5)
@@ -162,6 +177,7 @@ async def test_fractional_runners_share_gpu() -> None:
     assert all(g == seen[0] for g in seen)
 
 
+@pytest.mark.asyncio
 async def test_default_pool_single_gpu_serializes() -> None:
     runner = GPURunner(fraction=1.0)
     order: list[str] = []
@@ -178,6 +194,7 @@ async def test_default_pool_single_gpu_serializes() -> None:
     ) < order.index("start:a")
 
 
+@pytest.mark.asyncio
 async def test_coco_fn_runner_multi_gpu_parallel() -> None:
     configure_gpu_pool(2)
     seen_gpus: list[int | None] = []
@@ -198,6 +215,7 @@ async def test_coco_fn_runner_multi_gpu_parallel() -> None:
     assert len(set(seen_threads)) == 2
 
 
+@pytest.mark.asyncio
 async def test_coco_fn_runner_single_gpu_serializes() -> None:
     order: list[str] = []
 
@@ -216,6 +234,7 @@ async def test_coco_fn_runner_single_gpu_serializes() -> None:
     assert ends[0] < starts[1]
 
 
+@pytest.mark.asyncio
 async def test_coco_fn_runner_multi_gpu_parallel_async() -> None:
     configure_gpu_pool(2)
     seen_gpus: list[int | None] = []
@@ -232,6 +251,7 @@ async def test_coco_fn_runner_multi_gpu_parallel_async() -> None:
     assert all(g is not None for g in seen_gpus)
 
 
+@pytest.mark.asyncio
 async def test_coco_fn_fractional_gpu_shares_single_gpu() -> None:
     configure_gpu_pool(1)
     seen_gpus: list[int | None] = []
@@ -253,6 +273,7 @@ async def test_coco_fn_fractional_gpu_shares_single_gpu() -> None:
     assert len(finished) == 2
 
 
+@pytest.mark.asyncio
 async def test_coco_fn_fractional_gpu_blocked_when_full() -> None:
     configure_gpu_pool(1)
     in_flight = 0
@@ -270,3 +291,179 @@ async def test_coco_fn_fractional_gpu_blocked_when_full() -> None:
     results = await asyncio.gather(_half_gpu(1), _half_gpu(2), _half_gpu(3))
     assert sorted(results) == [1, 2, 3]
     assert max_in_flight == 2
+
+
+@pytest.mark.asyncio
+async def test_runner_current_gpus_and_fraction_sync() -> None:
+    configure_gpu_pool(2)
+    runner = GPURunner(fraction=0.5)
+
+    def fn(x: int) -> int:
+        assert current_gpus() == [current_gpu()]
+        assert current_gpu_fraction() == 0.5
+        return x + 1
+
+    result = await runner.run_sync_fn(fn, 5)
+    assert result == 6
+
+
+@pytest.mark.asyncio
+async def test_runner_current_gpus_and_fraction_async() -> None:
+    configure_gpu_pool(2)
+    runner = GPURunner(fraction=0.5)
+
+    async def fn(x: int) -> int:
+        assert current_gpus() == [current_gpu()]
+        assert current_gpu_fraction() == 0.5
+        return x + 1
+
+    result = await runner.run(fn, 5)
+    assert result == 6
+
+
+@pytest.mark.asyncio
+async def test_coco_fn_current_gpus_and_fraction() -> None:
+    configure_gpu_pool(2)
+    seen: list[tuple[list[int], float | None]] = []
+
+    @coco.fn.as_async(runner=coco.GPU(0.5))
+    def _gpu_work(x: int) -> int:
+        seen.append((coco.current_gpus(), coco.current_gpu_fraction()))
+        return x + 1
+
+    results = await asyncio.gather(_gpu_work(10), _gpu_work(20))
+    assert sorted(results) == [11, 21]
+    assert len(seen) == 2
+    for gpus, fraction in seen:
+        assert len(gpus) == 1
+        assert 0 <= gpus[0] < 2
+        assert fraction == 0.5
+
+
+def test_detect_num_gpus_explicit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COCOINDEX_NUM_GPUS", "4")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert _detect_num_gpus() == 4
+
+
+def test_detect_num_gpus_cuda_visible_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2,3")
+    assert _detect_num_gpus() == 3
+
+
+def test_detect_num_gpus_cuda_visible_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert _detect_num_gpus() == 1
+
+
+def test_detect_num_gpus_explicit_env_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COCOINDEX_NUM_GPUS", "0")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert _detect_num_gpus() == 1
+
+
+def test_detect_num_gpus_explicit_env_overrides_cuda_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COCOINDEX_NUM_GPUS", "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    assert _detect_num_gpus() == 2
+
+
+def test_detect_num_gpus_cuda_visible_single_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert _detect_num_gpus() == 1
+
+
+def test_detect_num_gpus_cuda_visible_with_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0, 1 , 2")
+    assert _detect_num_gpus() == 3
+
+
+def test_detect_num_gpus_nvidia_smi_returns_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    def _mock_run(*args: Any, **kwargs: Any) -> Any:
+        class _Completed:
+            returncode = 0
+            stdout = "8\n"
+
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    assert _detect_num_gpus() == 8
+
+
+def test_detect_num_gpus_nvidia_smi_empty_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    def _mock_run(*args: Any, **kwargs: Any) -> Any:
+        class _Completed:
+            returncode = 0
+            stdout = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    assert _detect_num_gpus() == 1
+
+
+def test_detect_num_gpus_nvidia_smi_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    def _mock_run(*args: Any, **kwargs: Any) -> Any:
+        class _Completed:
+            returncode = 1
+            stdout = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    assert _detect_num_gpus() == 1
+
+
+def test_detect_num_gpus_nvidia_smi_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    def _mock_run(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError("nvidia-smi not found")
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    assert _detect_num_gpus() == 1
+
+
+def test_detect_num_gpus_all_missing_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    def _mock_run(*args: Any, **kwargs: Any) -> Any:
+        class _Completed:
+            returncode = 1
+            stdout = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    assert _detect_num_gpus() == 1

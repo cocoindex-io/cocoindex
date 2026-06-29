@@ -81,7 +81,16 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
-from .runner import GPU, GPUPool, GPURunner, Runner, configure_gpu_pool, current_gpu
+from .runner import (
+    GPU,
+    GPUPool,
+    GPURunner,
+    Runner,
+    configure_gpu_pool,
+    current_gpu,
+    current_gpus,
+    current_gpu_fraction,
+)
 
 from .memo_fingerprint import (
     memo_fingerprint,
@@ -785,6 +794,8 @@ __all__ = [
     "Runner",
     "configure_gpu_pool",
     "current_gpu",
+    "current_gpus",
+    "current_gpu_fraction",
     # .serde
     "unpickle_safe",
     "serialize_by_pickle",
