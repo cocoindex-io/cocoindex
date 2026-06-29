@@ -257,7 +257,6 @@ type SinkFn = Arc<dyn Fn(Arc<ContextStore>, Vec<Action>) -> SinkFuture + Send + 
 
 #[derive(Clone)]
 pub(crate) struct BoxedSink {
-    key: usize,
     apply_fn: SinkFn,
 }
 
@@ -270,23 +269,7 @@ impl BoxedSink {
         f: impl Fn(Arc<ContextStore>, Vec<Action>) -> SinkFuture + Send + Sync + 'static,
     ) -> Self {
         let arc: SinkFn = Arc::new(f);
-        // Cast through a thin pointer to get a stable address for equality.
-        let key = Arc::as_ptr(&arc) as *const () as usize;
-        Self { key, apply_fn: arc }
-    }
-}
-
-impl PartialEq for BoxedSink {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
-    }
-}
-
-impl Eq for BoxedSink {}
-
-impl std::hash::Hash for BoxedSink {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.key.hash(state);
+        Self { apply_fn: arc }
     }
 }
 

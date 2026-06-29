@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use cocoindex_core::engine::target_state::ChildInvalidation;
+use cocoindex_core::engine::target_state::{ChildInvalidation, TargetActionSinkKeeper};
 pub use cocoindex_core::state::stable_path::StableKey;
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -183,7 +183,7 @@ impl ChildTargetDef {
 
 #[derive(Clone)]
 pub struct TargetActionSink<A> {
-    inner: BoxedSink,
+    inner: TargetActionSinkKeeper<RustProfile>,
     _action: PhantomData<fn() -> A>,
 }
 
@@ -196,7 +196,7 @@ where
         F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        let inner = BoxedSink::new(move |actions| {
+        let inner = TargetActionSinkKeeper::new(BoxedSink::new(move |actions| {
             let decoded = actions
                 .into_iter()
                 .map(decode_action::<A>)
@@ -212,7 +212,7 @@ where
                     .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
                 Ok(None)
             })
-        });
+        }));
         Self {
             inner,
             _action: PhantomData,
@@ -231,7 +231,7 @@ where
         F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send + 'static,
     {
-        let inner = BoxedSink::new(move |actions| {
+        let inner = TargetActionSinkKeeper::new(BoxedSink::new(move |actions| {
             let decoded = actions
                 .into_iter()
                 .map(decode_action::<A>)
@@ -255,7 +255,7 @@ where
                     .collect();
                 Ok(Some(mapped))
             })
-        });
+        }));
         Self {
             inner,
             _action: PhantomData,
@@ -274,22 +274,23 @@ where
         F: Fn(Arc<ContextStore>, Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        let inner = BoxedSink::new_with_ctx(move |host_ctx, actions| {
-            let decoded = actions
-                .into_iter()
-                .map(decode_action::<A>)
-                .collect::<Result<Vec<_>>>();
-            let fut = match decoded {
-                Ok(actions) => Box::pin(f(host_ctx, actions))
-                    as Pin<Box<dyn Future<Output = Result<()>> + Send>>,
-                Err(err) => Box::pin(async move { Err(err) }),
-            };
-            Box::pin(async move {
-                fut.await
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-                Ok(None)
-            })
-        });
+        let inner =
+            TargetActionSinkKeeper::new(BoxedSink::new_with_ctx(move |host_ctx, actions| {
+                let decoded = actions
+                    .into_iter()
+                    .map(decode_action::<A>)
+                    .collect::<Result<Vec<_>>>();
+                let fut = match decoded {
+                    Ok(actions) => Box::pin(f(host_ctx, actions))
+                        as Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+                    Err(err) => Box::pin(async move { Err(err) }),
+                };
+                Box::pin(async move {
+                    fut.await
+                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                    Ok(None)
+                })
+            }));
         Self {
             inner,
             _action: PhantomData,
@@ -304,31 +305,34 @@ where
         F: Fn(Arc<ContextStore>, Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send + 'static,
     {
-        let inner = BoxedSink::new_with_ctx(move |host_ctx, actions| {
-            let decoded = actions
-                .into_iter()
-                .map(decode_action::<A>)
-                .collect::<Result<Vec<_>>>();
-            let fut = match decoded {
-                Ok(actions) => Box::pin(f(host_ctx, actions))
-                    as Pin<Box<dyn Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send>>,
-                Err(err) => Box::pin(async move { Err(err) }),
-            };
-            Box::pin(async move {
-                let defs = fut
-                    .await
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-                let mapped = defs
+        let inner =
+            TargetActionSinkKeeper::new(BoxedSink::new_with_ctx(move |host_ctx, actions| {
+                let decoded = actions
                     .into_iter()
-                    .map(|d| {
-                        d.map(|d| cocoindex_core::engine::target_state::ChildTargetDef {
-                            handler: d.handler,
+                    .map(decode_action::<A>)
+                    .collect::<Result<Vec<_>>>();
+                let fut = match decoded {
+                    Ok(actions) => Box::pin(f(host_ctx, actions))
+                        as Pin<
+                            Box<dyn Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send>,
+                        >,
+                    Err(err) => Box::pin(async move { Err(err) }),
+                };
+                Box::pin(async move {
+                    let defs = fut
+                        .await
+                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                    let mapped = defs
+                        .into_iter()
+                        .map(|d| {
+                            d.map(|d| cocoindex_core::engine::target_state::ChildTargetDef {
+                                handler: d.handler,
+                            })
                         })
-                    })
-                    .collect();
-                Ok(Some(mapped))
-            })
-        });
+                        .collect();
+                    Ok(Some(mapped))
+                })
+            }));
         Self {
             inner,
             _action: PhantomData,
@@ -343,8 +347,6 @@ where
         &self,
         actions: Vec<TargetAction<A>>,
     ) -> Result<Option<Vec<Option<ChildTargetDef>>>> {
-        use cocoindex_core::engine::target_state::TargetActionSink as _;
-
         let actions = actions
             .into_iter()
             .map(|action| match action {
