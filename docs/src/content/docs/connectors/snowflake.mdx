@@ -213,6 +213,9 @@ async def declare_products(rows: list[ProductRow]) -> None:
         table.declare_row(row=row)
 ```
 
+For a complete runnable project, see `examples/snowflake_target` in this
+repository.
+
 ## Identifier handling
 
 Database, schema, table, and column names must be simple Snowflake identifiers containing letters, numbers, and underscores, and must not start with a number. The connector quotes identifiers when generating SQL.
