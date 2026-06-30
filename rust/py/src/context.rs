@@ -9,6 +9,7 @@ use crate::{environment::PyEnvironment, stable_path::PyStablePath};
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::collections::HashSet;
 
 #[pyclass(name = "ComponentProcessorContext")]
 #[derive(Clone)]
@@ -152,8 +153,16 @@ impl PyFnCallContext {
         Self(FnCallContext::new(propagate_children_fn_logic))
     }
 
-    pub fn join_child(&self, child_fn_ctx: &PyFnCallContext) -> PyResult<()> {
-        self.0.join_child(&child_fn_ctx.0);
+    #[pyo3(signature = (child_fn_ctx, suppressed_context_deps=None))]
+    pub fn join_child(
+        &self,
+        child_fn_ctx: &PyFnCallContext,
+        suppressed_context_deps: Option<HashSet<PyFingerprint>>,
+    ) -> PyResult<()> {
+        let suppressed: Option<HashSet<_>> =
+            suppressed_context_deps.map(|fps| fps.into_iter().map(|fp| fp.0).collect());
+        self.0
+            .join_child_suppressing_context_deps(&child_fn_ctx.0, suppressed.as_ref());
         Ok(())
     }
 

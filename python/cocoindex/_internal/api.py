@@ -111,6 +111,7 @@ from .pending_marker import PendingS, ResolvedS, MaybePendingS
 from .component_ctx import (
     ComponentContext,
     component_subpath,
+    provide_context,
     use_context,
     get_component_context,
 )
@@ -861,6 +862,7 @@ __all__ = [
     "exception_handler",
     "stats_group",
     "use_context",
+    "provide_context",
     "get_component_context",
     # .setting
     "Settings",
