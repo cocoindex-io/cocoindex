@@ -1,25 +1,63 @@
 # Snowflake Target Example
 
-This example writes a small set of order rows into a Snowflake table with the
-CocoIndex Snowflake target connector. CocoIndex owns the table state: it creates
-the database, schema, and table when needed, writes rows with Snowflake `MERGE`,
-and deletes target rows that are no longer declared by the pipeline.
+This example shows how to use Snowflake as a CocoIndex target.
+
+Snowflake is the table store in this example. CocoIndex is responsible for the
+target state: it creates the database, schema, and table when needed, writes
+rows with Snowflake `MERGE`, and deletes rows that are no longer declared by the
+flow.
+
+The example keeps the source data in Python so the Snowflake target behavior is
+easy to see. It declares three order records, computes `order_total`, writes the
+rows to Snowflake, then reads the table back with the Snowflake Python
+connector.
+
+## What this creates
+
+By default the flow writes to:
+
+- database: `COCOINDEX_DEMO_DB`
+- schema: `PUBLIC`
+- table: `COCOINDEX_ORDERS`
+- warehouse: `COCOINDEX_DEMO_WH`
+
+The warehouse must exist before the flow runs. The Snowflake connector creates
+the database, schema, and table.
+
+## How the flow works
+
+1. `coco_lifespan` reads `SNOWFLAKE_*` environment variables and provides a
+   Snowflake connection config to CocoIndex.
+2. `mount_table_target` declares the Snowflake table target and its primary key.
+3. `process_order` converts each source order into the row shape stored in
+   Snowflake.
+4. `cocoindex update main` reconciles the declared rows with the table.
 
 ## Prerequisites
 
-1. Install dependencies:
+Run commands from this directory:
 
 ```sh
-pip install -e .
+cd examples/snowflake_target
 ```
 
-2. Copy the environment template and fill in your Snowflake account details:
+1. Install dependencies from a source checkout:
+
+```sh
+pip install -e "../..[snowflake]" -e .
+```
+
+2. Copy the environment template:
 
 ```sh
 cp .env.example .env
 ```
 
-3. Create a small warehouse for the demo. You can run this in Snowflake:
+Edit `.env` with your Snowflake account, user, password, and optional role.
+`SNOWFLAKE_ACCOUNT` is the Snowflake account identifier, for example
+`ORGNAME-ACCOUNTNAME`.
+
+3. Create a small warehouse for the demo in Snowflake:
 
 ```sql
 CREATE WAREHOUSE IF NOT EXISTS COCOINDEX_DEMO_WH
@@ -28,8 +66,7 @@ CREATE WAREHOUSE IF NOT EXISTS COCOINDEX_DEMO_WH
   AUTO_RESUME = TRUE;
 ```
 
-The connector creates `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, and
-`SNOWFLAKE_TABLE` when the app runs.
+If you use a different warehouse name, update `SNOWFLAKE_WAREHOUSE` in `.env`.
 
 ## Run
 
@@ -43,6 +80,14 @@ Print the rows written to Snowflake:
 
 ```sh
 python main.py
+```
+
+Expected output:
+
+```text
+('ORD-1001', 'Summit Labs', 'mechanical keyboard', 2, 259.0, 'paid', 'web')
+('ORD-1002', 'Beacon Retail', 'standing desk', 1, 399.0, 'paid', 'sales')
+('ORD-1003', 'Ridgeview Health', 'noise cancelling headphones', 3, 599.97, 'pending', 'partner')
 ```
 
 ## Try an incremental update
