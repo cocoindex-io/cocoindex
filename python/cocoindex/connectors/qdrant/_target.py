@@ -19,7 +19,6 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
-    cast,
 )
 
 
@@ -222,9 +221,7 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
             )
 
         if deletes:
-            selector = qdrant_models.PointIdsList(
-                points=cast(list[qdrant_models.ExtendedPointId], deletes)
-            )
+            selector = qdrant_models.PointIdsList(points=deletes)
             await asyncio.to_thread(
                 self._client.delete,
                 collection_name=self._collection_name,

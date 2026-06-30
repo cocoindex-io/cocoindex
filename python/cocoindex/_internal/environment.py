@@ -196,6 +196,7 @@ class Environment:
         "_async_context",
         "_exception_handler",
         "_info",
+        "_component_selector",
         "__weakref__",
     )
 
@@ -242,6 +243,7 @@ class Environment:
         self._context_provider.set_core_env(self._core_env)
         self._exception_handler = exception_handler
         self._info = info or EnvironmentInfo(self)
+        self._component_selector: tuple[core.StablePath, ...] | None = None
 
     @property
     def name(self) -> str:

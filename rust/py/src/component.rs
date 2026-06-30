@@ -202,7 +202,7 @@ pub fn use_mount_async<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (processor, stable_path, comp_ctx, fn_ctx, handler_callback=None))]
+#[pyo3(signature = (processor, stable_path, comp_ctx, fn_ctx, handler_callback=None, *, skip=false))]
 pub fn mount_async<'py>(
     py: Python<'py>,
     processor: PyComponentProcessor,
@@ -210,6 +210,7 @@ pub fn mount_async<'py>(
     comp_ctx: PyComponentProcessorContext,
     fn_ctx: &PyFnCallContext,
     handler_callback: Option<Py<PyAny>>,
+    skip: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
     let child = comp_ctx
         .0
@@ -223,9 +224,12 @@ pub fn mount_async<'py>(
     let host_runtime_ctx = comp_ctx.0.app_ctx().env().host_runtime_ctx().clone();
     let on_error = build_on_error(host_runtime_ctx, handler_callback);
 
+    let pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>> =
+        if skip { Some(Box::new(|| false)) } else { None };
+
     future_into_py(py, async move {
         let handle = child
-            .mount(&comp_ctx.0, processor, on_error, None)
+            .mount(&comp_ctx.0, processor, on_error, pre_execute_check)
             .await
             .into_py_result()?;
         Ok(PyComponentMountHandle(Some(handle)))

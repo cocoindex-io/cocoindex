@@ -42,6 +42,16 @@ class ExceptionHandlerChain(NamedTuple):
 # ContextVar for the current ComponentContext
 _context_var: ContextVar[ComponentContext] = ContextVar("coco_component_context")
 
+# Transport bridge for the component selector. Set by App.update() /
+# App.update_blocking() via ContextVar.set(), then snapped into
+# ComponentContext by _enter_component_context(). After that the
+# selector lives on ComponentContext._component_selector for the
+# duration of the component tree — properly scoped per update call
+# even when multiple updates run concurrently.
+_selector_var: ContextVar[tuple[core.StablePath, ...] | None] = ContextVar(
+    "coco_component_selector", default=None
+)
+
 MountKind: TypeAlias = Literal[
     "mount", "mount_each", "delete_background", "process_live"
 ]
@@ -76,6 +86,7 @@ class ComponentContext:
     _core_processor_ctx: core.ComponentProcessorContext
     _core_fn_call_ctx: core.FnCallContext
     _exception_handler_chain: ExceptionHandlerChain | None
+    _component_selector: tuple[core.StablePath, ...] | None = None
     _in_memo_fn: bool = False
 
     def _with_fn_call_ctx(
@@ -87,6 +98,7 @@ class ComponentContext:
             self._core_processor_ctx,
             fn_call_ctx,
             self._exception_handler_chain,
+            self._component_selector,
             in_memo_fn,
         )
 
@@ -101,6 +113,7 @@ class ComponentContext:
             self._core_processor_ctx,
             self._core_fn_call_ctx,
             self._exception_handler_chain,
+            self._component_selector,
         )
 
     def _with_core_processor_ctx(
@@ -114,6 +127,7 @@ class ComponentContext:
             core_processor_ctx,
             self._core_fn_call_ctx,
             self._exception_handler_chain,
+            self._component_selector,
         )
 
     def _with_exception_handler(self, handler: ExceptionHandler) -> ComponentContext:
@@ -123,6 +137,7 @@ class ComponentContext:
             self._core_processor_ctx,
             self._core_fn_call_ctx,
             ExceptionHandlerChain(handler=handler, base=self._exception_handler_chain),
+            self._component_selector,
         )
 
     def resolve_exception_handler(
@@ -338,7 +353,9 @@ def _enter_component_context(
         if env.exception_handler
         else None
     )
-    context = ComponentContext(env, path, comp_ctx, fn_ctx, base_chain)
+    context = ComponentContext(
+        env, path, comp_ctx, fn_ctx, base_chain, env._component_selector
+    )
     tok = _context_var.set(context)
     try:
         yield
@@ -356,6 +373,26 @@ def get_context_from_ctx() -> ComponentContext:
         "No ComponentContext available. This function must be called from within "
         "an active component context (inside a mount/use_mount call or App.update)."
     )
+
+
+def get_component_selector() -> tuple[core.StablePath, ...] | None:
+    """Return the active component selector, or ``None`` if not set.
+
+    The component selector is set by :meth:`App.update()` when a
+    ``component_selector`` argument is provided. It is a tuple of
+    ``core.StablePath`` values describing which components to select.
+    Components can check this to decide whether to skip expensive work.
+
+    Returns ``None`` when called outside an active component context
+    (no update in progress).
+
+    Returns:
+        Tuple of ``core.StablePath`` values, or ``None`` (run everything).
+    """
+    ctx_var = _context_var.get(None)
+    if ctx_var is None:
+        return None
+    return ctx_var._component_selector
 
 
 def build_child_path(

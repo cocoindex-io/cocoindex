@@ -501,7 +501,14 @@ class LiveMapSubscriber(Generic[_K, _V]):
     provide keys and values instead of component subpaths and processor functions.
     """
 
-    __slots__ = ("_operator", "_fn", "_args", "_kwargs")
+    __slots__ = (
+        "_operator",
+        "_fn",
+        "_args",
+        "_kwargs",
+        "_component_selector",
+        "_child_path",
+    )
 
     def __init__(
         self,
@@ -509,11 +516,16 @@ class LiveMapSubscriber(Generic[_K, _V]):
         fn: Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        *,
+        component_selector: tuple[core.StablePath, ...] | None = None,
+        child_path: Any = None,  # core.StablePath
     ) -> None:
         self._operator = operator
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._component_selector = component_selector
+        self._child_path = child_path
 
     async def update_all(self) -> None:
         """Trigger a full re-iteration of all items."""
@@ -567,11 +579,13 @@ class _MountEachLiveComponent:
         fn: Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        child_path: Any = None,  # core.StablePath
     ) -> None:
         self._items = items
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._child_path = child_path
 
     async def process(self) -> None:
         if not isinstance(self._items, LiveMapView):
@@ -589,7 +603,11 @@ class _MountEachLiveComponent:
 
     async def process_live(self, operator: LiveComponentOperator) -> None:
         subscriber: LiveMapSubscriber[Any, Any] = LiveMapSubscriber(
-            operator, self._fn, self._args, self._kwargs
+            operator,
+            self._fn,
+            self._args,
+            self._kwargs,
+            child_path=self._child_path,
         )
         await self._items.watch(subscriber)
 
