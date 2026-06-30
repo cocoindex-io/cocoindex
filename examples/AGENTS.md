@@ -8,14 +8,14 @@ CocoIndex **v1** apps; `rust/` contains Rust ports with per-example READMEs.
 
 CocoIndex v1 is a fundamental redesign from v0. Without context, LLMs tend to
 hallucinate the v0 flow-builder DSL and deprecated decorators. Install the
-official skill first — it teaches the correct v1 API. Quickest path is the
-hosted single file:
+official skill first — it teaches the correct v1 API. Quickest portable path
+for Codex and other Agent Skills-compatible clients is the hosted skill:
 
 ```sh
-mkdir -p .claude/skills/cocoindex/references
-curl -fsSL https://cocoindex.io/docs/skill.md -o .claude/skills/cocoindex/SKILL.md
+mkdir -p .agents/skills/cocoindex/references
+curl -fsSL https://cocoindex.io/docs/skill.md -o .agents/skills/cocoindex/SKILL.md
 for f in api_reference connectors patterns setup_database setup_project; do
-  curl -fsSL https://cocoindex.io/docs/references/$f.md -o .claude/skills/cocoindex/references/$f.md
+  curl -fsSL https://cocoindex.io/docs/references/$f.md -o .agents/skills/cocoindex/references/$f.md
 done
 ```
 
@@ -23,8 +23,11 @@ Or clone the repo and copy the folder:
 
 ```sh
 git clone --depth=1 https://github.com/cocoindex-io/cocoindex.git /tmp/cocoindex-skill
-mkdir -p .claude/skills && cp -r /tmp/cocoindex-skill/skills/cocoindex .claude/skills/
+mkdir -p .agents/skills && cp -r /tmp/cocoindex-skill/skills/cocoindex .agents/skills/
 ```
+
+For Claude Code's native project path, use `.claude/skills/cocoindex` instead
+of `.agents/skills/cocoindex`; the skill format is the same.
 
 The skill itself lives at [`skills/cocoindex/`](../skills/cocoindex) (SKILL.md +
 `references/`). For Cursor, copy `SKILL.md` into `.cursor/rules/`. Full machine-readable
