@@ -16,10 +16,12 @@ connector.
 
 By default the flow writes to:
 
-- database: `COCOINDEX_DEMO_DB`
-- schema: `PUBLIC`
-- table: `COCOINDEX_ORDERS`
-- warehouse: `COCOINDEX_DEMO_WH`
+| Object | Default value | Created by |
+|--------|---------------|------------|
+| Warehouse | `COCOINDEX_DEMO_WH` | You, before running the example |
+| Database | `COCOINDEX_DEMO_DB` | CocoIndex |
+| Schema | `PUBLIC` | CocoIndex, if needed |
+| Table | `COCOINDEX_ORDERS` | CocoIndex |
 
 The warehouse must exist before the flow runs. The Snowflake connector creates
 the database, schema, and table.
@@ -53,11 +55,36 @@ pip install -e "../..[snowflake]" -e .
 cp .env.example .env
 ```
 
-Edit `.env` with your Snowflake account, user, password, and optional role.
-`SNOWFLAKE_ACCOUNT` is the Snowflake account identifier, for example
-`ORGNAME-ACCOUNTNAME`.
+3. Fill in `.env`.
 
-3. Create a small warehouse for the demo in Snowflake:
+| Variable | Required | How to choose it |
+|----------|----------|------------------|
+| `COCOINDEX_DB` | Yes | Local CocoIndex state database. The default `./cocoindex.db` is fine for the example. |
+| `SNOWFLAKE_ACCOUNT` | Yes | Snowflake account identifier, for example `ORGNAME-ACCOUNTNAME`. Do not include `.snowflakecomputing.com`. |
+| `SNOWFLAKE_USER` | Yes | Snowflake login name. |
+| `SNOWFLAKE_PASSWORD` | Yes | Password for `SNOWFLAKE_USER`. |
+| `SNOWFLAKE_ROLE` | No | Role for the session. Leave blank to use the user's default role. |
+| `SNOWFLAKE_WAREHOUSE` | Yes | Existing warehouse used to run DDL and DML. The README uses `COCOINDEX_DEMO_WH`. |
+| `SNOWFLAKE_DATABASE` | Yes | Target database name. CocoIndex creates it when the role has permission. |
+| `SNOWFLAKE_SCHEMA` | Yes | Target schema name. The default is `PUBLIC`. |
+| `SNOWFLAKE_TABLE` | Yes | Target table name. The default is `COCOINDEX_ORDERS`. |
+
+You can also check the current Snowflake session values in a worksheet:
+
+```sql
+SELECT
+  CURRENT_ORGANIZATION_NAME() AS organization_name,
+  CURRENT_ACCOUNT_NAME() AS account_name,
+  CURRENT_USER() AS user_name,
+  CURRENT_ROLE() AS role_name,
+  CURRENT_WAREHOUSE() AS warehouse_name;
+```
+
+For `SNOWFLAKE_ACCOUNT`, use the account identifier shown in Snowflake Account
+Details. In newer accounts this usually matches
+`ORGANIZATION_NAME-ACCOUNT_NAME`.
+
+4. Create a small warehouse for the demo in Snowflake:
 
 ```sql
 CREATE WAREHOUSE IF NOT EXISTS COCOINDEX_DEMO_WH
@@ -67,6 +94,33 @@ CREATE WAREHOUSE IF NOT EXISTS COCOINDEX_DEMO_WH
 ```
 
 If you use a different warehouse name, update `SNOWFLAKE_WAREHOUSE` in `.env`.
+
+5. Use a role with the needed permissions.
+
+For a trial account, `ACCOUNTADMIN` is enough. For a narrower role, it needs:
+
+- `USAGE` on the warehouse
+- permission to create or use the target database
+- permission to create or use the target schema
+- permission to create the target table and run `MERGE` and `DELETE`
+
+## Authentication used here
+
+This example uses username and password authentication:
+
+```python
+snowflake.ConnectionConfig(
+    account=os.environ["SNOWFLAKE_ACCOUNT"],
+    user=os.environ["SNOWFLAKE_USER"],
+    password=os.environ["SNOWFLAKE_PASSWORD"],
+    warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE"),
+    role=os.environ.get("SNOWFLAKE_ROLE") or None,
+)
+```
+
+Key-pair authentication is not covered by this example. The current
+`ConnectionConfig` in this PR accepts `account`, `user`, `password`,
+`warehouse`, and `role`, and the live validation used the password path.
 
 ## Run
 
