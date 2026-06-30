@@ -186,11 +186,11 @@ def _stop_observer(observer: object, *, join_timeout: float = 5.0) -> None:
     (e.g. macOS FSEvents calling a function that's been GC'd to None).
     """
     try:
-        observer.stop()  # type: ignore[union-attr]
+        observer.stop()  # type: ignore[attr-defined]
     except TypeError:
         pass
     try:
-        observer.join(timeout=join_timeout)  # type: ignore[union-attr]
+        observer.join(timeout=join_timeout)  # type: ignore[attr-defined]
     except TypeError:
         pass
 
@@ -225,6 +225,7 @@ class _LiveDirItems:
             FileSystemEventHandler,
         )
         from watchdog.observers import Observer
+        from watchdog.observers.api import BaseObserver
 
         root_resolved = self._resolved_root
         loop = asyncio.get_running_loop()
@@ -240,7 +241,7 @@ class _LiveDirItems:
 
         handler = _Handler()
 
-        def _start_observer() -> Observer:
+        def _start_observer() -> BaseObserver:
             obs = Observer()
             obs.schedule(handler, str(root_resolved), recursive=self._walker._recursive)
             # Observer.start() is synchronous and arms the OS-level watch
