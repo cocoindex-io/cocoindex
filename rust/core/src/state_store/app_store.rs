@@ -35,7 +35,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::txn::WriteTxn;
+use crate::state_store::txn::{ReadTxn, WriteTxn};
 
 /// LMDB database handle. Keys and values are opaque bytes; logical
 /// key/value schemas live in [`crate::state::db_schema`].
@@ -74,18 +74,21 @@ impl AppStore {
     /// Run `body` inside a write txn driven by the single-writer
     /// batcher. Concurrent callers coalesce into one underlying
     /// `heed::RwTxn`; bodies within a batch are awaited sequentially.
-    /// Every LMDB write path (session writes and the standalone
-    /// methods alike) goes through this so that no caller opens
-    /// `env.write_txn()` directly — bypassing the batcher would
-    /// serialize each call through heed's writer mutex with no
-    /// amortization.
+    /// Ordinary application data writes go through this (or
+    /// [`crate::state_store::Storage::run_txn`]) so they participate in
+    /// `MDB_MAP_FULL` auto-resize; bypassing the batcher would serialize
+    /// each call through heed's writer mutex with no amortization.
     pub(super) async fn run_in_batcher<F>(&self, body: F) -> Result<()>
     where
-        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
             + Send
+            + Sync
             + 'static,
     {
-        self.run_in_batcher_typed::<(), _>(move |wtxn| Box::pin(async move { body(wtxn).await }))
+        // Call `body(wtxn)` directly (borrowing `body` via its `Fn` impl) rather
+        // than capturing it in an `async move` block. This keeps the outer closure
+        // `Fn` (retryable) instead of `FnOnce`.
+        self.run_in_batcher_typed::<(), _>(move |wtxn| body(wtxn))
             .await
     }
 
@@ -95,8 +98,9 @@ impl AppStore {
     pub(super) async fn run_in_batcher_typed<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
-        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
+            + Sync
             + 'static,
     {
         self.storage.run_txn(body).await
@@ -106,7 +110,11 @@ impl AppStore {
     /// (two-phase: short retry → clear stale readers → retry
     /// indefinitely). Used by the standalone read methods and by the
     /// streaming inspection iter.
-    pub async fn read_txn(&self) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+    ///
+    /// The returned [`ReadTxn`] holds a coordinator read guard until it is
+    /// dropped, so callers must not keep it open longer than needed.
+    pub async fn read_txn<'a>(&'a self) -> Result<ReadTxn<'a>> {
+        let guard = self.storage.txn_coordinator().read_owned().await;
         let env = &self.env;
         let try_open = || async {
             match env.read_txn() {
@@ -122,20 +130,20 @@ impl AppStore {
         };
 
         // Phase 1: short timeout for transient concurrency.
-        match cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE1).await {
-            Ok(txn) => return Ok(txn),
+        let txn = match cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE1).await {
+            Ok(txn) => txn,
             Err(e) if !e.is_retryable => return Err(e.into()),
-            Err(_) => {}
-        }
-
-        // Phase 2: clear stale readers, then retry indefinitely.
-        let cleared = env.clear_stale_readers()?;
-        if cleared > 0 {
-            warn!("Cleared {cleared} stale LMDB readers");
-        }
-        cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE2)
-            .await
-            .map_err(Into::into)
+            Err(_) => {
+                let cleared = env.clear_stale_readers()?;
+                if cleared > 0 {
+                    warn!("Cleared {cleared} stale LMDB readers");
+                }
+                cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE2)
+                    .await
+                    .map_err(Into::<Error>::into)?
+            }
+        };
+        Ok(ReadTxn::new(guard, txn))
     }
 }
 
@@ -244,7 +252,7 @@ impl AppStore {
     pub async fn read_tracking_info(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_tracking_info(path)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(self.db().get(&*rtxn, &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write pre-serialized tracking info. Callers serialize externally so
@@ -273,31 +281,32 @@ impl AppStore {
     }
 
     /// Cleanup primitive: read the blob, clear `pending_process_token`
-    /// iff it equals `self_token`, write back. Opens its own write txn
-    /// (standalone — no caller-provided handle). Idempotent.
+    /// iff it equals `self_token`, write back. Routed through the
+    /// single-writer batcher so the write participates in `MDB_MAP_FULL`
+    /// auto-resize and whole-transaction retry. Idempotent.
     pub async fn clear_staged_tracking(&self, path: &StablePath, self_token: u128) -> Result<()> {
-        let env = self.env.clone();
+        let app_store = self.clone();
         let path = path.clone();
-        let db = self.db();
-        let key = key_tracking_info(&path)?;
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut wtxn = env.write_txn()?;
-            let Some(bytes) = db.get(&wtxn, &key)? else {
-                return Ok(());
-            };
-            let mut info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
-                cocoindex_utils::deser::from_msgpack_slice(bytes)?;
-            if info.pending_process_token != Some(self_token) {
-                return Ok(());
-            }
-            info.pending_process_token = None;
-            let new_bytes = rmp_serde::to_vec_named(&info)?;
-            db.put(&mut wtxn, &key, &new_bytes)?;
-            wtxn.commit()?;
-            Ok(())
+        self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            Box::pin(async move {
+                let key = key_tracking_info(&path)?;
+                let Some(bytes) = app_store.db().get(&**wtxn, &key)? else {
+                    return Ok(());
+                };
+                let mut info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
+                    cocoindex_utils::deser::from_msgpack_slice(bytes)?;
+                if info.pending_process_token != Some(self_token) {
+                    return Ok(());
+                }
+                info.pending_process_token = None;
+                let new_bytes = rmp_serde::to_vec_named(&info)?;
+                app_store.db().put(&mut **wtxn, &key, &new_bytes)?;
+                Ok(())
+            })
         })
         .await
-        .map_err(|e| internal_error!("clear_staged_tracking join: {e}"))?
     }
 
     /// Standalone Phase 5 sweep: delete one tombstone. Routed through
@@ -315,6 +324,9 @@ impl AppStore {
         let parent = parent.clone();
         let relative = relative.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let parent = parent.clone();
+            let relative = relative.clone();
             Box::pin(async move { app_store.delete_tombstone(wtxn, &parent, &relative).await })
         })
         .await
@@ -335,6 +347,8 @@ impl AppStore {
         let app_store = self.clone();
         let path = path.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
             Box::pin(async move {
                 let Some((parent, key)) = path.as_ref().split_parent() else {
                     return Ok(());
@@ -365,6 +379,9 @@ impl AppStore {
         let path = component_path.clone();
         let encoded = encoded.to_vec();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            let encoded = encoded.clone();
             Box::pin(async move {
                 app_store
                     .write_component_memo_raw(wtxn, &path, &encoded)
@@ -384,6 +401,8 @@ impl AppStore {
         let app_store = self.clone();
         let path = path.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
             Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
         })
         .await
@@ -398,7 +417,7 @@ impl AppStore {
         let rtxn = self.read_txn().await?;
         let parent_owned: StablePath = parent_path.into();
         let cex_key = key_child_existence(&parent_owned, key)?;
-        let Some(bytes) = self.db().get(&rtxn, &cex_key)? else {
+        let Some(bytes) = self.db().get(&*rtxn, &cex_key)? else {
             return Ok(None);
         };
         let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
@@ -412,6 +431,8 @@ impl AppStore {
         let app_store = self.clone();
         let key = key.clone();
         self.run_in_batcher_typed(move |wtxn| {
+            let app_store = app_store.clone();
+            let key = key.clone();
             Box::pin(async move { app_store.reserve_id_range_in_txn(wtxn, &key, count).await })
         })
         .await
@@ -438,7 +459,7 @@ impl AppStore {
     pub async fn read_component_memo(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_component_memo(path)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(self.db().get(&*rtxn, &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write a pre-serialized component memo. Callers serialize externally
@@ -616,7 +637,7 @@ impl AppStore {
         let rtxn = self.read_txn().await?;
         let prefix = key_tombstone_prefix(parent)?;
         let mut out = Vec::new();
-        for entry in self.db().prefix_iter(&rtxn, &prefix)? {
+        for entry in self.db().prefix_iter(&*rtxn, &prefix)? {
             let (raw_key, _) = entry?;
             let relative: StablePath = storekey::decode(raw_key[prefix.len()..].as_ref())?;
             out.push(relative);
@@ -821,7 +842,7 @@ impl AppStore {
     ) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_user_state(path, kind, user_key)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(self.db().get(&*rtxn, &key)?.map(<[u8]>::to_vec))
     }
 
     pub async fn write_user_state(
@@ -854,6 +875,10 @@ impl AppStore {
         let user_key = user_key.clone();
         let value = value.to_vec();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            let user_key = user_key.clone();
+            let value = value.clone();
             Box::pin(async move {
                 app_store
                     .write_user_state(wtxn, &path, kind, &user_key, &value)
@@ -920,7 +945,7 @@ impl AppStore {
         // Function memos, keyed by fingerprint.
         let fp_prefix = key_fn_memo_prefix(path)?;
         let mut memos = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &fp_prefix)? {
+        for entry in db.prefix_iter(&*rtxn, &fp_prefix)? {
             let (raw_key, raw_val) = entry?;
             let fp: Fingerprint = storekey::decode(raw_key[fp_prefix.len()..].as_ref())?;
             memos.push((fp, raw_val.to_vec()));
@@ -929,7 +954,7 @@ impl AppStore {
         // User states, keyed by stable key.
         let us_prefix = key_user_state_prefix(path, StateKind::Regular)?;
         let mut states = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &us_prefix)? {
+        for entry in db.prefix_iter(&*rtxn, &us_prefix)? {
             let (raw_key, raw_val) = entry?;
             let user_key: StableKey = storekey::decode(raw_key[us_prefix.len()..].as_ref())?;
             states.push((user_key, raw_val.to_vec()));
@@ -989,6 +1014,66 @@ mod tests {
     /// result is unused here (these tests write no memos).
     async fn read_regular_states(store: &AppStore, p: &StablePath) -> HashMap<StableKey, Vec<u8>> {
         to_map(store.prefetch_fn_processing_states(p).await.unwrap().1)
+    }
+
+    async fn write_tracking_with_token(store: &AppStore, path: &StablePath, token: Option<u128>) {
+        use crate::state::db_schema::StablePathEntryTrackingInfo;
+        use std::borrow::Cow;
+
+        let mut info = StablePathEntryTrackingInfo::new(Cow::Borrowed("test"));
+        info.pending_process_token = token;
+        let bytes = rmp_serde::to_vec_named(&info).unwrap();
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_tracking_info_raw(&mut wtxn, path, &bytes)
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+    }
+
+    async fn read_pending_process_token(store: &AppStore, path: &StablePath) -> Option<u128> {
+        use crate::state::db_schema::StablePathEntryTrackingInfo;
+
+        let bytes = store.read_tracking_info(path).await.unwrap()?;
+        let info: StablePathEntryTrackingInfo<'_> =
+            cocoindex_utils::deser::from_msgpack_slice(&bytes).unwrap();
+        info.pending_process_token
+    }
+
+    // --- clear_staged_tracking ---------------------------------------------
+
+    #[tokio::test]
+    async fn clear_staged_tracking_clears_matching_token() {
+        let (store, _dir) = make_test_store().await;
+        let path = comp_path("comp");
+        let token = 42u128;
+
+        write_tracking_with_token(&store, &path, Some(token)).await;
+        store.clear_staged_tracking(&path, token).await.unwrap();
+
+        assert_eq!(read_pending_process_token(&store, &path).await, None);
+    }
+
+    #[tokio::test]
+    async fn clear_staged_tracking_leaves_non_matching_token() {
+        let (store, _dir) = make_test_store().await;
+        let path = comp_path("comp");
+        let token = 42u128;
+
+        write_tracking_with_token(&store, &path, Some(token)).await;
+        store.clear_staged_tracking(&path, token + 1).await.unwrap();
+
+        assert_eq!(read_pending_process_token(&store, &path).await, Some(token));
+    }
+
+    #[tokio::test]
+    async fn clear_staged_tracking_missing_entry_is_noop() {
+        let (store, _dir) = make_test_store().await;
+        let path = comp_path("missing");
+
+        store.clear_staged_tracking(&path, 99).await.unwrap();
+
+        assert_eq!(read_pending_process_token(&store, &path).await, None);
     }
 
     // --- user state read-back (via prefetch) -------------------------------
@@ -1272,7 +1357,7 @@ impl AppStore {
         let db = self.db();
         let mut out = Vec::new();
         let mut last_prefix: Option<Vec<u8>> = None;
-        for entry in db.prefix_iter(&rtxn, &encoded_key_prefix)? {
+        for entry in db.prefix_iter(&*rtxn, &encoded_key_prefix)? {
             let (raw_key, _) = entry?;
             if let Some(last_prefix) = &last_prefix
                 && raw_key.starts_with(last_prefix)

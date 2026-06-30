@@ -226,7 +226,7 @@ async fn get_stable_path_detail_from_store(
 ) -> Result<Option<StablePathDetail>> {
     let db = store.db();
     let txn = store.read_txn().await?;
-    Ok(Some(read_detail_in_txn(&db, &txn, path)?))
+    Ok(Some(read_detail_in_txn(&db, &*txn, path)?))
 }
 
 /// Get detailed information about a single stable path from LMDB
@@ -313,13 +313,13 @@ async fn query_details_from_store(
     let mut results = Vec::new();
 
     if include_parents {
-        results.extend(list_parents_in_txn(&db, &txn, path)?);
+        results.extend(list_parents_in_txn(&db, &*txn, path)?);
     }
 
-    results.push(read_detail_in_txn(&db, &txn, path)?);
+    results.push(read_detail_in_txn(&db, &*txn, path)?);
 
     if include_children {
-        results.extend(list_children_in_txn(&db, &txn, path, recursive)?);
+        results.extend(list_children_in_txn(&db, &*txn, path, recursive)?);
     }
 
     Ok(results)

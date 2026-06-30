@@ -11,7 +11,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::WriteTxn;
+use crate::state_store::txn::{TxnCoordinator, WriteTxn};
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -23,11 +23,13 @@ use std::sync::Arc;
 
 const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
+const MAP_SIZE_GROWTH_FACTOR: usize = 2;
 
 /// Sync sibling of [`AppStore::read_txn`]'s `MDB_READERS_FULL` retry,
 /// for use inside `spawn_blocking` where the async retry helper isn't
-/// reachable. Same two-phase policy.
-fn open_read_txn_sync_with_retry(
+/// reachable. Same two-phase policy. Caller must already hold a coordinator
+/// read guard before opening the LMDB read transaction.
+fn open_read_txn_on_env_with_retry(
     env: &heed::Env<heed::WithoutTls>,
 ) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
     use std::time::{Duration, Instant};
@@ -119,21 +121,114 @@ pub struct Storage {
 
 struct StorageInner {
     db_env: heed::Env<heed::WithoutTls>,
+    coord: TxnCoordinator,
     batcher: Batcher<TxnRunner>,
 }
 
 /// Type-erased body for a batched write transaction. Each body returns a
 /// future that runs against the shared `WriteTxn` and resolves to a boxed
 /// output. The future is bound to the borrow of the txn (`'a`).
+///
+/// `Fn + Sync` (not `FnOnce`) so the batcher can retry the entire batch on
+/// `MDB_MAP_FULL`: the env is resized between attempts, then every body is
+/// called again with a fresh write transaction. Callers must therefore
+/// ensure their closures are side-effect–free on the captured state (i.e.
+/// they may be invoked more than once). In practice all callers clone `Arc`
+/// handles inside the closure and do not move-out of captures, so this is
+/// already satisfied.
+///
+/// `Sync` is required because `try_run_once` holds `&[TxnBody]` across
+/// `await` points; for `&T` to be `Send`, `T` must be `Sync`.
 type TxnBody = Box<
-    dyn for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
-        + Send,
+    dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
+        + Send
+        + Sync,
 >;
 
-/// `Runner` implementation that opens a single write txn, runs each batched
-/// body against it (awaiting in turn), then commits.
+/// Returns `true` if `err` is an LMDB `MDB_MAP_FULL` error.
+fn is_map_full(err: &Error) -> bool {
+    let inner = err.without_contexts();
+    if let Error::Internal(anyhow_err) = inner {
+        return matches!(
+            anyhow_err.downcast_ref::<heed::Error>(),
+            Some(heed::Error::Mdb(heed::MdbError::MapFull))
+        );
+    }
+    false
+}
+
+/// When a `MDB_MAP_FULL` error occurs (either from a put inside a body or
+/// from the final commit), the write txn and its coordinator read guard are
+/// dropped, the coordinator write guard is acquired, the map size is doubled
+/// via `env.resize`, and the whole batch is retried.
+///
+/// Safety: `resize` is only called while holding the coordinator write guard,
+/// which guarantees no read or write LMDB transaction opened through this
+/// coordinator is active in the current process.
 struct TxnRunner {
     db_env: heed::Env<heed::WithoutTls>,
+    coord: TxnCoordinator,
+}
+
+impl TxnRunner {
+    /// Attempts one write-txn pass over `inputs`. If any body or the final
+    /// commit returns an error the write txn and coordinator read guard are
+    /// dropped before the error propagates. On `MapFull` the caller should
+    /// resize (under the coordinator write guard) and retry.
+    async fn try_run_once(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
+        let read_guard = self.coord.read().await;
+        let mut outputs = Vec::with_capacity(inputs.len());
+        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
+        for body in inputs {
+            match body(&mut wtxn).await {
+                Ok(output) => outputs.push(output),
+                Err(e) if is_map_full(&e) => {
+                    drop(wtxn);
+                    drop(read_guard);
+                    return Err(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let wtxn = wtxn.into_inner();
+        match wtxn.commit() {
+            Ok(()) => Ok(outputs),
+            Err(e) => {
+                let err: Error = e.into();
+                if is_map_full(&err) {
+                    drop(read_guard);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Doubles the env's current map size (aligned to page). Caller must hold
+    /// the coordinator write guard before calling `Env::resize`.
+    fn next_map_size(db_env: &heed::Env<heed::WithoutTls>) -> Result<usize> {
+        let current = db_env.info().map_size;
+        let doubled = current.checked_mul(MAP_SIZE_GROWTH_FACTOR).ok_or_else(|| {
+            internal_error!("LMDB map size overflow while doubling: current={current} bytes")
+        })?;
+        Ok(align_map_size_to_page(doubled))
+    }
+
+    async fn resize_on_map_full(&self) -> Result<usize> {
+        let resize_guard = self.coord.write().await;
+        let new_size = Self::next_map_size(&self.db_env)?;
+        warn!(
+            "LMDB map full, auto-resizing to {} bytes and retrying",
+            new_size
+        );
+        // Safety: `resize_guard` excludes all coordinator-participating LMDB
+        // transactions in this process; the failed write txn and its read
+        // guard were dropped before this path runs.
+        unsafe {
+            self.db_env.resize(new_size)?;
+        }
+        drop(resize_guard);
+        Ok(new_size)
+    }
 }
 
 #[async_trait]
@@ -145,13 +240,15 @@ impl Runner for TxnRunner {
         &self,
         inputs: Vec<TxnBody>,
     ) -> Result<impl ExactSizeIterator<Item = Box<dyn Any + Send>>> {
-        let mut outputs = Vec::with_capacity(inputs.len());
-        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
-        for body in inputs {
-            outputs.push(body(&mut wtxn).await?);
+        loop {
+            match self.try_run_once(&inputs).await {
+                Ok(outputs) => return Ok(outputs.into_iter()),
+                Err(e) if is_map_full(&e) => {
+                    self.resize_on_map_full().await?;
+                }
+                Err(e) => return Err(e),
+            }
         }
-        wtxn.into_inner().commit()?;
-        Ok(outputs.into_iter())
     }
 }
 
@@ -187,31 +284,48 @@ impl Storage {
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
         }
+        let coord: TxnCoordinator = Arc::new(tokio::sync::RwLock::new(()));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
+                coord: coord.clone(),
             },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
         );
         Ok(Self {
-            inner: Arc::new(StorageInner { db_env, batcher }),
+            inner: Arc::new(StorageInner {
+                db_env,
+                coord,
+                batcher,
+            }),
         })
     }
 
-    /// Construct a `Storage` from an already-open `heed::Env`. Used in tests
-    /// where the env is created directly without going through `StorageSettings`.
+    /// Construct a `Storage` from an already-open `heed::Env`. Used in unit
+    /// tests that open an env directly without going through `StorageSettings`.
+    #[cfg(test)]
     pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
+        let coord: TxnCoordinator = Arc::new(tokio::sync::RwLock::new(()));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
+                coord: coord.clone(),
             },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
         );
         Self {
-            inner: Arc::new(StorageInner { db_env, batcher }),
+            inner: Arc::new(StorageInner {
+                db_env,
+                coord,
+                batcher,
+            }),
         }
+    }
+
+    pub(crate) fn txn_coordinator(&self) -> TxnCoordinator {
+        self.inner.coord.clone()
     }
 
     /// Migrate legacy files from the old layout (directly in `base_path`)
@@ -255,13 +369,20 @@ impl Storage {
     pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
-        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
+            + Sync
             + 'static,
     {
+        // Call `body(wtxn)` rather than wrapping in `async move { body(wtxn).await }`.
+        // The latter would move `body` into the async block, making the outer closure
+        // `FnOnce`. By calling `body(wtxn)` directly we borrow `body` (via its `Fn`
+        // impl) and only move the returned `future` into the mapping async block,
+        // keeping the outer closure `Fn` (retryable on `MDB_MAP_FULL`).
         let erased: TxnBody = Box::new(move |wtxn| {
+            let future = body(wtxn);
             Box::pin(async move {
-                let value = body(wtxn).await?;
+                let value = future.await?;
                 Ok(Box::new(value) as Box<dyn Any + Send>)
             })
         });
@@ -274,6 +395,7 @@ impl Storage {
 
     /// Create the per-app sub-database and wrap it in an `AppStore`.
     pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
+        let _guard = self.inner.coord.read().await;
         let mut wtxn = self.inner.db_env.write_txn()?;
         let db = self
             .inner
@@ -286,6 +408,7 @@ impl Storage {
     /// Open the per-app sub-database by name, or `None` if it doesn't exist.
     /// Opens an internal read transaction for the lookup.
     pub async fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
+        let _guard = self.inner.coord.read().await;
         let rtxn = self.inner.db_env.read_txn()?;
         let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
         let env = self.inner.db_env.clone();
@@ -299,12 +422,17 @@ impl Storage {
     /// empty sub-databases, so the app is effectively gone.
     /// Idempotent: dropping a non-existent app is a no-op.
     pub async fn drop_app(&self, app_name: &str) -> Result<()> {
-        let rtxn = self.inner.db_env.read_txn()?;
-        let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
-        drop(rtxn);
+        let db = {
+            let _guard = self.inner.coord.read().await;
+            let rtxn = self.inner.db_env.read_txn()?;
+            self.inner
+                .db_env
+                .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?
+        };
         let Some(db) = db else {
             return Ok(());
         };
+        let _guard = self.inner.coord.read().await;
         let mut wtxn = self.inner.db_env.write_txn()?;
         db.clear(&mut wtxn)?;
         wtxn.commit()?;
@@ -324,11 +452,13 @@ impl Storage {
     ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
+        let coord = self.inner.coord.clone();
         tokio::task::spawn_blocking(move || {
             let result: Result<()> = (|| {
                 let encoded_key_prefix =
                     DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-                let txn = open_read_txn_sync_with_retry(&app_store.env)?;
+                let _guard = coord.blocking_read();
+                let txn = open_read_txn_on_env_with_retry(&app_store.env)?;
                 let db = app_store.db();
 
                 let mut last_prefix: Option<Vec<u8>> = None;
@@ -402,6 +532,7 @@ impl Storage {
     /// The "unnamed database" is LMDB's catalog of named sub-databases.
     pub async fn list_app_names(&self) -> Result<Vec<String>> {
         let db_env = &self.inner.db_env;
+        let _guard = self.inner.coord.read().await;
         let rtxn = db_env.read_txn()?;
         let unnamed: heed::Database<heed::types::Str, heed::types::DecodeIgnore> = db_env
             .open_database(&rtxn, None)?
@@ -461,5 +592,208 @@ mod tests {
             lmdb_map_size: 4 * 1024 * 1024 + 1,
         };
         Storage::new(&settings).await.unwrap();
+    }
+
+    /// Integration test for `MDB_MAP_FULL` auto-resize on the `Storage::run_txn`
+    /// path: one batched write txn is filled past the map limit, the runner
+    /// doubles the map, retries the same body, and commits. Run via
+    /// `dev/test_lmdb_auto_resize.sh`.
+    #[tokio::test]
+    async fn auto_resizes_on_map_full() {
+        let dir = TempDir::new().unwrap();
+        let page = page_size::get();
+        // Deliberately tiny, page-aligned map. Large enough for env metadata and
+        // `create_app_store` (direct write txn, not the batcher).
+        let initial_map_size = align_map_size_to_page(page * 16);
+
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: initial_map_size,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+        let app_store = storage.create_app_store("resize_test").await.unwrap();
+        assert_eq!(
+            app_store.env.info().map_size,
+            initial_map_size,
+            "initial map size should match configured value"
+        );
+
+        // One payload pattern; 16 KiB per key. Total raw value bytes exceed the
+        // initial map once LMDB btree/metadata overhead is included, so a single
+        // `run_txn` body should hit MapFull on put or commit, trigger resize,
+        // and succeed only after retry.
+        const PAYLOAD_LEN: usize = 16 * 1024;
+        const WRITE_COUNT: usize = 64;
+        let payload = vec![0xAB_u8; PAYLOAD_LEN];
+        let entries: Vec<(String, Vec<u8>)> = (0..WRITE_COUNT)
+            .map(|i| (format!("key_{i:04}"), payload.clone()))
+            .collect();
+
+        let app_store_for_txn = app_store.clone();
+        let entries_for_txn = entries.clone();
+        storage
+            .run_txn(move |wtxn| {
+                let app_store = app_store_for_txn.clone();
+                let entries = entries_for_txn.clone();
+                Box::pin(async move {
+                    for (key, value) in &entries {
+                        app_store.db().put(wtxn, key.as_bytes(), value)?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .expect("single run_txn should succeed after MapFull resize-and-retry");
+
+        let final_map_size = app_store.env.info().map_size;
+        let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
+        assert!(
+            final_map_size > initial_map_size,
+            "map size must grow after MapFull: initial={initial_map_size}, final={final_map_size}"
+        );
+        assert!(
+            final_map_size >= expected_min_final,
+            "map size should at least double: initial={initial_map_size}, \
+             final={final_map_size}, expected>={expected_min_final}"
+        );
+
+        eprintln!(
+            "auto_resizes_on_map_full: initial_map_size={initial_map_size} \
+             final_map_size={final_map_size} writes={WRITE_COUNT} \
+             bytes_per_key={PAYLOAD_LEN}"
+        );
+
+        // Read back first, middle, and last keys; verify full payload bytes.
+        let rtxn = app_store.read_txn().await.unwrap();
+        for key in ["key_0000", "key_0031", "key_0063"] {
+            let bytes = app_store
+                .db()
+                .get(&*rtxn, key.as_bytes())
+                .unwrap()
+                .unwrap_or_else(|| panic!("{key} should exist after successful commit"));
+            assert_eq!(
+                bytes.as_ref(),
+                payload.as_slice(),
+                "{key} payload should match what was written"
+            );
+        }
+    }
+
+    /// Verifies the coordinator blocks `Env::resize` until every guarded read
+    /// transaction has ended:
+    ///
+    /// 1. Open a [`ReadTxn`] and keep it alive.
+    /// 2. Start a concurrent `Storage::run_txn` write large enough to hit MapFull.
+    /// 3. Confirm the write has not finished while the read txn is still open.
+    /// 4. Drop the read txn.
+    /// 5. Confirm the write completes, the map grows, and data is intact.
+    #[tokio::test]
+    async fn resize_waits_for_active_reader() {
+        use tokio::sync::oneshot;
+
+        let dir = TempDir::new().unwrap();
+        let page = page_size::get();
+        let initial_map_size = align_map_size_to_page(page * 16);
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: initial_map_size,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+        let app_store = storage.create_app_store("coord_test").await.unwrap();
+        let coord = storage.txn_coordinator();
+
+        // Step 1: hold a guarded read transaction open.
+        let reader = app_store.read_txn().await.unwrap();
+
+        const PAYLOAD_LEN: usize = 16 * 1024;
+        const WRITE_COUNT: usize = 64;
+        let payload = vec![0xCD_u8; PAYLOAD_LEN];
+        let entries: Vec<(String, Vec<u8>)> = (0..WRITE_COUNT)
+            .map(|i| (format!("key_{i:04}"), payload.clone()))
+            .collect();
+
+        // Step 2: concurrent write that will trigger MapFull + resize.
+        let (write_started_tx, write_started_rx) = oneshot::channel();
+        let storage_for_write = storage.clone();
+        let app_store_for_write = app_store.clone();
+        let entries_for_write = entries.clone();
+        let write_handle = tokio::spawn(async move {
+            write_started_tx.send(()).ok();
+            storage_for_write
+                .run_txn(move |wtxn| {
+                    let app_store = app_store_for_write.clone();
+                    let entries = entries_for_write.clone();
+                    Box::pin(async move {
+                        for (key, value) in &entries {
+                            app_store.db().put(wtxn, key.as_bytes(), value)?;
+                        }
+                        Ok(())
+                    })
+                })
+                .await
+        });
+
+        write_started_rx.await.unwrap();
+
+        // Step 3: wait until the resize path holds (or waits for) the coordinator
+        // write lock — impossible while our read guard is still alive.
+        let mut resize_blocked = false;
+        while !write_handle.is_finished() {
+            if coord.try_write().is_err() {
+                resize_blocked = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            resize_blocked,
+            "write should reach MapFull and block on resize while reader is held"
+        );
+        assert!(
+            !write_handle.is_finished(),
+            "write should not finish before the read txn is dropped"
+        );
+
+        // Step 4: release the read transaction (txn drops before its guard).
+        drop(reader);
+
+        // Step 5: write completes, map grows, data is readable.
+        write_handle
+            .await
+            .expect("write task panicked")
+            .expect("write should succeed after reader released");
+
+        let final_map_size = app_store.env.info().map_size;
+        let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
+        assert!(
+            final_map_size > initial_map_size,
+            "map size must grow: initial={initial_map_size}, final={final_map_size}"
+        );
+        assert!(
+            final_map_size >= expected_min_final,
+            "map size should at least double: initial={initial_map_size}, \
+             final={final_map_size}, expected>={expected_min_final}"
+        );
+
+        eprintln!(
+            "resize_waits_for_active_reader: initial_map_size={initial_map_size} \
+             final_map_size={final_map_size}"
+        );
+
+        let rtxn = app_store.read_txn().await.unwrap();
+        for key in ["key_0000", "key_0031", "key_0063"] {
+            let bytes = app_store
+                .db()
+                .get(&*rtxn, key.as_bytes())
+                .unwrap()
+                .unwrap_or_else(|| panic!("{key} should exist after successful write"));
+            assert_eq!(
+                bytes.as_ref(),
+                payload.as_slice(),
+                "{key} payload should match what was written"
+            );
+        }
     }
 }
