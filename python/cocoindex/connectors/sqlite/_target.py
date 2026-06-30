@@ -1058,9 +1058,17 @@ class TableTarget(
                  Must include all primary key columns.
         """
         row_dict = self._row_to_dict(row)
-        # Extract primary key values
-        pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_target_state(self._provider.target_state(pk_values, row_dict))
+        pk_values: list[Any] = []
+        for pk in self._table_schema.primary_key:
+            if isinstance(row, dict) and pk not in row:
+                raise ValueError(f"SQLite row is missing primary key column {pk!r}")
+            pk_value = row_dict[pk]
+            if pk_value is None:
+                raise ValueError(f"SQLite primary key column {pk!r} cannot be None")
+            pk_values.append(pk_value)
+        coco.declare_target_state(
+            self._provider.target_state(tuple(pk_values), row_dict)
+        )
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         """
