@@ -9,10 +9,10 @@ Tests cover:
 
 from __future__ import annotations
 
+import datetime
 import os
 import pathlib
 from pathlib import Path, PurePath
-from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -55,14 +55,14 @@ class TestStatToMetadata:
         # 1_000_000_500_000 us = 1_000_000 seconds + 500_000 microseconds
         stat = self._make_stat(size=0, mtime_ns=1_000_000_500_000_000)
         meta = _stat_to_metadata(stat)
-        assert isinstance(meta.modified_time, datetime)
+        assert isinstance(meta.modified_time, datetime.datetime)
         assert meta.modified_time.microsecond == 500_000
 
     def test_mtime_zero(self) -> None:
         stat = self._make_stat(size=0, mtime_ns=0)
         meta = _stat_to_metadata(stat)
         assert meta.size == 0
-        assert isinstance(meta.modified_time, datetime)
+        assert isinstance(meta.modified_time, datetime.datetime)
 
     def test_real_stat(self, tmp_path: Path) -> None:
         f = tmp_path / "sample.txt"
@@ -70,7 +70,7 @@ class TestStatToMetadata:
         stat = f.stat()
         meta = _stat_to_metadata(stat)
         assert meta.size == 11
-        assert isinstance(meta.modified_time, datetime)
+        assert isinstance(meta.modified_time, datetime.datetime)
 
 
 # =============================================================================
@@ -288,3 +288,38 @@ class TestDirWalkerWalkSync:
         walker = DirWalker(tmp_path)
         files = list(walker._walk_sync())
         assert files == []
+
+
+# =============================================================================
+# rescan_interval parameter
+# =============================================================================
+
+
+class TestRescanInterval:
+    def test_default_rescan_interval(self, tmp_path: Path) -> None:
+        walker = DirWalker(tmp_path, live=True)
+        assert walker._rescan_interval == datetime.timedelta(hours=1)
+
+    def test_custom_rescan_interval(self, tmp_path: Path) -> None:
+        walker = DirWalker(
+            tmp_path, live=True, rescan_interval=datetime.timedelta(minutes=2)
+        )
+        assert walker._rescan_interval == datetime.timedelta(minutes=2)
+
+    def test_none_disables_rescan(self, tmp_path: Path) -> None:
+        walker = DirWalker(tmp_path, live=True, rescan_interval=None)
+        assert walker._rescan_interval is None
+
+    def test_walk_dir_passes_rescan_interval(self, tmp_path: Path) -> None:
+        from cocoindex.connectors.localfs._source import walk_dir
+
+        walker = walk_dir(
+            tmp_path, live=True, rescan_interval=datetime.timedelta(minutes=5)
+        )
+        assert walker._rescan_interval == datetime.timedelta(minutes=5)
+
+    def test_walk_dir_default_rescan_interval(self, tmp_path: Path) -> None:
+        from cocoindex.connectors.localfs._source import walk_dir
+
+        walker = walk_dir(tmp_path, live=True)
+        assert walker._rescan_interval == datetime.timedelta(hours=1)
