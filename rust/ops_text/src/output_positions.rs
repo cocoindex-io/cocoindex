@@ -55,6 +55,53 @@ impl Position {
     }
 }
 
+/// A reusable per-file index from byte offset to [`OutputPosition`]. Built once
+/// in a single O(file) pass, then each lookup is a binary search over line starts
+/// plus a short char count within the target line. A long-lived parse (e.g. a
+/// `CodeAst` matched against many patterns) builds this once and reuses it, rather
+/// than re-scanning the whole file per query (a one-shot batch is O(file) *every*
+/// call, so N queries cost O(file·N)).
+pub struct LineIndex {
+    /// Byte offset of each line start (`[0]` is byte 0), ascending.
+    line_start_byte: Vec<usize>,
+    /// Char offset of each line start, parallel to `line_start_byte`.
+    line_start_char: Vec<usize>,
+}
+
+impl LineIndex {
+    /// Build the index from `text` in a single pass.
+    pub fn build(text: &str) -> Self {
+        let mut line_start_byte = vec![0usize];
+        let mut line_start_char = vec![0usize];
+        let mut char_count = 0usize;
+        for (b, ch) in text.char_indices() {
+            char_count += 1;
+            if ch == '\n' {
+                line_start_byte.push(b + 1); // the next line starts after the '\n'
+                line_start_char.push(char_count);
+            }
+        }
+        Self {
+            line_start_byte,
+            line_start_char,
+        }
+    }
+
+    /// Resolve `byte_offset` to its char offset + 1-based line/column. The offset
+    /// must lie on a char boundary of `text`; the end of the text is allowed.
+    /// `text` must be the same string the index was built from.
+    pub fn position(&self, text: &str, byte_offset: usize) -> OutputPosition {
+        // `line_start_byte[0]` is 0 ≤ byte_offset, so `partition_point` ≥ 1.
+        let idx = self.line_start_byte.partition_point(|&s| s <= byte_offset) - 1;
+        let chars_in_line = text[self.line_start_byte[idx]..byte_offset].chars().count();
+        OutputPosition {
+            char_offset: self.line_start_char[idx] + chars_in_line,
+            line: (idx + 1) as u32,
+            column: (chars_in_line + 1) as u32,
+        }
+    }
+}
+
 /// Fill OutputPosition for the requested byte offsets.
 ///
 /// This function efficiently computes character offsets, line numbers, and column
@@ -306,6 +353,51 @@ mod tests {
                 line: 1,
                 column: 8,
             })
+        );
+    }
+
+    #[test]
+    fn line_index_matches_single_pass() {
+        // LineIndex.position must agree with set_output_positions for the same
+        // offsets, including newlines and multibyte chars.
+        let text = "ab\ncd\nef";
+        let li = LineIndex::build(text);
+        for &b in &[0usize, 3, 6, 8] {
+            let mut p = Position::new(b);
+            set_output_positions(text, std::iter::once(&mut p));
+            assert_eq!(Some(li.position(text, b)), p.output, "byte {b}");
+        }
+
+        let emoji = "abc\u{1F604}def"; // emoji is 4 bytes at byte 3..7
+        let eli = LineIndex::build(emoji);
+        for &b in &[0usize, 3, 7, 10] {
+            let mut p = Position::new(b);
+            set_output_positions(emoji, std::iter::once(&mut p));
+            assert_eq!(Some(eli.position(emoji, b)), p.output, "emoji byte {b}");
+        }
+    }
+
+    #[test]
+    fn line_index_end_of_text_and_line_starts() {
+        let text = "x\n\ny"; // line starts at bytes 0, 2, 3
+        let li = LineIndex::build(text);
+        // start of line 3 (the 'y')
+        assert_eq!(
+            li.position(text, 3),
+            OutputPosition {
+                char_offset: 3,
+                line: 3,
+                column: 1,
+            }
+        );
+        // end of text
+        assert_eq!(
+            li.position(text, text.len()),
+            OutputPosition {
+                char_offset: 4,
+                line: 3,
+                column: 2,
+            }
         );
     }
 

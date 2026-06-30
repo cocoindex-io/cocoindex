@@ -1,5 +1,6 @@
 mod app;
 mod batching;
+mod code_ast;
 mod component;
 mod context;
 mod environment;
@@ -12,6 +13,7 @@ mod memo_fingerprint;
 mod ops;
 mod prelude;
 mod profile;
+mod ratelimit;
 mod runtime;
 mod rwlock;
 mod stable_path;
@@ -68,10 +70,24 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(inspect::iter_stable_paths, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::iter_stable_paths_by_name, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::list_app_names, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect::get_stable_path_detail, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        inspect::get_stable_path_detail_by_name,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(inspect::query_stable_path_details, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        inspect::query_stable_path_details_by_name,
+        m
+    )?)?;
 
     m.add_class::<inspect::PyStablePathNodeType>()?;
     m.add_class::<inspect::PyStablePathInfo>()?;
     m.add_class::<inspect::PyStablePathInfoAsyncIterator>()?;
+    m.add_class::<inspect::PyTargetStateVersion>()?;
+    m.add_class::<inspect::PyProviderGeneration>()?;
+    m.add_class::<inspect::PyTargetStateInfoItemSummary>()?;
+    m.add_class::<inspect::PyStablePathDetail>()?;
 
     m.add_class::<runtime::PyAsyncContext>()?;
 
@@ -112,6 +128,14 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(ops::detect_code_language, m)?)?;
     m.add_class::<ops::PyPatternMatcher>()?;
 
+    // Structural code matching over a reusable parsed AST
+    m.add_class::<code_ast::PyCodeAst>()?;
+    m.add_class::<code_ast::PyCodeMatch>()?;
+    m.add_class::<code_ast::PyCodePattern>()?;
+    m.add_class::<code_ast::PyFileMatch>()?;
+    m.add_function(wrap_pyfunction!(code_ast::match_code, m)?)?;
+    m.add_function(wrap_pyfunction!(code_ast::index_terms, m)?)?;
+
     // Synchronization primitives
     m.add_class::<rwlock::RWLock>()?;
     m.add_class::<rwlock::RWLockReadGuard>()?;
@@ -124,6 +148,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<batching::PyBatchingOptions>()?;
     m.add_class::<batching::PyBatchQueue>()?;
     m.add_class::<batching::PyBatcher>()?;
+
+    // Rate limiting
+    m.add_class::<ratelimit::PyRateLimiter>()?;
 
     Ok(())
 }

@@ -199,21 +199,21 @@ async fn extract_sections(
     Ok(split_into_sections(&relative_path, &file.content_str()?))
 }
 
-#[cocoindex::function(memo, batching)]
-async fn analyze_sections(
+// Per-section memoized analysis. Replaces the old `#[function(memo, batching)]`
+// collection form (removed): each section is memoized individually, so unchanged
+// sections are skipped on re-run. The analysis is CPU-bound, so per-section memo
+// preserves the incremental-update measurement (cache hits/misses) without batch
+// grouping. `batch_items` now counts cache misses (one body run per miss).
+#[cocoindex::function(memo)]
+async fn analyze_section_cached(
     ctx: &Ctx,
-    sections: Vec<SectionInput>,
-) -> cocoindex::Result<Vec<SectionAnalysis>> {
+    section: SectionInput,
+) -> cocoindex::Result<SectionAnalysis> {
     let metrics = ctx.get_or_err::<Arc<BenchMetrics>>()?.clone();
     let profile = ctx.get_or_err::<Arc<WorkloadProfile>>()?.clone();
     metrics.batch_calls.fetch_add(1, Ordering::Relaxed);
-    metrics
-        .batch_items
-        .fetch_add(sections.len() as u64, Ordering::Relaxed);
-    Ok(sections
-        .into_iter()
-        .map(|section| analyze_section(section, profile.as_ref()))
-        .collect())
+    metrics.batch_items.fetch_add(1, Ordering::Relaxed);
+    Ok(analyze_section(section, profile.as_ref()))
 }
 
 #[cocoindex::function(memo)]
@@ -233,16 +233,18 @@ async fn main() -> cocoindex::Result<()> {
     let profile = Arc::new(args.profile.clone());
     let sync_stats = Arc::new(Mutex::new(None::<OutputSyncStats>));
 
-    let app = App::builder(&format!(
-        "benchmark_{}_{}",
-        args.scenario.as_str(),
-        args.profile.as_str()
-    ))
-    .db_path(&args.state)
-    .provide(metrics.clone())
-    .provide(profile.clone())
-    .build()
-    .await?;
+    let app = Environment::builder()
+        .db_path(&args.state)
+        .provide(metrics.clone())
+        .provide(profile.clone())
+        .build()
+        .await?
+        .app(&format!(
+            "benchmark_{}_{}",
+            args.scenario.as_str(),
+            args.profile.as_str()
+        ))
+        .await?;
 
     let dataset = args.dataset.clone();
     let output = args.output.clone();
@@ -336,7 +338,12 @@ async fn process_collection(
         .sections_total
         .fetch_add(sections.len() as u64, Ordering::Relaxed);
 
-    let analyses = analyze_sections(ctx, sections).await?;
+    let analyses: Vec<SectionAnalysis> = ctx
+        .map(sections, |section| {
+            let ctx = ctx.clone();
+            async move { analyze_section_cached(&ctx, section).await }
+        })
+        .await?;
     let kind = scenario.collection_kind().to_string();
     summarize_collection_cached(ctx, &kind, &collection.name, &analyses).await
 }

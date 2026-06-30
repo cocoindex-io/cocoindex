@@ -20,9 +20,11 @@ pub enum Error {
     #[error("{0}")]
     Engine(String),
 
-    /// Requested type not found in context TypeMap.
-    #[error("context: type `{0}` not provided — call App::builder().provide() first")]
-    MissingContext(&'static str),
+    /// Requested type or key not found in context.
+    #[error(
+        "context: `{0}` not provided — call Environment::builder().provide() or provide_key() first"
+    )]
+    MissingContext(String),
 
     /// User-provided closure returned an error.
     #[error(transparent)]

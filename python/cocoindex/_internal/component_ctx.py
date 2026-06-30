@@ -76,14 +76,18 @@ class ComponentContext:
     _core_processor_ctx: core.ComponentProcessorContext
     _core_fn_call_ctx: core.FnCallContext
     _exception_handler_chain: ExceptionHandlerChain | None
+    _in_memo_fn: bool = False
 
-    def _with_fn_call_ctx(self, fn_call_ctx: core.FnCallContext) -> ComponentContext:
+    def _with_fn_call_ctx(
+        self, fn_call_ctx: core.FnCallContext, *, in_memo_fn: bool = False
+    ) -> ComponentContext:
         return ComponentContext(
             self._env,
             self._core_path,
             self._core_processor_ctx,
             fn_call_ctx,
             self._exception_handler_chain,
+            in_memo_fn,
         )
 
     def _with_extended_path(self, *parts: StableKey) -> ComponentContext:

@@ -163,6 +163,27 @@ async def _table_exists(conn: Any, table_name: str) -> bool:
     return False
 
 
+_server_reachable: bool | None = None
+
+
+async def _check_server_reachable() -> bool:
+    """Check once whether a SurrealDB server is reachable, caching the result.
+
+    Tests that need a live server are skipped (not failed) when none is running,
+    so that `surrealdb` being installed doesn't force the DB tests to run.
+    """
+    global _server_reachable
+    if _server_reachable is None:
+        try:
+            conn = AsyncSurreal(_SURREALDB_URL)
+            await conn.connect()  # type: ignore[call-arg]
+            await conn.close()
+            _server_reachable = True
+        except Exception:
+            _server_reachable = False
+    return _server_reachable
+
+
 async def _cleanup_conn(conn: Any, ns: str, db: str) -> None:
     """Drop the test database and close the connection."""
     try:
@@ -187,6 +208,8 @@ async def _cleanup_conn(conn: Any, ns: str, db: str) -> None:
 @pytest_asyncio.fixture
 async def surreal_conn() -> AsyncIterator[tuple[Any, str, str]]:
     """Create a SurrealDB connection with a unique test namespace/database."""
+    if not await _check_server_reachable():
+        pytest.skip(f"SurrealDB server not reachable at {_SURREALDB_URL}")
     tag = uuid_mod.uuid4().hex[:8]
     ns = f"test_ns_{tag}"
     db = f"test_db_{tag}"

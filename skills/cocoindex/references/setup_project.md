@@ -9,10 +9,10 @@ cocoindex init my-project
 cd my-project
 ```
 
-This creates: `main.py`, `pyproject.toml`, `.env`, `README.md`.
+This creates: `main.py`, `pyproject.toml`, `README.md`. The generated `main.py` sets the internal database location in its lifespan via `builder.settings.db_path = pathlib.Path("./cocoindex.db")`.
 
 ```bash
-pip install -e .
+uv run cocoindex update main.py   # or: pip install -e . && cocoindex update main.py
 ```
 
 ## Dependencies by Use Case
@@ -97,10 +97,12 @@ dependencies = [
 
 ### `.env` File
 
-CocoIndex automatically loads `.env` from the current directory.
+The `cocoindex` CLI automatically loads `.env` from the current directory (via `find_dotenv`).
 
 ```bash
-# CocoIndex internal database (required)
+# CocoIndex internal database (optional fallback).
+# Only used if the lifespan does not set builder.settings.db_path.
+# The `cocoindex init` template sets db_path in the lifespan instead, so this is not needed there.
 COCOINDEX_DB=./cocoindex.db
 
 # PostgreSQL (if using)
@@ -110,8 +112,8 @@ POSTGRES_URL=postgres://user:pass@localhost/db
 QDRANT_URL=http://localhost:6333
 
 # API keys (if using LLM extraction)
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=your-openai-api-key
+ANTHROPIC_API_KEY=your-anthropic-api-key
 ```
 
 ### Manual Settings (in lifespan)

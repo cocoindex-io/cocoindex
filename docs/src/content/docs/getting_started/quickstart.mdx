@@ -8,6 +8,8 @@ import AppExample from '/src/components/diagrams/concepts/AppExample.astro';
 import FileProcess from '/src/components/diagrams/concepts/FileProcess.astro';
 import ComponentsFanout from '/src/components/diagrams/concepts/ComponentsFanout.astro';
 import AppDef from '/src/components/diagrams/concepts/AppDef.astro';
+import ScarfPixel from '/src/components/ScarfPixel.astro';
+import { SCARF_QUICKSTART_PIXEL_ID } from '/src/consts';
 
 In this tutorial, we'll build a simple app that converts PDF files to Markdown and saves them to a local directory.
 
@@ -57,6 +59,14 @@ When your source data is updated, or your processing logic is changed (for examp
 
 ## Define the app
 
+At a high level, the app has three layers:
+
+1. **App** — binds the pipeline function to concrete input and output paths
+2. **Main function** — finds PDF files and mounts one processing component per file
+3. **File processing** — converts one PDF to Markdown and declares the output file
+
+We'll define the code in the opposite order so each Python symbol exists before it is referenced.
+
 Create a new file `main.py`. We'll define the processing functions first, then wire them into an App.
 
 ### Define file processing
@@ -71,9 +81,19 @@ import pathlib
 import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
-from docling.document_converter import DocumentConverter
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
-_converter = DocumentConverter()
+_pipeline_options = PdfPipelineOptions(
+    accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU)
+)
+_converter = DocumentConverter(
+    format_options={
+        InputFormat.PDF: PdfFormatOption(pipeline_options=_pipeline_options)
+    }
+)
 
 @coco.fn(memo=True)
 def process_file(
@@ -189,3 +209,5 @@ The corresponding Markdown file is automatically removed.
 - Read [Core Concepts](../programming_guide/core_concepts) to understand the mental model — state-driven programming, processing components, and memoization
 - Dive into the [Programming Guide](../programming_guide/app), starting with Apps, to learn how to build more complex pipelines
 - Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples) for real-world patterns (text embedding, RAG, knowledge graphs)
+
+<ScarfPixel pxid={SCARF_QUICKSTART_PIXEL_ID} />

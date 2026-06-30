@@ -6,6 +6,7 @@ from typing import (
     Any,
     Callable,
     Concatenate,
+    Generic,
     Iterable,
     ParamSpec,
     TypeVar,
@@ -80,7 +81,16 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
-from .runner import GPU, Runner
+from .runner import (
+    GPU,
+    GPUPool,
+    GPURunner,
+    Runner,
+    configure_gpu_pool,
+    current_gpu,
+    current_gpus,
+    current_gpu_fraction,
+)
 
 from .memo_fingerprint import (
     memo_fingerprint,
@@ -88,7 +98,13 @@ from .memo_fingerprint import (
     NotMemoKeyable,
 )
 
-from .serde import unpickle_safe, serialize_by_pickle
+from .serde import (
+    unpickle_safe,
+    serialize_by_pickle,
+    make_deserialize_fn,
+    get_deserialize_fn,
+    DeserializeFn,
+)
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
 
@@ -412,7 +428,10 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     Args:
         subpath: Optional component subpath. Auto-derived from fn.__name__ when omitted.
-        fn: The function to run for each item. The item value is passed as the first argument.
+        fn: The function to run for each item — the item value is passed as the
+            first argument. May also be a LiveComponent class, in which case one
+            live component instance is created per item (the item value is passed
+            as the first constructor argument, mirroring the plain-function shape).
         items: A keyed iterable of (key, value) pairs, or a LiveMapFeed/LiveMapView for live mode.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
@@ -439,23 +458,30 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
             )
         subpath = ComponentSubpath(Symbol(name))
 
-    if is_live_component_class(fn):
-        raise TypeError(
-            "LiveComponent classes cannot be used with mount_each(). "
-            "Use mount() instead."
-        )
-
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
 
     if isinstance(items, LiveMapFeed):
+        # Live data source: the per-item `fn` (whether a plain function or a
+        # LiveComponent class) is dispatched through `mount()` / `operator.update()`
+        # inside `_MountEachLiveComponent`, both of which already handle live
+        # component classes — so no special-casing of `fn` is needed here.
         instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
         return await _mount_live_component(parent_ctx, child_path, instance)
 
+    # Static data source: mount one component per item. When `fn` is a
+    # LiveComponent class, each item gets its own live component instance
+    # (same path as `mount(LiveCompClass)`, just looped per item).
+    fn_is_live = is_live_component_class(fn)
     core_handles: list[core.ComponentMountHandle] = []
 
     async def _mount_one(key: StableKey, item: Any) -> None:
         item_path = child_path.concat(key)
+        if fn_is_live:
+            instance = fn(item, *extra_args, **kwargs)
+            handle = await _mount_live_component(parent_ctx, item_path, instance)
+            core_handles.extend(handle._cores)
+            return
         processor = create_core_component_processor(
             fn, parent_ctx._env, item_path, (item, *extra_args), kwargs
         )
@@ -616,6 +642,157 @@ def runtime() -> _DualModeRuntime:
 
 
 # ============================================================================
+# use_state
+# ============================================================================
+
+_StateT = TypeVar("_StateT")
+
+# State has no static type hint (the handle is generic), so decode as Any.
+_DESERIALIZE_ANY = make_deserialize_fn(Any)
+
+
+class StateHandle(Generic[_StateT]):
+    """
+    Handle for a persistent per-component state value.
+
+    Returned by `coco.use_state()`. Read the current value via `.value`;
+    assign to `.value` to persist a new value for the next run.
+    """
+
+    __slots__ = ("_key", "_stored", "_deserializer", "_core_processor_ctx")
+
+    def __init__(
+        self,
+        key: StableKey,
+        stored: core.StoredValue,
+        deserializer: DeserializeFn,
+        core_processor_ctx: core.ComponentProcessorContext,
+    ) -> None:
+        self._key = key
+        self._stored = stored
+        self._deserializer = deserializer
+        self._core_processor_ctx = core_processor_ctx
+
+    @property
+    def value(self) -> _StateT:
+        # Lazy read: object-backed returns directly; bytes-backed deserializes once, cached.
+        return self._stored.get(self._deserializer)  # type: ignore[no-any-return]
+
+    @value.setter
+    def value(self, new_value: _StateT) -> None:
+        # Hand the object to Rust without serializing (serialization is deferred
+        # to commit). Keep the returned object-backed cell so later in-run reads
+        # return this value directly.
+        self._stored = self._core_processor_ctx.update_user_state(self._key, new_value)
+
+
+@overload
+def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]: ...
+@overload
+def use_state(
+    key: StableKey,
+    initial_value: _StateT | None = None,
+    *,
+    type_hint: type[_StateT],
+) -> StateHandle[_StateT]: ...
+def use_state(
+    key: StableKey,
+    initial_value: Any = None,
+    *,
+    type_hint: type[Any] | None = None,
+) -> StateHandle[Any]:
+    """
+    Declare a persistent state for the current component.
+
+    On the first run, the returned handle's `.value` is `initial_value`
+    (or `None` if omitted). On subsequent runs, `.value` is the value
+    stored at the end of the previous run. Assign to `handle.value`
+    during the run to persist a new value.
+
+    The value is serialized lazily, once, when the component commits — not at
+    assignment. Two consequences: (1) if the value is not serializable, the
+    error surfaces at commit (identifying the state key) rather than at the
+    `handle.value = ...` line; (2) the persisted value reflects the object as it
+    is at commit, so mutating it in place after assignment is captured.
+
+    Args:
+        key: Unique StableKey within this component (None, bool, int, str,
+             bytes, uuid.UUID, Symbol, or a tuple of these). Must be declared
+             at most once per component run.
+        initial_value: Value to use when no stored state exists for `key`.
+                       Defaults to `None`.
+        type_hint: Optional type to deserialize the stored value into. When
+                   provided, `.value` is decoded via the registered
+                   serialization framework (msgspec for dataclasses /
+                   NamedTuples / msgspec.Structs / primitives, pickle for
+                   types decorated with ``@coco.serialize_by_pickle``, pydantic
+                   for ``BaseModel`` subclasses). When omitted, the value is
+                   decoded generically (``Any``) — i.e. whatever object the
+                   deserializer produces from the stored bytes.
+
+    Returns:
+        A StateHandle wrapping the current value.
+
+    Raises:
+        RuntimeError: In the following cases, which surface as component build
+                      failures — logged by default but not propagated to
+                      `app.update()` unless a custom exception handler re-raises:
+
+                      - Inside a `with coco.component_subpath()` block: state
+                        is owned by the component's stable path, not the shifted
+                        subpath, so the key would silently read/write under the
+                        wrong identity.
+                      - Inside a memoized function body: on a cache hit the body
+                        is skipped entirely, so the key would never be declared
+                        and would be garbage-collected as stale on the next commit.
+                      - If `key` is declared more than once in the same component
+                        run: each key maps to exactly one state slot; a second
+                        declaration would be ambiguous.
+
+    Example::
+
+        # Plain (value typed as Any)
+        counter = coco.use_state("counter", 0)
+
+        # Typed — handle.value is Cursor, with full type inference
+        @dataclass
+        class Cursor:
+            pos: int
+            tag: str
+
+        cur = coco.use_state("cursor", type_hint=Cursor, initial_value=Cursor(0, "init"))
+        cur.value.pos += 1
+        cur.value = Cursor(cur.value.pos, "next")
+    """
+    ctx = get_context_from_ctx()
+    if ctx._core_path != ctx._core_processor_ctx.stable_path:
+        raise RuntimeError(
+            "coco.use_state() cannot be called inside a `with coco.component_subpath()` block"
+        )
+
+    if ctx._in_memo_fn:
+        raise RuntimeError(
+            "coco.use_state() cannot be called inside a memoized function"
+        )
+    try:
+        # initial_value passed unserialized; engine core drops it if a value is
+        # already stored on the previous run for this key.
+        stored = ctx._core_processor_ctx.use_state(key, initial_value)
+    except ValueError as e:
+        # Rust client errors surface as ValueError; normalize to RuntimeError so
+        # all use_state usage errors have a consistent type for callers.
+        raise RuntimeError(str(e)) from None
+    if type_hint is not None:
+        deserializer = get_deserialize_fn(
+            type_hint,  # type: ignore[arg-type]  # type objects are hashable at runtime
+            source_label=f"use_state key {key!r}",
+        )
+    else:
+        deserializer = _DESERIALIZE_ANY
+    return StateHandle(key, stored, deserializer, ctx._core_processor_ctx)
+
+
+# ============================================================================
 # __all__
 # ============================================================================
 
@@ -656,7 +833,13 @@ __all__ = [
     "lifespan",
     # .runner
     "GPU",
+    "GPUPool",
+    "GPURunner",
     "Runner",
+    "configure_gpu_pool",
+    "current_gpu",
+    "current_gpus",
+    "current_gpu_fraction",
     # .serde
     "unpickle_safe",
     "serialize_by_pickle",
@@ -699,6 +882,9 @@ __all__ = [
     "LiveMapView",
     "LiveMapSubscriber",
     "auto_refresh",
+    # use_state
+    "StateHandle",
+    "use_state",
     # Mount APIs
     "ComponentMountHandle",
     "mount",

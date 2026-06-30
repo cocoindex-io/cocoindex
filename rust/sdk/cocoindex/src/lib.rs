@@ -1,19 +1,133 @@
+#[cfg(feature = "amazon_s3")]
+pub mod amazon_s3;
 pub mod app;
+pub mod batched;
 pub mod ctx;
+#[cfg(any(feature = "neo4j", feature = "falkordb"))]
+mod cypher_graph;
+#[cfg(feature = "doris")]
+pub mod doris;
+pub mod entity_resolution;
 pub mod error;
+#[cfg(feature = "falkordb")]
+pub mod falkordb;
+pub mod file;
+// Rejects non-finite floats before the JSON round-trip in target connectors that
+// serialize rows through `serde_json` (which maps NaN/±Inf to null).
+#[cfg(any(
+    feature = "sqlite",
+    feature = "postgres",
+    feature = "doris",
+    feature = "surrealdb",
+    feature = "neo4j",
+    feature = "falkordb"
+))]
+mod finite;
 pub mod fs;
+#[cfg(feature = "google_drive")]
+pub mod gdrive;
+pub mod id;
+#[cfg(feature = "iggy")]
+pub mod iggy;
+#[cfg(feature = "kafka")]
+pub mod kafka;
+#[cfg(feature = "lancedb")]
+pub mod lancedb;
+pub mod live_component;
+#[doc(hidden)]
+pub mod logic;
 pub mod memo;
+pub mod mount;
+#[cfg(feature = "neo4j")]
+pub mod neo4j;
+#[cfg(feature = "oci_object_storage")]
+pub mod oci_object_storage;
+pub mod ops;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 pub mod prelude;
 pub(crate) mod profile;
+#[cfg(feature = "qdrant")]
+pub mod qdrant;
+pub mod resources;
+pub mod row_schema;
+#[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
+pub(crate) mod sql_ident;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+pub mod statediff;
 mod stats;
+#[cfg(feature = "surrealdb")]
+pub mod surrealdb;
+pub mod target_state;
+#[cfg(feature = "turbopuffer")]
+pub mod turbopuffer;
 mod typemap;
+pub mod user_state;
+#[cfg(feature = "valkey")]
+pub mod valkey;
 
 // Flat re-exports — the public API surface
-pub use app::{App, AppBuilder};
-pub use ctx::Ctx;
+pub use app::{
+    App, AppBuilder, DropHandle, Environment, EnvironmentBuilder, PreviewAction, PreviewValue,
+    Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
+};
+pub use batched::Batched;
+pub use ctx::{ContextKey, Ctx};
+pub use entity_resolution::{
+    CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
+    ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
+    resolve_entities_with_events,
+};
 pub use error::{Error, Result};
-pub use fs::{DirTarget, FileEntry, walk};
-pub use stats::RunStats;
+pub use file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
+    MatchAllFilePathMatcher, PatternFilePathMatcher,
+};
+pub use fs::{
+    DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
+    mount_dir_target, walk, walk_dir, walk_items,
+};
+pub use id::{
+    IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
+    generate_uuid_default,
+};
+// Re-exported so `#[cocoindex::function]` output can register each function's
+// logic fingerprint without the user crate needing a direct `linkme` dependency.
+#[doc(hidden)]
+pub use linkme;
+pub use live_component::{
+    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
+    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+};
+#[doc(hidden)]
+pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
+pub use resources::chunk::{Chunk, TextPosition};
+pub use resources::embedder::Embedder;
+pub use resources::live_map::LiveMap;
+pub use resources::rate_limit::RateLimiter;
+pub use resources::schema::{
+    MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
+    VectorSchemaProvider,
+};
+pub use statediff::{
+    CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
+    TrackingRecordTransition, diff, diff_composite, resolve_system_transition,
+};
+pub use stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
+pub use target_state::{
+    ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
+    register_root_target_states_provider,
+};
+pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
-pub use cocoindex_macros::function;
+pub use cocoindex_macros::{SchemaFields, function, mount_each, use_mount};
+pub use row_schema::{LogicalType, SchemaField, SchemaFields};
+
+// Re-exported so users can implement the async `LiveComponent` / `LiveMapFeed`
+// / `LiveMapView` traits as `#[cocoindex::async_trait]` without taking their own
+// dependency on `async-trait`.
+pub use async_trait::async_trait;

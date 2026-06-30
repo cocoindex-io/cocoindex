@@ -41,7 +41,7 @@ jobs:
           shell: bash
           run: git config --global core.autocrlf false
 
-        - uses: actions/checkout@v6
+        - uses: actions/checkout@v7
           with:
             fetch-depth: 1
 
@@ -52,6 +52,14 @@ jobs:
             version: "v0.12.0"
 
         - run: rustup toolchain install stable --profile minimal
+
+        # `protoc` is needed to build the Rust examples that enable the LanceDB
+        # (`lance-encoding`) and Qdrant (`qdrant-client`) features, which compile
+        # protobufs via `prost-build`. Cross-platform across the test matrix.
+        - name: Install protoc
+          uses: arduino/setup-protoc@v3
+          with:
+            repo-token: ${{ secrets.GITHUB_TOKEN }}
 
         - uses: actions/setup-python@v6
           id: setup_python
@@ -102,8 +110,14 @@ jobs:
 
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
               echo "Running prek on PR diff against target branch: ${{ github.base_ref }}"
+              # Fetch both diff endpoints: origin/<base> and the to-ref commit.
+              # The shallow checkout only guarantees the to-ref's tree, not the
+              # commit as a named object; without fetching <sha> explicitly,
+              # prek's `git diff origin/<base>..<sha>` can fail with "bad
+              # revision" (e.g. when the PR merges while this run is in flight).
               git fetch --no-tags --prune --depth=1 origin \
-                "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+                "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}" \
+                "${{ github.sha }}"
 
               prek run \
                 --from-ref "origin/${{ github.base_ref }}" \
@@ -124,7 +138,7 @@ jobs:
     validate-3p-notices:
         runs-on: ubuntu-latest
         steps:
-        - uses: actions/checkout@v6
+        - uses: actions/checkout@v7
           with:
             fetch-depth: 1
         - name: Install Rust toolchain

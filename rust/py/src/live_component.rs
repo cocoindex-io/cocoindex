@@ -3,7 +3,7 @@ use crate::{
     context::{PyComponentProcessorContext, PyFnCallContext},
     prelude::*,
     runtime::build_on_error,
-    stable_path::PyStablePath,
+    stable_path::{PyStableKey, PyStablePath},
 };
 
 use cocoindex_core::engine::live_component::LiveComponentController;
@@ -116,6 +116,41 @@ impl PyLiveComponentController {
     #[getter]
     pub fn is_live(&self) -> bool {
         self.0.is_live()
+    }
+
+    /// Read previously-committed user state for `key` (written via
+    /// `coco.use_state` inside `process()`), as a fresh standalone read.
+    /// Returns `None` if absent. Callable from `process_live` to gate a
+    /// durable startup-scan skip.
+    pub fn read_committed_state_async<'py>(
+        &self,
+        py: Python<'py>,
+        key: PyStableKey,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let ctrl = self.0.clone();
+        future_into_py(py, async move {
+            let value = ctrl.read_committed_state(&key.0).await.into_py_result()?;
+            Ok(value)
+        })
+    }
+
+    /// Commit `value` under `key` in this live component's persistent user
+    /// state (the `Live` keyspace), read back by `read_committed_state` on a
+    /// later run. Counterpart writer to `read_committed_state_async`; the
+    /// value is pre-serialized opaque bytes.
+    pub fn write_committed_state_async<'py>(
+        &self,
+        py: Python<'py>,
+        key: PyStableKey,
+        value: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let ctrl = self.0.clone();
+        future_into_py(py, async move {
+            ctrl.write_committed_state(&key.0, value)
+                .await
+                .into_py_result()?;
+            Ok(())
+        })
     }
 }
 

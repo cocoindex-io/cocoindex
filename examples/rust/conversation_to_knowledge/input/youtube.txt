@@ -1,0 +1,2 @@
+# One YouTube URL per line (real path: needs yt-dlp + ffmpeg + ASSEMBLYAI_API_KEY).
+# https://www.youtube.com/watch?v=BlVnGXEzFow

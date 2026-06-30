@@ -26,7 +26,7 @@ class Metrics:
         with self._lock:
             m = self.data
             self.data = {}
-            return m
+            return _MetricCounts(m)
 
     def __repr__(self) -> str:
         return f"Metrics{self.data}"
@@ -50,18 +50,51 @@ class Metrics:
             self.data.clear()
 
 
+class _MetricCounts(dict[str, int]):
+    """Collected metric counts whose equality tolerates the per-batch ``sink`` count.
+
+    Operation counts (``insert``/``upsert``/``delete``) are deterministic and
+    compared exactly. The number of ``sink`` (batch) invocations depends on how
+    aggressively the engine's shared target-action batcher coalesces leaf
+    actions, which can vary with concurrency. The ``sink`` value in an expected
+    literal is therefore treated as an upper bound rather than an exact count.
+    """
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, dict):
+            return False
+        actual_ops = {k: v for k, v in self.items() if k != "sink"}
+        expected_ops = {k: v for k, v in other.items() if k != "sink"}
+        if actual_ops != expected_ops:
+            return False
+        if "sink" not in other:
+            return True
+        return bool(self.get("sink", 0) <= other["sink"])
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    __hash__ = None  # type: ignore[assignment]
+
+
 class DictTargetStateStore:
     data: dict[str, DictDataWithPrev]
     metrics: Metrics
     _lock: threading.Lock
-    _use_async: bool
+    _action_sink: coco.TargetActionSink[
+        tuple[str, DictDataWithPrev | coco.NonExistenceType]
+    ]
     sink_exception: bool = False
 
     def __init__(self, use_async: bool = False) -> None:
         self.data = {}
         self.metrics = Metrics()
         self._lock = threading.Lock()
-        self._use_async = use_async
+        self._action_sink = (
+            coco.TargetActionSink.from_async_fn(self._async_sink)
+            if use_async
+            else coco.TargetActionSink.from_fn(self._sink)
+        )
 
     def _sink(
         self,
@@ -123,11 +156,7 @@ class DictTargetStateStore:
         )
         return coco.TargetReconcileOutput(
             action=(key, new_value),
-            sink=(
-                coco.TargetActionSink.from_async_fn(self._async_sink)
-                if self._use_async
-                else coco.TargetActionSink.from_fn(self._sink)
-            ),
+            sink=self._action_sink,
             tracking_record=desired_state,
         )
 
@@ -164,6 +193,9 @@ class DictsTargetStateStore:
     metrics: Metrics
     _lock: threading.Lock
     _use_async: bool
+    _action_sink: coco.TargetActionSink[
+        _DictTargetStateStoreAction, DictTargetStateStore
+    ]
     sink_exception: bool = False
     child_invalidation: Literal["destructive", "lossy"] | None = None
 
@@ -172,6 +204,11 @@ class DictsTargetStateStore:
         self.metrics = Metrics()
         self._lock = threading.Lock()
         self._use_async = use_async
+        self._action_sink = (
+            coco.TargetActionSink.from_async_fn(self._async_sink)
+            if use_async
+            else coco.TargetActionSink.from_fn(self._sink)
+        )
 
     def _sink(
         self,
@@ -228,19 +265,12 @@ class DictsTargetStateStore:
         | None
     ):
         assert isinstance(key, str)
-        sink: coco.TargetActionSink[
-            _DictTargetStateStoreAction, DictTargetStateStore
-        ] = (
-            coco.TargetActionSink.from_async_fn(self._async_sink)
-            if self._use_async
-            else coco.TargetActionSink.from_fn(self._sink)
-        )
         if coco.is_non_existence(desired_state):
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(
                     name=key, exists=False, action="delete"
                 ),
-                sink=sink,
+                sink=self._action_sink,
                 tracking_record=coco.NON_EXISTENCE,
                 child_invalidation=self.child_invalidation,
             )
@@ -248,7 +278,7 @@ class DictsTargetStateStore:
             assert len(prev_possible_records) > 0
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
-                sink=sink,
+                sink=self._action_sink,
                 tracking_record=desired_state,
             )
 
@@ -260,7 +290,7 @@ class DictsTargetStateStore:
                 action="insert" if len(prev_possible_records) == 0 else "upsert",
                 destructive=is_destructive,
             ),
-            sink=sink,
+            sink=self._action_sink,
             tracking_record=desired_state,
             child_invalidation=self.child_invalidation,
         )
@@ -271,10 +301,12 @@ class DictsTargetStateStore:
         self.child_invalidation = None
 
     def collect_child_metrics(self) -> dict[str, int]:
-        return sum(
-            (Metrics(store.metrics.collect()) for store in self._stores.values()),
-            Metrics(),
-        ).data
+        return _MetricCounts(
+            sum(
+                (Metrics(store.metrics.collect()) for store in self._stores.values()),
+                Metrics(),
+            ).data
+        )
 
     @property
     def data(self) -> dict[str, dict[str, DictDataWithPrev]]:
@@ -349,6 +381,9 @@ class AttachmentDictsTargetStateStore:
     metrics: Metrics
     _lock: threading.Lock
     _supported_attachment_types: frozenset[str]
+    _action_sink: coco.TargetActionSink[
+        _DictTargetStateStoreAction, _AttachmentChildHandler
+    ]
 
     child_invalidation: Literal["destructive", "lossy"] | None = None
 
@@ -362,6 +397,7 @@ class AttachmentDictsTargetStateStore:
         self._supported_attachment_types = supported_attachment_types or frozenset(
             {"items"}
         )
+        self._action_sink = coco.TargetActionSink.from_fn(self._sink)
 
     def _sink(
         self,
@@ -410,15 +446,12 @@ class AttachmentDictsTargetStateStore:
         | None
     ):
         assert isinstance(key, str)
-        sink: coco.TargetActionSink[
-            _DictTargetStateStoreAction, _AttachmentChildHandler
-        ] = coco.TargetActionSink.from_fn(self._sink)
         if coco.is_non_existence(desired_state):
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(
                     name=key, exists=False, action="delete"
                 ),
-                sink=sink,
+                sink=self._action_sink,
                 tracking_record=coco.NON_EXISTENCE,
                 child_invalidation=self.child_invalidation,
             )
@@ -426,7 +459,7 @@ class AttachmentDictsTargetStateStore:
             assert len(prev_possible_records) > 0
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
-                sink=sink,
+                sink=self._action_sink,
                 tracking_record=desired_state,
             )
 
@@ -438,7 +471,7 @@ class AttachmentDictsTargetStateStore:
                 action="insert" if len(prev_possible_records) == 0 else "upsert",
                 destructive=is_destructive,
             ),
-            sink=sink,
+            sink=self._action_sink,
             tracking_record=desired_state,
             child_invalidation=self.child_invalidation,
         )
@@ -449,14 +482,16 @@ class AttachmentDictsTargetStateStore:
         self.child_invalidation = None
 
     def collect_attachment_metrics(self, att_type: str) -> dict[str, int]:
-        return sum(
-            (
-                Metrics(handler._attachment_stores[att_type].metrics.collect())
-                for handler in self._handlers.values()
-                if att_type in handler._attachment_stores
-            ),
-            Metrics(),
-        ).data
+        return _MetricCounts(
+            sum(
+                (
+                    Metrics(handler._attachment_stores[att_type].metrics.collect())
+                    for handler in self._handlers.values()
+                    if att_type in handler._attachment_stores
+                ),
+                Metrics(),
+            ).data
+        )
 
     @property
     def attachment_data(

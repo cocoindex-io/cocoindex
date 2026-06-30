@@ -4,7 +4,6 @@ description: 'Generate documentation for multiple Python projects using LLM-powe
 slug: multi-codebase-summarization
 image: https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/cover.png
 tags: [llm, structured-data-extraction]
-last_reviewed: 2026-04-20
 ---
 
 ![Multi-Codebase Summarization](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/cover.png)
@@ -40,7 +39,7 @@ When your source data is updated, or your processing logic is changed (for examp
 1. Install CocoIndex and dependencies:
 
     ```bash
-    pip install 'cocoindex>=1.0.0' instructor litellm pydantic
+    pip install 'cocoindex>=1.0.2' instructor litellm pydantic
     ```
 
 2. Create a new directory for your project:
@@ -88,13 +87,19 @@ Define a CocoIndex App — the top-level runnable unit in CocoIndex.
 ```python title="main.py"
 from __future__ import annotations
 
+import os
+import pathlib
 from typing import Collection
 
+import instructor
 from litellm import acompletion
 from pydantic import BaseModel, Field
 
+import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
+from models import CodebaseInfo
 
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
@@ -125,8 +130,8 @@ It is up to you to declare the process granularity. It can be
 In this example, we have a [projects folder](https://github.com/cocoindex-io/cocoindex/tree/main/examples) containing 20+ projects. It is natural to pick granularity at the directory level for each project, because we want to create a wiki page per project.
 
 ```python title="main.py"
-@coco.function
-def app_main(
+@coco.fn
+async def app_main(
     root_dir: pathlib.Path,
     output_dir: pathlib.Path,
 ) -> None:
@@ -136,19 +141,20 @@ def app_main(
             continue
         project_name = entry.name
 
-        files = list(
-            localfs.walk_dir(
+        files = [
+            f
+            async for f in localfs.walk_dir(
                 entry,
                 recursive=True,
                 path_matcher=PatternFilePathMatcher(
-                    included_patterns=["*.py"],
-                    excluded_patterns=[".*", "__pycache__"],
+                    included_patterns=["**/*.py"],
+                    excluded_patterns=["**/.*", "**/__pycache__"],
                 ),
             )
-        )
+        ]
 
         if files:
-            coco.mount(
+            await coco.mount(
                 coco.component_subpath("project", project_name),
                 process_project,
                 project_name,
@@ -161,7 +167,7 @@ The main function does two things:
 
 1. **Find all projects** — Loop through each subdirectory in `root_dir`, treating each as a separate project.
 
-2. **Mount a processing component for each project** — For each project with Python files, `coco.mount()` sets up a processing component. CocoIndex handles the execution and tracks dependencies automatically.
+2. **Mount a processing component for each project** — For each project with Python files, `await coco.mount()` sets up a processing component. CocoIndex handles the execution and tracks dependencies automatically.
 
 **Why processing components?** A processing component groups an item's processing together with its target states. Each component runs independently and in parallel. In this case, when `project_a` finishes, its results are applied to the external system immediately, without waiting for `project_b` or any other project.
 
@@ -177,15 +183,15 @@ For each project, we will
 ![Process Project](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/project.svg)
 
 ```python title="main.py"
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_project(
     project_name: str,
     files: Collection[localfs.File],
     output_dir: pathlib.Path,
 ) -> None:
     """Process a project: extract, aggregate, and output markdown."""
-    # Extract info from each file concurrently using asyncio.gather
-    file_infos = await asyncio.gather(*[extract_file_info(f) for f in files])
+    # Extract info from each file concurrently.
+    file_infos = await coco.map(extract_file_info, files)
 
     # Aggregate into project-level summary
     project_info = await aggregate_project_info(project_name, file_infos)
@@ -196,7 +202,7 @@ async def process_project(
         output_dir / f"{project_name}.md", markdown, create_parent_dirs=True
     )
 ```
-**Concurrent processing with async** — By using `asyncio.gather()`, all file extractions run concurrently. This is significantly faster than sequential processing, especially when making LLM API calls.
+**Concurrent processing with async** — By using `coco.map()`, all file extractions run concurrently while keeping CocoIndex function calls visible to the pipeline. This is significantly faster than sequential processing, especially when making LLM API calls.
 
 [→ Function](/docs/programming_guide/function)
 
@@ -204,7 +210,7 @@ async def process_project(
 ## Extract file information with LLM
 
 Now let's take a look at the details for each transformation.
-For file extraction, we define a structure using Pydantic and use [Instructor](https://github.com/jxnl/instructor) to extract with LLMs.
+For file extraction, we define a structure using Pydantic and use [Instructor](https://github.com/567-labs/instructor) to extract with LLMs.
 
 ![Extract files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/extraction.svg)
 
@@ -221,7 +227,7 @@ class FunctionInfo(BaseModel):
         description="Function signature, e.g. 'async def foo(x: int) -> str'"
     )
     is_coco_function: bool = Field(
-        description="Whether decorated with @coco.function"
+        description="Whether decorated with @coco.fn"
     )
     summary: str = Field(description="Brief summary of what the function does")
 
@@ -251,10 +257,10 @@ The core extraction function uses memoization to cache LLM results:
 ````python title="main.py"
 _instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.JSON)
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
-    content = file.read_text()
+    content = await file.read_text()
     file_path = str(file.file_path.path)
 
     prompt = f"""Analyze the following Python file and extract structured information.
@@ -294,7 +300,7 @@ For projects with multiple files, we aggregate into a unified summary:
 ![Aggregate files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/aggregate.svg)
 
 ```python title="main.py"
-@coco.function
+@coco.fn
 async def aggregate_project_info(
     project_name: str,
     file_infos: list[CodebaseInfo],
@@ -372,7 +378,7 @@ Create output markdown for each project.
 ![Create Markdown](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/markdown.svg)
 
 ```python title="main.py"
-@coco.function
+@coco.fn
 def generate_markdown(
     project_name: str, info: CodebaseInfo, file_infos: list[CodebaseInfo]
 ) -> str:
@@ -482,6 +488,6 @@ This example showcases several powerful patterns:
 
 1. **Structured LLM outputs** with Instructor + Pydantic models
 2. **Memoized LLM calls** to avoid redundant API costs
-3. **Async concurrent processing** with `asyncio.gather()`
+3. **Async concurrent processing** with `coco.map()`
 4. **Hierarchical aggregation** (file → project)
 5. **Incremental processing** for efficient updates

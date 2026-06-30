@@ -338,6 +338,173 @@ relation_target.declare_relation(from_id="user:1", to_id="item:1", record=MyRela
 
 ---
 
+## Neo4j
+
+**Import**: `from cocoindex.connectors import neo4j`
+
+**Capabilities**: Target only | **Vector**: Native (vector index) | **Model**: Knowledge graph (nodes + relationships)
+
+### Connection Setup
+
+```python
+from cocoindex.connectors import neo4j
+
+NEO4J_DB = coco.ContextKey[neo4j.ConnectionFactory]("neo4j_db")
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    builder.provide(NEO4J_DB, neo4j.ConnectionFactory(
+        uri="bolt://localhost:7687",
+        auth=("neo4j", "cocoindex"),
+        database="neo4j",  # Optional, default "neo4j"
+    ))
+    yield
+```
+
+### As Target (Nodes + Relationships)
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Person:
+    name: str
+
+@dataclass
+class Task:
+    description: str
+
+@dataclass
+class AssignedRel:
+    priority: int
+
+# Mount node tables (each label is a table)
+person_table = await neo4j.mount_table_target(
+    NEO4J_DB,
+    "Person",
+    await neo4j.TableSchema.from_class(Person, primary_key="name"),
+    primary_key="name",
+)
+task_table = await neo4j.mount_table_target(
+    NEO4J_DB,
+    "Task",
+    await neo4j.TableSchema.from_class(Task, primary_key="description"),
+    primary_key="description",
+)
+
+# Mount a relationship target between two node tables
+assigned_rel = await neo4j.mount_relation_target(
+    NEO4J_DB, "ASSIGNED_TO", person_table, task_table,
+    await neo4j.TableSchema.from_class(AssignedRel),
+)
+
+# Declare nodes
+person_table.declare_record(row=Person(name="Alice"))   # alias: declare_row
+task_table.declare_record(row=Task(description="ship v1"))
+
+# Declare edges (record optional; PK auto-derived from endpoints when omitted)
+assigned_rel.declare_relation(
+    from_id="Alice", to_id="ship v1", record=AssignedRel(priority=1),
+)
+```
+
+### Vector Index
+
+```python
+person_table.declare_vector_index(
+    field="embedding",
+    dimension=384,
+    metric="cosine",  # or "euclidean"
+)
+```
+
+### Type Override
+
+```python
+from typing import Annotated
+
+@dataclass
+class Row:
+    id: str
+    score: Annotated[float, neo4j.Neo4jType("decimal", encoder=str)]
+```
+
+---
+
+## FalkorDB
+
+**Import**: `from cocoindex.connectors import falkordb`
+
+**Capabilities**: Target only | **Vector**: Native (vector index) | **Model**: Knowledge graph (nodes + relationships)
+
+### Connection Setup
+
+```python
+from cocoindex.connectors import falkordb
+
+FALKOR_DB = coco.ContextKey[falkordb.ConnectionFactory]("falkor_db")
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    builder.provide(FALKOR_DB, falkordb.ConnectionFactory(
+        uri="falkor://localhost:6379",
+        graph="knowledge_graph",  # Optional, default "default"
+    ))
+    yield
+```
+
+### As Target (Nodes + Relationships)
+
+```python
+person_table = await falkordb.mount_table_target(
+    FALKOR_DB,
+    "Person",
+    await falkordb.TableSchema.from_class(Person, primary_key="name"),
+    primary_key="name",
+)
+task_table = await falkordb.mount_table_target(
+    FALKOR_DB,
+    "Task",
+    await falkordb.TableSchema.from_class(Task, primary_key="description"),
+    primary_key="description",
+)
+
+# Mount relationship target (no schema -> PK auto-derived from endpoints)
+assigned_rel = await falkordb.mount_relation_target(
+    FALKOR_DB, "ASSIGNED_TO", person_table, task_table,
+)
+
+# Declare nodes
+person_table.declare_record(row=Person(name="Alice"))   # alias: declare_row
+task_table.declare_record(row=Task(description="ship v1"))
+
+# Declare edges
+assigned_rel.declare_relation(from_id="Alice", to_id="ship v1")
+```
+
+### Vector Index
+
+```python
+person_table.declare_vector_index(
+    field="embedding",
+    dimension=384,
+    metric="cosine",  # or "euclidean", "ip"
+)
+```
+
+### Type Override
+
+```python
+from typing import Annotated
+
+@dataclass
+class Row:
+    id: str
+    score: Annotated[float, falkordb.FalkorType("decimal", encoder=str)]
+```
+
+---
+
 ## LocalFS
 
 **Import**: `from cocoindex.connectors import localfs`
@@ -546,6 +713,8 @@ await coco.mount_each(process_file, source.items(), target)
 | **LanceDB** | - | Y | Native | Cloud-native vector DB |
 | **Qdrant** | - | Y | Native | Specialized vector search |
 | **SurrealDB** | - | Y | Native | Graph + document DB |
+| **Neo4j** | - | Y | Native | Knowledge graphs |
+| **FalkorDB** | - | Y | Native | Knowledge graphs (Redis) |
 | **Apache Doris** | - | Y | Native | Analytical DB + vectors |
 | **LocalFS** | Y | Y | N/A | File-based pipelines |
 | **Amazon S3** | Y | - | N/A | Cloud object storage |

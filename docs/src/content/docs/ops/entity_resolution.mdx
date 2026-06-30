@@ -226,7 +226,7 @@ resolver = LlmPairResolver(model="openai/gpt-4o-mini", retries=1)  # fewer retri
 
 ### Memoization
 
-Each unique `(entity, candidates)` pair's decision is persisted across runs via `@coco.fn(memo=True)`. Changing the model or prompt invalidates the cache. No additional memoization wrapper is needed.
+Each unique `(entity, candidates)` pair's decision is persisted across runs via [`@coco.fn(memo=True)`](../programming_guide/function). Changing the model or prompt invalidates the cache. No additional memoization wrapper is needed.
 
 ### Parameters
 

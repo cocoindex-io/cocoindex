@@ -52,6 +52,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'common_resources/data_types', label: 'Data types' },
       { type: 'doc', slug: 'common_resources/vector_schema', label: 'Vector schema' },
       { type: 'doc', slug: 'common_resources/id_generation', label: 'ID generation' },
+      { type: 'doc', slug: 'common_resources/live_map', label: 'LiveMap' },
     ],
   },
   {
@@ -62,6 +63,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'connectors/doris', label: 'Apache Doris' },
       { type: 'doc', slug: 'connectors/falkordb', label: 'FalkorDB' },
       { type: 'doc', slug: 'connectors/google_drive', label: 'Google Drive' },
+      { type: 'doc', slug: 'connectors/iggy', label: 'Iggy' },
       { type: 'doc', slug: 'connectors/kafka', label: 'Kafka' },
       { type: 'doc', slug: 'connectors/lancedb', label: 'LanceDB' },
       { type: 'doc', slug: 'connectors/localfs', label: 'Local filesystem' },
@@ -73,6 +75,8 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'connectors/sqlite', label: 'SQLite' },
       { type: 'doc', slug: 'connectors/surrealdb', label: 'SurrealDB' },
       { type: 'doc', slug: 'connectors/turbopuffer', label: 'Turbopuffer' },
+      { type: 'doc', slug: 'connectors/valkey', label: 'Valkey' },
+      { type: 'doc', slug: 'connectors/zvec', label: 'zvec' },
     ],
   },
   {

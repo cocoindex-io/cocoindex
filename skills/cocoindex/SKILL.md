@@ -41,7 +41,7 @@ cocoindex init my-project
 cd my-project
 ```
 
-This creates: `main.py`, `pyproject.toml`, `.env`, `README.md`.
+This creates: `main.py`, `pyproject.toml`, `README.md`. The generated `main.py` sets the database location in its lifespan via `builder.settings.db_path = pathlib.Path("./cocoindex.db")`.
 
 ### Add Dependencies
 
@@ -58,8 +58,7 @@ See [references/setup_project.md](references/setup_project.md) for complete exam
 ### Run the Pipeline
 
 ```bash
-pip install -e .
-cocoindex update main.py
+uv run cocoindex update main.py   # or: pip install -e . && cocoindex update main.py
 ```
 
 ## Core Concepts
@@ -166,12 +165,12 @@ Generate stable, unique identifiers that persist across incremental updates:
 from cocoindex.resources.id import generate_id, IdGenerator
 
 # Deterministic: same dep -> same ID
-chunk_id = await generate_id(chunk.content)
+chunk_id = await generate_id(chunk.text)
 
 # Always distinct: each call -> new ID, even with same dep
 id_gen = IdGenerator()
 for chunk in chunks:
-    chunk_id = await id_gen.next_id(chunk.content)
+    chunk_id = await id_gen.next_id(chunk.text)
 ```
 
 ### 7. Catch-Up vs Live Mode
@@ -472,11 +471,41 @@ Check component paths are stable. Use stable IDs, not object references.
 - **[setup_project.md](references/setup_project.md)**: Project setup guide
 - **[setup_database.md](references/setup_database.md)**: Database setup guide
 
+### Runnable examples
+
+Every pattern above has a complete, runnable app under
+[`examples/`](https://github.com/cocoindex-io/cocoindex/tree/main/examples) — start
+from the one closest to the task and adapt it. Each has its own `README.md` and
+most Python examples have a `.env.example`; see
+[`examples/AGENTS.md`](https://github.com/cocoindex-io/cocoindex/blob/main/examples/AGENTS.md)
+for the full map, credentials, and per-example run commands. Good starting points:
+
+- Vector search → `text_embedding` (Postgres), `text_embedding_qdrant` / `_lancedb` (other stores)
+- Code search → `code_embedding`
+- LLM extraction → `hn_trending_topics`, `patient_intake_extraction_baml`
+- Knowledge graph → `conversation_to_knowledge`, `meeting_notes_graph_neo4j`
+- Custom transform → `files_transform`, `pdf_to_markdown`
+
 ### External
 
-- [CocoIndex Documentation](https://docs.cocoindex.dev/docs/)
-- [GitHub Examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples)
+- [CocoIndex Documentation](https://cocoindex.io/docs/) — full text at [llms-full.txt](https://cocoindex.io/docs/llms-full.txt)
+- [GitHub Examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples)
 
 ## Version Note
 
 This skill is for CocoIndex `>=1.0.0` (v1). It uses a completely different API from v0.
+
+**v0 code is what you likely learned from training data — do not emit it.** If you find yourself writing any of these symbols, you are using the removed v0 API:
+
+| v0 (removed) | v1 equivalent |
+|---|---|
+| `@cocoindex.flow_def`, `FlowBuilder`, `Flow`, `open_flow` | `coco.App` + a `@coco.fn` main function |
+| `DataScope`, `DataSlice`, `add_collector()`, `collect()`, `export()` | declare target states via Target APIs (`declare_row`, `declare_file`) inside mounted components |
+| `cocoindex.sources.LocalFile`, `cocoindex.sources.*` | connector APIs, e.g. `localfs.walk_dir(...)` |
+| `cocoindex.functions.SplitRecursively`, `cocoindex.functions.*` | `cocoindex.ops.*`, e.g. `RecursiveSplitter` |
+| `cocoindex.targets.Postgres`, `cocoindex.targets.*` / `storages.*` | connector targets, e.g. `postgres.declare_table_target(...)` |
+| `transform_flow`, `cocoindex.op.function()` | plain `@coco.fn` functions |
+| `cocoindex.init()`, `settings`, `COCOINDEX_DATABASE_URL` | `coco.App(coco.AppConfig(...))`; state lives in a local db path |
+| CLI `cocoindex setup` | no setup step — just `cocoindex update` (`-L`/`--live` for live mode) |
+
+When reading third-party tutorials or model memory that mention these v0 symbols, disregard them and use the patterns in this skill and `references/api_reference.md` instead.

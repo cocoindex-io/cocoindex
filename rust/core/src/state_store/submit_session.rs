@@ -74,7 +74,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::prelude::*;
 use crate::state::db_schema::{
-    ChildExistenceInfo, StablePathEntryTrackingInfo, StablePathNodeType,
+    ChildExistenceInfo, StablePathEntryTrackingInfo, StablePathNodeType, StateKind,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
@@ -331,6 +331,18 @@ pub struct CommitPlan {
     pub fn_memo_clear_all_first: bool,
     pub fn_memo_writes: Vec<(Fingerprint, Vec<u8>)>,
     pub fn_memo_deletes: Vec<Fingerprint>,
+    /// If true, prefix-delete all `Regular`-kind user-state rows for self
+    /// before applying the writes/deletes below. The writes/deletes always
+    /// target `StateKind::Regular` — they carry the per-build `coco.use_state`
+    /// flush, which never touches the `Live` keyspace.
+    pub user_state_clear_all_first: bool,
+    pub user_state_writes: Vec<(StableKey, Vec<u8>)>,
+    pub user_state_deletes: Vec<StableKey>,
+    /// If true, also prefix-delete all `Live`-kind user-state rows for self.
+    /// Set only when the component is being deleted, so whole-component GC
+    /// removes the live-machinery committed state alongside the regular
+    /// state (the regular flush above never clears `Live`).
+    pub user_state_clear_live: bool,
     /// In-memory child tree after this build. AppStore feeds it to
     /// `existence_reconciler` (see [`AppStore::commit`]) inside its
     /// commit txn, so the children-`__cex` read + tombstone writes
@@ -351,8 +363,13 @@ pub struct CommitPlan {
 /// `&'a mut WriteTxn<'env>` borrow is bounded by the callback's await
 /// suspension scope. The body's future is `'a`-tied so it can't outlive
 /// the borrow.
+///
+/// `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
+/// invoke the reconciler more than once; it therefore clones or
+/// `Arc`-shares its captures rather than moving them in. The LMDB
+/// AppStore invokes it exactly once.
 pub type ExistenceReconciler =
-    Box<dyn for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send>;
+    Box<dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // AppStore methods — Phase 2 driver + Phase 4 commit / cleanup
@@ -475,6 +492,32 @@ impl AppStore {
                     for (fp, bytes) in plan.fn_memo_writes {
                         app_store
                             .write_fn_memo_raw(wtxn, &component_path, fp, &bytes)
+                            .await?;
+                    }
+                    if plan.user_state_clear_all_first {
+                        app_store
+                            .delete_user_states_of_kind(wtxn, &component_path, StateKind::Regular)
+                            .await?;
+                    }
+                    if plan.user_state_clear_live {
+                        app_store
+                            .delete_user_states_of_kind(wtxn, &component_path, StateKind::Live)
+                            .await?;
+                    }
+                    for key in plan.user_state_deletes {
+                        app_store
+                            .delete_user_state(wtxn, &component_path, StateKind::Regular, &key)
+                            .await?;
+                    }
+                    for (key, bytes) in plan.user_state_writes {
+                        app_store
+                            .write_user_state(
+                                wtxn,
+                                &component_path,
+                                StateKind::Regular,
+                                &key,
+                                &bytes,
+                            )
                             .await?;
                     }
                     existence_reconciler(wtxn).await?;
@@ -644,6 +687,13 @@ pub async fn reconcile_child_existence<'a>(
                             queue.push_back(Level {
                                 path: level.path.concat_part(curr_key.clone()),
                                 child_path_set: Some(curr_dir_set),
+                            });
+                        } else if existing_info.node_type == StablePathNodeType::Directory
+                            && new_node_type == StablePathNodeType::Component
+                        {
+                            queue.push_back(Level {
+                                path: level.path.concat_part(curr_key.clone()),
+                                child_path_set: None,
                             });
                         }
                         curr_next = curr_iter.next();

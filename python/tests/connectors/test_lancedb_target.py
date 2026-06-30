@@ -12,6 +12,7 @@ import pytest
 
 import cocoindex as coco
 from tests import common
+from cocoindex.connectorkits.fingerprint import fingerprint_object
 
 try:
     import pyarrow as pa  # type: ignore
@@ -220,6 +221,61 @@ async def test_add_column_preserves_existing_rows(lancedb_dir: Path) -> None:
 
 @pytest.mark.asyncio
 @requires_lancedb
+async def test_nullable_schema_only_add_does_not_upsert_rows(
+    lancedb_dir: Path,
+) -> None:
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_nullable_schema_only_add"
+    source_rows: list[Any] = []
+    row_type: type[Any] = SimpleRow
+
+    async def declare_table_and_rows() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            lancedb.declare_table_target,
+            LANCEDB_DB,
+            table_name,
+            await lancedb.TableSchema.from_class(row_type, primary_key=["id"]),
+        )
+        for row in source_rows:
+            table.declare_row(row=row)
+
+    env = _make_env(conn, "test_nullable_schema_only_add_does_not_upsert_rows")
+    app = coco.App(
+        coco.AppConfig(name="test_lancedb_nullable_schema_only_add", environment=env),
+        declare_table_and_rows,
+    )
+
+    source_rows = [
+        SimpleRow(id="1", name="Alice"),
+        SimpleRow(id="2", name="Bob"),
+    ]
+    await app.update()
+
+    initial_version = await _read_table_version(conn, table_name)
+
+    row_type = ExtendedRow
+    source_rows = [
+        ExtendedRow(id="1", name="Alice"),
+        ExtendedRow(id="2", name="Bob"),
+    ]
+    await app.update()
+
+    assert await _read_column_names(conn, table_name) == ["id", "name", "extra"]
+    assert sorted(await _read_rows(conn, table_name), key=lambda row: row["id"]) == [
+        {"id": "1", "name": "Alice", "extra": None},
+        {"id": "2", "name": "Bob", "extra": None},
+    ]
+
+    schema_only_version = await _read_table_version(conn, table_name)
+    assert schema_only_version == initial_version + 1
+
+    await app.update()
+    assert await _read_table_version(conn, table_name) == schema_only_version
+
+
+@pytest.mark.asyncio
+@requires_lancedb
 async def test_add_column_keeps_old_rows_before_backfill(lancedb_dir: Path) -> None:
     conn = await lancedb.connect_async(str(lancedb_dir))
     table_name = "test_add_column_existing_rows"
@@ -259,6 +315,190 @@ async def test_add_column_keeps_old_rows_before_backfill(lancedb_dir: Path) -> N
         {"id": "2", "name": "Bob", "extra": "std"},
     ]
     assert "extra" in await _read_column_names(conn, table_name)
+
+
+@requires_lancedb
+def test_row_reconcile_tracks_only_nulls_from_new_nullable_columns() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "extra": None}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is True
+    assert result.tracking_record == fingerprint_object(new_row)
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_non_null_value_for_new_nullable_column() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "extra": "vip"}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_existing_column_change_with_new_null_column() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alicia", "extra": None}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_when_previous_row_may_be_missing() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+        null_backfilled_columns={"extra"},
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "extra": None}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        True,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@requires_lancedb
+def test_row_reconcile_upserts_non_nullable_added_column() -> None:
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "score": lancedb.ColumnDef(type=pa.float64(), nullable=False),
+        },
+        primary_key=["id"],
+    )
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+    )
+
+    old_row = {"id": "1", "name": "Alice"}
+    new_row = {"id": "1", "name": "Alice", "score": 1.0}
+
+    result = handler.reconcile(
+        ("1",),
+        new_row,
+        [fingerprint_object(old_row)],
+        False,
+    )
+
+    assert result is not None
+    assert result.action.track_only is False
+    assert result.action.value == new_row
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_row_handler_track_only_actions_do_not_open_table_or_optimize() -> None:
+    conn = _FakeAsyncConnection()
+    handler = _target._RowHandler(
+        conn=cast(Any, conn),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
+        num_transactions_before_optimize=1,
+    )
+
+    await handler._apply_actions(
+        cast(Any, None),
+        [_target._RowAction(key=("1",), value=None, track_only=True)],
+    )
+
+    assert conn.open_table_count == 0
+    assert conn.table.optimize_count == 0
 
 
 @pytest.mark.asyncio
@@ -532,8 +772,526 @@ def test_table_target_rejects_non_positive_optimize_interval() -> None:
 
 @requires_lancedb
 def test_lancedb_async_table_supports_add_columns_api() -> None:
-    async_table = cast(Any, lancedb).table.AsyncTable
+    import lancedb as real_lancedb  # type: ignore[import-not-found, import-untyped]
+
+    async_table = real_lancedb.table.AsyncTable
 
     assert hasattr(async_table, "add_columns")
     assert callable(async_table.add_columns)
     assert pa.field("x", pa.string())
+
+
+# =============================================================================
+# Vector index tests
+# =============================================================================
+
+if HAS_LANCEDB:
+    import numpy as np
+
+    async def _create_test_table_with_vectors(
+        conn: lancedb.LanceAsyncConnection,
+        table_name: str,
+        num_rows: int = 256,
+        vec_size: int = 4,
+    ) -> None:
+        """Create a table with id, content, and embedding columns populated."""
+        data = {
+            "id": [str(i) for i in range(num_rows)],
+            "content": [f"doc {i}" for i in range(num_rows)],
+            "embedding": [
+                np.array([float(i) % 10, 1.0, 1.0, 1.0], dtype=np.float32)
+                for i in range(num_rows)
+            ],
+        }
+        arrays = [
+            pa.array(data["id"]),
+            pa.array(data["content"]),
+            pa.array(data["embedding"], type=pa.list_(pa.float32(), vec_size)),
+        ]
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("content", pa.string()),
+                pa.field("embedding", pa.list_(pa.float32(), vec_size)),
+            ]
+        )
+        batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
+        await conn.create_table(table_name, batch, mode="overwrite")
+
+    async def _create_test_table_with_text(
+        conn: lancedb.LanceAsyncConnection,
+        table_name: str,
+    ) -> None:
+        """Create a table with id and content columns."""
+        data = {
+            "id": ["1", "2"],
+            "content": [
+                "His first language is Spanish",
+                "Her first language is English",
+            ],
+        }
+        arrays = [pa.array(data["id"]), pa.array(data["content"])]
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("content", pa.string()),
+            ]
+        )
+        batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
+        await conn.create_table(table_name, batch, mode="overwrite")
+
+    async def _list_indices(
+        conn: lancedb.LanceAsyncConnection, table_name: str
+    ) -> list[Any]:
+        """Return the list of index metadata dicts for a table."""
+        table = await conn.open_table(table_name)
+        return list(await table.list_indices())
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_handler_creates_ivf_pq_index(lancedb_dir: Path) -> None:
+    """_VectorIndexHandler creates an IVF-PQ vector index on a populated table."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_idx_handler"
+    # IVF-PQ needs data to train on (at least num_partitions rows)
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    action = _target._VectorIndexAction(name="embedding_idx", spec=spec)
+
+    # Apply the action directly (context_provider not used for index creation)
+    await handler._apply_actions(cast(Any, None), [action])
+
+    # Verify index was created
+    indices = await _list_indices(conn, table_name)
+    index_names = [
+        getattr(idx, "name", None)
+        or getattr(idx, "index_name", None)
+        or getattr(idx, "columns", [""])[0]
+        for idx in indices
+    ]
+    assert any("embedding" in str(n) for n in index_names), (
+        f"Expected an embedding vector index, got: {index_names}"
+    )
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_handler_replace_replaces_existing_index(
+    lancedb_dir: Path,
+) -> None:
+    """_VectorIndexHandler with replace=True recreates an existing index without error."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_replace"
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    action = _target._VectorIndexAction(name="emb", spec=spec)
+
+    # Apply twice — second call should not raise (uses replace=True)
+    await handler._apply_actions(cast(Any, None), [action])
+    await handler._apply_actions(cast(Any, None), [action])  # no-error on re-create
+
+    indices = await _list_indices(conn, table_name)
+    assert len(indices) >= 1
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_handler_drops_index_on_delete(lancedb_dir: Path) -> None:
+    """A delete action (spec=None) drops the previously created vector index."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_drop"
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    await handler._apply_actions(
+        cast(Any, None), [_target._VectorIndexAction(name="emb_idx", spec=spec)]
+    )
+    names_before = {idx.name for idx in await _list_indices(conn, table_name)}
+    assert "emb_idx" in names_before
+
+    # Delete action (spec=None) drops the index by name.
+    delete = _target._VectorIndexAction(name="emb_idx", spec=None)
+    await handler._apply_actions(cast(Any, None), [delete])
+    names_after = {idx.name for idx in await _list_indices(conn, table_name)}
+    assert "emb_idx" not in names_after
+
+    # Dropping again is a safe no-op when the index is already gone.
+    await handler._apply_actions(cast(Any, None), [delete])
+
+
+@requires_lancedb
+def test_vector_index_handler_reconcile_no_op_when_fingerprint_unchanged(
+    lancedb_dir: Path,
+) -> None:
+    """Reconcile returns None when the fingerprint is unchanged (no-op)."""
+    # handler instance (conn/table_name don't matter for pure reconcile logic)
+    handler = _target._VectorIndexHandler(conn=cast(Any, None), table_name="dummy")
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=None,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+
+    fp = fingerprint_object(spec)
+    # Simulate: previous run recorded the same fingerprint, and prev_may_be_missing=False.
+    result = handler.reconcile("emb", spec, [fp], False)
+    assert result is None, "Expected no-op when fingerprint matches"
+
+
+@requires_lancedb
+def test_vector_index_handler_reconcile_action_when_spec_changes() -> None:
+    """Reconcile emits an action when the spec has changed."""
+    handler = _target._VectorIndexHandler(conn=cast(Any, None), table_name="dummy")
+    old_spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=None,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    new_spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="l2",  # changed
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=None,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+
+    old_fp = fingerprint_object(old_spec)
+    result = handler.reconcile("emb", new_spec, [old_fp], False)
+    assert result is not None, "Expected action when spec changed"
+    assert result.action.spec == new_spec
+
+
+@requires_lancedb
+def test_declare_vector_index_rejects_unknown_column() -> None:
+    """declare_vector_index() raises ValueError for a column not in the schema."""
+    schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+        },
+        primary_key=["id"],
+    )
+    from unittest.mock import MagicMock
+
+    fake_provider = MagicMock()
+    tbl: lancedb.TableTarget[Any, Any] = cast(
+        lancedb.TableTarget,
+        lancedb.TableTarget(fake_provider, schema),
+    )
+    with pytest.raises(ValueError, match="Column 'nonexistent' not found"):
+        tbl.declare_vector_index(column="nonexistent")
+
+
+# =============================================================================
+# FTS index tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_creates_fts_index(lancedb_dir: Path) -> None:
+    """_FtsIndexHandler creates an FTS index on a text column."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_idx_handler"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    action = _target._FtsIndexAction(name="content_fts", spec=spec)
+
+    await handler._apply_actions(cast(Any, None), [action])
+
+    # Verify FTS index was created
+    indices = await _list_indices(conn, table_name)
+    index_names = [
+        getattr(idx, "name", None)
+        or getattr(idx, "index_name", None)
+        or getattr(idx, "columns", [""])[0]
+        for idx in indices
+    ]
+    assert any("content" in str(n) for n in index_names), (
+        f"Expected a content FTS index, got: {index_names}"
+    )
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_search_returns_results(lancedb_dir: Path) -> None:
+    """After _FtsIndexHandler creates an FTS index, full-text search works."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_search"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    action = _target._FtsIndexAction(name="content_fts", spec=spec)
+    await handler._apply_actions(cast(Any, None), [action])
+
+    # FTS search for "spanish"
+    fts_tbl = await conn.open_table(table_name)
+    result_arrow = (
+        await (await fts_tbl.search("spanish", query_type="fts")).limit(5).to_arrow()
+    )
+    rows = result_arrow.to_pylist()
+    assert len(rows) >= 1
+    assert rows[0]["id"] == "1"
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_replace_is_idempotent(lancedb_dir: Path) -> None:
+    """Calling _apply_actions twice with replace=True should not raise."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_replace"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    action = _target._FtsIndexAction(name="content_fts", spec=spec)
+
+    await handler._apply_actions(cast(Any, None), [action])
+    await handler._apply_actions(cast(Any, None), [action])  # no error on re-create
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_drops_index_on_delete(lancedb_dir: Path) -> None:
+    """A delete action (spec=None) drops the previously created FTS index."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_drop"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    await handler._apply_actions(
+        cast(Any, None), [_target._FtsIndexAction(name="content_fts", spec=spec)]
+    )
+    assert "content_fts" in {idx.name for idx in await _list_indices(conn, table_name)}
+
+    # Delete action (spec=None) drops the index by name.
+    delete = _target._FtsIndexAction(name="content_fts", spec=None)
+    await handler._apply_actions(cast(Any, None), [delete])
+    assert "content_fts" not in {
+        idx.name for idx in await _list_indices(conn, table_name)
+    }
+
+
+@requires_lancedb
+def test_fts_index_handler_reconcile_no_op_when_fingerprint_unchanged() -> None:
+    """Reconcile returns None when the fingerprint is unchanged (no-op)."""
+    handler = _target._FtsIndexHandler(conn=cast(Any, None), table_name="dummy")
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+
+    fp = fingerprint_object(spec)
+    result = handler.reconcile("content_fts", spec, [fp], False)
+    assert result is None, "Expected no-op when fingerprint matches"
+
+
+@requires_lancedb
+def test_fts_index_handler_reconcile_action_when_spec_changes() -> None:
+    """Reconcile emits an action when the spec has changed."""
+    handler = _target._FtsIndexHandler(conn=cast(Any, None), table_name="dummy")
+    old_spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    new_spec = _target._FtsIndexSpec(
+        column="content",
+        language="Chinese",  # changed
+        with_position=False,
+    )
+
+    old_fp = fingerprint_object(old_spec)
+    result = handler.reconcile("content_fts", new_spec, [old_fp], False)
+    assert result is not None, "Expected action when spec changed"
+    assert result.action.spec == new_spec
+
+
+@requires_lancedb
+def test_declare_fts_index_rejects_unknown_column() -> None:
+    """declare_fts_index() raises ValueError for a column not in the schema."""
+    from unittest.mock import MagicMock
+
+    schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+        },
+        primary_key=["id"],
+    )
+    fake_provider = MagicMock()
+    tbl: lancedb.TableTarget[Any, Any] = cast(
+        lancedb.TableTarget,
+        lancedb.TableTarget(fake_provider, schema),
+    )
+    with pytest.raises(ValueError, match="Column 'no_such_col' not found"):
+        tbl.declare_fts_index(column="no_such_col")
+
+
+# =============================================================================
+# SQL string escaping tests (delete path)
+# =============================================================================
+
+
+@requires_lancedb
+def test_escape_sql_string_doubles_single_quotes() -> None:
+    """_escape_sql_string doubles embedded single quotes for DataFusion SQL."""
+    assert _target._escape_sql_string("hello") == "hello"
+    assert _target._escape_sql_string("it's") == "it''s"
+    assert _target._escape_sql_string("O'Brien") == "O''Brien"
+    assert _target._escape_sql_string("a''b") == "a''''b"
+    assert _target._escape_sql_string("") == ""
+    # Backslashes pass through unchanged (DataFusion does not use backslash escaping)
+    assert _target._escape_sql_string("path\\to\\file") == "path\\to\\file"
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_execute_deletes_escapes_string_pk() -> None:
+    """_execute_deletes properly escapes single quotes in string primary key values."""
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+
+    delete_filters: list[str] = []
+
+    class _DeletableFakeTable(_FakeAsyncTable):
+        async def delete(self, filter: str) -> None:  # noqa: A002
+            delete_filters.append(filter)
+
+    fake_table = _DeletableFakeTable()
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+    )
+    await handler._execute_deletes(
+        cast(Any, fake_table),
+        [
+            _target._RowAction(key=("O'Brien",), value=None),
+        ],
+    )
+    assert delete_filters == ["id = 'O''Brien'"]
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_execute_deletes_with_real_lancedb(lancedb_dir: Path) -> None:
+    """Integration test: insert and then delete a row whose PK contains a single quote."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_delete_escape"
+
+    # Insert a row with a quote in the PK
+    batch = pa.RecordBatch.from_arrays(
+        [pa.array(["O'Brien", "normal"]), pa.array(["Alice", "Bob"])],
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("name", pa.string()),
+            ]
+        ),
+    )
+    await conn.create_table(table_name, batch, mode="overwrite")
+
+    # Verify both rows exist
+    rows = await _read_rows(conn, table_name)
+    assert sorted(rows, key=lambda r: r["id"]) == [
+        {"id": "O'Brien", "name": "Alice"},
+        {"id": "normal", "name": "Bob"},
+    ]
+
+    # Delete the row with the problematic PK via _execute_deletes
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    table = await conn.open_table(table_name)
+    handler = _target._RowHandler(
+        conn=conn,
+        table_name=table_name,
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+    )
+    await handler._execute_deletes(
+        table,
+        [
+            _target._RowAction(key=("O'Brien",), value=None),
+        ],
+    )
+
+    # Verify only the quoted-PK row was deleted
+    rows = await _read_rows(conn, table_name)
+    assert rows == [{"id": "normal", "name": "Bob"}]

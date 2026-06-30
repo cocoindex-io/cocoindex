@@ -1,0 +1,28 @@
+---
+// One card in the examples listing grid, styled like the homepage "Built with
+// CocoIndex" cards: a dark artwork thumb (tag pill + window dots + a pipeline
+// illustration) on top, with the title and description in the light body below.
+// The artwork SVG (hosted in the blobs repo) carries no title text itself.
+import { titleText } from '../../consts';
+import { exampleCardImg, type ExampleCard } from '../../data/examples';
+
+interface Props {
+  ex: ExampleCard;
+  href: string;
+}
+const { ex, href } = Astro.props;
+const title = titleText(ex.title);
+// Facet values for the side-nav filters (By target / source / LLM).
+const facetVals = (kind: 'tgt' | 'src' | 'llm') =>
+  ex.tags.filter((t) => t.kind === kind).map((t) => t.label).join('|');
+---
+<a class="ex-card" href={href} data-tgt={facetVals('tgt')} data-src={facetVals('src')} data-llm={facetVals('llm')}>
+  <div class="ex-art">
+    <img class="ex-art-img" src={exampleCardImg(ex.slug)} alt={`${title} pipeline`} width="480" height="300" loading="lazy" decoding="async" data-card={ex.slug} />
+    <span class="ex-open">Open example →</span>
+  </div>
+  <div class="ex-body">
+    <h3>{title}</h3>
+    <p>{ex.description}</p>
+  </div>
+</a>

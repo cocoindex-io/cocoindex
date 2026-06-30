@@ -13,11 +13,34 @@ The skill lives in the [`skills/cocoindex/`](https://github.com/cocoindex-io/coc
 
 CocoIndex v1 is a fundamental redesign from v0. Without context, an LLM trained on older snapshots tends to hallucinate the wrong API (the v0 flow-builder DSL, deprecated decorators, missing `@coco.fn`, unstable component paths). The skill gives the agent a single concise reference covering:
 
-- **Mental model** — `target_state = transform(source_state)`, declarative pipelines, processing components.
+- **Mental model** — `target_state = transform(source_state)`, declarative pipelines, [processing components](../programming_guide/processing_component).
 - **Core APIs** — `@coco.fn`, `mount` / `use_mount` / `mount_each`, `ContextKey`, `@coco.lifespan`, target state declarations.
 - **Common patterns** — file transformation, vector embedding, LLM extraction, knowledge graphs.
 - **Connectors** — PostgreSQL, SQLite, LanceDB, Qdrant, SurrealDB, Apache Doris, LocalFS, S3, Kafka, Google Drive.
 - **Best practices** — memoization, stable component paths, vector schema with `Annotated[NDArray, KEY]`.
+
+## Use with agent clients
+
+| Client / workflow | Recommended setup |
+| --- | --- |
+| **Codex / Agent Skills-compatible clients** | Use `.agents/skills/cocoindex` for repo-local discovery. In this CocoIndex repo, checked-in `.agents/skills` symlinks expose the public skill and contributor playbooks automatically. |
+| **Claude Code** | Use `.claude/skills/cocoindex` in a project, or `~/.claude/skills/cocoindex` globally. |
+| **Cursor** | Copy `skills/cocoindex/SKILL.md` into `.cursor/rules/cocoindex.md`. |
+| **Generic AGENTS.md / CLAUDE.md** | Link to, import, or summarize `skills/cocoindex/SKILL.md` from your top-level agent instructions. |
+| **Context7** | This repo's `context7.json` already indexes `skills/cocoindex`; custom stacks can index the same folder. |
+| **Custom RAG / agent stack** | Index the `skills/cocoindex/` directory, including `references/`, as regular documentation. |
+
+Agent Skills-compatible clients load a skill directory that contains `SKILL.md`.
+If `.agents/skills/cocoindex` is checked into your project, no extra install step is
+needed for clients that scan that path.
+
+Project-local install for Codex or other Agent Skills-compatible clients:
+
+```sh
+mkdir -p .agents/skills
+git clone --depth=1 https://github.com/cocoindex-io/cocoindex.git /tmp/cocoindex-skill
+cp -r /tmp/cocoindex-skill/skills/cocoindex .agents/skills/
+```
 
 ## Use with Claude Code
 
@@ -47,6 +70,7 @@ The skill is plain Markdown — `SKILL.md` plus a few reference files. Any agent
 
 - **Cursor** — copy `skills/cocoindex/SKILL.md` into `.cursor/rules/cocoindex.md`.
 - **Generic AGENTS.md / CLAUDE.md** — concatenate or `@import` `SKILL.md` from your top-level agent instructions file.
+- **Context7** — use this repo's `context7.json` shape as a reference; it indexes `skills/cocoindex` alongside docs and examples.
 - **Custom RAG / agent stack** — index the `skills/cocoindex/` directory like any other documentation source.
 
 ## What's inside

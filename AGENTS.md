@@ -160,6 +160,12 @@ Changes are applied atomically per component. If a source item is deleted (path 
 ### Example
 
 ```python
+import pathlib
+
+import cocoindex as coco
+from cocoindex.connectors import localfs
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
 @coco.fn(memo=True)
 async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     html = _markdown_it.render(await file.read_text())
@@ -171,7 +177,9 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     target = await coco.use_mount(localfs.declare_dir_target, outdir)
 
     files = localfs.walk_dir(
-        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
     await coco.mount_each(process_file, files.items(), target)
 
@@ -287,11 +295,37 @@ When adding new functionality that involves I/O or concurrency:
 
 ## Versioning
 
-The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. Currently the `v1` branch is the main branch for CocoIndex v1 code.
+The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. CocoIndex v1 lives on the `main` branch; the legacy v0 code is preserved on the `v0` branch.
 
 ## Docs diagrams
 
 All diagrams embedded in docs pages are built as inline Astro components under `docs/src/components/diagrams/`, not exported SVG files. See [docs/src/components/diagrams/README.md](docs/src/components/diagrams/README.md) for the palette, primitives, shared CSS classes, animation conventions, and step-by-step authoring guidelines. Follow that guide for any new or updated diagram.
+
+## Agent Tooling
+
+### Semantic code search over this repo (`cocoindex-code`)
+
+To find where a concept lives, prefer semantic search over blind `grep`. This repo keeps a local
+`cocoindex-code` index; query it from any agent's shell with the `ccc` CLI:
+
+```bash
+ccc search "where is X handled"      # semantic search; add --refresh to reindex first
+```
+
+If `ccc search` reports no index, set it up once:
+
+```bash
+command -v ccc >/dev/null || uv tool install 'cocoindex-code[full]'   # per machine; local embeddings, no API key
+ccc init -f && ccc index                                             # repo-scoped index (first build ~1-2 min)
+```
+
+Everything is local — SQLite index, local embeddings, no keys — and a background daemon keeps it
+fresh. On a brand-new machine `ccc init` asks once for an embedding provider; choose the local
+default. The `-f` matters: if a parent directory is also a `ccc` project, plain `ccc init` refuses
+and search silently uses the parent's index, so run `ccc status` to confirm the root is this repo.
+We register no MCP server on purpose — an `ccc mcp` mode exists, but the CLI costs no context until
+invoked and behaves the same across agents. Source:
+[github.com/cocoindex-io/cocoindex-code](https://github.com/cocoindex-io/cocoindex-code).
 
 ## Agent Playbooks
 
@@ -301,6 +335,8 @@ Reusable task-specific agent guidance lives under `dev/agent-skills/`. These pla
 - For new target connectors, read `dev/agent-skills/target-connector/SKILL.md`.
 - For upgrading example package versions, read `dev/agent-skills/upgrade-examples/SKILL.md`.
 
-Claude-specific runtime configuration, hooks, and compatibility symlinks remain under `.claude/`. Do not put portable project guidance there; keep it in this file or under `dev/agent-skills/`.
+Agent Skills-compatible clients, including Codex, discover the checked-in symlinks under `.agents/skills/`. The public CocoIndex skill is exposed there as `cocoindex`, and contributor playbooks are exposed there from `dev/agent-skills/`.
+
+Claude Code compatibility remains under `.claude/`: hooks/settings live there, and `.claude/skills/` mirrors the contributor playbooks with symlinks. Do not duplicate skill content under `.agents/skills/` or `.claude/skills/`; edit the source directories (`skills/cocoindex/` for the public skill, `dev/agent-skills/` for contributor playbooks) and keep dot-directory entries as symlinks.
 
 Portable agent checks live under `dev/agent-checks/`. Claude Code hooks in `.claude/hooks/` are thin adapters that call these scripts when relevant files changed.

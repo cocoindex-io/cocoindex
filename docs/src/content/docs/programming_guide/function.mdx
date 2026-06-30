@@ -5,6 +5,10 @@ description: >
   detection, memoization, and execution pipeline — with async adapters, batching,
   and GPU-aware runners included.
 ---
+:::note[Prerequisite]
+This page builds on [Core Concepts](./core_concepts), which introduces change detection and function memoization **with diagrams**. If memoization feels abstract, start there.
+:::
+
 It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
 
 ```python
@@ -31,7 +35,7 @@ If you don't need any of the above for a helper, keep it as a plain Python funct
 
 ## Change detection and memoization
 
-Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates.
+Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates. For the big-picture view — how memoization skips unchanged work across both input and code changes — see the [Function memoization section in Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations).
 
 :::tip[Mental model]
 A function's behavior is determined by its **logic** (source code, [`deps`](#deps), [`version`](#version)), its **inputs** (arguments), and the **context values** it reads via [`use_context()`](./context#retrieving-values). If none of those have changed, a memoized function returns its cached result without re-executing. You don't need to reason about *how* CocoIndex tracks any of this; just trust the contract.

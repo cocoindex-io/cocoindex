@@ -1,67 +1,95 @@
-# Podcasts to Knowledge
-
 <p align="center">
-<img width="2428" alt="cocoindex code" src="https://github.com/user-attachments/assets/31883195-eab2-4ba2-9b02-f97901086e66" />
+  <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/" title="Turn podcasts into a knowledge graph with LLM and CocoIndex — transcription, LLM extraction, entity resolution, and a SurrealDB graph">
+    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/cover.svg" alt="Turn podcasts into a knowledge graph with LLM and CocoIndex — podcast episodes transcribed, extracted, and resolved into a graph of people, statements, technologies, and organizations" width="100%" draggable="false"/>
+  </a>
 </p>
 
+<h1 align="center">Turn podcasts into a <em>knowledge graph</em>.</h1>
 
-Converts YouTube podcast/interview sessions into a structured knowledge graph with CocoIndex
+<p align="center">
+  <b>YouTube episodes → a queryable graph of who said what about which technologies — in plain async Python.</b><br/>
+  Transcribe with speaker diarization, extract statements & entities with an LLM, resolve duplicates with embeddings, and sync it all into SurrealDB.
+</p>
+
+<p align="center">
+  <strong>Star us&nbsp;❤️&nbsp;→</strong>&nbsp;<a href="https://github.com/cocoindex-io/cocoindex" title="Star CocoIndex on GitHub"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg" alt="Star CocoIndex on GitHub" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
+  <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/" title="Read the full tutorial"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg" alt="Read the CocoIndex tutorial" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
+  <a href="https://discord.com/invite/zpA9S2DR7s" title="Join the CocoIndex Discord"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg" alt="Join the CocoIndex Discord" height="36" align="absmiddle"/></picture></a>
+</p>
 
 <div align="center">
 
-[![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
-[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
-[![Documentation](https://img.shields.io/badge/Documentation-394e79?logo=readthedocs&logoColor=00B9FF)](https://cocoindex.io/docs/getting_started/quickstart)
-[![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logoColor=white)](https://opensource.org/licenses/Apache-2.0)
-<!--[![PyPI - Downloads](https://img.shields.io/pypi/dm/cocoindex)](https://pypistats.org/packages/cocoindex) -->
-[![PyPI Downloads](https://static.pepy.tech/badge/cocoindex/month)](https://pepy.tech/projects/cocoindex)
-[![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
-[![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
+[![stars](https://img.shields.io/github/stars/cocoindex-io/cocoindex?style=flat-square&label=stars&color=FB6A76)](https://github.com/cocoindex-io/cocoindex)
+[![pypi](https://img.shields.io/pypi/v/cocoindex?style=flat-square&label=pypi&color=E59A63)](https://pypi.org/project/cocoindex/)
+[![discord](https://img.shields.io/discord/1314801574169673738?style=flat-square&logo=discord&logoColor=white&label=discord&color=5865F2)](https://discord.com/invite/zpA9S2DR7s)
+[![license](https://img.shields.io/badge/license-Apache--2.0-5B5BD6?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
 
-
-🌟 Please help star [CocoIndex](https://github.com/cocoindex-io/cocoindex) if you like this project!
 </div>
-<img width="3840" height="2174" alt="diagram" src="https://github.com/user-attachments/assets/97e312c7-4446-485a-b59e-0af82266c4ba" />
 
-**Pipeline:**
-1. Read YouTube URLs from plain text files
-2. Download audio via `yt-dlp`, transcribe with speaker diarization via AssemblyAI
-3. Extract metadata, speakers, and thematic statements via LLM (`openai/gpt-5.4-mini`)
-4. Resolve duplicate entities (persons, techs, orgs) using CocoIndex's `entity_resolution` utility (embedding similarity via faiss + LLM confirmation via pydantic-ai)
-5. Store the knowledge graph in SurrealDB: sessions, statements, persons, techs, orgs, and their relationships
+<br/>
 
-## Prerequisites
+You declare the graph in native Python and your own types — `target_state = transformation(source_state)`. The heavy lifting (incremental processing, change tracking, managed graph targets) runs in a Rust engine underneath, so adding one episode processes one episode, not the whole corpus.
 
-- Python 3.11+
-- [FFmpeg](https://ffmpeg.org/) installed (required by `yt-dlp` for audio extraction)
-- Docker (for SurrealDB)
-- An [AssemblyAI API key](https://www.assemblyai.com/) (for transcription with speaker diarization)
-- An OpenAI API key (for LLM extraction via litellm)
+## How it works
 
-## Setup
+Read YouTube URLs → fetch & transcribe (yt-dlp + AssemblyAI diarization) → extract speakers, statements, and mentioned entities with an LLM → resolve duplicate people/techs/orgs with embeddings + LLM → declare nodes and relationships into SurrealDB.
 
-### 1. Start SurrealDB
+The whole graph is declared as **target states** — read it in [`conv_knowledge/app.py`](conv_knowledge/app.py):
 
-Run SurrealDB with persistent storage via Docker:
+```python
+# Phase 1 — one memoized component per episode: transcribe, extract, declare nodes + edges
+@coco.fn(memo=True)
+async def process_session(youtube_id, session_table, statement_table, session_statement_rel):
+    transcript = await fetch_transcript(youtube_id)          # yt-dlp + AssemblyAI diarization
+    metadata   = await extract_metadata(step1_text, transcript)   # LLM → who is speaking
+    stmts      = await extract_statements(step2_text)             # LLM → claims + mentioned entities
+
+    session_table.declare_record(row=Session(id=session_id, ...))     # graph node
+    for stmt in stmts.statements:
+        statement_table.declare_record(row=Statement(id=..., statement=stmt.statement))
+        session_statement_rel.declare_relation(from_id=session_id, to_id=stmt_id)  # edge
+
+# Phase 2 — collapse "GPT-4" / "gpt4" / "ChatGPT-4" into one canonical node
+entity_dedup = await resolve_entities(
+    entities=raw_names, embedder=coco.use_context(EMBEDDER),
+    resolve_pair=LlmPairResolver(model=coco.use_context(RESOLUTION_LLM_MODEL)),
+)
+
+# Polymorphic edge: a statement can mention a person, a tech, or an org
+statement_mentions_rel = await surrealdb.mount_relation_target(
+    SURREAL_DB, "statement_mentions", statement_table,
+    [entity_tables[c.name] for c in ENTITY_TYPES],
+)
+```
+
+<p align="center">
+  📘 <b><a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/">Full Tutorial →</a></b><br/>
+  Step-by-step walkthrough: the two-step LLM extraction, the data models, entity resolution, the graph schema, and exactly what happens on each kind of change.
+</p>
+
+## Why it's worth a star ⭐
+
+- **Structured LLM extraction.** OpenAI (via LiteLLM) + Pydantic models pull speakers, thematic statements, and mentioned entities as *typed data* — not freeform text you have to re-parse.
+- **Entity resolution, built in.** [`resolve_entities`](https://cocoindex.io/docs/ops/entity_resolution/) collapses near-duplicate people, techs, and orgs using embedding similarity + LLM confirmation, so the graph has one canonical node per real-world thing.
+- **Incremental, per episode.** `@coco.fn(memo=True)` with one component per YouTube ID means adding an episode processes only that episode; unchanged sessions are skipped.
+- **A real graph, declaratively.** Nodes and polymorphic relationships are declared as target states; CocoIndex syncs them into [SurrealDB](https://cocoindex.io/docs/connectors/) and cleans up what's gone — no migration scripts.
+- **Plain async Python, swappable parts.** Transcriber, LLM, embedder, and graph store are all yours to change.
+
+## Run it
+
+**1. Start SurrealDB** (Docker):
 
 ```sh
-docker run -d \
-  --name surrealdb \
-  --user root \
-  -p 8787:8000 \
-  -v surrealdb-data:/data \
-  surrealdb/surrealdb:latest \
+docker run -d --name surrealdb --user root -p 8787:8000 \
+  -v surrealdb-data:/data surrealdb/surrealdb:latest \
   start --user root --pass root surrealkv:/data/database
 ```
 
-This persists data in a Docker volume (`surrealdb-data`) across container restarts.
-
-### 2. Set environment variables
+**2. Set keys** — transcription + extraction:
 
 ```sh
-# Required
-export ASSEMBLYAI_API_KEY="..."
-export OPENAI_API_KEY="sk-..."
+export ASSEMBLYAI_API_KEY="..."   # speaker-diarized transcription
+export OPENAI_API_KEY="sk-..."    # LLM extraction via LiteLLM
 
 # Optional (shown with defaults)
 export SURREALDB_URL="ws://localhost:8787/rpc"
@@ -70,121 +98,52 @@ export SURREALDB_DB="yt_conversations"
 export SURREALDB_USER="root"
 export SURREALDB_PASS="root"
 export INPUT_DIR="./input"
-export LLM_MODEL="openai/gpt-5.4-mini"
+export LLM_MODEL="openai/gpt-5-mini"
 export RESOLUTION_LLM_MODEL="openai/gpt-5-mini"
 ```
 
-### 3. Install dependencies
+**3. Install deps:**
 
 ```sh
 pip install -e .
 ```
 
-### 4. Add YouTube URLs
-
-Edit `input/sample.txt` (or create new `.txt` files under `input/`). One URL per line, `#` for comments:
+**4. Add YouTube URLs** — one per line in `input/sample.txt` (`#` for comments):
 
 ```
-# AI podcasts
 https://www.youtube.com/watch?v=VIDEO_ID_1
 https://www.youtube.com/watch?v=VIDEO_ID_2
 ```
 
-## Run
-
-Build/update the knowledge graph:
+**5. Build the graph** (incremental — re-running skips unchanged sessions):
 
 ```sh
 cocoindex update conv_knowledge.app
 ```
 
-This is incremental — re-running skips sessions that haven't changed.
+## Explore the graph
 
-## Visualize the Knowledge Graph
-
-SurrealDB includes a built-in web UI called **Surrealist** for exploring and visualizing data.
-
-### Option A: Surrealist Cloud
-
-1. Go to [app.surrealdb.com](https://app.surrealdb.com)
-2. Connect to your local instance:
-   - Endpoint: `ws://localhost:8787`
-   - Namespace: `cocoindex`
-   - Database: `yt_conversations`
-   - Username: `root` / Password: `root`
-3. Use the **Explorer** tab to browse tables and relations
-4. Use the **Query** tab to run SurrealQL queries (see below)
-
-### Option B: Surrealist Desktop
-
-Download from [surrealdb.com/surrealist](https://surrealdb.com/surrealist) for a native app with the same features.
-
-### Example queries
-
-See all relationships:
+SurrealDB ships [Surrealist](https://surrealdb.com/surrealist), a built-in UI for browsing and querying. For example — *which technologies are mentioned by the most distinct people?*
 
 ```surql
-SELECT * FROM statement_involves, session_statement, person_session;
-```
-
-Browse all sessions and their statements:
-
-```surql
-SELECT id, name, description, date FROM session;
-```
-
-Find all statements a person made:
-
-```surql
-SELECT
-  <-person_statement<-person.name AS speaker,
-  statement
-FROM statement;
-```
-
-Explore the full graph around a person:
-
-```surql
-SELECT
-  name,
-  ->person_session->session.name AS sessions,
-  ->person_statement->statement.statement AS statements
-FROM person;
-```
-
-Find all entities involved in a statement:
-
-```surql
-SELECT
-  statement,
-  ->statement_involves->person.name AS persons,
-  ->statement_involves->tech.name AS techs,
-  ->statement_involves->org.name AS orgs
-FROM statement;
-```
-
-Top N techs mentioned by the most people:
-
-```surql
-SELECT
-  name,
-  array::distinct(
-    <-statement_involves<-statement<-person_statement<-person.name
-  ) AS persons,
+SELECT name,
   array::len(array::distinct(
-    <-statement_involves<-statement<-person_statement<-person.id
+    <-statement_mentions<-statement<-person_statement<-person.id
   )) AS person_count
-FROM tech
-ORDER BY person_count DESC
-LIMIT 10;
+FROM tech ORDER BY person_count DESC LIMIT 10;
 ```
 
-## Schema
+The graph is small and expressive — `session`, `statement`, `person`, `tech`, `org` nodes, joined by `session_statement`, `person_session`, `person_statement`, and the polymorphic `statement_mentions`.
 
-```
-Nodes:  session, statement, person, tech, org
-Edges:  session_statement  (session -> statement)
-        person_session     (person -> session)
-        person_statement   (person -> statement)
-        statement_involves (statement -> person | tech | org)
-```
+## More graph examples
+
+Building graphs from other sources? See [meeting notes → Neo4j](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j) and [→ FalkorDB](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_falkordb), or [browse all examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples).
+
+---
+
+<p align="center">
+  If this turned hours of podcasts into something you can actually query, <a href="https://github.com/cocoindex-io/cocoindex"><b>give CocoIndex a star ⭐</b></a> — it helps a lot.<br/>
+  <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/">Tutorial</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
+</p>
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=7f27e85b-be3a-411a-b612-0b9d53711814&page=examples/conversation_to_knowledge" alt="" width="1" height="1" />

@@ -408,15 +408,15 @@ matcher = PatternFilePathMatcher(
 
 ```python
 # Deterministic: same dep -> same ID
-chunk_id = await generate_id(chunk.content)
-chunk_uuid = generate_uuid(chunk.content)
+chunk_id = await generate_id(chunk.text)
+chunk_uuid = generate_uuid(chunk.text)
 
 # Distinct per call (even with same dep)
 id_gen = IdGenerator()
-chunk_id = await id_gen.next_id(chunk.content)
+chunk_id = await id_gen.next_id(chunk.text)
 
 uuid_gen = UuidGenerator()
-chunk_uuid = uuid_gen.next_uuid(chunk.content)
+chunk_uuid = uuid_gen.next_uuid(chunk.text)
 ```
 
 ---
@@ -434,7 +434,7 @@ class Record:
     vector: Annotated[NDArray, EMBEDDER]
 
 # Explicit dimensions
-schema = VectorSchema(dtype=np.float32, size=384)
+schema = VectorSchema(dtype=np.dtype(np.float32), size=384)
 
 @dataclass
 class Record:

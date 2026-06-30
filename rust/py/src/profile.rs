@@ -3,7 +3,7 @@ use cocoindex_core::engine::profile::EngineProfile;
 use crate::{
     component::PyComponentProcessor,
     prelude::*,
-    target_state::{PyTargetActionSink, PyTargetHandler},
+    target_state::{PyTargetActionSinkInner, PyTargetHandler},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -19,6 +19,6 @@ impl EngineProfile for PyEngineProfile {
     type TargetHdl = PyTargetHandler;
     type TargetStateTrackingRecord = crate::value::PyStoredValue;
     type TargetAction = Py<PyAny>;
-    type TargetActionSink = PyTargetActionSink;
+    type TargetActionSink = PyTargetActionSinkInner;
     type TargetStateValue = Py<PyAny>;
 }

@@ -102,7 +102,7 @@ async def coco_lifespan(
     )
     builder.provide(
         LLM_MODEL,
-        os.environ.get("LLM_MODEL", "openai/gpt-5.4"),
+        os.environ.get("LLM_MODEL", "openai/gpt-5-mini"),
     )
     builder.provide(
         RESOLUTION_LLM_MODEL,

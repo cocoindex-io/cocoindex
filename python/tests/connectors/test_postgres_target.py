@@ -297,6 +297,79 @@ async def test_postgres_declare_vector_index(pg_env: _PgEnv) -> None:
 
 
 @pytest.mark.asyncio
+async def test_postgres_declare_vector_index_recreate_in_non_default_schema(
+    pg_env: _PgEnv,
+) -> None:
+    """Re-creating a vector index in a NON-default schema must not collide.
+
+    Regression: `_apply_actions` dropped the index with an *unqualified* name,
+    which resolves through the connection's `search_path` (default `"$user",
+    public`, excluding a custom schema), so the `DROP INDEX IF EXISTS` silently
+    no-opped while the following `CREATE INDEX ... ON "<schema>"."<table>"` always
+    targets the table's schema — raising `DuplicateTableError`. The method change
+    (ivfflat → hnsw) is what triggers the drop+recreate. The default-schema test
+    above doesn't catch this because `public` is on `search_path`.
+    """
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    schema_name = _unique_name("vecidx_sch")
+    table_name = _unique_name("test_vec_sch")
+    logical_name = "idx1"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
+    index_method = "ivfflat"
+
+    async with pool.acquire() as conn:
+        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(VectorRow, primary_key=["id"]),
+                pg_schema_name=schema_name,
+            )
+            table.declare_row(
+                row=VectorRow(
+                    id="1",
+                    content="hello",
+                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                )
+            )
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="cosine",
+                method=index_method,
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_vec_sch_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        # Run 1: create the ivfflat index in the custom schema.
+        await app.update()
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None and info["amname"] == "ivfflat"
+
+        # Run 2: change the method → drop + recreate. Before the fix this raised
+        # DuplicateTableError because the unqualified DROP missed the custom-schema
+        # index.
+        index_method = "hnsw"
+        await app.update()
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None and info["amname"] == "hnsw"
+
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+
+
+@pytest.mark.asyncio
 async def test_postgres_declare_vector_index_fingerprint_no_change(
     pg_env: _PgEnv,
 ) -> None:
@@ -764,4 +837,189 @@ async def test_postgres_column_drop_retries_after_failed_attempt(
     finally:
         async with pool.acquire() as conn:
             await conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+        await _drop_table(pool, table_name)
+
+
+async def _column_is_nullable(
+    pool: "asyncpg.Pool", table_name: str, column_name: str
+) -> bool:
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name = $1 AND column_name = $2",
+            table_name,
+            column_name,
+        )
+        return bool(val == "YES")
+
+
+@pytest.mark.asyncio
+async def test_schema_evolution_compatible_changes(pg_env: _PgEnv) -> None:
+    """Test schema evolution with compatible type changes preserves data and
+    nullability constraints."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("schema_evol")
+
+    # Mutable state: toggled between updates to change the schema.
+    use_v2 = False
+
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        if not use_v2:
+            return postgres.TableSchema(
+                columns={
+                    "id": postgres.ColumnDef("text", nullable=False),
+                    "col_nn_nn": postgres.ColumnDef("varchar(50)", nullable=False),
+                    "col_null_null": postgres.ColumnDef("varchar(50)", nullable=True),
+                    "col_null_nn": postgres.ColumnDef("varchar(50)", nullable=True),
+                    "col_nn_null": postgres.ColumnDef("varchar(50)", nullable=False),
+                },
+                primary_key=["id"],
+            )
+        return postgres.TableSchema(
+            columns={
+                "id": postgres.ColumnDef("text", nullable=False),
+                "col_nn_nn": postgres.ColumnDef("text", nullable=False),
+                "col_null_null": postgres.ColumnDef("text", nullable=True),
+                "col_null_nn": postgres.ColumnDef("text", nullable=False),
+                "col_nn_null": postgres.ColumnDef("text", nullable=True),
+            },
+            primary_key=["id"],
+        )
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+            table.declare_row(
+                row={
+                    "id": "row1",
+                    "col_nn_nn": "data1",
+                    "col_null_null": "data2",
+                    "col_null_nn": "data3",
+                    "col_nn_null": "data4",
+                }
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_schema_evol_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        # v1: create with varchar(50)
+        await app.update()
+        assert not await _column_is_nullable(pool, table_name, "col_nn_nn")
+        assert await _column_is_nullable(pool, table_name, "col_null_null")
+        assert await _column_is_nullable(pool, table_name, "col_null_nn")
+        assert not await _column_is_nullable(pool, table_name, "col_nn_null")
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT * FROM "{table_name}" WHERE "id" = $1', "row1"
+            )
+            assert row is not None
+            assert row["col_nn_nn"] == "data1"
+
+        # v2: evolve to text, flip nullability on two columns
+        use_v2 = True
+        await app.update()
+
+        assert not await _column_is_nullable(pool, table_name, "col_nn_nn")
+        assert await _column_is_nullable(pool, table_name, "col_null_null")
+        assert not await _column_is_nullable(pool, table_name, "col_null_nn")
+        assert await _column_is_nullable(pool, table_name, "col_nn_null")
+
+        # Data must be preserved (no destructive fallback)
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT * FROM "{table_name}" WHERE "id" = $1', "row1"
+            )
+            assert row is not None
+            assert row["col_nn_nn"] == "data1"
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_schema_evolution_incompatible_fallback(
+    pg_env: _PgEnv, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When a type cast is genuinely incompatible, the fallback recreates the
+    column but must preserve the desired NOT NULL constraint and log a warning."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("schema_fallback")
+
+    use_v2 = False
+
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        if not use_v2:
+            return postgres.TableSchema(
+                columns={
+                    "id": postgres.ColumnDef("text", nullable=False),
+                    "incompat_col": postgres.ColumnDef("text", nullable=False),
+                },
+                primary_key=["id"],
+            )
+        return postgres.TableSchema(
+            columns={
+                "id": postgres.ColumnDef("text", nullable=False),
+                "incompat_col": postgres.ColumnDef("integer", nullable=False),
+            },
+            primary_key=["id"],
+        )
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+            if not use_v2:
+                table.declare_row(row={"id": "row1", "incompat_col": "not_an_int"})
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_schema_fb_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        # v1: text NOT NULL
+        await app.update()
+        assert not await _column_is_nullable(pool, table_name, "incompat_col")
+
+        # v2: integer NOT NULL — incompatible cast triggers fallback
+        use_v2 = True
+        with caplog.at_level("WARNING"):
+            await app.update()
+
+        assert any(
+            "Recreating column. Existing data will be lost" in record.message
+            for record in caplog.records
+        )
+
+        # The column was recreated without data; NOT NULL cannot be preserved
+        # because existing rows get NULL for the new column.
+
+        # Type must have changed
+        async with pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = $1 AND column_name = $2",
+                table_name,
+                "incompat_col",
+            )
+            assert val == "integer"
+
+    finally:
         await _drop_table(pool, table_name)

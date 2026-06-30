@@ -1,16 +1,34 @@
 //! Memoization: skip re-execution when inputs haven't changed.
 
+use std::any::Any;
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex_core::engine::context::{FnCallContext, MemoStatesPayload};
-use cocoindex_core::engine::function::{FnCallMemoGuard, reserve_memoization};
+use cocoindex_core::engine::function::reserve_memoization;
 use cocoindex_utils::fingerprint::{Fingerprint, Fingerprinter};
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::{Ctx, fn_call_guard};
 use crate::error::{Error, Result};
-use crate::profile::{RustProfile, Value};
+use crate::file::FileLike;
+use crate::profile::Value;
+
+#[derive(Clone)]
+pub struct MemoStateValue(Value);
+
+pub struct MemoStateDecision {
+    state: MemoStateValue,
+    memo_valid: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct FileMemoState {
+    modified_nanos: u128,
+    content_fingerprint: Fingerprint,
+}
 
 /// Execute `f` with memoization. If `key` hasn't changed since the last run,
 /// returns the cached result from LMDB without executing `f`.
@@ -23,7 +41,7 @@ use crate::profile::{RustProfile, Value};
 ///
 /// # Examples
 /// ```ignore
-/// let html = memo::cached(&ctx, &file, || async {
+/// let html = memo::cached(&ctx, &file, |_ctx| async {
 ///     Ok(render_markdown(&file.read_text()?))
 /// }).await?;
 /// ```
@@ -31,25 +49,37 @@ pub async fn cached<K, T, F, Fut>(ctx: &Ctx, key: &K, f: F) -> Result<T>
 where
     K: Serialize,
     T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    F: FnOnce() -> Fut + Send + 'static,
+    F: FnOnce(Ctx) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
     let fp = key_fingerprint_result(key)?;
-    cached_by_fingerprint(ctx, fp, f).await
+    cached_by_fingerprint(ctx, fp, true, f).await
 }
 
 /// Fast path for generated macros that have already built the memo fingerprint.
+///
+/// `f` receives a `Ctx` scoped to this memo call; use it for `get_key` so
+/// change-detection dependencies attach to this memo entry.
+///
+/// `propagate_children_fn_logic` is the function's `logic_tracking` mode: `true`
+/// for `"full"` (transitively-called functions' logic changes invalidate this
+/// memo entry), `false` for `"self"`/`"none"` (only this function's own body).
 #[doc(hidden)]
-pub async fn cached_by_fingerprint<T, F, Fut>(ctx: &Ctx, fp: Fingerprint, f: F) -> Result<T>
+pub async fn cached_by_fingerprint<T, F, Fut>(
+    ctx: &Ctx,
+    fp: Fingerprint,
+    propagate_children_fn_logic: bool,
+    f: F,
+) -> Result<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    F: FnOnce() -> Fut + Send + 'static,
+    F: FnOnce(Ctx) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
     // If we have a pipeline context, use LMDB-backed memoization.
     let Some(comp_ctx) = &ctx.comp_ctx else {
         // No pipeline context — execute directly (standalone mode).
-        return f().await;
+        return f(ctx.clone()).await;
     };
 
     let guard = reserve_memoization(comp_ctx, fp)
@@ -63,13 +93,87 @@ where
     }
 
     // Cache miss (or memo disabled) — we are the resolver. Execute and commit.
-    let fn_ctx = FnCallContext::default();
-    let _guard = fn_call_guard(comp_ctx, &fn_ctx);
-    let result = f().await?;
+    let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
+    let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
+    let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
     let value = Value::from_serializable(&result)
         .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
+    let memo_states = MemoStatesPayload {
+        positional: Vec::new(),
+        by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
+    };
     guard
-        .resolve(&fn_ctx, || value, MemoStatesPayload::default())
+        .resolve(&fn_ctx, || value, memo_states)
+        .map_err(|e| Error::engine(format!("{e}")))?;
+    Ok(result)
+}
+
+#[doc(hidden)]
+pub async fn cached_by_fingerprint_with_state<T, F, Fut, S, SFut>(
+    ctx: &Ctx,
+    fp: Fingerprint,
+    propagate_children_fn_logic: bool,
+    state_fn: S,
+    f: F,
+) -> Result<T>
+where
+    T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+    F: FnOnce(Ctx) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T>> + Send + 'static,
+    S: FnOnce(Option<Vec<MemoStateValue>>) -> SFut,
+    SFut: Future<Output = Result<Vec<MemoStateDecision>>> + Send,
+{
+    let Some(comp_ctx) = &ctx.comp_ctx else {
+        return f(ctx.clone()).await;
+    };
+
+    let mut guard = reserve_memoization(comp_ctx, fp)
+        .await
+        .map_err(|e| Error::engine(format!("reserve_memoization: {e}")))?;
+
+    let cached_states = guard.cached().map(|cached| {
+        cached
+            .memo_states
+            .iter()
+            .cloned()
+            .map(MemoStateValue)
+            .collect::<Vec<_>>()
+    });
+    let state_decisions = state_fn(cached_states).await?;
+    let memo_states_for_resolve = state_decisions
+        .iter()
+        .map(|decision| decision.state.0.clone())
+        .collect::<Vec<_>>();
+
+    if let Some(cached) = guard.cached()
+        && state_decisions.iter().all(|decision| decision.memo_valid)
+    {
+        let states_changed = state_decisions
+            .iter()
+            .map(|decision| &decision.state.0.0)
+            .ne(cached.memo_states.iter().map(|value| &value.0));
+        let cached_context_states = cached.context_memo_states.to_vec();
+        let value: T = cached.ret.deserialize()?;
+        if states_changed {
+            guard.update_memo_states(MemoStatesPayload {
+                positional: memo_states_for_resolve,
+                by_context_fp: cached_context_states,
+            });
+        }
+        return Ok(value);
+    }
+
+    let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
+    let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
+    let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
+    let value = Value::from_serializable(&result)
+        .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
+    let memo_states = MemoStatesPayload {
+        positional: memo_states_for_resolve,
+        by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
+    };
+    guard
+        .resolve(&fn_ctx, || value, memo_states)
         .map_err(|e| Error::engine(format!("{e}")))?;
     Ok(result)
 }
@@ -120,8 +224,87 @@ pub fn write_key_fingerprint_part<T: Serialize + ?Sized>(
 }
 
 #[doc(hidden)]
+pub fn write_key_fingerprint_part_for_arg<T: Any + Serialize>(
+    fingerprinter: &mut Fingerprinter,
+    value: &T,
+) -> Result<()> {
+    if let Some(file) = as_file_like(value) {
+        let file_path = file.file_path();
+        return write_key_fingerprint_part(fingerprinter, &file_path.memo_key());
+    }
+    write_key_fingerprint_part(fingerprinter, value)
+}
+
+#[doc(hidden)]
 pub fn finish_key_fingerprinter(fingerprinter: Fingerprinter) -> Fingerprint {
     fingerprinter.into_fingerprint()
+}
+
+#[doc(hidden)]
+pub async fn collect_memo_arg_state<T: Any>(
+    value: &T,
+    prev: Option<&MemoStateValue>,
+) -> Result<Option<MemoStateDecision>> {
+    if let Some(file) = as_file_like(value) {
+        return file_memo_state(file, prev).await.map(Some);
+    }
+    Ok(None)
+}
+
+fn as_file_like(value: &dyn Any) -> Option<&dyn FileLike> {
+    if let Some(file) = value.downcast_ref::<crate::fs::FileEntry>() {
+        return Some(file);
+    }
+    #[cfg(feature = "amazon_s3")]
+    if let Some(file) = value.downcast_ref::<crate::amazon_s3::S3File>() {
+        return Some(file);
+    }
+    #[cfg(feature = "google_drive")]
+    if let Some(file) = value.downcast_ref::<crate::gdrive::DriveFile>() {
+        return Some(file);
+    }
+    #[cfg(feature = "oci_object_storage")]
+    if let Some(file) = value.downcast_ref::<crate::oci_object_storage::OciFile>() {
+        return Some(file);
+    }
+    None
+}
+
+async fn file_memo_state(
+    file: &dyn FileLike,
+    prev: Option<&MemoStateValue>,
+) -> Result<MemoStateDecision> {
+    let metadata = file.metadata().await?;
+    let modified_nanos = system_time_nanos(metadata.modified);
+    let prev_state = prev.and_then(|value| value.0.deserialize::<FileMemoState>().ok());
+
+    if let Some(ref prev_state) = prev_state
+        && prev_state.modified_nanos == modified_nanos
+    {
+        return Ok(MemoStateDecision {
+            state: MemoStateValue(Value::from_serializable(&prev_state)?),
+            memo_valid: true,
+        });
+    }
+
+    let content_fingerprint = file.content_fingerprint().await?;
+    let state = FileMemoState {
+        modified_nanos,
+        content_fingerprint,
+    };
+    let memo_valid = prev_state
+        .as_ref()
+        .is_some_and(|prev_state| prev_state.content_fingerprint == content_fingerprint);
+    Ok(MemoStateDecision {
+        state: MemoStateValue(Value::from_serializable(&state)?),
+        memo_valid,
+    })
+}
+
+fn system_time_nanos(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 fn fallback_key_bytes<T: ?Sized>(error: Error) -> Vec<u8> {
@@ -143,137 +326,6 @@ fn fallback_key_bytes<T: ?Sized>(error: Error) -> Vec<u8> {
             bytes
         }
     }
-}
-
-/// Batch-process items with per-item memoization.
-///
-/// For each item, computes a cache key via `key_fn` and probes the memo cache.
-/// Items with cache hits get their stored values immediately. Items with cache
-/// misses are collected and passed to `f` as a single batch. Results are stored
-/// back in the cache and merged with hits in original order.
-///
-/// This is the key optimization for LLM pipelines: instead of N individual API
-/// calls, you get 1 batch call for the cache misses only.
-///
-/// # Contract
-///
-/// `f` receives the cache-miss items and **must** return exactly one result per
-/// item, in the same order.
-pub async fn batch<I, K, T, F, KF, Fut>(ctx: &Ctx, items: I, key_fn: KF, f: F) -> Result<Vec<T>>
-where
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    K: Serialize,
-    T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    KF: Fn(&I::Item) -> Result<K>,
-    F: FnOnce(Vec<I::Item>) -> Fut + Send,
-    Fut: Future<Output = Result<Vec<T>>> + Send,
-{
-    batch_by_fingerprint(
-        ctx,
-        items,
-        move |item| {
-            let key = key_fn(item)?;
-            key_fingerprint_result(&key)
-        },
-        f,
-    )
-    .await
-}
-
-/// Same as [`batch`] but lets callers supply precomputed per-item fingerprints.
-#[doc(hidden)]
-pub async fn batch_by_fingerprint<I, T, F, KF, Fut>(
-    ctx: &Ctx,
-    items: I,
-    key_fn: KF,
-    f: F,
-) -> Result<Vec<T>>
-where
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    KF: Fn(&I::Item) -> Result<Fingerprint>,
-    F: FnOnce(Vec<I::Item>) -> Fut + Send,
-    Fut: Future<Output = Result<Vec<T>>> + Send,
-{
-    let items: Vec<I::Item> = items.into_iter().collect();
-    let total = items.len();
-
-    let Some(comp_ctx) = &ctx.comp_ctx else {
-        // No pipeline context — execute all directly.
-        return f(items).await;
-    };
-
-    let mut results: Vec<Option<T>> = (0..total).map(|_| None).collect();
-    let mut miss_items: Vec<I::Item> = Vec::with_capacity(total);
-    let mut miss_indices: Vec<usize> = Vec::with_capacity(total);
-    // Parallel vec: guard for cache-miss items that still hold the write lock.
-    let mut miss_guards: Vec<FnCallMemoGuard<RustProfile>> = Vec::with_capacity(total);
-
-    let mut fps_seen = rustc_hash::FxHashSet::default();
-
-    for (idx, item) in items.into_iter().enumerate() {
-        let fp = key_fn(&item)?;
-
-        if !fps_seen.insert(fp) {
-            // Engine rejects mapping duplicate memo keys per function invocation.
-            return Err(Error::engine(
-                "duplicate cache keys generated in memo batch execution",
-            ));
-        }
-
-        let guard = reserve_memoization(comp_ctx, fp)
-            .await
-            .map_err(|e| Error::engine(format!("reserve_memoization: {e}")))?;
-
-        if let Some(cached) = guard.cached() {
-            // Cache hit — deserialize stored result.
-            results[idx] = Some(cached.ret.deserialize()?);
-        } else {
-            // Cache miss — collect for batch execution; keep the guard for resolve.
-            miss_indices.push(idx);
-            miss_items.push(item);
-            miss_guards.push(guard);
-        }
-    }
-
-    if !miss_items.is_empty() {
-        let fn_ctx = FnCallContext::default();
-        let _guard = fn_call_guard(comp_ctx, &fn_ctx);
-        let miss_results = f(miss_items).await?;
-        if miss_results.len() != miss_indices.len() {
-            return Err(Error::engine(format!(
-                "batch function returned {} results for {} items",
-                miss_results.len(),
-                miss_indices.len()
-            )));
-        }
-
-        for ((idx, miss_result), guard) in miss_indices
-            .into_iter()
-            .zip(miss_results.into_iter())
-            .zip(miss_guards.into_iter())
-        {
-            let value = Value::from_serializable(&miss_result)
-                .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
-            guard
-                .resolve(&fn_ctx, || value, MemoStatesPayload::default())
-                .map_err(|e| Error::engine(format!("{e}")))?;
-            results[idx] = Some(miss_result);
-        }
-    }
-
-    let mut resolved = Vec::with_capacity(total);
-    for (idx, value) in results.into_iter().enumerate() {
-        let value = value.ok_or_else(|| {
-            Error::engine(format!(
-                "memo batch internal inconsistency: missing result for index {idx}"
-            ))
-        })?;
-        resolved.push(value);
-    }
-    Ok(resolved)
 }
 
 #[cfg(test)]

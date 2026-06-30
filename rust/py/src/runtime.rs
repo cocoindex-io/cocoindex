@@ -1,4 +1,7 @@
-use std::sync::OnceLock;
+use std::{
+    hash::{Hash, Hasher},
+    sync::{Arc, OnceLock},
+};
 
 use crate::prelude::*;
 
@@ -98,6 +101,20 @@ pub fn wrap_target_handler(py: Python<'_>, handler: &Py<PyAny>) -> PyResult<Py<P
 #[pyclass(name = "AsyncContext")]
 #[derive(Clone)]
 pub struct PyAsyncContext(pub Arc<TaskLocals>);
+
+impl PartialEq for PyAsyncContext {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for PyAsyncContext {}
+
+impl Hash for PyAsyncContext {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
 
 #[pymethods]
 impl PyAsyncContext {

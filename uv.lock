@@ -597,6 +597,8 @@ all = [
     { name = "sqlite-vec" },
     { name = "surrealdb" },
     { name = "turbopuffer" },
+    { name = "valkey-glide" },
+    { name = "zvec" },
 ]
 amazon-s3 = [
     { name = "aiobotocore" },
@@ -665,6 +667,12 @@ surrealdb = [
 ]
 turbopuffer = [
     { name = "turbopuffer" },
+]
+valkey = [
+    { name = "valkey-glide" },
+]
+zvec = [
+    { name = "zvec" },
 ]
 
 [package.dev-dependencies]
@@ -761,8 +769,8 @@ requires-dist = [
     { name = "httplib2", marker = "extra == 'google-drive'", specifier = ">=0.22.0" },
     { name = "instructor", marker = "extra == 'all'", specifier = ">=1.0" },
     { name = "instructor", marker = "extra == 'entity-resolution-llm'", specifier = ">=1.0" },
-    { name = "lancedb", marker = "extra == 'all'", specifier = ">=0.25.0" },
-    { name = "lancedb", marker = "extra == 'lancedb'", specifier = ">=0.25.0" },
+    { name = "lancedb", marker = "extra == 'all'", specifier = ">=0.33.0" },
+    { name = "lancedb", marker = "extra == 'lancedb'", specifier = ">=0.33.0" },
     { name = "litellm", marker = "extra == 'all'", specifier = ">=1.81.0" },
     { name = "litellm", marker = "extra == 'entity-resolution-llm'", specifier = ">=1.81.0" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.81.0" },
@@ -774,8 +782,8 @@ requires-dist = [
     { name = "oci", marker = "extra == 'oci'", specifier = ">=2.0" },
     { name = "pgvector", marker = "extra == 'all'", specifier = ">=0.4.2" },
     { name = "psutil", specifier = ">=7.2.1" },
-    { name = "pyarrow", marker = "extra == 'all'", specifier = ">=19.0.0" },
-    { name = "pyarrow", marker = "extra == 'lancedb'", specifier = ">=19.0.0" },
+    { name = "pyarrow", marker = "extra == 'all'", specifier = ">=23.0.0" },
+    { name = "pyarrow", marker = "extra == 'lancedb'", specifier = ">=23.0.0" },
     { name = "pymysql", marker = "extra == 'all'", specifier = ">=1.1.0" },
     { name = "pymysql", marker = "extra == 'doris'", specifier = ">=1.1.0" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
@@ -793,9 +801,13 @@ requires-dist = [
     { name = "turbopuffer", marker = "extra == 'all'", specifier = ">=0.5.0" },
     { name = "turbopuffer", marker = "extra == 'turbopuffer'", specifier = ">=0.5.0" },
     { name = "typing-extensions", specifier = ">=4.12" },
+    { name = "valkey-glide", marker = "extra == 'all'", specifier = ">=2.4.0" },
+    { name = "valkey-glide", marker = "extra == 'valkey'", specifier = ">=2.4.0" },
     { name = "watchdog", specifier = ">=6.0.0" },
+    { name = "zvec", marker = "extra == 'all'", specifier = ">=0.5.0" },
+    { name = "zvec", marker = "extra == 'zvec'", specifier = ">=0.5.0" },
 ]
-provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer"]
+provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer", "valkey", "zvec"]
 
 [package.metadata.requires-dev]
 build-test = [
@@ -1705,7 +1717,7 @@ wheels = [
 
 [[package]]
 name = "lancedb"
-version = "0.27.0"
+version = "0.33.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "deprecation" },
@@ -1718,12 +1730,12 @@ dependencies = [
     { name = "tqdm" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/57/c6f557499f94c8ab4b3afe9af26510dfa4aeca9b5d30806e3dd4d25d14e3/lancedb-0.27.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:b0f2ad52fef7248056f8db1e6ca2b2c052807f1c8074e3e3e33a44f5082465b7", size = 43534233, upload-time = "2026-01-22T01:28:00.689Z" },
-    { url = "https://files.pythonhosted.org/packages/f2/1b/dbb097f589fba64acf981161e0e42978b3a39ffe3c1680ac7bbf00edffa8/lancedb-0.27.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d643ee9d86e1250f0e63a68841c8f4da73a2c35fdc5e0d741e731ce30f4f0e41", size = 45411790, upload-time = "2026-01-22T01:36:03.829Z" },
-    { url = "https://files.pythonhosted.org/packages/38/36/1e643e3b409416182cdb4c8df9fccf5101ef6b19580aaadc917739a7c8ec/lancedb-0.27.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b90c12d36be1362f7f9b9b897c80400389d9c81ba4f6c2297f374d0ec5facb3a", size = 48497419, upload-time = "2026-01-22T01:39:22.941Z" },
-    { url = "https://files.pythonhosted.org/packages/6e/f8/52fc37bb20d7cf43771d5251acc351223d8833afd4e330ee6ed2cc4bf312/lancedb-0.27.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:79422a916843c08435ff2f7f2e9778a4efda8a73c847ce21df80e548bae0f752", size = 45426994, upload-time = "2026-01-22T01:34:53.128Z" },
-    { url = "https://files.pythonhosted.org/packages/ce/12/cbd8b634ad0d6e821fadd4fa63332c277b382d89860389341419b995222f/lancedb-0.27.0-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:2d70eb1ec33a18d5afc1210e30870c3ca29ef562271253b6953f6c32208caa8c", size = 48542425, upload-time = "2026-01-22T01:40:15.522Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/3d/dc276a98e53a17a4c8d31c93852f2b69e23a9145bf9b616a0d813cb56aa8/lancedb-0.27.0-cp39-abi3-win_amd64.whl", hash = "sha256:3c36ba6941a69405e45750d3bbc94899d141fe68c7e24c3b92ecb7c4e4d84bc7", size = 53378515, upload-time = "2026-01-22T02:10:10.048Z" },
+    { url = "https://files.pythonhosted.org/packages/09/2f/d5a4b2a5bb1f800936c76a6d8a4daf127a86fcab621eeb70b574a5adc774/lancedb-0.33.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:d4eaf6fa7c2eac619208f1d396f4de635ee0f535673067118a31c1181575c48b", size = 48338115, upload-time = "2026-05-28T20:37:55.88Z" },
+    { url = "https://files.pythonhosted.org/packages/07/12/31787b93a856b2c31382c7771dc22fb05575b70b87c9efe454269f4f0948/lancedb-0.33.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6c6c2402ed2744245ae76c4167c0461da0a7a80f1608e0ec491c1548ea2b4302", size = 51162262, upload-time = "2026-05-28T20:37:59.101Z" },
+    { url = "https://files.pythonhosted.org/packages/49/b7/081cc29f8e06bf12191b99ab3fe702aceebdb0914476b821a8c0445cacc8/lancedb-0.33.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7ebf1ffad811e6254a93931a79489ba1f21f48564bdfa06abae846f5fcaaf3e8", size = 54381368, upload-time = "2026-05-28T20:38:02.2Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/bd/e0f4bd621f10ecf96a801b0166e87799ed7ca5a9dbabcef9a6c766a58ef3/lancedb-0.33.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:13da39f80adfea59e5831fe64e4166b2d70a2f843e6507bf644c4fe4c350087c", size = 51188986, upload-time = "2026-05-28T20:38:05.375Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/1a/a8647a432ac6aa59cdce1fc061a7050ea4278bcab364539b78af2ecf72d2/lancedb-0.33.0-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:21b712825f0a00225e8974a41352c4ea84b0899ef8c23b17f672fadc38bd8346", size = 54440958, upload-time = "2026-05-28T20:38:08.474Z" },
+    { url = "https://files.pythonhosted.org/packages/08/6c/d0cc8da784cd7ed3b4940a5d1f3e7702e2d99a0a348ba81a376eed782810/lancedb-0.33.0-cp39-abi3-win_amd64.whl", hash = "sha256:4ba78c6202b0f6c2ce8edc7aa470e550d2da56271c7cbdd10428613f1f7126f9", size = 58751944, upload-time = "2026-05-28T20:38:11.549Z" },
 ]
 
 [[package]]
@@ -4384,6 +4396,39 @@ wheels = [
 ]
 
 [[package]]
+name = "valkey-glide"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "protobuf" },
+    { name = "sniffio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/83/82429b227936b50be8f38a2a8201738f9d15824352576d4b51422a32bf7f/valkey_glide-2.4.0.tar.gz", hash = "sha256:d0473026f9effa65465fa9888251600d4ec1e759d3a4dea0360eb1709a673ba7", size = 890870, upload-time = "2026-05-20T16:10:55.755Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d8/f3/c95f4eaed85187e5f6916f5f2ce4b6787e3dd46987cc48ab73a8131a1469/valkey_glide-2.4.0-cp311-cp311-macosx_10_7_x86_64.whl", hash = "sha256:f021cf7683f113e58142866b0afa3bdc7832c1919e1c1eb94c1a076fbdaae656", size = 7475842, upload-time = "2026-05-20T21:57:35.404Z" },
+    { url = "https://files.pythonhosted.org/packages/83/b0/4f421941bbd7bd199078c4da5c796a9b25a4ca97f25bd4f7ee28e2ae59d5/valkey_glide-2.4.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:06645f137386bfbc72ec1c1691f29711fcb620cb9a0d1eaeca12585974bd10b9", size = 6950846, upload-time = "2026-05-20T21:57:37.081Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/e5/af12bc364293f78c1aea2994e8b1dae426cc9454014c6bb39f00d748f62a/valkey_glide-2.4.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a73d4a41eba2dc7c01194d76909e34fc68dd1fb2149cc4f4e281bac75383085c", size = 7271553, upload-time = "2026-05-20T21:57:38.986Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/f5/1eae338fe98a9a99675fd64cbd38d6a4143d4dc763f471d2e32359ec7473/valkey_glide-2.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:af50749a61897b2c2da805e4bf56e3ecf44c13393d04883834d12a8f2661bd46", size = 7697931, upload-time = "2026-05-20T21:57:40.753Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/50/53505aa4101cd95c7aa963e959efe74bfea5fdfdcc254954803b9428ea5c/valkey_glide-2.4.0-cp312-cp312-macosx_10_7_x86_64.whl", hash = "sha256:ed3afadd6329f70642c855365de6f359010db05e07917da3bbf7166578895669", size = 7474129, upload-time = "2026-05-20T21:57:42.857Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/d9/6046a2fd28a91562c2439480886083523d413b6e93c9024185969170ce24/valkey_glide-2.4.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:63426bef320c2b3849add7c4eebc2205f2aead29e5ad32b19d19ae73b903df79", size = 6947614, upload-time = "2026-05-20T21:57:44.787Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/19/d8d8db130b4f865b313555a5dbde18606a03618dadb7efed881be27613fb/valkey_glide-2.4.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a769b85ed07eca851c5cdda769808f3e4133348ca3d76a5e1db3f83fc5790699", size = 7275078, upload-time = "2026-05-20T21:57:46.508Z" },
+    { url = "https://files.pythonhosted.org/packages/57/31/521f604a780888c5050c2da6ca98bfd90f161a7aededa48b4b13ef1a9db5/valkey_glide-2.4.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0b7117519770868c5f1db31cc3f568b1441f4f1e6ee07f8c4f4b7ad6361b11ea", size = 7696980, upload-time = "2026-05-20T21:57:48.255Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/d1/33332fbc4a4f97d606434bc8b3b37507c780876973a220e21c0cfd895f8a/valkey_glide-2.4.0-cp313-cp313-macosx_10_7_x86_64.whl", hash = "sha256:c4b1f8ff977ff5ff0879584d7e676715f15595b10f8f6d9b9b465cc3c5251c4d", size = 7474447, upload-time = "2026-05-20T21:57:50.018Z" },
+    { url = "https://files.pythonhosted.org/packages/85/ee/09f438faab5d7d46d720374e42a3fb30446974b01e650bc21a03346e423e/valkey_glide-2.4.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:0d466a5fc23c588a612473c2a96effb7589293751a5dec08bd8a8f18c0c0400e", size = 6947944, upload-time = "2026-05-20T21:57:52.139Z" },
+    { url = "https://files.pythonhosted.org/packages/16/ee/b2840085ee3fdc09e5f17123a59a80f278e2afe4caf2bd3923959540d334/valkey_glide-2.4.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:47780fd93b30991f6d9780b501ec9109ec4e2b4238dfb575efc2ac191c8dc69d", size = 7274725, upload-time = "2026-05-20T21:57:53.61Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/e3/622cce53ab71a9390de4ee45d91ace3dfd19e0db99b04141156d9c19f2f0/valkey_glide-2.4.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fb5255b3b54e79d01bab6b535ec6ccfafb7ea0601f8c6890a07316643f9983f7", size = 7696630, upload-time = "2026-05-20T21:57:55.496Z" },
+    { url = "https://files.pythonhosted.org/packages/97/3f/091cd9d5ab541c21ffcc0078340a43fb7084cd717934910778f60a6a7de7/valkey_glide-2.4.0-cp314-cp314-macosx_10_7_x86_64.whl", hash = "sha256:7f9ee25fa5db27cfb6eb98ff17e24baac051ac34d005ebd428386fefc73a395d", size = 7473470, upload-time = "2026-05-20T21:57:57.524Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/5b/4979833063515919c5d0d97505b882c1fad9040728608a7fdde83dfbae53/valkey_glide-2.4.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:0df5d69d7d6629297e8742bad33ab5f378fc21e8ae8491eeb276964962955ebe", size = 6950770, upload-time = "2026-05-20T21:57:59.157Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/de/fdc6dace2786e5af9d02763b09fe719d589fde89472fdf068fe12216b04a/valkey_glide-2.4.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:bd0617276dd47c8650af2d670efd2251c0489cc593e5c3d73ec6d4084a49485d", size = 7276193, upload-time = "2026-05-20T21:58:01.188Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/28/e668a344d97e562ac0b22852e076a8e602bebb4699390380f3684178affa/valkey_glide-2.4.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c6e1171e38ac4759ec01208f18e7fc9127a5d0306f733f4e24e86407a335fe42", size = 7695602, upload-time = "2026-05-20T21:58:02.988Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/b4/81d9dcafced5dcdb159fc9bb372a32405deb041506fa39acdd438bfbf1aa/valkey_glide-2.4.0-pp311-pypy311_pp73-macosx_10_7_x86_64.whl", hash = "sha256:8dc07919ec72d4c6e5fff0ea3d309b359fe6705eeaeed8f3bd266aface17ce13", size = 7478618, upload-time = "2026-05-20T21:58:19.101Z" },
+    { url = "https://files.pythonhosted.org/packages/29/ab/5ca8d31515601e0cff846a4e62af6fbc95a70d274ca1db4cf6a49c6ee297/valkey_glide-2.4.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:b23c5d858cae517b1643c4cbefa35745afd5d9251f11fd290a6ae285b22748ed", size = 6949012, upload-time = "2026-05-20T21:58:21.095Z" },
+    { url = "https://files.pythonhosted.org/packages/94/e6/b04246bca25e32fed0d4b4f6156bd61c735d7f9d84cb5adb7430bc73c595/valkey_glide-2.4.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c878f097b99e4034b32db92a390ea25a765adf7ea9c6cd3a5949010c892f462a", size = 7273352, upload-time = "2026-05-20T21:58:22.852Z" },
+    { url = "https://files.pythonhosted.org/packages/46/0c/9a20f8becba1cb721311da3c8dabfdab6ad6afd3e9041503288227081083/valkey_glide-2.4.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:565a49e57492ce5ade793ecfdf0a8b4444f1d222c65036623a488ce1c80b98bf", size = 7698497, upload-time = "2026-05-20T21:58:24.763Z" },
+]
+
+[[package]]
 name = "watchdog"
 version = "6.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4666,4 +4711,30 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e3/02/0f2892c661036d50ede074e376733dca2ae7c6eb617489437771209d4180/zipp-3.23.0.tar.gz", hash = "sha256:a07157588a12518c9d4034df3fbbee09c814741a33ff63c05fa29d26a2404166", size = 25547, upload-time = "2025-06-08T17:06:39.4Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2e/54/647ade08bf0db230bfea292f893923872fd20be6ac6f53b2b936ba839d75/zipp-3.23.0-py3-none-any.whl", hash = "sha256:071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e", size = 10276, upload-time = "2025-06-08T17:06:38.034Z" },
+]
+
+[[package]]
+name = "zvec"
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/d2/e2b5c435d83662d250321deec18a8e9aa70bf7955841b343ff840f3ca16e/zvec-0.5.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:fc654c7ea029f024ee750b3f2b0c1a3024d06b266b9438ebc8a37b14df20e9dd", size = 12140527, upload-time = "2026-06-24T08:01:09.718Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/69/77abcff29151f6c3d99eefed5e46b82b65acdd296c6a6cc6dca0a7807289/zvec-0.5.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:c83216ea4c94c0ce200f5f300eda8d095ee877dfd5a903ddabd7b42b6d06e3f0", size = 17382982, upload-time = "2026-06-24T07:51:17.075Z" },
+    { url = "https://files.pythonhosted.org/packages/10/35/d8c688c4c41a78d609ba91ffa651e7d7ebb4cc4bb208d5be160ef1ab99cc/zvec-0.5.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:b48e741736f4436efc037931011813cf6de04256279a148262726cf2c19dfc59", size = 19745543, upload-time = "2026-06-24T08:22:45.538Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/1e/87e61a2a5d79d35e852b8349f04107a9eed224032456c0b918c6a8b6322a/zvec-0.5.1-cp311-cp311-win_amd64.whl", hash = "sha256:29ccdc408bfec0b25530cbf3ab2160e3973828d991b0b9150b30f491b3c057ea", size = 12756533, upload-time = "2026-06-24T07:37:43.278Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/86/e1aa1ccf2d20253df54a3cd5837c7aa063ff8022871a13d66b06464696b6/zvec-0.5.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:2d882b183a1380c2a8b69114dae26007688ad7c39598448cd7db9ae57c39269f", size = 12143489, upload-time = "2026-06-24T08:01:11.753Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/0a/a4639d256c73c836e34ef5d07e93852d17384aae10c03178bd5e82bd881e/zvec-0.5.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:b9b2ad1b047f0a30d8938d3d633f51f0cfcc9a21f7d7cd90f1ea3448bbc41857", size = 17384017, upload-time = "2026-06-24T07:51:19.284Z" },
+    { url = "https://files.pythonhosted.org/packages/23/04/2b0e90e4b00e149ac210d79953ea656483f22a0601b0358e6769fb30022c/zvec-0.5.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:6d5e47eb9213eedc488339ad872d6b9c18ebdf1188bbd7fce4fe56a6384be4d6", size = 19748674, upload-time = "2026-06-24T08:22:47.743Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/1e/34462a1a269afcc3a5b6611e33672987f37ebbcae718a68923b59a6855c3/zvec-0.5.1-cp312-cp312-win_amd64.whl", hash = "sha256:d5408022e9c82fdbbd2b1b871d447ae7ccb72e9a12f71e4a34f951d2e78f259c", size = 12761037, upload-time = "2026-06-24T07:37:45.899Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/36/5f2b7596f16312929547c8bc604ddc58afe9813cb16b8263bbf799d172e9/zvec-0.5.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ddf1d001d0fa1945cbe46eb5a0df6f9ddd8e55f00de872250a41f3d218098924", size = 12143480, upload-time = "2026-06-24T08:01:13.884Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/55/9dc487a10c0ffa57f9eae93e97c3b9dc270cc77d9fa31babf4ab5f7a984b/zvec-0.5.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:f3d42d74a2992ed104fb268331573cfbfed6fed23085850fe38f5c38033cc609", size = 17384248, upload-time = "2026-06-24T07:51:21.538Z" },
+    { url = "https://files.pythonhosted.org/packages/27/3e/e4217a151c29897c01b2f77bdd096e79eca804ce97a36ac478e1e02eaaa5/zvec-0.5.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:834254168779fcf1af4ab2dd2c78e4194df96a618e135dee423b3a570ee52c35", size = 19748359, upload-time = "2026-06-24T08:22:50.07Z" },
+    { url = "https://files.pythonhosted.org/packages/78/1f/b9a079dd49917a34ce29702b27bda2a966b64af9c9e4590432178d4fbafe/zvec-0.5.1-cp313-cp313-win_amd64.whl", hash = "sha256:4cd524c866bf35af355940546b3048135d9a37269a43d7eefe348df2bbec94fa", size = 12761245, upload-time = "2026-06-24T07:37:48.623Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/d3/70e5f578dadc992880453a10ec05ad370a085ef6705ee59cd8f17825ef27/zvec-0.5.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:3c226591bdf5ba46a6862667f8c9034da4030339abf4ecffcee173287fd6073b", size = 12144325, upload-time = "2026-06-24T08:01:15.873Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/11/d8a9d95bf8eafb2a5db08a72ea49b090b3090c8e7e53ff191d1b05534e57/zvec-0.5.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:d18e7d160c92cfd7369b895baad8bb54dbb191f8d652651f82eb9a1ecd9fd9e6", size = 17385477, upload-time = "2026-06-24T07:51:23.902Z" },
+    { url = "https://files.pythonhosted.org/packages/11/d9/015d7391fd0a93f58219a099a4c46b64c2da8b9678e28ee74db71381bddc/zvec-0.5.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:54cc1a2d9f3fff286c0b9f0c5b464274041b8af9104de05189b951db85452f95", size = 19749346, upload-time = "2026-06-24T08:22:52.354Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/3a/bf411e1efb57e0d0ca1eff7fc30566da90bd9f86d7758ba3ba0851df96fd/zvec-0.5.1-cp314-cp314-win_amd64.whl", hash = "sha256:296887ac746534941b0ed0b22651b91131af9b7bb0ce5fdc36e47bf0d0e08132", size = 13259246, upload-time = "2026-06-24T07:37:51.206Z" },
 ]

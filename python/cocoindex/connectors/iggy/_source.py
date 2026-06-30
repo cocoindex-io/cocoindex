@@ -34,6 +34,7 @@ from cocoindex._internal.live_component import (
     ReadyAwaitable,
 )
 from cocoindex._internal.typing import StableKey
+from cocoindex.connectorkits import SingleWatcherGuard
 
 _logger = logging.getLogger(__name__)
 
@@ -248,6 +249,7 @@ class TopicStream:
         "_init_retry_interval",
         "_allow_replay",
         "_initial_high_watermark",
+        "_watch_guard",
     )
 
     def __init__(
@@ -278,6 +280,7 @@ class TopicStream:
         self._init_retry_interval = init_retry_interval
         self._allow_replay = allow_replay
         self._initial_high_watermark = initial_high_watermark
+        self._watch_guard = SingleWatcherGuard("Iggy TopicStream")
 
     def payloads(self) -> LiveStream[bytes]:
         """View of this stream yielding each message payload as bytes."""
@@ -320,6 +323,10 @@ class TopicStream:
 
     async def watch(self, subscriber: LiveStreamSubscriber[ReceiveMessage]) -> None:
         """Consume messages and deliver them to the subscriber."""
+        with self._watch_guard:
+            await self._watch(subscriber)
+
+    async def _watch(self, subscriber: LiveStreamSubscriber[ReceiveMessage]) -> None:
         high_watermark = await self._resolve_initial_high_watermark()
         consumer = await self._create_consumer()
         tracker = _OffsetTracker()

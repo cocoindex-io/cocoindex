@@ -18,7 +18,7 @@ jobs:
   generate-3p-notices:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: actions/setup-python@v6
@@ -52,14 +52,14 @@ jobs:
             target: x86_64
             python-version: "3.13"
             free-threaded: false
-            container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
+            container: "quay.io/pypa/manylinux_2_28_x86_64"
             maturin-args: "--interpreter 3.13"
           - os: linux
             runner: ubuntu-24.04-arm
             target: aarch64
             python-version: "3.13"
             free-threaded: false
-            container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
+            container: "quay.io/pypa/manylinux_2_28_aarch64"
             maturin-args: "--interpreter 3.13"
           - os: macos
             runner: macos-latest
@@ -85,14 +85,14 @@ jobs:
             target: x86_64
             python-version: "3.14"
             free-threaded: true
-            container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
+            container: "quay.io/pypa/manylinux_2_28_x86_64"
             maturin-args: "--no-default-features --interpreter 3.14t"
           - os: linux
             runner: ubuntu-24.04-arm
             target: aarch64
             python-version: "3.14"
             free-threaded: true
-            container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
+            container: "quay.io/pypa/manylinux_2_28_aarch64"
             maturin-args: "--no-default-features --interpreter 3.14t"
           - os: macos
             runner: macos-latest
@@ -107,7 +107,7 @@ jobs:
             free-threaded: true
             maturin-args: "--no-default-features --interpreter 3.14t"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: actions/download-artifact@v8
@@ -179,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [generate-3p-notices]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: actions/setup-python@v6
@@ -214,7 +214,7 @@ jobs:
       attestations: write
     environment: release
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: actions/setup-python@v6

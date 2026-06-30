@@ -26,6 +26,7 @@ from typing_extensions import TypeVar
 
 try:
     import lancedb  # type: ignore
+    import lancedb.index as lancedb_index  # type: ignore
     import pyarrow as pa  # type: ignore
 except ImportError as e:
     raise ImportError(
@@ -318,11 +319,35 @@ class TableSchema(Generic[RowT]):
         return columns
 
 
+def _escape_sql_string(value: str) -> str:
+    """Escape a string for safe embedding in a DataFusion SQL string literal."""
+    return value.replace("'", "''")
+
+
+async def _drop_index_if_exists(
+    table: lancedb.table.AsyncTable, index_name: str, table_name: str
+) -> None:
+    """Drop an index by name if it currently exists on the table.
+
+    LanceDB's ``drop_index`` only detaches the index from the table; the storage
+    is reclaimed on the next ``table.optimize()``, which the row handler already
+    schedules periodically after mutation batches.
+    """
+    existing = {idx.name for idx in await table.list_indices()}
+    if index_name not in existing:
+        _logger.debug(
+            "LanceDB index %s on table %s: nothing to drop", index_name, table_name
+        )
+        return
+    await table.drop_index(index_name)
+
+
 class _RowAction(NamedTuple):
     """Action to perform on a row."""
 
     key: _RowKey
     value: _RowValue | None  # None means delete
+    track_only: bool = False  # True means advance tracking without mutating LanceDB.
 
 
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
@@ -336,6 +361,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _optimize_lock: asyncio.Lock
     _optimize_task: asyncio.Task[None] | None
     _sink: coco.TargetActionSink[_RowAction]
+    _null_backfilled_columns: frozenset[str]
 
     def __init__(
         self,
@@ -343,6 +369,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         table_schema: TableSchema,
         num_transactions_before_optimize: int,
+        null_backfilled_columns: Collection[str] = (),
     ) -> None:
         self._conn = conn
         self._table_name = table_name
@@ -352,6 +379,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._optimize_lock = asyncio.Lock()
         self._optimize_task = None
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._null_backfilled_columns = frozenset(null_backfilled_columns)
 
     async def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -365,10 +393,15 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         deletes: list[_RowAction] = []
 
         for action in actions:
+            if action.track_only:
+                continue
             if action.value is None:
                 deletes.append(action)
             else:
                 upserts.append(action)
+
+        if not upserts and not deletes:
+            return
 
         table = await self._conn.open_table(self._table_name)
 
@@ -381,6 +414,33 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             await self._execute_deletes(table, deletes)
 
         await self._maybe_optimize(table)
+
+    def _legacy_fingerprint_for_null_backfill(
+        self, desired_state: _RowValue
+    ) -> _RowFingerprint | None:
+        """Return the pre-schema-evolution row fingerprint if this is DDL-only.
+
+        LanceDB backfills newly added columns with nulls during ``add_columns``.
+        If a row's only apparent change is one of those columns appearing as
+        ``None``, the physical row is already correct and only CocoIndex's
+        tracking record needs to move forward to the new full-row fingerprint.
+        """
+        if not self._null_backfilled_columns:
+            return None
+
+        legacy_state = dict(desired_state)
+        removed_any = False
+        for col_name in self._null_backfilled_columns:
+            if col_name not in legacy_state:
+                continue
+            if legacy_state[col_name] is not None:
+                return None
+            del legacy_state[col_name]
+            removed_any = True
+
+        if not removed_any:
+            return None
+        return fingerprint_object(legacy_state)
 
     async def _maybe_optimize(self, table: lancedb.table.AsyncTable) -> None:
         """Periodically optimize the table after successful mutation batches."""
@@ -485,7 +545,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 pk_value = action.key[i]
                 # Handle different types appropriately
                 if isinstance(pk_value, str):
-                    conditions.append(f"{pk_col} = '{pk_value}'")
+                    conditions.append(f"{pk_col} = '{_escape_sql_string(pk_value)}'")
                 else:
                     conditions.append(f"{pk_col} = {pk_value}")
 
@@ -499,6 +559,14 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             field = pa.field(col_name, col_def.type, nullable=col_def.nullable)
             fields.append(field)
         return pa.schema(fields)
+
+    def attachments(
+        self,
+    ) -> dict[str, _VectorIndexHandler | _FtsIndexHandler]:
+        return {
+            "vector_index": _VectorIndexHandler(self._conn, self._table_name),
+            "fts_index": _FtsIndexHandler(self._conn, self._table_name),
+        }
 
     def reconcile(
         self,
@@ -527,8 +595,213 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             # No change needed
             return None
 
+        if not prev_may_be_missing and prev_possible_records:
+            legacy_fp = self._legacy_fingerprint_for_null_backfill(desired_state)
+            if legacy_fp is not None and all(
+                prev == legacy_fp for prev in prev_possible_records
+            ):
+                return coco.TargetReconcileOutput(
+                    action=_RowAction(key=key, value=None, track_only=True),
+                    sink=self._sink,
+                    tracking_record=target_fp,
+                )
+
         return coco.TargetReconcileOutput(
             action=_RowAction(key=key, value=desired_state),
+            sink=self._sink,
+            tracking_record=target_fp,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Vector Index Attachment
+# ---------------------------------------------------------------------------
+
+
+class _VectorIndexSpec(msgspec.Struct, frozen=True, array_like=True):
+    """Specification for a LanceDB vector index attachment."""
+
+    column: str
+    metric: str
+    index_type: str  # "ivf_pq" or "hnsw_pq"
+    num_partitions: int | None
+    num_sub_vectors: int | None
+    num_bits: int | None
+    m: int | None
+    ef_construction: int | None
+
+
+_VectorIndexFingerprint = bytes
+
+
+class _VectorIndexAction(NamedTuple):
+    name: str
+    spec: _VectorIndexSpec | None  # None means delete
+
+
+class _VectorIndexHandler:
+    """Handler for vector index attachment states on a LanceDB table."""
+
+    _conn: LanceAsyncConnection
+    _table_name: str
+    _sink: coco.TargetActionSink[_VectorIndexAction]
+
+    def __init__(self, conn: LanceAsyncConnection, table_name: str) -> None:
+        self._conn = conn
+        self._table_name = table_name
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
+    ) -> None:
+        table = await self._conn.open_table(self._table_name)
+        for action in actions:
+            if action.spec is None:
+                await _drop_index_if_exists(table, action.name, self._table_name)
+            else:
+                spec = action.spec
+                if spec.index_type == "ivf_pq":
+                    index_config_kwargs: dict[str, Any] = {"distance_type": spec.metric}
+                    if spec.num_partitions is not None:
+                        index_config_kwargs["num_partitions"] = spec.num_partitions
+                    if spec.num_sub_vectors is not None:
+                        index_config_kwargs["num_sub_vectors"] = spec.num_sub_vectors
+                    if spec.num_bits is not None:
+                        index_config_kwargs["num_bits"] = spec.num_bits
+                    index_config = lancedb_index.IvfPq(**index_config_kwargs)
+                elif spec.index_type == "hnsw_pq":
+                    index_config_kwargs = {"distance_type": spec.metric}
+                    if spec.m is not None:
+                        index_config_kwargs["m"] = spec.m
+                    if spec.ef_construction is not None:
+                        index_config_kwargs["ef_construction"] = spec.ef_construction
+                    if spec.num_sub_vectors is not None:
+                        index_config_kwargs["num_sub_vectors"] = spec.num_sub_vectors
+                    if spec.num_bits is not None:
+                        index_config_kwargs["num_bits"] = spec.num_bits
+                    index_config = lancedb_index.HnswPq(**index_config_kwargs)
+                else:
+                    raise ValueError(
+                        f"Unsupported LanceDB vector index type: {spec.index_type!r}. "
+                        "Supported types are 'ivf_pq' and 'hnsw_pq'."
+                    )
+                await table.create_index(
+                    spec.column,
+                    config=index_config,
+                    replace=True,
+                    name=action.name,
+                )
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: _VectorIndexSpec | coco.NonExistenceType,
+        prev_possible_records: Collection[_VectorIndexFingerprint],
+        prev_may_be_missing: bool,
+        /,
+    ) -> coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexFingerprint] | None:
+        assert isinstance(key, str)
+        if coco.is_non_existence(desired_state):
+            if not prev_possible_records and not prev_may_be_missing:
+                return None
+            return coco.TargetReconcileOutput(
+                action=_VectorIndexAction(name=key, spec=None),
+                sink=self._sink,
+                tracking_record=coco.NON_EXISTENCE,
+            )
+
+        target_fp = fingerprint_object(desired_state)
+        if not prev_may_be_missing and all(
+            prev == target_fp for prev in prev_possible_records
+        ):
+            return None
+
+        return coco.TargetReconcileOutput(
+            action=_VectorIndexAction(name=key, spec=desired_state),
+            sink=self._sink,
+            tracking_record=target_fp,
+        )
+
+
+# ---------------------------------------------------------------------------
+# FTS Index Attachment
+# ---------------------------------------------------------------------------
+
+
+class _FtsIndexSpec(msgspec.Struct, frozen=True, array_like=True):
+    """Specification for a LanceDB FTS index attachment."""
+
+    column: str
+    language: str  # e.g. "English"
+    with_position: bool
+
+
+_FtsIndexFingerprint = bytes
+
+
+class _FtsIndexAction(NamedTuple):
+    name: str
+    spec: _FtsIndexSpec | None  # None means delete
+
+
+class _FtsIndexHandler:
+    """Handler for FTS index attachment states on a LanceDB table."""
+
+    _conn: LanceAsyncConnection
+    _table_name: str
+    _sink: coco.TargetActionSink[_FtsIndexAction]
+
+    def __init__(self, conn: LanceAsyncConnection, table_name: str) -> None:
+        self._conn = conn
+        self._table_name = table_name
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_FtsIndexAction]
+    ) -> None:
+        table = await self._conn.open_table(self._table_name)
+        for action in actions:
+            if action.spec is None:
+                await _drop_index_if_exists(table, action.name, self._table_name)
+            else:
+                spec = action.spec
+                fts_config = lancedb_index.FTS(
+                    language=spec.language,
+                    with_position=spec.with_position,
+                )
+                await table.create_index(
+                    spec.column,
+                    config=fts_config,
+                    replace=True,
+                    name=action.name,
+                )
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: _FtsIndexSpec | coco.NonExistenceType,
+        prev_possible_records: Collection[_FtsIndexFingerprint],
+        prev_may_be_missing: bool,
+        /,
+    ) -> coco.TargetReconcileOutput[_FtsIndexAction, _FtsIndexFingerprint] | None:
+        assert isinstance(key, str)
+        if coco.is_non_existence(desired_state):
+            if not prev_possible_records and not prev_may_be_missing:
+                return None
+            return coco.TargetReconcileOutput(
+                action=_FtsIndexAction(name=key, spec=None),
+                sink=self._sink,
+                tracking_record=coco.NON_EXISTENCE,
+            )
+
+        target_fp = fingerprint_object(desired_state)
+        if not prev_may_be_missing and all(
+            prev == target_fp for prev in prev_possible_records
+        ):
+            return None
+
+        return coco.TargetReconcileOutput(
+            action=_FtsIndexAction(name=key, spec=desired_state),
             sink=self._sink,
             tracking_record=target_fp,
         )
@@ -646,11 +919,21 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     continue
 
                 spec = action.spec
+                null_backfilled_columns: frozenset[str] = frozenset()
+                if action.main_action is None and action.column_actions:
+                    null_backfilled_columns = await self._apply_column_actions(
+                        conn,
+                        key.table_name,
+                        spec.table_schema,
+                        action.column_actions,
+                    )
+
                 handler = _RowHandler(
                     conn=conn,
                     table_name=key.table_name,
                     table_schema=spec.table_schema,
                     num_transactions_before_optimize=spec.num_transactions_before_optimize,
+                    null_backfilled_columns=null_backfilled_columns,
                 )
                 outputs[i] = coco.ChildTargetDef(handler=handler)
 
@@ -660,15 +943,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         key.table_name,
                         spec.table_schema,
                         if_not_exists=(action.main_action == "upsert"),
-                    )
-
-                # No main change: reconcile additive columns incrementally.
-                if action.column_actions:
-                    await self._apply_column_actions(
-                        conn,
-                        key.table_name,
-                        spec.table_schema,
-                        action.column_actions,
                     )
         return outputs
 
@@ -743,12 +1017,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         table_name: str,
         schema: TableSchema[Any],
         column_actions: dict[str, statediff.DiffAction],
-    ) -> None:
+    ) -> frozenset[str]:
         """Apply additive column schema changes in place."""
         table = await conn.open_table(table_name)
         existing_cols = set((await table.schema()).names)
         pk_cols = set(schema.primary_key)
         fields_to_add: list[pa.Field] = []
+        null_backfilled_columns: set[str] = set()
 
         for sub_key, action in column_actions.items():
             if not sub_key.startswith(_COL_SUBKEY_PREFIX):
@@ -772,6 +1047,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     # evolution must materialize the new column as nullable.
                     pa.field(col_name, desired_col.type, nullable=True)
                 )
+                if desired_col.nullable:
+                    null_backfilled_columns.add(col_name)
                 continue
 
             raise ValueError(
@@ -780,6 +1057,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         if fields_to_add:
             await table.add_columns(fields_to_add)
+            return frozenset(null_backfilled_columns)
+        return frozenset()
 
     def reconcile(
         self,
@@ -909,6 +1188,90 @@ class TableTarget(
                 value = col.encoder(value)
             out[col_name] = value
         return out
+
+    def declare_vector_index(
+        self: "TableTarget[RowT]",
+        *,
+        name: str | None = None,
+        column: str,
+        metric: Literal["cosine", "l2", "dot"] = "cosine",
+        index_type: Literal["ivf_pq", "hnsw_pq"] = "ivf_pq",
+        num_partitions: int | None = None,
+        num_sub_vectors: int | None = None,
+        num_bits: int | None = None,
+        m: int | None = None,
+        ef_construction: int | None = None,
+    ) -> None:
+        """
+        Declare a vector index on a column of this LanceDB table.
+
+        Uses LanceDB's async ``create_index`` API with IVF-PQ or HNSW-PQ.
+
+        Args:
+            name: Logical index name (defaults to ``column``).
+            column: Column to index.
+            metric: Distance metric ("cosine", "l2", or "dot").
+            index_type: Index algorithm: "ivf_pq" (IVF-PQ) or "hnsw_pq" (HNSW-PQ).
+            num_partitions: (ivf_pq only) Number of IVF partitions.
+            num_sub_vectors: (ivf_pq / hnsw_pq) Number of PQ sub-vectors.
+            num_bits: (ivf_pq / hnsw_pq) Number of bits per PQ code.
+            m: (hnsw_pq only) Maximum number of HNSW edges per node.
+            ef_construction: (hnsw_pq only) Size of the HNSW candidate list during build.
+        """
+        if name is None:
+            name = column
+        if column not in self._table_schema.columns:
+            raise ValueError(
+                f"Column '{column}' not found in table schema: "
+                f"{list(self._table_schema.columns.keys())}"
+            )
+        spec = _VectorIndexSpec(
+            column=column,
+            metric=metric,
+            index_type=index_type,
+            num_partitions=num_partitions,
+            num_sub_vectors=num_sub_vectors,
+            num_bits=num_bits,
+            m=m,
+            ef_construction=ef_construction,
+        )
+        att_provider = self._provider.attachment("vector_index")
+        coco.declare_target_state(att_provider.target_state(name, spec))
+
+    def declare_fts_index(
+        self: "TableTarget[RowT]",
+        *,
+        name: str | None = None,
+        column: str,
+        language: str = "English",
+        with_position: bool = True,
+    ) -> None:
+        """
+        Declare a Full-Text Search (FTS) index on a column of this LanceDB table.
+
+        Uses LanceDB's async ``create_index`` API with native Lance FTS support
+        (not the deprecated ``create_fts_index``). Works with LanceDB OSS.
+
+        Args:
+            name: Logical index name (defaults to ``column``).
+            column: Text column to index.
+            language: Tokenizer language (e.g. "English", "Chinese").
+            with_position: Whether to store position information (enables phrase queries).
+        """
+        if name is None:
+            name = column
+        if column not in self._table_schema.columns:
+            raise ValueError(
+                f"Column '{column}' not found in table schema: "
+                f"{list(self._table_schema.columns.keys())}"
+            )
+        spec = _FtsIndexSpec(
+            column=column,
+            language=language,
+            with_position=with_position,
+        )
+        att_provider = self._provider.attachment("fts_index")
+        coco.declare_target_state(att_provider.target_state(name, spec))
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key

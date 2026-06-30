@@ -1,0 +1,5 @@
+.env
+cocoindex.db/
+__pycache__/
+*.egg-info/
+.venv/

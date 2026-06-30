@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
-from datetime import datetime
 from pathlib import Path
 from collections.abc import AsyncIterable as _AsyncIterable
 from typing import AsyncIterator, Iterator
@@ -20,6 +20,7 @@ from cocoindex.resources.file import (
 
 from cocoindex._internal.context_keys import ContextKey
 from cocoindex._internal.live_component import LiveMapSubscriber
+from cocoindex.connectorkits import SingleWatcherGuard
 
 from ._common import FilePath, to_file_path
 
@@ -27,7 +28,7 @@ from ._common import FilePath, to_file_path
 def _stat_to_metadata(stat: os.stat_result) -> FileMetadata:
     """Convert an os.stat_result to FileMetadata."""
     seconds, us = divmod(stat.st_mtime_ns // 1_000, 1_000_000)
-    mtime = datetime.fromtimestamp(seconds).replace(microsecond=us)
+    mtime = datetime.datetime.fromtimestamp(seconds).replace(microsecond=us)
     return FileMetadata(size=stat.st_size, modified_time=mtime)
 
 
@@ -65,6 +66,9 @@ class File(_file.FileLike[pathlib.Path]):
         return await asyncio.to_thread(self._read_sync, size)
 
 
+_DEFAULT_RESCAN_INTERVAL: datetime.timedelta = datetime.timedelta(hours=1)
+
+
 class DirWalker:
     """An async directory walker.
 
@@ -81,6 +85,7 @@ class DirWalker:
     _recursive: bool
     _path_matcher: FilePathMatcher
     _live: bool
+    _rescan_interval: datetime.timedelta | None
 
     def __init__(
         self,
@@ -89,11 +94,13 @@ class DirWalker:
         live: bool = False,
         recursive: bool = False,
         path_matcher: FilePathMatcher | None = None,
+        rescan_interval: datetime.timedelta | None = _DEFAULT_RESCAN_INTERVAL,
     ) -> None:
         self._root_path = to_file_path(path)
         self._live = live
         self._recursive = recursive
         self._path_matcher = path_matcher or MatchAllFilePathMatcher()
+        self._rescan_interval = rescan_interval
 
     def _walk_sync(self) -> Iterator[File]:
         """Synchronously walk the directory and yield File objects (internal helper)."""
@@ -168,12 +175,33 @@ class DirWalker:
             yield file
 
 
+def _stop_observer(observer: object, *, join_timeout: float = 5.0) -> None:
+    """Stop and join a watchdog observer.
+
+    All blocking work lives here so callers can offload the entire
+    shutdown to a thread via ``asyncio.to_thread(_stop_observer, obs)``.
+
+    TypeError is suppressed because during interpreter shutdown watchdog's
+    platform observer may already have its C-library globals torn down
+    (e.g. macOS FSEvents calling a function that's been GC'd to None).
+    """
+    try:
+        observer.stop()  # type: ignore[attr-defined]
+    except TypeError:
+        pass
+    try:
+        observer.join(timeout=join_timeout)  # type: ignore[attr-defined]
+    except TypeError:
+        pass
+
+
 class _LiveDirItems:
     """``LiveMapView`` returned by ``DirWalker.items()`` when ``live=True``."""
 
     def __init__(self, walker: DirWalker) -> None:
         self._walker = walker
         self._resolved_root = walker._root_path.resolve()
+        self._watch_guard = SingleWatcherGuard("localfs live directory")
 
     def __aiter__(self) -> AsyncIterator[tuple[str, File]]:
         return self._aiter_impl()
@@ -183,6 +211,11 @@ class _LiveDirItems:
             yield pair
 
     async def watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
+        """Deliver an initial scan then live filesystem changes to the subscriber."""
+        with self._watch_guard:
+            await self._watch(subscriber)
+
+    async def _watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         from watchdog.events import (
             EVENT_TYPE_CREATED,
             EVENT_TYPE_DELETED,
@@ -192,9 +225,12 @@ class _LiveDirItems:
             FileSystemEventHandler,
         )
         from watchdog.observers import Observer
+        from watchdog.observers.api import BaseObserver
 
         root_resolved = self._resolved_root
         loop = asyncio.get_running_loop()
+        td = self._walker._rescan_interval
+        rescan_seconds: float | None = td.total_seconds() if td is not None else None
         # Watchdog dispatches events from a background thread; we forward
         # them into this asyncio.Queue via call_soon_threadsafe.
         events_queue: asyncio.Queue[FileSystemEvent] = asyncio.Queue()
@@ -203,20 +239,56 @@ class _LiveDirItems:
             def on_any_event(self, event: FileSystemEvent) -> None:
                 loop.call_soon_threadsafe(events_queue.put_nowait, event)
 
-        observer = Observer()
-        observer.schedule(
-            _Handler(), str(root_resolved), recursive=self._walker._recursive
-        )
-        # Observer.start() is synchronous and arms the OS-level watch
-        # (e.g. inotify) before returning, so the initial scan that
-        # follows cannot miss events that occur after this point.
-        observer.start()
+        handler = _Handler()
+
+        def _start_observer() -> BaseObserver:
+            obs = Observer()
+            obs.schedule(handler, str(root_resolved), recursive=self._walker._recursive)
+            # Observer.start() is synchronous and arms the OS-level watch
+            # (e.g. inotify / FSEvents) before returning, so a scan that
+            # follows cannot miss events that occur after this point.
+            obs.start()
+            return obs
+
+        observer = _start_observer()
         try:
             await subscriber.update_all()
             await subscriber.mark_ready()
 
+            last_rescan = loop.time()
+
             while True:
-                event = await events_queue.get()
+                # Compute timeout until next periodic rescan.
+                if rescan_seconds is not None:
+                    remaining = rescan_seconds - (loop.time() - last_rescan)
+                    if remaining <= 0:
+                        # Periodic rescan cycle: tear down the old
+                        # OS-level watcher, drain stale events, create a
+                        # fresh watcher (new FSEvents/inotify stream),
+                        # then do a full rescan to catch anything the old
+                        # watcher may have silently dropped.
+                        await asyncio.to_thread(_stop_observer, observer)
+
+                        while not events_queue.empty():
+                            try:
+                                events_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+
+                        observer = _start_observer()
+                        await subscriber.update_all()
+                        last_rescan = loop.time()
+                        continue
+                    timeout: float | None = remaining
+                else:
+                    timeout = None
+
+                try:
+                    event = await asyncio.wait_for(events_queue.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    # Rescan interval elapsed; loop back to trigger rescan.
+                    continue
+
                 # On a move event with a dest_path, treat as
                 # delete(src) + create(dest). All other events carry the
                 # affected path in src_path. src_path/dest_path are typed
@@ -267,31 +339,14 @@ class _LiveDirItems:
                     handle = await subscriber.update(key, file)
                     await handle.ready()
         finally:
-            # During interpreter shutdown, watchdog's platform observer
-            # may already have its C-library globals torn down, so
-            # `observer.stop()` can raise a `TypeError` from inside
-            # watchdog (e.g. macOS FSEvents trying to call a function
-            # that's been GC'd to None). Suppress that specific case
-            # only — we're already exiting, the OS will reclaim the
-            # watcher. Real bugs (AttributeError etc.) still propagate.
+            # Offload the blocking stop+join to a thread. During
+            # interpreter shutdown the default executor may already be
+            # closed, so fall back to a synchronous call (TypeError /
+            # RuntimeError are suppressed inside _stop_observer).
             try:
-                observer.stop()
-            except TypeError:
-                pass
-            # Wait for the observer thread to exit. Prefer the
-            # non-blocking thread-pool path; during interpreter shutdown
-            # the asyncio default executor may already be closed
-            # ("cannot schedule new futures after shutdown"), in which
-            # case fall back to a bounded synchronous join (also wrapped
-            # in TypeError-suppression for the same FSEvents-teardown
-            # reason).
-            try:
-                await asyncio.to_thread(observer.join)
+                await asyncio.to_thread(_stop_observer, observer)
             except RuntimeError:
-                try:
-                    observer.join(timeout=5.0)
-                except TypeError:
-                    pass
+                _stop_observer(observer)
 
 
 def walk_dir(
@@ -300,6 +355,7 @@ def walk_dir(
     live: bool = False,
     recursive: bool = False,
     path_matcher: FilePathMatcher | None = None,
+    rescan_interval: datetime.timedelta | None = _DEFAULT_RESCAN_INTERVAL,
 ) -> DirWalker:
     """
     Walk through a directory and yield file entries.
@@ -316,11 +372,22 @@ def walk_dir(
             in the immediate directory.
         path_matcher: Optional file path matcher to filter files and directories.
             If not provided, all files and directories are included.
+        rescan_interval: When ``live=True``, interval between periodic full
+            rescans that recreate the OS-level file watcher. Defends against
+            platform-specific watcher failures (e.g. macOS FSEvents silently
+            stopping). Defaults to 1 hour. Set to ``None`` to disable.
+            Ignored when ``live=False``.
 
     Returns:
         A DirWalker that can be used with ``async for`` loops.
     """
-    return DirWalker(path, live=live, recursive=recursive, path_matcher=path_matcher)
+    return DirWalker(
+        path,
+        live=live,
+        recursive=recursive,
+        path_matcher=path_matcher,
+        rescan_interval=rescan_interval,
+    )
 
 
 __all__ = ["walk_dir", "File", "DirWalker"]

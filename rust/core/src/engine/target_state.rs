@@ -8,14 +8,18 @@ use crate::{
     },
 };
 
-use std::hash::Hash;
+use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+};
 
 pub struct ChildTargetDef<Prof: EngineProfile> {
     pub handler: Prof::TargetHdl,
 }
 
 #[async_trait]
-pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
+pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
     /// Run the logic to apply the action.
@@ -29,6 +33,163 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'stat
     ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
 }
 
+/// Cloneable handle to a target action sink and its per-sink batcher.
+#[derive(Clone)]
+pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
+    inner: Arc<TargetActionSinkKeeperInner<Prof>>,
+}
+
+struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
+    batcher: Batcher<TargetActionRunner<Prof>>,
+}
+
+impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
+    pub fn new(sink: Prof::TargetActionSink) -> Self {
+        let sink = Arc::new(sink);
+        Self {
+            inner: Arc::new(TargetActionSinkKeeperInner {
+                batcher: Batcher::new(
+                    TargetActionRunner { sink },
+                    Arc::new(BatchQueue::new()),
+                    BatchingOptions::default(),
+                ),
+            }),
+        }
+    }
+
+    pub async fn apply(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: Vec<Prof::TargetAction>,
+    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
+        if actions.is_empty() {
+            return Ok(None);
+        }
+        self.inner
+            .batcher
+            .run(TargetActionRunnerInput {
+                host_runtime_ctx: host_runtime_ctx.clone(),
+                host_ctx,
+                actions,
+            })
+            .await
+    }
+}
+
+impl<Prof: EngineProfile> PartialEq for TargetActionSinkKeeper<Prof> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl<Prof: EngineProfile> Eq for TargetActionSinkKeeper<Prof> {}
+
+impl<Prof: EngineProfile> Hash for TargetActionSinkKeeper<Prof> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.inner).hash(state);
+    }
+}
+
+struct TargetActionRunnerInput<Prof: EngineProfile> {
+    host_runtime_ctx: Prof::HostRuntimeCtx,
+    host_ctx: Arc<Prof::HostCtx>,
+    actions: Vec<Prof::TargetAction>,
+}
+
+struct TargetActionRunnerContext<Prof: EngineProfile> {
+    host_runtime_ctx: Prof::HostRuntimeCtx,
+    host_ctx: Arc<Prof::HostCtx>,
+}
+
+impl<Prof: EngineProfile> PartialEq for TargetActionRunnerContext<Prof> {
+    fn eq(&self, other: &Self) -> bool {
+        self.host_runtime_ctx == other.host_runtime_ctx
+            && Arc::ptr_eq(&self.host_ctx, &other.host_ctx)
+    }
+}
+
+impl<Prof: EngineProfile> Eq for TargetActionRunnerContext<Prof> {}
+
+impl<Prof: EngineProfile> Hash for TargetActionRunnerContext<Prof> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.host_runtime_ctx.hash(state);
+        Arc::as_ptr(&self.host_ctx).hash(state);
+    }
+}
+
+struct TargetActionRunner<Prof: EngineProfile> {
+    sink: Arc<Prof::TargetActionSink>,
+}
+
+#[async_trait]
+impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
+    type Input = TargetActionRunnerInput<Prof>;
+    type Output = Option<Vec<Option<ChildTargetDef<Prof>>>>;
+
+    async fn run(
+        &self,
+        inputs: Vec<Self::Input>,
+    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
+        let num_inputs = inputs.len();
+        if num_inputs == 0 {
+            return Ok(Vec::new().into_iter());
+        }
+
+        let mut groups =
+            HashMap::<TargetActionRunnerContext<Prof>, Vec<(usize, Vec<Prof::TargetAction>)>>::new(
+            );
+        for (input_idx, input) in inputs.into_iter().enumerate() {
+            let context = TargetActionRunnerContext {
+                host_runtime_ctx: input.host_runtime_ctx,
+                host_ctx: input.host_ctx,
+            };
+            groups
+                .entry(context)
+                .or_default()
+                .push((input_idx, input.actions));
+        }
+
+        let mut outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> =
+            std::iter::repeat_with(|| None).take(num_inputs).collect();
+        for (context, inputs) in groups {
+            let mut actions = Vec::new();
+            let mut action_counts = Vec::with_capacity(inputs.len());
+            let mut input_indexes = Vec::with_capacity(inputs.len());
+
+            // Each input is one component's reconciled actions; the sink wants
+            // one flat action list per compatible host context.
+            for (input_idx, mut input_actions) in inputs {
+                input_indexes.push(input_idx);
+                action_counts.push(input_actions.len());
+                actions.append(&mut input_actions);
+            }
+
+            let actions_len = actions.len();
+            let Some(handlers) = self
+                .sink
+                .apply(&context.host_runtime_ctx, context.host_ctx, actions)
+                .await?
+            else {
+                continue;
+            };
+            if handlers.len() != actions_len {
+                client_bail!(
+                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
+                    actions_len,
+                    handlers.len(),
+                );
+            }
+            let mut handlers = handlers.into_iter();
+            for (input_idx, count) in std::iter::zip(input_indexes, action_counts) {
+                outputs[input_idx] = Some(handlers.by_ref().take(count).collect());
+            }
+        }
+
+        Ok(outputs.into_iter())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildInvalidation {
     Destructive,
@@ -37,7 +198,7 @@ pub enum ChildInvalidation {
 
 pub struct TargetReconcileOutput<Prof: EngineProfile> {
     pub action: Prof::TargetAction,
-    pub sink: Prof::TargetActionSink,
+    pub sink: TargetActionSinkKeeper<Prof>,
     pub tracking_record: Option<Prof::TargetStateTrackingRecord>,
     pub child_invalidation: Option<ChildInvalidation>,
 }
@@ -215,14 +376,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         let symbol_key = StableKey::Symbol(att_type.into());
         let target_state_path = self.target_state_path().concat(&symbol_key);
 
-        let provider_generation = self
-            .provider_generation()
-            .ok_or_else(|| {
-                internal_error!(
-                    "Parent provider generation must be set before registering attachment"
-                )
-            })?
-            .clone();
+        let provider_generation = self.provider_generation().cloned().unwrap_or_default();
 
         let provider = TargetStateProvider {
             inner: Arc::new(TargetStateProviderInner {
@@ -300,6 +454,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
             }),
         };
         self.add(target_state_path, provider.clone())?;
+        provider.register_all_attachment_providers(self)?;
         Ok(provider)
     }
 

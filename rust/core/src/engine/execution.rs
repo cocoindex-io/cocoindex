@@ -8,11 +8,13 @@ use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
     DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
 };
-use crate::engine::context::{FnCallContext, FnCallMemoEntry, FnMemoCache, decode_stored_entry};
+use crate::engine::context::{
+    FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
+};
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
-    ChildInvalidation, TargetActionSink, TargetHandler, TargetStateProvider,
+    ChildInvalidation, TargetActionSinkKeeper, TargetHandler, TargetStateProvider,
     TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
@@ -80,7 +82,13 @@ pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
-) -> Result<Option<(Prof::FunctionData, MemoStatesPayload<Prof>)>> {
+) -> Result<
+    Option<(
+        Prof::FunctionData,
+        MemoStatesPayload<Prof>,
+        Vec<Fingerprint>,
+    )>,
+> {
     // Short-circuit to miss under full_reprocess
     if comp_ctx.full_reprocess() {
         return Ok(None);
@@ -110,12 +118,18 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                         let context_memo_states = deserialize_context_memo_states::<Prof>(
                             &memo_info.context_memo_states,
                         )?;
+                        // Carry the stored logic deps out so the cache-hit path
+                        // can still report this subtree's dependency set to the
+                        // parent — otherwise a parent that mounts this component
+                        // would not depend on it (or its descendants) and would
+                        // wrongly stay a memo hit when their code changes.
                         return Ok(Some((
                             ret,
                             MemoStatesPayload {
                                 positional: memo_states,
                                 by_context_fp: context_memo_states,
                             },
+                            memo_info.logic_deps.to_vec(),
                         )));
                     }
                     Err(e) => {
@@ -273,6 +287,19 @@ pub fn declare_target_state<Prof: EngineProfile>(
     Ok(())
 }
 
+pub fn register_root_target_state_provider<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    name: String,
+    handler: Prof::TargetHdl,
+) -> Result<TargetStateProvider<Prof>> {
+    comp_ctx.update_building_state(|building_state| {
+        building_state
+            .target_states
+            .provider_registry
+            .register_root(name, handler)
+    })
+}
+
 pub fn declare_target_state_with_child<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
@@ -345,18 +372,23 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// Build the engine-side decisions for Phase 4 commit and run
     /// them through [`AppStore::commit`](crate::state_store::AppStore::commit).
     /// The AppStore opens its own write txn, applies the plan's writes
-    /// (tracking-info, fn-memo flush, target-owner cleanup), and
-    /// invokes the `ExistenceReconciler` callback to walk the
+    /// (tracking-info, fn-memo flush, user-state flush, target-owner cleanup),
+    /// and invokes the `ExistenceReconciler` callback to walk the
     /// child-existence tree atomically inside the same txn. Then
     /// launches Phase 5 GC.
+
     async fn commit(
         self,
         child_path_set: Option<ChildStablePathSet>,
         fn_memos: FnMemoCache<Prof>,
+        user_states: UserStateCache<Prof::FunctionData>,
         curr_version: Option<u64>,
     ) -> Result<()> {
         // Consume FnMemoCache once (drains each entry's RwLock to Pending).
         let fn_memo_plan = fn_memos.into_flush_plan()?;
+        // Likewise consume UserStateCache by value, serializing each surviving
+        // Declared value to bytes once for the commit (see into_flush_plan).
+        let user_state_plan = user_states.into_flush_plan()?;
 
         // Engine-side decisions: read existing tracking_info, prune by
         // version retention, clear pending_process_token, version-
@@ -372,6 +404,15 @@ impl<Prof: EngineProfile> Committer<Prof> {
             child_path_set.map(Arc::new)
         };
 
+        // On whole-component deletion, also clear the `Live` user-state
+        // keyspace. The regular flush (clear_all_first / writes / deletes)
+        // only touches `Regular`, so without this the live-machinery
+        // committed state (read via `read_committed_state`) would leak when
+        // its owning component disappears. For a Delete action `user_states`
+        // is `UserStateCache::new()`, so `clear_all_first` is already true —
+        // this flag is the parallel signal for the `Live` half.
+        let user_state_clear_live = self.component_ctx.mode() == ComponentProcessingMode::Delete;
+
         let plan = CommitPlan {
             new_tracking_info,
             target_owners_to_upsert: Vec::new(),
@@ -379,6 +420,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
             fn_memo_clear_all_first: fn_memo_plan.clear_all_first,
             fn_memo_writes: fn_memo_plan.writes,
             fn_memo_deletes: fn_memo_plan.deletes,
+            user_state_clear_all_first: user_state_plan.clear_all_first,
+            user_state_writes: user_state_plan.writes,
+            user_state_deletes: user_state_plan.deletes,
+            user_state_clear_live,
             child_path_set: child_path_set.clone(),
         };
 
@@ -389,7 +434,13 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let app_store = self.app_store.clone();
         let component_path = self.component_path.clone();
         let cps = child_path_set;
+        // `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
+        // re-invoke it — clone the (cheap, `Arc`/owned) captures per call
+        // rather than moving them into the future.
         let reconciler: ExistenceReconciler = Box::new(move |wtxn| {
+            let app_store = app_store.clone();
+            let component_path = component_path.clone();
+            let cps = cps.clone();
             Box::pin(async move {
                 reconcile_child_existence(wtxn, &app_store, &component_path, cps.as_deref()).await
             })
@@ -570,7 +621,7 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 struct PreCommitOutput<Prof: EngineProfile> {
     curr_version: Option<u64>,
     previously_exists: bool,
-    actions_by_sinks: HashMap<Prof::TargetActionSink, SinkInput<Prof>>,
+    actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
     /// Name of the processor to be deleted; caller passes it to `collect_processor_name_name_for_del`.
     processor_name_for_del: Option<String>,
     /// Provider generations to apply (via
@@ -643,7 +694,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     prior_owners: BTreeMap<TargetStatePath, Option<StablePath>>,
     preempted_owner_states: BTreeMap<StablePath, OwnerStateForPreempt>,
 ) -> Result<PreCommitOutcome<Prof>> {
-    let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
+    let mut actions_by_sinks = HashMap::<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>::new();
     let mut processor_name_for_del: Option<String> = None;
 
     // Flatten `prior_owners` to drop `None` entries (paths with no
@@ -1146,6 +1197,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         declared_target_states,
         child_path_set,
         fn_memos,
+        user_states,
         contained_target_state_paths,
     ) = match comp_ctx.processing_state() {
         ComponentProcessingAction::Build(build_ctx) => {
@@ -1163,6 +1215,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
             let child_path_set = building_state.child_path_set;
             let fn_memos = building_state.fn_memos;
+            let user_states = building_state.user_states;
             let contained_target_state_paths = finalize_fn_call_memoization(comp_ctx, &fn_memos)?;
             (
                 &built_target_states_providers
@@ -1171,6 +1224,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 building_state.target_states.declared_target_states,
                 Some(child_path_set),
                 fn_memos,
+                user_states,
                 contained_target_state_paths,
             )
         }
@@ -1179,6 +1233,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             Default::default(),
             None,
             FnMemoCache::default(),
+            UserStateCache::new(),
             HashSet::new(),
         ),
     };
@@ -1552,7 +1607,11 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in actions_by_sinks {
             let handlers = sink
-                .apply(host_runtime_ctx, Arc::clone(comp_ctx.host_ctx()), input.actions)
+                .apply(
+                    host_runtime_ctx,
+                    Arc::clone(comp_ctx.host_ctx()),
+                    input.actions,
+                )
                 .await?;
             if let Some(child_providers) = input.child_providers {
                 let Some(handlers) = handlers else {
@@ -1579,6 +1638,19 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         }
                     }
                 }
+            } else {
+                // Orphan deletes for container targets have no child provider
+                // to fulfill, but their sink still returns an all-None handler
+                // list.
+                if handlers
+                    .into_iter()
+                    .flatten()
+                    .any(|handler| handler.is_some())
+                {
+                    client_bail!(
+                        "target action sink returned child handlers without child providers"
+                    );
+                }
             }
         }
         Ok(())
@@ -1594,7 +1666,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // session handoff needed.
     let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
     if let Err(e) = committer
-        .commit(child_path_set, fn_memos, curr_version)
+        .commit(child_path_set, fn_memos, user_states, curr_version)
         .await
     {
         // The commit txn either committed or rolled back before
@@ -1671,6 +1743,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         &'_ Prof::FunctionData,
         &'_ MemoStatesPayload<Prof>,
     )>,
+    logic_deps: &HashSet<Fingerprint>,
 ) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(());
@@ -1680,10 +1753,14 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
     let context_memo_states_serialized =
         serialize_context_memo_states::<Prof>(&memo_states.by_context_fp)?;
+    // Sorted for deterministic storage. Only reached when actually memoizing
+    // (after the early return above), so non-memoized builds pay no sort.
+    let mut logic_deps_sorted: Vec<Fingerprint> = logic_deps.iter().copied().collect();
+    logic_deps_sorted.sort();
     let memo_info = db_schema::ComponentMemoizationInfo {
         processor_fp: fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
-        logic_deps: comp_ctx.take_logic_deps(),
+        logic_deps: logic_deps_sorted,
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
     };

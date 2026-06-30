@@ -12,6 +12,9 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 env_logger = { workspace = true }
 heed = "0.22.0"
+# Page-size lookup for aligning the LMDB map size; matches the crate heed uses
+# internally to validate `map_size` against the system page size.
+page_size = "0.6"
 nix = { workspace = true }
 storekey = { workspace = true }
 serde = { workspace = true, features = ["rc", "derive"] }
@@ -20,6 +23,7 @@ tokio-stream = { workspace = true }
 rmp = { workspace = true }
 rmp-serde = { workspace = true }
 rpds = { workspace = true }
+serde_bytes = { workspace = true }
 serde_with = { workspace = true }
 uuid = { workspace = true }
 indexmap = { workspace = true }
@@ -35,3 +39,4 @@ rand = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 axum = { workspace = true }
+tempfile = "3"

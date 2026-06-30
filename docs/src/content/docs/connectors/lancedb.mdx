@@ -6,20 +6,20 @@ description: >
   Python classes, vector columns via VectorSchemaProvider, and both
   system-managed and user-managed table lifecycles.
 ---
-The `lancedb` connector provides target state APIs for writing rows to LanceDB tables.
+The `lancedb` connector provides utilities for writing rows to LanceDB tables, with automatic schema inference from Python classes and support for declaring vector and full-text search (FTS) indexes. CocoIndex manages the table lifecycle — creating, dropping, and evolving the schema — and keeps rows in sync via incremental upserts and deletions.
 
 ```python
 from cocoindex.connectors import lancedb
 ```
 
-::::note Dependencies
+:::note[Dependencies]
 This connector requires additional dependencies. Install with:
 
 ```bash
 pip install cocoindex[lancedb]
 ```
 
-::::
+:::
 
 ## Connection setup
 
@@ -45,7 +45,7 @@ conn = await lancedb.connect_async("./lancedb_data")
 
 ## As target
 
-The `lancedb` connector provides target state APIs for writing rows to tables. With it, CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
+The `lancedb` connector provides target state APIs for writing rows to tables. CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
 
 ### Declaring target states
 
@@ -109,6 +109,78 @@ def TableTarget.declare_row(
 **Parameters:**
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
+
+#### Vector indexes (attachment)
+
+Declare a vector index on a vector column to accelerate similarity search. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
+
+```python
+def TableTarget.declare_vector_index(
+    self,
+    *,
+    name: str | None = None,
+    column: str,
+    metric: Literal["cosine", "l2", "dot"] = "cosine",
+    index_type: Literal["ivf_pq", "hnsw_pq"] = "ivf_pq",
+    num_partitions: int | None = None,
+    num_sub_vectors: int | None = None,
+    num_bits: int | None = None,
+    m: int | None = None,
+    ef_construction: int | None = None,
+) -> None
+```
+
+**Parameters:**
+
+- `name` — Logical index name (defaults to `column`).
+- `column` — Vector column to index.
+- `metric` — Distance metric: `"cosine"` (default), `"l2"`, or `"dot"`.
+- `index_type` — Index algorithm: `"ivf_pq"` (IVF-PQ, default) or `"hnsw_pq"` (HNSW-PQ).
+- `num_partitions` — *(IVF-PQ only)* Number of IVF partitions.
+- `num_sub_vectors` — *(IVF-PQ / HNSW-PQ)* Number of PQ sub-vectors.
+- `num_bits` — *(IVF-PQ / HNSW-PQ)* Number of bits per PQ code.
+- `m` — *(HNSW-PQ only)* Maximum number of HNSW edges per node.
+- `ef_construction` — *(HNSW-PQ only)* Size of the HNSW candidate list during build.
+
+Parameters left as `None` fall back to LanceDB's defaults.
+
+**Example:**
+
+```python
+table.declare_vector_index(column="embedding", metric="cosine")
+```
+
+#### FTS indexes (attachment)
+
+Declare a full-text search (FTS) index on a text column to enable keyword and phrase search. Like vector indexes, FTS indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
+
+```python
+def TableTarget.declare_fts_index(
+    self,
+    *,
+    name: str | None = None,
+    column: str,
+    language: str = "English",
+    with_position: bool = True,
+) -> None
+```
+
+**Parameters:**
+
+- `name` — Logical index name (defaults to `column`).
+- `column` — Text column to index.
+- `language` — Tokenizer language (e.g. `"English"`, `"Chinese"`).
+- `with_position` — Whether to store token positions (enables phrase queries). Defaults to `True`.
+
+**Example:**
+
+```python
+table.declare_fts_index(column="content")
+```
+
+:::note
+Indexes are reconciled as part of the table's target state: changing a declaration replaces the index in place, removing a declaration drops the index, and dropping the table removes all its indexes.
+:::
 
 ### Table schema: from Python class
 
@@ -181,7 +253,7 @@ class MyRow:
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+For `NDArray` fields, a `VectorSchemaProvider` annotation specifies the vector dimension and dtype. The annotation accepts a `VectorSchemaProvider`, a `ContextKey`, or an explicit `VectorSchema`. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
 
 ### Table schema: explicit column definitions
 
@@ -243,6 +315,9 @@ async def app_main() -> None:
             primary_key=["doc_id"],
         ),
     )
+
+    # Declare a vector index for similarity search
+    table.declare_vector_index(column="embedding", metric="cosine")
 
     # Declare rows
     for doc in documents:

@@ -1,0 +1,14 @@
+[project]
+name = "docs-to-knowledge-graph"
+version = "0.1.0"
+description = "CocoIndex example: build a knowledge graph from Markdown docs (concept triples) in Neo4j."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[neo4j]>=1.0.7",
+    "instructor",
+    "litellm",
+    "pydantic",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
