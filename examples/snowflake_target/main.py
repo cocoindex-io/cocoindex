@@ -46,7 +46,7 @@ class SnowflakeOrder:
 SAMPLE_ORDERS = (
     SourceOrder(
         order_id="ORD-1001",
-        customer="Ada Lovelace",
+        customer="Summit Labs",
         product="mechanical keyboard",
         quantity=2,
         unit_price=129.50,
@@ -55,16 +55,16 @@ SAMPLE_ORDERS = (
     ),
     SourceOrder(
         order_id="ORD-1002",
-        customer="Grace Hopper",
+        customer="Beacon Retail",
         product="standing desk",
         quantity=1,
         unit_price=399.00,
         status="paid",
-        attributes={"channel": "sales", "priority": "white_glove"},
+        attributes={"channel": "sales", "priority": "rush"},
     ),
     SourceOrder(
         order_id="ORD-1003",
-        customer="Katherine Johnson",
+        customer="Ridgeview Health",
         product="noise cancelling headphones",
         quantity=3,
         unit_price=199.99,
