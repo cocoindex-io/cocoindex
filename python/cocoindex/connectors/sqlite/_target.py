@@ -1055,7 +1055,9 @@ class TableTarget(
 
         Args:
             row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
-                 Must include all primary key columns.
+                 Must include all primary key columns with non-None values.
+                 Dict rows may omit nullable non-primary-key columns; omitted values
+                 are written as NULL.
         """
         row_dict = self._row_to_dict(row)
         pk_values: list[Any] = []
