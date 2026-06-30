@@ -7,7 +7,7 @@ import struct
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Iterator
+from typing import Annotated, Any, Iterator, cast
 
 import numpy as np
 import pytest
@@ -282,6 +282,42 @@ def test_delete_row(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     assert not any(row["id"] == "2" for row in data)
 
 
+def test_dataclass_row_null_primary_key_raises(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test dataclass rows cannot declare NULL primary keys."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _row_type = SimpleRow
+        _table_name = "test_dataclass_null_pk"
+        _source_rows = [SimpleRow(id=cast(Any, None), name="No id", value=1)]
+
+        test_env = make_test_env(
+            managed_conn, "test_dataclass_row_null_primary_key_raises"
+        )
+        app = coco.App(
+            coco.AppConfig(
+                name="test_dataclass_row_null_primary_key_raises",
+                environment=test_env,
+            ),
+            declare_table_and_rows,
+        )
+
+        with pytest.raises(
+            ValueError, match="SQLite primary key column 'id' cannot be None"
+        ):
+            app.update_blocking()
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
 def test_different_schema_types(
     sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
@@ -508,6 +544,139 @@ def test_dict_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     data = read_table_data(managed_conn, "dict_table")
     assert len(data) == 2
     assert {"id": "1", "name": "Item1", "count": 10} in data
+
+
+def test_dict_row_missing_primary_key_raises(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test dict rows missing primary keys are rejected."""
+    managed_conn, _ = sqlite_db
+
+    dict_rows: list[dict[str, Any]] = []
+
+    test_env = make_test_env(managed_conn, "test_dict_row_missing_primary_key_raises")
+
+    async def declare_dict_table() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            sqlite.declare_table_target,
+            SQLITE_DB,
+            "dict_missing_pk",
+            sqlite.TableSchema(
+                {
+                    "id": sqlite.ColumnDef(type="TEXT", nullable=False),
+                    "name": sqlite.ColumnDef(type="TEXT"),
+                    "count": sqlite.ColumnDef(type="INTEGER"),
+                },
+                primary_key=["id"],
+            ),
+        )
+
+        for row in dict_rows:
+            table.declare_row(row=row)
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_dict_row_missing_primary_key_raises", environment=test_env
+        ),
+        declare_dict_table,
+    )
+
+    dict_rows.extend([{"name": "Item1", "count": 1}])
+    with pytest.raises(
+        ValueError, match="SQLite row is missing primary key column 'id'"
+    ):
+        app.update_blocking()
+
+
+def test_dict_row_null_primary_key_raises(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test dict rows with NULL primary keys are rejected."""
+    managed_conn, _ = sqlite_db
+
+    dict_rows: list[dict[str, Any]] = []
+
+    test_env = make_test_env(managed_conn, "test_dict_row_null_primary_key_raises")
+
+    async def declare_dict_table() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            sqlite.declare_table_target,
+            SQLITE_DB,
+            "dict_null_pk",
+            sqlite.TableSchema(
+                {
+                    "id": sqlite.ColumnDef(type="TEXT", nullable=False),
+                    "name": sqlite.ColumnDef(type="TEXT"),
+                    "count": sqlite.ColumnDef(type="INTEGER"),
+                },
+                primary_key=["id"],
+            ),
+        )
+
+        for row in dict_rows:
+            table.declare_row(row=row)
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_dict_row_null_primary_key_raises", environment=test_env
+        ),
+        declare_dict_table,
+    )
+
+    dict_rows.extend([{"id": None, "name": "Item1", "count": 1}])
+    with pytest.raises(
+        ValueError, match="SQLite primary key column 'id' cannot be None"
+    ):
+        app.update_blocking()
+
+
+def test_dict_row_missing_nullable_non_key_writes_null(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test missing nullable non-key dict fields are written as NULL."""
+    managed_conn, _ = sqlite_db
+
+    dict_rows: list[dict[str, Any]] = []
+
+    test_env = make_test_env(
+        managed_conn, "test_dict_row_missing_nullable_non_key_writes_null"
+    )
+
+    async def declare_dict_table() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            sqlite.declare_table_target,
+            SQLITE_DB,
+            "dict_missing_nullable",
+            sqlite.TableSchema(
+                {
+                    "id": sqlite.ColumnDef(type="TEXT", nullable=False),
+                    "name": sqlite.ColumnDef(type="TEXT"),
+                    "count": sqlite.ColumnDef(type="INTEGER"),
+                },
+                primary_key=["id"],
+            ),
+        )
+
+        for row in dict_rows:
+            table.declare_row(row=row)
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_dict_row_missing_nullable_non_key_writes_null",
+            environment=test_env,
+        ),
+        declare_dict_table,
+    )
+
+    dict_rows.extend([{"id": "1", "name": "Item1"}])
+    app.update_blocking()
+
+    assert read_table_data(managed_conn, "dict_missing_nullable") == [
+        {"id": "1", "name": "Item1", "count": None}
+    ]
 
 
 def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
