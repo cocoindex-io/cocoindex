@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 
 use crate::engine::component::{
@@ -14,6 +15,7 @@ use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
+use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::error::{SharedError, SharedResult};
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -536,30 +538,29 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// last committed scan: the persisted subtree dependency set `S` exists and
     /// every fingerprint in it is still registered in the current logic set.
     ///
-    /// Callable from `process_live` to decide whether a durable connector can
-    /// skip its startup full scan. Failure-safe — returns `false` when no `S`
-    /// was ever committed (never scanned), when the stored value can't be
-    /// decoded, or when any fingerprint is gone (code changed); each means
-    /// "re-scan to be safe."
+    /// `S` lives in this component's own memoization entry (the same DB row a
+    /// regular component uses) as a `ComponentMemoizationInfo` carrying only
+    /// `logic_deps`. Callable from `process_live` to decide whether a durable
+    /// connector can skip its startup full scan. Failure-safe — returns `false`
+    /// when no `S` was ever committed (never scanned), when the stored value
+    /// can't be decoded, or when any fingerprint is gone (code changed); each
+    /// means "re-scan to be safe."
     pub async fn processing_unchanged(&self) -> Result<bool> {
         let Some(bytes) = self
             .component
             .app_ctx()
             .app_store()
-            .read_user_state(
-                self.component.stable_path(),
-                db_schema::StateKind::Live,
-                &logic_deps_state_key(),
-            )
+            .read_component_memo(self.component.stable_path())
             .await?
         else {
             return Ok(false);
         };
-        let Ok(deps) = decode_logic_deps(&bytes) else {
-            return Ok(false);
+        let memo_info: db_schema::ComponentMemoizationInfo<'_> = match from_msgpack_slice(&bytes) {
+            Ok(info) => info,
+            Err(_) => return Ok(false),
         };
         Ok(logic_registry::all_contained_with_env(
-            &deps,
+            &memo_info.logic_deps,
             self.component.app_ctx().env(),
         ))
     }
@@ -1191,76 +1192,91 @@ async fn drain_task_body<Prof: EngineProfile>(
     }
 }
 
-/// Framework-reserved key under which a live component persists the aggregate
-/// logic-dependency set `S` of its processed subtree (own fp ∪ all descendants)
-/// in the `Live` keyspace. Read back on a later run to decide whether the
-/// processing logic is unchanged. Uses the `Symbol` namespace so it cannot
-/// collide with a user committed-state key.
-fn logic_deps_state_key() -> StableKey {
-    StableKey::Symbol(Arc::from("sys/live_logic_deps"))
+/// Build a `ComponentMemoizationInfo` that carries only the aggregate logic-
+/// dependency set `S`. `processor_fp`/`return_value` are `None` so the entry can
+/// never be mistaken for a reusable regular memo (the memo skip compares against
+/// `Some(fp)`). `logic_deps` is stored sorted for deterministic on-disk bytes.
+fn logic_deps_memo_info(
+    logic_deps: Vec<Fingerprint>,
+) -> db_schema::ComponentMemoizationInfo<'static> {
+    db_schema::ComponentMemoizationInfo {
+        processor_fp: None,
+        return_value: None,
+        logic_deps,
+        memo_states: vec![],
+        context_memo_states: vec![],
+    }
 }
 
-/// Serialize the aggregate set deterministically (sorted) for stable storage.
-fn encode_logic_deps(deps: &HashSet<Fingerprint>) -> Result<Vec<u8>> {
-    let mut sorted: Vec<Fingerprint> = deps.iter().copied().collect();
-    sorted.sort();
-    Ok(rmp_serde::to_vec_named(&sorted)?)
-}
-
-fn decode_logic_deps(bytes: &[u8]) -> Result<Vec<Fingerprint>> {
-    Ok(rmp_serde::from_slice(bytes)?)
-}
-
-/// Persist `deps` as the new aggregate `S`, replacing any prior value. Used by
-/// `update_full`, which recomputes the whole subtree authoritatively — so a
-/// fingerprint whose code was edited away simply drops out of the set.
+/// Persist `deps` as the new aggregate `S`, replacing any prior value. `S` is
+/// stored in the component's own memoization entry (the same DB row a regular
+/// component uses). Used by `update_full`, which recomputes the whole subtree
+/// authoritatively — so a fingerprint whose code was edited away simply drops
+/// out of the set.
+///
+/// The live root is not a memoized component, so the memo check at the start of
+/// every `update_full` build invalidates (deletes) this entry; it is rewritten
+/// here only after the build succeeds. `S` is therefore present iff the last
+/// full scan completed — a failed scan leaves no `S`, correctly forcing a
+/// re-scan on the next run.
 async fn persist_logic_deps_replace<Prof: EngineProfile>(
     component: &Component<Prof>,
     deps: &HashSet<Fingerprint>,
 ) -> Result<()> {
-    let encoded = encode_logic_deps(deps)?;
+    let mut logic_deps: Vec<Fingerprint> = deps.iter().copied().collect();
+    logic_deps.sort();
+    let encoded = rmp_serde::to_vec_named(&logic_deps_memo_info(logic_deps))?;
     component
         .app_ctx()
         .app_store()
-        .write_user_state_standalone(
-            component.stable_path(),
-            db_schema::StateKind::Live,
-            &logic_deps_state_key(),
-            &encoded,
-        )
+        .finalize_memoization(component.stable_path(), &encoded)
         .await
 }
 
 /// Extend the aggregate `S` with `deps`, used by an incremental `update` op: a
 /// streamed item is an existing item on the next restart, so its subtree code
-/// must be in `S`. Skips the write when `deps` is already covered (steady
-/// state: the same functions process every item), keeping incremental ops cheap.
+/// must be in `S`. Read-merge-writes the component's memo entry in a single txn
+/// so concurrent per-subpath drains cannot lose each other's additions; skips
+/// the write entirely when `deps` is already covered (steady state: the same
+/// functions process every item), keeping incremental ops cheap.
 async fn persist_logic_deps_extend<Prof: EngineProfile>(
     component: &Component<Prof>,
     deps: &HashSet<Fingerprint>,
 ) -> Result<()> {
-    let app_store = component.app_ctx().app_store();
-    let key = logic_deps_state_key();
-    let existing = app_store
-        .read_user_state(component.stable_path(), db_schema::StateKind::Live, &key)
-        .await?;
-    let mut merged: HashSet<Fingerprint> = match &existing {
-        Some(bytes) => decode_logic_deps(bytes)?.into_iter().collect(),
-        None => HashSet::new(),
-    };
-    // Common case: every new dep is already stored — nothing to persist.
-    if deps.iter().all(|fp| merged.contains(fp)) {
-        return Ok(());
-    }
-    merged.extend(deps.iter().copied());
-    let encoded = encode_logic_deps(&merged)?;
-    app_store
-        .write_user_state_standalone(
-            component.stable_path(),
-            db_schema::StateKind::Live,
-            &key,
-            &encoded,
-        )
+    let app_store = component.app_ctx().app_store().clone();
+    let path = component.stable_path().clone();
+    let deps = deps.clone();
+    component
+        .app_ctx()
+        .env()
+        .run_txn(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            let deps = deps.clone();
+            Box::pin(async move {
+                // BTreeSet gives sorted, de-duplicated storage for free.
+                let mut merged: BTreeSet<Fingerprint> =
+                    match app_store.read_component_memo_in_txn(wtxn, &path).await? {
+                        Some(bytes) => {
+                            let info: db_schema::ComponentMemoizationInfo<'_> =
+                                from_msgpack_slice(&bytes)?;
+                            info.logic_deps.into_iter().collect()
+                        }
+                        None => BTreeSet::new(),
+                    };
+                let before = merged.len();
+                merged.extend(deps.iter().copied());
+                // Every new dep already stored — nothing to persist.
+                if merged.len() == before {
+                    return Ok(());
+                }
+                let logic_deps: Vec<Fingerprint> = merged.into_iter().collect();
+                let encoded = rmp_serde::to_vec_named(&logic_deps_memo_info(logic_deps))?;
+                app_store
+                    .write_component_memo_raw(wtxn, &path, &encoded)
+                    .await
+            })
+        })
         .await
 }
 

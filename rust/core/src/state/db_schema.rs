@@ -237,10 +237,17 @@ pub enum MemoizedValue<'a> {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ComponentMemoizationInfo<'a> {
-    #[serde(rename = "F")]
-    pub processor_fp: Fingerprint,
-    #[serde(rename = "R", borrow)]
-    pub return_value: MemoizedValue<'a>,
+    /// Fingerprint of the memoized processor. `Some` for a regular memoized
+    /// component; `None` for a live component's change-detection entry, which
+    /// persists only `logic_deps`. A `None` entry can never satisfy a regular
+    /// memo skip (which compares against `Some(fp)`), so it is never mistaken
+    /// for a reusable memo.
+    #[serde(rename = "F", default, skip_serializing_if = "Option::is_none")]
+    pub processor_fp: Option<Fingerprint>,
+    /// Memoized return value. Present alongside `processor_fp`; `None` for a live
+    /// change-detection entry.
+    #[serde(rename = "R", default, borrow, skip_serializing_if = "Option::is_none")]
+    pub return_value: Option<MemoizedValue<'a>>,
     #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
     pub logic_deps: Vec<Fingerprint>,
     #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
