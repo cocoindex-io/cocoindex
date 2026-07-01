@@ -102,41 +102,46 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         };
         let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&memo_bytes)?;
         if let Some(processor_fp) = processor_fp {
-            if memo_info.processor_fp == processor_fp
+            if memo_info.processor_fp == Some(processor_fp)
                 && logic_registry::all_contained_with_env(
                     &memo_info.logic_deps,
                     comp_ctx.app_ctx().env(),
                 )
             {
-                let bytes = match memo_info.return_value {
-                    db_schema::MemoizedValue::Inlined(b) => b,
-                };
-                let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
-                match ret {
-                    Ok(ret) => {
-                        let memo_states = deserialize_memo_values::<Prof>(&memo_info.memo_states)?;
-                        let context_memo_states = deserialize_context_memo_states::<Prof>(
-                            &memo_info.context_memo_states,
-                        )?;
-                        // Carry the stored logic deps out so the cache-hit path
-                        // can still report this subtree's dependency set to the
-                        // parent — otherwise a parent that mounts this component
-                        // would not depend on it (or its descendants) and would
-                        // wrongly stay a memo hit when their code changes.
-                        return Ok(Some((
-                            ret,
-                            MemoStatesPayload {
-                                positional: memo_states,
-                                by_context_fp: context_memo_states,
-                            },
-                            memo_info.logic_deps.to_vec(),
-                        )));
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Skip memoized return value because it failed in deserialization: {:?}",
-                            e
-                        );
+                // A regular memoized entry always carries a return value; only a
+                // live change-detection entry has `None`, and its `processor_fp`
+                // is `None` too, so it never matches the `Some(processor_fp)`
+                // check above. A missing value here is unexpected — fall through
+                // to invalidate rather than treat it as a hit.
+                if let Some(db_schema::MemoizedValue::Inlined(bytes)) = memo_info.return_value {
+                    let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
+                    match ret {
+                        Ok(ret) => {
+                            let memo_states =
+                                deserialize_memo_values::<Prof>(&memo_info.memo_states)?;
+                            let context_memo_states = deserialize_context_memo_states::<Prof>(
+                                &memo_info.context_memo_states,
+                            )?;
+                            // Carry the stored logic deps out so the cache-hit path
+                            // can still report this subtree's dependency set to the
+                            // parent — otherwise a parent that mounts this component
+                            // would not depend on it (or its descendants) and would
+                            // wrongly stay a memo hit when their code changes.
+                            return Ok(Some((
+                                ret,
+                                MemoStatesPayload {
+                                    positional: memo_states,
+                                    by_context_fp: context_memo_states,
+                                },
+                                memo_info.logic_deps.to_vec(),
+                            )));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Skip memoized return value because it failed in deserialization: {:?}",
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -1758,8 +1763,10 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     let mut logic_deps_sorted: Vec<Fingerprint> = logic_deps.iter().copied().collect();
     logic_deps_sorted.sort();
     let memo_info = db_schema::ComponentMemoizationInfo {
-        processor_fp: fp,
-        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
+        processor_fp: Some(fp),
+        return_value: Some(db_schema::MemoizedValue::Inlined(Cow::Borrowed(
+            ret_bytes.as_ref(),
+        ))),
         logic_deps: logic_deps_sorted,
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,

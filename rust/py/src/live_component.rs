@@ -134,6 +134,19 @@ impl PyLiveComponentController {
         })
     }
 
+    /// Whether this live component's processing logic is unchanged since its
+    /// last committed scan (the persisted subtree dependency set still resolves
+    /// against the current logic set). Callable from `process_live` to gate a
+    /// durable startup-scan skip. Failure-safe: `False` when never scanned or
+    /// when any dependency's code changed.
+    pub fn processing_unchanged_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctrl = self.0.clone();
+        future_into_py(py, async move {
+            let unchanged = ctrl.processing_unchanged().await.into_py_result()?;
+            Ok(unchanged)
+        })
+    }
+
     /// Commit `value` under `key` in this live component's persistent user
     /// state (the `Live` keyspace), read back by `read_committed_state` on a
     /// later run. Counterpart writer to `read_committed_state_async`; the
