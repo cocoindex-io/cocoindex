@@ -440,6 +440,7 @@ class _RowAction(NamedTuple):
 
     key: _RowKey
     value: _RowValue | None  # None means delete
+    handler: "_RowHandler"  # Owning table's handler, so the shared sink can dispatch
 
 
 # --- Vector Index Attachment ---
@@ -683,7 +684,6 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _table_name: str
     _schema_name: str | None
     _table_schema: TableSchema
-    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -696,13 +696,18 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_name = table_name
         self._schema_name = pg_schema_name
         self._table_schema = table_schema
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Sequence[_RowAction]
+    async def _execute_actions(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        actions: Sequence[_RowAction],
     ) -> None:
-        """Apply row actions (upserts and deletes) to the database."""
+        """Apply this table's row actions (upserts and deletes) using `conn`.
 
+        Runs sequentially because `conn` may be a single connection shared
+        (via the module-level row sink) with other tables' actions in the
+        same batch/transaction — a connection cannot run overlapping queries.
+        """
         if not actions:
             return
 
@@ -715,16 +720,15 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             else:
                 upserts.append(action)
 
-        async with asyncio.TaskGroup() as tg:
-            self._schedule_upserts(tg, upserts)
-            self._schedule_deletes(tg, deletes)
+        await self._execute_upserts(conn, upserts)
+        await self._execute_deletes(conn, deletes)
 
-    def _schedule_upserts(
+    async def _execute_upserts(
         self,
-        tg: asyncio.TaskGroup,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         upserts: list[_RowAction],
     ) -> None:
-        """Schedule upsert chunks as parallel tasks."""
+        """Execute upsert chunks sequentially on `conn`."""
         if not upserts:
             return
 
@@ -750,19 +754,19 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         chunk_size = max(1, _BIND_LIMIT // num_parameters)
         for i in range(0, len(upserts), chunk_size):
             chunk = upserts[i : i + chunk_size]
-            tg.create_task(
-                self._execute_upsert_chunk(
-                    table_name,
-                    col_list,
-                    conflict_clause,
-                    all_col_names,
-                    num_parameters,
-                    chunk,
-                )
+            await self._execute_upsert_chunk(
+                conn,
+                table_name,
+                col_list,
+                conflict_clause,
+                all_col_names,
+                num_parameters,
+                chunk,
             )
 
     async def _execute_upsert_chunk(
         self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         table_name: str,
         col_list: str,
         conflict_clause: str,
@@ -782,15 +786,14 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
 
         values_sql = ", ".join(values_sql_parts)
         sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
-        async with self._pool.acquire() as conn:
-            await conn.execute(sql, *params)
+        await conn.execute(sql, *params)
 
-    def _schedule_deletes(
+    async def _execute_deletes(
         self,
-        tg: asyncio.TaskGroup,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         deletes: list[_RowAction],
     ) -> None:
-        """Schedule delete chunks as parallel tasks."""
+        """Execute delete chunks sequentially on `conn`."""
         if not deletes:
             return
 
@@ -801,12 +804,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         chunk_size = max(1, _BIND_LIMIT // num_pk)
         for i in range(0, len(deletes), chunk_size):
             chunk = deletes[i : i + chunk_size]
-            tg.create_task(
-                self._execute_delete_chunk(table_name, pk_cols, num_pk, chunk)
-            )
+            await self._execute_delete_chunk(conn, table_name, pk_cols, num_pk, chunk)
 
     async def _execute_delete_chunk(
         self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         table_name: str,
         pk_cols: list[str],
         num_pk: int,
@@ -827,8 +829,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 params.extend(action.key)
             sql = f"DELETE FROM {table_name} WHERE {' OR '.join(or_parts)}"
 
-        async with self._pool.acquire() as conn:
-            await conn.execute(sql, *params)
+        await conn.execute(sql, *params)
 
     def attachments(
         self,
@@ -856,8 +857,8 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
-                action=_RowAction(key=key, value=None),
-                sink=self._sink,
+                action=_RowAction(key=key, value=None, handler=self),
+                sink=_ROW_SINK,
                 tracking_record=coco.NON_EXISTENCE,
             )
 
@@ -870,10 +871,52 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, value=desired_state),
-            sink=self._sink,
+            action=_RowAction(key=key, value=desired_state, handler=self),
+            sink=_ROW_SINK,
             tracking_record=target_fp,
         )
+
+
+async def _apply_row_actions(
+    context_provider: ContextProvider, actions: Sequence[_RowAction]
+) -> None:
+    """Apply row actions across (possibly multiple) tables.
+
+    Actions are grouped by their owning pool so unrelated databases can be
+    applied concurrently, and then by table (handler) within each pool so
+    that all row changes to tables sharing a database go through a single
+    connection and a single transaction — giving cross-table atomicity
+    within one database.
+    """
+    if not actions:
+        return
+
+    by_pool: dict[asyncpg.Pool, list[_RowAction]] = {}
+    for action in actions:
+        by_pool.setdefault(action.handler._pool, []).append(action)
+
+    async with asyncio.TaskGroup() as tg:
+        for pool_actions in by_pool.values():
+            tg.create_task(_apply_pool_row_actions(pool_actions))
+
+
+async def _apply_pool_row_actions(actions: list[_RowAction]) -> None:
+    """Apply all row actions sharing one pool within a single connection/transaction."""
+    pool = actions[0].handler._pool
+
+    by_handler: dict[_RowHandler, list[_RowAction]] = {}
+    for action in actions:
+        by_handler.setdefault(action.handler, []).append(action)
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for handler, handler_actions in by_handler.items():
+                await handler._execute_actions(conn, handler_actions)
+
+
+_ROW_SINK: coco.TargetActionSink[_RowAction] = coco.TargetActionSink.from_async_fn(
+    _apply_row_actions
+)
 
 
 class _TableKey(NamedTuple):
