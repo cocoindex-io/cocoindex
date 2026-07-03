@@ -11,7 +11,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::{TxnCoordinator, WriteTxn};
+use crate::state_store::txn::WriteTxn;
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -121,7 +121,7 @@ pub struct Storage {
 
 struct StorageInner {
     db_env: heed::Env<heed::WithoutTls>,
-    coord: TxnCoordinator,
+    coord: Arc<tokio::sync::RwLock<()>>,
     batcher: Batcher<TxnRunner>,
 }
 
@@ -167,7 +167,7 @@ fn is_map_full(err: &Error) -> bool {
 /// coordinator is active in the current process.
 struct TxnRunner {
     db_env: heed::Env<heed::WithoutTls>,
-    coord: TxnCoordinator,
+    coord: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl TxnRunner {
@@ -176,31 +176,14 @@ impl TxnRunner {
     /// dropped before the error propagates. On `MapFull` the caller should
     /// resize (under the coordinator write guard) and retry.
     async fn try_run_once(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
-        let read_guard = self.coord.read().await;
+        let _read_guard = self.coord.read().await;
         let mut outputs = Vec::with_capacity(inputs.len());
         let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
         for body in inputs {
-            match body(&mut wtxn).await {
-                Ok(output) => outputs.push(output),
-                Err(e) if is_map_full(&e) => {
-                    drop(wtxn);
-                    drop(read_guard);
-                    return Err(e);
-                }
-                Err(e) => return Err(e),
-            }
+            outputs.push(body(&mut wtxn).await?);
         }
-        let wtxn = wtxn.into_inner();
-        match wtxn.commit() {
-            Ok(()) => Ok(outputs),
-            Err(e) => {
-                let err: Error = e.into();
-                if is_map_full(&err) {
-                    drop(read_guard);
-                }
-                Err(err)
-            }
-        }
+        wtxn.into_inner().commit()?;
+        Ok(outputs)
     }
 
     /// Doubles the env's current map size (aligned to page). Caller must hold
@@ -284,7 +267,7 @@ impl Storage {
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
         }
-        let coord: TxnCoordinator = Arc::new(tokio::sync::RwLock::new(()));
+        let coord = Arc::new(tokio::sync::RwLock::new(()));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
@@ -306,7 +289,7 @@ impl Storage {
     /// tests that open an env directly without going through `StorageSettings`.
     #[cfg(test)]
     pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
-        let coord: TxnCoordinator = Arc::new(tokio::sync::RwLock::new(()));
+        let coord = Arc::new(tokio::sync::RwLock::new(()));
         let batcher = Batcher::new(
             TxnRunner {
                 db_env: db_env.clone(),
@@ -324,7 +307,7 @@ impl Storage {
         }
     }
 
-    pub(crate) fn txn_coordinator(&self) -> TxnCoordinator {
+    pub(crate) fn txn_coordinator(&self) -> Arc<tokio::sync::RwLock<()>> {
         self.inner.coord.clone()
     }
 

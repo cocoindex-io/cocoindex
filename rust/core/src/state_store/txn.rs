@@ -1,18 +1,11 @@
 //! LMDB transaction wrappers and the shared transaction/resize coordinator.
 //!
 //! Every read or write LMDB transaction in this process acquires a read guard
-//! on [`TxnCoordinator`] for its full lifetime. [`TxnRunner`] acquires the
+//! on `StorageInner::coord` for its full lifetime. [`TxnRunner`] acquires the
 //! write guard before calling `unsafe Env::resize()`, guaranteeing no
 //! participating transaction is active.
 
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
-
-/// Serializes LMDB transactions against `Env::resize`.
-///
-/// * Normal read/write transactions hold a read guard for their lifetime.
-/// * Resize holds the write guard, blocking until all guards drop.
-pub(crate) type TxnCoordinator = Arc<tokio::sync::RwLock<()>>;
 
 /// Guarded LMDB read transaction returned to callers. Holds a coordinator read
 /// lock for the lifetime of the inner `RoTxn` and borrows the parent env via
