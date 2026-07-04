@@ -7,9 +7,10 @@ This module provides a two-level target state system for Qdrant:
 """
 
 from __future__ import annotations
-import cocoindex as coco
 
 import asyncio
+import uuid
+
 import msgspec
 from dataclasses import dataclass
 from typing import (
@@ -68,6 +69,17 @@ class QdrantVectorDef(NamedTuple):
     multivector_comparator: Literal["max_sim"] = "max_sim"
 
 
+class QdrantSparseVectorDef(NamedTuple):
+    """Qdrant sparse vector specification.
+
+    Sparse vectors in Qdrant are always named and use dot-product scoring.
+    ``modifier="idf"`` enables Qdrant's IDF modifier; ``None`` (the default)
+    applies no modifier.
+    """
+
+    modifier: Literal["idf"] | None = None
+
+
 class _ResolvedQdrantVectorDef(msgspec.Struct, frozen=True, tag=True):
     """Resolved single (unnamed) vector specification.
 
@@ -86,6 +98,18 @@ class _ResolvedQdrantNamedVectorsDef(msgspec.Struct, frozen=True, tag=True):
     vectors: dict[str, _ResolvedQdrantVectorDef]
 
 
+class _ResolvedQdrantSparseVectorDef(msgspec.Struct, frozen=True, tag=True):
+    """Resolved sparse vector specification."""
+
+    modifier: Literal["idf"] | None = None
+
+
+class _ResolvedQdrantSparseVectorsDef(msgspec.Struct, frozen=True, tag=True):
+    """Resolved named sparse vectors specification."""
+
+    sparse_vectors: dict[str, _ResolvedQdrantSparseVectorDef]
+
+
 async def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVectorDef:
     resolved_schema: res_schema.VectorSchema | res_schema.MultiVectorSchema
     vs = await res_schema.get_vector_schema(vector_def.schema)
@@ -102,6 +126,12 @@ async def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVec
         distance=vector_def.distance,
         multivector_comparator=vector_def.multivector_comparator,
     )
+
+
+def _resolve_sparse_vector_def(
+    sparse_vector_def: QdrantSparseVectorDef,
+) -> _ResolvedQdrantSparseVectorDef:
+    return _ResolvedQdrantSparseVectorDef(modifier=sparse_vector_def.modifier)
 
 
 @dataclass(slots=True)
@@ -132,11 +162,13 @@ class CollectionSchema:
         ```
     """
 
-    _vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
+    _vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None
+    _sparse_vectors: _ResolvedQdrantSparseVectorsDef | None
 
     def __init__(
         self,
-        vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef,
+        vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None,
+        sparse_vectors: _ResolvedQdrantSparseVectorsDef | None = None,
     ) -> None:
         """
         Create a CollectionSchema from pre-resolved vector definitions.
@@ -144,12 +176,19 @@ class CollectionSchema:
         For constructing from unresolved ``QdrantVectorDef``, use the async
         classmethod ``create`` instead.
         """
+        if vectors is None and sparse_vectors is None:
+            raise ValueError(
+                "Qdrant collection schema must declare dense/multivector or sparse vectors"
+            )
         self._vectors = vectors
+        self._sparse_vectors = sparse_vectors
 
     @classmethod
     async def create(
         cls,
-        vectors: QdrantVectorDef | dict[str, QdrantVectorDef],
+        vectors: QdrantVectorDef | dict[str, QdrantVectorDef] | None = None,
+        *,
+        sparse_vectors: dict[str, QdrantSparseVectorDef] | None = None,
     ) -> "CollectionSchema":
         """
         Create a CollectionSchema by resolving vector definitions.
@@ -157,27 +196,64 @@ class CollectionSchema:
         Args:
             vectors: Either a single QdrantVectorDef (for unnamed vector) or a dictionary
                      mapping vector field names to QdrantVectorDef.
+            sparse_vectors: Optional dictionary mapping sparse vector names to
+                            QdrantSparseVectorDef. Sparse vectors must be named.
         """
-        resolved: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
+        resolved: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None
         if isinstance(vectors, QdrantVectorDef):
             resolved = await _resolve_vector_def(vectors)
         elif isinstance(vectors, dict):
+            if not vectors:
+                raise ValueError("Qdrant named vectors must not be empty")
             resolved = _ResolvedQdrantNamedVectorsDef(
                 vectors={
                     name: await _resolve_vector_def(vector_def)
                     for name, vector_def in vectors.items()
                 }
             )
+            _validate_vector_names(resolved.vectors.keys(), "vector")
+        elif vectors is None:
+            resolved = None
         else:
             raise ValueError(f"Invalid vector definition: {vectors}")
-        return cls(resolved)
+
+        resolved_sparse: _ResolvedQdrantSparseVectorsDef | None = None
+        if sparse_vectors is not None:
+            if not sparse_vectors:
+                raise ValueError("Qdrant sparse vectors must not be empty")
+            _validate_vector_names(sparse_vectors.keys(), "sparse vector")
+            resolved_sparse = _ResolvedQdrantSparseVectorsDef(
+                sparse_vectors={
+                    name: _resolve_sparse_vector_def(sparse_vector_def)
+                    for name, sparse_vector_def in sparse_vectors.items()
+                }
+            )
+
+        if (
+            isinstance(resolved, _ResolvedQdrantNamedVectorsDef)
+            and resolved_sparse is not None
+        ):
+            overlap = sorted(
+                set(resolved.vectors) & set(resolved_sparse.sparse_vectors)
+            )
+            if overlap:
+                raise ValueError(
+                    f"Qdrant dense and sparse vector names must not overlap: {overlap}"
+                )
+
+        return cls(resolved, resolved_sparse)
 
     @property
     def vectors(
         self,
-    ) -> _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef:
+    ) -> _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None:
         """Get vector definitions (all VectorSchemaProviders resolved)."""
         return self._vectors
+
+    @property
+    def sparse_vectors(self) -> _ResolvedQdrantSparseVectorsDef | None:
+        """Get sparse vector definitions."""
+        return self._sparse_vectors
 
 
 class _PointAction(NamedTuple):
@@ -277,7 +353,8 @@ class _CollectionSpec:
 
 
 class _CollectionTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
-    vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
+    vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None
+    sparse_vectors: _ResolvedQdrantSparseVectorsDef | None = None
 
 
 _CollectionTrackingRecord = statediff.MutualTrackingRecord[
@@ -374,24 +451,30 @@ class _CollectionHandler(
         ):
             return
 
-        # Configure vectors based on whether it's named or unnamed
+        # Configure dense/multivectors based on whether they're named or unnamed.
         vectors_config: (
-            dict[str, qdrant_models.VectorParams] | qdrant_models.VectorParams
-        )
+            dict[str, qdrant_models.VectorParams] | qdrant_models.VectorParams | None
+        ) = None
         if isinstance(schema.vectors, _ResolvedQdrantNamedVectorsDef):
-            # Named vectors: use dict
             vectors_config = {
                 name: _vector_params_from_def(vector_def)
                 for name, vector_def in schema.vectors.vectors.items()
             }
-        else:
-            # Unnamed vector: pass VectorParams directly (not in a dict)
+        elif schema.vectors is not None:
             vectors_config = _vector_params_from_def(schema.vectors)
+
+        sparse_vectors_config: dict[str, qdrant_models.SparseVectorParams] | None = None
+        if schema.sparse_vectors is not None:
+            sparse_vectors_config = {
+                name: _sparse_vector_params_from_def(sparse_vector_def)
+                for name, sparse_vector_def in schema.sparse_vectors.sparse_vectors.items()
+            }
 
         await asyncio.to_thread(
             client.create_collection,
             collection_name=collection_name,
             vectors_config=vectors_config,
+            sparse_vectors_config=sparse_vectors_config,
         )
 
     def reconcile(
@@ -415,7 +498,8 @@ class _CollectionHandler(
         else:
             tracking_record = statediff.MutualTrackingRecord(
                 tracking_record=_CollectionTrackingRecordCore(
-                    vectors=desired_state.schema.vectors
+                    vectors=desired_state.schema.vectors,
+                    sparse_vectors=desired_state.schema.sparse_vectors,
                 ),
                 managed_by=desired_state.managed_by,
             )
@@ -493,15 +577,14 @@ class CollectionTarget(
 
         Args:
             point: PointStruct defining the point ID, vectors, and payload
-        """
-        # Extract point ID
-        point_id: _PointId
-        if isinstance(point.id, (str, int)):
-            point_id = point.id
-        else:
-            point_id = str(point.id)
 
-        coco.declare_target_state(self._provider.target_state(point_id, point))
+        Raises:
+            ValueError: If the point ID is not an unsigned 64-bit integer or
+                a UUID (Qdrant rejects all other IDs at write time).
+        """
+        coco.declare_target_state(
+            self._provider.target_state(_validate_point_id(point.id), point)
+        )
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key
@@ -615,6 +698,16 @@ def _multivector_comparator(
     raise ValueError(f"Unsupported multivector comparator: {comparator}")
 
 
+def _sparse_modifier_from_spec(
+    modifier: Literal["idf"] | None,
+) -> qdrant_models.Modifier | None:
+    if modifier is None:
+        return None
+    if modifier == "idf":
+        return qdrant_models.Modifier.IDF
+    raise ValueError(f"Unsupported Qdrant sparse vector modifier: {modifier}")
+
+
 def _vector_params_from_def(
     vector_def: _ResolvedQdrantVectorDef,
 ) -> qdrant_models.VectorParams:
@@ -640,10 +733,66 @@ def _vector_params_from_def(
     )
 
 
+def _sparse_vector_params_from_def(
+    sparse_vector_def: _ResolvedQdrantSparseVectorDef,
+) -> qdrant_models.SparseVectorParams:
+    """Convert a resolved sparse vector definition to Qdrant SparseVectorParams."""
+    return qdrant_models.SparseVectorParams(
+        modifier=_sparse_modifier_from_spec(sparse_vector_def.modifier)
+    )
+
+
+def _validate_vector_names(names: Collection[str], kind: str) -> None:
+    for name in names:
+        if not name:
+            raise ValueError(f"Qdrant {kind} name must not be empty")
+
+
+_POINT_ID_RULE = (
+    "Qdrant point IDs must be an unsigned 64-bit integer or a UUID "
+    "(str or uuid.UUID); see "
+    "https://qdrant.tech/documentation/manage-data/points/#point-ids. For a "
+    "stable ID derived from an arbitrary string key, use uuid.uuid5, e.g. "
+    'str(uuid.uuid5(uuid.NAMESPACE_URL, f"doc/{key}")).'
+)
+
+
+def _validate_point_id(raw: object) -> _PointId:
+    """Validate a point ID against Qdrant's server-side rules, eagerly.
+
+    Qdrant only accepts unsigned 64-bit integers and UUIDs (any textual
+    form: hyphenated, 32-char hex, or URN); everything else is rejected at
+    upsert time with an opaque transport error, so fail at declare time
+    with an actionable one instead.
+    """
+    if isinstance(raw, int):
+        if not 0 <= raw < 1 << 64:
+            raise ValueError(
+                f"Invalid Qdrant point ID {raw!r}: out of unsigned 64-bit range. "
+                f"{_POINT_ID_RULE}"
+            )
+        return raw
+    if isinstance(raw, uuid.UUID):
+        return str(raw)
+    if isinstance(raw, str):
+        try:
+            uuid.UUID(raw)
+        except ValueError:
+            raise ValueError(
+                f"Invalid Qdrant point ID {raw!r}: strings must be UUIDs. "
+                f"{_POINT_ID_RULE}"
+            ) from None
+        return raw
+    raise ValueError(
+        f"Invalid Qdrant point ID of type {type(raw).__name__}. {_POINT_ID_RULE}"
+    )
+
+
 __all__ = [
     "CollectionSchema",
     "CollectionTarget",
     "PointStruct",
+    "QdrantSparseVectorDef",
     "QdrantVectorDef",
     "collection_target",
     "create_client",

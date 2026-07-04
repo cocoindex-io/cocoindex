@@ -2,11 +2,11 @@
 title: "*Qdrant* connector"
 toc_max_heading_level: 4
 description: >
-  Write points to Qdrant collections with single or named vectors, multi-vector
-  support, and schemaless payloads — configured via QdrantVectorDef for
-  dimension, distance metric, and multi-vector comparator.
+  Write points to Qdrant collections with single or named dense vectors, sparse
+  vectors, multi-vector support, and schemaless payloads — configured via
+  QdrantVectorDef and QdrantSparseVectorDef.
 ---
-The `qdrant` connector provides utilities for writing points to Qdrant vector databases, with support for both single and named vectors, as well as multi-vector configurations.
+The `qdrant` connector provides utilities for writing points to Qdrant vector databases, with support for single vectors, named dense vectors, sparse vectors, and multi-vector configurations.
 
 ```python
 from cocoindex.connectors import qdrant
@@ -125,7 +125,9 @@ class CollectionSchema:
     @classmethod
     async def create(
         cls,
-        vectors: QdrantVectorDef | dict[str, QdrantVectorDef],
+        vectors: QdrantVectorDef | dict[str, QdrantVectorDef] | None = None,
+        *,
+        sparse_vectors: dict[str, QdrantSparseVectorDef] | None = None,
     ) -> CollectionSchema
 ```
 
@@ -134,6 +136,7 @@ class CollectionSchema:
 - `vectors` — Either:
   - A single `QdrantVectorDef` for an unnamed vector
   - A dict mapping vector names to `QdrantVectorDef` for named vectors
+- `sparse_vectors` — Optional dict mapping sparse vector names to `QdrantSparseVectorDef`. Sparse vectors are always named in Qdrant.
 
 #### QdrantVectorDef
 
@@ -151,6 +154,17 @@ class QdrantVectorDef(NamedTuple):
 - `schema` — A `VectorSchemaProvider` or `MultiVectorSchemaProvider` that defines vector dimensions
 - `distance` — Distance metric for similarity search (default: `"cosine"`)
 - `multivector_comparator` — Comparator for multi-vector fields (only applies to `MultiVectorSchemaProvider`)
+
+#### QdrantSparseVectorDef
+
+Specifies a named sparse vector configuration:
+
+```python
+class QdrantSparseVectorDef(NamedTuple):
+    modifier: Literal["idf"] | None = None
+```
+
+Sparse vectors use Qdrant's native sparse-vector storage and dot-product scoring. The optional `modifier="idf"` enables Qdrant's IDF modifier for sparse vectors.
 
 #### Single (unnamed) vector
 
@@ -170,7 +184,7 @@ Points use the vector directly:
 
 ```python
 point = qdrant.PointStruct(
-    id="doc-123",
+    id=123,  # unsigned int or UUID — see "Point IDs" below
     vector=embedding.tolist(),  # Single vector
     payload={"text": "...", "metadata": {...}},
 )
@@ -202,13 +216,52 @@ Points use a dict of vectors:
 
 ```python
 point = qdrant.PointStruct(
-    id="doc-123",
+    id=123,  # unsigned int or UUID — see "Point IDs" below
     vector={
         "text_embedding": text_vec.tolist(),
         "image_embedding": image_vec.tolist(),
     },
     payload={"text": "...", "metadata": {...}},
 )
+```
+
+#### Dense + sparse vectors
+
+For hybrid retrieval, declare a named dense vector and a named sparse vector in the same collection:
+
+```python
+from qdrant_client.http import models as qdrant_models
+from cocoindex.resources.schema import VectorSchema
+import numpy as np
+
+schema = await qdrant.CollectionSchema.create(
+    vectors={
+        "dense": qdrant.QdrantVectorDef(
+            schema=VectorSchema(dtype=np.float32, size=384),
+            distance="cosine",
+        ),
+    },
+    sparse_vectors={
+        "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
+    },
+)
+```
+
+Points put both vector types in `PointStruct.vector`. The sparse vector is a native Qdrant `SparseVector`, not payload:
+
+```python
+point = qdrant.PointStruct(
+    id=123,
+    vector={
+        "dense": dense_embedding.tolist(),
+        "sparse": qdrant_models.SparseVector(
+            indices=sparse_indices,
+            values=sparse_values,
+        ),
+    },
+    payload={"text": text},
+)
+target.declare_point(point)
 ```
 
 #### VectorSchemaProvider
@@ -336,15 +389,62 @@ async def app_main() -> None:
         collection.declare_point(point)
 ```
 
+### Example: dense + sparse hybrid vectors
+
+```python
+from qdrant_client.http import models as qdrant_models
+from cocoindex.resources.schema import VectorSchema
+import numpy as np
+
+@coco.fn
+async def app_main() -> None:
+    collection = await qdrant.mount_collection_target(
+        QDRANT_DB,
+        "hybrid_docs",
+        await qdrant.CollectionSchema.create(
+            vectors={
+                "dense": qdrant.QdrantVectorDef(
+                    schema=VectorSchema(dtype=np.float32, size=384),
+                    distance="cosine",
+                ),
+            },
+            sparse_vectors={
+                "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
+            },
+        ),
+    )
+
+    for chunk in chunks:
+        point = qdrant.PointStruct(
+            id=chunk.id,
+            vector={
+                "dense": chunk.dense_embedding.tolist(),
+                "sparse": qdrant_models.SparseVector(
+                    indices=chunk.sparse_indices,
+                    values=chunk.sparse_values,
+                ),
+            },
+            payload={"text": chunk.text},
+        )
+        collection.declare_point(point)
+```
+
 ## Point IDs
 
-Qdrant supports the following point ID types:
+Qdrant only accepts two point ID types — this is enforced by the Qdrant server itself (see [Qdrant's Point IDs documentation](https://qdrant.tech/documentation/manage-data/points/#point-ids)):
 
-- `str` — String identifiers
-- `int` — Integer identifiers (unsigned 64-bit)
-- `uuid.UUID` — UUID identifiers (converted to string)
+- `int` — unsigned 64-bit integers (`0 <= id < 2**64`)
+- `str` — UUID strings, in any standard textual form (hyphenated, 32-character hex, or URN)
 
-All other types are converted to strings automatically.
+`uuid.UUID` instances are also accepted and converted to strings. `declare_point` validates the ID eagerly and raises `ValueError` for anything else, rather than letting the write fail later at the Qdrant server.
+
+To derive a stable point ID from an arbitrary string key (e.g. a document path or chunk key), use a deterministic UUID:
+
+```python
+import uuid
+
+point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"doc/{chunk_key}"))
+```
 
 ## Payloads
 
@@ -376,23 +476,51 @@ from qdrant_client.http import models as qdrant_models
 client = qdrant.create_client("http://localhost:6333")
 
 # Perform search
-results = client.search(
+results = client.query_points(
     collection_name="documents",
-    query_vector=query_embedding.tolist(),
+    query=query_embedding.tolist(),
     limit=10,
+    with_payload=True,
 )
 
-for result in results:
-    print(f"Score: {result.score}, ID: {result.id}")
-    print(f"Payload: {result.payload}")
+for point in results.points:
+    print(f"Score: {point.score}, ID: {point.id}")
+    print(f"Payload: {point.payload}")
 ```
 
 For named vectors:
 
 ```python
-results = client.search(
+results = client.query_points(
     collection_name="documents",
-    query_vector=("text", query_embedding.tolist()),  # Search using "text" vector
+    query=query_embedding.tolist(),
+    using="text",  # Search using the "text" vector
     limit=10,
+)
+```
+
+For hybrid dense + sparse retrieval, use Qdrant's query API with prefetches and reciprocal rank fusion:
+
+```python
+results = client.query_points(
+    collection_name="hybrid_docs",
+    prefetch=[
+        qdrant_models.Prefetch(
+            query=query_dense_embedding.tolist(),
+            using="dense",
+            limit=100,
+        ),
+        qdrant_models.Prefetch(
+            query=qdrant_models.SparseVector(
+                indices=query_sparse_indices,
+                values=query_sparse_values,
+            ),
+            using="sparse",
+            limit=100,
+        ),
+    ],
+    query=qdrant_models.FusionQuery(fusion=qdrant_models.Fusion.RRF),
+    limit=10,
+    with_payload=True,
 )
 ```
