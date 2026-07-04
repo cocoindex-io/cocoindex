@@ -1023,3 +1023,88 @@ async def test_schema_evolution_incompatible_fallback(
 
     finally:
         await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_strips_nul_in_array_columns(pg_env: _PgEnv) -> None:
+    """U+0000 (NUL) inside array element strings must be stripped before asyncpg
+    binds them to Postgres.
+
+    Prior to the fix, ``_row_to_dict`` only called ``_strip_nul`` on scalar
+    ``str`` values.  A ``list[str]`` bound to a ``text[]`` column bypassed
+    sanitization entirely, causing asyncpg to raise ``ValueError: string
+    cannot contain NUL (0x00) characters``.
+    """
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_arr_nul")
+
+    schema: postgres.TableSchema[dict[str, Any]] = postgres.TableSchema(
+        columns={
+            "id": postgres.ColumnDef("text", nullable=False),
+            "tags": postgres.ColumnDef("text[]"),
+        },
+        primary_key=["id"],
+    )
+
+    rows: list[dict[str, Any]] = [
+        {"id": "row1", "tags": ["clean", "has\x00nul", "also\x00bad"]},
+        {"id": "row2", "tags": ["all", "clean"]},
+    ]
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                schema,
+            )
+            for row in rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_arr_nul_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+
+        async with pool.acquire() as conn:
+            row1 = await conn.fetchrow(
+                f'SELECT "tags" FROM "{table_name}" WHERE "id" = $1', "row1"
+            )
+            row2 = await conn.fetchrow(
+                f'SELECT "tags" FROM "{table_name}" WHERE "id" = $1', "row2"
+            )
+
+        assert row1 is not None
+        assert list(row1["tags"]) == ["clean", "hasnul", "alsobad"]
+        assert row2 is not None
+        assert list(row2["tags"]) == ["all", "clean"]
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+def test_sanitize_nul_preserves_tuple() -> None:
+    """``_sanitize_nul`` must return ``tuple`` when given ``tuple`` input.
+
+    asyncpg uses ``tuple`` to represent Postgres composite (record) types.
+    Converting to ``list`` silently changes the wire encoding.
+    """
+    inp = ("a\x00b", "c", ("inner\x00d",))
+    result = postgres._target._sanitize_nul(inp)
+    assert result == ("ab", "c", ("innerd",))
+    assert isinstance(result, tuple)
+    assert isinstance(result[2], tuple)
+
+
+def test_sanitize_nul_preserves_list() -> None:
+    """``_sanitize_nul`` must return ``list`` when given ``list`` input."""
+    inp = ["x\x00y", ["nested\x00z"]]
+    result = postgres._target._sanitize_nul(inp)
+    assert result == ["xy", ["nestedz"]]
+    assert isinstance(result, list)
+    assert isinstance(result[1], list)
