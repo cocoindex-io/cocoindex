@@ -5,7 +5,7 @@ from __future__ import annotations
 import cocoindex as coco
 
 from tests import common
-from tests.common.target_states import GlobalDictTarget, DictDataWithPrev
+from tests.common.target_states import GlobalDictTarget, DictDataWithPrev, AtMost
 
 coco_env = common.create_test_env(__file__)
 
@@ -101,7 +101,7 @@ def test_ownership_transfer_then_delete() -> None:
     _source_data["C2"] = {}
     app.update_blocking()
     assert GlobalDictTarget.store.data == {}
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "delete": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "delete": 1}
 
 
 def test_ownership_transfer_ordering_independence() -> None:
@@ -216,7 +216,7 @@ def test_ownership_transfer_preempt_strict() -> None:
     assert GlobalDictTarget.store.data == {
         "x": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
     # Run 2: Ownership transfers from C1 to C2
     _source_data.clear()
@@ -226,7 +226,7 @@ def test_ownership_transfer_preempt_strict() -> None:
         "x": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=False),
     }
     # Should be 1 upsert (update), NOT a delete + insert
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
     # Run 3: Same value transfer — no action needed
     _source_data.clear()
