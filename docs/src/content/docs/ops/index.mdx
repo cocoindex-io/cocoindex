@@ -16,10 +16,10 @@ from cocoindex.ops import text, litellm, sentence_transformers, entity_resolutio
 
 | Module | What it provides |
 |---|---|
-| [Text operations](/docs/ops/text) | Code language detection, regex-based `SeparatorSplitter`, and syntax-aware `RecursiveSplitter` (tree-sitter) returning position-tracked [`Chunk`](/docs/common_resources/data_types#chunk)s. |
-| [Sentence Transformers](/docs/ops/sentence_transformers) | Local text embeddings via `sentence-transformers`, with model caching, thread-safe GPU access, and optional normalization. |
-| [LiteLLM](/docs/ops/litellm) | Embeddings and audio transcription through LiteLLM's unified API across 100+ providers (OpenAI, Azure, Vertex AI, Bedrock, Cohere, and more). |
-| [Entity resolution](/docs/ops/entity_resolution) | Deduplicate entity names via FAISS embedding similarity plus a pluggable LLM pair-resolver, with PINNED / PREFERRED canonical policies. |
+| [Text operations](/docs/ops/text/) | Code language detection, regex-based `SeparatorSplitter`, and syntax-aware `RecursiveSplitter` (tree-sitter) returning position-tracked [`Chunk`](/docs/common_resources/data_types/#chunk)s. |
+| [Sentence Transformers](/docs/ops/sentence_transformers/) | Local text embeddings via `sentence-transformers`, with model caching, thread-safe GPU access, and optional normalization. |
+| [LiteLLM](/docs/ops/litellm/) | Embeddings and audio transcription through LiteLLM's unified API across 100+ providers (OpenAI, Azure, Vertex AI, Bedrock, Cohere, and more). |
+| [Entity resolution](/docs/ops/entity_resolution/) | Deduplicate entity names via FAISS embedding similarity plus a pluggable LLM pair-resolver, with PINNED / PREFERRED canonical policies. |
 
 ## Most common: chunking code and text
 
@@ -43,7 +43,7 @@ chunks = splitter.split(
 
 It tries to keep each output chunk between `min_chunk_size` and `chunk_size`, splitting
 at the highest-level boundary that fits and descending to finer boundaries when a piece
-is still too large. See [Text operations](/docs/ops/text) for the full parameter reference,
+is still too large. See [Text operations](/docs/ops/text/) for the full parameter reference,
 supported languages, and custom-language configuration.
 
 ## Embeddings
@@ -51,5 +51,5 @@ supported languages, and custom-language configuration.
 Two interchangeable embedding backends are available, both providing a
 `VectorSchemaProvider` so vector columns are configured automatically by connectors:
 
-- [Sentence Transformers](/docs/ops/sentence_transformers) runs locally, no API key.
-- [LiteLLM](/docs/ops/litellm) reaches hosted providers behind one API.
+- [Sentence Transformers](/docs/ops/sentence_transformers/) runs locally, no API key.
+- [LiteLLM](/docs/ops/litellm/) reaches hosted providers behind one API.

@@ -88,6 +88,9 @@
     "connectors/qdrant": {
       "reviewedTs": 1782216000
     },
+    "connectors/snowflake": {
+      "reviewedTs": 1782734400
+    },
     "connectors/sqlite": {
       "reviewedTs": 1782216000
     },
@@ -192,6 +195,9 @@
     },
     "examples/slides-to-speech": {
       "reviewedTs": 1782216000
+    },
+    "examples/text-embedding": {
+      "reviewedTs": 1782734400
     },
     "examples/text-embedding-lancedb": {
       "reviewedTs": 1782216000

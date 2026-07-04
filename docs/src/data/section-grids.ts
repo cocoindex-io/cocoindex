@@ -3,21 +3,11 @@
 // DocCardGrid, imported directly in each section's index.mdx. Hrefs are
 // absolute (`/docs/...`) so they work both from the rendered page and
 // anywhere the data is reused.
-export interface SectionGridCard {
-  href: string;
-  title: string;
-  glyph: string;
-  body: string;
-}
+import type { Props as DocCardGridProps } from '@cocoindex/brand/DocCardGrid.astro';
 
-export interface SectionGridGroup {
-  label: string;
-  blurb: string;
-  accent: 'coral' | 'palm' | 'peach' | 'gold';
-  cards: SectionGridCard[];
-}
+type SectionGridGroups = DocCardGridProps['groups'];
 
-export const programmingGuideGroups: SectionGridGroup[] = [
+export const programmingGuideGroups: SectionGridGroups = [
   {
     label: 'Core building blocks',
     blurb: 'The pieces you compose into a pipeline, from the App down to a single function.',

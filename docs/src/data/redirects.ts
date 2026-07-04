@@ -70,8 +70,8 @@ export const redirects: Record<string, string> = {
   '/examples/custom_source_hackernews': '/docs/examples/hackernews-trending-topics/',
   '/examples/custom_targets': '/docs/advanced_topics/custom_target_connector/',
   '/examples/document_ai': '/docs/examples/',
-  '/examples/image_search': '/docs/examples/image-search/',
-  '/examples/image_search_clip': '/docs/examples/image-search-colpali/',
+  '/examples/image_search': '/docs/examples/image-search-colpali/', // v0 image_search was the ColPali app
+  '/examples/image_search_clip': '/docs/examples/image-search/',
   '/examples/knowledge-graph-for-docs': '/docs/examples/docs-to-knowledge-graph/',
   '/examples/manual_extraction': '/docs/examples/manuals-llm-extraction/',
   '/examples/meeting_notes_graph': '/docs/examples/meeting-notes-to-knowledge-graph/',
@@ -80,8 +80,10 @@ export const redirects: Record<string, string> = {
   '/examples/patient_form_extraction_baml': '/docs/examples/patient-intake-baml/',
   '/examples/patient_form_extraction_dspy': '/docs/examples/patient-intake-dspy/',
   '/examples/pdf_elements': '/docs/examples/pdf-to-markdown/',
-  '/examples/photo_search': '/docs/examples/image-search/',
+  '/examples/photo_search': '/docs/examples/face-recognition/',
   '/examples/postgres_source': '/docs/examples/postgres-source/',
   '/examples/product_recommendation': '/docs/examples/product-recommendation/',
-  '/examples/simple_vector_index': '/docs/examples/',
+  '/examples/simple_vector_index': '/docs/examples/text-embedding/',
+  '/examples/google_drive': '/docs/examples/google-drive-embedding/',
+  '/examples/s3_sqs_pipeline': '/docs/examples/amazon-s3-embedding/',
 };
