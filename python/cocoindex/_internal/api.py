@@ -110,6 +110,7 @@ from .runner import (
 from .memo_fingerprint import (
     memo_fingerprint,
     register_memo_key_function,
+    register_memo_type_identifier,
     NotMemoKeyable,
 )
 
@@ -970,6 +971,7 @@ __all__ = [
     # .memo_fingerprint
     "memo_fingerprint",
     "register_memo_key_function",
+    "register_memo_type_identifier",
     "NotMemoKeyable",
     # .pending_marker
     "MaybePendingS",
