@@ -37,7 +37,7 @@
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  fill: var(--muted, rgba(42, 18, 27, 0.58));
+  fill: var(--muted);
 }
 
 .dg-label--mono {
@@ -87,7 +87,7 @@
 }
 
 .dg-fo-label--muted {
-  color: var(--muted, rgba(42, 18, 27, 0.58));
+  color: var(--muted);
 }
 
 /* ─── Boxes ────────────────────────────────────────────────── */
@@ -171,7 +171,7 @@
 }
 
 .dg-tag-text--muted {
-  fill: var(--muted, rgba(42, 18, 27, 0.58));
+  fill: var(--muted);
 }
 
 /* ─── State modifiers ─────────────────────────────────────── */
@@ -206,8 +206,8 @@
 .dg-state-removed>.dg-label,
 .dg-state-removed>foreignObject .dg-fo-label {
   text-decoration: line-through;
-  color: var(--muted, rgba(42, 18, 27, 0.58));
-  fill: var(--muted, rgba(42, 18, 27, 0.58));
+  color: var(--muted);
+  fill: var(--muted);
 }
 
 /* `changed` is kept as a thin invalidation marker (pink stroke, no fill

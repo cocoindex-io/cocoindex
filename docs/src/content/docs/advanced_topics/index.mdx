@@ -5,8 +5,9 @@ description: >
   running update, customize memoization, build live components, and connect
   CocoIndex to systems it doesn't ship with.
 ---
-import AdvancedTopicsGrid from '/src/components/AdvancedTopicsGrid.astro';
+import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
+import { advancedTopicsGroups } from '/src/data/section-grids';
 
-You can build complete pipelines with the [programming guide](../programming_guide/core_concepts) alone. Reach for these pages when you want to go a level deeper into how the engine behaves, and extend it past what it ships with.
+You can build complete pipelines with the [programming guide](/docs/programming_guide/core_concepts/) alone. Reach for these pages when you want to go a level deeper into how the engine behaves, and extend it past what it ships with.
 
-<AdvancedTopicsGrid />
+<DocCardGrid groups={advancedTopicsGroups} ariaLabel="Advanced topics" />

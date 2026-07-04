@@ -5,8 +5,9 @@ description: >
   components, and functions, plus the context, live mode, and serialization
   details that tie them together.
 ---
-import ProgrammingGuideGrid from '/src/components/ProgrammingGuideGrid.astro';
+import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
+import { programmingGuideGroups } from '/src/data/section-grids';
 
-Start with [Core Concepts](./core_concepts) for the mental model and the diagrams behind it. These pages are the working reference for each building block once the ideas click: what it does, the APIs you call, and how it fits the declarative, incremental model.
+Start with [Core Concepts](/docs/programming_guide/core_concepts/) for the mental model and the diagrams behind it. These pages are the working reference for each building block once the ideas click: what it does, the APIs you call, and how it fits the declarative, incremental model.
 
-<ProgrammingGuideGrid />
+<DocCardGrid groups={programmingGuideGroups} ariaLabel="Programming guide" />

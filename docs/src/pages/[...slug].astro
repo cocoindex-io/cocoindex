@@ -16,7 +16,7 @@ const rel = (doc as unknown as { filePath?: string }).filePath
   .pop();
 const sourcePath = rel ?? `${doc.id}.md`;
 
-// Title may contain *asterisks* marking italic-coral segments
+// Title may contain *asterisks* marking coral accent segments
 // (see src/consts.ts titleMarkup); plain metadata strips them.
 const rawTitle: string =
   typeof doc.data.title === 'string' && doc.data.title.length > 0 ? doc.data.title : slug;

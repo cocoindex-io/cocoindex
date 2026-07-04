@@ -8,7 +8,7 @@ import docsMeta from './docs-meta.json';
 
 const data = docsMeta as {
   _version?: string | null;
-  files: Record<string, { sourcePath?: string; reviewedTs: number }>;
+  files: Record<string, { reviewedTs: number }>;
 };
 
 /** Current docs version, formatted as `v X.Y.Z` (null when unset). */

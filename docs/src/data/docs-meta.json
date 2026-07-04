@@ -2,228 +2,265 @@
   "_version": "1.0.7",
   "files": {
     "advanced_topics": {
-      "sourcePath": "advanced_topics/index.mdx",
       "reviewedTs": 1782734400
     },
     "advanced_topics/concurrency_control": {
-      "sourcePath": "advanced_topics/concurrency_control.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "advanced_topics/custom_target_connector": {
-      "sourcePath": "advanced_topics/custom_target_connector.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "advanced_topics/exception_handlers": {
-      "sourcePath": "advanced_topics/exception_handlers.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "advanced_topics/internal_storage": {
-      "sourcePath": "advanced_topics/internal_storage.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "advanced_topics/live_component": {
-      "sourcePath": "advanced_topics/live_component.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "advanced_topics/memoization_keys": {
-      "sourcePath": "advanced_topics/memoization_keys.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "advanced_topics/multiple_environments": {
-      "sourcePath": "advanced_topics/multiple_environments.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "advanced_topics/progress_monitoring": {
-      "sourcePath": "advanced_topics/progress_monitoring.mdx",
       "reviewedTs": 1782734400
     },
     "cli": {
-      "sourcePath": "cli.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "cli_commands": {
-      "sourcePath": "cli_commands.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "common_resources": {
-      "sourcePath": "common_resources/index.mdx",
       "reviewedTs": 1782734400
     },
     "common_resources/data_types": {
-      "sourcePath": "common_resources/data_types.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "common_resources/id_generation": {
-      "sourcePath": "common_resources/id_generation.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "common_resources/live_map": {
-      "sourcePath": "common_resources/live_map.mdx",
       "reviewedTs": 1782734400
     },
     "common_resources/vector_schema": {
-      "sourcePath": "common_resources/vector_schema.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors": {
-      "sourcePath": "connectors/index.mdx",
       "reviewedTs": 1782734400
     },
     "connectors/amazon_s3": {
-      "sourcePath": "connectors/amazon_s3.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/doris": {
-      "sourcePath": "connectors/doris.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/falkordb": {
-      "sourcePath": "connectors/falkordb.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/google_drive": {
-      "sourcePath": "connectors/google_drive.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/iggy": {
-      "sourcePath": "connectors/iggy.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/kafka": {
-      "sourcePath": "connectors/kafka.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/lancedb": {
-      "sourcePath": "connectors/lancedb.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/localfs": {
-      "sourcePath": "connectors/localfs.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/neo4j": {
-      "sourcePath": "connectors/neo4j.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/oci_object_storage": {
-      "sourcePath": "connectors/oci_object_storage.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/postgres": {
-      "sourcePath": "connectors/postgres.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/qdrant": {
-      "sourcePath": "connectors/qdrant.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/sqlite": {
-      "sourcePath": "connectors/sqlite.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/surrealdb": {
-      "sourcePath": "connectors/surrealdb.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/turbopuffer": {
-      "sourcePath": "connectors/turbopuffer.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "connectors/valkey": {
-      "sourcePath": "connectors/valkey.mdx",
       "reviewedTs": 1782734400
     },
     "connectors/zvec": {
-      "sourcePath": "connectors/zvec.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "contributing/guide": {
-      "sourcePath": "contributing/guide.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "contributing/setup_dev_environment": {
-      "sourcePath": "contributing/setup_dev_environment.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
+    },
+    "examples/amazon-s3-embedding": {
+      "reviewedTs": 1782216000
+    },
+    "examples/audio-to-text": {
+      "reviewedTs": 1782216000
+    },
+    "examples/csv-to-kafka": {
+      "reviewedTs": 1782216000
+    },
+    "examples/docs-to-knowledge-graph": {
+      "reviewedTs": 1782216000
+    },
+    "examples/entire-session-search": {
+      "reviewedTs": 1782216000
+    },
+    "examples/face-recognition": {
+      "reviewedTs": 1782216000
+    },
+    "examples/files-transform": {
+      "reviewedTs": 1782216000
+    },
+    "examples/google-drive-embedding": {
+      "reviewedTs": 1782216000
+    },
+    "examples/hackernews-trending-topics": {
+      "reviewedTs": 1782216000
+    },
+    "examples/image-search": {
+      "reviewedTs": 1782216000
+    },
+    "examples/image-search-colpali": {
+      "reviewedTs": 1782216000
+    },
+    "examples/index-codebase": {
+      "reviewedTs": 1782216000
+    },
+    "examples/kafka-to-lancedb": {
+      "reviewedTs": 1782216000
+    },
+    "examples/manuals-llm-extraction": {
+      "reviewedTs": 1782216000
+    },
+    "examples/meeting-notes-to-knowledge-graph": {
+      "reviewedTs": 1782216000
+    },
+    "examples/multi-codebase-summarization": {
+      "reviewedTs": 1782216000
+    },
+    "examples/multi-format-indexing": {
+      "reviewedTs": 1782216000
+    },
+    "examples/oci-object-storage-embedding": {
+      "reviewedTs": 1782216000
+    },
+    "examples/paper-metadata": {
+      "reviewedTs": 1782216000
+    },
+    "examples/patient-intake-baml": {
+      "reviewedTs": 1782216000
+    },
+    "examples/patient-intake-dspy": {
+      "reviewedTs": 1782216000
+    },
+    "examples/pdf-embedding": {
+      "reviewedTs": 1782216000
+    },
+    "examples/pdf-to-markdown": {
+      "reviewedTs": 1782216000
+    },
+    "examples/podcast-to-knowledge-graph": {
+      "reviewedTs": 1782216000
+    },
+    "examples/postgres-source": {
+      "reviewedTs": 1782216000
+    },
+    "examples/product-recommendation": {
+      "reviewedTs": 1782216000
+    },
+    "examples/sec-edgar-analytics": {
+      "reviewedTs": 1782216000
+    },
+    "examples/slides-to-speech": {
+      "reviewedTs": 1782216000
+    },
+    "examples/text-embedding-lancedb": {
+      "reviewedTs": 1782216000
+    },
+    "examples/text-embedding-qdrant": {
+      "reviewedTs": 1782216000
+    },
+    "examples/text-embedding-turbopuffer": {
+      "reviewedTs": 1782216000
     },
     "faq": {
-      "sourcePath": "faq.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "getting_started/ai_coding_agents": {
-      "sourcePath": "getting_started/ai_coding_agents.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "getting_started/installation": {
-      "sourcePath": "getting_started/installation.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "getting_started/overview": {
-      "sourcePath": "getting_started/overview.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "getting_started/quickstart": {
-      "sourcePath": "getting_started/quickstart.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "ops": {
-      "sourcePath": "ops/index.mdx",
       "reviewedTs": 1782734400
     },
     "ops/entity_resolution": {
-      "sourcePath": "ops/entity_resolution.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "ops/litellm": {
-      "sourcePath": "ops/litellm.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "ops/sentence_transformers": {
-      "sourcePath": "ops/sentence_transformers.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "ops/text": {
-      "sourcePath": "ops/text.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide": {
-      "sourcePath": "programming_guide/index.mdx",
       "reviewedTs": 1782734400
     },
     "programming_guide/app": {
-      "sourcePath": "programming_guide/app.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/context": {
-      "sourcePath": "programming_guide/context.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/core_concepts": {
-      "sourcePath": "programming_guide/core_concepts.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/function": {
-      "sourcePath": "programming_guide/function.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/live_mode": {
-      "sourcePath": "programming_guide/live_mode.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/processing_component": {
-      "sourcePath": "programming_guide/processing_component.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/sdk_overview": {
-      "sourcePath": "programming_guide/sdk_overview.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/serialization": {
-      "sourcePath": "programming_guide/serialization.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     },
     "programming_guide/target_state": {
-      "sourcePath": "programming_guide/target_state.mdx",
-      "reviewedTs": 1782734400
+      "reviewedTs": 1782216000
     }
   }
 }
