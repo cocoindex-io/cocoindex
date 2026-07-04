@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import inspect
 import math
 import os
 import pickle
 import struct
 import sys
 import typing
+import weakref
 
 from . import core
 from .serde import (
@@ -28,6 +30,7 @@ from .typing import Fingerprintable
 
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
+_BoundKeyFn = typing.Callable[[], typing.Any]
 _StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
 
 
@@ -37,6 +40,7 @@ class _MemoFns(typing.NamedTuple):
 
 
 _memo_fns: dict[type, _MemoFns] = {}
+_memo_type_identifiers: dict[int, tuple[weakref.ReferenceType[type], str]] = {}
 
 
 class StateFnEntry(typing.NamedTuple):
@@ -118,6 +122,192 @@ def canonical_module_name(obj: typing.Any) -> str:
     return mod
 
 
+def _memo_type_label(typ: type) -> str:
+    """Return a user-facing label for type-identifier validation errors."""
+    return f"{canonical_module_name(typ)}.{getattr(typ, '__qualname__', '<unknown>')}"
+
+
+def _validate_memo_type_identifier(identifier: object, *, source: str) -> str:
+    """Validate a non-empty stable memo type identifier."""
+    if not isinstance(identifier, str):
+        raise TypeError(f"{source} must be a str, got {type(identifier).__name__}")
+    if identifier.strip() == "":
+        raise ValueError(
+            f"{source} must be non-empty and contain non-whitespace characters"
+        )
+    return identifier
+
+
+def _remove_memo_type_identifier(
+    type_id: int, dead_ref: weakref.ReferenceType[type]
+) -> None:
+    """Remove ``type_id`` only if ``dead_ref`` is still the stored weakref."""
+    entry = _memo_type_identifiers.get(type_id)
+    if entry is not None and entry[0] is dead_ref:
+        _memo_type_identifiers.pop(type_id, None)
+
+
+def register_memo_type_identifier(typ: type, identifier: str) -> None:
+    """Register a stable memo type identity for one exact Python type.
+
+    Type-aware fingerprints use it instead of module+qualname. Registration
+    overrides ``typ.__coco_memo_type_id__``; explicit class-object hooks and
+    pickle fallback must carry their own stable key.
+    """
+    if not isinstance(typ, type):
+        raise TypeError(
+            "register_memo_type_identifier() expects typ to be a type, "
+            f"got {type(typ).__name__}"
+        )
+    identifier = _validate_memo_type_identifier(
+        identifier, source="register_memo_type_identifier(..., identifier)"
+    )
+    type_id = id(typ)
+
+    def _remove_stale_type_identifier(
+        dead_ref: weakref.ReferenceType[type],
+    ) -> None:
+        _remove_memo_type_identifier(type_id, dead_ref)
+
+    _memo_type_identifiers[type_id] = (
+        weakref.ref(typ, _remove_stale_type_identifier),
+        identifier,
+    )
+
+
+def _unregister_memo_type_identifier(typ: type) -> None:
+    """Best-effort test helper for removing an exact-type registration."""
+    type_id = id(typ)
+    entry = _memo_type_identifiers.get(type_id)
+    if entry is not None and entry[0]() is typ:
+        _memo_type_identifiers.pop(type_id, None)
+
+
+def _registered_memo_type_identifier(typ: type) -> str | None:
+    """Return the registered identifier for ``typ`` from the id-keyed table."""
+    type_id = id(typ)
+    entry = _memo_type_identifiers.get(type_id)
+    if entry is None:
+        return None
+    ref, identifier = entry
+    if ref() is typ:
+        return identifier
+    _memo_type_identifiers.pop(type_id, None)
+    return None
+
+
+def _lookup_memo_type_identifier(typ: type) -> str | None:
+    """Resolve a registered or exact ``__coco_memo_type_id__`` identifier."""
+    identifier = _registered_memo_type_identifier(typ)
+    if identifier is not None:
+        return identifier
+    if "__coco_memo_type_id__" in typ.__dict__:
+        return _validate_memo_type_identifier(
+            typ.__dict__["__coco_memo_type_id__"],
+            source=f"{_memo_type_label(typ)}.__coco_memo_type_id__",
+        )
+    return None
+
+
+_MEMO_KEY_ATTR = "__coco_memo_key__"
+_MEMO_STATE_ATTR = "__coco_memo_state__"
+
+
+def _callable_memo_hook(hook: object) -> _BoundKeyFn | None:
+    """Return ``hook`` when it is callable."""
+    if not callable(hook):
+        return None
+    return typing.cast(_BoundKeyFn, hook)
+
+
+def _python_callable_accepts_no_args(hook: object) -> bool:
+    """Return whether a Python function/method can bind zero arguments.
+
+    This is deliberately limited to regular Python callables.  Some valid
+    callable objects and C-extension functions cannot expose an inspectable
+    signature; those are accepted and validated by the actual call.
+    """
+    if not (inspect.isfunction(hook) or inspect.ismethod(hook)):
+        return True
+    try:
+        inspect.signature(hook).bind()
+    except TypeError:
+        return False
+    return True
+
+
+def _metaclass_object_memo_hook(cls: type) -> _BoundKeyFn | None:
+    """Resolve a memo key hook from ``cls``'s metaclass."""
+    for base in typing.cast(type, type(cls)).__mro__:
+        raw = base.__dict__.get(_MEMO_KEY_ATTR)
+        if raw is None:
+            continue
+        hook = (
+            typing.cast(typing.Any, raw).__get__(cls, type(cls))
+            if hasattr(raw, "__get__")
+            else raw
+        )
+        return _callable_memo_hook(hook)
+    return None
+
+
+def _class_object_memo_hook(cls: type) -> _BoundKeyFn | None:
+    """Resolve an explicit memo key hook for a class object.
+
+    Plain class-body methods that require an instance are ignored because there
+    is no ``self`` to bind.  Zero-argument functions assigned as class
+    attributes, descriptor-based hooks, callable objects, and metaclass hooks
+    remain valid class-object hooks.
+    """
+    for base in cls.__mro__:
+        raw = base.__dict__.get(_MEMO_KEY_ATTR)
+        if raw is None:
+            continue
+        hook = getattr(cls, _MEMO_KEY_ATTR, None)
+        if isinstance(raw, (classmethod, staticmethod)):
+            if not callable(hook) or not _python_callable_accepts_no_args(hook):
+                hook_kind = (
+                    "classmethod" if isinstance(raw, classmethod) else "staticmethod"
+                )
+                raise TypeError(
+                    f"{_memo_type_label(base)}.{_MEMO_KEY_ATTR} is a {hook_kind} "
+                    "that cannot be called with zero arguments; class-object hooks "
+                    "must take no arguments after binding"
+                )
+            return typing.cast(_BoundKeyFn, hook)
+        if callable(hook) and _python_callable_accepts_no_args(hook):
+            return typing.cast(_BoundKeyFn, hook)
+        break
+    return _metaclass_object_memo_hook(cls)
+
+
+def _class_object_state_fn_entry(cls: type) -> StateFnEntry | None:
+    """Resolve a memo state hook bound to ``cls``'s metaclass."""
+    typ = type(cls)
+    for base in typing.cast(type, typ).__mro__:
+        raw = base.__dict__.get(_MEMO_STATE_ATTR)
+        if raw is None:
+            continue
+        state_hook = (
+            typing.cast(typing.Any, raw).__get__(cls, typ)
+            if hasattr(raw, "__get__")
+            else raw
+        )
+        if not callable(state_hook):
+            return None
+        raw_fn = getattr(typ, _MEMO_STATE_ATTR)
+        return _make_state_fn_entry(state_hook, raw_fn)
+    return None
+
+
+def _type_identity_parts(typ: type) -> tuple[Fingerprintable, Fingerprintable]:
+    """Return stable-ID or module+qualname type identity parts."""
+    identifier = _lookup_memo_type_identifier(typ)
+    if identifier is not None:
+        return (("__coco_memo_type_id__", identifier), None)
+    return (canonical_module_name(typ), getattr(typ, "__qualname__", None))
+
+
 def _is_dataclass_instance(obj: object) -> bool:
     """Check if obj is a dataclass instance (not a class)."""
     return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
@@ -142,8 +332,7 @@ def _canonicalize_dataclass(
     fields = dataclasses.fields(obj)  # type: ignore[arg-type]
     return (
         "dataclass",
-        canonical_module_name(typ),
-        typ.__qualname__,
+        *_type_identity_parts(typ),
         tuple(
             (field.name, _canonicalize(getattr(obj, field.name), _seen, state_methods))
             for field in fields
@@ -165,8 +354,7 @@ def _canonicalize_pydantic(
     field_names = obj.__pydantic_fields__.keys()  # type: ignore[attr-defined]
     return (
         "pydantic",
-        canonical_module_name(typ),
-        typ.__qualname__,
+        *_type_identity_parts(typ),
         tuple(
             (name, _canonicalize(getattr(obj, name), _seen, state_methods))
             for name in field_names
@@ -284,21 +472,30 @@ def _canonicalize(
         return bytes(obj)
 
     # 2) Hook / registry (apply once, then recurse on returned key fragment)
-    hook = getattr(obj, "__coco_memo_key__", None)
+    hook = (
+        _class_object_memo_hook(obj)
+        if isinstance(obj, type)
+        else getattr(obj, _MEMO_KEY_ATTR, None)
+    )
     if hook is not None and callable(hook):
         k = hook()
         typ = type(obj)
         tag = "hook"
-        state_hook = getattr(obj, "__coco_memo_state__", None)
-        if state_hook is not None and callable(state_hook):
-            tag = "shook"
-            # raw function for type hint extraction (unbound method on class)
-            raw_fn = getattr(typ, "__coco_memo_state__")
-            state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
+        if isinstance(obj, type):
+            state_entry = _class_object_state_fn_entry(obj)
+            if state_entry is not None:
+                tag = "shook"
+                state_methods.append(state_entry)
+        else:
+            state_hook = getattr(obj, _MEMO_STATE_ATTR, None)
+            if state_hook is not None and callable(state_hook):
+                tag = "shook"
+                # raw function for type hint extraction (unbound method on class)
+                raw_fn = getattr(typ, _MEMO_STATE_ATTR)
+                state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
-            canonical_module_name(typ),
-            typ.__qualname__,
+            *_type_identity_parts(typ),
             _canonicalize(k, _seen, state_methods),
         )
 
@@ -313,8 +510,7 @@ def _canonicalize(
                 state_methods.append(_make_state_fn_entry(bound, memo.state_fn))
             return (
                 tag,
-                canonical_module_name(base),
-                base.__qualname__,
+                *_type_identity_parts(base),
                 _canonicalize(k, _seen, state_methods),
             )
 
@@ -441,15 +637,13 @@ def fingerprint_call(
 
 
 # Register memo key for class types.
-register_memo_key_function(
-    type,
-    lambda cls: (canonical_module_name(cls), getattr(cls, "__qualname__", None)),
-)
+register_memo_key_function(type, lambda cls: _type_identity_parts(cls))
 
 
 __all__ = [
     "NotMemoKeyable",
     "register_memo_key_function",
+    "register_memo_type_identifier",
     "register_not_memo_keyable",
     "unregister_memo_key_function",
     "fingerprint_call",
