@@ -5,6 +5,7 @@ import type { APIRoute } from 'astro';
 import { getCollection } from 'astro:content';
 import {
   GITHUB_REPO,
+  docSlug,
   pageUrl as url,
   pageMarkdownUrl as markdownUrl,
   LLMS_FULL_TXT_URL,
@@ -17,7 +18,7 @@ const oneLine = (s?: string) => (s ?? '').replace(/\s+/g, ' ').trim();
 export const GET: APIRoute = async () => {
   const docs = await getCollection('docs');
   const desc = new Map<string, string>();
-  for (const d of docs) desc.set(d.id, oneLine(d.data.description));
+  for (const d of docs) desc.set(docSlug(d.id), oneLine(d.data.description));
 
   const line = (slug: string, label?: string) => {
     const d = desc.get(slug);

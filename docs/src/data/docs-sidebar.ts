@@ -35,6 +35,7 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'Programming Guide',
     items: [
+      { type: 'doc', slug: 'programming_guide', label: 'Overview' },
       { type: 'doc', slug: 'programming_guide/app', label: 'App' },
       { type: 'doc', slug: 'programming_guide/target_state', label: 'Target state' },
       { type: 'doc', slug: 'programming_guide/processing_component', label: 'Processing component' },
@@ -49,6 +50,7 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'Common Resources',
     items: [
+      { type: 'doc', slug: 'common_resources', label: 'Overview' },
       { type: 'doc', slug: 'common_resources/data_types', label: 'Data types' },
       { type: 'doc', slug: 'common_resources/vector_schema', label: 'Vector schema' },
       { type: 'doc', slug: 'common_resources/id_generation', label: 'ID generation' },
@@ -59,6 +61,7 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'Connectors',
     items: [
+      { type: 'doc', slug: 'connectors', label: 'Overview' },
       { type: 'doc', slug: 'connectors/amazon_s3', label: 'Amazon S3' },
       { type: 'doc', slug: 'connectors/doris', label: 'Apache Doris' },
       { type: 'doc', slug: 'connectors/falkordb', label: 'FalkorDB' },
@@ -83,6 +86,7 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'Built-in Operations',
     items: [
+      { type: 'doc', slug: 'ops', label: 'Overview' },
       { type: 'doc', slug: 'ops/entity_resolution', label: 'Entity resolution' },
       { type: 'doc', slug: 'ops/litellm', label: 'LiteLLM' },
       { type: 'doc', slug: 'ops/sentence_transformers', label: 'Sentence transformers' },
@@ -93,6 +97,7 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'Advanced Topics',
     items: [
+      { type: 'doc', slug: 'advanced_topics', label: 'Overview' },
       { type: 'doc', slug: 'advanced_topics/concurrency_control', label: 'Concurrency control' },
       { type: 'doc', slug: 'advanced_topics/progress_monitoring', label: 'Progress monitoring' },
       { type: 'doc', slug: 'advanced_topics/memoization_keys', label: 'Memoization keys' },
@@ -122,9 +127,6 @@ export const sidebar: SidebarItem[] = [
     ],
   },
 ];
-
-// V1 is a fresh URL namespace; no legacy Docusaurus redirects carried over.
-export const redirects: Record<string, string> = {};
 
 // Flatten for prev/next pager.
 export function flatten(items: SidebarItem[] = sidebar): Array<{ slug: string; label?: string }> {

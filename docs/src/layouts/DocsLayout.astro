@@ -5,11 +5,11 @@ import Topbar from '../components/Topbar.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
 import MobileSheet from '../components/MobileSheet.astro';
-import MermaidRenderer from '../components/MermaidRenderer.astro';
+import MermaidRenderer from '@cocoindex/brand/MermaidRenderer.astro';
 import Analytics from '../components/Analytics.astro';
 import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
-import { SITE_URL, titleMarkup, pageUrl, pageMarkdownUrl, SKILL_MD_URL, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
+import { THEME_COLOR, SITE_URL, titleMarkup, pageUrl, pageMarkdownUrl, SKILL_MD_URL, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
 import { skillReferenceNames } from '../lib/skill-files';
 import ICON_COPY from '../icons/copy.svg?raw';
 import ICON_EXT from '../icons/external.svg?raw';
@@ -27,7 +27,7 @@ export interface IntroMeta {
 export interface Props {
   /** Plain title used for <title>, OG, breadcrumb, and canonical meta. */
   title: string;
-  /** Optional title string with *asterisks* marking italic-coral segments
+  /** Optional title string with *asterisks* marking coral accent segments
    *  (see src/consts.ts titleMarkup). Falls back to `title` when absent. */
   titleMarkup?: string;
   description?: string;
@@ -148,7 +148,7 @@ const breadcrumbLd = {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#FBF6E8" />
+    <meta name="theme-color" content={THEME_COLOR} />
 
     <title>{fullTitle}</title>
     {description && <meta name="description" content={description} />}
@@ -526,188 +526,3 @@ const breadcrumbLd = {
     <Analytics />
   </body>
 </html>
-
-<style>
-  /* Breadcrumb + AI actions share one band: breadcrumb left, button right.
-     This anchors the control instead of floating it on its own row above
-     the title. */
-  .page-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    margin: 0 0 20px;
-  }
-  .page-head .breadcrumb {
-    margin: 0;
-    min-width: 0;
-  }
-  .ai-actions {
-    display: flex;
-    justify-content: flex-end;
-    flex: none;
-  }
-  .ai-menu {
-    position: relative;
-  }
-  @media (max-width: 600px) {
-    /* On phones the breadcrumb can get long; let it sit above the button,
-       with the button left-aligned under it. Desktop keeps it on the right. */
-    .page-head {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 12px;
-    }
-    .ai-actions {
-      align-self: flex-start;
-    }
-    /* Button is left-aligned now, so open the panel rightward from its left
-       edge (anchoring right:0 would push it off the left of the viewport) and
-       clamp the width so it never exceeds the content gutter. */
-    .ai-panel {
-      left: 0;
-      right: auto;
-      width: min(308px, calc(100vw - 48px));
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .ai-toggle svg,
-    .ai-item,
-    .ai-primary,
-    .ai-toggle {
-      transition: none;
-    }
-  }
-
-  /* Split button: primary "Copy page" + chevron toggle. */
-  .ai-split {
-    display: inline-flex;
-    align-items: stretch;
-    background: var(--cream);
-    border: 1px solid var(--rule);
-    border-radius: 999px;
-    overflow: hidden;
-  }
-  .ai-primary,
-  .ai-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: 500 var(--text-sm)/1 var(--sans);
-    color: var(--maroon-ink);
-    background: transparent;
-    border: 0;
-    cursor: pointer;
-    transition: color 0.15s, background 0.15s;
-  }
-  .ai-primary {
-    padding: 8px 12px 8px 14px;
-  }
-  .ai-toggle {
-    padding: 8px 9px;
-    border-left: 1px solid var(--rule);
-  }
-  .ai-primary:hover,
-  .ai-toggle:hover {
-    color: var(--coral);
-    background: var(--paper);
-  }
-  /* Shared interaction contract — canonical focus ring (inset, since these sit
-     inside the bordered split control). */
-  .ai-primary:focus-visible,
-  .ai-toggle:focus-visible { outline: var(--focus); outline-offset: -2px; }
-  .ai-primary :global(svg) {
-    width: 14px;
-    height: 14px;
-  }
-  .ai-toggle svg {
-    width: 13px;
-    height: 13px;
-    transition: transform 0.18s ease;
-  }
-  .ai-toggle[aria-expanded='true'] svg {
-    transform: rotate(180deg);
-  }
-  .ai-primary.copied {
-    color: var(--palm-ink);
-  }
-
-  /* Dropdown panel. */
-  .ai-panel {
-    position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
-    z-index: 40;
-    width: 308px;
-    padding: 6px;
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    border-radius: 14px;
-    box-shadow:
-      0 14px 32px rgba(42, 18, 27, 0.16),
-      0 3px 8px rgba(42, 18, 27, 0.08);
-  }
-  .ai-panel[hidden] {
-    display: none;
-  }
-  .ai-item {
-    display: flex;
-    gap: 11px;
-    align-items: flex-start;
-    width: 100%;
-    padding: 9px 10px;
-    border: 0;
-    border-radius: 10px;
-    background: transparent;
-    text-align: left;
-    text-decoration: none;
-    cursor: pointer;
-    transition: background 0.12s ease;
-  }
-  .ai-item:hover,
-  .ai-item:focus-visible {
-    background: color-mix(in oklab, var(--coral) 8%, transparent);
-  }
-  .ai-item:focus-visible { outline: var(--focus); outline-offset: -2px; }
-  .ai-ic {
-    flex: none;
-    display: grid;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    color: var(--maroon-ink);
-    background: var(--cream);
-    border: 1px solid var(--rule);
-    border-radius: 9px;
-  }
-  .ai-ic :global(svg) {
-    width: 17px;
-    height: 17px;
-  }
-  .ai-tx {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-  .ai-t {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font: 500 var(--text-sm)/1.25 var(--sans);
-    color: var(--maroon-ink);
-  }
-  .ai-t :global(.ext) {
-    width: 12px;
-    height: 12px;
-    opacity: 0.5;
-  }
-  .ai-d {
-    font: 400 var(--text-sm)/1.3 var(--sans);
-    color: var(--muted);
-  }
-  .ai-item.copied .ai-d {
-    color: var(--palm-ink);
-  }
-</style>

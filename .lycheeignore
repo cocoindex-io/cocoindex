@@ -1,7 +1,8 @@
 # Link checker ignore file (lychee)
 # Patterns to exclude from link checking to avoid false positives
 
-# internal doc links - docusaurus validates these during build
+# internal doc links (root-absolute /docs/... resolve to file:// under
+# --root-dir) - remark-link-checker validates these during the Astro build
 ^file://
 
 # internal example-walkthrough self-links - validated at build time; a newly

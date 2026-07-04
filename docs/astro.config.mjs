@@ -5,9 +5,9 @@ import sitemap from '@astrojs/sitemap';
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkCodeTitles from './scripts/remark-code-titles.mjs';
-import remarkMermaid from './scripts/remark-mermaid.mjs';
+import remarkMermaid from '@cocoindex/brand/remark-mermaid';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
-import { redirects } from './src/data/docs-sidebar.ts';
+import { redirects } from './src/data/redirects.ts';
 // One shared Shiki theme (the readability-tuned --code-* palette) so docs and
 // blog highlight code identically — single source of truth (GUIDELINE §5.5).
 import { cocoindexCodeTheme } from '@cocoindex/brand/code-theme';

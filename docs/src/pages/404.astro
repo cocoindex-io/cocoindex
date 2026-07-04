@@ -5,7 +5,7 @@
 import '../styles/globals.css';
 import Topbar from '../components/Topbar.astro';
 import MobileSheet from '../components/MobileSheet.astro';
-import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES } from '../consts';
+import { THEME_COLOR, SITE_MAIN, SITE_BLOG, SITE_EXAMPLES } from '../consts';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 ---
@@ -16,7 +16,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#FBF6E8" />
+    <meta name="theme-color" content={THEME_COLOR} />
     <meta name="robots" content="noindex, nofollow" />
     <title>404 · Page not found · Coconut rolled away</title>
     <meta name="description" content="That page wandered off. Let's get you back to something that exists." />
@@ -67,87 +67,9 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
       </section>
     </main>
 
-    <style>
-      .nf .nf-hero {
-        padding: clamp(48px, 9vw, 120px) 0 clamp(72px, 10vw, 140px);
-        position: relative;
-        overflow: hidden;
-      }
-      .nf .nf-hero::before {
-        content: "";
-        position: absolute; inset: 0;
-        background:
-          radial-gradient(ellipse 60% 40% at 20% 10%, rgba(229, 154, 99, 0.18), transparent 60%),
-          radial-gradient(ellipse 40% 30% at 90% 80%, rgba(251, 106, 118, 0.14), transparent 60%);
-        pointer-events: none;
-      }
-      .nf .nf-grid {
-        position: relative;
-        z-index: 1;
-        max-width: 880px;
-        margin: 0 auto;
-        padding: 0 32px;
-        text-align: center;
-      }
-      .nf .nf-copy { display: inline-block; text-align: left; }
-
-      .nf .nf-eyebrow {
-        display: inline-flex; align-items: center; gap: 10px;
-        font-family: var(--mono); font-size: var(--text-xs);
-        letter-spacing: 0.16em; text-transform: uppercase;
-        color: var(--muted);
-        padding: 8px 14px;
-        border: 1px solid var(--rule-strong);
-        border-radius: 999px;
-        background: color-mix(in oklab, var(--cream) 50%, var(--paper));
-      }
-      .nf .nf-eyebrow .dot {
-        width: 8px; height: 8px; border-radius: 50%;
-        background: var(--coral);
-        box-shadow: 0 0 0 4px rgba(190, 81, 51, 0.18);
-      }
-
-      .nf .nf-title {
-        font-family: var(--serif);
-        font-weight: 600;
-        font-size: var(--text-display);
-        line-height: 0.86;
-        letter-spacing: -0.035em;
-        margin: 24px 0 24px;
-        color: var(--maroon-ink);
-      }
-      .nf .nf-title em {
-        font-style: normal;
-        font-weight: 600;
-        color: var(--coral);
-      }
-
-      .nf .nf-lead {
-        font-size: var(--text-md);
-        line-height: 1.55;
-        color: rgba(42, 18, 27, 0.78);
-        max-width: 52ch;
-        margin-bottom: 32px;
-      }
-
-      .nf .nf-ctas {
-        display: flex; flex-wrap: wrap; gap: 12px;
-        margin-bottom: 28px;
-      }
-      /* Buttons — see `.btn` + variants in globals.css. No local overrides. */
-      .nf .btn-xl svg { flex: none; }
-
-      .nf .nf-tip {
-        display: inline-flex; align-items: center; gap: 12px;
-        padding: 10px 14px;
-        border-left: 2px solid var(--coral);
-        font-size: var(--text-sm);
-        color: var(--muted);
-      }
-      .nf .nf-tip .caps {
-        color: var(--coral);
-        font-weight: 600;
-      }
+    <style is:global>
+      /* Shared with the main-site 404: @cocoindex/brand/not-found.css. */
+      @import '@cocoindex/brand/not-found.css';
     </style>
   </body>
 </html>

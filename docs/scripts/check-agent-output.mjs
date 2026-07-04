@@ -144,6 +144,33 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
   }
 }
 
+// 8. Section overview pages must link every page in their sidebar section.
+//    Catches the drift class where a page ships in the sidebar but the
+//    hand-curated overview (tables / card grids) silently omits it — a
+//    Snowflake-sized hole in a page that claims to be exhaustive.
+{
+  const sidebarSrc = read(here('../src/data/docs-sidebar.ts'));
+  const slugs = [...sidebarSrc.matchAll(/\{ type: 'doc', slug: '([^']+)'/g)].map((m) => m[1]);
+  const sections = slugs.filter((s) => !s.includes('/'));
+  for (const section of sections) {
+    const pages = slugs.filter((s) => s.startsWith(`${section}/`));
+    if (!pages.length) continue;
+    const overviewPath = join(DIST, section, 'index.html');
+    if (!existsSync(overviewPath)) {
+      errors.push(`missing dist/${section}/index.html (section overview)`);
+      continue;
+    }
+    const html = read(overviewPath);
+    // scope to the article body so the sidebar's own nav links don't satisfy
+    // the check; fall back to the full page if the marker is absent.
+    const main = html.slice(html.indexOf('<main'), html.lastIndexOf('</main>') + 1) || html;
+    for (const page of pages) {
+      if (!main.includes(`/docs/${page}/`) && !main.includes(`/docs/${page}"`))
+        errors.push(`section overview /docs/${section}/ does not link /docs/${page}/`);
+    }
+  }
+}
+
 if (errors.length) {
   console.error(`check-agent-output: ${errors.length} problem(s)`);
   for (const e of errors) console.error(`  - ${e}`);
