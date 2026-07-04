@@ -347,6 +347,7 @@ class _RowAction(NamedTuple):
 
     key: _RowKey
     value: _RowValue | None  # None means delete
+    track_only: bool = False  # True means advance tracking without mutating LanceDB.
 
 
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
@@ -360,6 +361,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _optimize_lock: asyncio.Lock
     _optimize_task: asyncio.Task[None] | None
     _sink: coco.TargetActionSink[_RowAction]
+    _null_backfilled_columns: frozenset[str]
 
     def __init__(
         self,
@@ -367,6 +369,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         table_schema: TableSchema,
         num_transactions_before_optimize: int,
+        null_backfilled_columns: Collection[str] = (),
     ) -> None:
         self._conn = conn
         self._table_name = table_name
@@ -376,6 +379,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._optimize_lock = asyncio.Lock()
         self._optimize_task = None
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._null_backfilled_columns = frozenset(null_backfilled_columns)
 
     async def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -389,10 +393,15 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         deletes: list[_RowAction] = []
 
         for action in actions:
+            if action.track_only:
+                continue
             if action.value is None:
                 deletes.append(action)
             else:
                 upserts.append(action)
+
+        if not upserts and not deletes:
+            return
 
         table = await self._conn.open_table(self._table_name)
 
@@ -405,6 +414,33 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             await self._execute_deletes(table, deletes)
 
         await self._maybe_optimize(table)
+
+    def _legacy_fingerprint_for_null_backfill(
+        self, desired_state: _RowValue
+    ) -> _RowFingerprint | None:
+        """Return the pre-schema-evolution row fingerprint if this is DDL-only.
+
+        LanceDB backfills newly added columns with nulls during ``add_columns``.
+        If a row's only apparent change is one of those columns appearing as
+        ``None``, the physical row is already correct and only CocoIndex's
+        tracking record needs to move forward to the new full-row fingerprint.
+        """
+        if not self._null_backfilled_columns:
+            return None
+
+        legacy_state = dict(desired_state)
+        removed_any = False
+        for col_name in self._null_backfilled_columns:
+            if col_name not in legacy_state:
+                continue
+            if legacy_state[col_name] is not None:
+                return None
+            del legacy_state[col_name]
+            removed_any = True
+
+        if not removed_any:
+            return None
+        return fingerprint_object(legacy_state)
 
     async def _maybe_optimize(self, table: lancedb.table.AsyncTable) -> None:
         """Periodically optimize the table after successful mutation batches."""
@@ -558,6 +594,17 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         ):
             # No change needed
             return None
+
+        if not prev_may_be_missing and prev_possible_records:
+            legacy_fp = self._legacy_fingerprint_for_null_backfill(desired_state)
+            if legacy_fp is not None and all(
+                prev == legacy_fp for prev in prev_possible_records
+            ):
+                return coco.TargetReconcileOutput(
+                    action=_RowAction(key=key, value=None, track_only=True),
+                    sink=self._sink,
+                    tracking_record=target_fp,
+                )
 
         return coco.TargetReconcileOutput(
             action=_RowAction(key=key, value=desired_state),
@@ -872,11 +919,21 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     continue
 
                 spec = action.spec
+                null_backfilled_columns: frozenset[str] = frozenset()
+                if action.main_action is None and action.column_actions:
+                    null_backfilled_columns = await self._apply_column_actions(
+                        conn,
+                        key.table_name,
+                        spec.table_schema,
+                        action.column_actions,
+                    )
+
                 handler = _RowHandler(
                     conn=conn,
                     table_name=key.table_name,
                     table_schema=spec.table_schema,
                     num_transactions_before_optimize=spec.num_transactions_before_optimize,
+                    null_backfilled_columns=null_backfilled_columns,
                 )
                 outputs[i] = coco.ChildTargetDef(handler=handler)
 
@@ -886,15 +943,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         key.table_name,
                         spec.table_schema,
                         if_not_exists=(action.main_action == "upsert"),
-                    )
-
-                # No main change: reconcile additive columns incrementally.
-                if action.column_actions:
-                    await self._apply_column_actions(
-                        conn,
-                        key.table_name,
-                        spec.table_schema,
-                        action.column_actions,
                     )
         return outputs
 
@@ -969,12 +1017,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         table_name: str,
         schema: TableSchema[Any],
         column_actions: dict[str, statediff.DiffAction],
-    ) -> None:
+    ) -> frozenset[str]:
         """Apply additive column schema changes in place."""
         table = await conn.open_table(table_name)
         existing_cols = set((await table.schema()).names)
         pk_cols = set(schema.primary_key)
         fields_to_add: list[pa.Field] = []
+        null_backfilled_columns: set[str] = set()
 
         for sub_key, action in column_actions.items():
             if not sub_key.startswith(_COL_SUBKEY_PREFIX):
@@ -998,6 +1047,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     # evolution must materialize the new column as nullable.
                     pa.field(col_name, desired_col.type, nullable=True)
                 )
+                if desired_col.nullable:
+                    null_backfilled_columns.add(col_name)
                 continue
 
             raise ValueError(
@@ -1006,6 +1057,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         if fields_to_add:
             await table.add_columns(fields_to_add)
+            return frozenset(null_backfilled_columns)
+        return frozenset()
 
     def reconcile(
         self,

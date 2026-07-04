@@ -14,7 +14,7 @@ use crate::engine::context::{
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
-    ChildInvalidation, TargetActionSink, TargetHandler, TargetStateProvider,
+    ChildInvalidation, TargetActionSinkKeeper, TargetHandler, TargetStateProvider,
     TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
@@ -621,7 +621,7 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 struct PreCommitOutput<Prof: EngineProfile> {
     curr_version: Option<u64>,
     previously_exists: bool,
-    actions_by_sinks: HashMap<Prof::TargetActionSink, SinkInput<Prof>>,
+    actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
     /// Name of the processor to be deleted; caller passes it to `collect_processor_name_name_for_del`.
     processor_name_for_del: Option<String>,
     /// Provider generations to apply (via
@@ -694,7 +694,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     prior_owners: BTreeMap<TargetStatePath, Option<StablePath>>,
     preempted_owner_states: BTreeMap<StablePath, OwnerStateForPreempt>,
 ) -> Result<PreCommitOutcome<Prof>> {
-    let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
+    let mut actions_by_sinks = HashMap::<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>::new();
     let mut processor_name_for_del: Option<String> = None;
 
     // Flatten `prior_owners` to drop `None` entries (paths with no
@@ -1607,7 +1607,11 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in actions_by_sinks {
             let handlers = sink
-                .apply(host_runtime_ctx, Arc::clone(comp_ctx.host_ctx()), input.actions)
+                .apply(
+                    host_runtime_ctx,
+                    Arc::clone(comp_ctx.host_ctx()),
+                    input.actions,
+                )
                 .await?;
             if let Some(child_providers) = input.child_providers {
                 let Some(handlers) = handlers else {
@@ -1633,6 +1637,19 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             );
                         }
                     }
+                }
+            } else {
+                // Orphan deletes for container targets have no child provider
+                // to fulfill, but their sink still returns an all-None handler
+                // list.
+                if handlers
+                    .into_iter()
+                    .flatten()
+                    .any(|handler| handler.is_some())
+                {
+                    client_bail!(
+                        "target action sink returned child handlers without child providers"
+                    );
                 }
             }
         }

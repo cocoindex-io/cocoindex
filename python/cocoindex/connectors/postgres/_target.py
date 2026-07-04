@@ -13,6 +13,7 @@ import datetime
 import decimal
 import ipaddress
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from typing import (
     NamedTuple,
     Sequence,
 )
+
 
 from typing_extensions import TypeVar
 
@@ -55,6 +57,8 @@ import msgspec
 
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+
+logger = logging.getLogger(__name__)
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -511,12 +515,21 @@ class _VectorIndexHandler:
     ) -> None:
         async with self._pool.acquire() as conn:
             for action in actions:
-                index_name = f'"{self._table_name}__vector__{action.name}"'
+                index_base_name = f"{self._table_name}__vector__{action.name}"
+                # `CREATE INDEX` takes an *unqualified* index name (it is created in
+                # the table's schema); `DROP INDEX` must be *schema-qualified* to
+                # find that index — an unqualified name resolves via `search_path`,
+                # which need not include the table's schema, so the drop would
+                # silently no-op and a later create would collide.
+                create_index_name = f'"{index_base_name}"'
+                drop_index_name = _qualified_table_name(
+                    index_base_name, self._schema_name
+                )
                 if action.spec is None:
-                    await conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+                    await conn.execute(f"DROP INDEX IF EXISTS {drop_index_name}")
                 else:
                     # Drop + recreate
-                    await conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+                    await conn.execute(f"DROP INDEX IF EXISTS {drop_index_name}")
                     table_name = _qualified_table_name(
                         self._table_name, self._schema_name
                     )
@@ -535,7 +548,7 @@ class _VectorIndexHandler:
                         f" WITH ({', '.join(with_params)})" if with_params else ""
                     )
                     sql = (
-                        f"CREATE INDEX {index_name} ON {table_name} "
+                        f"CREATE INDEX {create_index_name} ON {table_name} "
                         f'USING {action.spec.method} ("{action.spec.column}" {action.spec.op_class})'
                         f"{with_clause}"
                     )
@@ -1140,12 +1153,20 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 # inside a savepoint; if it fails, fall back to drop+add.
                 try:
                     async with conn.transaction():
-                        nullable = "" if desired_col.nullable else " NOT NULL"
+                        set_null = (
+                            "DROP NOT NULL" if desired_col.nullable else "SET NOT NULL"
+                        )
                         await conn.execute(
                             f"ALTER TABLE {qualified_name} "
-                            f'ALTER COLUMN "{col_name}" TYPE {desired_col.type}{nullable}'
+                            f'ALTER COLUMN "{col_name}" TYPE {desired_col.type}, '
+                            f'ALTER COLUMN "{col_name}" {set_null}'
                         )
                 except asyncpg.PostgresError:
+                    logger.warning(
+                        f"PostgreSQL type conversion for column {col_name!r} failed. "
+                        f"Recreating column. Existing data will be lost."
+                    )
+
                     await conn.execute(
                         f'ALTER TABLE {qualified_name} DROP COLUMN IF EXISTS "{col_name}"'
                     )
