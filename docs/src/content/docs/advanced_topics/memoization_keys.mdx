@@ -1,14 +1,15 @@
 ---
 title: "*Memoization keys* & states"
 description: >
-  Customize how CocoIndex fingerprints memoized inputs via __coco_memo_key__ or
-  registered functions, and layer state validation (e.g. mtime, then content hash)
-  on top — plus NotMemoKeyable to opt out for stateful types.
+  Customize how CocoIndex fingerprints memoized inputs via __coco_memo_key__,
+  registered functions, or stable semantic type identifiers, and layer state
+  validation (e.g. mtime, then content hash) on top.
 ---
 As described in [Function — Change detection](../programming_guide/function#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
 
 - **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
 - **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
+- **Stable type identifiers** — how to keep a type's memo namespace stable across refactors.
 
 ## How data fingerprinting works
 
@@ -24,7 +25,7 @@ The following types are handled automatically (no custom key needed):
 - **Containers**: `list`, `tuple`, `dict`, `set`, `frozenset` (recursively canonicalized)
 - **Dataclass instances**: all fields included in definition order
 - **Pydantic v2 models**: all fields included
-- **Class objects** (`type`): identified by module and qualified name
+- **Class objects** (`type`): identified by semantic type ID when configured, otherwise by module and qualified name
 - **Other picklable objects**: used as a fallback via `pickle`
 
 The canonical forms are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
@@ -77,6 +78,41 @@ register_memo_key_function(Path, path_key)
 
 - Registration is **MRO-aware**: if you register both a base class and a subclass, the **most specific** match wins.
 - Your key function must return the same kinds of stable objects as `__coco_memo_key__` (small primitives/tuples).
+
+
+### Stabilize type identity across refactors
+
+By default, CocoIndex includes a type's module and qualified name around type-aware values such as dataclasses, Pydantic models, values with `__coco_memo_key__`, registered memo-key functions, and class objects. If a class moves or is renamed, that default identity changes and old memo entries are not reused.
+
+Add a stable semantic identifier when the type should keep the same memo namespace across refactors:
+
+```python
+from dataclasses import dataclass
+from typing import ClassVar
+
+@dataclass
+class SourceEntry:
+    __coco_memo_type_id__: ClassVar[str] = "com.example.SourceEntry/v1"
+
+    id: str
+    content: str
+```
+
+For a third-party type that is already handled by `register_memo_key_function(...)`, register the type ID on that same owner type:
+
+```python
+from pathlib import Path
+import cocoindex as coco
+
+coco.register_memo_key_function(Path, lambda path: str(path))
+coco.register_memo_type_identifier(Path, "stdlib.pathlib.Path/v1")
+```
+
+Direct stable type IDs are exact-type: `__coco_memo_type_id__` and direct `register_memo_type_identifier(SomeType, ...)` lookup apply only to that exact type. For values handled by `register_memo_key_function(...)`, the selected registered owner type supplies the type identity for subclasses, matching the MRO-aware key-function lookup described above.
+
+Stable type IDs do not retroactively migrate memo entries created before the ID existed, and they do not make plain pickle-fallback instances refactor-stable; use `__coco_memo_key__` or `register_memo_key_function(...)` when the object's value also needs a stable custom key.
+
+Class objects have one extra boundary: if no explicit class-object hook is selected, the registered `type` memo-key path can use the class object's stable type ID. An explicit zero-argument `__coco_memo_key__` hook on a class object is a custom key, so CocoIndex does not automatically wrap that hook payload in the class object's stable ID; include any stable namespace in the hook return value when needed.
 
 ### Override at the call site with `memo_key=`
 
