@@ -27,6 +27,24 @@ class SourceDataEntry:
         return (self.name, self.version)
 
 
+@dataclass(frozen=True)
+class _StableOldEntry:
+    name: str
+    version: int
+    content: str
+
+    __coco_memo_type_id__ = "test.FunctionMemoEntry/v1"
+
+
+@dataclass(frozen=True)
+class _StableNewEntry:
+    name: str
+    version: int
+    content: str
+
+    __coco_memo_type_id__ = "test.FunctionMemoEntry/v1"
+
+
 @dataclass
 class DictSourceDataEntry:
     name: str
@@ -38,6 +56,8 @@ class DictSourceDataEntry:
 
 
 _plain_source_data: dict[str, SourceDataEntry] = {}
+_stable_type_source_data: dict[str, object] = {}
+
 _dict_source_data: dict[str, DictSourceDataEntry] = {}
 _metrics = Metrics()
 
@@ -53,6 +73,54 @@ def _process_plain_source_data() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = _transform_entry(value)
         coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+@coco.fn(memo=True)
+def _transform_stable_type_entry(entry: object) -> str:
+    _metrics.increment("call.transform_stable_type_entry")
+    return f"processed: {getattr(entry, 'content')}"
+
+
+@coco.fn
+def _process_stable_type_source_data() -> None:
+    for key, value in _stable_type_source_data.items():
+        transformed_value = _transform_stable_type_entry(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_stable_memo_type_id_reuses_memo_across_renamed_dataclass() -> None:
+    GlobalDictTarget.store.clear()
+    _stable_type_source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_stable_memo_type_id_reuses_memo_across_renamed_dataclass",
+            environment=coco_env,
+        ),
+        _process_stable_type_source_data,
+    )
+
+    _stable_type_source_data["A"] = _StableOldEntry(
+        name="A", version=1, content="contentA1"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_stable_type_entry": 1}
+    assert GlobalDictTarget.store.data["A"].data == "processed: contentA1"
+
+    _stable_type_source_data["A"] = _StableNewEntry(
+        name="A", version=1, content="contentA1"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data["A"].data == "processed: contentA1"
+
+    _stable_type_source_data["A"] = _StableNewEntry(
+        name="A", version=2, content="contentA2"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_stable_type_entry": 1}
+    assert GlobalDictTarget.store.data["A"].data == "processed: contentA2"
 
 
 def test_memo_pure_function() -> None:
