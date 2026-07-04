@@ -201,19 +201,12 @@ app = coco.App(
 def _qdrant_search(
     client: QdrantClient, query_vector: list[float], limit: int
 ) -> list[Any]:
-    if hasattr(client, "query_points"):
-        return client.query_points(
-            collection_name=QDRANT_COLLECTION,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-        ).points
-    return client.search(
+    return client.query_points(
         collection_name=QDRANT_COLLECTION,
-        query_vector=query_vector,
+        query=query_vector,
         limit=limit,
         with_payload=True,
-    )
+    ).points
 
 
 def query(image_path: str, *, top_k: int = TOP_K) -> None:
