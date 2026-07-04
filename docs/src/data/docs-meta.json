@@ -2,271 +2,271 @@
   "_version": "1.0.14",
   "files": {
     "advanced_topics": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "advanced_topics/concurrency_control": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "advanced_topics/custom_target_connector": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "advanced_topics/exception_handlers": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "advanced_topics/internal_storage": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "advanced_topics/live_component": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "advanced_topics/memoization_keys": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "advanced_topics/multiple_environments": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "advanced_topics/progress_monitoring": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "cli": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "cli_commands": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "common_resources": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "common_resources/data_types": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "common_resources/id_generation": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "common_resources/live_map": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "common_resources/vector_schema": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "connectors/amazon_s3": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/doris": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/falkordb": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/google_drive": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/iggy": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/kafka": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/lancedb": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/localfs": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/neo4j": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/oci_object_storage": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/postgres": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/qdrant": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/snowflake": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "connectors/sqlite": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/surrealdb": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/turbopuffer": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "connectors/valkey": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "connectors/zvec": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "contributing/guide": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "contributing/setup_dev_environment": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/amazon-s3-embedding": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/audio-to-text": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/csv-to-kafka": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/docs-to-knowledge-graph": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/entire-session-search": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/face-recognition": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/files-transform": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/google-drive-embedding": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/hackernews-trending-topics": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/image-search": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/image-search-colpali": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/index-codebase": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/kafka-to-lancedb": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/manuals-llm-extraction": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/meeting-notes-to-knowledge-graph": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/multi-codebase-summarization": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/multi-format-indexing": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/oci-object-storage-embedding": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/paper-metadata": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/patient-intake-baml": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/patient-intake-dspy": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/pdf-embedding": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/pdf-to-markdown": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/podcast-to-knowledge-graph": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/postgres-source": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/product-recommendation": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/sec-edgar-analytics": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/slides-to-speech": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/text-embedding": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "examples/text-embedding-lancedb": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/text-embedding-qdrant": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "examples/text-embedding-turbopuffer": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "faq": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "getting_started/ai_coding_agents": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "getting_started/installation": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "getting_started/overview": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "getting_started/quickstart": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "ops": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "ops/entity_resolution": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "ops/litellm": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "ops/sentence_transformers": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "ops/text": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide": {
-      "reviewedTs": 1782734400
+      "reviewedTs": 1783166400
     },
     "programming_guide/app": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/context": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/core_concepts": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/function": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/live_mode": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/processing_component": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/sdk_overview": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/serialization": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     },
     "programming_guide/target_state": {
-      "reviewedTs": 1782216000
+      "reviewedTs": 1783166400
     }
   }
 }
