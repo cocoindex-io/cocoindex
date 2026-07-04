@@ -1,12 +1,15 @@
 import dataclasses
 import math
-from typing import Any
+from typing import Any, ClassVar, cast
 
 import pytest
 
 from cocoindex._internal.function import _apply_memo_key, _normalize_memo_key
 from cocoindex._internal.memo_fingerprint import (
     fingerprint_call,
+    StateFnEntry,
+    _unregister_memo_type_identifier,
+    register_memo_type_identifier,
     register_memo_key_function,
     unregister_memo_key_function,
 )
@@ -130,6 +133,432 @@ def test_hook_and_registry_include_type_name_to_avoid_collisions() -> None:
     finally:
         unregister_memo_key_function(C)
         unregister_memo_key_function(D)
+
+
+def test_dataclass_stable_type_id_reuses_fingerprint_across_module_move() -> None:
+    def make_entry(module: str) -> type[Any]:
+        @dataclasses.dataclass
+        class Entry:
+            __coco_memo_type_id__ = "test.Entry/v1"
+
+            value: int
+
+        Entry.__module__ = module
+        return Entry
+
+    OldEntry = make_entry("tests.old_entries")
+    NewEntry = make_entry("tests.new_entries")
+
+    assert OldEntry.__qualname__ == NewEntry.__qualname__
+    assert OldEntry.__module__ != NewEntry.__module__
+
+    assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) == fingerprint_call(
+        _dummy_fn, (NewEntry(1),), {}, []
+    )
+    assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) != fingerprint_call(
+        _dummy_fn, (NewEntry(2),), {}, []
+    )
+
+
+def test_pydantic_stable_type_id_allows_renamed_model_reuse() -> None:
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        pytest.skip("pydantic not installed")
+        return
+
+    class OldModel(BaseModel):
+        __coco_memo_type_id__: ClassVar[str] = "test.Model/v1"
+
+        value: int
+
+    class NewModel(BaseModel):
+        __coco_memo_type_id__: ClassVar[str] = "test.Model/v1"
+
+        value: int
+
+    assert fingerprint_call(
+        _dummy_fn, (OldModel(value=1),), {}, []
+    ) == fingerprint_call(_dummy_fn, (NewModel(value=1),), {}, [])
+    assert fingerprint_call(
+        _dummy_fn, (OldModel(value=1),), {}, []
+    ) != fingerprint_call(_dummy_fn, (NewModel(value=2),), {}, [])
+
+
+class _UninspectableZeroArgMemoHook:
+    @property
+    def __signature__(self) -> object:
+        raise ValueError("signature unavailable")
+
+    def __call__(self) -> object:
+        return ("class-hook", "stable")
+
+
+def test_raw_class_object_honors_zero_arg_memo_key() -> None:
+    def stable_key() -> object:
+        return ("class-hook", "stable")
+
+    def other_key() -> object:
+        return ("class-hook", "other")
+
+    class OldEntry:
+        __coco_memo_key__ = stable_key
+
+    class NewEntry:
+        __coco_memo_key__ = stable_key
+
+    class ChangedEntry:
+        __coco_memo_key__ = other_key
+
+    OldEntry.__module__ = "tests.old_raw_class"
+    NewEntry.__module__ = "tests.new_raw_class"
+    ChangedEntry.__module__ = "tests.new_raw_class"
+
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) == fingerprint_call(
+        _dummy_fn, (NewEntry,), {}, []
+    )
+    assert fingerprint_call(_dummy_fn, (NewEntry,), {}, []) != fingerprint_call(
+        _dummy_fn, (ChangedEntry,), {}, []
+    )
+
+
+def test_raw_class_object_metaclass_hook_collects_state_method() -> None:
+    class MemoMeta(type):
+        def __coco_memo_key__(cls) -> object:
+            return ("metaclass-hook", "stable")
+
+        def __coco_memo_state__(cls, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(
+                state=("state", cls.__name__, prev_state), memo_valid=True
+            )
+
+    class OldEntry(metaclass=MemoMeta):
+        pass
+
+    class NewEntry(metaclass=MemoMeta):
+        pass
+
+    OldEntry.__module__ = "tests.old_raw_class"
+    NewEntry.__module__ = "tests.new_raw_class"
+
+    old_methods: list[Any] = []
+    new_methods: list[Any] = []
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, old_methods) == fingerprint_call(
+        _dummy_fn, (NewEntry,), {}, new_methods
+    )
+
+    assert len(old_methods) == 1
+    assert len(new_methods) == 1
+    assert isinstance(old_methods[0], StateFnEntry)
+    assert isinstance(new_methods[0], StateFnEntry)
+    assert old_methods[0].call("previous") == MemoStateOutcome(
+        state=("state", "OldEntry", "previous"), memo_valid=True
+    )
+    assert new_methods[0].call("previous") == MemoStateOutcome(
+        state=("state", "NewEntry", "previous"), memo_valid=True
+    )
+
+
+def test_raw_class_object_accepts_uninspectable_zero_arg_staticmethod_memo_key() -> None:
+    hook = _UninspectableZeroArgMemoHook()
+
+    class OldEntry:
+        __coco_memo_key__ = staticmethod(hook)
+
+    class NewEntry:
+        __coco_memo_key__ = staticmethod(hook)
+
+    OldEntry.__module__ = "tests.old_raw_class"
+    NewEntry.__module__ = "tests.new_raw_class"
+
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) == fingerprint_call(
+        _dummy_fn, (NewEntry,), {}, []
+    )
+
+
+def test_raw_class_object_accepts_uninspectable_zero_arg_plain_memo_key() -> None:
+    hook = _UninspectableZeroArgMemoHook()
+
+    class OldEntry:
+        __coco_memo_key__ = hook
+
+    class NewEntry:
+        __coco_memo_key__ = hook
+
+    OldEntry.__module__ = "tests.old_raw_class"
+    NewEntry.__module__ = "tests.new_raw_class"
+
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) == fingerprint_call(
+        _dummy_fn, (NewEntry,), {}, []
+    )
+
+
+def test_raw_class_object_rejects_non_zero_arg_staticmethod_memo_key() -> None:
+    """Reject invalid staticmethod hooks before calling class-object memo keys."""
+    class Entry:
+        @staticmethod
+        def __coco_memo_key__(value: object) -> object:
+            return ("class-hook", value)
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"Entry\.__coco_memo_key__ is a staticmethod that cannot be called "
+            r"with zero arguments; class-object hooks must take no arguments "
+            r"after binding"
+        ),
+    ):
+        fingerprint_call(_dummy_fn, (Entry,), {}, [])
+
+
+def test_raw_class_object_rejects_non_zero_arg_classmethod_memo_key() -> None:
+    """Reject invalid classmethod hooks after descriptor binding leaves arguments."""
+    class Entry:
+        @classmethod
+        def __coco_memo_key__(cls, value: object) -> object:
+            return ("class-hook", cls.__name__, value)
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"Entry\.__coco_memo_key__ is a classmethod that cannot be called "
+            r"with zero arguments; class-object hooks must take no arguments "
+            r"after binding"
+        ),
+    ):
+        fingerprint_call(_dummy_fn, (Entry,), {}, [])
+
+
+def test_raw_class_object_ignores_instance_memo_state() -> None:
+    class Entry:
+        @staticmethod
+        def __coco_memo_key__() -> object:
+            return ("class-hook", "stable")
+
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            raise AssertionError("instance memo state must not run for class objects")
+
+    methods: list[Any] = []
+    fp1 = fingerprint_call(_dummy_fn, (Entry,), {}, methods)
+    fp2 = fingerprint_call(_dummy_fn, (Entry,), {}, [])
+
+    assert fp1 == fp2
+    assert methods == []
+
+
+def test_raw_class_object_uses_metaclass_hook_after_ignored_instance_key() -> None:
+    class MemoMeta(type):
+        def __coco_memo_key__(cls) -> object:
+            return ("metaclass-hook", "stable")
+
+    class Base:
+        def __coco_memo_key__(self) -> object:
+            raise AssertionError("instance memo key must not run for class objects")
+
+    class OldEntry(Base, metaclass=MemoMeta):
+        pass
+
+    class NewEntry(Base, metaclass=MemoMeta):
+        pass
+
+    OldEntry.__module__ = "tests.old_raw_class"
+    NewEntry.__module__ = "tests.new_raw_class"
+
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) == fingerprint_call(
+        _dummy_fn, (NewEntry,), {}, []
+    )
+
+
+def test_raw_class_object_stable_type_id_ignores_instance_memo_key() -> None:
+    class OldEntry:
+        __coco_memo_type_id__ = "test.RawClass/v1"
+
+        def __coco_memo_key__(self) -> object:
+            raise AssertionError("instance memo key must not run for class objects")
+
+    class NewEntry:
+        __coco_memo_type_id__ = "test.RawClass/v1"
+
+        def __coco_memo_key__(self) -> object:
+            raise AssertionError("instance memo key must not run for class objects")
+
+    class ChangedEntry:
+        __coco_memo_type_id__ = "test.RawClass/v2"
+
+        def __coco_memo_key__(self) -> object:
+            raise AssertionError("instance memo key must not run for class objects")
+
+    OldEntry.__module__ = "tests.old_raw_class"
+    NewEntry.__module__ = "tests.new_raw_class"
+    ChangedEntry.__module__ = "tests.new_raw_class"
+
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) == fingerprint_call(
+        _dummy_fn, (NewEntry,), {}, []
+    )
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) != fingerprint_call(
+        _dummy_fn, (ChangedEntry,), {}, []
+    )
+
+
+def test_raw_class_object_explicit_hook_owns_stable_namespace() -> None:
+    """Explicit class-object hooks are custom keys, not stable-ID wrappers."""
+    def shared_key() -> object:
+        return ("class-hook", "shared")
+
+    def changed_key() -> object:
+        return ("class-hook", "changed")
+
+    class OldEntry:
+        __coco_memo_type_id__ = "test.RawClassHook/v1"
+        __coco_memo_key__ = staticmethod(shared_key)
+
+    class ChangedKeyEntry:
+        __coco_memo_type_id__ = "test.RawClassHook/v1"
+        __coco_memo_key__ = staticmethod(changed_key)
+
+    class ChangedTypeIdEntry:
+        __coco_memo_type_id__ = "test.RawClassHook/v2"
+        __coco_memo_key__ = staticmethod(shared_key)
+
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) != fingerprint_call(
+        _dummy_fn, (ChangedKeyEntry,), {}, []
+    )
+    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) == fingerprint_call(
+        _dummy_fn, (ChangedTypeIdEntry,), {}, []
+    )
+
+
+def test_registered_memo_type_identifier_allows_renamed_type_reuse() -> None:
+    class OldEntry:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("entry", self.value)
+
+    class NewEntry:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("entry", self.value)
+
+    register_memo_type_identifier(OldEntry, "test.RegisteredEntry/v1")
+    register_memo_type_identifier(NewEntry, "test.RegisteredEntry/v1")
+    try:
+        assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) == fingerprint_call(
+            _dummy_fn, (NewEntry(1),), {}, []
+        )
+        assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) != fingerprint_call(
+            _dummy_fn, (NewEntry(2),), {}, []
+        )
+    finally:
+        _unregister_memo_type_identifier(OldEntry)
+        _unregister_memo_type_identifier(NewEntry)
+
+
+def test_registered_memo_key_function_uses_registered_base_type_identity() -> None:
+    class Base:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+    class ChildA(Base):
+        pass
+
+    class ChildB(Base):
+        pass
+
+    register_memo_key_function(Base, lambda entry: ("base", entry.value))
+    register_memo_type_identifier(Base, "test.RegisteredBase/v1")
+    try:
+        assert fingerprint_call(_dummy_fn, (ChildA(1),), {}, []) == fingerprint_call(
+            _dummy_fn, (ChildB(1),), {}, []
+        )
+        assert fingerprint_call(_dummy_fn, (ChildA(1),), {}, []) != fingerprint_call(
+            _dummy_fn, (ChildB(2),), {}, []
+        )
+    finally:
+        unregister_memo_key_function(Base)
+        _unregister_memo_type_identifier(Base)
+
+
+def test_registered_memo_type_identifier_is_identity_exact_for_equal_metaclasses() -> (
+    None
+):
+    class EqMeta(type):
+        def __eq__(cls, other: object) -> bool:
+            return isinstance(other, EqMeta)
+
+        def __hash__(cls) -> int:
+            return 1
+
+    class A(metaclass=EqMeta):
+        def __coco_memo_key__(self) -> object:
+            return ("same",)
+
+    class B(metaclass=EqMeta):
+        def __coco_memo_key__(self) -> object:
+            return ("same",)
+
+    assert fingerprint_call(_dummy_fn, (A(),), {}, []) != fingerprint_call(
+        _dummy_fn, (B(),), {}, []
+    )
+
+    register_memo_type_identifier(A, "test.EqualityMetaA/v1")
+    try:
+        assert fingerprint_call(_dummy_fn, (A(),), {}, []) != fingerprint_call(
+            _dummy_fn, (B(),), {}, []
+        )
+    finally:
+        _unregister_memo_type_identifier(A)
+
+
+def test_stable_type_id_exact_type_and_validation() -> None:
+    class Parent:
+        __coco_memo_type_id__ = "test.Parent/v1"
+
+        def __coco_memo_key__(self) -> object:
+            return ("same", 1)
+
+    class Child(Parent):
+        pass
+
+    class BadObjectId:
+        __coco_memo_type_id__ = object()
+
+        def __coco_memo_key__(self) -> object:
+            return ("bad", 1)
+
+    class EmptyId:
+        __coco_memo_type_id__ = ""
+
+        def __coco_memo_key__(self) -> object:
+            return ("bad", 1)
+
+    assert fingerprint_call(_dummy_fn, (Parent(),), {}, []) != fingerprint_call(
+        _dummy_fn, (Child(),), {}, []
+    )
+    with pytest.raises(TypeError, match="must be a str"):
+        fingerprint_call(_dummy_fn, (BadObjectId(),), {}, [])
+    with pytest.raises(ValueError, match="non-empty"):
+        fingerprint_call(_dummy_fn, (EmptyId(),), {}, [])
+
+
+def test_register_memo_type_identifier_validation_and_export() -> None:
+    import cocoindex as coco
+
+    class Entry:
+        pass
+
+    assert coco.register_memo_type_identifier is register_memo_type_identifier
+    with pytest.raises(TypeError, match="expects typ to be a type"):
+        register_memo_type_identifier(cast(Any, object()), "test.Invalid/v1")
+    with pytest.raises(TypeError, match="must be a str"):
+        register_memo_type_identifier(Entry, cast(Any, object()))
+    with pytest.raises(ValueError, match="non-empty"):
+        register_memo_type_identifier(Entry, "")
+    with pytest.raises(ValueError, match="non-empty"):
+        register_memo_type_identifier(Entry, "   ")
 
 
 def test_cycles_are_supported_and_deterministic() -> None:
