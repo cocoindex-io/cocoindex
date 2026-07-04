@@ -71,7 +71,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 #### Tables (parent state)
 
-Declares a table as a target state. Returns a `TableTarget` for declaring rows.
+Declares a table as a target state. Returns a pending `TableTarget` for declaring rows.
 
 ```python
 def declare_table_target(
@@ -79,8 +79,7 @@ def declare_table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: Literal["system", "user"] = "system",
-    num_transactions_before_optimize: int = 50,
+    managed_by: ManagedBy = ManagedBy.SYSTEM,
 ) -> TableTarget[RowT, coco.PendingS]
 ```
 
@@ -90,9 +89,50 @@ def declare_table_target(
 - `table_name` — Name of the table.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
-- `num_transactions_before_optimize` — Number of successful row mutation batches before scheduling a background LanceDB `table.optimize()` call.
+  `ManagedBy` is exported from `cocoindex.connectorkits.target`.
 
-**Returns:** A pending `TableTarget`. Use the convenience wrapper `await lancedb.mount_table_target(LANCE_DB, table_name, table_schema)` to resolve.
+**Returns:** A pending `TableTarget`. Resolve it with `await target`.
+
+For the common case where you want a ready-to-use target immediately, use `mount_table_target()`:
+
+```python
+async def mount_table_target(
+    db: ContextKey[LanceAsyncConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: ManagedBy = ManagedBy.SYSTEM,
+) -> TableTarget[RowT]
+```
+
+For lower-level composition with `coco.mount_target()`, `table_target()` returns the raw target
+state:
+
+```python
+def table_target(
+    db: ContextKey[LanceAsyncConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: ManagedBy = ManagedBy.SYSTEM,
+) -> coco.TargetState
+```
+
+CocoIndex automatically runs LanceDB `table.optimize()` when durable table and index statistics
+cross internal maintenance thresholds, such as small fragments, deletion files, or unindexed
+index tails. This is stats-driven rather than transaction-count-driven, so it works across
+many short incremental runs as well as long-running updates.
+
+Table optimization compacts small fragments, cleans up deletion files, and reindexes new data so
+the freshest rows are available through declared indexes; see LanceDB's
+[compaction and cleanup](https://docs.lancedb.com/performance#compaction-and-cleanup) guidance.
+
+:::note
+Automatic optimize runs inline with CocoIndex's row-mutation path. To avoid LanceDB optimistic
+commit conflicts, use CocoIndex as the owner of writes that sync source data into the table.
+External LanceDB connections outside CocoIndex should generally be read-only while CocoIndex is
+updating the table.
+:::
 
 #### Rows (child states)
 
@@ -251,6 +291,12 @@ class MyRow:
     value: Annotated[float, LanceType(pa.float32())]
 ```
 
+`LanceType` also accepts an optional encoder for values that need conversion before writing:
+
+```python
+LanceType(pa.string(), encoder=lambda value: json.dumps(value))
+```
+
 #### VectorSchemaProvider
 
 For `NDArray` fields, a `VectorSchemaProvider` annotation specifies the vector dimension and dtype. The annotation accepts a `VectorSchemaProvider`, a `ContextKey`, or an explicit `VectorSchema`. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
@@ -264,8 +310,23 @@ def TableSchema.__init__(
     self,
     columns: dict[str, ColumnDef],
     primary_key: list[str],
+    *,
+    row_type: type[RowT] | None = None,
 ) -> None
 ```
+
+`ColumnDef` has the following fields:
+
+```python
+class ColumnDef(NamedTuple):
+    type: pa.DataType
+    nullable: bool = True
+    encoder: Callable[[Any], Any] | None = None
+```
+
+- `type` — PyArrow type stored in LanceDB.
+- `nullable` — Whether the column may contain null values.
+- `encoder` — Optional function to convert values before writing them.
 
 **Example:**
 
