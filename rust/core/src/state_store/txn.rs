@@ -1,16 +1,39 @@
-//! Write transaction wrapper.
+//! LMDB transaction wrappers and the shared transaction/resize coordinator.
 //!
-//! Wraps the underlying LMDB `heed::RwTxn` so engine code outside
-//! `state_store/` doesn't see `heed::*`. Derefs to the inner heed type
-//! so internal call sites (within this module) can still reach the
-//! heed API.
-//!
-//! Read access doesn't have a wrapper type: standalone read methods on
-//! [`AppStore`](super::AppStore) open a fresh `heed::RoTxn` internally
-//! per call, and in-write-txn reads (`*_in_txn`) take this [`WriteTxn`]
-//! directly. There is no public read-transaction handle.
+//! Every read or write LMDB transaction in this process acquires a read guard
+//! on `StorageInner::coord` for its full lifetime. [`TxnRunner`] acquires the
+//! write guard before calling `unsafe Env::resize()`, guaranteeing no
+//! participating transaction is active.
 
 use std::ops::{Deref, DerefMut};
+
+/// Guarded LMDB read transaction returned to callers. Holds a coordinator read
+/// lock for the lifetime of the inner `RoTxn` and borrows the parent env via
+/// `'store`.
+pub struct ReadTxn<'store> {
+    // Must be declared before `_guard` so the LMDB transaction is dropped
+    // before the coordinator guard is released (Rust drops fields in
+    // declaration order).
+    txn: heed::RoTxn<'store, heed::WithoutTls>,
+    _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl<'store> ReadTxn<'store> {
+    pub(crate) fn new(
+        guard: tokio::sync::OwnedRwLockReadGuard<()>,
+        txn: heed::RoTxn<'store, heed::WithoutTls>,
+    ) -> Self {
+        Self { txn, _guard: guard }
+    }
+}
+
+impl<'store> Deref for ReadTxn<'store> {
+    type Target = heed::RoTxn<'store, heed::WithoutTls>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.txn
+    }
+}
 
 /// Write transaction wrapper. Threaded through `Storage::run_txn` closures.
 pub struct WriteTxn<'env>(pub(crate) heed::RwTxn<'env>);

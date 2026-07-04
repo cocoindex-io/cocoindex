@@ -72,8 +72,9 @@ impl<Prof: EngineProfile> Environment<Prof> {
     pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
-        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
+            + Sync
             + 'static,
     {
         self.inner.storage.run_txn(body).await
