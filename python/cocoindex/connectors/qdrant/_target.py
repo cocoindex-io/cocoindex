@@ -92,22 +92,21 @@ class _ResolvedQdrantVectorDef(msgspec.Struct, frozen=True, tag=True):
     multivector_comparator: Literal["max_sim"]
 
 
-class _ResolvedQdrantNamedVectorsDef(msgspec.Struct, frozen=True, tag=True):
-    """Resolved named vectors specification (multiple named vectors per collection)."""
-
-    vectors: dict[str, _ResolvedQdrantVectorDef]
-
-
 class _ResolvedQdrantSparseVectorDef(msgspec.Struct, frozen=True, tag=True):
     """Resolved sparse vector specification."""
 
     modifier: Literal["idf"] | None = None
 
 
-class _ResolvedQdrantSparseVectorsDef(msgspec.Struct, frozen=True, tag=True):
-    """Resolved named sparse vectors specification."""
+class _ResolvedQdrantNamedVectorsDef(msgspec.Struct, frozen=True, tag=True):
+    """Resolved named vectors specification.
 
-    sparse_vectors: dict[str, _ResolvedQdrantSparseVectorDef]
+    Dense and sparse vectors share one namespace in Qdrant (the server
+    rejects duplicate names across the two kinds), so a single dict holds
+    both; the tagged union discriminates them.
+    """
+
+    vectors: dict[str, _ResolvedQdrantVectorDef | _ResolvedQdrantSparseVectorDef]
 
 
 async def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVectorDef:
@@ -162,13 +161,11 @@ class CollectionSchema:
         ```
     """
 
-    _vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None
-    _sparse_vectors: _ResolvedQdrantSparseVectorsDef | None
+    _vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
 
     def __init__(
         self,
-        vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None,
-        sparse_vectors: _ResolvedQdrantSparseVectorsDef | None = None,
+        vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef,
     ) -> None:
         """
         Create a CollectionSchema from pre-resolved vector definitions.
@@ -176,84 +173,63 @@ class CollectionSchema:
         For constructing from unresolved ``QdrantVectorDef``, use the async
         classmethod ``create`` instead.
         """
-        if vectors is None and sparse_vectors is None:
-            raise ValueError(
-                "Qdrant collection schema must declare dense/multivector or sparse vectors"
-            )
         self._vectors = vectors
-        self._sparse_vectors = sparse_vectors
 
     @classmethod
     async def create(
         cls,
-        vectors: QdrantVectorDef | dict[str, QdrantVectorDef] | None = None,
-        *,
-        sparse_vectors: dict[str, QdrantSparseVectorDef] | None = None,
+        vectors: QdrantVectorDef
+        | dict[str, QdrantVectorDef | QdrantSparseVectorDef]
+        | None = None,
     ) -> "CollectionSchema":
         """
         Create a CollectionSchema by resolving vector definitions.
 
         Args:
-            vectors: Either a single QdrantVectorDef (for unnamed vector) or a dictionary
-                     mapping vector field names to QdrantVectorDef.
-            sparse_vectors: Optional dictionary mapping sparse vector names to
-                            QdrantSparseVectorDef. Sparse vectors must be named.
+            vectors: Either a single QdrantVectorDef (for an unnamed dense
+                     vector) or a dictionary mapping vector names to
+                     QdrantVectorDef or QdrantSparseVectorDef. Dense and
+                     sparse vectors share one namespace in Qdrant, so both
+                     kinds live in the same dict; sparse vectors are always
+                     named.
         """
-        resolved: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None
+        resolved: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
         if isinstance(vectors, QdrantVectorDef):
             resolved = await _resolve_vector_def(vectors)
+        elif isinstance(vectors, QdrantSparseVectorDef):
+            raise ValueError(
+                "Qdrant sparse vectors are always named; pass them in a dict, "
+                'e.g. vectors={"sparse": QdrantSparseVectorDef()}'
+            )
         elif isinstance(vectors, dict):
             if not vectors:
                 raise ValueError("Qdrant named vectors must not be empty")
-            resolved = _ResolvedQdrantNamedVectorsDef(
-                vectors={
-                    name: await _resolve_vector_def(vector_def)
-                    for name, vector_def in vectors.items()
-                }
-            )
-            _validate_vector_names(resolved.vectors.keys(), "vector")
+            _validate_vector_names(vectors.keys(), "vector")
+            resolved_entries: dict[
+                str, _ResolvedQdrantVectorDef | _ResolvedQdrantSparseVectorDef
+            ] = {}
+            for name, vector_def in vectors.items():
+                if isinstance(vector_def, QdrantVectorDef):
+                    resolved_entries[name] = await _resolve_vector_def(vector_def)
+                elif isinstance(vector_def, QdrantSparseVectorDef):
+                    resolved_entries[name] = _resolve_sparse_vector_def(vector_def)
+                else:
+                    raise ValueError(f"Invalid vector definition: {vector_def}")
+            resolved = _ResolvedQdrantNamedVectorsDef(vectors=resolved_entries)
         elif vectors is None:
-            resolved = None
+            raise ValueError(
+                "Qdrant collection schema must declare at least one vector"
+            )
         else:
             raise ValueError(f"Invalid vector definition: {vectors}")
-
-        resolved_sparse: _ResolvedQdrantSparseVectorsDef | None = None
-        if sparse_vectors is not None:
-            if not sparse_vectors:
-                raise ValueError("Qdrant sparse vectors must not be empty")
-            _validate_vector_names(sparse_vectors.keys(), "sparse vector")
-            resolved_sparse = _ResolvedQdrantSparseVectorsDef(
-                sparse_vectors={
-                    name: _resolve_sparse_vector_def(sparse_vector_def)
-                    for name, sparse_vector_def in sparse_vectors.items()
-                }
-            )
-
-        if (
-            isinstance(resolved, _ResolvedQdrantNamedVectorsDef)
-            and resolved_sparse is not None
-        ):
-            overlap = sorted(
-                set(resolved.vectors) & set(resolved_sparse.sparse_vectors)
-            )
-            if overlap:
-                raise ValueError(
-                    f"Qdrant dense and sparse vector names must not overlap: {overlap}"
-                )
-
-        return cls(resolved, resolved_sparse)
+        return cls(resolved)
 
     @property
     def vectors(
         self,
-    ) -> _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None:
+    ) -> _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef:
         """Get vector definitions (all VectorSchemaProviders resolved)."""
         return self._vectors
-
-    @property
-    def sparse_vectors(self) -> _ResolvedQdrantSparseVectorsDef | None:
-        """Get sparse vector definitions."""
-        return self._sparse_vectors
 
 
 class _PointAction(NamedTuple):
@@ -353,8 +329,7 @@ class _CollectionSpec:
 
 
 class _CollectionTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
-    vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef | None
-    sparse_vectors: _ResolvedQdrantSparseVectorsDef | None = None
+    vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
 
 
 _CollectionTrackingRecord = statediff.MutualTrackingRecord[
@@ -451,24 +426,27 @@ class _CollectionHandler(
         ):
             return
 
-        # Configure dense/multivectors based on whether they're named or unnamed.
+        # Dense and sparse defs share one namespace on our side; split them
+        # into Qdrant's two config maps here.
         vectors_config: (
             dict[str, qdrant_models.VectorParams] | qdrant_models.VectorParams | None
         ) = None
+        sparse_vectors_config: dict[str, qdrant_models.SparseVectorParams] | None = None
         if isinstance(schema.vectors, _ResolvedQdrantNamedVectorsDef):
-            vectors_config = {
+            dense = {
                 name: _vector_params_from_def(vector_def)
                 for name, vector_def in schema.vectors.vectors.items()
+                if isinstance(vector_def, _ResolvedQdrantVectorDef)
             }
-        elif schema.vectors is not None:
+            sparse = {
+                name: _sparse_vector_params_from_def(vector_def)
+                for name, vector_def in schema.vectors.vectors.items()
+                if isinstance(vector_def, _ResolvedQdrantSparseVectorDef)
+            }
+            vectors_config = dense or None
+            sparse_vectors_config = sparse or None
+        else:
             vectors_config = _vector_params_from_def(schema.vectors)
-
-        sparse_vectors_config: dict[str, qdrant_models.SparseVectorParams] | None = None
-        if schema.sparse_vectors is not None:
-            sparse_vectors_config = {
-                name: _sparse_vector_params_from_def(sparse_vector_def)
-                for name, sparse_vector_def in schema.sparse_vectors.sparse_vectors.items()
-            }
 
         await asyncio.to_thread(
             client.create_collection,
@@ -498,8 +476,7 @@ class _CollectionHandler(
         else:
             tracking_record = statediff.MutualTrackingRecord(
                 tracking_record=_CollectionTrackingRecordCore(
-                    vectors=desired_state.schema.vectors,
-                    sparse_vectors=desired_state.schema.sparse_vectors,
+                    vectors=desired_state.schema.vectors
                 ),
                 managed_by=desired_state.managed_by,
             )

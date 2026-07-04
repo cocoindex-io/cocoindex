@@ -39,6 +39,7 @@ if HAS_QDRANT:
         _CollectionTrackingRecordCore,
         _PointHandler,
         _ResolvedQdrantNamedVectorsDef,
+        _ResolvedQdrantSparseVectorDef,
         _ResolvedQdrantVectorDef,
         _sparse_vector_params_from_def,
         _distance_from_spec,
@@ -183,19 +184,34 @@ class TestSparseVectorSupport:
             vectors={
                 "dense": qdrant.QdrantVectorDef(
                     schema=VectorSchema(dtype=np.dtype(np.float32), size=4)
-                )
+                ),
+                "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
             },
-            sparse_vectors={"sparse": qdrant.QdrantSparseVectorDef(modifier="idf")},
         )
 
-        assert schema.sparse_vectors is not None
-        sparse_def = schema.sparse_vectors.sparse_vectors["sparse"]
+        assert isinstance(schema.vectors, _ResolvedQdrantNamedVectorsDef)
+        sparse_def = schema.vectors.vectors["sparse"]
+        assert isinstance(sparse_def, _ResolvedQdrantSparseVectorDef)
         params = _sparse_vector_params_from_def(sparse_def)
         assert isinstance(params, qdrant_models.SparseVectorParams)
         assert params.modifier == qdrant_models.Modifier.IDF
 
     @pytest.mark.asyncio
-    async def test_create_collection_forwards_sparse_vectors_config(self) -> None:
+    async def test_sparse_only_schema_and_bare_sparse_rejected(self) -> None:
+        schema = await qdrant.CollectionSchema.create(
+            vectors={"sparse": qdrant.QdrantSparseVectorDef()},
+        )
+        assert isinstance(schema.vectors, _ResolvedQdrantNamedVectorsDef)
+
+        with pytest.raises(ValueError, match="always named"):
+            await qdrant.CollectionSchema.create(
+                vectors=qdrant.QdrantSparseVectorDef(),  # type: ignore[arg-type]
+            )
+        with pytest.raises(ValueError, match="at least one vector"):
+            await qdrant.CollectionSchema.create()
+
+    @pytest.mark.asyncio
+    async def test_create_collection_splits_dense_and_sparse_configs(self) -> None:
         class FakeQdrantClient:
             def __init__(self) -> None:
                 self.create_kwargs: dict[str, object] | None = None
@@ -208,9 +224,9 @@ class TestSparseVectorSupport:
             vectors={
                 "dense": qdrant.QdrantVectorDef(
                     schema=VectorSchema(dtype=np.dtype(np.float32), size=4)
-                )
+                ),
+                "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
             },
-            sparse_vectors={"sparse": qdrant.QdrantSparseVectorDef(modifier="idf")},
         )
         client = FakeQdrantClient()
 
@@ -222,11 +238,40 @@ class TestSparseVectorSupport:
         )
 
         assert client.create_kwargs is not None
+        dense_config = client.create_kwargs["vectors_config"]
+        assert isinstance(dense_config, dict)
+        assert set(dense_config) == {"dense"}
         sparse_config = client.create_kwargs["sparse_vectors_config"]
         assert isinstance(sparse_config, dict)
         assert set(sparse_config) == {"sparse"}
         assert isinstance(sparse_config["sparse"], qdrant_models.SparseVectorParams)
         assert sparse_config["sparse"].modifier == qdrant_models.Modifier.IDF
+
+    @pytest.mark.asyncio
+    async def test_create_collection_sparse_only_passes_no_dense_config(self) -> None:
+        class FakeQdrantClient:
+            def __init__(self) -> None:
+                self.create_kwargs: dict[str, object] | None = None
+
+            def create_collection(self, **kwargs: object) -> bool:
+                self.create_kwargs = kwargs
+                return True
+
+        schema = await qdrant.CollectionSchema.create(
+            vectors={"sparse": qdrant.QdrantSparseVectorDef()},
+        )
+        client = FakeQdrantClient()
+        await _CollectionHandler()._create_collection(
+            client,  # type: ignore[arg-type]
+            "test_sparse_only",
+            schema,
+            if_not_exists=False,
+        )
+        assert client.create_kwargs is not None
+        assert client.create_kwargs["vectors_config"] is None
+        sparse_config = client.create_kwargs["sparse_vectors_config"]
+        assert isinstance(sparse_config, dict)
+        assert set(sparse_config) == {"sparse"}
 
     def test_point_fingerprint_changes_when_sparse_vector_changes(self) -> None:
         handler = _PointHandler(
@@ -303,31 +348,47 @@ class TestPointIdValidation:
 
 @requires_qdrant
 class TestTrackingRecordUpgradeCompat:
-    def test_pre_sparse_tracking_record_decodes_equal_to_dense_only(self) -> None:
+    def test_pre_sparse_tracking_record_compat(self) -> None:
         """Records written before sparse-vector support must decode equal to a
-        new dense-only record — otherwise every existing collection would be
-        destructively replaced (and its data lost) on upgrade."""
+        new dense-only record, and a new dense-only record must encode to the
+        same bytes as before — otherwise existing collections would be
+        destructively replaced (and their data lost) on upgrade."""
+
+        # Pre-sparse on-disk shape: inner dict values were the bare dense
+        # struct, not the dense|sparse tagged union. The explicit tag pins
+        # the historical class name so the encoding matches old records.
+        class PreSparseNamed(
+            msgspec.Struct, frozen=True, tag="_ResolvedQdrantNamedVectorsDef"
+        ):
+            vectors: dict[str, _ResolvedQdrantVectorDef]
 
         class PreSparseCore(msgspec.Struct, frozen=True, array_like=True):
-            vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
+            vectors: _ResolvedQdrantVectorDef | PreSparseNamed
 
-        dense = _ResolvedQdrantNamedVectorsDef(
-            vectors={
-                "dense": _ResolvedQdrantVectorDef(
-                    schema=VectorSchema(dtype=np.dtype(np.float32), size=4),
-                    distance="cosine",
-                    multivector_comparator="max_sim",
-                )
-            }
+        dense_def = _ResolvedQdrantVectorDef(
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=4),
+            distance="cosine",
+            multivector_comparator="max_sim",
         )
-        old_bytes = serde._msgspec_encoder.encode(PreSparseCore(vectors=dense))
+        old_bytes = serde._msgspec_encoder.encode(
+            PreSparseCore(vectors=PreSparseNamed(vectors={"dense": dense_def}))
+        )
+
+        new_record = _CollectionTrackingRecordCore(
+            vectors=_ResolvedQdrantNamedVectorsDef(vectors={"dense": dense_def})
+        )
         decoded = msgspec.msgpack.Decoder(
             type=_CollectionTrackingRecordCore,
             ext_hook=serde._ext_hook,
             dec_hook=serde._dec_hook,
         ).decode(old_bytes)
-        assert decoded == _CollectionTrackingRecordCore(
-            vectors=dense, sparse_vectors=None
+        assert decoded == new_record, "old records must decode equal to new"
+
+        new_bytes = serde._msgspec_encoder.encode(new_record)
+        assert new_bytes == old_bytes, (
+            "dense-only records must encode byte-identically to pre-sparse "
+            "records; a byte change would flip the statediff and destroy "
+            "existing collections on upgrade"
         )
 
 
@@ -355,9 +416,9 @@ def test_live_dense_sparse_vectors_and_hybrid_query() -> None:
                 vectors={
                     "dense": qdrant.QdrantVectorDef(
                         schema=VectorSchema(dtype=np.dtype(np.float32), size=4)
-                    )
+                    ),
+                    "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
                 },
-                sparse_vectors={"sparse": qdrant.QdrantSparseVectorDef(modifier="idf")},
             ),
         )
         target.declare_point(

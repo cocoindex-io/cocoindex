@@ -125,18 +125,19 @@ class CollectionSchema:
     @classmethod
     async def create(
         cls,
-        vectors: QdrantVectorDef | dict[str, QdrantVectorDef] | None = None,
-        *,
-        sparse_vectors: dict[str, QdrantSparseVectorDef] | None = None,
+        vectors: QdrantVectorDef
+        | dict[str, QdrantVectorDef | QdrantSparseVectorDef]
+        | None = None,
     ) -> CollectionSchema
 ```
 
 **Parameters:**
 
 - `vectors` — Either:
-  - A single `QdrantVectorDef` for an unnamed vector
-  - A dict mapping vector names to `QdrantVectorDef` for named vectors
-- `sparse_vectors` — Optional dict mapping sparse vector names to `QdrantSparseVectorDef`. Sparse vectors are always named in Qdrant.
+  - A single `QdrantVectorDef` for an unnamed dense vector
+  - A dict mapping vector names to `QdrantVectorDef` (dense) or `QdrantSparseVectorDef` (sparse)
+
+Dense and sparse vectors share one namespace in Qdrant (the server rejects duplicate names across the two kinds), so both live in the same dict — a name collision is impossible to express. Sparse vectors are always named.
 
 #### QdrantVectorDef
 
@@ -240,8 +241,6 @@ schema = await qdrant.CollectionSchema.create(
             schema=VectorSchema(dtype=np.float32, size=384),
             distance="cosine",
         ),
-    },
-    sparse_vectors={
         "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
     },
 )
@@ -407,8 +406,6 @@ async def app_main() -> None:
                     schema=VectorSchema(dtype=np.float32, size=384),
                     distance="cosine",
                 ),
-            },
-            sparse_vectors={
                 "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
             },
         ),
