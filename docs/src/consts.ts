@@ -1,3 +1,4 @@
+import brandTokens from '@cocoindex/brand/tokens.json';
 export const SITE_URL = 'https://cocoindex.io';
 export const GITHUB_REPO = 'https://github.com/cocoindex-io/cocoindex';
 // Branded 1200×630 social cards. Hosted in the `blobs` image repo
@@ -58,5 +59,5 @@ export const MIXPANEL_TOKEN = (import.meta.env.COCOINDEX_DOCS_MIXPANEL_API_KEY ?
 export const SCARF_PIXEL_ID = (import.meta.env.COCOINDEX_DOCS_SCARF_PIXEL_ID ?? '') as string;
 export const SCARF_QUICKSTART_PIXEL_ID = (import.meta.env.COCOINDEX_DOCS_SCARF_QUICKSTART_PIXEL_ID ?? '') as string;
 
-// Hex approximation of --paper for <meta name="theme-color"> (CSS vars can't reach meta tags).
-export const THEME_COLOR = '#FBF6E8';
+// Brand paper as plain hex for <meta name="theme-color"> (CSS vars can't reach meta tags).
+export const THEME_COLOR = brandTokens.color['paper-hex'];
