@@ -1,25 +1,29 @@
 """
 Runner base class and GPU runner implementation.
 
-Runners execute functions in specific contexts. Each runner owns a BatchQueue
-that serializes execution.
+Runners execute functions in specific contexts. Each runner owns a BatchQueue.
 
-The GPU runner runs in-process by default with an async lock for serialization.
-Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
+The GPU runner supports multiple GPUs and fractional GPU allocations.
+Configure the GPU pool size via the COCOINDEX_NUM_GPUS environment variable
+(default: 1). Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import os
 import pickle
+import subprocess
+import threading
+import multiprocessing as mp
+import warnings
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from contextvars import ContextVar
 from typing import Any, Callable, Coroutine, TypeVar, ParamSpec
-import threading
-import os
-import multiprocessing as mp
+
 from . import core
 
 P = ParamSpec("P")
@@ -34,8 +38,9 @@ _in_subprocess: bool = False
 class Runner(ABC):
     """Base class for runners that execute functions.
 
-    Each runner owns a BatchQueue that serializes execution of all functions
-    using this runner. The queue is created lazily on first use.
+    Each runner owns a BatchQueue, created lazily on first use. The queue is
+    shared with functions using this runner for batch aggregation; concurrency
+    control is handled by the runner's run/run_sync_fn implementations.
 
     Subclasses must implement:
     - run(): Execute an async function
@@ -52,8 +57,7 @@ class Runner(ABC):
     def get_queue(self) -> core.BatchQueue:
         """Get or create the BatchQueue for this runner.
 
-        All functions using this runner share this queue, ensuring
-        serial execution of workloads.
+        All functions using this runner share this queue for batch aggregation.
         """
         if self._queue is None:
             with self._queue_lock:
@@ -205,33 +209,208 @@ def in_subprocess() -> bool:
 
 
 # ============================================================================
+# GPU Pool — fractional capacity tracking across multiple GPUs
+# ============================================================================
+
+
+def _detect_num_gpus() -> int:
+    """Detect the number of GPUs available for the default pool.
+
+    Detection order:
+
+    1. ``COCOINDEX_NUM_GPUS`` environment variable (explicit override).
+    2. ``CUDA_VISIBLE_DEVICES`` environment variable (count of entries).
+    3. ``nvidia-smi`` command output (if available).
+    4. Default to ``1``.
+    """
+    env_num = os.environ.get("COCOINDEX_NUM_GPUS")
+    if env_num is not None:
+        return max(1, int(env_num))
+
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible is not None:
+        devices = [d.strip() for d in cuda_visible.split(",") if d.strip()]
+        if devices:
+            return len(devices)
+        # Empty CUDA_VISIBLE_DEVICES disables CUDA devices; keep a logical
+        # pool size of 1 so GPU runners still behave predictably.
+        return 1
+
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=count", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            output = result.stdout.strip().splitlines()
+            if output:
+                count = int(output[0].strip())
+                if count > 0:
+                    return count
+    except Exception:
+        pass
+
+    return 1
+
+
+class GPUPool:
+    """Tracks fractional GPU capacity across multiple GPUs.
+
+    Each GPU starts with capacity 1.0. ``acquire(fraction)`` blocks until a
+    GPU with enough remaining capacity is available, then returns its id.
+    ``release(gpu_id, fraction)`` restores capacity and wakes waiters.
+
+    The default pool size is auto-detected from ``COCOINDEX_NUM_GPUS``,
+    ``CUDA_VISIBLE_DEVICES``, or ``nvidia-smi`` (falling back to 1).
+    Call ``configure_gpu_pool(N)`` to override programmatically.
+    """
+
+    _num_gpus: int
+    _capacity: list[float]
+    _cond: asyncio.Condition | None
+    _bound_loop: asyncio.AbstractEventLoop | None
+
+    def __init__(self, num_gpus: int) -> None:
+        if num_gpus < 1:
+            raise ValueError(f"num_gpus must be >= 1, got {num_gpus}")
+        self._num_gpus = num_gpus
+        self._capacity = [1.0] * num_gpus
+        self._cond = None
+        self._bound_loop = None
+
+    @property
+    def num_gpus(self) -> int:
+        return self._num_gpus
+
+    def _get_cond(self) -> asyncio.Condition:
+        loop = asyncio.get_running_loop()
+        if self._cond is None or self._bound_loop is not loop:
+            self._cond = asyncio.Condition()
+            self._bound_loop = loop
+        return self._cond
+
+    def _find_available(self, fraction: float) -> int | None:
+        best_gpu = None
+        best_cap = -1.0
+        for i, cap in enumerate(self._capacity):
+            if cap >= fraction and cap > best_cap:
+                best_gpu = i
+                best_cap = cap
+        return best_gpu
+
+    async def acquire(self, fraction: float) -> int:
+        async with self._get_cond():
+            while True:
+                gpu_id = self._find_available(fraction)
+                if gpu_id is not None:
+                    self._capacity[gpu_id] -= fraction
+                    return gpu_id
+                await self._get_cond().wait()
+
+    async def release(self, gpu_id: int, fraction: float) -> None:
+        cond = self._get_cond()
+        async with cond:
+            self._capacity[gpu_id] += fraction
+            cond.notify_all()
+
+
+# ============================================================================
+# GPU identity propagation
+# ============================================================================
+
+_current_gpus: ContextVar[list[int]] = ContextVar("coco_current_gpus", default=[])
+_current_gpu_fraction: ContextVar[float | None] = ContextVar(
+    "coco_current_gpu_fraction", default=None
+)
+
+
+def current_gpu() -> int | None:
+    """Return the first physical GPU id assigned to the current call, or None."""
+    gpus = _current_gpus.get()
+    return gpus[0] if gpus else None
+
+
+def current_gpus() -> list[int]:
+    """Return the physical GPU ids assigned to the current call."""
+    return list(_current_gpus.get())
+
+
+def current_gpu_fraction() -> float | None:
+    """Return the fractional GPU amount assigned to the current call, or None."""
+    return _current_gpu_fraction.get()
+
+
+def _run_with_gpu_context(
+    gpu_ids: list[int], fraction: float, fn: Callable[..., R], *args: Any, **kwargs: Any
+) -> R:
+    tok_gpus = _current_gpus.set(gpu_ids)
+    tok_frac = _current_gpu_fraction.set(fraction)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _current_gpus.reset(tok_gpus)
+        _current_gpu_fraction.reset(tok_frac)
+
+
+# ============================================================================
+# Default GPU pool
+# ============================================================================
+
+_default_gpu_pool: GPUPool | None = None
+_default_gpu_pool_lock = threading.Lock()
+
+
+def _get_default_gpu_pool() -> GPUPool:
+    global _default_gpu_pool
+    with _default_gpu_pool_lock:
+        if _default_gpu_pool is None:
+            _default_gpu_pool = GPUPool(num_gpus=_detect_num_gpus())
+        return _default_gpu_pool
+
+
+def configure_gpu_pool(num_gpus: int) -> None:
+    """Override the default GPU pool. Must be called before any GPU function runs."""
+    global _default_gpu_pool
+    with _default_gpu_pool_lock:
+        _default_gpu_pool = GPUPool(num_gpus=num_gpus)
+
+
+# ============================================================================
 # GPU Runner
 # ============================================================================
 
 
 class GPURunner(Runner):
-    """Singleton runner for GPU workloads.
+    """Runner for GPU workloads with fractional allocation support.
 
-    By default, runs in-process. Serialization is handled by the BatchQueue
-    (inherited from Runner) and the dedicated single-worker thread pool for
-    sync functions. Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
+    ``coco.GPU`` is shorthand for ``GPURunner(fraction=1.0)``.
+    ``coco.GPU(0.5)`` creates a runner requesting half a GPU.
+
+    The assigned GPU id(s) are available inside the function via
+    ``coco.current_gpu()`` (first id) and ``coco.current_gpus()`` (full list).
+    The allocated fraction is available via ``coco.current_gpu_fraction()``.
+    For multi-GPU subprocess mode (where ``CUDA_VISIBLE_DEVICES`` must be set
+    per-process), use in-process mode (the default) until per-GPU subprocess
+    pools are implemented.
     """
 
-    _instance: GPURunner | None = None
+    _fraction: float
     _use_subprocess: bool | None
     _gpu_executor: ThreadPoolExecutor | None
 
-    def __new__(cls) -> GPURunner:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    def __init__(self, fraction: float = 1.0) -> None:
+        super().__init__()
+        if not (0 < fraction <= 1.0):
+            raise ValueError(f"fraction must be in (0, 1.0], got {fraction}")
+        self._fraction = fraction
+        self._use_subprocess = None
+        self._gpu_executor = None
 
-    def __init__(self) -> None:
-        # Only initialize once (singleton)
-        if not hasattr(self, "_queue"):
-            super().__init__()
-            self._use_subprocess = None
-            self._gpu_executor = None
+    def __call__(self, fraction: float = 1.0) -> GPURunner:
+        return GPURunner(fraction=fraction)
 
     def _should_use_subprocess(self) -> bool:
         """Check if subprocess mode is enabled (reads env var lazily on first call)."""
@@ -242,41 +421,84 @@ class GPURunner(Runner):
         return self._use_subprocess
 
     def _get_gpu_executor(self) -> ThreadPoolExecutor:
-        """Get or create the dedicated GPU thread pool (single worker)."""
+        """Get or create the dedicated GPU thread pool."""
         if self._gpu_executor is None:
-            self._gpu_executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="gpu"
-            )
+            self._gpu_executor = ThreadPoolExecutor(thread_name_prefix="gpu")
         return self._gpu_executor
+
+    async def _acquire_gpu(self) -> int:
+        return await _get_default_gpu_pool().acquire(self._fraction)
+
+    async def _release_gpu(self, gpu_id: int) -> None:
+        await _get_default_gpu_pool().release(gpu_id, self._fraction)
 
     async def run(
         self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute an async function.
 
-        Default: in-process directly.
-        Subprocess mode: via execute_in_subprocess (asyncio.run() in subprocess).
+        Acquires a GPU from the pool, sets current GPU context, then:
+        - In-process (default): runs directly on the event loop.
+        - Subprocess mode: via execute_in_subprocess (asyncio.run() in subprocess).
         """
-        if self._should_use_subprocess():
-            # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
-            return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
-        return await fn(*args, **kwargs)
+        gpu_id = await self._acquire_gpu()
+        gpu_ids = [gpu_id]
+        tok_gpus = _current_gpus.set(gpu_ids)
+        tok_frac = _current_gpu_fraction.set(self._fraction)
+        try:
+            if self._should_use_subprocess():
+                _warn_subprocess_multi_gpu()
+                # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
+                return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
+            return await fn(*args, **kwargs)
+        finally:
+            _current_gpus.reset(tok_gpus)
+            _current_gpu_fraction.reset(tok_frac)
+            await self._release_gpu(gpu_id)
 
     async def run_sync_fn(
         self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute a sync function.
 
-        Default: in-process on a dedicated single-worker GPU thread.
-        Subprocess mode: via execute_in_subprocess.
+        Acquires a GPU from the pool, sets current GPU context, then:
+        - In-process (default): offloads to the dedicated GPU thread pool.
+        - Subprocess mode: via execute_in_subprocess.
         """
-        if self._should_use_subprocess():
-            return await execute_in_subprocess(fn, *args, **kwargs)
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._get_gpu_executor(), functools.partial(fn, *args, **kwargs)
+        gpu_id = await self._acquire_gpu()
+        gpu_ids = [gpu_id]
+        try:
+            if self._should_use_subprocess():
+                _warn_subprocess_multi_gpu()
+                return await execute_in_subprocess(fn, *args, **kwargs)
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                self._get_gpu_executor(),
+                functools.partial(
+                    _run_with_gpu_context, gpu_ids, self._fraction, fn, *args, **kwargs
+                ),
+            )
+        finally:
+            await self._release_gpu(gpu_id)
+
+
+GPU = GPURunner(fraction=1.0)
+
+_subprocess_multi_gpu_warned = False
+
+
+def _warn_subprocess_multi_gpu() -> None:
+    global _subprocess_multi_gpu_warned
+    if _subprocess_multi_gpu_warned:
+        return
+    _subprocess_multi_gpu_warned = True
+    pool = _get_default_gpu_pool()
+    if pool.num_gpus > 1:
+        warnings.warn(
+            f"COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 with num_gpus={pool.num_gpus}: "
+            "subprocess mode does not yet support per-GPU CUDA_VISIBLE_DEVICES. "
+            "All subprocess calls run on the same GPU regardless of pool "
+            "assignment. Use in-process mode for multi-GPU support.",
+            UserWarning,
+            stacklevel=4,
         )
-
-
-# Singleton instance for public use
-GPU = GPURunner()

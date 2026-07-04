@@ -143,11 +143,8 @@ jobs:
             fetch-depth: 1
         - name: Install Rust toolchain
           uses: dtolnay/rust-toolchain@stable
-        - uses: taiki-e/install-action@v2
-          with:
-            tool: cargo-binstall
         - name: Install cargo-about
-          run: cargo binstall -y cargo-about
+          run: cargo install cargo-about --features cli --locked
         - name: Validate third-party notices (dry-run)
           shell: bash
           run: |

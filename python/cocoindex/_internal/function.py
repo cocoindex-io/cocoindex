@@ -1544,14 +1544,23 @@ class AsyncFunction(Function[P, R_co]):
             self_obj, extra_args, extra_kwargs
         )
 
-        # Get queue: shared from the runner (if present), or a fresh one owned
-        # by this batcher otherwise.
-        queue = (
-            self._runner.get_queue() if self._runner is not None else core.BatchQueue()
-        )
+        # Batching mode: share the runner's queue so multiple calls aggregate
+        # into batches. Runner-only mode: use a fresh per-function queue — the
+        # GPUPool handles concurrency, the shared serialization queue would
+        # prevent multi-GPU parallelism.
+        #
+        # Known limitation: batching + runner still serializes batches through
+        # the shared queue, so concurrent batches cannot use multiple GPUs.
+        # Fixing this requires a queue design that allows partial batches to
+        # run in parallel — a trade-off between batch size (GPU utilization)
+        # and parallelism (latency). Tracked as future work.
+        if self._batching and self._runner is not None:
+            queue = self._runner.get_queue()
+        else:
+            queue = core.BatchQueue()
 
         # When runner is specified without batching, use max_batch_size=1
-        # to process items individually through the shared queue.
+        # to process items individually.
         options = core.BatchingOptions(
             max_batch_size=self._max_batch_size if self._batching else 1
         )

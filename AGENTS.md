@@ -335,6 +335,8 @@ Reusable task-specific agent guidance lives under `dev/agent-skills/`. These pla
 - For new target connectors, read `dev/agent-skills/target-connector/SKILL.md`.
 - For upgrading example package versions, read `dev/agent-skills/upgrade-examples/SKILL.md`.
 
-Claude-specific runtime configuration, hooks, and compatibility symlinks remain under `.claude/`. Do not put portable project guidance there; keep it in this file or under `dev/agent-skills/`.
+Agent Skills-compatible clients, including Codex, discover the checked-in symlinks under `.agents/skills/`. The public CocoIndex skill is exposed there as `cocoindex`, and contributor playbooks are exposed there from `dev/agent-skills/`.
+
+Claude Code compatibility remains under `.claude/`: hooks/settings live there, and `.claude/skills/` mirrors the contributor playbooks with symlinks. Do not duplicate skill content under `.agents/skills/` or `.claude/skills/`; edit the source directories (`skills/cocoindex/` for the public skill, `dev/agent-skills/` for contributor playbooks) and keep dot-directory entries as symlinks.
 
 Portable agent checks live under `dev/agent-checks/`. Claude Code hooks in `.claude/hooks/` are thin adapters that call these scripts when relevant files changed.
