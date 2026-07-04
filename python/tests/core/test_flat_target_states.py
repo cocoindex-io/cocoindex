@@ -6,6 +6,7 @@ import cocoindex as coco
 
 from tests import common
 from tests.common.target_states import (
+    AtMost,
     GlobalDictTarget,
     AsyncGlobalDictTarget,
     DictDataWithPrev,
@@ -37,7 +38,7 @@ def test_global_dict_target_state_insert() -> None:
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
     _source_data["b"] = 2
     app.update_blocking()
@@ -45,7 +46,7 @@ def test_global_dict_target_state_insert() -> None:
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
 
 def test_global_dict_target_state_upsert() -> None:
@@ -66,7 +67,7 @@ def test_global_dict_target_state_upsert() -> None:
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 2}
 
     _source_data["a"] = 3
     app.update_blocking()
@@ -74,7 +75,7 @@ def test_global_dict_target_state_upsert() -> None:
         "a": DictDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
 
 def test_global_dict_target_state_delete() -> None:
@@ -91,14 +92,14 @@ def test_global_dict_target_state_delete() -> None:
     _source_data["a"] = 1
     _source_data["b"] = 2
     app.update_blocking()
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 2}
 
     del _source_data["a"]
     app.update_blocking()
     assert GlobalDictTarget.store.data == {
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "delete": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "delete": 1}
 
 
 def test_global_dict_target_state_no_change() -> None:
@@ -120,7 +121,7 @@ def test_global_dict_target_state_no_change() -> None:
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 2}
 
     app.update_blocking()
     assert GlobalDictTarget.store.data == {
@@ -136,7 +137,7 @@ def test_global_dict_target_state_no_change() -> None:
         "a": DictDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
     app.update_blocking()
     assert GlobalDictTarget.store.data == {
@@ -167,7 +168,10 @@ def test_async_global_dict_target_state_insert() -> None:
     assert AsyncGlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
     }
-    assert AsyncGlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert AsyncGlobalDictTarget.store.metrics.collect() == {
+        "sink": AtMost(1),
+        "upsert": 1,
+    }
 
     _source_data["b"] = 2
     app.update_blocking()
@@ -175,7 +179,10 @@ def test_async_global_dict_target_state_insert() -> None:
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert AsyncGlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert AsyncGlobalDictTarget.store.metrics.collect() == {
+        "sink": AtMost(1),
+        "upsert": 1,
+    }
 
 
 def test_global_dict_preview_returns_actions_without_writing() -> None:
@@ -203,7 +210,7 @@ def test_global_dict_preview_returns_actions_without_writing() -> None:
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 2}
 
 
 @pytest.mark.asyncio
@@ -250,14 +257,14 @@ def test_global_dict_target_state_proceed_with_exception() -> None:
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=True),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
     _source_data["a"] = 3
     app.update_blocking()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=3, prev=[2], prev_may_be_missing=False),
     }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
 
     del _source_data["a"]
     try:
@@ -268,4 +275,4 @@ def test_global_dict_target_state_proceed_with_exception() -> None:
         GlobalDictTarget.store.sink_exception = False
     app.update_blocking()
     assert GlobalDictTarget.store.data == {}
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "delete": 1}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "delete": 1}

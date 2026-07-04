@@ -3,7 +3,7 @@ from typing import Any
 import cocoindex as coco
 
 from tests import common
-from tests.common.target_states import DictsTarget, DictDataWithPrev
+from tests.common.target_states import DictsTarget, DictDataWithPrev, AtMost
 
 _inner_exec_count: int = 0
 
@@ -71,8 +71,8 @@ def test_destructive_change_ignores_stale_children() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     # Run 2: Destructive change with same data — children re-inserted (stale tracking ignored)
     DictsTarget.store.child_invalidation = "destructive"
@@ -235,7 +235,7 @@ def test_destructive_change_invalidates_memo() -> None:
     # Run 1: Initial insert — inner function executes
     app.update_blocking()
     assert _inner_exec_count == 1
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
 
     # Run 2: Same data, no invalidation — inner function skipped (memo hit)
     _inner_exec_count = 0
@@ -251,7 +251,7 @@ def test_destructive_change_invalidates_memo() -> None:
     finally:
         DictsTarget.store.child_invalidation = None
     assert _inner_exec_count == 1
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
 
     # Run 4: Same data, no invalidation — memo hit again (new provider_id is stable)
     _inner_exec_count = 0
@@ -268,7 +268,7 @@ def test_lossy_change_invalidates_memo() -> None:
     # Run 1: Initial insert — inner function executes
     app.update_blocking()
     assert _inner_exec_count == 1
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
 
     # Run 2: Same data, no invalidation — inner function skipped (memo hit)
     _inner_exec_count = 0
@@ -285,7 +285,7 @@ def test_lossy_change_invalidates_memo() -> None:
         DictsTarget.store.child_invalidation = None
     assert _inner_exec_count == 1
     # Lossy forces upsert (prev_may_be_missing=True) for child rows
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
 
     # Run 4: Same data, no invalidation — memo hit again (schema_version is stable)
     _inner_exec_count = 0

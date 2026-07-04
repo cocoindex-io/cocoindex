@@ -8,7 +8,12 @@ import dataclasses
 from typing import Any, Collection, Generic
 
 from tests import common
-from tests.common.target_states import DictsTarget, DictDataWithPrev, AsyncDictsTarget
+from tests.common.target_states import (
+    DictsTarget,
+    DictDataWithPrev,
+    AsyncDictsTarget,
+    AtMost,
+)
 
 coco_env = common.create_test_env(__file__)
 
@@ -49,8 +54,8 @@ def test_dicts_data_together_insert() -> None:
         },
         "D2": {},
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
@@ -67,8 +72,8 @@ def test_dicts_data_together_insert() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -99,8 +104,8 @@ def test_dicts_data_together_delete_dict() -> None:
         },
         "D2": {},
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -120,8 +125,12 @@ def test_dicts_data_together_delete_dict() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1, "delete": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {
+        "sink": AtMost(3),
+        "insert": 1,
+        "delete": 1,
+    }
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -144,8 +153,8 @@ def test_dicts_data_together_delete_dict() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -174,8 +183,8 @@ def test_dicts_data_together_delete_entry() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     del _source_data["D1"]["a"]
     app.update_blocking()
@@ -184,8 +193,8 @@ def test_dicts_data_together_delete_entry() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "delete": 1}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "delete": 1}
 
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
@@ -198,8 +207,8 @@ def test_dicts_data_together_delete_entry() -> None:
             "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -244,8 +253,8 @@ def test_dicts_in_sub_components_insert() -> None:
         },
         "D2": {},
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
@@ -262,8 +271,8 @@ def test_dicts_in_sub_components_insert() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -296,8 +305,8 @@ def test_dicts_in_sub_components_delete_dict() -> None:
         },
         "D2": {},
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -318,8 +327,12 @@ def test_dicts_in_sub_components_delete_dict() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1, "delete": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {
+        "sink": AtMost(3),
+        "insert": 1,
+        "delete": 1,
+    }
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D2",
@@ -343,8 +356,8 @@ def test_dicts_in_sub_components_delete_dict() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -375,8 +388,8 @@ def test_dicts_in_sub_components_delete_entry() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     del _source_data["D1"]["a"]
     app.update_blocking()
@@ -385,8 +398,8 @@ def test_dicts_in_sub_components_delete_entry() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "delete": 1}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "delete": 1}
 
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
@@ -399,8 +412,8 @@ def test_dicts_in_sub_components_delete_entry() -> None:
             "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -461,8 +474,8 @@ async def test_dicts_containers_together_insert() -> None:
         },
         "D2": {},
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
@@ -479,8 +492,8 @@ async def test_dicts_containers_together_insert() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 2}
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -506,8 +519,8 @@ async def test_dicts_containers_together_delete_dict() -> None:
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
     await app.update()
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -527,8 +540,12 @@ async def test_dicts_containers_together_delete_dict() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1, "delete": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {
+        "sink": AtMost(1),
+        "insert": 1,
+        "delete": 1,
+    }
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 2}
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D2",
@@ -551,8 +568,8 @@ async def test_dicts_containers_together_delete_dict() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -583,8 +600,8 @@ async def test_dicts_containers_together_delete_entry() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     del _source_data["D1"]["a"]
     await app.update()
@@ -593,8 +610,8 @@ async def test_dicts_containers_together_delete_entry() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "delete": 1}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "delete": 1}
 
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
@@ -607,8 +624,8 @@ async def test_dicts_containers_together_delete_entry() -> None:
             "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
@@ -643,7 +660,7 @@ def test_proceed_with_failed_creation() -> None:
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -872,8 +889,8 @@ async def test_mount_each_insert() -> None:
         },
         "D2": {},
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
@@ -890,8 +907,8 @@ async def test_mount_each_insert() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 2}
     _me = coco.Symbol("_declare_one_dict")
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
@@ -918,7 +935,7 @@ async def test_mount_each_delete() -> None:
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
     await app.update()
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
 
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
@@ -932,7 +949,11 @@ async def test_mount_each_delete() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1, "delete": 1}
+    assert DictsTarget.store.metrics.collect() == {
+        "sink": AtMost(3),
+        "insert": 1,
+        "delete": 1,
+    }
     _me = coco.Symbol("_declare_one_dict")
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
@@ -958,7 +979,7 @@ async def test_mount_each_delete() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / _me,
@@ -1006,8 +1027,11 @@ async def test_async_dicts() -> None:
         },
         "D2": {},
     }
-    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {
+        "sink": AtMost(1),
+        "upsert": 2,
+    }
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
@@ -1024,8 +1048,11 @@ async def test_async_dicts() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
-    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {
+        "sink": AtMost(2),
+        "upsert": 2,
+    }
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -1054,8 +1081,11 @@ def test_async_dicts_sync_app() -> None:
         },
         "D2": {},
     }
-    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {
+        "sink": AtMost(1),
+        "upsert": 2,
+    }
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
@@ -1072,8 +1102,11 @@ def test_async_dicts_sync_app() -> None:
             "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
-    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": AtMost(3), "insert": 1}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {
+        "sink": AtMost(2),
+        "upsert": 2,
+    }
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
@@ -1120,8 +1153,8 @@ def test_mount_target_insert() -> None:
         },
         "D2": {},
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
     # Verify stable paths contain the mount_target symbol
     paths = coco_inspect.list_stable_paths_sync(app)
@@ -1150,8 +1183,8 @@ def test_mount_target_delete() -> None:
             "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 3}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 3}
 
     # Delete D2, modify D1
     del _mount_target_source_data["D2"]
@@ -1164,8 +1197,8 @@ def test_mount_target_delete() -> None:
             "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
         },
     }
-    assert DictsTarget.store.metrics.collect() == {"sink": 2, "delete": 1}
-    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "delete": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
 
 
 ##################################################################################

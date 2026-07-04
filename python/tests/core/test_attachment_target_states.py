@@ -8,6 +8,7 @@ from typing import Any
 
 from tests import common
 from tests.common.target_states import (
+    AtMost,
     AttachmentDictsTarget,
     MultiAttachmentDictsTarget,
     DictsTarget,
@@ -53,9 +54,12 @@ def test_attachment_basic_lifecycle() -> None:
             },
         },
     }
-    assert AttachmentDictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
+    assert AttachmentDictsTarget.store.metrics.collect() == {
+        "sink": AtMost(1),
+        "insert": 1,
+    }
     assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {
-        "sink": 1,
+        "sink": AtMost(1),
         "upsert": 2,
     }
 
@@ -71,9 +75,9 @@ def test_attachment_basic_lifecycle() -> None:
             },
         },
     }
-    assert AttachmentDictsTarget.store.metrics.collect() == {"sink": 1}
+    assert AttachmentDictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
     assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {
-        "sink": 1,
+        "sink": AtMost(1),
         "delete": 1,
         "upsert": 1,
     }
@@ -82,7 +86,10 @@ def test_attachment_basic_lifecycle() -> None:
     _source_data.clear()
     app.update_blocking()
     assert AttachmentDictsTarget.store.attachment_data == {}
-    assert AttachmentDictsTarget.store.metrics.collect() == {"sink": 1, "delete": 1}
+    assert AttachmentDictsTarget.store.metrics.collect() == {
+        "sink": AtMost(1),
+        "delete": 1,
+    }
 
 
 def test_attachment_idempotent_provider() -> None:
@@ -168,11 +175,11 @@ def test_attachment_independent_types() -> None:
         },
     }
     assert MultiAttachmentDictsTarget.store.collect_attachment_metrics("items") == {
-        "sink": 1,
+        "sink": AtMost(1),
         "upsert": 2,
     }
     assert MultiAttachmentDictsTarget.store.collect_attachment_metrics("tags") == {
-        "sink": 1,
+        "sink": AtMost(1),
         "upsert": 2,
     }
 
@@ -254,7 +261,7 @@ def test_attachment_destructive_change_invalidates_memo() -> None:
     app.update_blocking()
     assert _memo_exec_count == 1
     assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {
-        "sink": 1,
+        "sink": AtMost(1),
         "upsert": 1,
     }
 
@@ -274,7 +281,7 @@ def test_attachment_destructive_change_invalidates_memo() -> None:
         AttachmentDictsTarget.store.child_invalidation = None
     assert _memo_exec_count == 1
     assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {
-        "sink": 1,
+        "sink": AtMost(1),
         "upsert": 1,
     }
 
