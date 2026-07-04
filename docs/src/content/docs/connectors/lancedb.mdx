@@ -80,7 +80,6 @@ def declare_table_target(
     table_schema: TableSchema[RowT],
     *,
     managed_by: Literal["system", "user"] = "system",
-    num_transactions_before_optimize: int = 50,
 ) -> TableTarget[RowT, coco.PendingS]
 ```
 
@@ -90,9 +89,24 @@ def declare_table_target(
 - `table_name` — Name of the table.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
-- `num_transactions_before_optimize` — Number of successful row mutation batches before scheduling a background LanceDB `table.optimize()` call.
 
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await lancedb.mount_table_target(LANCE_DB, table_name, table_schema)` to resolve.
+
+CocoIndex automatically runs LanceDB `table.optimize()` when durable table and index statistics
+cross internal maintenance thresholds, such as small fragments, deletion files, or unindexed
+index tails. This is stats-driven rather than transaction-count-driven, so it works across
+many short incremental runs as well as long-running updates.
+
+Table optimization compacts small fragments, cleans up deletion files, and reindexes new data so
+the freshest rows are available through declared indexes; see LanceDB's
+[compaction and cleanup](https://docs.lancedb.com/performance#compaction-and-cleanup) guidance.
+
+:::note
+Automatic optimize runs inline with CocoIndex's row-mutation path. To avoid LanceDB optimistic
+commit conflicts, use CocoIndex as the owner of writes that sync source data into the table.
+External LanceDB connections outside CocoIndex should generally be read-only while CocoIndex is
+updating the table.
+:::
 
 #### Rows (child states)
 

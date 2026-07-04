@@ -72,7 +72,7 @@ editable-profile = "dev" # local editable builds
 litellm = ["litellm>=1.81.0"]
 sentence_transformers = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
-lancedb = ["lancedb>=0.33.0", "pyarrow>=23.0.0"]
+lancedb = ["lancedb>=0.34.0", "pyarrow>=23.0.0"]
 postgres = ["asyncpg>=0.31.0"]
 qdrant = ["qdrant-client>=1.6.0"]
 snowflake = ["snowflake-connector-python>=3.0.0"]
@@ -105,7 +105,7 @@ all = [
     "litellm>=1.81.0",
     "sentence-transformers>=3.3.1",
     "colpali-engine",
-    "lancedb>=0.33.0",
+    "lancedb>=0.34.0",
     "pyarrow>=23.0.0",
     "asyncpg>=0.31.0",
     "pgvector>=0.4.2",

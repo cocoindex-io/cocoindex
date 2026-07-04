@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
+import datetime as _datetime
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, cast
+from typing import Any, Iterator, NamedTuple, cast
 
 import pytest
 
@@ -61,21 +61,72 @@ def lancedb_dir() -> Iterator[Path]:
 
 if HAS_LANCEDB:
 
+    class _FakeIndexConfig(NamedTuple):
+        name: str
+        columns: list[str]
+
+    class _FakeIndexStats(NamedTuple):
+        num_indexed_rows: int
+        num_unindexed_rows: int
+
+    def _fake_version(
+        *,
+        timestamp: _datetime.datetime | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "timestamp": timestamp or _datetime.datetime.now(),
+            "metadata": metadata or {},
+        }
+
     class _FakeAsyncTable:
         def __init__(
             self,
             *,
-            block: asyncio.Event | None = None,
             fail_once: bool = False,
+            stats_failure: bool = False,
+            num_small_fragments: int = 0,
+            index_stats: dict[str, _FakeIndexStats] | None = None,
+            versions: list[dict[str, Any]] | None = None,
         ) -> None:
             self.optimize_count = 0
-            self._block = block
+            self.stats_count = 0
             self._fail_once = fail_once
+            self._stats_failure = stats_failure
+            self._num_small_fragments = num_small_fragments
+            self._index_stats = index_stats or {}
+            self._versions = versions if versions is not None else [_fake_version()]
+
+        async def stats(self) -> dict[str, Any]:
+            self.stats_count += 1
+            if self._stats_failure:
+                raise RuntimeError("stats failed")
+            return {
+                "total_bytes": 0,
+                "num_rows": 0,
+                "num_indices": len(self._index_stats),
+                "fragment_stats": {
+                    "num_fragments": self._num_small_fragments,
+                    "num_small_fragments": self._num_small_fragments,
+                    "lengths": {},
+                },
+            }
+
+        async def list_indices(self) -> list[_FakeIndexConfig]:
+            return [
+                _FakeIndexConfig(name=name, columns=[name])
+                for name in self._index_stats
+            ]
+
+        async def index_stats(self, index_name: str) -> _FakeIndexStats | None:
+            return self._index_stats.get(index_name)
+
+        async def list_versions(self) -> list[dict[str, Any]]:
+            return self._versions
 
         async def optimize(self) -> None:
             self.optimize_count += 1
-            if self._block is not None:
-                await self._block.wait()
             if self._fail_once:
                 self._fail_once = False
                 raise RuntimeError("optimize failed")
@@ -157,11 +208,6 @@ if HAS_LANCEDB:
             },
             primary_key=["id"],
         )
-
-    async def _wait_for_optimize_task(handler: _target._RowHandler) -> None:
-        task = handler._optimize_task
-        if task is not None:
-            await task
 
 
 @pytest.mark.asyncio
@@ -331,7 +377,6 @@ def test_row_reconcile_tracks_only_nulls_from_new_nullable_columns() -> None:
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=table_schema,
-        num_transactions_before_optimize=50,
         null_backfilled_columns={"extra"},
     )
 
@@ -364,7 +409,6 @@ def test_row_reconcile_upserts_non_null_value_for_new_nullable_column() -> None:
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=table_schema,
-        num_transactions_before_optimize=50,
         null_backfilled_columns={"extra"},
     )
 
@@ -397,7 +441,6 @@ def test_row_reconcile_upserts_existing_column_change_with_new_null_column() -> 
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=table_schema,
-        num_transactions_before_optimize=50,
         null_backfilled_columns={"extra"},
     )
 
@@ -430,7 +473,6 @@ def test_row_reconcile_upserts_when_previous_row_may_be_missing() -> None:
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=table_schema,
-        num_transactions_before_optimize=50,
         null_backfilled_columns={"extra"},
     )
 
@@ -463,7 +505,6 @@ def test_row_reconcile_upserts_non_nullable_added_column() -> None:
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=table_schema,
-        num_transactions_before_optimize=50,
     )
 
     old_row = {"id": "1", "name": "Alice"}
@@ -489,7 +530,6 @@ async def test_row_handler_track_only_actions_do_not_open_table_or_optimize() ->
         conn=cast(Any, conn),
         table_name="test_table",
         table_schema=_make_table_schema(),
-        num_transactions_before_optimize=1,
     )
 
     await handler._apply_actions(
@@ -607,107 +647,213 @@ async def test_add_multiple_columns_in_place(lancedb_dir: Path) -> None:
 
 @pytest.mark.asyncio
 @requires_lancedb
-async def test_row_handler_optimizes_after_configured_mutation_count() -> None:
-    table_schema = lancedb.TableSchema(
-        columns={
-            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
-            "name": lancedb.ColumnDef(type=pa.string()),
-        },
-        primary_key=["id"],
-    )
+async def test_row_handler_optimizes_for_small_fragments() -> None:
     handler = _target._RowHandler(
         conn=cast(Any, None),
         table_name="test_table",
-        table_schema=table_schema,
-        num_transactions_before_optimize=2,
+        table_schema=_make_table_schema(),
+    )
+    table = _FakeAsyncTable(num_small_fragments=_target._MAX_SMALL_FRAGMENTS)
+
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
+
+    assert table.optimize_count == 1
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_row_handler_optimizes_for_deletion_files() -> None:
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
+    )
+    table = _FakeAsyncTable(
+        versions=[
+            _fake_version(
+                metadata={
+                    "total_deletion_files": str(_target._MAX_DELETION_FILES),
+                }
+            )
+        ]
+    )
+
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
+
+    assert table.optimize_count == 1
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_row_handler_optimizes_for_unindexed_tail_on_all_index_types() -> None:
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
+    )
+    table = _FakeAsyncTable(
+        index_stats={
+            "vector_idx": _FakeIndexStats(
+                num_indexed_rows=100_000,
+                num_unindexed_rows=_target._MAX_UNINDEXED_ROWS,
+            ),
+            "fts_idx": _FakeIndexStats(
+                num_indexed_rows=100_000,
+                num_unindexed_rows=_target._MAX_UNINDEXED_ROWS,
+            ),
+        }
+    )
+
+    decision = await handler._evaluate_optimize(cast(Any, table))
+    assert decision.should is True
+    assert any(
+        reason.startswith("unindexed[vector_idx]=") for reason in decision.reasons
+    )
+    assert any(reason.startswith("unindexed[fts_idx]=") for reason in decision.reasons)
+
+
+@requires_lancedb
+def test_count_prunable_old_versions_ignores_young_versions() -> None:
+    now = _datetime.datetime.now(_datetime.timezone.utc)
+    old_enough = now - (
+        _target._DEFAULT_VERSION_PRUNE_AGE
+        + _target._VERSION_PRUNE_MARGIN
+        + _datetime.timedelta(seconds=1)
+    )
+    too_young = now - _target._DEFAULT_VERSION_PRUNE_AGE
+    versions = [
+        _fake_version(timestamp=old_enough),
+        _fake_version(timestamp=too_young),
+    ]
+
+    assert _target._count_prunable_old_versions(versions) == 1
+
+
+@requires_lancedb
+def test_count_prunable_old_versions_treats_naive_timestamps_as_local() -> None:
+    cutoff = _datetime.datetime.now(_datetime.timezone.utc) - (
+        _target._DEFAULT_VERSION_PRUNE_AGE + _target._VERSION_PRUNE_MARGIN
+    )
+    local_tz = _datetime.datetime.now().astimezone().tzinfo
+    assert local_tz is not None
+    old_enough_local = (cutoff - _datetime.timedelta(seconds=1)).astimezone(local_tz)
+
+    versions = [_fake_version(timestamp=old_enough_local.replace(tzinfo=None))]
+
+    assert _target._count_prunable_old_versions(versions) == 1
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_row_handler_checks_stats_after_large_mutation_batch() -> None:
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
     )
     table = _FakeAsyncTable()
 
-    await handler._maybe_optimize(cast(Any, table))
-    assert table.optimize_count == 0
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
+    table._num_small_fragments = _target._MAX_SMALL_FRAGMENTS
 
-    await handler._maybe_optimize(cast(Any, table))
-    await _wait_for_optimize_task(handler)
-    assert table.optimize_count == 1
+    await handler._maybe_optimize(
+        cast(Any, table),
+        mutation_count=_target._MUTATED_ROWS_BETWEEN_STATS_CHECKS,
+    )
 
-    await handler._maybe_optimize(cast(Any, table))
-    await _wait_for_optimize_task(handler)
     assert table.optimize_count == 1
 
 
 @pytest.mark.asyncio
 @requires_lancedb
-async def test_row_handler_does_not_overlap_optimize_tasks() -> None:
+async def test_row_handler_skips_stats_until_mutated_row_threshold() -> None:
     handler = _target._RowHandler(
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=_make_table_schema(),
-        num_transactions_before_optimize=1,
     )
-    unblock = asyncio.Event()
-    table = _FakeAsyncTable(block=unblock)
+    table = _FakeAsyncTable()
 
-    await handler._maybe_optimize(cast(Any, table))
-    await asyncio.sleep(0)
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
+    table._num_small_fragments = _target._MAX_SMALL_FRAGMENTS
+    await handler._maybe_optimize(
+        cast(Any, table),
+        mutation_count=_target._MUTATED_ROWS_BETWEEN_STATS_CHECKS - 1,
+    )
+
+    assert table.optimize_count == 0
+    assert table.stats_count == 1
+
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
     assert table.optimize_count == 1
-
-    await handler._maybe_optimize(cast(Any, table))
-    await asyncio.sleep(0)
-    assert table.optimize_count == 1
-
-    unblock.set()
-    await _wait_for_optimize_task(handler)
 
 
 @pytest.mark.asyncio
 @requires_lancedb
-async def test_row_handler_preserves_mutations_during_optimize() -> None:
+async def test_row_handler_throttles_optimize_attempts_after_trigger() -> None:
     handler = _target._RowHandler(
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=_make_table_schema(),
-        num_transactions_before_optimize=2,
     )
-    unblock = asyncio.Event()
-    table = _FakeAsyncTable(block=unblock)
+    table = _FakeAsyncTable(num_small_fragments=_target._MAX_SMALL_FRAGMENTS)
 
-    await handler._maybe_optimize(cast(Any, table))
-    assert table.optimize_count == 0
-
-    await handler._maybe_optimize(cast(Any, table))
-    await asyncio.sleep(0)
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
     assert table.optimize_count == 1
 
-    await handler._maybe_optimize(cast(Any, table))
-    await asyncio.sleep(0)
+    await handler._maybe_optimize(
+        cast(Any, table),
+        mutation_count=_target._MUTATED_ROWS_BETWEEN_STATS_CHECKS,
+    )
     assert table.optimize_count == 1
 
-    unblock.set()
-    await _wait_for_optimize_task(handler)
-
-    await handler._maybe_optimize(cast(Any, table))
-    await _wait_for_optimize_task(handler)
+    await handler._maybe_optimize(
+        cast(Any, table),
+        mutation_count=(
+            _target._MIN_MUTATED_ROWS_BETWEEN_OPTIMIZE_ATTEMPTS
+            - _target._MUTATED_ROWS_BETWEEN_STATS_CHECKS
+        ),
+    )
     assert table.optimize_count == 2
 
 
 @pytest.mark.asyncio
 @requires_lancedb
-async def test_row_handler_retries_after_optimize_failure() -> None:
+async def test_row_handler_stats_failure_is_non_fatal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     handler = _target._RowHandler(
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=_make_table_schema(),
-        num_transactions_before_optimize=1,
     )
-    table = _FakeAsyncTable(fail_once=True)
+    table = _FakeAsyncTable(stats_failure=True)
 
-    await handler._maybe_optimize(cast(Any, table))
-    await _wait_for_optimize_task(handler)
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
+
+    assert table.optimize_count == 0
+    assert "Exception evaluating LanceDB optimize decision" in caplog.text
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_row_handler_optimize_failure_is_non_fatal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
+    )
+    table = _FakeAsyncTable(
+        fail_once=True,
+        num_small_fragments=_target._MAX_SMALL_FRAGMENTS,
+    )
+
+    await handler._maybe_optimize(cast(Any, table), mutation_count=1)
+
     assert table.optimize_count == 1
-
-    await handler._maybe_optimize(cast(Any, table))
-    await _wait_for_optimize_task(handler)
-    assert table.optimize_count == 2
+    assert "Exception in optimizing LanceDB table" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -720,14 +866,12 @@ async def test_table_handler_skips_optimize_for_existing_table() -> None:
         spec=_target._TableSpec(
             table_schema=_make_table_schema(),
             managed_by=target.ManagedBy.USER,
-            num_transactions_before_optimize=50,
         ),
         main_action=None,
         column_actions={},
     )
 
     await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
-    await asyncio.sleep(0)
 
     assert conn.open_table_count == 0
     assert conn.table.optimize_count == 0
@@ -743,31 +887,16 @@ async def test_table_handler_does_not_optimize_new_table_before_row_mutations() 
         spec=_target._TableSpec(
             table_schema=_make_table_schema(),
             managed_by=target.ManagedBy.SYSTEM,
-            num_transactions_before_optimize=50,
         ),
         main_action="insert",
         column_actions={},
     )
 
     await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
-    await asyncio.sleep(0)
 
     assert conn.create_table_count == 1
     assert conn.open_table_count == 0
     assert conn.table.optimize_count == 0
-
-
-@requires_lancedb
-def test_table_target_rejects_non_positive_optimize_interval() -> None:
-    with pytest.raises(
-        ValueError, match="num_transactions_before_optimize must be positive"
-    ):
-        lancedb.table_target(
-            db=cast(Any, None),
-            table_name="test_table",
-            table_schema=_make_table_schema(),
-            num_transactions_before_optimize=0,
-        )
 
 
 @requires_lancedb
@@ -1233,7 +1362,6 @@ async def test_execute_deletes_escapes_string_pk() -> None:
         conn=cast(Any, None),
         table_name="test_table",
         table_schema=table_schema,
-        num_transactions_before_optimize=50,
     )
     await handler._execute_deletes(
         cast(Any, fake_table),
@@ -1283,7 +1411,6 @@ async def test_execute_deletes_with_real_lancedb(lancedb_dir: Path) -> None:
         conn=conn,
         table_name=table_name,
         table_schema=table_schema,
-        num_transactions_before_optimize=50,
     )
     await handler._execute_deletes(
         table,
