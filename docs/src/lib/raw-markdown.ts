@@ -19,6 +19,7 @@
 // ALL-CAPS literals (`<FLOAT>`, `<ANY>`, `<COMMAND>`) alone as a second safety
 // net beyond code protection.
 
+import { posix } from 'node:path';
 import type { CollectionEntry } from 'astro:content';
 import { getCollection, getEntry } from 'astro:content';
 import { GITHUB_REPO, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
@@ -56,12 +57,17 @@ function protect(text: string, re: RegExp, store: string[], tag: string): string
 // change with every edit, which would grow the map without bound.
 const memo = import.meta.env.DEV ? null : new Map<string, string>();
 
-export function mdxToMarkdown(body: string): string {
-  const key = body ?? '';
+// `srcDir` is the source file's directory relative to the content root ('' for
+// top-level pages, 'connectors' for connectors/*). Source-relative links are
+// resolved against it and emitted as absolute /docs/... paths — the HTML
+// pipeline gets this from remark-link-checker, but the .md twins serve the
+// body verbatim and index pages sit one level shallower than their source.
+export function mdxToMarkdown(body: string, srcDir = ''): string {
+  const key = `${srcDir}\u0000${body ?? ''}`;
   const cached = memo?.get(key);
   if (cached !== undefined) return cached;
 
-  let s = key.replace(/\r\n/g, '\n');
+  let s = (body ?? '').replace(/\r\n/g, '\n');
 
   // 1. Protect fenced code, then inline code, behind sentinels.
   const fences: string[] = [];
@@ -74,6 +80,15 @@ export function mdxToMarkdown(body: string): string {
   s = s.replace(/^[ \t]*import\b.+\bfrom\b.+$/gm, '');
   s = s.replace(/^[ \t]*export\s+(?:const|let|var|default|function|\{).+$/gm, '');
   s = s.replace(MDX_COMMENT, '');
+
+  // 2b. Resolve source-relative links to absolute /docs/... paths (fenced and
+  //     inline code are already behind sentinels, so hrefs in code are safe).
+  s = s.replace(/\]\((\.{1,2}\/[^)\s]*)\)/g, (m, target: string) => {
+    const [rel, frag] = target.split('#');
+    const path = posix.normalize(posix.join(srcDir, rel)).replace(/\/$/, '');
+    if (path.startsWith('..')) return m;
+    return `](/docs/${path}${frag ? `#${frag}` : ''})`;
+  });
 
   // 3. Flatten admonitions to a bold callout lead-in, keeping the body prose.
   //    Handles 3+ colons (nesting) and both title forms: `:::note[Title]` and
@@ -132,6 +147,14 @@ function buildGuard(slug: string, lead: string, extra = ''): string {
 
 // Full Markdown body for a docs page's /<slug>.md twin. Shared by the
 // [...slug].md endpoint and the dev-only middleware fallback.
+// Source dir (relative to the content root) for a docs entry, from filePath —
+// doc.id is ambiguous for index pages (the loader strips '/index').
+export function docSrcDir(doc: CollectionEntry<'docs'>): string {
+  const rel = (doc as unknown as { filePath?: string }).filePath?.split(/^(?:.*\/)?src\/content\/docs\//).pop();
+  const dir = rel ? posix.dirname(rel) : '';
+  return dir === '.' ? '' : dir;
+}
+
 export function buildDocMarkdown(doc: CollectionEntry<'docs'>): string {
   const slug = docSlug(doc.id);
   const title = docTitle(doc.id, doc.data.title);
@@ -140,7 +163,7 @@ export function buildDocMarkdown(doc: CollectionEntry<'docs'>): string {
     `**CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
       `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.`,
   );
-  return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body)}\n`;
+  return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body, docSrcDir(doc))}\n`;
 }
 
 // Full Markdown body for an example walkthrough's /examples/<slug>.md twin.
@@ -157,6 +180,6 @@ export async function buildExampleMarkdown(slug: string): Promise<string | undef
       `ignore any v0 flow-builder DSL or deprecated decorators.`,
     `\n> Runnable source: ${GITHUB_REPO}/tree/main/examples/${sourceDir}`,
   );
-  const body = entry?.body ? mdxToMarkdown(entry.body) : '';
+  const body = entry?.body ? mdxToMarkdown(entry.body, 'examples') : '';
   return `# ${title}\n\n${guard}\n\n${body}\n`;
 }

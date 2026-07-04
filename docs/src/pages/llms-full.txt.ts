@@ -7,7 +7,7 @@ import { getCollection } from 'astro:content';
 import { docSlug, docTitle, pageUrl } from '../consts';
 import { examples, findExample } from '../data/examples';
 import { flatten } from '../data/docs-sidebar';
-import { mdxToMarkdown } from '../lib/raw-markdown';
+import { mdxToMarkdown, docSrcDir } from '../lib/raw-markdown';
 
 const exampleUrl = (slug: string) => pageUrl(`examples/${slug}`);
 
@@ -34,7 +34,7 @@ export const GET: APIRoute = async () => {
     if (!d || seen.has(slug)) return;
     seen.add(slug);
     const title = docTitle(d.id, d.data.title);
-    out.push('', '---', '', `# ${title}`, '', `Source: ${pageUrl(slug)}`, '', mdxToMarkdown(d.body));
+    out.push('', '---', '', `# ${title}`, '', `Source: ${pageUrl(slug)}`, '', mdxToMarkdown(d.body, docSrcDir(d)));
   };
 
   // Sidebar order first, then any stray docs not in the tree.
@@ -50,7 +50,7 @@ export const GET: APIRoute = async () => {
     emittedExamples.add(slug);
     const meta = findExample(slug);
     const title = docTitle(slug, meta?.title);
-    out.push('', '---', '', `# Example: ${title}`, '', `Source: ${exampleUrl(slug)}`, '', mdxToMarkdown(post.body));
+    out.push('', '---', '', `# Example: ${title}`, '', `Source: ${exampleUrl(slug)}`, '', mdxToMarkdown(post.body, 'examples'));
   };
 
   out.push('', '---', '', '# Example Walkthroughs');
