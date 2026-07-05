@@ -78,21 +78,6 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
 
     fn processor_info(&self) -> &ComponentProcessorInfo;
 
-    /// Called before component memo lookup.
-    ///
-    /// A component memo hit returns without calling `process()`. Host runtimes
-    /// that enforce cooperative entry checks, e.g. Python deadlines, need this
-    /// hook so cached component results observe the same entry behavior as a
-    /// real processor invocation.
-    fn before_memo_lookup(
-        &self,
-        host_runtime_ctx: &Prof::HostRuntimeCtx,
-        comp_ctx: &ComponentProcessorContext<Prof>,
-    ) -> Result<impl Future<Output = Result<()>> + Send + 'static> {
-        let _ = (host_runtime_ctx, comp_ctx);
-        Ok(async { Ok(()) })
-    }
-
     /// Whether this processor has a memo state handler for post-fingerprint validation.
     fn has_memo_state_handler(&self) -> bool {
         false
@@ -896,12 +881,6 @@ impl<Prof: EngineProfile> Component<Prof> {
             let processor_name = processor.processor_info().name.as_str();
             memo_fp_to_store = processor.memo_key_fingerprint();
             processor_context.deadline().check()?;
-            processor
-                .before_memo_lookup(
-                    processor_context.app_ctx().env().host_runtime_ctx(),
-                    processor_context,
-                )?
-                .await?;
 
             // Fast-path: component memoization check does not require acquiring the build permit.
             // If it hits, we can immediately return without processing/submitting/waiting.

@@ -86,9 +86,6 @@ class ComponentProcessor(Generic[T_co]):
         processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
-        # Called before Rust checks memo state, so Python deadlines can fail
-        # fast even when the processor body is skipped by a memo hit.
-        entry_callback: Callable[[], Any] | None = None,
     ) -> ComponentProcessor[T_co]: ...
     @staticmethod
     def new_async(
@@ -96,9 +93,6 @@ class ComponentProcessor(Generic[T_co]):
         processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
-        # Called before Rust checks memo state, so Python deadlines can fail
-        # fast even when the processor body is skipped by a memo hit.
-        entry_callback: Callable[[], Any] | None = None,
     ) -> ComponentProcessor[T_co]: ...
 
 # --- ComponentProcessorContext ---

@@ -5,7 +5,7 @@ import contextlib
 from collections.abc import Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from datetime import timedelta
-from typing import Final, TypeAlias, TypeGuard, TypeVar, final
+from typing import TypeAlias, TypeVar
 
 from . import core
 
@@ -13,17 +13,7 @@ from . import core
 DeadlineExceededError = core.DeadlineExceededError
 
 DeadlineSnapshot = core.DeadlineContext
-
-
-@final
-class NoDeadlinePropagation:
-    """Sentinel for boundaries that must leave deadline context untouched."""
-
-    __slots__ = ()
-
-
-NO_DEADLINE_PROPAGATION: Final = NoDeadlinePropagation()
-DeadlinePropagation: TypeAlias = DeadlineSnapshot | NoDeadlinePropagation
+DeadlinePropagation: TypeAlias = DeadlineSnapshot | None
 
 _current_deadline: ContextVar[DeadlineSnapshot] = ContextVar(
     "coco_deadline", default=core.deadline_none()
@@ -55,13 +45,6 @@ def check_deadline() -> None:
 def capture() -> DeadlineSnapshot:
     """Capture the current deadline for explicit cross-task propagation."""
     return _current_deadline.get()
-
-
-def is_deadline_snapshot(
-    propagation: DeadlinePropagation,
-) -> TypeGuard[DeadlineSnapshot]:
-    """Return true when a propagation value is an explicit deadline snapshot."""
-    return not isinstance(propagation, NoDeadlinePropagation)
 
 
 @contextlib.contextmanager

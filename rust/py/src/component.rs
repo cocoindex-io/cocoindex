@@ -46,44 +46,39 @@ pub struct PyComponentProcessor {
     memo_key_fingerprint: Option<utils::fingerprint::Fingerprint>,
     processor_info: Arc<ComponentProcessorInfo>,
     state_handler: Option<PyCallback>,
-    entry_callback: Option<PyCallback>,
 }
 
 #[pymethods]
 impl PyComponentProcessor {
     #[staticmethod]
-    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None, state_handler=None, entry_callback=None))]
+    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None, state_handler=None))]
     pub fn new_sync(
         processor_fn: Py<PyAny>,
         processor_info: PyComponentProcessorInfo,
         memo_key_fingerprint: Option<PyFingerprint>,
         state_handler: Option<Py<PyAny>>,
-        entry_callback: Option<Py<PyAny>>,
     ) -> Self {
         Self {
             processor_fn: PyCallback::Sync(Arc::new(processor_fn)),
             memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
             processor_info: processor_info.0,
             state_handler: state_handler.map(|h| PyCallback::Async(Arc::new(h))),
-            entry_callback: entry_callback.map(|h| PyCallback::Sync(Arc::new(h))),
         }
     }
 
     #[staticmethod]
-    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None, state_handler=None, entry_callback=None))]
+    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None, state_handler=None))]
     pub fn new_async(
         processor_fn: Py<PyAny>,
         processor_info: PyComponentProcessorInfo,
         memo_key_fingerprint: Option<PyFingerprint>,
         state_handler: Option<Py<PyAny>>,
-        entry_callback: Option<Py<PyAny>>,
     ) -> Self {
         Self {
             processor_fn: PyCallback::Async(Arc::new(processor_fn)),
             memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
             processor_info: processor_info.0,
             state_handler: state_handler.map(|h| PyCallback::Async(Arc::new(h))),
-            entry_callback: entry_callback.map(|h| PyCallback::Sync(Arc::new(h))),
         }
     }
 }
@@ -108,25 +103,6 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
 
     fn processor_info(&self) -> &ComponentProcessorInfo {
         &self.processor_info
-    }
-
-    fn before_memo_lookup(
-        &self,
-        host_runtime_ctx: &PyAsyncContext,
-        _comp_ctx: &ComponentProcessorContext<PyEngineProfile>,
-    ) -> Result<impl Future<Output = Result<()>> + Send + 'static> {
-        // Python processors may carry a deadline snapshot that Rust cannot see
-        // directly. Run the small Python entry callback before the Rust memo
-        // fast path, otherwise an expired deadline could be hidden by a
-        // component memo hit that never calls back into `process()`.
-        let Some(entry_callback) = &self.entry_callback else {
-            return Ok(futures::future::Either::Left(async { Ok(()) }));
-        };
-        let fut = entry_callback.call(host_runtime_ctx, ())?;
-        Ok(futures::future::Either::Right(async move {
-            fut.await?;
-            Ok(())
-        }))
     }
 
     fn has_memo_state_handler(&self) -> bool {

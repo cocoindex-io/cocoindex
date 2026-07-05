@@ -728,7 +728,7 @@ def test_deadline_exceptions_are_not_memoized(fake_clock: _FakeClock) -> None:
     #
     # run 1: body raises DeadlineExceededError -> no memo value stored
     # run 2: wider deadline executes body again and stores "ok"
-    # run 3: expired before memo lookup -> before_memo_lookup raises
+    # run 3: expired before memo lookup -> core pre-memo checkpoint raises
     # run 4: wider deadline returns cached "ok" without re-running body
     calls = 0
     should_timeout = True

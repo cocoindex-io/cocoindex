@@ -41,9 +41,7 @@ from .component_ctx import (
 from .context_keys import resolve_awaitables_sync
 from .deadline import (
     DeadlinePropagation,
-    NO_DEADLINE_PROPAGATION,
     check_deadline as _deadline_checkpoint,
-    is_deadline_snapshot as _is_deadline_snapshot,
     restore as _restore_deadline,
 )
 from .memo_fingerprint import (
@@ -85,27 +83,11 @@ MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
 def _deadline_snapshot_context(
     deadline_snapshot: DeadlinePropagation,
 ) -> Iterator[None]:
-    if not _is_deadline_snapshot(deadline_snapshot):
+    if deadline_snapshot is None:
         yield
         return
     with _restore_deadline(deadline_snapshot):
         yield
-
-
-def _deadline_entry_callback(
-    deadline_snapshot: DeadlinePropagation,
-) -> Callable[[], None] | None:
-    if not _is_deadline_snapshot(deadline_snapshot):
-        return None
-
-    def _entry_callback() -> None:
-        # Rust may return a memoized processor result before calling the Python
-        # processor body, so deadline-aware processors need this pre-memo
-        # checkpoint to make memo hits observe expired deadlines too.
-        with _deadline_snapshot_context(deadline_snapshot):
-            _deadline_checkpoint()
-
-    return _entry_callback
 
 
 class PreparedMemoKeySpec(NamedTuple):
@@ -601,7 +583,7 @@ def _build_sync_core_processor(
     logic_fp: core.Fingerprint | None = None,
     state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
     propagate_children_fn_logic: bool = True,
-    deadline_snapshot: DeadlinePropagation = NO_DEADLINE_PROPAGATION,
+    deadline_snapshot: DeadlinePropagation = None,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         with _deadline_snapshot_context(deadline_snapshot):
@@ -622,7 +604,6 @@ def _build_sync_core_processor(
         processor_info,
         memo_fp,
         state_handler,
-        _deadline_entry_callback(deadline_snapshot),
     )
 
 
@@ -918,9 +899,7 @@ class SyncFunction(Function[P, R_co]):
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        return self._core_processor_with_deadline(
-            env, path, args, kwargs, NO_DEADLINE_PROPAGATION
-        )
+        return self._core_processor_with_deadline(env, path, args, kwargs, None)
 
     def _core_processor_with_deadline(
         self: SyncFunction[P0, R_co],
@@ -1084,7 +1063,7 @@ def _build_async_core_processor(
     logic_fp: core.Fingerprint | None = None,
     state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
     propagate_children_fn_logic: bool = True,
-    deadline_snapshot: DeadlinePropagation = NO_DEADLINE_PROPAGATION,
+    deadline_snapshot: DeadlinePropagation = None,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         with _deadline_snapshot_context(deadline_snapshot):
@@ -1105,7 +1084,6 @@ def _build_async_core_processor(
         processor_info,
         memo_fp,
         state_handler,
-        _deadline_entry_callback(deadline_snapshot),
     )
 
 
@@ -1686,9 +1664,7 @@ class AsyncFunction(Function[P, R_co]):
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        return self._core_processor_with_deadline(
-            env, path, args, kwargs, NO_DEADLINE_PROPAGATION
-        )
+        return self._core_processor_with_deadline(env, path, args, kwargs, None)
 
     def _core_processor_with_deadline(
         self,
@@ -2202,9 +2178,9 @@ def create_core_component_processor(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     /,
-    deadline_snapshot: DeadlinePropagation = NO_DEADLINE_PROPAGATION,
+    deadline_snapshot: DeadlinePropagation = None,
 ) -> core.ComponentProcessor[R_co]:
-    if _is_deadline_snapshot(deadline_snapshot):
+    if deadline_snapshot is not None:
         with _deadline_snapshot_context(deadline_snapshot):
             _deadline_checkpoint()
 
