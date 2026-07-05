@@ -397,7 +397,11 @@ impl Ctx {
                 "IdGenerator requires an active pipeline context",
             ));
         };
-        comp_ctx.app_ctx().next_id(None).await.map_err(Error::from)
+        comp_ctx
+            .app_ctx()
+            .next_id(None, comp_ctx.deadline())
+            .await
+            .map_err(Error::from)
     }
 
     /// Declare a persistent state for the current component.
@@ -864,7 +868,10 @@ impl Ctx {
             format!("mount:{key}"),
         );
 
-        let handle = match child_component.use_mount(comp_ctx, processor).await {
+        let handle = match child_component
+            .use_mount(comp_ctx, processor, comp_ctx.deadline())
+            .await
+        {
             Ok(handle) => handle,
             Err(err) => {
                 return Err(Error::engine(format!("{err}")));

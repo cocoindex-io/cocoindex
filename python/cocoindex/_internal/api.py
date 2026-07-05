@@ -296,6 +296,7 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
+        _capture_deadline(),
     )
     pyvalue = await core_handle.result_async(parent_ctx._core_processor_ctx)
     # use_mount waits for the child to finish instead of abandoning it on

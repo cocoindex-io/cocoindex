@@ -524,6 +524,7 @@ impl App {
         let core_options = AppUpdateOptions {
             full_reprocess: options.full_reprocess,
             live: options.live,
+            deadline: None,
         };
 
         // In preview mode the engine collects target actions into this shared

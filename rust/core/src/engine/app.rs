@@ -4,6 +4,7 @@ use crate::prelude::*;
 
 use crate::engine::component::Component;
 use crate::engine::context::{AppContext, PreviewActionCollector};
+use crate::engine::deadline::DeadlineContext;
 use crate::engine::live_component::{LIVE_COMPONENT_DRAIN_TIMEOUT_SECS, LiveComponentState};
 
 use crate::engine::environment::{AppRegistration, Environment};
@@ -18,6 +19,8 @@ pub struct AppUpdateOptions {
     pub full_reprocess: bool,
     /// If true, enable live component mode for this update.
     pub live: bool,
+    /// Deadline for the root processor and for observing the update result.
+    pub deadline: Option<DeadlineContext>,
 }
 
 /// Handle returned by `App::update` or `App::drop_app` that provides access to
@@ -28,6 +31,7 @@ pub struct AppOpHandle<T: Send + 'static> {
     version_rx: watch::Receiver<u64>,
     /// Whether this is a live-mode operation (affects progress display).
     pub live: bool,
+    deadline: DeadlineContext,
 }
 
 impl<T: Send + 'static> AppOpHandle<T> {
@@ -60,9 +64,13 @@ impl<T: Send + 'static> AppOpHandle<T> {
 
     /// Awaits the task completion and returns the result.
     pub async fn result(self) -> Result<T> {
-        self.task
+        let result = self
+            .task
             .await
-            .map_err(|e| internal_error!("operation task panicked: {e}"))?
+            .map_err(|e| internal_error!("operation task panicked: {e}"))?;
+        let value = result?;
+        self.deadline.check()?;
+        Ok(value)
     }
 }
 
@@ -112,6 +120,7 @@ impl<Prof: EngineProfile> App<Prof> {
         self.app_ctx().reset_cancellation_token_if_cancelled();
         let processing_stats = ProcessingStats::new();
         let version_rx = processing_stats.subscribe();
+        let deadline = options.deadline.unwrap_or(DeadlineContext::NONE);
         let context = self.root_component.new_processor_context_for_build(
             None,
             processing_stats.clone(),
@@ -119,6 +128,7 @@ impl<Prof: EngineProfile> App<Prof> {
             options.live,
             preview_collector.clone(),
             host_ctx,
+            deadline,
             // Root has no installed on_error in Build mode — orphan-delete
             // failures from the root's GC sweep log + swallow. (Cascading
             // a raising on_error from root would equate "any orphan delete
@@ -163,6 +173,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 stats: processing_stats,
                 version_rx,
                 live,
+                deadline,
             },
             preview_collector,
         ))
@@ -274,6 +285,7 @@ impl<Prof: EngineProfile> App<Prof> {
             stats: processing_stats,
             version_rx,
             live: false,
+            deadline: DeadlineContext::NONE,
         })
     }
 

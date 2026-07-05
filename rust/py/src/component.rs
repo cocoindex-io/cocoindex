@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     function::{build_memo_states_payload, context_memo_states_to_pydict},
+    deadline::PyDeadlineContext,
     prelude::*,
     runtime::{PyAsyncContext, PyCallback, build_on_error},
     stable_path::PyStablePath,
@@ -207,6 +208,7 @@ pub fn use_mount_async<'py>(
     stable_path: PyStablePath,
     comp_ctx: PyComponentProcessorContext,
     fn_ctx: &PyFnCallContext,
+    deadline: PyDeadlineContext,
 ) -> PyResult<Bound<'py, PyAny>> {
     let child = comp_ctx
         .0
@@ -218,7 +220,7 @@ pub fn use_mount_async<'py>(
     comp_ctx.0.push_active_member(&child);
     future_into_py(py, async move {
         let handle = child
-            .use_mount(&comp_ctx.0, processor)
+            .use_mount(&comp_ctx.0, processor, deadline.0)
             .await
             .into_py_result()?;
         Ok(PyComponentMountRunHandle(Some(handle)))

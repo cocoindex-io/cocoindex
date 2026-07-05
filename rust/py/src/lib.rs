@@ -3,6 +3,7 @@ mod batching;
 mod code_ast;
 mod component;
 mod context;
+mod deadline;
 mod environment;
 mod fingerprint;
 mod function;
@@ -26,6 +27,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     use pyo3::prelude::*;
 
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    cocoindex_py_utils::add_error_classes(m)?;
 
     m.add_function(wrap_pyfunction!(runtime::init_runtime, m)?)?;
     m.add_function(wrap_pyfunction!(runtime::shutdown_tokio_runtime, m)?)?;
@@ -47,6 +49,18 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<context::PyComponentProcessorContext>()?;
     m.add_class::<context::PyFnCallContext>()?;
+
+    m.add_class::<deadline::PyDeadlineContext>()?;
+    m.add_function(wrap_pyfunction!(deadline::deadline_none, m)?)?;
+    m.add_function(wrap_pyfunction!(deadline::testing_reset_deadline_clock, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        deadline::testing_disable_deadline_clock,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        deadline::testing_advance_deadline_clock,
+        m
+    )?)?;
 
     m.add_class::<live_component::PyLiveComponentController>()?;
     m.add_function(wrap_pyfunction!(live_component::mount_live_async, m)?)?;

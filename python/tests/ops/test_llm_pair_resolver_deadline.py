@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import asyncio
 import pathlib
 import sys
 import types
@@ -10,20 +11,35 @@ from typing import Any
 import pytest
 
 import cocoindex as coco
+from cocoindex._internal import core
 from cocoindex._internal import deadline as _deadline
 
 
 class _FakeClock:
-    def __init__(self) -> None:
-        self.now = 0.0
+    def __init__(self, real_sleep: Any) -> None:
+        self._now = 0.0
         self.sleeps: list[float] = []
+        self._real_sleep = real_sleep
+        core.testing_reset_deadline_clock()
 
-    def monotonic(self) -> float:
-        return self.now
+    @property
+    def now(self) -> float:
+        return self._now
+
+    @now.setter
+    def now(self, value: float) -> None:
+        if value < self._now:
+            core.testing_reset_deadline_clock()
+            self._now = 0.0
+        delta = value - self._now
+        if delta:
+            core.testing_advance_deadline_clock(round(delta * 1000))
+        self._now = value
 
     async def sleep(self, delay: float) -> None:
         self.sleeps.append(delay)
         self.now += delay
+        await self._real_sleep(0)
 
 
 class _FakeCompletions:
@@ -100,9 +116,9 @@ async def test_llm_resolver_with_deadline_retries_until_deadline(
     # retries=0 is ignored as a retry budget
     # invalid outputs sleep/back off while time remains
     # valid output before deadline returns successfully
-    clock = _FakeClock()
-    monkeypatch.setattr(_deadline, "_monotonic_now", clock.monotonic)
-    monkeypatch.setattr(_deadline, "_sleep_for", clock.sleep)
+    real_sleep = asyncio.sleep
+    clock = _FakeClock(real_sleep)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
     module = _load_resolver_module(monkeypatch)
     completions = _FakeCompletions(module, ["ghost", "ghost", "ghost", "bar"])
     resolver = module.LlmPairResolver(model="fake", retries=0)
@@ -116,3 +132,4 @@ async def test_llm_resolver_with_deadline_retries_until_deadline(
     )
     assert completions.calls == 4
     assert clock.sleeps == [1.0, 1.0, 1.0]
+    core.testing_disable_deadline_clock()

@@ -71,13 +71,15 @@ class UpdateHandle(Generic[R]):
         init_coro: Any,  # Coroutine that returns core.UpdateHandle
         main_fn: Any = None,
         preview: bool = False,
-        deadline_snapshot: DeadlineSnapshot = None,
+        deadline_snapshot: DeadlineSnapshot | None = None,
     ) -> None:
         self._init_coro = init_coro
         self._core_handle: core.UpdateHandle | None = None
         self._main_fn = main_fn  # used for return type inspection
         self._preview = preview
-        self._deadline_snapshot = deadline_snapshot
+        self._deadline_snapshot = (
+            deadline_snapshot if deadline_snapshot is not None else core.deadline_none()
+        )
 
     async def _ensure_started(self) -> core.UpdateHandle:
         if self._core_handle is None:
@@ -335,6 +337,7 @@ class App(Generic[P, R]):
                 live=live,
                 preview=preview,
                 host_ctx=env._context_provider,
+                deadline=deadline_snapshot,
             )
 
         return UpdateHandle(
@@ -388,6 +391,7 @@ class App(Generic[P, R]):
             refresh_interval_secs=refresh_interval_secs,
             live=live,
             preview=preview,
+            deadline=deadline_snapshot,
         )
         _check_deadline_snapshot(deadline_snapshot)
         if preview:

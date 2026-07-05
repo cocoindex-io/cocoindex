@@ -9,6 +9,7 @@ use crate::engine::context::{
     AppContext, ComponentDeleteContext, ComponentProcessingAction, ComponentProcessingMode,
     ComponentProcessorContext, MemoStatesPayload, PreviewActionCollector,
 };
+use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
     cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
     update_component_memo_states, use_or_invalidate_component_memoization,
@@ -489,6 +490,9 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
                 Ok(())
             })?;
         }
+        if let Some(parent_context) = parent_context {
+            parent_context.deadline().check()?;
+        }
         Ok(output.ret)
     }
 }
@@ -542,6 +546,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         self,
         parent_ctx: &ComponentProcessorContext<Prof>,
         processor: Prof::ComponentProc,
+        deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         let child_ctx = self.new_processor_context_for_build(
             Some(parent_ctx),
@@ -550,6 +555,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.live(), // use_mount inherits live from parent
             parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
+            deadline,
             // No build-mode on_error: use_mount is foreground; failures
             // propagate as `Err` to the awaiting parent via `.result()`.
             // Orphan-delete failures during this child's commit fall
@@ -579,6 +585,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.live(), // mount inherits live from parent
             parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
+            DeadlineContext::NONE,
             on_error.clone(),
         )?;
         self.run_in_background(processor, child_ctx, on_error, pre_execute_check)
@@ -888,6 +895,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         if let Some(processor) = processor {
             let processor_name = processor.processor_info().name.as_str();
             memo_fp_to_store = processor.memo_key_fingerprint();
+            processor_context.deadline().check()?;
             processor
                 .before_memo_lookup(
                     processor_context.app_ctx().env().host_runtime_ctx(),
@@ -1025,6 +1033,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
 
                     let ret = ret?;
+                    processor_context.deadline().check()?;
                     let submit_output = submit(processor_context, processor, |name| {
                         if reported_processor_name.is_none() {
                             processing_stats.update(&name, |stats| {
@@ -1170,6 +1179,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
         host_ctx: Arc<Prof::HostCtx>,
+        deadline: DeadlineContext,
         on_error: Option<OnError>,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = parent_ctx {
@@ -1208,6 +1218,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 on_error,
                 preview_collector,
             ),
+            deadline,
         ))
     }
 
@@ -1228,6 +1239,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 providers,
                 on_error,
             }),
+            DeadlineContext::NONE,
         )
     }
 }

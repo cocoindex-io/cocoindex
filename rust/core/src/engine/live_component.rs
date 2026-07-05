@@ -5,6 +5,7 @@ use crate::engine::component::{
     Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle, OnError,
 };
 use crate::engine::context::{ComponentProcessingAction, ComponentProcessorContext, FnCallContext};
+use crate::engine::deadline::DeadlineContext;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
@@ -575,6 +576,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 on_error.clone(),
                 None,
             ),
+            DeadlineContext::NONE,
         );
 
         let handle = self
@@ -876,6 +878,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 None,
                 None,
             ),
+            DeadlineContext::NONE,
         );
         let fn_ctx = FnCallContext::default();
 
@@ -1181,6 +1184,7 @@ async fn run_op<Prof: EngineProfile>(
                     on_error.clone(),
                     None,
                 ),
+                DeadlineContext::NONE,
             );
             let inner_handle = child
                 .run_in_background(processor, context, on_error, None)

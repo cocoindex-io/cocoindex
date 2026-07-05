@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Collection
 from datetime import timedelta
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 
 import cocoindex as coco
+from cocoindex._internal import core
 from cocoindex._internal import deadline as _deadline
 from cocoindex._internal.component_ctx import next_id as _next_id
 from tests import common
@@ -15,24 +16,44 @@ from tests.common.target_states import DictDataWithPrev, GlobalDictTarget
 
 
 class _FakeClock:
-    def __init__(self, now: float = 0.0) -> None:
-        self.now = now
+    def __init__(
+        self,
+        now: float = 0.0,
+        real_sleep: Any = asyncio.sleep,
+    ) -> None:
+        self._now = 0.0
         self.sleeps: list[float] = []
+        self._real_sleep = real_sleep
+        core.testing_reset_deadline_clock()
+        self.now = now
 
-    def monotonic(self) -> float:
-        return self.now
+    @property
+    def now(self) -> float:
+        return self._now
+
+    @now.setter
+    def now(self, value: float) -> None:
+        if value < self._now:
+            core.testing_reset_deadline_clock()
+            self._now = 0.0
+        delta = value - self._now
+        if delta:
+            core.testing_advance_deadline_clock(round(delta * 1000))
+        self._now = value
 
     async def sleep(self, delay: float) -> None:
         self.sleeps.append(delay)
         self.now += delay
+        await self._real_sleep(0)
 
 
 @pytest.fixture
-def fake_clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
-    clock = _FakeClock()
-    monkeypatch.setattr(_deadline, "_monotonic_now", clock.monotonic)
-    monkeypatch.setattr(_deadline, "_sleep_for", clock.sleep)
-    return clock
+def fake_clock(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeClock]:
+    real_sleep = asyncio.sleep
+    clock = _FakeClock(real_sleep=real_sleep)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    yield clock
+    core.testing_disable_deadline_clock()
 
 
 def _env(suffix: str) -> coco.Environment:

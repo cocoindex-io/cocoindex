@@ -89,9 +89,10 @@ impl PyComponentProcessorContext {
         key: Option<PyStableKey>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let app_ctx = self.0.app_ctx().clone();
+        let deadline = self.0.deadline();
         future_into_py(py, async move {
             let id = app_ctx
-                .next_id(key.as_ref().map(|k| &k.0))
+                .next_id(key.as_ref().map(|k| &k.0), deadline)
                 .await
                 .into_py_result()?;
             Ok(id)

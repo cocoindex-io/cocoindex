@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
+use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -156,7 +157,12 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
-    pub async fn next_id(&self, key: Option<&StableKey>) -> Result<u64> {
+    pub async fn next_id(
+        &self,
+        key: Option<&StableKey>,
+        deadline: DeadlineContext,
+    ) -> Result<u64> {
+        deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
         self.inner
@@ -671,6 +677,7 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
+    deadline: DeadlineContext,
 
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 
@@ -706,12 +713,14 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
+        deadline: DeadlineContext,
     ) -> Self {
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
+                deadline,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 host_ctx,
@@ -762,6 +771,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     pub fn stable_path(&self) -> &StablePath {
         self.inner.component.stable_path()
+    }
+
+    pub fn deadline(&self) -> DeadlineContext {
+        self.inner.deadline
     }
 
     /// Eagerly load every function-memo and user-state entry for this
