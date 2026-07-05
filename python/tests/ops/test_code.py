@@ -199,3 +199,28 @@ def test_index_terms_str_and_code_source() -> None:
         index_terms(CodeSource(src_text, language="nonsense-lang"))
     with pytest.raises(ValueError, match="language"):
         index_terms(src, language="python")  # CodeSource carries its own
+
+
+def test_deprecated_codeast_compat_shims(tmp_path: Path) -> None:
+    """The removed CodeAst surface that released downstreams (e.g.
+    cocoindex-code's grep) still touch keeps working for one deprecation
+    cycle: ``FileMatch.ast``, ``CodeSource.source``, and the ``CodeAst``
+    module alias."""
+    cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
+    hit = tmp_path / "hit.py"
+    hit.write_text(_PY_SRC, newline="")
+    fm = cp.match_file(str(hit))
+    assert fm is not None
+    with pytest.deprecated_call():
+        assert fm.ast is fm.source
+    with pytest.deprecated_call():
+        assert fm.source.source == _PY_SRC  # the exact downstream expression shape
+
+    from cocoindex.ops import code as code_module
+
+    with pytest.deprecated_call():
+        deprecated_cls = code_module.CodeAst
+    assert deprecated_cls is CodeSource
+    assert isinstance(CodeSource(_PY_SRC, language="python"), deprecated_cls)
+    with pytest.raises(AttributeError):
+        _ = code_module.NoSuchName
