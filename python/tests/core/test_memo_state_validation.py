@@ -713,3 +713,111 @@ def test_state_changed_but_reusable_component_sync() -> None:
     )
     app.update_blocking()
     assert _metrics.collect() == {"call.declare_two_level": 1}
+
+
+
+# ============================================================================
+# Raw class-object metaclass state validation (sync)
+# ============================================================================
+
+_class_object_source: dict[str, type] = {}
+_class_object_prev_states: list[Any] = []
+
+
+class _ClassObjectMemoMeta(type):
+    def __coco_memo_key__(cls) -> object:
+        return getattr(cls, "stable_key")
+
+    def __coco_memo_state__(cls, prev_state: Any) -> coco.MemoStateOutcome:
+        state_value = getattr(cls, "state_value")
+        _class_object_prev_states.append(prev_state)
+        memo_valid = not coco.is_non_existence(prev_state) and prev_state == state_value
+        return coco.MemoStateOutcome(state=state_value, memo_valid=memo_valid)
+
+
+def _make_class_object(
+    stable_key: str, state_value: int, content: str
+) -> type:
+    return _ClassObjectMemoMeta(
+        f"ClassObject_{stable_key}_{state_value}_{content}",
+        (),
+        {
+            "stable_key": stable_key,
+            "state_value": state_value,
+            "content": content,
+        },
+    )
+
+
+@coco.fn(memo=True)
+def _transform_class_object(cls: type) -> str:
+    _metrics.increment("call.transform_class_object")
+    return f"class content: {getattr(cls, 'content')}"
+
+
+@coco.fn
+def _process_class_objects() -> None:
+    for key, cls in _class_object_source.items():
+        result = _transform_class_object(cls)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, result))
+
+
+def test_class_object_metaclass_state_validation_sync() -> None:
+    """Class-object metaclass state participates in App memo validation."""
+    GlobalDictTarget.store.clear()
+    _class_object_source.clear()
+    _class_object_prev_states.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_class_object_metaclass_state_validation_sync",
+            environment=coco_env,
+        ),
+        _process_class_objects,
+    )
+
+    # Run 1: no previous state, so the transform executes and persists content A.
+    _class_object_source["row"] = _make_class_object("stable", 1, "A")
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_class_object": 1}
+    assert len(_class_object_prev_states) == 1
+    assert coco.is_non_existence(_class_object_prev_states[0])
+    assert GlobalDictTarget.store.data == {
+        "row": DictDataWithPrev(
+            data="class content: A", prev=[], prev_may_be_missing=True
+        )
+    }
+
+    # Run 2: equivalent replacement with same state is a cache hit; C is ignored.
+    _class_object_source["row"] = _make_class_object("stable", 1, "C")
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert len(_class_object_prev_states) == 2
+    assert coco.is_non_existence(_class_object_prev_states[0])
+    assert _class_object_prev_states[1:] == [1]
+    assert GlobalDictTarget.store.data["row"].data == "class content: A"
+
+    # Run 3: same key but new state invalidates the cache and persists content B.
+    _class_object_source["row"] = _make_class_object("stable", 2, "B")
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_class_object": 1}
+    assert len(_class_object_prev_states) == 3
+    assert coco.is_non_existence(_class_object_prev_states[0])
+    assert _class_object_prev_states[1:] == [1, 1]
+    assert GlobalDictTarget.store.data == {
+        "row": DictDataWithPrev(
+            data="class content: B",
+            prev=["class content: A"],
+            prev_may_be_missing=False,
+        )
+    }
+
+    # Run 4: state 2 was persisted, so another replacement hits cache; D is ignored.
+    _class_object_source["row"] = _make_class_object("stable", 2, "D")
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert len(_class_object_prev_states) == 4
+    assert coco.is_non_existence(_class_object_prev_states[0])
+    assert _class_object_prev_states[1:] == [1, 1, 2]
+    assert GlobalDictTarget.store.data["row"].data == "class content: B"
