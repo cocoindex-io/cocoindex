@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
+use crate::hazards::{TreeHazards, scan_tree_hazards};
 use crate::positions::LineIndex;
 use crate::prog_langs::{self, ProgrammingLanguageInfo, TreeSitterLanguageInfo};
 
@@ -55,6 +56,7 @@ pub struct CodeSource<'a> {
     /// Lazy parse; inner `None` = the parser returned no tree (memoized).
     tree: OnceLock<Option<tree_sitter::Tree>>,
     line_index: OnceLock<LineIndex>,
+    hazards: OnceLock<TreeHazards>,
 }
 
 impl<'a> CodeSource<'a> {
@@ -97,6 +99,7 @@ impl<'a> CodeSource<'a> {
             info,
             tree: OnceLock::new(),
             line_index: OnceLock::new(),
+            hazards: OnceLock::new(),
         }
     }
 
@@ -145,6 +148,21 @@ impl<'a> CodeSource<'a> {
     /// Get-or-build the byte→(char offset, line, column) index, memoized.
     pub fn line_index(&self) -> &LineIndex {
         self.line_index.get_or_init(|| LineIndex::build(&self.text))
+    }
+
+    /// Get-or-scan the tree-trust hazards of the parsed AST, memoized: a
+    /// shallow parse error (error recovery reshaped the tree's top structure —
+    /// consumers deriving structure from it should degrade) and pathologically
+    /// deep subtrees (recursive walks must treat them as opaque). `None` when
+    /// there is no tree to scan.
+    pub fn tree_hazards(&self) -> Option<&TreeHazards> {
+        let ParseOutcome::Parsed(tree) = self.tree() else {
+            return None;
+        };
+        Some(
+            self.hazards
+                .get_or_init(|| scan_tree_hazards(tree.root_node())),
+        )
     }
 }
 
@@ -200,6 +218,19 @@ mod tests {
         assert!(std::ptr::eq(src.info().unwrap(), info));
         assert_eq!(src.requested_language(), Some("rust"));
         assert!(matches!(src.tree(), ParseOutcome::Parsed(_)));
+    }
+
+    #[test]
+    fn tree_hazards_memoized_and_gated_on_parse() {
+        let src = CodeSource::with_language("def f():\n    return 1\n", "python");
+        let first = src.tree_hazards().expect("parsed") as *const TreeHazards;
+        let second = src.tree_hazards().expect("parsed") as *const TreeHazards;
+        assert_eq!(first, second);
+        assert!(!src.tree_hazards().unwrap().parse_error);
+        assert!(src.tree_hazards().unwrap().deep_spans.is_empty());
+
+        let no_grammar = CodeSource::new("plain text");
+        assert!(no_grammar.tree_hazards().is_none());
     }
 
     #[test]
