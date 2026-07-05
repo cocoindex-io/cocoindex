@@ -25,6 +25,7 @@ from .component_ctx import (
     ComponentSubpath,
     get_context_from_ctx,
 )
+from .deadline import without_deadline as _without_deadline
 from .function import AnyCallable, create_core_component_processor
 from .environment import Environment
 from .serde import deserialize, serialize
@@ -103,6 +104,10 @@ async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) 
     Used by `_mount_live_component` (api.py) and the LiveCompClass branch
     of `LiveComponentOperator.update`.
 
+    Live components run independently from the parent update, so parent
+    cooperative deadlines do not apply to ``process_live`` or the
+    ``operator.update_full()`` calls it starts.
+
     Save/restore the prior value rather than using `ContextVar.reset(token)`:
     on cancellation the finally block can run in a different `Context`
     than where the Token was created (asyncio Task cancellation can
@@ -125,7 +130,8 @@ async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) 
     prev = _in_process_live.get()
     _in_process_live.set(True)
     try:
-        await instance.process_live(operator)
+        with _without_deadline():
+            await instance.process_live(operator)
     finally:
         _in_process_live.set(prev)
         operator._detach()

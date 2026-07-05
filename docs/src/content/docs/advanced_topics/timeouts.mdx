@@ -1,0 +1,197 @@
+---
+title: "*Timeouts* and deadlines"
+description: >
+  Use `coco.timeout()` to put a time budget around a CocoIndex update,
+  foreground child work, and deadline-aware retries.
+---
+Use `coco.timeout()` when a CocoIndex run, processor, or foreground child operation should stop after a time budget.
+
+The timeout is **cooperative**: CocoIndex checks the time at safe points and raises `coco.DeadlineExceededError` when the deadline has passed. It does not forcibly cancel Python code that is already inside an `await`, such as an HTTP request or database query. Use that library's own timeout for individual I/O calls.
+
+## Quick start
+
+```python
+from datetime import timedelta
+
+import cocoindex as coco
+
+
+try:
+    with coco.timeout(timedelta(minutes=5)):
+        app.update_blocking()
+except coco.DeadlineExceededError:
+    print("CocoIndex update timed out")
+```
+
+In async code, create the update handle inside the timeout block:
+
+```python
+with coco.timeout(timedelta(minutes=5)):
+    handle = app.update()
+    await handle.result()
+```
+
+The deadline is captured when `app.update()` creates the handle. If the handle is created before entering `coco.timeout()`, the root processor does not inherit that timeout.
+
+Nested timeout blocks use the shorter remaining budget:
+
+```python
+with coco.timeout(timedelta(minutes=5)):
+    ...
+    with coco.timeout(timedelta(minutes=30)):
+        # Still bounded by the outer 5-minute timeout.
+        ...
+
+    with coco.timeout(timedelta(seconds=10)):
+        # Temporarily narrowed to 10 seconds.
+        ...
+    # Back to the outer timeout.
+```
+
+## The rule
+
+A timeout follows work the caller is directly waiting for. It does not follow background work or shared work.
+
+| Code shape | What happens |
+| --- | --- |
+| `with coco.timeout(...): app.update()` | The root processor inherits the timeout. |
+| Direct `@coco.fn` call | Inherits the current timeout and checks it at function entry and return. |
+| `await coco.use_mount(child, ...)` | The child inherits the timeout because the parent needs the child's result. |
+| `await coco.mount(child, ...)` / `await coco.mount_each(...)` | The child does not inherit the parent's timeout. The caller still checks its own timeout before mounting and after `handle.ready()`. |
+| `await coco.map(fn, items)` | Item tasks inherit the timeout. Already-started items are allowed to finish. |
+| Batched function body | Does not inherit any one caller's timeout because a batch can contain work from multiple callers. |
+| Target writes and connector sink calls | Do not inherit the processor timeout. Once processing has succeeded, CocoIndex lets target synchronization finish consistently. |
+| Long loop inside a processor | Add `coco.check_deadline()` where you want the loop to stop promptly. |
+
+## Foreground child work
+
+Use `use_mount()` when the parent depends on the child's value. The timeout applies to both parent and child:
+
+```python
+@coco.fn
+async def parse_file(file: FileLike) -> ParsedDoc:
+    text = await file.read_text()
+    coco.check_deadline()
+    return parse(text)
+
+
+@coco.fn
+async def main(file: FileLike) -> None:
+    parsed = await coco.use_mount(
+        coco.component_subpath("parse"),
+        parse_file,
+        file,
+    )
+    index(parsed)
+
+
+with coco.timeout(timedelta(seconds=30)):
+    app.update_blocking()
+```
+
+If the deadline passes while `parse_file()` is in `file.read_text()`, CocoIndex does not interrupt that await. The timeout is observed when control reaches the next CocoIndex check, such as `coco.check_deadline()` or the function return.
+
+## Background child work
+
+Use `mount()` or `mount_each()` when the child is independent background work. The parent's timeout can stop the parent from waiting forever, but it does not become the child's timeout:
+
+```python
+@coco.fn
+async def process_file(file: FileLike) -> None:
+    # No timeout is inherited from the parent mount() call.
+    ...
+
+
+@coco.fn
+async def main(files: list[FileLike]) -> None:
+    with coco.timeout(timedelta(seconds=30)):
+        handle = await coco.mount(
+            coco.component_subpath("first-file"),
+            process_file,
+            files[0],
+        )
+
+        # This wait is controlled by the parent's timeout.
+        # The child processor itself remains independent.
+        await handle.ready()
+```
+
+If the parent times out while waiting for `handle.ready()`, the timeout belongs to the parent wait. It does not retroactively cancel the child processor.
+
+## What happens on timeout
+
+| When the deadline is reached | Observable behavior |
+| --- | --- |
+| Before a processor starts | The processor body is not run. |
+| During processor code | The processor raises `DeadlineExceededError` at the next check. |
+| After target states were declared in memory | Those declarations are discarded; no connector sink actions are applied for that failed processor run. |
+| Before returning a memoized result | The cached value is not returned after the deadline. |
+| Inside a memoized body | The timeout is not cached as a successful result. |
+| While waiting for `use_mount()` | The parent waits until the child finishes or fails, then checks the timeout before continuing. |
+| While waiting for `mount().ready()` | The child remains independent; the caller can raise after the ready wait returns. |
+| Inside `coco.map()` | Started items are not cancelled. `map()` waits for them to finish, then raises the first failure by input order. |
+| After processor code succeeds and target synchronization starts | The caller's timeout is no longer active for connector writes. CocoIndex avoids interrupting target synchronization halfway through. |
+
+The main consistency guarantee is: if a timeout happens during processing, CocoIndex does not apply partial target writes from that failed processor run. A later update can retry normally.
+
+## Add checks in long processors
+
+CocoIndex already checks common boundaries, but a long processor loop should add explicit checks:
+
+```python
+@coco.fn
+async def import_rows(rows: list[Row]) -> None:
+    for row in rows:
+        target.declare_row(row=transform(row))
+        coco.check_deadline()
+```
+
+This makes the loop stop near the deadline instead of waiting until the whole function returns.
+
+## Long I/O still needs its own timeout
+
+`coco.timeout()` does not replace client-level timeouts:
+
+```python
+@coco.fn
+async def fetch_page(client: httpx.AsyncClient, url: str) -> str:
+    # httpx controls this individual request.
+    response = await client.get(url, timeout=10.0)
+
+    # CocoIndex controls the orchestration around it.
+    coco.check_deadline()
+    return response.text
+```
+
+Think of the two budgets as complementary:
+
+- client timeouts bound one external call
+- `coco.timeout()` bounds CocoIndex work between safe checks
+
+## Retries
+
+Deadline-aware retry loops check the deadline before each attempt and before each sleep. If a deadline is active, a retry sleep is shortened so it never sleeps past the remaining budget.
+
+If no CocoIndex deadline is active, retry code keeps its normal numeric retry cap. For example, `LlmPairResolver` keeps its configured retry count without `coco.timeout()`, but retries invalid model responses until the deadline when a timeout is active.
+
+## API
+
+```python
+with coco.timeout(datetime.timedelta(seconds=30)):
+    ...
+```
+
+Sets a cooperative timeout for the current CocoIndex context.
+
+```python
+coco.check_deadline()
+```
+
+Raises `coco.DeadlineExceededError` if the current deadline has passed.
+
+```python
+class coco.DeadlineExceededError(TimeoutError):
+    ...
+```
+
+Raised when a CocoIndex timeout is exceeded.

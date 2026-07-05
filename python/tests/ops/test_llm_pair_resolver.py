@@ -107,6 +107,7 @@ async def test_llm_retry_exhaustion_returns_no_match() -> None:
         resolver = LlmPairResolver(model="openai/gpt-4o-mini", retries=1)
         result = await resolver("foo", ["bar", "baz"])
     assert result == PairDecision()
+    assert mock.call_count == 2
 
 
 @pytest.mark.asyncio

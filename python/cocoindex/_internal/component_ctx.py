@@ -18,6 +18,7 @@ from typing import (
 )
 
 from cocoindex._internal.context_keys import ContextKey
+from cocoindex._internal.deadline import check_deadline
 from cocoindex._internal.environment import Environment
 
 from . import core
@@ -496,5 +497,6 @@ async def next_id(key: StableKey = None) -> int:
     Raises:
         RuntimeError: If called outside an active component context.
     """
+    check_deadline()
     ctx = get_context_from_ctx()
     return await ctx._core_processor_ctx.next_id(key)

@@ -99,6 +99,7 @@ export const sidebar: SidebarItem[] = [
     items: [
       { type: 'doc', slug: 'advanced_topics', label: 'Overview' },
       { type: 'doc', slug: 'advanced_topics/concurrency_control', label: 'Concurrency control' },
+      { type: 'doc', slug: 'advanced_topics/timeouts', label: 'Timeouts' },
       { type: 'doc', slug: 'advanced_topics/progress_monitoring', label: 'Progress monitoring' },
       { type: 'doc', slug: 'advanced_topics/memoization_keys', label: 'Memoization keys' },
       { type: 'doc', slug: 'advanced_topics/exception_handlers', label: 'Error handling' },

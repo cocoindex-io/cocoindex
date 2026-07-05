@@ -133,6 +133,12 @@ export const advancedTopicsGroups: SectionGridGroup[] = [
         body: 'Cap how many processing components run at once to protect rate-limited APIs and GPUs.',
       },
       {
+        href: '/docs/advanced_topics/timeouts/',
+        title: 'Timeouts',
+        glyph: 'progress',
+        body: 'Put a cooperative deadline around foreground CocoIndex work without cancelling shared writes or background components.',
+      },
+      {
         href: '/docs/advanced_topics/internal_storage/',
         title: 'Internal storage',
         glyph: 'storage',

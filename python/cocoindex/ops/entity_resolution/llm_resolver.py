@@ -13,6 +13,7 @@ import pydantic as _pydantic
 import cocoindex as _coco
 import instructor as _instructor
 import litellm as _litellm
+from cocoindex._internal import deadline as _deadline
 from cocoindex.ops.entity_resolution import (
     CanonicalSide as _CanonicalSide,
     PairDecision as _PairDecision,
@@ -46,6 +47,7 @@ concise, Wikipedia-style) than the matched one.
 If you are unsure whether two names refer to the same thing, err on the side \
 of `matched` being null.
 """
+_RETRY_BACKOFF_SECONDS = 1.0
 
 
 class LlmPairResolver:
@@ -64,7 +66,7 @@ class LlmPairResolver:
         model: str,
         entity_type: str | None = None,
         extra_guidance: str | None = None,
-        retries: int = 5,
+        retries: int = 2,
     ) -> None:
         """
         Args:
@@ -76,7 +78,8 @@ class LlmPairResolver:
             extra_guidance: Optional domain rules appended to the default
                 prompt. Do **not** include output-format instructions.
             retries: Max retries when the LLM returns an invalid ``matched``
-                value. Default 2.
+                value and no CocoIndex deadline is active. Default 2. Under
+                ``coco.timeout()``, the deadline is the retry budget instead.
         """
         self._model = model
         self._retries = retries
@@ -102,7 +105,7 @@ class LlmPairResolver:
             {"role": "user", "content": user_message},
         ]
 
-        for attempt in range(1 + self._retries):
+        async def _attempt() -> _PairDecision | None:
             result = await self._get_client().chat.completions.create(
                 model=self._model,
                 response_model=_LlmResponse,
@@ -118,6 +121,19 @@ class LlmPairResolver:
             )
             messages.append({"role": "assistant", "content": result.model_dump_json()})
             messages.append({"role": "user", "content": feedback})
+            return None
+
+        # With a CocoIndex deadline, wall-clock budget is the retry budget.
+        # Without one, preserve the historical fixed retry cap.
+        if _deadline.has_deadline():
+            return await _deadline.retry_until_deadline(
+                _attempt, backoff_seconds=_RETRY_BACKOFF_SECONDS
+            )
+
+        for _ in range(1 + self._retries):
+            decision = await _attempt()
+            if decision is not None:
+                return decision
 
         return _PairDecision()
 
