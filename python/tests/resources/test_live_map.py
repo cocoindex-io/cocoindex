@@ -419,3 +419,73 @@ async def test_live_delete_via_ownership() -> None:
         assert "b" not in GlobalDictTarget.store.data
 
     await _run_live(name, body)
+
+
+# ============================================================================
+# Arm/scan seam (regression for a CI flake: duplicate delivery)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_watch_change_in_arm_scan_seam_delivered_once() -> None:
+    """A change landing between watch() arming its queue and the initial snapshot
+    used to be delivered twice: once inside the snapshot, once from the queue
+    (defeating the `==` gate and re-running consumers with an equal value)."""
+    from cocoindex.resources.live_map import _EntryAction, _apply_entry_actions
+
+    lm: LiveMap[str, str] = LiveMap()
+    scan_gate = asyncio.Event()
+    settled = asyncio.Event()
+
+    class _Handle:
+        async def ready(self) -> None:
+            pass
+
+    class _SeamSub:
+        def __init__(self) -> None:
+            self.snapshot: dict[str, str] = {}
+            self.updates: list[tuple[str, Any]] = []
+
+        async def update_all(self) -> None:
+            await scan_gate.wait()  # hold the seam open
+            async for k, v in lm:
+                self.snapshot[k] = v
+
+        async def mark_ready(self) -> None:
+            settled.set()
+
+        async def update(self, key: str, value: Any) -> _Handle:
+            self.updates.append((key, value))
+            return _Handle()
+
+        async def delete(self, key: str) -> _Handle:
+            self.updates.append((key, None))
+            return _Handle()
+
+    sub = _SeamSub()
+    task = asyncio.create_task(lm.watch(sub))  # type: ignore[arg-type]
+    await asyncio.sleep(0)  # queue armed; update_all blocked at the gate
+
+    # The change lands in the seam: queued (queue is armed) AND visible to the
+    # upcoming snapshot (it mutates _entries first).
+    await _apply_entry_actions(None, [_EntryAction(lm, "a", "1", False)])  # type: ignore[arg-type]
+
+    scan_gate.set()
+    await asyncio.wait_for(settled.wait(), timeout=5)
+    await asyncio.sleep(0.05)  # let the drain loop process the queued change
+
+    assert sub.snapshot == {"a": "1"}
+    assert sub.updates == []  # seam change must NOT be re-delivered
+
+    # A genuinely new change (post-snapshot) is still delivered exactly once.
+    await _apply_entry_actions(None, [_EntryAction(lm, "a", "2", False)])  # type: ignore[arg-type]
+    deadline = asyncio.get_event_loop().time() + 5
+    while sub.updates != [("a", "2")] and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    assert sub.updates == [("a", "2")]
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass

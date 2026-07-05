@@ -92,6 +92,9 @@ class _Change(_NamedTuple):
     key: _Any
     value: _Any
     deleted: bool
+    # Orders emissions relative to `_scan` snapshots: the watch loop skips changes
+    # already reflected in the snapshot it delivered (see `watch`).
+    seq: int
 
 
 # ============================================================================
@@ -172,12 +175,14 @@ async def _apply_entry_actions(
         if action.deleted:
             if action.key in live_map._entries:
                 del live_map._entries[action.key]
-                live_map._emit(_Change(action.key, None, True))
+                live_map._seq += 1
+                live_map._emit(_Change(action.key, None, True, live_map._seq))
         else:
             prev = live_map._entries.get(action.key, _MISSING)
             if prev is _MISSING or prev != action.value:
                 live_map._entries[action.key] = action.value
-                live_map._emit(_Change(action.key, action.value, False))
+                live_map._seq += 1
+                live_map._emit(_Change(action.key, action.value, False, live_map._seq))
 
 
 async def _apply_container_actions(
@@ -229,6 +234,8 @@ class LiveMap(_Generic[_K, _V]):
         "_entry_provider",
         "_watcher_queue",
         "__weakref__",
+        "_seq",
+        "_watch_scan_seq",
     )
 
     _uuid: _uuid.UUID
@@ -242,6 +249,11 @@ class LiveMap(_Generic[_K, _V]):
         self._uuid = _uuid.uuid4()
         self._entries = {}
         self._watcher_queue = None
+        # Monotonic emission counter (single event loop: applies are sequential, so a
+        # change with seq <= the seq recorded at snapshot time is already in that
+        # snapshot).
+        self._seq = 0
+        self._watch_scan_seq: int | None = None
 
     @classmethod
     async def create(cls) -> "LiveMap[_K, _V]":
@@ -261,7 +273,12 @@ class LiveMap(_Generic[_K, _V]):
 
     async def _scan(self) -> _AsyncIterator[tuple[_K, _V]]:
         # Snapshot synchronously so a sink firing between yields can't mutate mid-iteration.
-        for item in list(self._entries.items()):
+        snapshot = list(self._entries.items())
+        if self._watcher_queue is not None and self._watch_scan_seq is None:
+            # First scan after a watch armed its queue = the watcher's initial
+            # snapshot (`subscriber.update_all`): record how far it reached.
+            self._watch_scan_seq = self._seq
+        for item in snapshot:
             yield item
 
     async def watch(self, subscriber: "_coco.LiveMapSubscriber[_K, _V]") -> None:
@@ -269,14 +286,21 @@ class LiveMap(_Generic[_K, _V]):
         if self._watcher_queue is not None:
             raise RuntimeError("LiveMap supports a single active watch() at a time.")
         queue: _asyncio.Queue[_Change] = _asyncio.Queue()
-        self._watcher_queue = (
-            queue  # arm before the scan so concurrent changes aren't lost
-        )
+        # Arm before the scan so changes concurrent with it aren't lost. The mirror
+        # image of that choice is a change landing between arming and the snapshot:
+        # it gets queued AND included in the snapshot. The seq gate below drops such
+        # already-delivered changes at drain time (they'd otherwise re-notify the
+        # consumer with an equal value, defeating the `==` gate).
+        self._watcher_queue = queue
+        self._watch_scan_seq = None
         try:
             await subscriber.update_all()
             await subscriber.mark_ready()
+            snapshot_seq = self._watch_scan_seq
             while True:
                 change = await queue.get()
+                if snapshot_seq is not None and change.seq <= snapshot_seq:
+                    continue  # already reflected in the initial snapshot
                 if change.deleted:
                     handle = await subscriber.delete(change.key)
                 else:
@@ -284,6 +308,7 @@ class LiveMap(_Generic[_K, _V]):
                 await handle.ready()
         finally:
             self._watcher_queue = None
+            self._watch_scan_seq = None
 
     def _emit(self, change: _Change) -> None:
         queue = self._watcher_queue
