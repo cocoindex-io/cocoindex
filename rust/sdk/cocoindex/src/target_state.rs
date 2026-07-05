@@ -208,8 +208,7 @@ where
                 Err(err) => Box::pin(async move { Err(err) }),
             };
             Box::pin(async move {
-                fut.await
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                fut.await.map_err(crate::error::Error::into_core)?;
                 Ok(None)
             })
         }));
@@ -242,9 +241,7 @@ where
                 Err(err) => Box::pin(async move { Err(err) }),
             };
             Box::pin(async move {
-                let defs = fut
-                    .await
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                let defs = fut.await.map_err(crate::error::Error::into_core)?;
                 let mapped = defs
                     .into_iter()
                     .map(|d| {
@@ -286,8 +283,7 @@ where
                     Err(err) => Box::pin(async move { Err(err) }),
                 };
                 Box::pin(async move {
-                    fut.await
-                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                    fut.await.map_err(crate::error::Error::into_core)?;
                     Ok(None)
                 })
             }));
@@ -319,9 +315,7 @@ where
                     Err(err) => Box::pin(async move { Err(err) }),
                 };
                 Box::pin(async move {
-                    let defs = fut
-                        .await
-                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                    let defs = fut.await.map_err(crate::error::Error::into_core)?;
                     let mapped = defs
                         .into_iter()
                         .map(|d| {
@@ -511,15 +505,15 @@ where
         let desired = desired
             .map(Value::deserialize::<V>)
             .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+            .map_err(crate::error::Error::into_core)?;
         let prev = prev
             .iter()
             .map(Value::deserialize::<H::TrackingRecord>)
             .collect::<Result<Vec<_>>>()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+            .map_err(crate::error::Error::into_core)?;
         let output = handler
             .reconcile(key, desired, prev, prev_may_be_missing)
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+            .map_err(crate::error::Error::into_core)?;
         let Some(output) = output else {
             return Ok(None);
         };
@@ -549,7 +543,7 @@ where
     .with_attachments(move || {
         let entries = attach_handler
             .attachments()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+            .map_err(crate::error::Error::into_core)?;
         Ok(entries
             .into_iter()
             .map(|(name, def)| (Arc::from(name.as_str()), def.handler))

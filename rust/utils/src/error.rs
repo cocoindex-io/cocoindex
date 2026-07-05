@@ -298,9 +298,7 @@ impl IntoResponse for Error {
 
         let (status_code, error_msg) = match &self {
             Error::Client { msg, .. } => (StatusCode::BAD_REQUEST, msg.clone()),
-            Error::DeadlineExceeded { .. } => {
-                (StatusCode::REQUEST_TIMEOUT, self.to_string())
-            }
+            Error::DeadlineExceeded { .. } => (StatusCode::REQUEST_TIMEOUT, self.to_string()),
             Error::HostLang(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             Error::Context { .. } | Error::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", self))

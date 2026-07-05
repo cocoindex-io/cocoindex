@@ -106,10 +106,7 @@ where
     {
         let wrapped: BatchFn<In, Out> = Box::new(move |inputs| {
             let fut = f(inputs);
-            Box::pin(async move {
-                fut.await
-                    .map_err(|e: Error| cocoindex_utils::error::Error::internal_msg(e.to_string()))
-            })
+            Box::pin(async move { fut.await.map_err(Error::into_core) })
         });
         let runner = FnRunner { f: wrapped };
         let queue = Arc::new(BatchQueue::new());

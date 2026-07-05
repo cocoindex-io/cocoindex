@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::Environment;
 use cocoindex_core::engine::execution;
 use cocoindex_core::engine::live_component::mount_live_prepare;
@@ -198,6 +199,9 @@ pub struct Ctx {
     /// concurrent body receives its own scoped `Ctx`. `None` at the app root
     /// and in standalone use.
     pub(crate) fn_ctx: Option<Arc<FnCallContext>>,
+    /// Deadline carried by this SDK context. Component contexts supplied by the
+    /// Rust core set the initial value; `with_timeout` returns a narrowed clone.
+    pub(crate) deadline: DeadlineContext,
     /// Exception handlers in scope for background work mounted from this `Ctx`,
     /// ordered outermost→innermost. Empty at the root; extended by
     /// `mount_live_with_handler` so nested live components inherit ancestors'
@@ -210,10 +214,14 @@ impl Ctx {
         comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
         state: Arc<AppInner>,
     ) -> Self {
+        let deadline = comp_ctx
+            .as_ref()
+            .map_or(DeadlineContext::NONE, |ctx| ctx.deadline());
         Self {
             comp_ctx,
             state,
             fn_ctx: None,
+            deadline,
             handler_chain: Arc::new(Vec::new()),
         }
     }
@@ -223,19 +231,27 @@ impl Ctx {
         state: Arc<AppInner>,
         handler_chain: Arc<Vec<crate::live_component::ExceptionHandler>>,
     ) -> Self {
+        let deadline = comp_ctx
+            .as_ref()
+            .map_or(DeadlineContext::NONE, |ctx| ctx.deadline());
         Self {
             comp_ctx,
             state,
             fn_ctx: None,
+            deadline,
             handler_chain,
         }
     }
 
     fn child(&self, comp_ctx: Option<ComponentProcessorContext<RustProfile>>) -> Self {
+        let deadline = comp_ctx
+            .as_ref()
+            .map_or(self.deadline, |ctx| ctx.deadline());
         Self {
             comp_ctx,
             state: self.state.clone(),
             fn_ctx: None,
+            deadline,
             handler_chain: self.handler_chain.clone(),
         }
     }
@@ -247,6 +263,7 @@ impl Ctx {
             comp_ctx: self.comp_ctx.clone(),
             state: self.state.clone(),
             fn_ctx: Some(fn_ctx),
+            deadline: self.deadline,
             handler_chain: self.handler_chain.clone(),
         }
     }
@@ -342,6 +359,33 @@ impl Drop for StatsGroupEndGuard {
 }
 
 impl Ctx {
+    /// Return a cloned context with an additional timeout applied.
+    ///
+    /// If the current context already has an earlier deadline, the earlier one
+    /// wins. The returned context should be passed to child scopes and helper
+    /// calls whose work belongs to the narrower budget.
+    pub fn with_timeout(&self, timeout: Duration) -> Self {
+        let mut scoped = self.clone();
+        scoped.deadline = scoped.deadline.with_timeout(timeout);
+        scoped
+    }
+
+    /// Check the current deadline and return [`Error::DeadlineExceeded`] if it
+    /// has expired.
+    pub fn check_deadline(&self) -> Result<()> {
+        self.deadline.check().map_err(Error::from)
+    }
+
+    /// Return true when this context carries an active deadline.
+    pub fn has_deadline(&self) -> bool {
+        self.deadline.has_deadline()
+    }
+
+    /// Return the remaining budget, or `None` when no deadline is active.
+    pub fn remaining_deadline(&self) -> Option<Duration> {
+        self.deadline.remaining()
+    }
+
     /// Try to get a shared resource and return a typed error if missing.
     ///
     /// # Errors
@@ -399,7 +443,7 @@ impl Ctx {
         };
         comp_ctx
             .app_ctx()
-            .next_id(None, comp_ctx.deadline())
+            .next_id(None, self.deadline)
             .await
             .map_err(Error::from)
     }
@@ -548,6 +592,7 @@ impl Ctx {
             comp_ctx: Some(derived.clone()),
             state: self.state.clone(),
             fn_ctx: self.fn_ctx.clone(),
+            deadline: derived.deadline(),
             handler_chain: self.handler_chain.clone(),
         };
         let group_guard = StatsGroupEndGuard::new(derived);
@@ -853,10 +898,12 @@ impl Ctx {
         let scope_handler_chain = self.handler_chain.clone();
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
+                let deadline = child_comp_ctx.deadline();
                 let ctx = Ctx {
                     comp_ctx: Some(child_comp_ctx),
                     state: state.clone(),
                     fn_ctx: Some(scope_fn_ctx.clone()),
+                    deadline,
                     handler_chain: scope_handler_chain.clone(),
                 };
                 Box::pin(async move {
@@ -869,19 +916,19 @@ impl Ctx {
         );
 
         let handle = match child_component
-            .use_mount(comp_ctx, processor, comp_ctx.deadline())
+            .use_mount(comp_ctx, processor, self.deadline)
             .await
         {
             Ok(handle) => handle,
             Err(err) => {
-                return Err(Error::engine(format!("{err}")));
+                return Err(Error::from(err));
             }
         };
         let value = handle.result(Some(comp_ctx)).await;
         let value = match value {
             Ok(value) => value,
             Err(err) => {
-                return Err(Error::engine(format!("{err}")));
+                return Err(Error::from(err));
             }
         };
         let result: T = match value.deserialize() {
@@ -1070,7 +1117,17 @@ impl Ctx {
         F: Fn(I::Item) -> Fut,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let futs: Vec<_> = items.into_iter().map(f).collect();
+        self.check_deadline()?;
+        let deadline = self.deadline;
+        let futs: Vec<_> = items
+            .into_iter()
+            .map(|item| async {
+                deadline.check().map_err(Error::from)?;
+                let result = f(item).await?;
+                deadline.check().map_err(Error::from)?;
+                Ok(result)
+            })
+            .collect();
         futures::future::try_join_all(futs).await
     }
 }

@@ -76,10 +76,13 @@ where
     F: FnOnce(Ctx) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
+    ctx.check_deadline()?;
     // If we have a pipeline context, use LMDB-backed memoization.
     let Some(comp_ctx) = &ctx.comp_ctx else {
         // No pipeline context — execute directly (standalone mode).
-        return f(ctx.clone()).await;
+        let result = f(ctx.clone()).await?;
+        ctx.check_deadline()?;
+        return Ok(result);
     };
 
     let guard = reserve_memoization(comp_ctx, fp)
@@ -89,6 +92,7 @@ where
     // Cache hit — deserialize and return the stored value.
     if let Some(cached) = guard.cached() {
         let value: T = cached.ret.deserialize()?;
+        ctx.check_deadline()?;
         return Ok(value);
     }
 
@@ -96,6 +100,7 @@ where
     let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
     let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
     let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
+    ctx.check_deadline()?;
     let value = Value::from_serializable(&result)
         .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
     let memo_states = MemoStatesPayload {
@@ -123,8 +128,11 @@ where
     S: FnOnce(Option<Vec<MemoStateValue>>) -> SFut,
     SFut: Future<Output = Result<Vec<MemoStateDecision>>> + Send,
 {
+    ctx.check_deadline()?;
     let Some(comp_ctx) = &ctx.comp_ctx else {
-        return f(ctx.clone()).await;
+        let result = f(ctx.clone()).await?;
+        ctx.check_deadline()?;
+        return Ok(result);
     };
 
     let mut guard = reserve_memoization(comp_ctx, fp)
@@ -154,6 +162,7 @@ where
             .ne(cached.memo_states.iter().map(|value| &value.0));
         let cached_context_states = cached.context_memo_states.to_vec();
         let value: T = cached.ret.deserialize()?;
+        ctx.check_deadline()?;
         if states_changed {
             guard.update_memo_states(MemoStatesPayload {
                 positional: memo_states_for_resolve,
@@ -166,6 +175,7 @@ where
     let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
     let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
     let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
+    ctx.check_deadline()?;
     let value = Value::from_serializable(&result)
         .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
     let memo_states = MemoStatesPayload {

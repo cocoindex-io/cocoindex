@@ -157,11 +157,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
-    pub async fn next_id(
-        &self,
-        key: Option<&StableKey>,
-        deadline: DeadlineContext,
-    ) -> Result<u64> {
+    pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);

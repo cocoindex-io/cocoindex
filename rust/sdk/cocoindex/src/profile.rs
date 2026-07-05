@@ -137,10 +137,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
                 cocoindex_utils::error::Error::internal_msg("processor already consumed")
             })?;
         let fut = process_fn(comp_ctx.clone());
-        Ok(async move {
-            fut.await
-                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))
-        })
+        Ok(async move { fut.await.map_err(crate::error::Error::into_core) })
     }
 
     fn memo_key_fingerprint(&self) -> Option<Fingerprint> {
