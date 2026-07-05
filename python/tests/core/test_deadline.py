@@ -529,17 +529,17 @@ def test_plain_coco_fn_checks_deadline_after_return(fake_clock: _FakeClock) -> N
 
 
 def test_sink_body_is_deadline_isolated(fake_clock: _FakeClock) -> None:
-    store = _RecordingTargetStore()
-    provider = coco.register_root_target_states_provider(
-        "test_deadline/sink_isolated", store
-    )
-
-    @coco.fn
-    async def main() -> None:
-        coco.declare_target_state(provider.target_state("k", "v"))
-
-    app = coco.App(coco.AppConfig(name="deadline_d5", environment=_env("d5")), main)
     with coco.timeout(timedelta(seconds=10)):
+        store = _RecordingTargetStore()
+        provider = coco.register_root_target_states_provider(
+            "test_deadline/sink_isolated", store
+        )
+
+        @coco.fn
+        async def main() -> None:
+            coco.declare_target_state(provider.target_state("k", "v"))
+
+        app = coco.App(coco.AppConfig(name="deadline_d5", environment=_env("d5")), main)
         app.update_blocking()
 
     assert store.seen_deadlines == [None]
@@ -733,6 +733,7 @@ def test_deadline_exceptions_are_not_memoized(fake_clock: _FakeClock) -> None:
     calls = 0
     should_timeout = True
     expire_before_call = False
+    memo_value_returned_to_main = False
 
     @coco.fn(memo=True)
     def memoized() -> str:
@@ -745,9 +746,12 @@ def test_deadline_exceptions_are_not_memoized(fake_clock: _FakeClock) -> None:
 
     @coco.fn
     async def main() -> str:
+        nonlocal memo_value_returned_to_main
         if expire_before_call:
             fake_clock.now = 11
-        return memoized()
+        result = memoized()
+        memo_value_returned_to_main = True
+        return result
 
     app = coco.App(coco.AppConfig(name="deadline_d10", environment=_env("d10")), main)
 
@@ -763,11 +767,13 @@ def test_deadline_exceptions_are_not_memoized(fake_clock: _FakeClock) -> None:
     assert calls == 2
 
     expire_before_call = True
+    memo_value_returned_to_main = False
     fake_clock.now = 0
     with coco.timeout(timedelta(seconds=10)):
         with pytest.raises(coco.DeadlineExceededError):
             app.update_blocking()
     assert calls == 2
+    assert not memo_value_returned_to_main
 
     with coco.timeout(timedelta(seconds=20)):
         assert app.update_blocking() == "ok"

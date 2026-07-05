@@ -23,6 +23,8 @@ const MAX_DEADLINE_NS: u64 = u64::MAX - 1;
 static MONOTONIC_ANCHOR: OnceLock<Instant> = OnceLock::new();
 static TEST_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
 static TEST_CLOCK_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Immutable deadline handle carried through engine contexts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -138,15 +140,25 @@ pub fn testing_advance_deadline_clock(duration: Duration) {
 }
 
 #[cfg(test)]
+pub(crate) fn testing_deadline_clock_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_CLOCK_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    struct TestClockGuard;
+    struct TestClockGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestClockGuard {
         fn new() -> Self {
+            let guard = testing_deadline_clock_lock();
             testing_reset_deadline_clock();
-            Self
+            Self { _guard: guard }
         }
     }
 

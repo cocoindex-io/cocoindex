@@ -1093,7 +1093,8 @@ impl Ctx {
 
     /// Run a closure concurrently for each item within the current scope (no child scopes).
     ///
-    /// Like `futures::future::try_join_all` but with a mapping closure.
+    /// Like `futures::future::join_all` plus result collection: every started
+    /// item runs to completion, then the first error in input order is returned.
     ///
     /// # Examples
     ///
@@ -1123,12 +1124,19 @@ impl Ctx {
             .into_iter()
             .map(|item| async {
                 deadline.check().map_err(Error::from)?;
-                let result = f(item).await?;
-                deadline.check().map_err(Error::from)?;
-                Ok(result)
+                let result = f(item).await;
+                if result.is_ok() {
+                    deadline.check().map_err(Error::from)?;
+                }
+                result
             })
             .collect();
-        futures::future::try_join_all(futs).await
+        let outcomes = futures::future::join_all(futs).await;
+        let mut values = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            values.push(outcome?);
+        }
+        Ok(values)
     }
 }
 
@@ -1152,4 +1160,70 @@ where
         None,
         processor_name,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{App, UpdateOptions};
+    use cocoindex_core::engine::deadline::{
+        testing_advance_deadline_clock, testing_disable_deadline_clock,
+        testing_reset_deadline_clock,
+    };
+
+    struct TestClockGuard;
+
+    impl TestClockGuard {
+        fn new() -> Self {
+            testing_reset_deadline_clock();
+            Self
+        }
+
+        fn reset(&self) {
+            testing_reset_deadline_clock();
+        }
+    }
+
+    impl Drop for TestClockGuard {
+        fn drop(&mut self) {
+            testing_disable_deadline_clock();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn next_raw_id_checks_deadline_before_allocating() {
+        let clock = TestClockGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::builder("ctx_next_raw_id_deadline")
+            .db_path(dir.path().join("lmdb"))
+            .build()
+            .await
+            .unwrap();
+
+        let err = app
+            .update_with_options(
+                UpdateOptions {
+                    timeout: Some(Duration::from_secs(1)),
+                    ..UpdateOptions::default()
+                },
+                |ctx| async move {
+                    testing_advance_deadline_clock(Duration::from_secs(2));
+                    let _ = ctx.next_raw_id().await?;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.is_deadline_exceeded());
+
+        clock.reset();
+        let first_id_after_timeout = app
+            .update(|ctx| async move { ctx.next_raw_id().await })
+            .await
+            .unwrap();
+        assert_eq!(
+            first_id_after_timeout, 1,
+            "expired next_id must not consume an ID allocation"
+        );
+    }
 }

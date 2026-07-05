@@ -982,6 +982,12 @@ impl<Prof: EngineProfile> Component<Prof> {
                         // We can piggyback on the same processing to avoid duplicating the work.
                     }
 
+                    // The earlier deadline check guards memo lookup. A component can still
+                    // spend time waiting for the build semaphore, existence upsert, or state
+                    // prefetch before the user body starts, so check again at the actual
+                    // processor-entry boundary.
+                    processor_context.deadline().check()?;
+
                     let ret: Result<Option<Prof::FunctionData>> = match &processor {
                         Some(processor) => processor
                             .process(
@@ -1225,8 +1231,27 @@ impl<Prof: EngineProfile> Component<Prof> {
 
 #[cfg(test)]
 mod tests {
-    use super::any_active;
-    use std::sync::{Arc, Weak};
+    use super::{ComponentProcessor, ComponentProcessorInfo, any_active};
+    use crate::engine::app::{App, AppUpdateOptions};
+    use crate::engine::context::{ComponentProcessorContext, MemoStatesPayload};
+    use crate::engine::deadline::{
+        DeadlineContext, testing_advance_deadline_clock, testing_deadline_clock_lock,
+        testing_disable_deadline_clock, testing_reset_deadline_clock,
+    };
+    use crate::engine::environment::Environment;
+    use crate::engine::profile::{EngineProfile, Persist};
+    use crate::engine::target_state::{
+        ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
+        TargetStateProviderRegistry,
+    };
+    use crate::state::stable_path::StableKey;
+    use crate::state_store::StorageSettings;
+    use async_trait::async_trait;
+    use cocoindex_utils::fingerprint::Fingerprint;
+    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, Weak};
+    use std::time::Duration;
 
     #[test]
     fn test_any_active_pop_prune() {
@@ -1252,5 +1277,238 @@ mod tests {
         drop(live);
         assert!(!any_active(&mut members));
         assert!(members.is_empty());
+    }
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
+    struct TestProfile;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TestData(Vec<u8>);
+
+    impl Persist for TestData {
+        fn to_bytes(&self) -> crate::prelude::Result<bytes::Bytes> {
+            Ok(bytes::Bytes::from(self.0.clone()))
+        }
+
+        fn from_bytes(data: &[u8]) -> crate::prelude::Result<Self> {
+            Ok(Self(data.to_vec()))
+        }
+    }
+
+    struct NoopSink;
+
+    #[async_trait]
+    impl TargetActionSink<TestProfile> for NoopSink {
+        async fn apply(
+            &self,
+            _host_runtime_ctx: &(),
+            _host_ctx: Arc<()>,
+            _actions: Vec<()>,
+        ) -> crate::prelude::Result<Option<Vec<Option<ChildTargetDef<TestProfile>>>>> {
+            Ok(None)
+        }
+    }
+
+    struct NoopHandler;
+
+    impl TargetHandler<TestProfile> for NoopHandler {
+        fn reconcile(
+            &self,
+            _key: StableKey,
+            _desired_target_state: Option<&()>,
+            _prev_possible_records: &[TestData],
+            _prev_may_be_missing: bool,
+        ) -> crate::prelude::Result<Option<TargetReconcileOutput<TestProfile>>> {
+            Ok(None)
+        }
+    }
+
+    impl Hash for TestProcessor {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.memo_fp.hash(state);
+        }
+    }
+
+    impl PartialEq for TestProcessor {
+        fn eq(&self, other: &Self) -> bool {
+            self.memo_fp == other.memo_fp
+        }
+    }
+
+    impl Eq for TestProcessor {}
+
+    impl EngineProfile for TestProfile {
+        type HostRuntimeCtx = ();
+        type HostCtx = ();
+        type ComponentProc = TestProcessor;
+        type FunctionData = TestData;
+        type TargetHdl = NoopHandler;
+        type TargetStateTrackingRecord = TestData;
+        type TargetAction = ();
+        type TargetActionSink = NoopSink;
+        type TargetStateValue = ();
+    }
+
+    struct TestProcessor {
+        info: ComponentProcessorInfo,
+        memo_fp: Fingerprint,
+        body_started: Arc<AtomicBool>,
+        advance_clock_in_state_handler: bool,
+    }
+
+    impl TestProcessor {
+        fn new(
+            name: &str,
+            memo_fp: Fingerprint,
+            body_started: Arc<AtomicBool>,
+            advance_clock_in_state_handler: bool,
+        ) -> Self {
+            Self {
+                info: ComponentProcessorInfo::new(name.to_string()),
+                memo_fp,
+                body_started,
+                advance_clock_in_state_handler,
+            }
+        }
+    }
+
+    impl ComponentProcessor<TestProfile> for TestProcessor {
+        fn process(
+            &self,
+            _host_runtime_ctx: &(),
+            _comp_ctx: &ComponentProcessorContext<TestProfile>,
+        ) -> crate::prelude::Result<
+            impl Future<Output = crate::prelude::Result<TestData>> + Send + 'static,
+        > {
+            let body_started = self.body_started.clone();
+            Ok(async move {
+                body_started.store(true, Ordering::SeqCst);
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }
+
+        fn memo_key_fingerprint(&self) -> Option<Fingerprint> {
+            Some(self.memo_fp)
+        }
+
+        fn processor_info(&self) -> &ComponentProcessorInfo {
+            &self.info
+        }
+
+        fn has_memo_state_handler(&self) -> bool {
+            true
+        }
+
+        fn handle_memo_states(
+            &self,
+            _host_runtime_ctx: &(),
+            _comp_ctx: &ComponentProcessorContext<TestProfile>,
+            _stored_states: Option<MemoStatesPayload<TestProfile>>,
+        ) -> crate::prelude::Result<
+            impl Future<Output = crate::prelude::Result<(MemoStatesPayload<TestProfile>, bool, bool)>>
+            + Send
+            + 'static,
+        > {
+            let advance_clock = self.advance_clock_in_state_handler;
+            Ok(async move {
+                if advance_clock {
+                    testing_advance_deadline_clock(Duration::from_secs(2));
+                }
+                Ok((
+                    MemoStatesPayload {
+                        positional: vec![TestData(b"state".to_vec())],
+                        by_context_fp: Vec::new(),
+                    },
+                    false,
+                    false,
+                ))
+            })
+        }
+    }
+
+    struct TestClockGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestClockGuard {
+        fn new() -> Self {
+            let guard = testing_deadline_clock_lock();
+            testing_reset_deadline_clock();
+            Self { _guard: guard }
+        }
+    }
+
+    impl Drop for TestClockGuard {
+        fn drop(&mut self) {
+            testing_disable_deadline_clock();
+        }
+    }
+
+    async fn test_app(name: &str) -> (App<TestProfile>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().join("lmdb"),
+            lmdb_max_dbs: 64,
+            lmdb_map_size: 1 << 24,
+        };
+        let providers = Arc::new(Mutex::new(TargetStateProviderRegistry::new(
+            Default::default(),
+        )));
+        let env = Environment::<TestProfile>::new(settings, providers, ())
+            .await
+            .unwrap();
+        let app = App::new(name, env, None).await.unwrap();
+        (app, dir)
+    }
+
+    #[tokio::test]
+    async fn deadline_rechecked_after_memo_state_handler_before_processor_body() {
+        let _clock = TestClockGuard::new();
+        let memo_fp = Fingerprint::from(&"processor-entry-deadline").unwrap();
+        let (app, _dir) = test_app("deadline_pre_body").await;
+
+        let first_body_started = Arc::new(AtomicBool::new(false));
+        let first_processor = TestProcessor::new(
+            "deadline_pre_body",
+            memo_fp,
+            first_body_started.clone(),
+            false,
+        );
+        let (handle, _) = app
+            .update(
+                first_processor,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert!(first_body_started.load(Ordering::SeqCst));
+
+        let second_body_started = Arc::new(AtomicBool::new(false));
+        let second_processor = TestProcessor::new(
+            "deadline_pre_body",
+            memo_fp,
+            second_body_started.clone(),
+            true,
+        );
+        let deadline = DeadlineContext::NONE.with_timeout(Duration::from_secs(1));
+        let (handle, _) = app
+            .update(
+                second_processor,
+                AppUpdateOptions {
+                    deadline: Some(deadline),
+                    ..AppUpdateOptions::default()
+                },
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let err = handle.result().await.unwrap_err();
+        assert!(err.is_deadline_exceeded());
+        assert!(
+            !second_body_started.load(Ordering::SeqCst),
+            "processor body must not start after memo-state validation expires the deadline"
+        );
     }
 }

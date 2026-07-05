@@ -12,6 +12,7 @@ use cocoindex_core::engine::deadline::{
     testing_advance_deadline_clock, testing_disable_deadline_clock, testing_reset_deadline_clock,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 static MEMO_CHILD_CALLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -155,15 +156,31 @@ async fn rust_sdk_deadline_conformance_subset() {
     // expired child before its body can run.
     clock.reset();
     let (app, _dir) = temp_app("sdk_deadline_use_mount_inherit").await;
+    let child_body_started = Arc::new(AtomicBool::new(false));
     let err = app
-        .update(|ctx| async move {
-            let scoped = ctx.with_timeout(Duration::from_secs(1));
-            testing_advance_deadline_clock(Duration::from_secs(2));
-            scoped.scope(&"child", |_child| async move { Ok(()) }).await
+        .update({
+            let child_body_started = child_body_started.clone();
+            move |ctx| async move {
+                let scoped = ctx.with_timeout(Duration::from_secs(1));
+                testing_advance_deadline_clock(Duration::from_secs(2));
+                scoped
+                    .scope(&"child", move |_child| {
+                        let child_body_started = child_body_started.clone();
+                        async move {
+                            child_body_started.store(true, Ordering::SeqCst);
+                            Ok(())
+                        }
+                    })
+                    .await
+            }
         })
         .await
         .unwrap_err();
     assert_deadline(err);
+    assert!(
+        !child_body_started.load(Ordering::SeqCst),
+        "expired child body must not start before the core pre-memo checkpoint"
+    );
 
     // Background/live-style components are isolated. The child processor Ctx
     // sees no deadline even though the parent has one.
@@ -192,6 +209,69 @@ async fn rust_sdk_deadline_conformance_subset() {
     .await
     .unwrap();
     assert!(child_saw_no_deadline.load(Ordering::SeqCst));
+
+    // ctx.map is cooperative, not cancel-by-drop: after one item observes the
+    // deadline, already-started siblings still run to completion before map()
+    // reports the first error in input order. Replacing join_all with
+    // try_join_all makes this assertion fail because the slow future is dropped.
+    clock.reset();
+    let (app, _dir) = temp_app("sdk_deadline_map_drains").await;
+    let slow_started = Arc::new(AtomicBool::new(false));
+    let slow_released = Arc::new(Notify::new());
+    let slow_completed = Arc::new(AtomicBool::new(false));
+    let err = app
+        .update_with_options(
+            UpdateOptions {
+                timeout: Some(Duration::from_secs(1)),
+                ..UpdateOptions::default()
+            },
+            {
+                let slow_started = slow_started.clone();
+                let slow_released = slow_released.clone();
+                let slow_completed = slow_completed.clone();
+                move |ctx| async move {
+                    let scoped = ctx.with_timeout(Duration::from_secs(1));
+                    let check_ctx = scoped.clone();
+                    let _: Vec<&'static str> = scoped
+                        .map(["slow", "deadline"], move |item| {
+                            let check_ctx = check_ctx.clone();
+                            let slow_started = slow_started.clone();
+                            let slow_released = slow_released.clone();
+                            let slow_completed = slow_completed.clone();
+                            async move {
+                                match item {
+                                    "slow" => {
+                                        slow_started.store(true, Ordering::SeqCst);
+                                        slow_released.notified().await;
+                                        slow_completed.store(true, Ordering::SeqCst);
+                                        Ok("slow")
+                                    }
+                                    "deadline" => {
+                                        assert!(
+                                            slow_started.load(Ordering::SeqCst),
+                                            "slow item must be pending before deadline item fails"
+                                        );
+                                        slow_released.notify_one();
+                                        testing_advance_deadline_clock(Duration::from_secs(2));
+                                        check_ctx.check_deadline()?;
+                                        Ok("deadline")
+                                    }
+                                    _ => unreachable!("test input is fixed"),
+                                }
+                            }
+                        })
+                        .await?;
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_deadline(err);
+    assert!(
+        slow_completed.load(Ordering::SeqCst),
+        "ctx.map must drain already-started siblings before returning a deadline error"
+    );
 
     // If a processor expires after declaring target states, the core
     // post-body/pre-submit checkpoint stops submit; the sink is never called.
