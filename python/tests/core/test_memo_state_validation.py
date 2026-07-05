@@ -867,7 +867,6 @@ def test_recollect_after_run_rejected_for_component() -> None:
     with pytest.raises(Exception, match="recollect_after_run"):
         app.update_blocking()
 
-
 # ============================================================================
 # State changed, still reusable → the refreshed entry keeps its target states
 # and the entries it depends on across the commit
@@ -983,9 +982,7 @@ class _ClassObjectMemoMeta(type):
         return coco.MemoStateOutcome(state=state_value, memo_valid=memo_valid)
 
 
-def _make_class_object(
-    stable_key: str, state_value: int, content: str
-) -> type:
+def _make_class_object(stable_key: str, state_value: int, content: str) -> type:
     return _ClassObjectMemoMeta(
         f"ClassObject_{stable_key}_{state_value}_{content}",
         (),
