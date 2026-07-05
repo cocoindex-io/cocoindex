@@ -6,17 +6,32 @@
 //! `cocoindex_ops_text::split::Chunk`, so examples and user code do not have to
 //! re-slice the source by raw byte offsets.
 
-use cocoindex_ops_text::prog_langs;
+use cocoindex_code_ast::prog_langs;
 use cocoindex_ops_text::split;
 
 use crate::error::{Error, Result};
 use crate::resources::chunk::{Chunk, TextPosition};
 
 // Re-export the lightweight config types so callers configure the splitters
-// without depending on `cocoindex_ops_text` directly.
-pub use cocoindex_ops_text::split::{
-    CustomLanguageConfig, KeepSeparator, RecursiveChunkConfig, SeparatorSplitConfig,
-};
+// without depending on `cocoindex_ops_text` directly, and the shared
+// `CodeSource` handle so one parse can be reused across consumers.
+pub use cocoindex_code_ast::CodeSource;
+pub use cocoindex_ops_text::split::{CustomLanguageConfig, KeepSeparator, SeparatorSplitConfig};
+
+/// Configuration for a single [`RecursiveSplitter`] operation.
+#[derive(Debug, Clone)]
+pub struct RecursiveChunkConfig {
+    /// Target chunk size in bytes.
+    pub chunk_size: usize,
+    /// Minimum chunk size in bytes. Defaults to `chunk_size / 2`.
+    pub min_chunk_size: Option<usize>,
+    /// Overlap between consecutive chunks in bytes.
+    pub chunk_overlap: Option<usize>,
+    /// Language name or file extension for syntax-aware splitting. Used by
+    /// [`RecursiveSplitter::split_with`]; ignored by
+    /// [`RecursiveSplitter::split_source`], where the source carries its own.
+    pub language: Option<String>,
+}
 
 /// Detect the programming language for a filename from its extension.
 ///
@@ -125,8 +140,30 @@ impl RecursiveSplitter {
 
     /// Split `text` with full control over chunk size, overlap, and language.
     pub fn split_with(&self, text: &str, config: RecursiveChunkConfig) -> Vec<Chunk> {
+        let source = match config.language.clone() {
+            Some(language) => CodeSource::with_language(text, language),
+            None => CodeSource::new(text),
+        };
+        self.split_source(&source, config)
+    }
+
+    /// Split an existing [`CodeSource`], reusing its cached parse (and
+    /// populating it for later consumers — e.g. structural matching over the
+    /// same file). The source's language wins: `config.language` is ignored.
+    pub fn split_source(
+        &self,
+        source: &CodeSource<'_>,
+        config: RecursiveChunkConfig,
+    ) -> Vec<Chunk> {
         self.inner
-            .split(text, config)
+            .split(
+                source,
+                split::RecursiveChunkConfig {
+                    chunk_size: config.chunk_size,
+                    min_chunk_size: config.min_chunk_size,
+                    chunk_overlap: config.chunk_overlap,
+                },
+            )
             .into_iter()
             .map(convert_chunk)
             .collect()

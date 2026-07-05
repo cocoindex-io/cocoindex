@@ -6,8 +6,9 @@ use std::sync::{Arc, LazyLock};
 use unicase::UniCase;
 
 use super::{Chunk, TextRange};
-use crate::output_positions::{Position, set_output_positions};
-use crate::prog_langs::{self, TreeSitterLanguageInfo};
+use cocoindex_code_ast::positions::{Position, set_output_positions};
+use cocoindex_code_ast::prog_langs::TreeSitterLanguageInfo;
+use cocoindex_code_ast::{CodeSource, ParseOutcome};
 
 const SYNTAX_LEVEL_GAP_COST: usize = 512;
 const MISSING_OVERLAP_COST: usize = 512;
@@ -40,7 +41,8 @@ impl Default for RecursiveSplitConfig {
     }
 }
 
-/// Configuration for a single chunking operation.
+/// Configuration for a single chunking operation. The language comes from the
+/// [`CodeSource`] passed to [`RecursiveChunker::split`], not from here.
 #[derive(Debug, Clone)]
 pub struct RecursiveChunkConfig {
     /// Target chunk size in bytes.
@@ -49,8 +51,6 @@ pub struct RecursiveChunkConfig {
     pub min_chunk_size: Option<usize>,
     /// Overlap between consecutive chunks in bytes.
     pub chunk_overlap: Option<usize>,
-    /// Language name or file extension for syntax-aware splitting.
-    pub language: Option<String>,
 }
 
 struct SimpleLanguageConfig {
@@ -639,8 +639,16 @@ impl RecursiveChunker {
         Ok(Self { custom_languages })
     }
 
-    /// Split the text into chunks according to the configuration.
-    pub fn split(&self, text: &str, config: RecursiveChunkConfig) -> Vec<Chunk> {
+    /// Split the source into chunks according to the configuration.
+    ///
+    /// Routing: a custom (regex) language configured on this chunker takes
+    /// priority (never parses); otherwise the source's tree-sitter parse is
+    /// used when available, and everything else (unknown language, no grammar,
+    /// parse failure) degrades to the default regex splitter. The parse is
+    /// cached on the [`CodeSource`], so several consumers of the same source
+    /// parse at most once.
+    pub fn split(&self, source: &CodeSource<'_>, config: RecursiveChunkConfig) -> Vec<Chunk> {
+        let text = source.text();
         let min_chunk_size = config.min_chunk_size.unwrap_or(config.chunk_size / 2);
         let chunk_overlap = std::cmp::min(config.chunk_overlap.unwrap_or(0), min_chunk_size);
 
@@ -656,93 +664,33 @@ impl RecursiveChunker {
             },
         };
 
-        let language = UniCase::new(config.language.unwrap_or_default());
+        let language = UniCase::new(source.requested_language().unwrap_or_default().to_string());
         let output = if let Some(lang_config) = self.custom_languages.get(&language) {
             internal_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
                 lang_config,
                 next_regexp_sep_id: 0,
             })
-        } else if let Some(lang_info) = prog_langs::get_language_info(&language)
-            && let Some(tree_sitter_info) = lang_info.treesitter_info.as_ref()
-        {
-            let mut parser = tree_sitter::Parser::new();
-            if parser
-                .set_language(&tree_sitter_info.tree_sitter_lang)
-                .is_err()
-            {
-                // Fall back to default if language setup fails
-                internal_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
-                    lang_config: &DEFAULT_LANGUAGE_CONFIG,
-                    next_regexp_sep_id: 0,
-                })
-            } else if let Some(tree) = parser.parse(text, None) {
-                internal_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
-                    tree_sitter_info,
-                    node: tree.root_node(),
-                })
-            } else {
-                // Fall back to default if parsing fails
-                internal_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
-                    lang_config: &DEFAULT_LANGUAGE_CONFIG,
-                    next_regexp_sep_id: 0,
-                })
-            }
-        } else {
-            internal_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
-                lang_config: &DEFAULT_LANGUAGE_CONFIG,
-                next_regexp_sep_id: 0,
-            })
-        };
-
-        finalize_chunks(text, output)
-    }
-
-    /// Split using an already-parsed tree-sitter `tree`, reusing the parse
-    /// instead of re-parsing `text` (e.g. a tree shared with the pattern
-    /// matcher). The tree must come from the grammar for `config.language`; if
-    /// that language has no tree-sitter support the tree is ignored and the
-    /// default regex splitter is used (same fallback as `split`). Custom (regex)
-    /// languages are not consulted — a provided tree always takes the
-    /// tree-sitter path.
-    pub fn split_with_tree(
-        &self,
-        text: &str,
-        config: RecursiveChunkConfig,
-        tree: &tree_sitter::Tree,
-    ) -> Vec<Chunk> {
-        let min_chunk_size = config.min_chunk_size.unwrap_or(config.chunk_size / 2);
-        let chunk_overlap = std::cmp::min(config.chunk_overlap.unwrap_or(0), min_chunk_size);
-        let internal_chunker = InternalRecursiveChunker {
-            full_text: text,
-            chunk_size: config.chunk_size,
-            chunk_overlap,
-            min_chunk_size,
-            min_atom_chunk_size: if chunk_overlap > 0 {
-                chunk_overlap
-            } else {
-                min_chunk_size
-            },
-        };
-        let language = UniCase::new(config.language.unwrap_or_default());
-        let output = if let Some(lang_info) = prog_langs::get_language_info(&language)
-            && let Some(tree_sitter_info) = lang_info.treesitter_info.as_ref()
-        {
+        } else if let ParseOutcome::Parsed(tree) = source.tree() {
+            let tree_sitter_info = source
+                .treesitter_info()
+                .expect("a parsed tree implies tree-sitter info");
             internal_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
                 tree_sitter_info,
                 node: tree.root_node(),
             })
         } else {
+            // Unknown language, no grammar, or parse failure: default regex split.
             internal_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
                 lang_config: &DEFAULT_LANGUAGE_CONFIG,
                 next_regexp_sep_id: 0,
             })
         };
+
         finalize_chunks(text, output)
     }
 }
 
 /// Compute line/column positions on `output` and convert to the public `Chunk`s.
-/// Shared by `split` and `split_with_tree`.
 fn finalize_chunks(text: &str, mut output: Vec<ChunkOutput>) -> Vec<Chunk> {
     set_output_positions(
         text,
@@ -780,9 +728,8 @@ mod tests {
             chunk_size: 15,
             min_chunk_size: Some(5),
             chunk_overlap: Some(0),
-            language: None,
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::new(text), config);
 
         assert_eq!(chunks.len(), 3);
         assert_eq!(
@@ -807,9 +754,8 @@ mod tests {
             chunk_size: 20,
             min_chunk_size: Some(12),
             chunk_overlap: Some(0),
-            language: None,
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::new(text), config);
 
         assert!(chunks.len() > 1);
         for chunk in &chunks {
@@ -826,9 +772,8 @@ mod tests {
             chunk_size: 20,
             min_chunk_size: Some(10),
             chunk_overlap: Some(5),
-            language: None,
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::new(text), config);
 
         assert!(chunks.len() > 1);
         for chunk in &chunks {
@@ -849,9 +794,8 @@ mod tests {
             chunk_size: 30,
             min_chunk_size: Some(10),
             chunk_overlap: Some(0),
-            language: None,
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::new(text), config);
 
         assert_eq!(chunks.len(), 3);
         // Verify chunks are trimmed appropriately
@@ -875,9 +819,8 @@ fn other() {
             chunk_size: 50,
             min_chunk_size: Some(20),
             chunk_overlap: Some(0),
-            language: Some("rust".to_string()),
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::with_language(text, "rust"), config);
 
         assert!(!chunks.is_empty());
     }
@@ -902,9 +845,8 @@ fn other() {
             chunk_size: 80,
             min_chunk_size: Some(20),
             chunk_overlap: Some(0),
-            language: Some("svelte".to_string()),
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::with_language(text, "svelte"), config);
         assert!(!chunks.is_empty());
     }
 
@@ -930,9 +872,8 @@ end
             chunk_size: 60,
             min_chunk_size: Some(20),
             chunk_overlap: Some(0),
-            language: Some("julia".to_string()),
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::with_language(text, "julia"), config);
         assert!(!chunks.is_empty());
     }
 
@@ -961,9 +902,8 @@ export default {
             chunk_size: 80,
             min_chunk_size: Some(20),
             chunk_overlap: Some(0),
-            language: Some("vue".to_string()),
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::with_language(text, "vue"), config);
         assert!(!chunks.is_empty());
     }
 
@@ -975,9 +915,8 @@ export default {
             chunk_size: 10,
             min_chunk_size: Some(5),
             chunk_overlap: Some(0),
-            language: None,
         };
-        let chunks = chunker.split(text, config);
+        let chunks = chunker.split(&CodeSource::new(text), config);
 
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].start.line, 1);
@@ -1001,9 +940,8 @@ export default {
             chunk_size: 10,
             min_chunk_size: Some(4),
             chunk_overlap: Some(0),
-            language: Some("myformat".to_string()),
         };
-        let chunks = chunker.split(text, chunk_config);
+        let chunks = chunker.split(&CodeSource::with_language(text, "myformat"), chunk_config);
 
         assert_eq!(chunks.len(), 3);
         assert_eq!(&text[chunks[0].range.start..chunks[0].range.end], "Part1");

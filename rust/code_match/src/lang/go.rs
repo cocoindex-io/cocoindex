@@ -4,7 +4,6 @@
 //! use the generic backslash forms.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn go() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -15,7 +14,7 @@ pub fn go() -> LangConfig {
             sq_string(),               // rune 'r'
             backtick_string_literal(), // `raw, no escapes`
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_go::LANGUAGE), toks)
+        LangConfig::from_registry("go", toks)
     });
     CFG.clone()
 }

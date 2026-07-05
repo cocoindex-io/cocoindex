@@ -2,7 +2,6 @@
 
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn rust() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -14,7 +13,7 @@ pub fn rust() -> LangConfig {
             TokenRule::new(RustRawString, TokKind::Str),
             regex_rule(r#"(?s)^b"(?:\\.|[^"\\])*""#, TokKind::Str), // byte string b"..."
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_rust::LANGUAGE), toks)
+        LangConfig::from_registry("rust", toks)
     });
     CFG.clone()
 }

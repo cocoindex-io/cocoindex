@@ -1,13 +1,12 @@
 //! Kotlin: triple-quoted (raw) strings `"""..."""`.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn kotlin() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
         let mut toks = c_like_tokenizers();
         toks.push(triple_dq_string());
-        LangConfig::from_grammar(Language::new(tree_sitter_kotlin_ng::LANGUAGE), toks)
+        LangConfig::from_registry("kotlin", toks)
     });
     CFG.clone()
 }

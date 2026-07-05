@@ -3,7 +3,6 @@
 //! use backslash and `$`-expansion (matched opaquely via the node's text).
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn bash() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -13,7 +12,7 @@ pub fn bash() -> LangConfig {
             dq_string(),         // "..." backslash + $-expansion
             sq_string_literal(), // '...' literal, no escaping
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_bash::LANGUAGE), toks)
+        LangConfig::from_registry("bash", toks)
     });
     CFG.clone()
 }

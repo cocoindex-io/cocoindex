@@ -4,7 +4,6 @@
 //! of `1L` is just `L`; matching the `integer` node by text (Str) handles it.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn r() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -21,7 +20,7 @@ pub fn r() -> LangConfig {
             // `%...%` infix/special operators, one token.
             regex_rule(r"^%[^%]*%", TokKind::Token),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_r::LANGUAGE), toks)
+        LangConfig::from_registry("r", toks)
     });
     CFG.clone()
 }

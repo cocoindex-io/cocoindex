@@ -7,8 +7,8 @@
 mod by_separators;
 mod recursive;
 
-pub use crate::output_positions::{LineIndex, OutputPosition, TextRange};
 pub use by_separators::{KeepSeparator, SeparatorSplitConfig, SeparatorSplitter};
+pub use cocoindex_code_ast::{LineIndex, OutputPosition, TextRange};
 pub use recursive::{
     CustomLanguageConfig, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
 };

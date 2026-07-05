@@ -1,12 +1,14 @@
 //! Text processing operations exposed to Python.
 
+use cocoindex_code_ast::{CodeSource, prog_langs};
 use cocoindex_ops_text::pattern_matcher::PatternMatcher;
-use cocoindex_ops_text::prog_langs;
 use cocoindex_ops_text::split::{
     Chunk, CustomLanguageConfig, KeepSeparator, RecursiveChunkConfig, RecursiveChunker,
     RecursiveSplitConfig, SeparatorSplitConfig, SeparatorSplitter,
 };
 use pyo3::prelude::*;
+
+use crate::code::PyCodeSource;
 
 /// A chunk of text with its range and position information (returned to Python).
 ///
@@ -191,11 +193,13 @@ impl PyRecursiveSplitter {
     /// Split the text into chunks according to the configuration.
     ///
     /// Args:
-    ///     text: The text to split.
+    ///     text: The text to split — a `str`, or a `CodeSource` whose cached
+    ///         parse is reused (and populated for later consumers).
     ///     chunk_size: Target chunk size in bytes.
     ///     min_chunk_size: Minimum chunk size in bytes. Defaults to chunk_size / 2.
     ///     chunk_overlap: Overlap between consecutive chunks in bytes.
     ///     language: Language name or file extension for syntax-aware splitting.
+    ///         Only valid when `text` is a `str` — a `CodeSource` carries its own.
     ///
     /// Returns:
     ///     A list of chunks.
@@ -203,23 +207,44 @@ impl PyRecursiveSplitter {
     fn split(
         &self,
         py: Python<'_>,
-        text: &str,
+        text: &Bound<'_, PyAny>,
         chunk_size: usize,
         min_chunk_size: Option<usize>,
         chunk_overlap: Option<usize>,
         language: Option<String>,
-    ) -> Vec<PyChunk> {
-        py.detach(|| {
-            let config = RecursiveChunkConfig {
-                chunk_size,
-                min_chunk_size,
-                chunk_overlap,
-                language,
+    ) -> PyResult<Vec<PyChunk>> {
+        let config = RecursiveChunkConfig {
+            chunk_size,
+            min_chunk_size,
+            chunk_overlap,
+        };
+        // Reuse path: a CodeSource handle (parse shared across consumers).
+        if let Ok(src) = text.cast::<PyCodeSource>() {
+            if language.is_some() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "language must not be given when splitting a CodeSource; it carries its own",
+                ));
+            }
+            let src = src.borrow();
+            // Capture `&CodeSource` (not the GIL-bound `PyRef`) across `detach`.
+            let inner = &src.inner;
+            return Ok(py.detach(|| {
+                let chunks = self.chunker.split(inner, config);
+                chunks.iter().map(PyChunk::from_chunk).collect()
+            }));
+        }
+        // Convenience path: a bare string, wrapped in a borrowed CodeSource.
+        let text: &str = text.extract().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("text must be a str or CodeSource")
+        })?;
+        Ok(py.detach(|| {
+            let source = match language {
+                Some(language) => CodeSource::with_language(text, language),
+                None => CodeSource::new(text),
             };
-
-            let chunks = self.chunker.split(text, config);
+            let chunks = self.chunker.split(&source, config);
             chunks.iter().map(PyChunk::from_chunk).collect()
-        })
+        }))
     }
 }
 

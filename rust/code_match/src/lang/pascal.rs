@@ -3,7 +3,6 @@
 //! (char code). Each is one `literalNumber`/`literalString` node, matched whole.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn pascal() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -16,7 +15,7 @@ pub fn pascal() -> LangConfig {
             regex_rule(r"^%[01]+", TokKind::Str),           // binary
             regex_rule(r"^#\$?[0-9A-Fa-f]+", TokKind::Str), // char code #65 / #$41
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_pascal::LANGUAGE), toks)
+        LangConfig::from_registry("pascal", toks)
     });
     CFG.clone()
 }

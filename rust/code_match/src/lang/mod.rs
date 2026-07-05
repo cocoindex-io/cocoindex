@@ -65,43 +65,47 @@ pub use typescript::{tsx, typescript};
 pub use xml::xml;
 pub use yaml::yaml;
 
-/// Resolve a language name to its [`LangConfig`], case-insensitively and with
-/// common aliases (`c++`, `c#`, `js`, `py`, `golang`, …). Returns `None` for a
-/// language code_match doesn't support. Used by the Python binding to map a
-/// user-supplied language string to a matcher config.
+/// Resolve a language name to its [`LangConfig`]. Resolution goes through the
+/// `cocoindex_code_ast` registry — case-insensitive, with all its aliases and
+/// file extensions (`c++`, `c#`, `js`, `py`, `.rs`, `golang`, …) — then maps
+/// the canonical name to a matcher config. Returns `None` for a language
+/// code_match doesn't support (a superset of the registry check: a registry
+/// language without a matcher config is also `None`). Used by the Python
+/// binding to map a user-supplied language string to a matcher config.
 pub fn by_name(name: &str) -> Option<crate::config::LangConfig> {
-    Some(match name.to_ascii_lowercase().as_str() {
-        "bash" | "shell" | "sh" => bash(),
+    let info = cocoindex_code_ast::prog_langs::get_language_info(name)?;
+    Some(match info.name.as_ref() {
+        "bash" => bash(),
         "c" => c(),
-        "cpp" | "c++" => cpp(),
-        "csharp" | "c#" | "cs" => csharp(),
+        "cpp" => cpp(),
+        "csharp" => csharp(),
         "cmake" => cmake(),
         "css" => css(),
         "elm" => elm(),
-        "fortran" | "f90" => fortran(),
-        "go" | "golang" => go(),
-        "hcl" | "terraform" | "tf" => hcl(),
+        "fortran" => fortran(),
+        "go" => go(),
+        "hcl" => hcl(),
         "html" => html(),
         "java" => java(),
-        "javascript" | "js" => javascript(),
+        "javascript" => javascript(),
         "json" => json(),
-        "julia" | "jl" => julia(),
-        "kotlin" | "kt" => kotlin(),
-        "pascal" | "delphi" => pascal(),
+        "julia" => julia(),
+        "kotlin" => kotlin(),
+        "pascal" => pascal(),
         "php" => php(),
-        "python" | "py" => python(),
+        "python" => python(),
         "r" => r(),
-        "ruby" | "rb" => ruby(),
-        "rust" | "rs" => rust(),
+        "ruby" => ruby(),
+        "rust" => rust(),
         "scala" => scala(),
-        "solidity" | "sol" => solidity(),
+        "solidity" => solidity(),
         "sql" => sql(),
         "swift" => swift(),
         "toml" => toml(),
-        "typescript" | "ts" => typescript(),
+        "typescript" => typescript(),
         "tsx" => tsx(),
         "xml" => xml(),
-        "yaml" | "yml" => yaml(),
+        "yaml" => yaml(),
         _ => return None,
     })
 }

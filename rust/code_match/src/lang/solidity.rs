@@ -3,7 +3,6 @@
 //! off as an identifier. Normal strings use generic backslash escaping.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn solidity() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -18,7 +17,7 @@ pub fn solidity() -> LangConfig {
             regex_rule(r#"^unicode"(?:\\.|[^"\\])*""#, TokKind::Str),
             regex_rule(r"^unicode'(?:\\.|[^'\\])*'", TokKind::Str),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_solidity::LANGUAGE), toks)
+        LangConfig::from_registry("solidity", toks)
     });
     CFG.clone()
 }

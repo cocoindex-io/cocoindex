@@ -4,6 +4,7 @@ members = [
     "rust/utils",
     "rust/py",
     "rust/py_utils",
+    "rust/code_ast",
     "rust/ops_text",
     "rust/code_match",
     "rust/sdk/cocoindex",

@@ -4,7 +4,6 @@
 //! quote, so SQL picks the doubled-quote string builders.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn sql() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -15,7 +14,7 @@ pub fn sql() -> LangConfig {
             dq_string_doubled(), // "delimited ""id"""
             backtick_string(),   // `mysql_id`
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_sequel::LANGUAGE), toks)
+        LangConfig::from_registry("sql", toks)
     });
     CFG.clone()
 }

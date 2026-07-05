@@ -16,7 +16,8 @@
 use std::collections::{HashMap, HashSet};
 
 use aho_corasick::{AhoCorasick, MatchKind};
-use tree_sitter::{Node, Parser, Tree};
+use cocoindex_code_ast::{CodeSource, ParseOutcome};
+use tree_sitter::{Node, Tree};
 
 use crate::config::LangConfig;
 use crate::lexer::{Cardinality, PatternItem};
@@ -215,14 +216,11 @@ impl Prefilter {
 /// comments skipped (the matcher skips them too). Over-collecting would only ever
 /// add false positives, never false negatives.
 pub fn index_terms(source: &str, cfg: &LangConfig, min_len: usize) -> Vec<String> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&cfg.language)
-        .expect("load language for index_terms");
-    let Some(tree) = parser.parse(source, None) else {
-        return Vec::new();
-    };
-    index_terms_in_tree(&tree, source, min_len)
+    let src = CodeSource::with_info(source, cfg.info);
+    match src.tree() {
+        ParseOutcome::Parsed(tree) => index_terms_in_tree(tree, source, min_len),
+        ParseOutcome::NoGrammar | ParseOutcome::ParseFailed => Vec::new(),
+    }
 }
 
 /// [`index_terms`] reusing an already-parsed `tree` (which encodes the language,

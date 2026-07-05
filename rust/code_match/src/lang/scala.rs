@@ -3,13 +3,12 @@
 //! quote) falls through to the operator table like a Rust lifetime.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn scala() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
         let mut toks = c_like_tokenizers();
         toks.push(triple_dq_string());
-        LangConfig::from_grammar(Language::new(tree_sitter_scala::LANGUAGE), toks)
+        LangConfig::from_registry("scala", toks)
     });
     CFG.clone()
 }

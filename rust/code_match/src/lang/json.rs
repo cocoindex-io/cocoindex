@@ -2,7 +2,6 @@
 //! which the generic (unsigned) number tokenizer would split off as an operator.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn json() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -14,7 +13,7 @@ pub fn json() -> LangConfig {
             ),
             dq_string(),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_json::LANGUAGE), toks)
+        LangConfig::from_registry("json", toks)
     });
     CFG.clone()
 }

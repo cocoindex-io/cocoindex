@@ -13,9 +13,11 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use cocoindex_code_ast::prog_langs::ProgrammingLanguageInfo;
+use cocoindex_code_ast::{CodeSource, ParseOutcome};
 use cocoindex_utils::error::Result;
 use regex::Regex;
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{Node, Tree};
 
 use crate::config::LangConfig;
 use crate::lexer::{Cardinality, PatternItem, lex};
@@ -177,13 +179,41 @@ impl Pattern {
         }
     }
 
+    /// Match `source`, parsing it with this pattern's grammar. An unparseable
+    /// source (cancellation/timeout-class failures) yields no matches.
     pub fn matches<'s>(&self, source: &'s str) -> Vec<Match<'s>> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&self.cfg.language)
-            .expect("load language");
-        let tree = parser.parse(source, None).expect("parse source");
-        self.matches_in_tree(&tree, source)
+        let src = CodeSource::with_info(source, self.cfg.info);
+        match src.tree() {
+            ParseOutcome::Parsed(tree) => self.matches_in_tree(tree, source),
+            ParseOutcome::NoGrammar | ParseOutcome::ParseFailed => Vec::new(),
+        }
+    }
+
+    /// Match an existing [`CodeSource`], reusing its cached parse when its
+    /// resolved language is this pattern's (the common case). A source resolved
+    /// to a different grammar — or to none — is parsed fresh with the pattern's
+    /// grammar, preserving [`matches`](Self::matches) semantics; a source whose
+    /// parse fails yields no matches (consistent with the prefilter silently
+    /// skipping non-candidates).
+    pub fn matches_source<'s>(&self, source: &'s CodeSource<'_>) -> Vec<Match<'s>> {
+        let text = source.text();
+        if source
+            .info()
+            .is_some_and(|info| std::ptr::eq(info, self.cfg.info))
+        {
+            match source.tree() {
+                ParseOutcome::Parsed(tree) => self.matches_in_tree(tree, text),
+                ParseOutcome::NoGrammar | ParseOutcome::ParseFailed => Vec::new(),
+            }
+        } else {
+            self.matches(text)
+        }
+    }
+
+    /// The registry entry for this pattern's language — its grammar identity
+    /// (registry entries are singletons; compare with [`std::ptr::eq`]).
+    pub fn lang_info(&self) -> &'static ProgrammingLanguageInfo {
+        self.cfg.info
     }
 
     /// For every containment in the pattern, find the descendants its INNER matches —

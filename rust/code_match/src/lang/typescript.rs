@@ -1,25 +1,16 @@
 //! TypeScript / TSX: C-style escaping + backtick template strings.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn typescript() -> LangConfig {
-    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        LangConfig::from_grammar(
-            Language::new(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
-            c_like_tokenizers(),
-        )
-    });
+    static CFG: LazyLock<LangConfig> =
+        LazyLock::new(|| LangConfig::from_registry("typescript", c_like_tokenizers()));
     CFG.clone()
 }
 
 pub fn tsx() -> LangConfig {
-    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        LangConfig::from_grammar(
-            Language::new(tree_sitter_typescript::LANGUAGE_TSX),
-            c_like_tokenizers(),
-        )
-    });
+    static CFG: LazyLock<LangConfig> =
+        LazyLock::new(|| LangConfig::from_registry("tsx", c_like_tokenizers()));
     CFG.clone()
 }
 
