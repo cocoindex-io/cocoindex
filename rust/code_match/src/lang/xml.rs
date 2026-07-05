@@ -5,7 +5,6 @@
 //! attribute strings), flipped by `<` / `>`.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 const TEXT: u8 = 0;
 const TAG: u8 = 1;
@@ -19,7 +18,7 @@ pub fn xml() -> LangConfig {
             dq_string().in_modes(1 << TAG),
             sq_string().in_modes(1 << TAG),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_xml::LANGUAGE_XML), toks)
+        LangConfig::from_registry("xml", toks)
             .with_modes(vec![(TEXT, '<', TAG), (TAG, '>', TEXT)], 1 << TEXT)
     });
     CFG.clone()

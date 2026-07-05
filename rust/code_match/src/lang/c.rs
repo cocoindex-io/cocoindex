@@ -2,7 +2,6 @@
 
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 /// Identifier, number (with `'` separators), `"…"` and `'…'`.
 pub(crate) fn c_tokenizers() -> Vec<TokenRule> {
@@ -10,9 +9,8 @@ pub(crate) fn c_tokenizers() -> Vec<TokenRule> {
 }
 
 pub fn c() -> LangConfig {
-    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        LangConfig::from_grammar(Language::new(tree_sitter_c::LANGUAGE), c_tokenizers())
-    });
+    static CFG: LazyLock<LangConfig> =
+        LazyLock::new(|| LangConfig::from_registry("c", c_tokenizers()));
     CFG.clone()
 }
 

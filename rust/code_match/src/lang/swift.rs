@@ -3,7 +3,6 @@
 //! via the whole string node's text.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn swift() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -14,7 +13,7 @@ pub fn swift() -> LangConfig {
             triple_dq_string(),
             TokenRule::new(SwiftRawString, TokKind::Str),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_swift::LANGUAGE), toks)
+        LangConfig::from_registry("swift", toks)
     });
     CFG.clone()
 }

@@ -528,3 +528,40 @@ def test_recursive_splitter_with_json() -> None:
 
     assert len(chunks) >= 1
     assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_accepts_code_source() -> None:
+    from cocoindex.ops.code import CodeSource
+
+    code = "def foo():\n    return 1\n\ndef bar():\n    return 2\n"
+    splitter = RecursiveSplitter()
+    via_source = splitter.split(CodeSource(code, language="python"), chunk_size=30)
+    via_str = splitter.split(code, chunk_size=30, language="python")
+    assert via_source == via_str
+
+
+def test_recursive_splitter_code_source_rejects_language_kwarg() -> None:
+    import pytest
+
+    from cocoindex.ops.code import CodeSource
+
+    splitter = RecursiveSplitter()
+    src = CodeSource("x = 1\n", language="python")
+    with pytest.raises(ValueError, match="language"):
+        splitter.split(src, chunk_size=10, language="python")
+
+
+def test_recursive_splitter_code_source_custom_language() -> None:
+    """A custom language is honored for a CodeSource too (regex path, no parse),
+    identically to passing the text as a str."""
+    from cocoindex.ops.code import CodeSource
+
+    config = CustomLanguageConfig("myformat", [r"---"])
+    splitter = RecursiveSplitter(custom_languages=[config])
+    text = "Part1---Part2---Part3"
+    via_source = splitter.split(
+        CodeSource(text, language="myformat"), chunk_size=10, min_chunk_size=4
+    )
+    via_str = splitter.split(text, chunk_size=10, min_chunk_size=4, language="myformat")
+    assert via_source == via_str
+    assert [c.text for c in via_source] == ["Part1", "Part2", "Part3"]

@@ -8,6 +8,7 @@ from cocoindex.ops.code import (
     CodeAst,
     CodeMatch,
     CodePattern,
+    CodeSource,
     index_terms,
     match_code,
 )
@@ -168,3 +169,37 @@ def test_index_terms_free_fn_and_method() -> None:
     # keywords excluded
     assert "def" not in ast.index_terms()
     assert "return" not in ast.index_terms()
+
+
+def test_code_source_properties() -> None:
+    src = CodeSource(_PY_SRC, language="python")
+    assert src.text == _PY_SRC
+    assert src.language == "python"
+    assert CodeSource("plain text").language is None
+
+
+def test_code_source_unknown_language_never_raises() -> None:
+    # Unlike CodeAst, construction is tolerant: consumers degrade on their own.
+    src = CodeSource("hello world", language="not-a-language")
+    assert src.language == "not-a-language"
+
+
+def test_code_source_shared_by_matcher_and_splitter() -> None:
+    """One CodeSource handle serves pattern matching and splitting (one parse)."""
+    from cocoindex.ops.text import RecursiveSplitter
+
+    src = CodeSource(_PY_SRC, language="python")
+    cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
+    assert {_cap(m, "NAME") for m in cp.match_source(src)} == {"foo", "bar"}
+    chunks = RecursiveSplitter().split(src, chunk_size=1000)
+    assert chunks and chunks[0].text.startswith("def foo")
+
+
+def test_code_source_match_agrees_with_str_match() -> None:
+    cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
+    via_source = cp.match_source(CodeSource(_PY_SRC, language="python"))
+    via_str = cp.match_source(_PY_SRC)
+    assert via_source == via_str
+    # A CodeSource without (or with a different) language still matches: the
+    # pattern's own grammar is used, same as the str path.
+    assert cp.match_source(CodeSource(_PY_SRC)) == via_str

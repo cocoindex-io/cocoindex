@@ -1994,6 +1994,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "cocoindex_code_ast",
  "cocoindex_code_match",
  "cocoindex_core",
  "cocoindex_macros",
@@ -2027,21 +2028,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tree-sitter",
  "uuid",
  "walkdir",
  "wiremock",
 ]
 
 [[package]]
-name = "cocoindex_code_match"
+name = "cocoindex_code_ast"
 version = "999.0.0"
 dependencies = [
- "aho-corasick",
- "cocoindex_utils",
- "regex",
- "regex-syntax",
  "tree-sitter",
+ "tree-sitter-astro-next",
  "tree-sitter-bash",
  "tree-sitter-c",
  "tree-sitter-c-sharp",
@@ -2058,6 +2055,8 @@ dependencies = [
  "tree-sitter-json",
  "tree-sitter-julia",
  "tree-sitter-kotlin-ng",
+ "tree-sitter-language",
+ "tree-sitter-md",
  "tree-sitter-pascal",
  "tree-sitter-php",
  "tree-sitter-python",
@@ -2067,11 +2066,26 @@ dependencies = [
  "tree-sitter-scala",
  "tree-sitter-sequel",
  "tree-sitter-solidity",
+ "tree-sitter-svelte-ng",
  "tree-sitter-swift",
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
+ "tree-sitter-vue-next",
  "tree-sitter-xml",
  "tree-sitter-yaml",
+ "unicase",
+]
+
+[[package]]
+name = "cocoindex_code_match"
+version = "999.0.0"
+dependencies = [
+ "aho-corasick",
+ "cocoindex_code_ast",
+ "cocoindex_utils",
+ "regex",
+ "regex-syntax",
+ "tree-sitter",
 ]
 
 [[package]]
@@ -2122,44 +2136,10 @@ name = "cocoindex_ops_text"
 version = "999.0.0"
 dependencies = [
  "anyhow",
+ "cocoindex_code_ast",
  "globset",
  "regex",
  "tree-sitter",
- "tree-sitter-astro-next",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-c-sharp",
- "tree-sitter-cmake",
- "tree-sitter-cpp",
- "tree-sitter-css",
- "tree-sitter-elm",
- "tree-sitter-fortran",
- "tree-sitter-go",
- "tree-sitter-hcl",
- "tree-sitter-html",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-json",
- "tree-sitter-julia",
- "tree-sitter-kotlin-ng",
- "tree-sitter-language",
- "tree-sitter-md",
- "tree-sitter-pascal",
- "tree-sitter-php",
- "tree-sitter-python",
- "tree-sitter-r",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-scala",
- "tree-sitter-sequel",
- "tree-sitter-solidity",
- "tree-sitter-svelte-ng",
- "tree-sitter-swift",
- "tree-sitter-toml-ng",
- "tree-sitter-typescript",
- "tree-sitter-vue-next",
- "tree-sitter-xml",
- "tree-sitter-yaml",
  "unicase",
 ]
 
@@ -2170,6 +2150,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "cocoindex_code_ast",
  "cocoindex_code_match",
  "cocoindex_core",
  "cocoindex_ops_text",
@@ -2181,7 +2162,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tree-sitter",
  "uuid",
 ]
 

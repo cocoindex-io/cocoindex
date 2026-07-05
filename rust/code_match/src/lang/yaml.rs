@@ -5,7 +5,6 @@
 //! would see two identifiers) — match it with a metavar (`key: \V`) instead.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn yaml() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -15,7 +14,7 @@ pub fn yaml() -> LangConfig {
             dq_string(),         // "..." backslash escaping
             sq_string_doubled(), // '...' with '' escaping
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_yaml::LANGUAGE), toks)
+        LangConfig::from_registry("yaml", toks)
     });
     CFG.clone()
 }

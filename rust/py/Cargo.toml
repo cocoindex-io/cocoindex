@@ -16,11 +16,9 @@ abi3 = ["pyo3/abi3-py311"]
 cocoindex_core = { path = "../core" }
 cocoindex_utils = { path = "../utils" }
 cocoindex_py_utils = { path = "../py_utils" }
+cocoindex_code_ast = { path = "../code_ast" }
 cocoindex_ops_text = { path = "../ops_text" }
 cocoindex_code_match = { path = "../code_match" }
-# Pinned to one version workspace-wide (`links = "tree-sitter"`); keep in lockstep
-# with rust/ops_text and rust/code_match.
-tree-sitter = "0.25.10"
 
 pyo3 = { workspace = true, features = ["uuid", "bytes"] }
 pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }

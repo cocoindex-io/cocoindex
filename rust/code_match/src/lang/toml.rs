@@ -4,7 +4,6 @@
 //! `...T...Z`) are single nodes that the generic profile would split on `-`/`:`.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn toml() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -26,7 +25,7 @@ pub fn toml() -> LangConfig {
             triple_dq_string(),  // """..."""
             triple_sq_string(),  // '''...'''
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_toml_ng::LANGUAGE), toks)
+        LangConfig::from_registry("toml", toks)
     });
     CFG.clone()
 }

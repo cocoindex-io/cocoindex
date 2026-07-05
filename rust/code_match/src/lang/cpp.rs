@@ -3,13 +3,12 @@
 use super::c::c_tokenizers;
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn cpp() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
         let mut toks = c_tokenizers();
         toks.push(TokenRule::new(CppRawString, TokKind::Str));
-        LangConfig::from_grammar(Language::new(tree_sitter_cpp::LANGUAGE), toks)
+        LangConfig::from_registry("cpp", toks)
     });
     CFG.clone()
 }

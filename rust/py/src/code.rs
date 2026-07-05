@@ -1,20 +1,17 @@
-//! `CodeAst` — a Python handle wrapping a single tree-sitter parse, reused by
-//! both structural pattern matching (`code_match`) and chunk splitting
-//! (`ops_text`) so the source is parsed only once. Both consumers use the same
-//! grammar crate per language (pinned to one tree-sitter version workspace-wide),
-//! so one tree is sound for both.
+//! Python bindings for code parsing and structural matching: `CodeSource` (a
+//! lazily-parsed handle shared by every AST consumer), `CodeAst` (an
+//! eagerly-validated parse), and `CodePattern` (compiled by-example patterns).
+//! All consumers resolve grammars through the `cocoindex_code_ast` registry
+//! (one tree-sitter version workspace-wide), so one tree is sound for all.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
-use cocoindex_code_match::lang;
-use cocoindex_code_match::{Match, Pattern, Prefilter, index_terms_in_tree};
-use cocoindex_ops_text::prog_langs;
-use cocoindex_ops_text::split::{
-    LineIndex, OutputPosition, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
-};
+use cocoindex_code_ast::tree_sitter::Tree;
+use cocoindex_code_ast::{CodeSource, LineIndex, OutputPosition, ParseOutcome};
+use cocoindex_code_match::{Match, Pattern, Prefilter, index_terms_in_tree, lang};
+use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
 use pyo3::prelude::*;
-use tree_sitter::{Parser, Tree};
 
 use crate::ops::PyChunk;
 
@@ -69,8 +66,8 @@ fn chunk_from(range: &Range<usize>, s: OutputPosition, e: OutputPosition) -> PyC
 }
 
 /// Convert raw matches to `PyCodeMatch`, resolving line/column positions for
-/// every match and capture endpoint through the AST's reusable [`LineIndex`]
-/// (each offset is an independent lookup, so no per-call full-file scan).
+/// every match and capture endpoint through a reusable [`LineIndex`] (each
+/// offset is an independent lookup, so no per-call full-file scan).
 fn build_matches(source: &str, line_index: &LineIndex, raw: Vec<Match<'_>>) -> Vec<PyCodeMatch> {
     let pos = |b: usize| line_index.position(source, b);
     raw.into_iter()
@@ -93,17 +90,58 @@ fn build_matches(source: &str, line_index: &LineIndex, raw: Vec<Match<'_>>) -> V
         .collect()
 }
 
+/// Source text plus a lazily-parsed, memoized AST — the shared input for every
+/// API that may need a parse. Construction never parses and never fails: an
+/// unknown language simply means consumers take their degraded (non-AST) path.
+/// Pass one handle to several APIs (splitters, `CodePattern.match_source`, …)
+/// and the source is parsed at most once.
+#[pyclass(name = "CodeSource")]
+pub struct PyCodeSource {
+    pub(crate) inner: CodeSource<'static>,
+}
+
+#[pymethods]
+impl PyCodeSource {
+    /// Wrap `text` for `language` (name, alias, or file extension; optional).
+    /// No parsing happens here; unknown languages are accepted.
+    #[new]
+    #[pyo3(signature = (text, language=None))]
+    fn new(text: String, language: Option<String>) -> Self {
+        let inner = match language {
+            Some(language) => CodeSource::with_language(text, language),
+            None => CodeSource::new(text),
+        };
+        Self { inner }
+    }
+
+    /// The source text.
+    #[getter]
+    fn text(&self) -> &str {
+        self.inner.text()
+    }
+
+    /// The language as given at construction (may be an alias or extension).
+    #[getter]
+    fn language(&self) -> Option<&str> {
+        self.inner.requested_language()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CodeSource(language={:?}, text_len={})",
+            self.inner.requested_language(),
+            self.inner.text().len()
+        )
+    }
+}
+
 /// A parsed code AST. Parse once, then `matches()` structural patterns and/or
 /// `split()` into chunks without re-parsing. Construct with
-/// `CodeAst(source, language)`.
+/// `CodeAst(source, language)`; unlike `CodeSource`, construction parses
+/// eagerly and raises on an unknown language or a failed parse.
 #[pyclass(name = "CodeAst")]
 pub struct PyCodeAst {
-    source: String,
-    language: String,
-    tree: Tree,
-    /// Byte→position index over `source`, built on first `matches()` and reused
-    /// across subsequent pattern queries (the "one parse, many patterns" case).
-    line_index: std::sync::OnceLock<LineIndex>,
+    source: CodeSource<'static>,
 }
 
 impl PyCodeAst {
@@ -111,26 +149,33 @@ impl PyCodeAst {
     /// callers that have already released the GIL (e.g. inside `py.detach`) can build
     /// an AST without re-acquiring it. Touches no Python objects.
     fn parse(source: String, language: String) -> PyResult<Self> {
-        let ts = prog_langs::get_language_info(&language)
-            .and_then(|i| i.treesitter_info.as_ref())
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown or non-tree-sitter language: {language:?}"
-                ))
-            })?;
-        let mut parser = Parser::new();
-        parser.set_language(&ts.tree_sitter_lang).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("failed to load grammar: {e}"))
-        })?;
-        let tree = parser
-            .parse(&source, None)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("failed to parse source"))?;
-        Ok(Self {
-            source,
-            language,
-            tree,
-            line_index: std::sync::OnceLock::new(),
-        })
+        let source = CodeSource::with_language(source, language);
+        if source.treesitter_info().is_none() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown or non-tree-sitter language: {:?}",
+                source.requested_language().unwrap_or_default()
+            )));
+        }
+        if !matches!(source.tree(), ParseOutcome::Parsed(_)) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "failed to parse source",
+            ));
+        }
+        Ok(Self { source })
+    }
+
+    /// The parsed tree (validated at construction).
+    fn tree(&self) -> &Tree {
+        match self.source.tree() {
+            ParseOutcome::Parsed(tree) => tree,
+            _ => unreachable!("CodeAst construction validated the parse"),
+        }
+    }
+
+    fn language_str(&self) -> &str {
+        self.source
+            .requested_language()
+            .expect("CodeAst always has a language")
     }
 }
 
@@ -147,13 +192,13 @@ impl PyCodeAst {
     /// The language this AST was parsed for.
     #[getter]
     fn language(&self) -> &str {
-        &self.language
+        self.language_str()
     }
 
     /// The source text.
     #[getter]
     fn source(&self) -> &str {
-        &self.source
+        self.source.text()
     }
 
     /// Find every match of `pattern`, reusing the parse. `pattern` is either a
@@ -166,40 +211,39 @@ impl PyCodeAst {
         // Reuse path: a precompiled CodePattern.
         if let Ok(cp) = pattern.cast::<PyCodePattern>() {
             let cp = cp.borrow();
-            if !same_grammar(&self.language, &cp.language) {
+            let same_grammar = self
+                .source
+                .info()
+                .is_some_and(|info| std::ptr::eq(info, cp.pattern.lang_info()));
+            if !same_grammar {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "CodePattern language {:?} does not match this AST's {:?}",
-                    cp.language, self.language
+                    cp.language,
+                    self.language_str()
                 )));
             }
             // Capture `&Pattern` (not the GIL-bound `PyRef`) across `detach`.
             let compiled = &cp.pattern;
             return Ok(py.detach(|| {
-                let line_index = self
-                    .line_index
-                    .get_or_init(|| LineIndex::build(&self.source));
-                let raw = compiled.matches_in_tree(&self.tree, &self.source);
-                build_matches(&self.source, line_index, raw)
+                let raw = compiled.matches_in_tree(self.tree(), self.source.text());
+                build_matches(self.source.text(), self.source.line_index(), raw)
             }));
         }
         // Convenience path: a pattern string, compiled here.
         let pattern: String = pattern.extract().map_err(|_| {
             pyo3::exceptions::PyTypeError::new_err("pattern must be a str or CodePattern")
         })?;
-        let cfg = lang::by_name(&self.language).ok_or_else(|| {
+        let cfg = lang::by_name(self.language_str()).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "structural matching is not supported for language {:?}",
-                self.language
+                self.language_str()
             ))
         })?;
         let compiled = Pattern::compile(&pattern, &cfg)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(py.detach(|| {
-            let line_index = self
-                .line_index
-                .get_or_init(|| LineIndex::build(&self.source));
-            let raw = compiled.matches_in_tree(&self.tree, &self.source);
-            build_matches(&self.source, line_index, raw)
+            let raw = compiled.matches_in_tree(self.tree(), self.source.text());
+            build_matches(self.source.text(), self.source.line_index(), raw)
         }))
     }
 
@@ -220,9 +264,8 @@ impl PyCodeAst {
                 chunk_size,
                 min_chunk_size,
                 chunk_overlap,
-                language: Some(self.language.clone()),
             };
-            chunker.split_with_tree(&self.source, config, &self.tree)
+            chunker.split(&self.source, config)
         });
         Ok(chunks.iter().map(PyChunk::from_chunk).collect())
     }
@@ -232,14 +275,14 @@ impl PyCodeAst {
     /// index (FTS / n-grams).
     #[pyo3(signature = (min_len=3))]
     fn index_terms(&self, py: Python<'_>, min_len: usize) -> Vec<String> {
-        py.detach(|| index_terms_in_tree(&self.tree, &self.source, min_len))
+        py.detach(|| index_terms_in_tree(self.tree(), self.source.text(), min_len))
     }
 
     fn __repr__(&self) -> String {
         format!(
             "CodeAst(language={:?}, source_len={})",
-            self.language,
-            self.source.len()
+            self.language_str(),
+            self.source.text().len()
         )
     }
 }
@@ -290,17 +333,42 @@ impl PyCodePattern {
         py.detach(|| self.prefilter.might_match(source))
     }
 
-    /// Match against `source`, parsing it — but skip the parse entirely when the
+    /// Match against `source` — a `str` (parsed on the spot) or a `CodeSource`
+    /// (reusing its cached parse) — skipping the parse entirely when the
     /// prefilter rejects it. Reuses this pattern's compilation across calls.
-    fn match_source(&self, py: Python<'_>, source: String) -> Vec<PyCodeMatch> {
-        py.detach(|| {
+    fn match_source(
+        &self,
+        py: Python<'_>,
+        source: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<PyCodeMatch>> {
+        // Reuse path: a CodeSource handle (its parse and line index are cached).
+        if let Ok(src) = source.cast::<PyCodeSource>() {
+            let src = src.borrow();
+            // Capture `&CodeSource` (not the GIL-bound `PyRef`) across `detach`.
+            let inner = &src.inner;
+            return Ok(py.detach(|| {
+                if !self.prefilter.might_match(inner.text()) {
+                    return Vec::new();
+                }
+                let raw = self.pattern.matches_source(inner);
+                if raw.is_empty() {
+                    return Vec::new();
+                }
+                build_matches(inner.text(), inner.line_index(), raw)
+            }));
+        }
+        // Convenience path: a bare string, parsed here (when not prefiltered out).
+        let source: String = source.extract().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("source must be a str or CodeSource")
+        })?;
+        Ok(py.detach(|| {
             let raw = self.pattern.matches_prefiltered(&source, &self.prefilter);
             if raw.is_empty() {
                 return Vec::new();
             }
             let line_index = LineIndex::build(&source);
             build_matches(&source, &line_index, raw)
-        })
+        }))
     }
 
     /// Read the file at `path`, run the prefilter, and (only if it might match)
@@ -328,16 +396,13 @@ impl PyCodePattern {
             if !self.prefilter.might_match(&content) {
                 return Ok(None); // rejected without parsing
             }
-            let ast = PyCodeAst::parse(content, self.language.clone())?;
-            let raw = self.pattern.matches_in_tree(&ast.tree, &ast.source);
+            let source = CodeSource::with_language(content, self.language.clone());
+            let raw = self.pattern.matches_source(&source);
             if raw.is_empty() {
                 return Ok(None);
             }
-            let matches = {
-                let line_index = ast.line_index.get_or_init(|| LineIndex::build(&ast.source));
-                build_matches(&ast.source, line_index, raw)
-            };
-            Ok(Some((ast, matches)))
+            let matches = build_matches(source.text(), source.line_index(), raw);
+            Ok(Some((PyCodeAst { source }, matches)))
         })?;
 
         let Some((ast, matches)) = built else {
@@ -381,16 +446,6 @@ impl PyFileMatch {
     }
 }
 
-/// Whether two language names resolve to the same tree-sitter grammar (so a pattern
-/// compiled for one can match a tree parsed for the other) — handles aliases
-/// (`c++`/`cpp`). `false` if either is unsupported for matching.
-fn same_grammar(a: &str, b: &str) -> bool {
-    match (lang::by_name(a), lang::by_name(b)) {
-        (Some(ca), Some(cb)) => ca.language == cb.language,
-        _ => false,
-    }
-}
-
 /// Extract the indexable terms of `source` (identifiers + string-literal content,
 /// ≥ `min_len`, deduped), for building an external prefilter index. One-shot; use
 /// `CodeAst.index_terms` to reuse an existing parse.
@@ -404,7 +459,7 @@ pub fn index_terms(
 ) -> PyResult<Vec<String>> {
     py.detach(|| {
         let ast = PyCodeAst::parse(source, language)?;
-        Ok(index_terms_in_tree(&ast.tree, &ast.source, min_len))
+        Ok(index_terms_in_tree(ast.tree(), ast.source.text(), min_len))
     })
 }
 
@@ -420,16 +475,19 @@ pub fn match_code(
 ) -> PyResult<Vec<PyCodeMatch>> {
     py.detach(|| {
         let ast = PyCodeAst::parse(source, language)?;
-        let cfg = lang::by_name(&ast.language).ok_or_else(|| {
+        let cfg = lang::by_name(ast.language_str()).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "structural matching is not supported for language {:?}",
-                ast.language
+                ast.language_str()
             ))
         })?;
         let compiled = Pattern::compile(pattern, &cfg)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
-        let line_index = LineIndex::build(&ast.source);
-        let raw = compiled.matches_in_tree(&ast.tree, &ast.source);
-        Ok(build_matches(&ast.source, &line_index, raw))
+        let raw = compiled.matches_in_tree(ast.tree(), ast.source.text());
+        Ok(build_matches(
+            ast.source.text(),
+            ast.source.line_index(),
+            raw,
+        ))
     })
 }

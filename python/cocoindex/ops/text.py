@@ -13,6 +13,7 @@ __all__ = [
 import typing as _typing
 
 from cocoindex._internal import core as _core
+from cocoindex.ops.code import CodeSource as _CodeSource
 from cocoindex.resources import chunk as _chunk
 
 
@@ -153,7 +154,7 @@ class RecursiveSplitter:
 
     def split(
         self,
-        text: str,
+        text: "str | _CodeSource",
         chunk_size: int,
         *,
         min_chunk_size: int | None = None,
@@ -163,21 +164,31 @@ class RecursiveSplitter:
         """Split the text into chunks according to the configuration.
 
         Args:
-            text: The text to split.
+            text: The text to split — a ``str``, or a
+                :class:`~cocoindex.ops.code.CodeSource` whose cached parse is
+                reused (and populated for later consumers of the same source).
             chunk_size: Target chunk size in bytes.
             min_chunk_size: Minimum chunk size in bytes. Defaults to chunk_size / 2.
             chunk_overlap: Overlap between consecutive chunks in bytes.
             language: Language name or file extension for syntax-aware splitting
                 (e.g., "python", "rust", ".py", ".rs"). If provided and the language
                 has tree-sitter support, the splitting will be syntax-aware.
+                Only valid when ``text`` is a ``str`` — a ``CodeSource`` carries
+                its own language (``ValueError`` otherwise).
 
         Returns:
             A list of Chunk objects containing the split text with position information.
         """
+        if isinstance(text, _CodeSource):
+            raw_text: "str | _core.CodeSource" = text._src
+            source_text = text.text
+        else:
+            raw_text = text
+            source_text = text
         raw_chunks = self._splitter.split(
-            text, chunk_size, min_chunk_size, chunk_overlap, language
+            raw_text, chunk_size, min_chunk_size, chunk_overlap, language
         )
-        return [_convert_chunk(c, text) for c in raw_chunks]
+        return [_convert_chunk(c, source_text) for c in raw_chunks]
 
 
 def _convert_chunk(raw: _core.Chunk, text: str) -> _chunk.Chunk:

@@ -2,7 +2,6 @@
 
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn python() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -19,7 +18,7 @@ pub fn python() -> LangConfig {
             r"^[rbfuRBFU]{1,2}'(?:\\.|[^'\\])*'",
             TokKind::Str,
         ));
-        LangConfig::from_grammar(Language::new(tree_sitter_python::LANGUAGE), toks)
+        LangConfig::from_registry("python", toks)
     });
     CFG.clone()
 }

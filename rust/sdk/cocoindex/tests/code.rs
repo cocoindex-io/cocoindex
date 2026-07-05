@@ -391,9 +391,8 @@ fn index_terms_unknown_language_errors() {
 
 #[test]
 fn language_aliases_accepted() {
-    // Languages/aliases resolved through the tree-sitter table (prog_langs),
-    // matching the Python binding. Bare "py" is NOT accepted (Python uses
-    // "python"); the dotted/extension aliases below all resolve.
+    // Languages/aliases resolved through the `cocoindex_code_ast` registry,
+    // matching the Python binding.
 
     // C++: "c++" and "cpp" aliases both map to the same grammar.
     let ms = match_code(r"void \N(\(P*\))", "void run() {}", "c++").unwrap();
@@ -408,23 +407,23 @@ fn language_aliases_accepted() {
 
 #[test]
 fn parse_uses_treesitter_table_like_python() {
-    // CodeAst parsing goes through the full tree-sitter table, exactly like the
-    // Python binding — so the canonical name parses, while a structural-match-only
-    // alias (`code_match`'s "sh"/"py" that the tree-sitter table doesn't know) is
-    // rejected at parse instead of silently regex-falling-back in split().
+    // CodeAst parsing goes through the `cocoindex_code_ast` registry, exactly
+    // like the Python binding. The registry is the single alias table for the
+    // whole workspace (code_match's former private aliases like "sh"/"py" were
+    // absorbed into it), so every alias resolves consistently everywhere and
+    // only genuinely unknown languages are rejected at parse.
 
     // Canonical name parses + splits via tree-sitter.
     let ast = CodeAst::new("def f(x): return x", "python").unwrap();
     assert!(!ast.split(50, None, None).unwrap().is_empty());
 
-    // "bash" (tree-sitter table) parses; its code_match-only alias "sh" does not.
+    // Aliases resolve to the same grammar as their canonical names.
     assert!(CodeAst::new("echo hi", "bash").is_ok());
-    assert!(
-        CodeAst::new("echo hi", "sh").is_err(),
-        "structural-only alias 'sh' must error at parse (matches Python), not silently regex-split"
-    );
-    // Bare "py" is rejected (Python uses "python").
-    assert!(CodeAst::new("x = 1", "py").is_err());
+    assert!(CodeAst::new("echo hi", "sh").is_ok());
+    assert!(CodeAst::new("x = 1", "py").is_ok());
+
+    // A language the registry doesn't know errors at parse.
+    assert!(CodeAst::new("x = 1", "not_a_language").is_err());
 }
 
 // ─── Multiple captures ────────────────────────────────────────────────────────

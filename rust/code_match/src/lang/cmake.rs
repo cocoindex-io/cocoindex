@@ -3,13 +3,12 @@
 //! generic backslash escaping; `${VAR}` references match via the generic profile.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn cmake() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
         let mut toks = c_like_tokenizers();
         toks.push(TokenRule::new(CmakeBracket, TokKind::Str));
-        LangConfig::from_grammar(Language::new(tree_sitter_cmake::LANGUAGE), toks)
+        LangConfig::from_registry("cmake", toks)
     });
     CFG.clone()
 }

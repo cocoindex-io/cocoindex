@@ -3,7 +3,6 @@
 //! literals `Z'FF'` / `B'1010'` / `O'17'`.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn fortran() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -17,7 +16,7 @@ pub fn fortran() -> LangConfig {
             regex_rule(r"^[BOZboz]'[0-9A-Fa-f]*'", TokKind::Str),
             regex_rule(r#"^[BOZboz]"[0-9A-Fa-f]*""#, TokKind::Str),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_fortran::LANGUAGE), toks)
+        LangConfig::from_registry("fortran", toks)
     });
     CFG.clone()
 }

@@ -1,6 +1,6 @@
 mod app;
 mod batching;
-mod code_ast;
+mod code;
 mod component;
 mod context;
 mod environment;
@@ -128,13 +128,14 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(ops::detect_code_language, m)?)?;
     m.add_class::<ops::PyPatternMatcher>()?;
 
-    // Structural code matching over a reusable parsed AST
-    m.add_class::<code_ast::PyCodeAst>()?;
-    m.add_class::<code_ast::PyCodeMatch>()?;
-    m.add_class::<code_ast::PyCodePattern>()?;
-    m.add_class::<code_ast::PyFileMatch>()?;
-    m.add_function(wrap_pyfunction!(code_ast::match_code, m)?)?;
-    m.add_function(wrap_pyfunction!(code_ast::index_terms, m)?)?;
+    // Code parsing + structural matching over a reusable parsed AST
+    m.add_class::<code::PyCodeSource>()?;
+    m.add_class::<code::PyCodeAst>()?;
+    m.add_class::<code::PyCodeMatch>()?;
+    m.add_class::<code::PyCodePattern>()?;
+    m.add_class::<code::PyFileMatch>()?;
+    m.add_function(wrap_pyfunction!(code::match_code, m)?)?;
+    m.add_function(wrap_pyfunction!(code::index_terms, m)?)?;
 
     // Synchronization primitives
     m.add_class::<rwlock::RWLock>()?;

@@ -1,14 +1,16 @@
 r"""Structural code matching over a reusable parsed AST.
 
-Parse source once into a :class:`CodeAst`, then match by-example structural
-patterns and/or split it into chunks without re-parsing. Metavariables in a
-pattern use the ``\`` sigil (e.g. ``\NAME``, ``\(ARGS*\)``).
+Wrap source in a :class:`CodeSource` (or parse eagerly with :class:`CodeAst`),
+then match by-example structural patterns and/or split it into chunks without
+re-parsing. Metavariables in a pattern use the ``\`` sigil (e.g. ``\NAME``,
+``\(ARGS*\)``).
 """
 
 __all__ = [
     "CodeAst",
     "CodeMatch",
     "CodePattern",
+    "CodeSource",
     "FileMatch",
     "index_terms",
     "match_code",
@@ -18,6 +20,49 @@ from dataclasses import dataclass as _dataclass
 
 from cocoindex._internal import core as _core
 from cocoindex.resources import chunk as _chunk
+
+
+class CodeSource:
+    """Source text plus a lazily-parsed, shared AST.
+
+    The universal input for APIs that may need a parse: pass one handle to
+    several of them (:meth:`RecursiveSplitter.split
+    <cocoindex.ops.text.RecursiveSplitter.split>`,
+    :meth:`CodePattern.match_source`, …) and the source is parsed **at most
+    once**, no matter how many consumers touch it.
+
+    Construction never parses and never raises: an unknown or non-tree-sitter
+    language is fine — each consumer takes its own degraded (non-AST) path,
+    exactly as if it had been given a plain ``str``.
+
+    Args:
+        text: The source text.
+        language: Language name, alias, or file extension (e.g. ``"python"``,
+            ``"c++"``, ``".rs"``). ``None`` means no syntax awareness.
+
+    Examples:
+        >>> src = CodeSource("def f(): pass", language="python")
+        >>> splitter = RecursiveSplitter()          # doctest: +SKIP
+        >>> chunks = splitter.split(src, chunk_size=1000)   # parses once
+        >>> cp = CodePattern(r"def \\NAME(\\(A*\\)):", language="python")
+        >>> ms = cp.match_source(src)               # reuses the same parse
+    """
+
+    def __init__(self, text: str, language: str | None = None) -> None:
+        self._src = _core.CodeSource(text, language)
+
+    @property
+    def text(self) -> str:
+        """The source text."""
+        return self._src.text
+
+    @property
+    def language(self) -> str | None:
+        """The language as given at construction (may be an alias/extension)."""
+        return self._src.language
+
+    def __repr__(self) -> str:
+        return f"CodeSource(language={self.language!r}, text_len={len(self.text)})"
 
 
 @_dataclass(frozen=True, slots=True)
@@ -74,10 +119,16 @@ class CodePattern:
         check. ``False`` means it definitely can't (skip it); ``True`` means "maybe"."""
         return self._cp.might_match(source)
 
-    def match_source(self, source: str) -> list[CodeMatch]:
-        """Match against ``source`` (parses it), skipping the parse entirely when the
-        prefilter rejects it. Reuses this pattern's compilation across calls."""
-        return [_convert_match(m, source) for m in self._cp.match_source(source)]
+    def match_source(self, source: "str | CodeSource") -> list[CodeMatch]:
+        """Match against ``source`` — a ``str`` (parsed on the spot) or a
+        :class:`CodeSource` (reusing its cached parse) — skipping the parse
+        entirely when the prefilter rejects it. Reuses this pattern's
+        compilation across calls."""
+        if isinstance(source, CodeSource):
+            raw, text = self._cp.match_source(source._src), source.text
+        else:
+            raw, text = self._cp.match_source(source), source
+        return [_convert_match(m, text) for m in raw]
 
     def match_file(self, path: str) -> "FileMatch | None":
         """Read ``path``, prefilter, and (only if it might match) parse + match.

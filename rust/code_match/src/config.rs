@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use cocoindex_code_ast::prog_langs::{self, ProgrammingLanguageInfo};
 use regex::Regex;
 use tree_sitter::Language;
 
@@ -202,6 +203,10 @@ pub fn c_like_tokenizers() -> Vec<TokenRule> {
 
 #[derive(Clone)]
 pub struct LangConfig {
+    /// The registry entry this config was built from. Per-language singleton —
+    /// compare with [`std::ptr::eq`] for grammar identity (e.g. against a
+    /// [`CodeSource`](cocoindex_code_ast::CodeSource)'s resolved info).
+    pub info: &'static ProgrammingLanguageInfo,
     pub language: Language,
     /// Anonymous punctuation/operator tokens, longest-first, excluding the
     /// splittable compounds. Derived from the grammar; used for maximal munch.
@@ -234,14 +239,29 @@ pub struct LangConfig {
 }
 
 impl LangConfig {
-    /// Build a config from a grammar and an **explicit** tokenizer profile.
-    /// There is deliberately no default: every language must state how its
-    /// literals tokenize, because string-escaping conventions differ (a `"a\"b"`
-    /// that is one string in C is two in a doubled-quote language). C-style
-    /// languages pass [`c_like_tokenizers`]; others compose the `*_doubled` /
-    /// `*_literal` / `triple_*` builders. Op/splittable tables are derived from
-    /// the grammar.
-    pub fn from_grammar(language: Language, tokenizers: Vec<TokenRule>) -> Self {
+    /// Build a config for a registry language (canonical name, e.g. `"python"`,
+    /// `"tsx"`) and an **explicit** tokenizer profile. The grammar comes from
+    /// the `cocoindex_code_ast` registry, so grammar identity is shared with
+    /// every other consumer by construction. There is deliberately no default
+    /// tokenizer profile: every language must state how its literals tokenize,
+    /// because string-escaping conventions differ (a `"a\"b"` that is one
+    /// string in C is two in a doubled-quote language). C-style languages pass
+    /// [`c_like_tokenizers`]; others compose the `*_doubled` / `*_literal` /
+    /// `triple_*` builders. Op/splittable tables are derived from the grammar.
+    ///
+    /// Panics if the name is not a registry language with a tree-sitter
+    /// grammar — the per-language constructors in `lang` are static
+    /// configuration, so this is a build-time invariant, not runtime input.
+    pub fn from_registry(language_name: &str, tokenizers: Vec<TokenRule>) -> Self {
+        let info = prog_langs::get_language_info(language_name).unwrap_or_else(|| {
+            panic!("language {language_name:?} is not in the code_ast registry")
+        });
+        let language = info
+            .treesitter_info
+            .as_ref()
+            .unwrap_or_else(|| panic!("language {language_name:?} has no tree-sitter grammar"))
+            .tree_sitter_lang
+            .clone();
         let single_char = single_char_punct_tokens(&language);
         let splittable = detect_splittable(&language, &single_char);
         let op_tokens = derive_op_tokens(&language, &splittable);
@@ -254,6 +274,7 @@ impl LangConfig {
             .map(String::from)
             .collect();
         LangConfig {
+            info,
             language,
             op_tokens,
             keywords,
