@@ -5,7 +5,6 @@ import pytest
 from pathlib import Path
 
 from cocoindex.ops.code import (
-    CodeAst,
     CodeMatch,
     CodePattern,
     CodeSource,
@@ -15,6 +14,7 @@ from cocoindex.ops.code import (
 from cocoindex.resources.chunk import Chunk
 
 _PY_SRC = "def foo(a, b):\n    return a + b\n\ndef bar(x):\n    return x\n"
+_DEF_PATTERN = r"def \NAME(\(ARGS*\)):"
 
 
 def _cap(m: CodeMatch, name: str) -> str:
@@ -23,15 +23,22 @@ def _cap(m: CodeMatch, name: str) -> str:
     return chunk.text
 
 
-def test_codeast_properties() -> None:
-    ast = CodeAst(_PY_SRC, language="python")
-    assert ast.language == "python"
-    assert ast.source == _PY_SRC
+def test_code_source_properties() -> None:
+    src = CodeSource(_PY_SRC, language="python")
+    assert src.text == _PY_SRC
+    assert src.language == "python"
+    assert CodeSource("plain text").language is None
+
+
+def test_code_source_unknown_language_never_raises() -> None:
+    # Construction is tolerant: consumers degrade (or raise at call time when
+    # they genuinely require an AST).
+    src = CodeSource("hello world", language="not-a-language")
+    assert src.language == "not-a-language"
 
 
 def test_matches_returns_dataclasses_with_captures() -> None:
-    ast = CodeAst(_PY_SRC, language="python")
-    matches = ast.matches(r"def \NAME(\(ARGS*\)):")
+    matches = match_code(_DEF_PATTERN, CodeSource(_PY_SRC, language="python"))
     assert all(isinstance(m, CodeMatch) for m in matches)
     by_name = {_cap(m, "NAME"): m for m in matches}
     assert set(by_name) == {"foo", "bar"}
@@ -49,62 +56,57 @@ def test_matches_returns_dataclasses_with_captures() -> None:
 
 
 def test_one_parse_many_patterns() -> None:
-    """A single CodeAst can be matched against multiple patterns (reused parse)."""
-    ast = CodeAst(_PY_SRC, language="python")
-    assert {_cap(m, "NAME") for m in ast.matches(r"def \NAME(\(ARGS*\)):")} == {
-        "foo",
-        "bar",
-    }
-    assert {_cap(m, "X") for m in ast.matches(r"return \X")} >= {"a + b", "x"}
+    """A single CodeSource can be matched against multiple patterns (reused parse)."""
+    src = CodeSource(_PY_SRC, language="python")
+    assert {_cap(m, "NAME") for m in match_code(_DEF_PATTERN, src)} == {"foo", "bar"}
+    assert {_cap(m, "X") for m in match_code(r"return \X", src)} >= {"a + b", "x"}
 
 
-def test_split_returns_chunks() -> None:
-    ast = CodeAst(_PY_SRC, language="python")
-    chunks = ast.split(chunk_size=30)
-    assert chunks  # non-empty
-    assert all(isinstance(c, Chunk) for c in chunks)
-    # chunk text is sliced from the source and positions are populated
-    assert all(c.text for c in chunks)
-    assert chunks[0].start.line == 1
-
-
-def test_match_code_one_shot() -> None:
-    matches = match_code(r"def \NAME(\(ARGS*\)):", _PY_SRC, "python")
+def test_match_code_one_shot_str() -> None:
+    matches = match_code(_DEF_PATTERN, _PY_SRC, "python")
     assert {_cap(m, "NAME") for m in matches} == {"foo", "bar"}
+    # a str source requires a language
+    with pytest.raises(ValueError, match="language"):
+        match_code(_DEF_PATTERN, _PY_SRC)
+    # ... and a CodeSource rejects one (it carries its own)
+    with pytest.raises(ValueError, match="language"):
+        match_code(_DEF_PATTERN, CodeSource(_PY_SRC, language="python"), "python")
 
 
 def test_language_alias() -> None:
     # "c++" alias resolves for both parsing and matching.
-    src = "int main() { return 0; }"
-    ast = CodeAst(src, language="c++")
-    assert _cap(ast.matches(r"return \V;")[0], "V") == "0"
+    src = CodeSource("int main() { return 0; }", language="c++")
+    assert _cap(match_code(r"return \V;", src)[0], "V") == "0"
 
 
-def test_unknown_language_raises() -> None:
+def test_matching_unknown_language_raises() -> None:
     with pytest.raises(ValueError):
-        CodeAst("x = 1", language="nonsense-lang")
+        match_code(r"\X", "x = 1", "nonsense-lang")
+    with pytest.raises(ValueError):
+        match_code(r"\X", CodeSource("x = 1", language="nonsense-lang"))
 
 
 def test_matching_unsupported_language_raises() -> None:
     # Markdown can be parsed/split but has no structural matcher.
-    ast = CodeAst("# hello", language="markdown")
     with pytest.raises(ValueError):
-        ast.matches(r"\X")
+        match_code(r"\X", CodeSource("# hello", language="markdown"))
 
 
 def test_malformed_pattern_raises() -> None:
-    ast = CodeAst(_PY_SRC, language="python")
     with pytest.raises(ValueError):
-        ast.matches(r"\(/[/\)")  # invalid regex matcher (unterminated char class)
+        # invalid regex matcher (unterminated char class)
+        CodePattern(r"\(/[/\)", language="python")
+    with pytest.raises(ValueError):
+        match_code(r"\(/[/\)", _PY_SRC, "python")
 
 
-def test_code_pattern_reused_across_asts() -> None:
-    # Compile once, match against many ASTs — same results as passing the string.
-    cp = CodePattern(r"def \NAME(\(ARGS*\)):", language="python")
+def test_code_pattern_reused_across_sources() -> None:
+    # Compile once, match against many sources — same results as one-shots.
+    cp = CodePattern(_DEF_PATTERN, language="python")
     assert cp.language == "python"
-    ast = CodeAst(_PY_SRC, language="python")
-    via_obj = {_cap(m, "NAME") for m in ast.matches(cp)}
-    via_str = {_cap(m, "NAME") for m in ast.matches(r"def \NAME(\(ARGS*\)):")}
+    src = CodeSource(_PY_SRC, language="python")
+    via_obj = {_cap(m, "NAME") for m in cp.match_source(src)}
+    via_str = {_cap(m, "NAME") for m in match_code(_DEF_PATTERN, src)}
     assert via_obj == via_str == {"foo", "bar"}
 
 
@@ -119,69 +121,14 @@ def test_code_pattern_match_source_and_might_match() -> None:
     assert cp.match_source("def f():\n    return other(item)\n") == []
 
 
-def test_code_pattern_language_mismatch_raises() -> None:
-    cp = CodePattern(r"return \X;", language="c++")
-    ast = CodeAst(_PY_SRC, language="python")
-    with pytest.raises(ValueError):
-        ast.matches(cp)
-
-
-def test_code_pattern_match_file(tmp_path: Path) -> None:
+def test_code_source_match_agrees_with_str_match() -> None:
     cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
-
-    hit = tmp_path / "hit.py"
-    # newline="" so the bytes round-trip verbatim (no `\n`→`\r\n` on Windows).
-    hit.write_text(_PY_SRC, newline="")
-    fm = cp.match_file(str(hit))
-    assert fm is not None
-    assert fm.path == str(hit)
-    assert fm.ast.source == _PY_SRC  # the AST is bundled (content via ast.source)
-    assert {_cap(m, "NAME") for m in fm.matches} == {"foo", "bar"}
-    # the bundled AST is reusable without re-parsing
-    assert fm.ast.split(chunk_size=1000)
-
-    # a file with no match → None (and binary/missing handled gracefully)
-    miss = tmp_path / "miss.py"
-    miss.write_text("x = 1\n", newline="")
-    assert cp.match_file(str(miss)) is None
-
-    binary = tmp_path / "blob.bin"
-    binary.write_bytes(b"\xff\xfe\x00\x01def foo():")
-    assert cp.match_file(str(binary)) is None  # non-utf8 skipped
-
-
-def test_comments_in_source_are_ignored() -> None:
-    # Code written inside a comment must not match; a comment is transparent to the
-    # matcher (and the bundled match path agrees).
-    src = "# bar(commented)\ndef g():\n    return bar(real)  # bar(also_commented)\n"
-    ast = CodeAst(src, language="python")
-    args = [_cap(m, "X") for m in ast.matches(r"bar(\X)")]
-    assert args == ["real"]  # the two `bar(...)` in comments do not match
-
-
-def test_index_terms_free_fn_and_method() -> None:
-    src = 'def handler(req):\n    return process(req, "payload")\n'
-    want = {"handler", "req", "process", "payload"}
-    assert want <= set(index_terms(src, language="python"))
-    # the CodeAst method reuses the parse and agrees
-    ast = CodeAst(src, language="python")
-    assert sorted(ast.index_terms()) == sorted(index_terms(src, language="python"))
-    # keywords excluded
-    assert "def" not in ast.index_terms()
-    assert "return" not in ast.index_terms()
-
-
-def test_code_source_properties() -> None:
-    src = CodeSource(_PY_SRC, language="python")
-    assert src.text == _PY_SRC
-    assert src.language == "python"
-    assert CodeSource("plain text").language is None
-
-
-def test_code_source_unknown_language_never_raises() -> None:
-    # Unlike CodeAst, construction is tolerant: consumers degrade on their own.
-    src = CodeSource("hello world", language="not-a-language")
-    assert src.language == "not-a-language"
+    via_source = cp.match_source(CodeSource(_PY_SRC, language="python"))
+    via_str = cp.match_source(_PY_SRC)
+    assert via_source == via_str
+    # A CodeSource without (or with a different) language still matches: the
+    # pattern's own grammar is used, same as the str path.
+    assert cp.match_source(CodeSource(_PY_SRC)) == via_str
 
 
 def test_code_source_shared_by_matcher_and_splitter() -> None:
@@ -195,11 +142,60 @@ def test_code_source_shared_by_matcher_and_splitter() -> None:
     assert chunks and chunks[0].text.startswith("def foo")
 
 
-def test_code_source_match_agrees_with_str_match() -> None:
+def test_code_pattern_match_file(tmp_path: Path) -> None:
     cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
-    via_source = cp.match_source(CodeSource(_PY_SRC, language="python"))
-    via_str = cp.match_source(_PY_SRC)
-    assert via_source == via_str
-    # A CodeSource without (or with a different) language still matches: the
-    # pattern's own grammar is used, same as the str path.
-    assert cp.match_source(CodeSource(_PY_SRC)) == via_str
+
+    hit = tmp_path / "hit.py"
+    # newline="" so the bytes round-trip verbatim (no `\n`→`\r\n` on Windows).
+    hit.write_text(_PY_SRC, newline="")
+    fm = cp.match_file(str(hit))
+    assert fm is not None
+    assert fm.path == str(hit)
+    assert fm.source.text == _PY_SRC  # the parsed source is bundled
+    assert fm.source.language == "python"
+    assert {_cap(m, "NAME") for m in fm.matches} == {"foo", "bar"}
+    # the bundled source is reusable without re-parsing
+    from cocoindex.ops.text import RecursiveSplitter
+
+    assert RecursiveSplitter().split(fm.source, chunk_size=1000)
+
+    # a file with no match → None (and binary/missing handled gracefully)
+    miss = tmp_path / "miss.py"
+    miss.write_text("x = 1\n", newline="")
+    assert cp.match_file(str(miss)) is None
+
+    binary = tmp_path / "blob.bin"
+    binary.write_bytes(b"\xff\xfe\x00\x01def foo():")
+    assert cp.match_file(str(binary)) is None  # non-utf8 skipped
+
+
+def test_comments_in_source_are_ignored() -> None:
+    # Code written inside a comment must not match; a comment is transparent to
+    # the matcher.
+    src = "# bar(commented)\ndef g():\n    return bar(real)  # bar(also_commented)\n"
+    args = [
+        _cap(m, "X") for m in match_code(r"bar(\X)", CodeSource(src, language="python"))
+    ]
+    assert args == ["real"]  # the two `bar(...)` in comments do not match
+
+
+def test_index_terms_str_and_code_source() -> None:
+    src_text = 'def handler(req):\n    return process(req, "payload")\n'
+    want = {"handler", "req", "process", "payload"}
+    assert want <= set(index_terms(src_text, language="python"))
+    # the CodeSource path reuses the parse and agrees
+    src = CodeSource(src_text, language="python")
+    assert sorted(index_terms(src)) == sorted(index_terms(src_text, language="python"))
+    # keywords excluded
+    assert "def" not in index_terms(src)
+    assert "return" not in index_terms(src)
+    # a str source requires a language; unknown languages raise (silently
+    # indexing nothing would poison a prefilter index with false negatives)
+    with pytest.raises(ValueError, match="language"):
+        index_terms(src_text)
+    with pytest.raises(ValueError):
+        index_terms(src_text, language="nonsense-lang")
+    with pytest.raises(ValueError):
+        index_terms(CodeSource(src_text, language="nonsense-lang"))
+    with pytest.raises(ValueError, match="language"):
+        index_terms(src, language="python")  # CodeSource carries its own

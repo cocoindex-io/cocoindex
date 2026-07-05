@@ -130,7 +130,6 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     // Code parsing + structural matching over a reusable parsed AST
     m.add_class::<code::PyCodeSource>()?;
-    m.add_class::<code::PyCodeAst>()?;
     m.add_class::<code::PyCodeMatch>()?;
     m.add_class::<code::PyCodePattern>()?;
     m.add_class::<code::PyFileMatch>()?;
