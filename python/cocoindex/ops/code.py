@@ -17,6 +17,8 @@ __all__ = [
     "match_code",
 ]
 
+import typing as _typing
+import warnings as _warnings
 from dataclasses import dataclass as _dataclass
 
 from cocoindex._internal import core as _core
@@ -71,6 +73,17 @@ class CodeSource:
     def language(self) -> str | None:
         """The language as given at construction (may be an alias/extension)."""
         return self._src.language
+
+    @property
+    def source(self) -> str:
+        """Deprecated alias of :attr:`text` (the name the removed ``CodeAst``
+        class used); use ``.text``."""
+        _warnings.warn(
+            "CodeSource.source is deprecated; use CodeSource.text",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._src.text
 
     def __repr__(self) -> str:
         return f"CodeSource(language={self.language!r}, text_len={len(self.text)})"
@@ -176,6 +189,18 @@ class FileMatch:
     """The matches found (always at least one — ``match_file`` returns ``None``
     when there are none)."""
 
+    @property
+    def ast(self) -> CodeSource:
+        """Deprecated alias of :attr:`source` (the field's name when it held the
+        removed ``CodeAst`` class); use ``.source``."""
+        _warnings.warn(
+            "FileMatch.ast is deprecated; use FileMatch.source "
+            "(and .text for the file content)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.source
+
 
 def match_code(
     pattern: str, source: "str | CodeSource", language: str | None = None
@@ -238,3 +263,23 @@ def _convert_chunk(raw: "_core.Chunk", text: str) -> _chunk.Chunk:
             column=raw.end_column,
         ),
     )
+
+
+def __getattr__(name: str) -> _typing.Any:
+    # Deprecated alias for the removed ``CodeAst`` class, so annotations and
+    # ``isinstance`` checks in older callers keep working. ``CodeSource`` is
+    # the single handle now; note its constructor is lazy and tolerant where
+    # ``CodeAst``'s was eager and raising, and the old ``.matches`` / ``.split``
+    # / ``.index_terms`` methods live on the consumers instead
+    # (``CodePattern.match_source`` / ``match_code``, ``RecursiveSplitter.split``,
+    # ``index_terms``).
+    if name == "CodeAst":
+        _warnings.warn(
+            "CodeAst is deprecated and now aliases CodeSource; use CodeSource "
+            "with CodePattern.match_source / match_code, RecursiveSplitter.split, "
+            "and index_terms",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return CodeSource
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
