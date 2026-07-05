@@ -36,18 +36,6 @@ impl DeadlineContext {
     /// No active deadline.
     pub const NONE: Self = Self(NO_DEADLINE_NS);
 
-    /// Recreate a handle from its raw monotonic-nanosecond representation.
-    ///
-    /// This is used only by FFI wrappers that need to carry the opaque value.
-    pub const fn from_raw_ns(raw_ns: u64) -> Self {
-        Self(raw_ns)
-    }
-
-    /// Return the raw monotonic-nanosecond representation.
-    pub const fn raw_ns(self) -> u64 {
-        self.0
-    }
-
     pub const fn has_deadline(self) -> bool {
         self.0 != NO_DEADLINE_NS
     }
@@ -59,11 +47,7 @@ impl DeadlineContext {
         let deadline = monotonic_ns()
             .saturating_add(timeout_ns)
             .min(MAX_DEADLINE_NS);
-        if self.has_deadline() {
-            Self(self.0.min(deadline))
-        } else {
-            Self(deadline)
-        }
+        Self(self.0.min(deadline))
     }
 
     /// Raise a structured deadline error if this context has expired.
@@ -209,6 +193,6 @@ mod tests {
         let _clock = TestClockGuard::new();
         let deadline = DeadlineContext::NONE.with_timeout(Duration::MAX);
         assert!(deadline.has_deadline());
-        assert_eq!(deadline.raw_ns(), MAX_DEADLINE_NS);
+        assert_eq!(deadline.0, MAX_DEADLINE_NS);
     }
 }

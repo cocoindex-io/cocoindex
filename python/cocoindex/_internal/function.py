@@ -40,7 +40,7 @@ from .component_ctx import (
 )
 from .context_keys import resolve_awaitables_sync
 from .deadline import (
-    DeadlinePropagation,
+    DeadlineSnapshot,
     check_deadline as _deadline_checkpoint,
     restore as _restore_deadline,
 )
@@ -81,7 +81,7 @@ MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
 
 @contextlib.contextmanager
 def _deadline_snapshot_context(
-    deadline_snapshot: DeadlinePropagation,
+    deadline_snapshot: DeadlineSnapshot | None,
 ) -> Iterator[None]:
     if deadline_snapshot is None:
         yield
@@ -583,11 +583,10 @@ def _build_sync_core_processor(
     logic_fp: core.Fingerprint | None = None,
     state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
     propagate_children_fn_logic: bool = True,
-    deadline_snapshot: DeadlinePropagation = None,
+    deadline_snapshot: DeadlineSnapshot | None = None,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         with _deadline_snapshot_context(deadline_snapshot):
-            _deadline_checkpoint()
             with _enter_component_context(
                 env,
                 path,
@@ -596,7 +595,6 @@ def _build_sync_core_processor(
                 logic_fp=logic_fp,
             ):
                 result = fn(*args, **kwargs)
-                _deadline_checkpoint()
                 return result
 
     return core.ComponentProcessor.new_sync(
@@ -907,7 +905,7 @@ class SyncFunction(Function[P, R_co]):
         path: core.StablePath,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-        deadline_snapshot: DeadlinePropagation,
+        deadline_snapshot: DeadlineSnapshot | None,
     ) -> core.ComponentProcessor[R_co]:
         state_methods: list[StateFnEntry] = []
         memo_fp: core.Fingerprint | None = None
@@ -1036,7 +1034,7 @@ class _BoundSyncMethod(Generic[SelfT]):
         path: core.StablePath,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-        deadline_snapshot: DeadlinePropagation,
+        deadline_snapshot: DeadlineSnapshot | None,
     ) -> core.ComponentProcessor[Any]:
         return self._func._core_processor_with_deadline(
             env, path, (self._instance, *args), kwargs, deadline_snapshot
@@ -1063,11 +1061,10 @@ def _build_async_core_processor(
     logic_fp: core.Fingerprint | None = None,
     state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
     propagate_children_fn_logic: bool = True,
-    deadline_snapshot: DeadlinePropagation = None,
+    deadline_snapshot: DeadlineSnapshot | None = None,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         with _deadline_snapshot_context(deadline_snapshot):
-            _deadline_checkpoint()
             with _enter_component_context(
                 env,
                 path,
@@ -1076,7 +1073,6 @@ def _build_async_core_processor(
                 logic_fp=logic_fp,
             ):
                 result = await fn(*args, **kwargs)
-                _deadline_checkpoint()
                 return result
 
     return core.ComponentProcessor.new_async(
@@ -1125,7 +1121,7 @@ class _BoundAsyncMethod(Generic[SelfT]):
         path: core.StablePath,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-        deadline_snapshot: DeadlinePropagation,
+        deadline_snapshot: DeadlineSnapshot | None,
     ) -> core.ComponentProcessor[Any]:
         return self._func._core_processor_with_deadline(
             env, path, (self._instance, *args), kwargs, deadline_snapshot
@@ -1672,7 +1668,7 @@ class AsyncFunction(Function[P, R_co]):
         path: core.StablePath,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-        deadline_snapshot: DeadlinePropagation,
+        deadline_snapshot: DeadlineSnapshot | None,
     ) -> core.ComponentProcessor[R_co]:
         state_methods: list[StateFnEntry] = []
         memo_fp: core.Fingerprint | None = None
@@ -2178,7 +2174,7 @@ def create_core_component_processor(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     /,
-    deadline_snapshot: DeadlinePropagation = None,
+    deadline_snapshot: DeadlineSnapshot | None = None,
 ) -> core.ComponentProcessor[R_co]:
     if deadline_snapshot is not None:
         with _deadline_snapshot_context(deadline_snapshot):

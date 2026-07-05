@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection
+import math
+from collections.abc import Callable, Collection
 from datetime import timedelta
 from typing import Any, Iterator
 
 import pytest
 
 import cocoindex as coco
+import cocoindex.inspect as coco_inspect
 from cocoindex._internal import core
 from cocoindex._internal import deadline as _deadline
 from cocoindex._internal.component_ctx import next_id as _next_id
@@ -49,6 +51,7 @@ class _FakeClock:
 
 @pytest.fixture
 def fake_clock(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeClock]:
+    monkeypatch.setenv("COCOINDEX_TESTING", "1")
     real_sleep = asyncio.sleep
     clock = _FakeClock(real_sleep=real_sleep)
     monkeypatch.setattr(asyncio, "sleep", clock.sleep)
@@ -58,6 +61,29 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeClock]:
 
 def _env(suffix: str) -> coco.Environment:
     return common.create_test_env(__file__, suffix=suffix)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        core.testing_reset_deadline_clock,
+        core.testing_disable_deadline_clock,
+        lambda: core.testing_advance_deadline_clock(1),
+    ],
+)
+def test_testing_deadline_clock_requires_testing_env(
+    monkeypatch: pytest.MonkeyPatch,
+    call: Callable[[], None],
+) -> None:
+    monkeypatch.delenv("COCOINDEX_TESTING", raising=False)
+    with pytest.raises(RuntimeError, match="COCOINDEX_TESTING=1"):
+        call()
+
+
+@pytest.mark.parametrize("seconds", [-1.0, math.nan, math.inf, 1e300])
+def test_deadline_context_with_timeout_rejects_invalid_seconds(seconds: float) -> None:
+    with pytest.raises(ValueError, match="timeout duration"):
+        core.deadline_none().with_timeout(seconds)
 
 
 class _RecordingTargetStore:
@@ -192,6 +218,36 @@ def test_processor_return_checks_deadline_before_submit(fake_clock: _FakeClock) 
             app.update_blocking()
 
     assert GlobalDictTarget.store.data == {}
+
+
+def test_app_drop_cleanup_ignores_expired_ambient_deadline(
+    fake_clock: _FakeClock,
+) -> None:
+    GlobalDictTarget.store.clear()
+
+    @coco.fn
+    async def child() -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("cleanup", "v1"))
+
+    @coco.fn
+    async def main() -> None:
+        await coco.mount(coco.component_subpath("child"), child)
+
+    app = coco.App(
+        coco.AppConfig(name="deadline_drop_cleanup", environment=_env("drop_cleanup")),
+        main,
+    )
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "cleanup": DictDataWithPrev(data="v1", prev=[], prev_may_be_missing=True),
+    }
+
+    with coco.timeout(timedelta(seconds=10)):
+        fake_clock.now = 11
+        app.drop_blocking()
+
+    assert GlobalDictTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == []
 
 
 @pytest.mark.asyncio

@@ -525,9 +525,9 @@ impl App {
         let core_options = AppUpdateOptions {
             full_reprocess: options.full_reprocess,
             live: options.live,
-            deadline: options
-                .timeout
-                .map(|timeout| DeadlineContext::NONE.with_timeout(timeout)),
+            deadline: options.timeout.map_or(DeadlineContext::NONE, |timeout| {
+                DeadlineContext::NONE.with_timeout(timeout)
+            }),
         };
 
         // In preview mode the engine collects target actions into this shared

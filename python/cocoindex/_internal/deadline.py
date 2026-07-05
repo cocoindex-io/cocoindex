@@ -5,7 +5,7 @@ import contextlib
 from collections.abc import Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from datetime import timedelta
-from typing import TypeAlias, TypeVar
+from typing import TypeVar
 
 from . import core
 
@@ -13,7 +13,6 @@ from . import core
 DeadlineExceededError = core.DeadlineExceededError
 
 DeadlineSnapshot = core.DeadlineContext
-DeadlinePropagation: TypeAlias = DeadlineSnapshot | None
 
 _current_deadline: ContextVar[DeadlineSnapshot] = ContextVar(
     "coco_deadline", default=core.deadline_none()

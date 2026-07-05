@@ -1497,7 +1497,7 @@ mod tests {
             .update(
                 second_processor,
                 AppUpdateOptions {
-                    deadline: Some(deadline),
+                    deadline,
                     ..AppUpdateOptions::default()
                 },
                 Arc::new(()),

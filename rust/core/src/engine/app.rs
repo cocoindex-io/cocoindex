@@ -13,14 +13,24 @@ use crate::state::stable_path::StablePath;
 use tokio::sync::watch;
 
 /// Options for updating an app.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AppUpdateOptions {
     /// If true, reprocess everything and invalidate existing caches.
     pub full_reprocess: bool,
     /// If true, enable live component mode for this update.
     pub live: bool,
     /// Deadline for the root processor and for observing the update result.
-    pub deadline: Option<DeadlineContext>,
+    pub deadline: DeadlineContext,
+}
+
+impl Default for AppUpdateOptions {
+    fn default() -> Self {
+        Self {
+            full_reprocess: false,
+            live: false,
+            deadline: DeadlineContext::NONE,
+        }
+    }
 }
 
 /// Handle returned by `App::update` or `App::drop_app` that provides access to
@@ -120,7 +130,7 @@ impl<Prof: EngineProfile> App<Prof> {
         self.app_ctx().reset_cancellation_token_if_cancelled();
         let processing_stats = ProcessingStats::new();
         let version_rx = processing_stats.subscribe();
-        let deadline = options.deadline.unwrap_or(DeadlineContext::NONE);
+        let deadline = options.deadline;
         let context = self.root_component.new_processor_context_for_build(
             None,
             processing_stats.clone(),

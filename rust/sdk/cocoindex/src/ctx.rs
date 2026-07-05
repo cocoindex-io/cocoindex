@@ -364,10 +364,25 @@ impl Ctx {
     /// If the current context already has an earlier deadline, the earlier one
     /// wins. The returned context should be passed to child scopes and helper
     /// calls whose work belongs to the narrower budget.
+    #[must_use = "returns a new scoped Ctx; the original is unchanged"]
     pub fn with_timeout(&self, timeout: Duration) -> Self {
         let mut scoped = self.clone();
         scoped.deadline = scoped.deadline.with_timeout(timeout);
         scoped
+    }
+
+    /// Run a closure with a cloned context carrying an additional timeout.
+    ///
+    /// This is the least error-prone spelling for scoped work: name the closure
+    /// argument `ctx` and it shadows the outer context, so calls inside the body
+    /// naturally use the scoped deadline.
+    pub async fn with_timeout_scope<F, Fut, T>(&self, timeout: Duration, f: F) -> T
+    where
+        F: FnOnce(Self) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let scoped = self.with_timeout(timeout);
+        f(scoped).await
     }
 
     /// Check the current deadline and return [`Error::DeadlineExceeded`] if it
@@ -1225,5 +1240,28 @@ mod tests {
             first_id_after_timeout, 1,
             "expired next_id must not consume an ID allocation"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn with_timeout_scope_applies_deadline_to_scoped_ctx() {
+        let _clock = TestClockGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::builder("ctx_with_timeout_scope_deadline")
+            .db_path(dir.path().join("lmdb"))
+            .build()
+            .await
+            .unwrap();
+
+        let err = app
+            .update(|ctx| async move {
+                ctx.with_timeout_scope(Duration::from_secs(1), |ctx| async move {
+                    testing_advance_deadline_clock(Duration::from_secs(2));
+                    ctx.check_deadline()
+                })
+                .await
+            })
+            .await
+            .unwrap_err();
+        assert!(err.is_deadline_exceeded());
     }
 }

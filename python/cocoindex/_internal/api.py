@@ -299,10 +299,6 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
         _capture_deadline(),
     )
     pyvalue = await core_handle.result_async(parent_ctx._core_processor_ctx)
-    # use_mount waits for the child to finish instead of abandoning it on
-    # timeout. Once the child returns, the parent enforces its own deadline
-    # before using the child's value.
-    check_deadline()
     return pyvalue.get(fn_ret_deserializer(processor_fn))
 
 

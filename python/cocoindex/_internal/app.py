@@ -16,12 +16,7 @@ from typing import (
 )
 
 from . import core
-from .deadline import (
-    DeadlineSnapshot,
-    capture as _capture_deadline,
-    check_deadline as _check_deadline,
-    restore as _restore_deadline,
-)
+from .deadline import capture as _capture_deadline
 from .environment import Environment, LazyEnvironment, _default_env
 from .function import (
     AnyCallable,
@@ -42,11 +37,6 @@ from .update_stats import (
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
-
-def _check_deadline_snapshot(snapshot: DeadlineSnapshot) -> None:
-    with _restore_deadline(snapshot):
-        _check_deadline()
 
 
 class _StatsSnapshot(NamedTuple):
@@ -71,15 +61,11 @@ class UpdateHandle(Generic[R]):
         init_coro: Any,  # Coroutine that returns core.UpdateHandle
         main_fn: Any = None,
         preview: bool = False,
-        deadline_snapshot: DeadlineSnapshot | None = None,
     ) -> None:
         self._init_coro = init_coro
         self._core_handle: core.UpdateHandle | None = None
         self._main_fn = main_fn  # used for return type inspection
         self._preview = preview
-        self._deadline_snapshot = (
-            deadline_snapshot if deadline_snapshot is not None else core.deadline_none()
-        )
 
     async def _ensure_started(self) -> core.UpdateHandle:
         if self._core_handle is None:
@@ -101,11 +87,6 @@ class UpdateHandle(Generic[R]):
         if self._core_handle is None:
             return None
         return self._snapshot_from_handle(self._core_handle).stats
-
-    def _check_deadline(self) -> None:
-        # Result observation uses the deadline captured when update() was
-        # called, not the ambient deadline active when the handle is awaited.
-        _check_deadline_snapshot(self._deadline_snapshot)
 
     async def watch(self) -> AsyncIterator[UpdateSnapshot[R]]:
         """Async iterator that yields progress snapshots.
@@ -133,7 +114,6 @@ class UpdateHandle(Generic[R]):
             if version >= _TERMINATED_VERSION:
                 snap = self._snapshot_from_handle(handle)
                 pyvalue: Any = await handle.result()
-                self._check_deadline()
                 result: R = pyvalue.get(fn_ret_deserializer(self._main_fn))
                 if snap.stats is not None:
                     yield UpdateSnapshot(
@@ -157,10 +137,8 @@ class UpdateHandle(Generic[R]):
         handle = await self._ensure_started()
         if self._preview:
             await handle.result()
-            self._check_deadline()
             return handle.take_preview_actions()  # type: ignore[return-value]
         pyvalue: Any = await handle.result()
-        self._check_deadline()
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
     def __await__(self) -> Any:
@@ -193,7 +171,6 @@ async def show_progress(
         refresh_interval.total_seconds() if refresh_interval is not None else None
     )
     pyvalue: Any = await core.show_progress(core_handle, refresh_interval_secs)
-    handle._check_deadline()
     return pyvalue.get(fn_ret_deserializer(handle._main_fn))  # type: ignore[no-any-return]
 
 
@@ -344,7 +321,6 @@ class App(Generic[P, R]):
             _init(),
             main_fn=self._main_fn,
             preview=preview,
-            deadline_snapshot=deadline_snapshot,
         )
 
     def update_blocking(
@@ -393,7 +369,6 @@ class App(Generic[P, R]):
             preview=preview,
             deadline=deadline_snapshot,
         )
-        _check_deadline_snapshot(deadline_snapshot)
         if preview:
             return pyvalue  # type: ignore[no-any-return]
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]

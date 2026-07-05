@@ -2,6 +2,7 @@ use crate::prelude::*;
 
 use cocoindex_core::engine::{
     app::{App, AppOpHandle, AppUpdateOptions},
+    deadline::DeadlineContext,
     progress_display::{ProgressDisplayOptions, show_progress as rust_show_progress},
     runtime::get_runtime,
     stats::{ProcessingStats, VersionedProcessingStats},
@@ -262,7 +263,7 @@ impl PyApp {
         let options = AppUpdateOptions {
             full_reprocess,
             live,
-            deadline: deadline.map(|d| d.0),
+            deadline: deadline.map_or(DeadlineContext::NONE, |d| d.0),
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {
@@ -296,7 +297,7 @@ impl PyApp {
         let options = AppUpdateOptions {
             full_reprocess,
             live,
-            deadline: deadline.map(|d| d.0),
+            deadline: deadline.map_or(DeadlineContext::NONE, |d| d.0),
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {

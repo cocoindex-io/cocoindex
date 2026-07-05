@@ -12,7 +12,6 @@ import pytest
 
 import cocoindex as coco
 from cocoindex._internal import core
-from cocoindex._internal import deadline as _deadline
 
 
 class _FakeClock:
@@ -117,6 +116,7 @@ async def test_llm_resolver_with_deadline_retries_until_deadline(
     # invalid outputs sleep/back off while time remains
     # valid output before deadline returns successfully
     real_sleep = asyncio.sleep
+    monkeypatch.setenv("COCOINDEX_TESTING", "1")
     clock = _FakeClock(real_sleep)
     monkeypatch.setattr(asyncio, "sleep", clock.sleep)
     module = _load_resolver_module(monkeypatch)
