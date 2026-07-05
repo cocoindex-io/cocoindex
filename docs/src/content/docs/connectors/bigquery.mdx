@@ -1,0 +1,220 @@
+---
+title: "*BigQuery* connector"
+toc_max_heading_level: 4
+description: >
+  Write CocoIndex target rows into BigQuery tables with managed DDL, MERGE
+  upserts, deletes, and automatic mapping from Python row types.
+---
+The `bigquery` connector provides target state APIs for writing rows to BigQuery tables. CocoIndex tracks the rows that should exist and applies table creation, upserts, updates, and deletes incrementally.
+
+```python
+from cocoindex.connectors import bigquery
+```
+
+:::note[Install]
+Install the optional BigQuery dependency before using this connector:
+
+```bash
+pip install cocoindex[bigquery]
+```
+:::
+
+## Connection setup
+
+Create a `ContextKey[bigquery.ConnectionConfig]` to identify the BigQuery connection, then provide it in your lifespan:
+
+:::note
+The key name is load-bearing across runs. It is the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
+:::
+
+```python
+import os
+from collections.abc import Iterator
+
+import cocoindex as coco
+from cocoindex.connectors import bigquery
+
+BIGQUERY = coco.ContextKey[bigquery.ConnectionConfig]("bigquery")
+
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    builder.provide(
+        BIGQUERY,
+        bigquery.ConnectionConfig(
+            project=os.environ.get("BIGQUERY_PROJECT"),
+            credentials_path=os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or None,
+            location=os.environ.get("BIGQUERY_LOCATION"),
+        ),
+    )
+    yield
+```
+
+If `credentials_path` is omitted, the Google client uses Application Default Credentials.
+
+### ConnectionConfig
+
+```python
+@dataclass(frozen=True)
+class ConnectionConfig:
+    project: str | None = None
+    credentials_path: str | None = None
+    location: str | None = None
+```
+
+**Parameters:**
+
+- `project` - Optional Google Cloud project used by the BigQuery client.
+- `credentials_path` - Optional path to a service account JSON key file. If omitted, Application Default Credentials are used.
+- `location` - Optional BigQuery job location, for example `US` or `EU`.
+
+## As target
+
+The `bigquery` connector provides target state APIs for writing rows to tables.
+
+### Tables
+
+Declares a table as a target state. Returns a `TableTarget` for declaring rows.
+
+```python
+def declare_table_target(
+    db: ContextKey[ConnectionConfig],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    dataset: str,
+    project: str | None = None,
+    managed_by: Literal["system", "user"] = "system",
+) -> TableTarget[RowT, coco.PendingS]
+```
+
+**Parameters:**
+
+- `db` - A `ContextKey[ConnectionConfig]` identifying the connection to use.
+- `table_name` - Name of the table.
+- `table_schema` - Schema definition including columns and primary key.
+- `dataset` - BigQuery dataset name.
+- `project` - Optional project that owns the target table. If omitted, BigQuery uses the client project.
+- `managed_by` - Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
+
+When `managed_by="system"`, CocoIndex creates the dataset and table if needed. Table changes use BigQuery DDL, and row changes use BigQuery `MERGE` for upserts.
+
+:::note
+BigQuery primary key constraints are not enforced by BigQuery. CocoIndex still uses the primary key list to reconcile rows and generate `MERGE` and `DELETE` statements.
+:::
+
+### Rows
+
+Once a `TableTarget` is resolved, declare rows to be upserted:
+
+```python
+def TableTarget.declare_row(
+    self,
+    *,
+    row: RowT,
+) -> None
+```
+
+**Parameters:**
+
+- `row` - A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
+
+## Table schema: from Python class
+
+Define the table structure using a Python class:
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class ProductRow:
+    id: str
+    name: str
+    price: float
+    metadata: dict[str, object]
+
+schema = await bigquery.TableSchema.from_class(
+    ProductRow,
+    primary_key=["id"],
+)
+```
+
+Python types are automatically mapped to BigQuery column types:
+
+| Python Type | BigQuery Type |
+|-------------|---------------|
+| `bool` | `BOOL` |
+| `int` | `INT64` |
+| `float` | `FLOAT64` |
+| `decimal.Decimal` | `NUMERIC` |
+| `str` | `STRING` |
+| `bytes` | `BYTES` |
+| `uuid.UUID` | `STRING` |
+| `datetime.date` | `DATE` |
+| `datetime.time` | `TIME` |
+| `datetime.datetime` | `TIMESTAMP` |
+| `datetime.timedelta` | `FLOAT64` |
+| `list`, `dict`, nested structs | `JSON` |
+
+`JSON` values are JSON-serialized and written with `PARSE_JSON`.
+
+### BigQueryType
+
+Use `BigQueryType` to specify a custom BigQuery type and optional encoder:
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+
+from cocoindex.connectors.bigquery import BigQueryType
+
+@dataclass
+class ProductRow:
+    id: Annotated[int, BigQueryType("NUMERIC")]
+    embedding: Annotated[list[float], BigQueryType("ARRAY<FLOAT64>")]
+```
+
+You can also pass `column_overrides` when constructing the schema:
+
+```python
+schema = await bigquery.TableSchema.from_class(
+    ProductRow,
+    primary_key=["id"],
+    column_overrides={
+        "id": bigquery.BigQueryType("NUMERIC"),
+    },
+)
+```
+
+## Example
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class ProductRow:
+    id: str
+    name: str
+    price: float
+    metadata: dict[str, object]
+
+async def declare_products(rows: list[ProductRow]) -> None:
+    table = await bigquery.mount_table_target(
+        BIGQUERY,
+        table_name="product_index",
+        table_schema=await bigquery.TableSchema.from_class(
+            ProductRow,
+            primary_key=["id"],
+        ),
+        project="my-project",
+        dataset="analytics",
+    )
+
+    for row in rows:
+        table.declare_row(row=row)
+```
+
+See `examples/bigquery_target` for a runnable project.
+
+## Identifier handling
+
+Dataset, table, and column names must be simple BigQuery identifiers containing letters, numbers, and underscores, and must not start with a number. The connector quotes identifiers when generating SQL.

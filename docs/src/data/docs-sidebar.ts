@@ -63,6 +63,7 @@ export const sidebar: SidebarItem[] = [
     items: [
       { type: 'doc', slug: 'connectors', label: 'Overview' },
       { type: 'doc', slug: 'connectors/amazon_s3', label: 'Amazon S3' },
+      { type: 'doc', slug: 'connectors/bigquery', label: 'BigQuery' },
       { type: 'doc', slug: 'connectors/doris', label: 'Apache Doris' },
       { type: 'doc', slug: 'connectors/falkordb', label: 'FalkorDB' },
       { type: 'doc', slug: 'connectors/google_drive', label: 'Google Drive' },
