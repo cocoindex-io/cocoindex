@@ -10,6 +10,7 @@
 //! - byte→position machinery ([`positions`]): [`LineIndex`], [`OutputPosition`],
 //!   [`TextRange`].
 
+mod hazards;
 pub mod positions;
 pub mod prog_langs;
 mod source;
@@ -18,5 +19,6 @@ mod source;
 /// dependency (grammars are pinned to one version workspace-wide here).
 pub use tree_sitter;
 
+pub use hazards::TreeHazards;
 pub use positions::{LineIndex, OutputPosition, TextRange};
 pub use source::{CodeSource, ParseOutcome};
