@@ -243,9 +243,9 @@ def test_raw_class_object_metaclass_hook_collects_state_method() -> None:
 
     old_methods: list[Any] = []
     new_methods: list[Any] = []
-    assert fingerprint_call(_dummy_fn, (OldEntry,), {}, old_methods) == fingerprint_call(
-        _dummy_fn, (NewEntry,), {}, new_methods
-    )
+    assert fingerprint_call(
+        _dummy_fn, (OldEntry,), {}, old_methods
+    ) == fingerprint_call(_dummy_fn, (NewEntry,), {}, new_methods)
 
     assert len(old_methods) == 1
     assert len(new_methods) == 1
@@ -259,7 +259,9 @@ def test_raw_class_object_metaclass_hook_collects_state_method() -> None:
     )
 
 
-def test_raw_class_object_accepts_uninspectable_zero_arg_staticmethod_memo_key() -> None:
+def test_raw_class_object_accepts_uninspectable_zero_arg_staticmethod_memo_key() -> (
+    None
+):
     hook = _UninspectableZeroArgMemoHook()
 
     class OldEntry:
@@ -295,6 +297,7 @@ def test_raw_class_object_accepts_uninspectable_zero_arg_plain_memo_key() -> Non
 
 def test_raw_class_object_rejects_non_zero_arg_staticmethod_memo_key() -> None:
     """Reject invalid staticmethod hooks before calling class-object memo keys."""
+
     class Entry:
         @staticmethod
         def __coco_memo_key__(value: object) -> object:
@@ -313,6 +316,7 @@ def test_raw_class_object_rejects_non_zero_arg_staticmethod_memo_key() -> None:
 
 def test_raw_class_object_rejects_non_zero_arg_classmethod_memo_key() -> None:
     """Reject invalid classmethod hooks after descriptor binding leaves arguments."""
+
     class Entry:
         @classmethod
         def __coco_memo_key__(cls, value: object) -> object:
@@ -402,6 +406,7 @@ def test_raw_class_object_stable_type_id_ignores_instance_memo_key() -> None:
 
 def test_raw_class_object_explicit_hook_owns_stable_namespace() -> None:
     """Explicit class-object hooks are custom keys, not stable-ID wrappers."""
+
     def shared_key() -> object:
         return ("class-hook", "shared")
 

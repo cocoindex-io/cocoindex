@@ -715,7 +715,6 @@ def test_state_changed_but_reusable_component_sync() -> None:
     assert _metrics.collect() == {"call.declare_two_level": 1}
 
 
-
 # ============================================================================
 # Raw class-object metaclass state validation (sync)
 # ============================================================================
@@ -735,9 +734,7 @@ class _ClassObjectMemoMeta(type):
         return coco.MemoStateOutcome(state=state_value, memo_valid=memo_valid)
 
 
-def _make_class_object(
-    stable_key: str, state_value: int, content: str
-) -> type:
+def _make_class_object(stable_key: str, state_value: int, content: str) -> type:
     return _ClassObjectMemoMeta(
         f"ClassObject_{stable_key}_{state_value}_{content}",
         (),
