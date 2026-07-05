@@ -1,0 +1,13 @@
+[project]
+name = "bigquery-target"
+version = "0.1.0"
+description = "CocoIndex example: write managed target rows to BigQuery."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[bigquery]>=1.0.7",
+    "google-cloud-bigquery>=3.0.0",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
