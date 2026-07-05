@@ -1,15 +1,10 @@
 //! Ruby: C-style escaping (the common case; `%w[...]`, heredocs use a metavar).
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn ruby() -> LangConfig {
-    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        LangConfig::from_grammar(
-            Language::new(tree_sitter_ruby::LANGUAGE),
-            c_like_tokenizers(),
-        )
-    });
+    static CFG: LazyLock<LangConfig> =
+        LazyLock::new(|| LangConfig::from_registry("ruby", c_like_tokenizers()));
     CFG.clone()
 }
 

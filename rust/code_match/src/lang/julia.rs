@@ -3,7 +3,6 @@
 //! `$`-interpolation is matched opaquely via the whole node's text.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn julia() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -26,7 +25,7 @@ pub fn julia() -> LangConfig {
                 TokKind::Str,
             ),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_julia::LANGUAGE), toks)
+        LangConfig::from_registry("julia", toks)
     });
     CFG.clone()
 }

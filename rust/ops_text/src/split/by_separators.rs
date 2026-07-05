@@ -3,7 +3,7 @@
 use regex::Regex;
 
 use super::{Chunk, TextRange};
-use crate::output_positions::{Position, set_output_positions};
+use cocoindex_code_ast::positions::{Position, set_output_positions};
 
 /// How to handle separators when splitting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

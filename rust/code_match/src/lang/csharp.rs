@@ -3,14 +3,13 @@
 //! `"..."` use the generic backslash form.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn csharp() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
         let mut toks = c_like_tokenizers();
         toks.push(triple_dq_string()); // raw string """..."""
         toks.push(regex_rule(r#"(?s)^@"(?:""|[^"])*""#, TokKind::Str)); // verbatim @"a""b"
-        LangConfig::from_grammar(Language::new(tree_sitter_c_sharp::LANGUAGE), toks)
+        LangConfig::from_registry("csharp", toks)
     });
     CFG.clone()
 }

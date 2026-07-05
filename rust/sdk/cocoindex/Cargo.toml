@@ -10,12 +10,15 @@ license.workspace = true
 # filesystem-watcher crate.
 fs_live = ["dep:notify"]
 # Text splitting / language detection facade (`ops::text`).
-text = ["dep:cocoindex_ops_text"]
+text = ["dep:cocoindex_ops_text", "dep:cocoindex_code_ast"]
 # Structural code matching over tree-sitter ASTs (`ops::code`).
-# Activates cocoindex_code_match + tree-sitter + cocoindex_ops_text (for the
-# LineIndex / split-with-tree helpers). Grammar crates are pinned to the same
-# versions as code_match's own Cargo.toml.
-code_match = ["dep:cocoindex_code_match", "dep:cocoindex_ops_text", "dep:tree-sitter"]
+# Activates cocoindex_code_match + cocoindex_code_ast (registry, CodeSource,
+# LineIndex) + cocoindex_ops_text (parse-reusing split helpers).
+code_match = [
+    "dep:cocoindex_code_match",
+    "dep:cocoindex_code_ast",
+    "dep:cocoindex_ops_text",
+]
 # Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
 fastembed = ["dep:fastembed"]
 # Remote embeddings / transcription over an OpenAI-compatible HTTP API (`ops::api`).
@@ -61,12 +64,12 @@ valkey = ["dep:redis", "dep:serde_json"]
 cocoindex_macros = { path = "../cocoindex_macros" }
 cocoindex_core = { path = "../../core", package = "cocoindex_core" }
 cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
+# Language registry + shared `CodeSource` handle (`ops::text`, `ops::code`).
+cocoindex_code_ast = { path = "../../code_ast", optional = true }
 # Text splitting / language detection (`ops::text`); also used by `code_match`.
 cocoindex_ops_text = { path = "../../ops_text", optional = true }
 # Structural code matching (`ops::code`).
 cocoindex_code_match = { path = "../../code_match", optional = true }
-# tree-sitter runtime — same version as code_match's Cargo.toml (workspace pin).
-tree-sitter = { version = "0.25.10", optional = true }
 # Local sentence-transformer embeddings (`ops::sentence_transformers`); pulls in
 # the ONNX runtime, so it is gated behind the `fastembed` feature.
 fastembed = { version = "4", optional = true }

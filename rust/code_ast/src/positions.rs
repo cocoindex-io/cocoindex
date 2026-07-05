@@ -1,4 +1,6 @@
-//! Internal module for computing output positions from byte offsets.
+//! Byte-offset → output-position machinery: [`TextRange`], [`OutputPosition`],
+//! the reusable per-file [`LineIndex`], and low-level batch helpers
+//! ([`Position`] / [`set_output_positions`]) for splitter output construction.
 
 /// A text range specified by byte offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +40,9 @@ pub struct OutputPosition {
 }
 
 /// Position tracking helper that converts byte offsets to character positions.
-pub(crate) struct Position {
+/// Low-level; used by splitters to batch-resolve chunk endpoints via
+/// [`set_output_positions`].
+pub struct Position {
     /// The byte offset in the text.
     pub byte_offset: usize,
     /// Computed output position (populated by `set_output_positions`).
@@ -106,10 +110,7 @@ impl LineIndex {
 ///
 /// This function efficiently computes character offsets, line numbers, and column
 /// numbers for a set of byte positions in a single pass through the text.
-pub(crate) fn set_output_positions<'a>(
-    text: &str,
-    positions: impl Iterator<Item = &'a mut Position>,
-) {
+pub fn set_output_positions<'a>(text: &str, positions: impl Iterator<Item = &'a mut Position>) {
     let mut positions = positions.collect::<Vec<_>>();
     positions.sort_by_key(|o| o.byte_offset);
 

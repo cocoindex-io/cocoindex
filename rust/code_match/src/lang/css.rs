@@ -5,7 +5,6 @@
 //! `@media` and `!important` are single tokens (Token).
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn css() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
@@ -23,7 +22,7 @@ pub fn css() -> LangConfig {
             // `!important` / `!default` — one token.
             regex_rule(r"^![A-Za-z]+", TokKind::Token),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_css::LANGUAGE), toks)
+        LangConfig::from_registry("css", toks)
     });
     CFG.clone()
 }

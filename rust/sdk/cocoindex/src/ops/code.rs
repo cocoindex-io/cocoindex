@@ -30,18 +30,17 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
+use cocoindex_code_ast::tree_sitter::Tree;
+use cocoindex_code_ast::{LineIndex, OutputPosition, ParseOutcome};
 use cocoindex_code_match::lang;
 use cocoindex_code_match::{Pattern, Prefilter, index_terms_in_tree};
-use cocoindex_ops_text::prog_langs;
-use cocoindex_ops_text::split::{
-    LineIndex, OutputPosition, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
-};
-use tree_sitter::{Parser, Tree};
+use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
 
 use crate::error::{Error, Result};
 use crate::resources::chunk::{Chunk, TextPosition};
+
+pub use cocoindex_code_ast::CodeSource;
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -87,31 +86,6 @@ fn build_sdk_matches(
             }
         })
         .collect()
-}
-
-/// Parse `source` for `language`, returning the tree-sitter tree.
-///
-/// Resolution goes through `prog_langs` (the full tree-sitter table — hundreds
-/// of languages), exactly like the Python binding, so any tree-sitter-supported
-/// language can be parsed and split (`split` re-resolves through the same table).
-/// Structural matching ([`CodeAst::matches`]) additionally requires the language
-/// to be in the smaller `code_match` set and errors otherwise — also matching
-/// Python. The stored language string is kept verbatim so `split` re-resolves it
-/// consistently (both lookups are case-insensitive).
-fn parse_tree(source: &str, language: &str) -> Result<(Tree, String)> {
-    let ts = prog_langs::get_language_info(language)
-        .and_then(|i| i.treesitter_info.as_ref())
-        .ok_or_else(|| {
-            Error::engine(format!("unknown or non-tree-sitter language: {language:?}"))
-        })?;
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts.tree_sitter_lang)
-        .map_err(|e| Error::engine(format!("failed to load grammar for {language:?}: {e}")))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| Error::engine(format!("failed to parse source as {language:?}")))?;
-    Ok((tree, language.to_string()))
 }
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -215,16 +189,15 @@ impl CodePattern {
         if !self.prefilter.might_match(&content) {
             return Ok(None);
         }
-        let ast = CodeAst::parse_owned(content, self.language.clone())?;
-        let raw = self.pattern.matches_in_tree(&ast.tree, &ast.source);
+        let source = CodeSource::with_language(content, self.language.clone());
+        let raw = self.pattern.matches_source(&source);
         if raw.is_empty() {
             return Ok(None);
         }
-        let line_index = ast.line_index.get_or_init(|| LineIndex::build(&ast.source));
-        let matches = build_sdk_matches(&ast.source, line_index, raw);
+        let matches = build_sdk_matches(source.text(), source.line_index(), raw);
         Ok(Some(FileMatch {
             path: path.to_string(),
-            ast,
+            ast: CodeAst { source },
             matches,
         }))
     }
@@ -232,12 +205,11 @@ impl CodePattern {
 
 /// A parsed code AST: parse once, then [`matches`](CodeAst::matches),
 /// [`matches_with`](CodeAst::matches_with), and/or [`split`](CodeAst::split)
-/// without re-parsing.
+/// without re-parsing. A thin, eagerly-validated wrapper over [`CodeSource`]:
+/// construction parses immediately and errors on an unknown language or a
+/// failed parse, so every method afterwards has a tree.
 pub struct CodeAst {
-    source: String,
-    language: String,
-    tree: Tree,
-    line_index: OnceLock<LineIndex>,
+    source: CodeSource<'static>,
 }
 
 impl CodeAst {
@@ -248,64 +220,82 @@ impl CodeAst {
     }
 
     fn parse_owned(source: String, language: String) -> Result<Self> {
-        let (tree, language) = parse_tree(&source, &language)?;
-        Ok(Self {
-            source,
-            language,
-            tree,
-            line_index: OnceLock::new(),
-        })
+        let source = CodeSource::with_language(source, language);
+        if source.treesitter_info().is_none() {
+            return Err(Error::engine(format!(
+                "unknown or non-tree-sitter language: {:?}",
+                source.requested_language().unwrap_or_default()
+            )));
+        }
+        if !matches!(source.tree(), ParseOutcome::Parsed(_)) {
+            return Err(Error::engine(format!(
+                "failed to parse source as {:?}",
+                source.requested_language().unwrap_or_default()
+            )));
+        }
+        Ok(Self { source })
+    }
+
+    /// The parsed tree (validated at construction).
+    fn tree(&self) -> &Tree {
+        match self.source.tree() {
+            ParseOutcome::Parsed(tree) => tree,
+            _ => unreachable!("CodeAst construction validated the parse"),
+        }
     }
 
     /// The language this AST was parsed for.
     pub fn language(&self) -> &str {
-        &self.language
+        self.source
+            .requested_language()
+            .expect("CodeAst always has a language")
     }
 
     /// The source text.
     pub fn source(&self) -> &str {
-        &self.source
+        self.source.text()
     }
 
     /// Find every match of a pattern string, compiling it on the spot. Reuses the
     /// AST parse. Prefer [`matches_with`](CodeAst::matches_with) when matching the
     /// same pattern across many ASTs.
     pub fn matches(&self, pattern: &str) -> Result<Vec<CodeMatch>> {
-        let cfg = lang::by_name(&self.language).ok_or_else(|| {
+        let cfg = lang::by_name(self.language()).ok_or_else(|| {
             Error::engine(format!(
                 "structural matching is not supported for language {:?}",
-                self.language
+                self.language()
             ))
         })?;
         let compiled = Pattern::compile(pattern, &cfg)?;
-        let line_index = self
-            .line_index
-            .get_or_init(|| LineIndex::build(&self.source));
-        let raw = compiled.matches_in_tree(&self.tree, &self.source);
-        Ok(build_sdk_matches(&self.source, line_index, raw))
+        let raw = compiled.matches_in_tree(self.tree(), self.source());
+        Ok(build_sdk_matches(
+            self.source(),
+            self.source.line_index(),
+            raw,
+        ))
     }
 
     /// Find every match of a precompiled [`CodePattern`], reusing both the AST and
     /// the pattern's compilation. This is the fast path for matching the same
     /// pattern against many sources.
     pub fn matches_with(&self, pattern: &CodePattern) -> Result<Vec<CodeMatch>> {
-        match (
-            lang::by_name(&self.language),
-            lang::by_name(&pattern.language),
-        ) {
-            (Some(ca), Some(cb)) if ca.language == cb.language => {}
-            _ => {
-                return Err(Error::engine(format!(
-                    "CodePattern language {:?} does not match AST language {:?}",
-                    pattern.language, self.language
-                )));
-            }
+        let same_grammar = self
+            .source
+            .info()
+            .is_some_and(|info| std::ptr::eq(info, pattern.pattern.lang_info()));
+        if !same_grammar {
+            return Err(Error::engine(format!(
+                "CodePattern language {:?} does not match AST language {:?}",
+                pattern.language,
+                self.language()
+            )));
         }
-        let line_index = self
-            .line_index
-            .get_or_init(|| LineIndex::build(&self.source));
-        let raw = pattern.pattern.matches_in_tree(&self.tree, &self.source);
-        Ok(build_sdk_matches(&self.source, line_index, raw))
+        let raw = pattern.pattern.matches_in_tree(self.tree(), self.source());
+        Ok(build_sdk_matches(
+            self.source(),
+            self.source.line_index(),
+            raw,
+        ))
     }
 
     /// Split into syntax-aware chunks, reusing the parse.
@@ -325,9 +315,8 @@ impl CodeAst {
             chunk_size,
             min_chunk_size,
             chunk_overlap,
-            language: Some(self.language.clone()),
         };
-        let raw = chunker.split_with_tree(&self.source, config, &self.tree);
+        let raw = chunker.split(&self.source, config);
         Ok(raw
             .into_iter()
             .map(|c| {
@@ -354,7 +343,7 @@ impl CodeAst {
     /// chars, deduped), reusing the parse. Suitable for building an external
     /// prefilter index (FTS / n-grams).
     pub fn index_terms(&self, min_len: usize) -> Vec<String> {
-        index_terms_in_tree(&self.tree, &self.source, min_len)
+        index_terms_in_tree(self.tree(), self.source(), min_len)
     }
 }
 

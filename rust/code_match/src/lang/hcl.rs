@@ -4,15 +4,10 @@
 //! them with a metavar rather than an exact literal.
 use crate::config::*;
 use std::sync::LazyLock;
-use tree_sitter::Language;
 
 pub fn hcl() -> LangConfig {
-    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        LangConfig::from_grammar(
-            Language::new(tree_sitter_hcl::LANGUAGE),
-            c_like_tokenizers(),
-        )
-    });
+    static CFG: LazyLock<LangConfig> =
+        LazyLock::new(|| LangConfig::from_registry("hcl", c_like_tokenizers()));
     CFG.clone()
 }
 

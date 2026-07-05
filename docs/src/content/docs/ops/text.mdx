@@ -114,6 +114,20 @@ chunks = splitter.split(
 )
 ```
 
+**Reusing one parse across APIs:**
+
+When the same code is passed to several parse-consuming APIs (e.g. splitting *and*
+structural pattern matching), wrap it in a `CodeSource` so it is parsed at most once.
+The `CodeSource` carries its own language, so the `language=` argument must be omitted:
+
+```python
+from cocoindex.ops.code import CodePattern, CodeSource
+
+src = CodeSource(python_code, language="python")
+chunks = splitter.split(src, chunk_size=1000)          # parses once
+defs = CodePattern(r"def \NAME(\(A*\)):", language="python").match_source(src)  # reuses the parse
+```
+
 **Supported languages:**
 
 Languages with syntax-aware (tree-sitter) splitting — splits at logical boundaries like functions, classes, and blocks:

@@ -1,11 +1,12 @@
 //! Text processing operations for CocoIndex.
 //!
 //! This crate provides text processing functionality including:
-//! - Programming language detection and tree-sitter support
 //! - Text splitting by separators
 //! - Recursive text chunking with syntax awareness
+//!
+//! Language detection / the tree-sitter registry and the shared
+//! [`CodeSource`](cocoindex_code_ast::CodeSource) input type live in the
+//! `cocoindex_code_ast` crate.
 
-pub(crate) mod output_positions;
 pub mod pattern_matcher;
-pub mod prog_langs;
 pub mod split;
