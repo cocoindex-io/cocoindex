@@ -1,5 +1,6 @@
 //! Text processing operations exposed to Python.
 
+use cocoindex_code_ast::view::{SegmentKind, SourceView};
 use cocoindex_code_ast::{CodeSource, prog_langs};
 use cocoindex_ops_text::pattern_matcher::PatternMatcher;
 use cocoindex_ops_text::split::{
@@ -285,4 +286,114 @@ impl PyPatternMatcher {
     fn is_file_included(&self, path: &str) -> bool {
         self.matcher.is_file_included(path)
     }
+}
+
+/// One contiguous piece of a source view's synthetic text, grounded in the source.
+#[pyclass(name = "ViewSegment")]
+#[derive(Clone)]
+pub struct PyViewSegment {
+    #[pyo3(get)]
+    pub start_byte: usize,
+    #[pyo3(get)]
+    pub end_byte: usize,
+    #[pyo3(get)]
+    pub start_char_offset: usize,
+    #[pyo3(get)]
+    pub start_line: u32,
+    #[pyo3(get)]
+    pub start_column: u32,
+    #[pyo3(get)]
+    pub end_char_offset: usize,
+    #[pyo3(get)]
+    pub end_line: u32,
+    #[pyo3(get)]
+    pub end_column: u32,
+    /// "frame" (context header repeated from enclosing scopes) or "content".
+    #[pyo3(get)]
+    pub kind: &'static str,
+    /// When present, this text stands in for the covered source in the view's text.
+    #[pyo3(get)]
+    pub summary: Option<String>,
+    /// Char range of this segment's rendering within the view's synthetic `text`
+    /// (segments form a contiguous partition of it).
+    #[pyo3(get)]
+    pub rendered_start: usize,
+    #[pyo3(get)]
+    pub rendered_end: usize,
+}
+
+/// A source view: synthetic text plus its source-grounded segments.
+#[pyclass(name = "SourceView")]
+pub struct PySourceView {
+    #[pyo3(get)]
+    pub text: String,
+    #[pyo3(get)]
+    pub segments: Vec<PyViewSegment>,
+}
+
+impl PySourceView {
+    fn from_view(view: SourceView) -> Self {
+        // Segments partition the synthetic text contiguously: one ordered pass
+        // converts their byte ranges to char offsets.
+        let mut char_cursor = 0usize;
+        let segments = view
+            .segments
+            .into_iter()
+            .map(|seg| {
+                let rendered_start = char_cursor;
+                char_cursor += view.text[seg.text_range.start..seg.text_range.end]
+                    .chars()
+                    .count();
+                PyViewSegment {
+                    start_byte: seg.range.start,
+                    end_byte: seg.range.end,
+                    start_char_offset: seg.start.char_offset,
+                    start_line: seg.start.line,
+                    start_column: seg.start.column,
+                    end_char_offset: seg.end.char_offset,
+                    end_line: seg.end.line,
+                    end_column: seg.end.column,
+                    kind: match seg.kind {
+                        SegmentKind::Frame => "frame",
+                        SegmentKind::Content => "content",
+                    },
+                    summary: seg.summary,
+                    rendered_start,
+                    rendered_end: char_cursor,
+                }
+            })
+            .collect();
+        Self {
+            text: view.text,
+            segments,
+        }
+    }
+}
+
+/// Render source byte ranges into a source view: context frames of the ranges'
+/// envelope, each range verbatim, and cues where material is omitted — the
+/// code-match rendering path.
+///
+/// Args:
+///     source: The `CodeSource` the ranges refer to (its cached parse is reused).
+///     ranges: Byte ranges `(start, end)` in the source, in source order.
+///
+/// Returns:
+///     A source view (synthetic text + source-grounded segments).
+#[pyfunction]
+pub fn render_ranges(
+    py: Python<'_>,
+    source: &Bound<'_, PyCodeSource>,
+    ranges: Vec<(usize, usize)>,
+) -> PySourceView {
+    let src = source.borrow();
+    // Capture `&CodeSource` (not the GIL-bound `PyRef`) across `detach`.
+    let inner = &src.inner;
+    py.detach(|| {
+        let ranges: Vec<cocoindex_code_ast::TextRange> = ranges
+            .iter()
+            .map(|&(start, end)| cocoindex_code_ast::TextRange::new(start, end))
+            .collect();
+        PySourceView::from_view(cocoindex_code_ast::view::render_ranges(inner, &ranges))
+    })
 }

@@ -916,6 +916,8 @@ dependencies = [
 name = "cocoindex_code_ast"
 version = "999.0.0"
 dependencies = [
+ "regex",
+ "serde",
  "tree-sitter",
  "tree-sitter-astro-next",
  "tree-sitter-bash",

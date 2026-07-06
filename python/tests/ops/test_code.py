@@ -10,6 +10,7 @@ from cocoindex.ops.code import (
     CodeSource,
     index_terms,
     match_code,
+    render_match,
 )
 from cocoindex.resources.chunk import Chunk
 
@@ -224,3 +225,47 @@ def test_deprecated_codeast_compat_shims(tmp_path: Path) -> None:
     assert isinstance(CodeSource(_PY_SRC, language="python"), deprecated_cls)
     with pytest.raises(AttributeError):
         _ = code_module.NoSuchName
+
+
+def test_render_match_frames_and_span() -> None:
+    src_text = (
+        "class Store:\n"
+        "    def fetch(self, key):\n"
+        "        if key in self.cache:\n"
+        "            return self.cache[key]\n"
+        "        return None\n"
+    )
+    source = CodeSource(src_text, language="python")
+    matches = CodePattern(r"return \X", language="python").match_source(source)
+    assert matches
+    view = render_match(source, matches[0])
+
+    # Frames of enclosing scopes (outermost first), then the matched code.
+    assert view.text.startswith("class Store:\n    def fetch(self, key):\n")
+    assert view.text.endswith("return self.cache[key]")
+
+    # Verbatim segments render their exact source slice; renderings partition text.
+    cursor = 0
+    for seg in view.segments:
+        rendering = view.text[seg.rendered_start : seg.rendered_end]
+        assert seg.rendered_start == cursor
+        if seg.summary is None:
+            assert rendering == src_text[seg.start.byte_offset : seg.end.byte_offset]
+        else:
+            assert rendering == seg.summary
+        assert seg.kind in ("frame", "content")
+        cursor = seg.rendered_end
+    assert cursor == len(view.text)
+
+    # Citation span (frames excluded) == the match's span.
+    chunk = matches[0].chunks[0]
+    assert view.start.byte_offset == chunk.start.byte_offset
+    assert view.end.byte_offset == chunk.end.byte_offset
+
+
+def test_render_match_top_level_is_frameless() -> None:
+    flat = CodeSource("x = compute(1)\n", language="python")
+    (m,) = CodePattern(r"compute(\X)", language="python").match_source(flat)
+    view = render_match(flat, m)
+    assert view.text == "compute(1)"
+    assert [seg.kind for seg in view.segments] == ["content"]
