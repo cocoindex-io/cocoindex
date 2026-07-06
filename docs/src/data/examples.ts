@@ -579,7 +579,7 @@ export const findExample = (slug: string): ExampleCard | undefined =>
 // Sidebar facets shown on the listing — every entry is demonstrated by a
 // runnable example in EXAMPLE_CATALOG below (keep the two in sync).
 export const SIDEBAR_TARGETS = ['Postgres', 'Qdrant', 'LanceDB', 'Turbopuffer', 'Neo4j', 'FalkorDB', 'SurrealDB', 'Kafka', 'Local FS'];
-export const SIDEBAR_SOURCES = ['Local FS', 'Amazon S3', 'Google Drive', 'OCI Storage', 'Postgres', 'Kafka', 'YouTube', 'HackerNews'];
+export const SIDEBAR_SOURCES = ['Local FS', 'Amazon S3', 'Azure Blob', 'Google Drive', 'OCI Storage', 'Postgres', 'Kafka', 'YouTube', 'HackerNews'];
 export const SIDEBAR_LLMS = ['OpenAI', 'Gemini', 'Any via LiteLLM'];
 export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'text-embedding', label: 'Semantic Search 101', count: '★' },
@@ -661,6 +661,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'code_embedding_lancedb', title: 'Code Embedding · LanceDB', description: 'Extract code chunks from Python/Rust/TOML/Markdown and store code + vectors in LanceDB; semantic code search.' },
       { dir: 'entire_session_search', docs: 'entire-session-search', title: 'Entire Session Search', description: 'Semantic search over AI coding sessions captured by Entire — transcripts, prompts, and context summaries into Postgres (pgvector).' },
       { dir: 'amazon_s3_embedding', docs: 'amazon-s3-embedding', title: 'Amazon S3 Embedding', description: 'Embed Markdown files from an S3 bucket into Postgres (pgvector); semantic-search demo.' },
+      { dir: 'azure_blob_embedding', title: 'Azure Blob Storage Embedding', description: 'Embed Markdown files from Azure Blob Storage into Postgres (pgvector); query demo.' },
       { dir: 'gdrive_text_embedding', docs: 'google-drive-embedding', title: 'Google Drive Text Embedding', description: 'Embed text files from Google Drive into Postgres (pgvector); query demo.' },
       { dir: 'oci_object_storage_embedding', docs: 'oci-object-storage-embedding', title: 'OCI Object Storage Embedding', description: 'Embed Markdown files from Oracle Cloud (OCI) Object Storage into Postgres (pgvector); query demo.' },
       { dir: 'postgres_source', docs: 'postgres-source', title: 'Postgres as a Source', description: 'Use an existing PostgreSQL table as a CocoIndex source: derive fields, embed, and store the results back.' },

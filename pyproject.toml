@@ -89,6 +89,7 @@ google_drive = [
     "httplib2>=0.22.0",
 ]
 amazon_s3 = ["aiobotocore>=2.0.0"]
+azure_blob = ["azure-identity>=1.15.0", "azure-storage-blob>=12.19.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
 falkordb = ["falkordb>=1.1.0"]
 neo4j = ["neo4j>=5.18.0"]
@@ -122,6 +123,8 @@ all = [
     "google-auth-httplib2>=0.2.0",
     "httplib2>=0.22.0",
     "aiobotocore>=2.0.0",
+    "azure-identity>=1.15.0",
+    "azure-storage-blob>=12.19.0",
     "aiohttp>=3.9.0",
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
@@ -225,6 +228,8 @@ module = [
     "botocore.*",
     "aiobotocore",
     "aiobotocore.*",
+    "azure",
+    "azure.*",
     "aiohttp",
     "aiohttp.*",
     "aiomysql",

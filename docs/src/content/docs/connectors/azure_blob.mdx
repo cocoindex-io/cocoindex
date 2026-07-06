@@ -1,0 +1,241 @@
+---
+title: "*Azure Blob Storage* connector"
+toc_max_heading_level: 4
+description: >
+  Read blobs from Azure Blob Storage containers with prefix filters, path
+  matchers, size limits, and stable AzureBlobFilePath values for memoization.
+---
+The `azure_blob` connector provides utilities for reading blobs from Azure Blob Storage containers.
+
+```python
+from cocoindex.connectors import azure_blob
+```
+
+:::note[Installation]
+This connector uses the Azure async SDK. Install with:
+
+```bash
+pip install cocoindex[azure_blob]
+```
+:::
+
+## As source
+
+The connector provides three read helpers:
+
+- `list_blobs()` lists blobs in a container, with optional prefix and filtering.
+- `get_blob()` fetches a single blob by name.
+- `read()` reads blob content directly by name.
+
+All helpers take an async Azure `ContainerClient`. Create and close the client in your app lifespan.
+
+### Connection setup
+
+Use Azure's SDK authentication methods directly. For local development, `DefaultAzureCredential` can use your Azure CLI login:
+
+```bash
+az login
+az account set --subscription "<subscription-name-or-id>"
+```
+
+```python
+from azure.identity.aio import DefaultAzureCredential
+from azure.storage.blob.aio import ContainerClient
+
+credential = DefaultAzureCredential()
+try:
+    async with ContainerClient(
+        account_url="https://myaccount.blob.core.windows.net",
+        container_name="docs",
+        credential=credential,
+    ) as client:
+        # Use client with azure_blob.list_blobs(), get_blob(), or read().
+        ...
+finally:
+    await credential.close()
+```
+
+To use a SAS token:
+
+```python
+from azure.storage.blob.aio import ContainerClient
+
+async with ContainerClient(
+    account_url="https://myaccount.blob.core.windows.net",
+    container_name="docs",
+    credential="<sas-token>",
+) as client:
+    ...
+```
+
+To use a storage account access key:
+
+```python
+from azure.storage.blob.aio import ContainerClient
+
+async with ContainerClient(
+    account_url="https://myaccount.blob.core.windows.net",
+    container_name="docs",
+    credential="<account-key>",
+) as client:
+    ...
+```
+
+The identity must have permission to list and read blobs. With Azure role-based access control, `Storage Blob Data Reader` is enough for read-only indexing.
+
+### list_blobs
+
+List blobs in an Azure Blob Storage container. Returns an `AzureBlobWalker` that supports async iteration.
+
+```python
+def list_blobs(
+    container_client: ContainerClient,
+    *,
+    prefix: str = "",
+    path_matcher: FilePathMatcher | None = None,
+    max_file_size: int | None = None,
+) -> AzureBlobWalker
+```
+
+**Parameters:**
+
+- `container_client` - An async Azure `ContainerClient`.
+- `prefix` - Only list blobs whose name starts with this prefix. The prefix is stripped from relative paths in returned files.
+- `path_matcher` - Optional filter for files. Patterns are matched against the relative path after prefix stripping. See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
+- `max_file_size` - Skip blobs larger than this size in bytes.
+
+**Returns:** An `AzureBlobWalker` that can be used with `async for` loops.
+
+### Iterating files
+
+`list_blobs()` yields `AzureBlobFile` objects implementing [`FileLike`](../common_resources/data_types#filelike):
+
+```python
+from cocoindex.connectors import azure_blob
+
+async for file in azure_blob.list_blobs(client, prefix="docs/"):
+    text = await file.read_text()
+    ...
+```
+
+### Keyed iteration with `items()`
+
+`AzureBlobWalker.items()` yields `(str, AzureBlobFile)` pairs. The key is the blob path relative to the prefix:
+
+```python
+async for key, file in azure_blob.list_blobs(client, prefix="docs/").items():
+    content = await file.read()
+```
+
+### Filtering files
+
+Use `PatternFilePathMatcher` to include or exclude blobs by glob pattern. Patterns are matched against the relative path after prefix stripping:
+
+```python
+from cocoindex.connectors import azure_blob
+from cocoindex.resources.file import PatternFilePathMatcher
+
+matcher = PatternFilePathMatcher(included_patterns=["**/*.md"])
+
+async for file in azure_blob.list_blobs(client, prefix="docs/", path_matcher=matcher):
+    process(file)
+```
+
+### Limiting file size
+
+Use `max_file_size` to skip blobs above a size threshold:
+
+```python
+async for file in azure_blob.list_blobs(client, max_file_size=10 * 1024 * 1024):
+    process(file)
+```
+
+### get_blob
+
+Fetch a single blob by name.
+
+```python
+async def get_blob(
+    container_client: ContainerClient,
+    blob_name: str,
+) -> AzureBlobFile
+```
+
+**Parameters:**
+
+- `container_client` - An async Azure `ContainerClient`.
+- `blob_name` - The full blob name in the container.
+
+**Returns:** An `AzureBlobFile` for the specified blob.
+
+**Example:**
+
+```python
+from cocoindex.connectors import azure_blob
+
+file = await azure_blob.get_blob(client, "docs/readme.md")
+text = await file.read_text()
+```
+
+### read
+
+Read blob content directly by name, without fetching metadata first.
+
+```python
+async def read(
+    container_client: ContainerClient,
+    blob_name: str,
+    size: int = -1,
+) -> bytes
+```
+
+**Parameters:**
+
+- `container_client` - An async Azure `ContainerClient`.
+- `blob_name` - The full blob name in the container.
+- `size` - Number of bytes to read. If `-1`, read the entire blob.
+
+**Returns:** The blob content as bytes.
+
+**Example:**
+
+```python
+data = await azure_blob.read(client, "docs/readme.md")
+```
+
+### AzureBlobFilePath
+
+Each file returned by the connector has an `AzureBlobFilePath`, a [`FilePath`](../common_resources/data_types#filepath) specialized for Azure Blob Storage:
+
+- **Relative path** (`file.file_path.path`) - The blob name relative to the walker prefix, or the full blob name if no prefix was used.
+- **Resolved path** (`file.file_path.resolve()`) - The full blob name in the container.
+
+For example, with `prefix="docs/"` and blob name `"docs/readme.md"`:
+
+- `file.file_path.path` returns `PurePath("readme.md")`
+- `file.file_path.resolve()` returns `"docs/readme.md"`
+
+### Example
+
+```python
+import cocoindex as coco
+from cocoindex.connectors import azure_blob
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
+@coco.fn
+async def app_main() -> None:
+    client = coco.use_context(AZURE_CONTAINER_CLIENT)
+    matcher = PatternFilePathMatcher(included_patterns=["**/*.md"])
+    files = azure_blob.list_blobs(client, prefix="docs/", path_matcher=matcher)
+
+    with coco.component_subpath("file"):
+        async for key, file in files.items():
+            await coco.mount(coco.component_subpath(key), process_file, file)
+
+@coco.fn(memo=True)
+async def process_file(file: FileLike[str]) -> None:
+    text = await file.read_text()
+    # Process the file content.
+```
+
+See `examples/azure_blob_embedding` for a runnable project.
