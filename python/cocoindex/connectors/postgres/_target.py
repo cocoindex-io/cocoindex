@@ -135,15 +135,20 @@ def _strip_nul(s: str) -> str:
 def _sanitize_nul(value: Any) -> Any:
     """Recursively strip NUL from strings, dict keys, and nested containers.
 
-    Applied to jsonb payloads before ``json.dumps`` so nested strings — and
-    dict keys — don't surface as ``\\u0000`` escapes in the serialized JSON
-    (which Postgres rejects when parsing ``jsonb``).
+    Applied to jsonb payloads before ``json.dumps`` and to array / composite
+    column values before they are bound to asyncpg.  Nested strings — and
+    dict keys — are cleaned so Postgres never sees ``U+0000``.
+
+    ``tuple`` inputs are returned as ``tuple`` (asyncpg relies on ``tuple``
+    for Postgres composite types); ``list`` inputs remain ``list``.
     """
     if isinstance(value, str):
         return _strip_nul(value)
     if isinstance(value, dict):
         return {_sanitize_nul(k): _sanitize_nul(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, tuple):
+        return tuple(_sanitize_nul(v) for v in value)
+    if isinstance(value, list):
         return [_sanitize_nul(v) for v in value]
     return value
 
@@ -1296,14 +1301,10 @@ class TableTarget(
 
             if value is not None and col.encoder is not None:
                 value = col.encoder(value)
-            # Strip NUL from any string bound directly to Postgres. Text-family
-            # columns reject it; jsonb columns are already handled inside
-            # `_json_encoder` (nested strings + dict keys), so this is a no-op
-            # on the encoded JSON string but catches `text`/`varchar`/`citext`/
-            # custom-typed str columns regardless of whether the user supplied
-            # an encoder.
-            if isinstance(value, str):
-                value = _strip_nul(value)
+            # Strip NUL from values bound to Postgres recursively. jsonb columns
+            # are already handled inside `_json_encoder`, so the recursive walk
+            # is a harmless no-op on the encoded JSON string.
+            value = _sanitize_nul(value)
             out[col_name] = value
         return out
 
