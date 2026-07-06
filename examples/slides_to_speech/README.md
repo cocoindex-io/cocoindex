@@ -1,13 +1,13 @@
 <p align="center">
-  <a href="https://cocoindex.io/docs/examples/slides-to-speech/" title="Turn slide decks into a narrated, searchable index with CocoIndex — vision LLM speaker notes, local Piper TTS, and LanceDB, in plain async Python">
-    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/slides-to-speech/cover.svg" alt="Turn slide decks into narrated, searchable audio with CocoIndex — a vision LLM writes speaker notes for each slide, Piper synthesizes them to MP3 locally, and the notes are embedded into LanceDB for semantic search with playable narration attached" width="100%" draggable="false"/>
+  <a href="https://cocoindex.io/docs/examples/slides-to-speech/" title="Turn slide decks into a narrated, searchable index with CocoIndex — vision LLM speaker notes, local Pocket TTS, and LanceDB, in plain async Python">
+    <img src="https://cocoindex.io/blobs/docs-v1/img/examples/slides-to-speech/cover.svg" alt="Turn slide decks into narrated, searchable audio with CocoIndex — a vision LLM writes speaker notes for each slide, Pocket TTS synthesizes them to MP3 locally on the CPU, and the notes are embedded into LanceDB for semantic search with playable narration attached" width="100%" draggable="false"/>
   </a>
 </p>
 
 <h1 align="center">Turn a slide deck into <em>narrated</em>, searchable audio.</h1>
 
 <p align="center">
-  <b>A vision LLM writes speaker notes for each slide, Piper synthesizes them to audio <em>locally</em>, and the notes are embedded into LanceDB — so you search the deck by meaning and play back the narration for any hit.</b><br/>
+  <b>A vision LLM writes speaker notes for each slide, Pocket TTS synthesizes them to audio <em>locally on the CPU</em>, and the notes are embedded into LanceDB — so you search the deck by meaning and play back the narration for any hit.</b><br/>
   A deck is a great outline and a terrible thing to listen to or search; this fixes both — in plain async Python.
 </p>
 
@@ -28,15 +28,15 @@
 
 <br/>
 
-A slide deck is a great outline and a terrible thing to *listen to* or *search*. This pipeline fixes both: for each slide, a vision LLM writes natural speaker notes, [Piper](https://github.com/OHF-Voice/piper1-gpl) synthesizes them to audio locally, and the notes are embedded into [LanceDB](https://lancedb.com/) so you can search the deck by meaning and play back the narration for any hit. You declare the transformation in native Python and your own types — `target_state = transformation(source_state)` — the vision and TTS steps run on a [GPU runner](https://cocoindex.io/docs/programming_guide/function/), and the Rust engine handles incremental processing, so adding a deck processes only its slides.
+A slide deck is a great outline and a terrible thing to *listen to* or *search*. This pipeline fixes both: for each slide, a vision LLM writes natural speaker notes, [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) synthesizes them to audio locally on the CPU, and the notes are embedded into [LanceDB](https://lancedb.com/) so you can search the deck by meaning and play back the narration for any hit. You declare the transformation in native Python and your own types — `target_state = transformation(source_state)` — the vision and TTS steps run on a [`coco.GPU` runner](https://cocoindex.io/docs/programming_guide/function/) that serializes them off the event loop, and the Rust engine handles incremental processing, so adding a deck processes only its slides.
 
 ## How it works
 
 A deck fans out to **slides**, and each slide produces text, audio, and a vector:
 
 - **Render** each slide of the PDF to an image (pymupdf).
-- **Narrate** — a vision LLM (instructor over LiteLLM) writes natural speaker notes for the slide image.
-- **Voice + embed** — Piper synthesizes the notes to MP3 while a sentence-transformer embeds them, concurrently.
+- **Narrate** — a vision LLM (via DSPy) writes natural speaker notes for the slide image.
+- **Voice + embed** — Pocket TTS synthesizes the notes to MP3 while a sentence-transformer embeds them, concurrently.
 - **Store** one LanceDB row per slide — page, notes, audio (a binary column), and the embedding.
 
 `process_slide` runs the vision LLM, then synthesizes audio *and* embeds the notes with `asyncio.gather` before declaring the row. Read it in [`main.py`](main.py):
@@ -46,7 +46,7 @@ A deck fans out to **slides**, and each slide produces text, audio, and a vector
 async def process_slide(slide: SlidePage, filename: str, table: lancedb.TableTarget[SlideRecord]) -> None:
     notes = (await extract_speaker_notes(slide.image)).speaker_notes   # vision LLM
     voice, embedding = await asyncio.gather(
-        text_to_speech(notes),                       # Piper TTS — local, no API
+        text_to_speech(notes),                       # Pocket TTS — local CPU, no API
         coco.use_context(EMBEDDER).embed(notes),     # sentence-transformer
     )
     table.declare_row(row=SlideRecord(
@@ -64,43 +64,37 @@ The MP3 audio is stored right in the LanceDB row, so a semantic-search hit comes
 
 <p align="center">
   📘 <b><a href="https://cocoindex.io/docs/examples/slides-to-speech/">Full Tutorial →</a></b><br/>
-  Step-by-step walkthrough with the vision-LLM speaker notes, local Piper TTS, the per-slide LanceDB row, and searching the deck by meaning.
+  Step-by-step walkthrough with the vision-LLM speaker notes, local Pocket TTS, the per-slide LanceDB row, and searching the deck by meaning.
 </p>
 
 ## Why it's worth a star ⭐
 
-- **Three modalities, one row.** Each slide becomes text (LLM notes), audio (Piper MP3), and a vector (sentence-transformer) — declared as a single LanceDB `SlideRecord`.
-- **Local TTS, no per-character billing.** Piper is a fast, fully local neural voice — no API, no streaming costs; the voice model loads once via `@functools.cache`.
+- **Three modalities, one row.** Each slide becomes text (LLM notes), audio (Pocket TTS MP3), and a vector (sentence-transformer) — declared as a single LanceDB `SlideRecord`.
+- **Local TTS, no per-character billing.** Pocket TTS is a fast, ~100M-param neural voice that runs entirely on the CPU — no API, no GPU, no streaming costs; the model and voice state load once via `@functools.cache`.
 - **Audio travels with the hit.** The MP3 lives in a binary LanceDB column, so a search result carries its own playable narration.
 - **Concurrent per slide.** `asyncio.gather` runs TTS and embedding side by side; the heavy vision and TTS steps run on a `coco.GPU` runner.
-- **Incremental & swappable.** `@coco.fn(memo=True)` reprocesses only changed slides; `LLM_MODEL` and `EMBEDDER` are declared with `detect_change=True`, so swapping the model or voice re-runs only the affected steps.
+- **Incremental & swappable.** `@coco.fn(memo=True)` reprocesses only changed slides; `LLM_MODEL` and `EMBEDDER` are declared with `detect_change=True`, so swapping the LLM or embedder re-runs only the affected steps.
 
 ## Run it
 
-> Needs **LLM credentials** for the vision model (default `gemini/gemini-2.5-flash` → `GEMINI_API_KEY`), a local **Piper** voice, and **ffmpeg** for MP3 export.
+> Needs **LLM credentials** for the vision model (default `gemini/gemini-2.5-flash` → `GEMINI_API_KEY`) and **ffmpeg** for MP3 export. **Pocket TTS** runs locally on the CPU — its weights download automatically on first run, no GPU or API key required.
 
-**1. Download a Piper voice** (~60 MB, local):
-
-```sh
-python3 -m piper.download_voices en_US-lessac-medium
-```
-
-**2. Configure & install:**
+**1. Configure & install:**
 
 ```sh
 cp .env.example .env     # set GEMINI_API_KEY (or swap LLM_MODEL, e.g. OpenAI)
 pip install -e .
 ```
 
-**3. Build the index** — drop a slide-deck PDF into `slides/`, then:
+**2. Build the index** — drop a slide-deck PDF into `slides/`, then:
 
 ```sh
 cocoindex update main        # or: cocoindex update -L main   (keep watching the folder)
 ```
 
-On a 3-slide sample deck this produces three LanceDB rows, each with vision-LLM speaker notes and ~170–280 KB of Piper MP3 audio.
+The first run downloads the Pocket TTS weights (~100M params) from Hugging Face and caches them. On a 3-slide sample deck this produces three LanceDB rows, each with vision-LLM speaker notes and ~170–280 KB of MP3 narration. Pick a different voice with `POCKET_TTS_VOICE` (e.g. `alba`, `charles`, `vera`).
 
-**4. Search the deck** — embed a query the same way and search LanceDB:
+**3. Search the deck** — embed a query the same way and search LanceDB:
 
 ```sh
 python main.py "reducing latency and reliability"

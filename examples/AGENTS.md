@@ -119,7 +119,7 @@ A walkthrough URL means there's a step-by-step guide at
 - `multi_format_indexing` — PDFs + images as page screenshots → ColPali → Qdrant; no OCR, no chunking. *(walkthrough: multi-format-indexing)*
 - `face_recognition` — detect faces (dlib) → 128-d embeddings → Qdrant face search. *(walkthrough: face-recognition)*
 - `audio_to_text` — transcribe audio with LiteLLM → Postgres.
-- `slides_to_speech` — slides → vision-LLM notes → Piper TTS narration → LanceDB semantic search. *(walkthrough: slides-to-speech)*
+- `slides_to_speech` — slides → vision-LLM notes → Pocket TTS narration → LanceDB semantic search. *(walkthrough: slides-to-speech)*
 
 ### Structured extraction (LLM / BAML / DSPy)
 - `multi_codebase_summarization` — LLM per-file summaries across many repos. *(walkthrough: multi-codebase-summarization)*
