@@ -104,7 +104,9 @@ class ComponentProcessorContext:
     def initial_context_memo_states(
         self,
     ) -> dict[Fingerprint, list[Any]]: ...
-    async def next_id(self, key: StableKey | None = None) -> int: ...
+    async def next_id(
+        self, key: StableKey | None = None, *, deadline: DeadlineContext
+    ) -> int: ...
     def begin_stats_group(
         self,
         title: str,
@@ -287,7 +289,8 @@ class App:
         refresh_interval_secs: float | None = None,
         live: bool = False,
         preview: bool = False,
-        deadline: DeadlineContext | None = None,
+        *,
+        deadline: DeadlineContext,
     ) -> StoredValue | list[Any]: ...
     def update_async(
         self,
@@ -296,7 +299,8 @@ class App:
         live: bool = False,
         preview: bool = False,
         host_ctx: Any = None,
-        deadline: DeadlineContext | None = None,
+        *,
+        deadline: DeadlineContext,
     ) -> UpdateHandle: ...
     def drop(
         self,

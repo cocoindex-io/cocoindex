@@ -19,7 +19,7 @@ from . import core, environment
 from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
 from .deadline import (
     DeadlineExceededError,
-    capture as _capture_deadline,
+    deadline_for_engine as _deadline_for_engine,
     check_deadline,
     timeout,
 )
@@ -289,14 +289,14 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
         child_path,
         args,
         kwargs,
-        deadline_snapshot=_capture_deadline(),
+        deadline_snapshot=_deadline_for_engine(),
     )
     core_handle = await core.use_mount_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
-        _capture_deadline(),
+        _deadline_for_engine(),
     )
     pyvalue = await core_handle.result_async(parent_ctx._core_processor_ctx)
     return pyvalue.get(fn_ret_deserializer(processor_fn))

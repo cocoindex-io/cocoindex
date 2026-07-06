@@ -47,7 +47,10 @@ concise, Wikipedia-style) than the matched one.
 If you are unsure whether two names refer to the same thing, err on the side \
 of `matched` being null.
 """
-_RETRY_BACKOFF_SECONDS = 1.0
+
+
+class _InvalidModelOutput(Exception):
+    """The model returned a `matched` value outside the candidate list."""
 
 
 class LlmPairResolver:
@@ -78,8 +81,8 @@ class LlmPairResolver:
             extra_guidance: Optional domain rules appended to the default
                 prompt. Do **not** include output-format instructions.
             retries: Max retries when the LLM returns an invalid ``matched``
-                value and no CocoIndex deadline is active. Default 2. Under
-                ``coco.timeout()``, the deadline is the retry budget instead.
+                value. Default 2. An active ``coco.timeout()`` deadline can
+                only stop retries sooner, never extend them.
         """
         self._model = model
         self._retries = retries
@@ -105,7 +108,7 @@ class LlmPairResolver:
             {"role": "user", "content": user_message},
         ]
 
-        async def _attempt() -> _PairDecision | None:
+        async def _attempt() -> _PairDecision:
             result = await self._get_client().chat.completions.create(
                 model=self._model,
                 response_model=_LlmResponse,
@@ -121,21 +124,22 @@ class LlmPairResolver:
             )
             messages.append({"role": "assistant", "content": result.model_dump_json()})
             messages.append({"role": "user", "content": feedback})
-            return None
+            raise _InvalidModelOutput(feedback)
 
-        # With a CocoIndex deadline, wall-clock budget is the retry budget.
-        # Without one, preserve the historical fixed retry cap.
-        if _deadline.has_deadline():
-            return await _deadline.retry_until_deadline(
-                _attempt, backoff_seconds=_RETRY_BACKOFF_SECONDS
+        # Retry invalid model output up to the fixed cap. An active CocoIndex
+        # deadline can only stop retries sooner, never extend them. Historical
+        # behavior retries immediately, so the backoff is zero.
+        try:
+            return await _deadline.retry_transient(
+                _attempt,
+                retry_on=(_InvalidModelOutput,),
+                max_attempts=1 + self._retries,
+                backoff=lambda _attempt_index: 0.0,
             )
-
-        for _ in range(1 + self._retries):
-            decision = await _attempt()
-            if decision is not None:
-                return decision
-
-        return _PairDecision()
+        except _InvalidModelOutput:
+            # Exhausted the cap without a valid answer: keep the public
+            # contract of returning an empty decision instead of raising.
+            return _PairDecision()
 
     def __coco_memo_key__(self) -> object:
         return self._memo_key

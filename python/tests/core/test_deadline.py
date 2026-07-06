@@ -724,22 +724,176 @@ def test_next_id_checks_deadline_before_allocating(fake_clock: _FakeClock) -> No
             app.update_blocking()
 
 
+class _Boom(Exception):
+    pass
+
+
+async def _always_boom_recording(attempts: list[float], clock: _FakeClock) -> None:
+    attempts.append(clock.now)
+    raise _Boom("transient")
+
+
 @pytest.mark.asyncio
-async def test_retry_until_deadline_bounds_attempts_and_sleeps(
+async def test_retry_transient_bounds_attempts_and_sleeps(
     fake_clock: _FakeClock,
 ) -> None:
+    # D8: never starts an attempt past the ambient deadline, never sleeps
+    # past it, and the expiry surfaces as DeadlineExceededError.
     attempts: list[float] = []
-
-    async def attempt() -> str | None:
-        attempts.append(fake_clock.now)
-        return None
 
     with coco.timeout(timedelta(seconds=10)):
         with pytest.raises(coco.DeadlineExceededError):
-            await _deadline.retry_until_deadline(attempt, backoff_seconds=3)
+            await _deadline.retry_transient(
+                lambda: _always_boom_recording(attempts, fake_clock),
+                retry_on=(_Boom,),
+                max_attempts=100,
+                backoff=lambda _n: 3.0,
+            )
 
     assert attempts == [0, 3, 6, 9]
     assert fake_clock.sleeps == [3, 3, 3, 1]
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_cap_exhaustion_reraises_last_error(
+    fake_clock: _FakeClock,
+) -> None:
+    attempts: list[float] = []
+    with pytest.raises(_Boom):
+        await _deadline.retry_transient(
+            lambda: _always_boom_recording(attempts, fake_clock),
+            retry_on=(_Boom,),
+            max_attempts=3,
+            backoff=lambda _n: 1.0,
+        )
+    assert attempts == [0, 1, 2]
+    assert fake_clock.sleeps == [1.0, 1.0]  # no sleep after the final attempt
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_budget_exhaustion_reraises_last_error(
+    fake_clock: _FakeClock,
+) -> None:
+    # The budget is a policy wall: exhausting it re-raises the transient
+    # error, NOT a deadline/timeout error — the caller never set a deadline.
+    attempts: list[float] = []
+    with pytest.raises(_Boom):
+        await _deadline.retry_transient(
+            lambda: _always_boom_recording(attempts, fake_clock),
+            retry_on=(_Boom,),
+            max_attempts=None,
+            budget=timedelta(seconds=5),
+            backoff=lambda _n: 2.0,
+        )
+    assert attempts == [0, 2, 4]
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_ambient_deadline_beats_budget(
+    fake_clock: _FakeClock,
+) -> None:
+    # When the user's clock and the policy budget are both expired, the
+    # user's clock wins the exception.
+    attempts: list[float] = []
+    with coco.timeout(timedelta(seconds=4)):
+        with pytest.raises(coco.DeadlineExceededError):
+            await _deadline.retry_transient(
+                lambda: _always_boom_recording(attempts, fake_clock),
+                retry_on=(_Boom,),
+                max_attempts=None,
+                budget=timedelta(seconds=4),
+                backoff=lambda _n: 2.0,
+            )
+    assert attempts == [0, 2]
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_effort_is_monotone_in_the_deadline(
+    fake_clock: _FakeClock,
+) -> None:
+    # Cross-mode property: an ambient deadline never increases retry effort.
+    async def run(with_deadline: bool) -> int:
+        attempts: list[float] = []
+        fake_clock.now = 0
+        expected = coco.DeadlineExceededError if with_deadline else _Boom
+        with pytest.raises(expected):
+            if with_deadline:
+                with coco.timeout(timedelta(seconds=2)):
+                    await _deadline.retry_transient(
+                        lambda: _always_boom_recording(attempts, fake_clock),
+                        retry_on=(_Boom,),
+                        max_attempts=5,
+                        backoff=lambda _n: 1.0,
+                    )
+            else:
+                await _deadline.retry_transient(
+                    lambda: _always_boom_recording(attempts, fake_clock),
+                    retry_on=(_Boom,),
+                    max_attempts=5,
+                    backoff=lambda _n: 1.0,
+                )
+        return len(attempts)
+
+    without = await run(with_deadline=False)
+    with_deadline = await run(with_deadline=True)
+    assert with_deadline <= without == 5
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_predicate_and_passthrough(
+    fake_clock: _FakeClock,
+) -> None:
+    # Predicate classification retries matching errors; anything else
+    # propagates immediately without consuming attempts.
+    calls: list[int] = []
+
+    async def flaky() -> str:
+        calls.append(1)
+        if len(calls) < 3:
+            raise _Boom("transient")
+        return "ok"
+
+    result = await _deadline.retry_transient(
+        flaky,
+        retry_on=lambda e: isinstance(e, _Boom),
+        max_attempts=5,
+        backoff=lambda _n: 0.0,
+    )
+    assert result == "ok"
+    assert len(calls) == 3
+
+    async def hard_fail() -> None:
+        raise ValueError("not transient")
+
+    with pytest.raises(ValueError):
+        await _deadline.retry_transient(hard_fail, retry_on=(_Boom,), max_attempts=5)
+
+
+def test_retry_transient_validates_walls() -> None:
+    async def noop() -> None:
+        pass
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(ValueError, match="requires a budget"):
+            loop.run_until_complete(
+                _deadline.retry_transient(noop, retry_on=(_Boom,), max_attempts=None)
+            )
+        with pytest.raises(ValueError, match="max_attempts >= 1"):
+            loop.run_until_complete(
+                _deadline.retry_transient(noop, retry_on=(_Boom,), max_attempts=0)
+            )
+        with pytest.raises(ValueError, match="positive budget"):
+            loop.run_until_complete(
+                _deadline.retry_transient(
+                    noop,
+                    retry_on=(_Boom,),
+                    max_attempts=None,
+                    budget=timedelta(0),
+                )
+            )
+    finally:
+        loop.close()
 
 
 def test_deadline_after_declaring_target_states_applies_no_sink_actions(
@@ -1001,3 +1155,154 @@ async def _raises_deadline_async(fn: Any, *args: Any, **kwargs: Any) -> bool:
     except coco.DeadlineExceededError:
         return True
     return False
+
+
+def test_engine_entry_points_require_the_deadline_argument(
+    fake_clock: _FakeClock,
+) -> None:
+    # The C4 contract: engine entry points that check a deadline take it as
+    # a required argument, so a forgotten hand-off is an immediate
+    # TypeError instead of a silently stale check.
+    observed: list[str] = []
+
+    @coco.fn
+    async def main() -> None:
+        ctx = coco.get_component_context()
+        try:
+            await ctx._core_processor_ctx.next_id(None)  # type: ignore[call-arg]
+        except TypeError as e:
+            observed.append(f"next_id: {e}")
+
+    env = _env("required_handoff")
+    app = coco.App(
+        coco.AppConfig(name="deadline_required_handoff", environment=env), main
+    )
+    app.update_blocking()
+    assert len(observed) == 1 and "deadline" in observed[0]
+
+
+def test_directory_map_children_inherit_distinct_narrowed_deadlines(
+    fake_clock: _FakeClock,
+) -> None:
+    # Two concurrent map tasks in ONE component (parent deadline NONE) mount
+    # children under different `with coco.timeout(...)` scopes. If children
+    # read their deadline from the shared parent ctx, both observations
+    # would be None — one shared slot can't hold 5s and 30s at once.
+    observed: dict[str, float | None] = {}
+
+    @coco.fn
+    async def report(label: str) -> None:
+        observed[label] = _deadline.remaining_seconds()
+
+    @coco.fn
+    async def main() -> None:
+        observed["parent"] = _deadline.remaining_seconds()
+
+        async def run_one(spec: tuple[str, int]) -> None:
+            label, secs = spec
+            with coco.timeout(timedelta(seconds=secs)):
+                await coco.use_mount(coco.component_subpath(label), report, label)
+
+        await coco.map(run_one, [("fast", 5), ("slow", 30)])
+
+    env = _env("map_distinct_narrowing")
+    app = coco.App(coco.AppConfig(name="deadline_map_distinct", environment=env), main)
+    app.update_blocking()
+
+    assert observed["parent"] is None
+    assert observed["fast"] == pytest.approx(5.0)
+    assert observed["slow"] == pytest.approx(30.0)
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_bound_attempt_uses_tightest_wall(
+    fake_clock: _FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # bound_attempt=True bounds each in-flight attempt with the remaining
+    # POLICY budget only. The ambient deadline must never cancel an
+    # in-flight attempt: CocoIndex timeouts are cooperative.
+    recorded: list[float] = []
+
+    async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
+        recorded.append(timeout)
+        return await awaitable
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    async def ok() -> str:
+        return "ok"
+
+    # Even with a narrower ambient deadline, the wait_for bound is the
+    # policy budget, not min(ambient, budget).
+    with coco.timeout(timedelta(seconds=3)):
+        result = await _deadline.retry_transient(
+            ok,
+            retry_on=(_Boom,),
+            max_attempts=None,
+            budget=timedelta(seconds=10),
+            bound_attempt=True,
+        )
+    assert result == "ok"
+    assert recorded == [pytest.approx(10.0)]
+
+    recorded.clear()
+    result = await _deadline.retry_transient(
+        ok,
+        retry_on=(_Boom,),
+        max_attempts=None,
+        budget=timedelta(seconds=10),
+        bound_attempt=True,
+    )
+    assert result == "ok"
+    assert recorded == [pytest.approx(10.0)]
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_ambient_deadline_never_cancels_in_flight_attempt(
+    fake_clock: _FakeClock,
+) -> None:
+    # Regression for the cooperative contract: an ambient deadline expiring
+    # mid-attempt must not hard-cancel the await (no builtins.TimeoutError).
+    # The attempt runs to completion, and the helper's own post-attempt
+    # checkpoint then raises DeadlineExceededError: no result is accepted
+    # past the user's clock, and no cancellation ever happened.
+    completed: list[str] = []
+
+    async def expires_ambient_then_succeeds() -> str:
+        fake_clock.now += 5.0  # burn past the ambient deadline mid-attempt
+        completed.append("attempt ran to completion")
+        return "ok"
+
+    with coco.timeout(timedelta(seconds=3)):
+        with pytest.raises(coco.DeadlineExceededError):
+            await _deadline.retry_transient(
+                expires_ambient_then_succeeds,
+                retry_on=(_Boom,),
+                max_attempts=None,
+                budget=timedelta(seconds=10),
+                bound_attempt=True,
+            )
+    assert completed == ["attempt ran to completion"]  # not cancelled
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_never_retries_base_exceptions(
+    fake_clock: _FakeClock,
+) -> None:
+    # Even a maximally broad predicate must not classify cancellation or
+    # interpreter-exit signals: the helper catches Exception, not
+    # BaseException, so these propagate untouched on the first attempt.
+    calls: list[int] = []
+
+    async def cancelled() -> None:
+        calls.append(1)
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _deadline.retry_transient(
+            cancelled,
+            retry_on=lambda _e: True,
+            max_attempts=5,
+            backoff=lambda _n: 0.0,
+        )
+    assert len(calls) == 1

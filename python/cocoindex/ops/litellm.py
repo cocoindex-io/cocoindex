@@ -16,13 +16,15 @@ __all__ = [
 import asyncio as _asyncio
 import io as _io
 import logging as _logging
-import time as _time
+from datetime import timedelta as _timedelta
 from collections.abc import Awaitable as _Awaitable
 from collections.abc import Callable as _Callable
 from typing import Any as _Any
 from typing import TypeVar as _TypeVar
 
 import litellm as litellm
+
+from cocoindex._internal import deadline as _deadline
 import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
@@ -130,32 +132,22 @@ async def _retry_litellm_call(
     operation: _Callable[[], _Awaitable[_T]],
     operation_name: str,
 ) -> _T:
-    deadline = _time.monotonic() + _EMBEDDING_RETRY_TIMEOUT_SECONDS
-    backoff = _EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS
-    attempt = 1
-    while True:
-        remaining = deadline - _time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(f"{operation_name} did not succeed within 10 minutes")
-        try:
-            return await _asyncio.wait_for(operation(), timeout=remaining)
-        except Exception as e:
-            if not _is_retryable_litellm_error(e):
-                raise
-            remaining = deadline - _time.monotonic()
-            if remaining <= 0:
-                raise
-            delay = min(backoff, remaining)
-            _logger.warning(
-                "%s failed with transient error on attempt %d; retrying in %.1fs: %s",
-                operation_name,
-                attempt,
-                delay,
-                e,
-            )
-            await _asyncio.sleep(delay)
-            backoff = min(backoff * 2, _EMBEDDING_RETRY_MAX_BACKOFF_SECONDS)
-            attempt += 1
+    # Time is the brake here (no attempt cap): retry transient failures for
+    # up to the budget, with each in-flight attempt bounded to the tightest
+    # remaining wall. An ambient coco.timeout() can only stop retries sooner.
+    return await _deadline.retry_transient(
+        operation,
+        retry_on=_is_retryable_litellm_error,
+        max_attempts=None,
+        budget=_timedelta(seconds=_EMBEDDING_RETRY_TIMEOUT_SECONDS),
+        backoff=_deadline.exponential_backoff(
+            initial=_EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS,
+            multiplier=2.0,
+            max_delay=_EMBEDDING_RETRY_MAX_BACKOFF_SECONDS,
+        ),
+        bound_attempt=True,
+        operation_name=operation_name,
+    )
 
 
 class LiteLLMEmbedder(_schema.VectorSchemaProvider):

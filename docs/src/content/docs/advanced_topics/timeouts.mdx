@@ -1,14 +1,17 @@
 ---
 title: "*Timeouts* and deadlines"
 description: >
-  Use `coco.timeout()` to put a time budget around a CocoIndex update,
-  foreground child work, and deadline-aware retries.
+  Use `coco.timeout()` to put a time budget around a piece of processing —
+  one file, one LLM call — with cooperative checks, deadline-aware retries,
+  and clean time-boxing of whole updates.
 ---
-Use `coco.timeout()` when a CocoIndex run, processor, or foreground child operation should stop after a time budget.
+Use `coco.timeout()` when a piece of CocoIndex work should stop after a time budget.
 
 The timeout is **cooperative**: CocoIndex checks the time at safe points and raises `coco.DeadlineExceededError` when the deadline has passed. It does not forcibly cancel Python code that is already inside an `await`, such as an HTTP request or database query. Use that library's own timeout for individual I/O calls.
 
 ## Quick start
+
+The most common budget is per item of work inside a processing component — one file, one LLM call. Per-item budgets stay meaningful as your source grows (a whole-run limit does not), and they apply no matter how the app runs, including via the `cocoindex update` CLI:
 
 ```python
 from datetime import timedelta
@@ -16,22 +19,15 @@ from datetime import timedelta
 import cocoindex as coco
 
 
-try:
-    with coco.timeout(timedelta(minutes=5)):
-        app.update_blocking()
-except coco.DeadlineExceededError:
-    print("CocoIndex update timed out")
+@coco.fn(memo=True)
+async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
+    # This file gets 30 seconds, including retries inside.
+    with coco.timeout(timedelta(seconds=30)):
+        summary = await summarize_with_llm(await file.read_text())
+    target.declare_file(filename=out_name(file), content=summary)
 ```
 
-In async code, create the update handle inside the timeout block:
-
-```python
-with coco.timeout(timedelta(minutes=5)):
-    handle = app.update()
-    await handle.result()
-```
-
-The deadline is captured when `app.update()` creates the handle. If the handle is created before entering `coco.timeout()`, the root processor does not inherit that timeout.
+If the budget runs out, the component fails with `coco.DeadlineExceededError` like any other processor error: nothing external is written for it, nothing is memoized, and the next update retries it cleanly.
 
 Nested timeout blocks use the shorter remaining budget:
 
@@ -54,7 +50,7 @@ A timeout follows work the caller is directly waiting for. It does not follow ba
 
 | Code shape | What happens |
 | --- | --- |
-| `with coco.timeout(...): app.update()` | The root processor inherits the timeout. |
+| `with coco.timeout(...): app.update()` | The root processor inherits the timeout (see [Time-boxing a whole update](#time-boxing-a-whole-update-programmatic-callers)). |
 | Direct `@coco.fn` call | Inherits the current timeout and checks it at function entry and return. |
 | `await coco.use_mount(child, ...)` | The child inherits the timeout because the parent needs the child's result. |
 | `await coco.mount(child, ...)` / `await coco.mount_each(...)` | The child does not inherit the parent's timeout. The caller still checks its own timeout before mounting and after `handle.ready()`. |
@@ -168,11 +164,36 @@ Think of the two budgets as complementary:
 - client timeouts bound one external call
 - `coco.timeout()` bounds CocoIndex work between safe checks
 
+## Time-boxing a whole update (programmatic callers)
+
+When you call `app.update()` yourself and the surrounding environment has its own clock (a CI job, a serverless handler, a shared cron window), you can put the budget around the whole update:
+
+```python
+try:
+    with coco.timeout(timedelta(minutes=10)):
+        app.update_blocking()
+except coco.DeadlineExceededError:
+    print("stopped after the 10-minute budget")
+```
+
+In async code, create the update handle inside the timeout block — the deadline is captured when `app.update()` creates the handle:
+
+```python
+with coco.timeout(timedelta(minutes=10)):
+    handle = app.update()
+    await handle.result()
+```
+
+Because components commit independently and the engine rolls forward, a whole-update timeout never wastes completed work: everything that finished is committed and stays committed; the timeout only stops new progress, and the **next update resumes where this one left off**. `with coco.timeout(timedelta(minutes=10)): app.update()` means "index as much as possible in ten minutes, cleanly."
+
 ## Retries
 
-Deadline-aware retry loops check the deadline before each attempt and before each sleep. If a deadline is active, a retry sleep is shortened so it never sleeps past the remaining budget.
+Retry helpers distinguish two kinds of limit:
 
-If no CocoIndex deadline is active, retry code keeps its normal numeric retry cap. For example, `LlmPairResolver` keeps its configured retry count without `coco.timeout()`, but retries invalid model responses until the deadline when a timeout is active.
+- **Policy limits owned by the call site** — attempt caps and retry budgets. Exhausting them re-raises the last transient error, so your normal error handling still applies.
+- **The ambient `coco.timeout(...)` deadline** — raises `coco.DeadlineExceededError`, and can only stop retries sooner, never extend them. It fires only if you actually set a timeout.
+
+Adding a timeout therefore never increases retry effort, and removing one never decreases it. No retry attempt starts past any limit, and backoff sleeps never exceed the tightest remaining budget. Built-in operations (`LlmPairResolver`, LiteLLM embedding retries) share one helper with these semantics.
 
 ## API
 

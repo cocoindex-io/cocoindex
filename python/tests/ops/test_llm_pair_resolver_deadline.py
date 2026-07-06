@@ -107,29 +107,87 @@ async def test_llm_resolver_without_deadline_keeps_numeric_cap(
 
 
 @pytest.mark.asyncio
-async def test_llm_resolver_with_deadline_retries_until_deadline(
+async def test_llm_resolver_deadline_never_extends_the_retry_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Active CocoIndex deadline:
+    # Active CocoIndex deadline, monotone semantics:
     #
-    # retries=0 is ignored as a retry budget
-    # invalid outputs sleep/back off while time remains
-    # valid output before deadline returns successfully
+    # the attempt cap ALWAYS applies; a generous deadline never extends it.
+    # retries=0 -> exactly one call, then the empty-decision fallback, even
+    # though 10s of deadline budget remains.
     real_sleep = asyncio.sleep
     monkeypatch.setenv("COCOINDEX_TESTING", "1")
     clock = _FakeClock(real_sleep)
     monkeypatch.setattr(asyncio, "sleep", clock.sleep)
     module = _load_resolver_module(monkeypatch)
-    completions = _FakeCompletions(module, ["ghost", "ghost", "ghost", "bar"])
+    completions = _FakeCompletions(module, ["ghost"])
     resolver = module.LlmPairResolver(model="fake", retries=0)
     resolver._client = _FakeClient(completions)
 
     with coco.timeout(timedelta(seconds=10)):
         result = await resolver("foo", ["bar", "baz"])
 
-    assert result == module._PairDecision(
-        matched="bar", canonical=module._CanonicalSide.MATCHED
-    )
-    assert completions.calls == 4
-    assert clock.sleeps == [1.0, 1.0, 1.0]
+    assert result == module._PairDecision()
+    assert completions.calls == 1
+    core.testing_disable_deadline_clock()
+
+
+@pytest.mark.asyncio
+async def test_llm_resolver_retry_effort_is_monotone_in_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Cross-mode property (the fix for "removing the deadline gives less
+    # retry duration"): attempts with a deadline are never more than
+    # attempts without one, for the same failing input.
+    real_sleep = asyncio.sleep
+    monkeypatch.setenv("COCOINDEX_TESTING", "1")
+    clock = _FakeClock(real_sleep)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    module = _load_resolver_module(monkeypatch)
+
+    async def run(with_deadline: bool) -> int:
+        completions = _FakeCompletions(module, ["ghost"])
+        resolver = module.LlmPairResolver(model="fake", retries=2)
+        resolver._client = _FakeClient(completions)
+        if with_deadline:
+            with coco.timeout(timedelta(seconds=10)):
+                result = await resolver("foo", ["bar", "baz"])
+        else:
+            result = await resolver("foo", ["bar", "baz"])
+        assert result == module._PairDecision()
+        return completions.calls
+
+    without = await run(with_deadline=False)
+    with_deadline = await run(with_deadline=True)
+    assert with_deadline <= without == 3
+    core.testing_disable_deadline_clock()
+
+
+@pytest.mark.asyncio
+async def test_llm_resolver_expired_deadline_stops_retries_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A deadline that expires mid-retry surfaces DeadlineExceededError from
+    # the retry checkpoint before the next attempt starts.
+    real_sleep = asyncio.sleep
+    monkeypatch.setenv("COCOINDEX_TESTING", "1")
+    clock = _FakeClock(real_sleep)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    module = _load_resolver_module(monkeypatch)
+
+    class _ExpiringCompletions(_FakeCompletions):
+        async def create(self, **kwargs: object) -> Any:
+            result = await super().create(**kwargs)
+            clock.now += 6.0  # each attempt burns 6s of virtual time
+            return result
+
+    completions = _ExpiringCompletions(module, ["ghost"])
+    resolver = module.LlmPairResolver(model="fake", retries=5)
+    resolver._client = _FakeClient(completions)
+
+    with coco.timeout(timedelta(seconds=10)):
+        with pytest.raises(coco.DeadlineExceededError):
+            await resolver("foo", ["bar", "baz"])
+
+    assert completions.calls == 2  # 6s, 12s > 10s: third attempt never starts
     core.testing_disable_deadline_clock()

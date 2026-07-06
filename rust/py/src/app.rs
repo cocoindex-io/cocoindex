@@ -249,7 +249,7 @@ impl PyApp {
         Ok(Self(Arc::new(app)))
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false, deadline=None))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false, *, deadline))]
     pub fn update_async(
         &self,
         root_processor: PyComponentProcessor,
@@ -257,13 +257,13 @@ impl PyApp {
         host_ctx: Py<PyAny>,
         live: bool,
         preview: bool,
-        deadline: Option<PyDeadlineContext>,
+        deadline: PyDeadlineContext,
     ) -> PyResult<PyUpdateHandle> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             full_reprocess,
             live,
-            deadline: deadline.map_or(DeadlineContext::NONE, |d| d.0),
+            deadline: deadline.0,
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {
@@ -280,7 +280,7 @@ impl PyApp {
         Ok(uh)
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false, deadline=None))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false, *, deadline))]
     pub fn update(
         &self,
         py: Python<'_>,
@@ -291,13 +291,13 @@ impl PyApp {
         refresh_interval_secs: Option<f64>,
         live: bool,
         preview: bool,
-        deadline: Option<PyDeadlineContext>,
+        deadline: PyDeadlineContext,
     ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             full_reprocess,
             live,
-            deadline: deadline.map_or(DeadlineContext::NONE, |d| d.0),
+            deadline: deadline.0,
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {

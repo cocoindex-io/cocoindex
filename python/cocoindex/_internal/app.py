@@ -16,7 +16,7 @@ from typing import (
 )
 
 from . import core
-from .deadline import capture as _capture_deadline
+from .deadline import deadline_for_engine as _deadline_for_engine
 from .environment import Environment, LazyEnvironment, _default_env
 from .function import (
     AnyCallable,
@@ -295,7 +295,7 @@ class App(Generic[P, R]):
         Returns:
             An UpdateHandle that provides access to stats(), watch(), and result().
         """
-        deadline_snapshot = _capture_deadline()
+        deadline_snapshot = _deadline_for_engine()
 
         async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
@@ -349,7 +349,7 @@ class App(Generic[P, R]):
         """
         env, core_app = self._get_core_env_app_sync()
         root_path = core.StablePath()
-        deadline_snapshot = _capture_deadline()
+        deadline_snapshot = _deadline_for_engine()
         processor = create_core_component_processor(
             self._main_fn,
             env,

@@ -1,6 +1,8 @@
 use crate::fingerprint::PyFingerprint;
 use crate::function::context_initial_states_to_pydict;
 use crate::prelude::*;
+
+use crate::deadline::PyDeadlineContext;
 use crate::stable_path::PyStableKey;
 
 use crate::app::PyStatsGroupHandle;
@@ -82,14 +84,18 @@ impl PyComponentProcessorContext {
     ///
     /// Returns:
     ///     A coroutine that resolves to the next unique ID as an integer.
-    #[pyo3(signature = (key=None))]
+    #[pyo3(signature = (key=None, *, deadline))]
     fn next_id<'py>(
         &self,
         py: Python<'py>,
         key: Option<PyStableKey>,
+        deadline: PyDeadlineContext,
     ) -> PyResult<Bound<'py, PyAny>> {
         let app_ctx = self.0.app_ctx().clone();
-        let deadline = self.0.deadline();
+        // Required hand-off: the caller's current (possibly narrowed) scope,
+        // not this ctx's mount-time base. See deadline_for_engine() in the
+        // Python SDK.
+        let deadline = deadline.0;
         future_into_py(py, async move {
             let id = app_ctx
                 .next_id(key.as_ref().map(|k| &k.0), deadline)

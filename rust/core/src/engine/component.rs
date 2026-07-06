@@ -527,6 +527,15 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     /// Mount and run a child in the foreground (use_mount path).
     /// Inherits live from the parent context.
+    ///
+    /// `deadline` is the deadline for the CHILD, taken from the caller's
+    /// current scope, and cannot be read from `parent_ctx.deadline`: that is
+    /// the caller's own base, frozen at the caller's mount, while narrowing
+    /// (`with coco.timeout(...)`) lives in the SDK's per-task carrier —
+    /// concurrent tasks within one component can hold different narrowed
+    /// scopes at the same moment, so the current value must travel with each
+    /// call. It becomes the child ctx's deadline, frozen at the child's
+    /// mount, same rule one level down.
     pub async fn use_mount(
         self,
         parent_ctx: &ComponentProcessorContext<Prof>,
