@@ -1108,3 +1108,12 @@ def test_sanitize_nul_preserves_list() -> None:
     assert result == ["xy", ["nestedz"]]
     assert isinstance(result, list)
     assert isinstance(result[1], list)
+
+
+def test_sanitize_nul_preserves_dict() -> None:
+    """``_sanitize_nul`` must return ``dict`` when given ``dict`` input, with keys and values sanitized."""
+    inp = {"a\x00b": "c\x00d", "e": {"f\x00g": "h"}}
+    result = postgres._target._sanitize_nul(inp)
+    assert result == {"ab": "cd", "e": {"fg": "h"}}
+    assert isinstance(result, dict)
+    assert isinstance(result["e"], dict)

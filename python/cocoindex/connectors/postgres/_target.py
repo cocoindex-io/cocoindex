@@ -1301,15 +1301,10 @@ class TableTarget(
 
             if value is not None and col.encoder is not None:
                 value = col.encoder(value)
-            # Strip NUL from values bound to Postgres.  Scalar strings hit
-            # the fast path; lists/tuples (array and composite columns) are
-            # walked recursively.  jsonb columns are already handled inside
-            # `_json_encoder`, so the recursive walk is a harmless no-op on
-            # the encoded JSON string.
-            if isinstance(value, str):
-                value = _strip_nul(value)
-            elif isinstance(value, (list, tuple)):
-                value = _sanitize_nul(value)
+            # Strip NUL from values bound to Postgres recursively. jsonb columns
+            # are already handled inside `_json_encoder`, so the recursive walk
+            # is a harmless no-op on the encoded JSON string.
+            value = _sanitize_nul(value)
             out[col_name] = value
         return out
 
