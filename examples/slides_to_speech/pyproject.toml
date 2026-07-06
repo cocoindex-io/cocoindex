@@ -1,17 +1,17 @@
 [project]
 name = "slides-to-speech"
 version = "0.1.0"
-description = "CocoIndex example: turn slide decks into narrated, searchable indexes — vision LLM speaker notes, Piper TTS, and LanceDB."
+description = "CocoIndex example: turn slide decks into narrated, searchable indexes — vision LLM speaker notes, Pocket TTS, and LanceDB."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[lancedb,sentence_transformers]>=1.0.7",
-    "instructor>=1.0.0",
-    "litellm>=1.0.0",
-    "pydantic>=2.0.0",
+    "cocoindex[lancedb,sentence_transformers]>=1.0.16",
+    "lancedb>=0.34.0",    # queried directly in main.py; also pinned by the cocoindex[lancedb] extra
+    "dspy>=3.0.0",        # vision LLM structured extraction (brings litellm + pydantic transitively)
     "pymupdf>=1.24.0",
-    "piper-tts>=1.2.0",
+    "pocket-tts>=2.1.0",
     "pydub>=0.25.1",
-    "numpy<2.5",          # numpy 2.5 breaks NDArray vector-column resolution
+    "audioop-lts; python_version >= '3.13'",  # pydub needs stdlib audioop, removed in Python 3.13
+    "numpy>=2,<2.5",      # >=2 required by pocket-tts; <2.5 keeps NDArray vector-column resolution working
 ]
 
 [tool.setuptools]

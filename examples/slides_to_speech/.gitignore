@@ -1,7 +1,10 @@
 .env
 cocoindex.db
+.mypy_cache
 .venv-test/
 __pycache__/
 lancedb_data/
-*.onnx
-*.onnx.json
+
+# Local
+scratch
+slides_to_speech.egg-info

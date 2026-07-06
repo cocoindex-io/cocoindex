@@ -535,7 +535,7 @@ export const examples: ExampleCard[] = [
     index: '31 / 32',
     category: 'image',
     thumbLabel: 'Slides · vision + TTS',
-    description: 'Render each slide, write speaker notes with a vision LLM, narrate them with Piper TTS locally, and embed the notes into LanceDB — search a deck by meaning and play back the narration.',
+    description: 'Render each slide, write speaker notes with a vision LLM, narrate them with Pocket TTS locally on the CPU, and embed the notes into LanceDB — search a deck by meaning and play back the narration.',
     tags: [
       { kind: 'src', label: 'Local FS' },
       { kind: 'ops', label: 'Vision LLM + TTS' },
@@ -676,7 +676,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'face_recognition', docs: 'face-recognition', title: 'Build Your Own Face Search', description: 'Detect faces in a folder of photos, embed each with face_recognition (dlib), and index them in Qdrant for face search; query demo.', run: RUN_MAIN },
       { dir: 'audio_to_text', docs: 'audio-to-text', title: 'Audio → Text', description: 'Transcribe local audio files with LiteLLM and store one row per file in Postgres, keyed by filename.', run: RUN_MAIN_PY },
       { dir: 'multi_format_indexing', docs: 'multi-format-indexing', title: 'Multi-format Visual Search (ColPali)', description: 'Index PDFs and images as page screenshots with the ColPali multi-vector model — no OCR, no chunking — into Qdrant with MaxSim; text query demo.', run: RUN_MAIN },
-      { dir: 'slides_to_speech', docs: 'slides-to-speech', title: 'Slides to Narrated Search', description: 'Render each slide, write speaker notes with a vision LLM, narrate them with Piper TTS locally, embed the notes into LanceDB; semantic search with playable audio.', run: RUN_MAIN },
+      { dir: 'slides_to_speech', docs: 'slides-to-speech', title: 'Slides to Narrated Search', description: 'Render each slide, write speaker notes with a vision LLM, narrate them with Pocket TTS locally on the CPU, embed the notes into LanceDB; semantic search with playable audio.', run: RUN_MAIN },
     ],
   },
   {

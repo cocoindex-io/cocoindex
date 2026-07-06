@@ -3,8 +3,8 @@ Slides to Speech (v1) — CocoIndex pipeline example.
 
 Turn a slide deck (PDF) into a narrated, searchable index. For each slide:
 render it to an image, use a vision LLM to write speaker notes, synthesize
-those notes to audio with Piper (local TTS), embed the notes for semantic
-search, and store everything in LanceDB.
+those notes to audio with Pocket TTS (Kyutai's local, CPU-only TTS), embed the
+notes for semantic search, and store everything in LanceDB.
 
 Index (use `-L` for live mode, omit for one-shot catch-up):
     cocoindex update main
@@ -26,11 +26,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Annotated
 
-import instructor
-import litellm
-import pydantic
+import dspy
+import numpy as np
 from numpy.typing import NDArray
-from piper import PiperVoice
+from pocket_tts import TTSModel
 from pydub import AudioSegment
 
 import cocoindex as coco
@@ -38,12 +37,10 @@ from cocoindex.connectors import localfs, lancedb
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-litellm.drop_params = True
-
 LANCEDB_TABLE = "slides_to_speech"
 LANCEDB_URI = os.environ.get("LANCEDB_URI", "./lancedb_data")
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PIPER_MODEL = os.environ.get("PIPER_MODEL_NAME", "en_US-lessac-medium")
+POCKET_TTS_VOICE = os.environ.get("POCKET_TTS_VOICE", "alba")
 
 LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("slides_lancedb")
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
@@ -75,60 +72,68 @@ def pdf_to_slides(content: bytes) -> list[SlidePage]:
 
 
 # ---------------------------------------------------------------------------
-# Vision LLM: slide image -> speaker notes
+# Vision LLM: slide image -> speaker notes (DSPy)
 # ---------------------------------------------------------------------------
 
 
-class SlideTranscript(pydantic.BaseModel):
-    speaker_notes: str = pydantic.Field(
-        description="Natural spoken narration for this slide, as a presenter would "
-        "say it aloud — a few sentences, no markdown or bullet symbols."
+class SlideNotes(dspy.Signature):
+    """Write natural spoken narration for a slide, as a presenter would say it aloud."""
+
+    slide: dspy.Image = dspy.InputField(desc="the rendered slide image")
+    speaker_notes: str = dspy.OutputField(
+        desc="a few sentences of spoken narration — no markdown or bullet symbols"
     )
+
+
+_speaker_notes = dspy.Predict(SlideNotes)
+
+
+@functools.cache
+def _get_lm(model: str) -> dspy.LM:
+    # max_tokens leaves headroom for the model's hidden reasoning plus the answer.
+    return dspy.LM(model, max_tokens=8192)
 
 
 @coco.fn(memo=True)
-async def extract_speaker_notes(image: bytes) -> SlideTranscript:
-    client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
+async def extract_speaker_notes(image: bytes) -> str:
     data_url = "data:image/png;base64," + base64.b64encode(image).decode()
-    result = await client.chat.completions.create(
-        model=coco.use_context(LLM_MODEL),
-        response_model=SlideTranscript,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Write speaker notes for this slide."},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }
-        ],
-    )
-    return SlideTranscript.model_validate(result.model_dump())
+    with dspy.context(lm=_get_lm(coco.use_context(LLM_MODEL))):
+        result = await _speaker_notes.acall(slide=dspy.Image(url=data_url))
+    return result.speaker_notes
 
 
 # ---------------------------------------------------------------------------
-# Piper TTS: text -> mp3 bytes
+# Pocket TTS: text -> mp3 bytes (local, CPU-only)
 # ---------------------------------------------------------------------------
 
 
 @functools.cache
-def get_piper_voice() -> PiperVoice:
-    return PiperVoice.load(f"{PIPER_MODEL}.onnx")
+def get_tts_model() -> TTSModel:
+    # ~100M-param model; weights download from Hugging Face on first use, then cache.
+    return TTSModel.load_model()
+
+
+@functools.cache
+def get_voice_state(voice: str) -> dict:
+    # A voice state is a reusable conditioning template. Loading it is slow, so we
+    # cache one per voice; generate_audio(copy_state=True) leaves it intact to reuse.
+    return get_tts_model().get_state_for_audio_prompt(voice)
 
 
 @coco.fn.as_async(runner=coco.GPU)
 def text_to_speech(text: str) -> bytes:
-    voice = get_piper_voice()
-    chunks = list(voice.synthesize(text))
-    pcm = b"".join(c.audio_int16_bytes for c in chunks)
-    audio = AudioSegment(
-        data=pcm,
-        sample_width=chunks[0].sample_width,
-        frame_rate=chunks[0].sample_rate,
-        channels=chunks[0].sample_channels,
+    model = get_tts_model()
+    # Pocket TTS is not thread-safe; the coco.GPU runner serializes calls so the one
+    # cached model is only ever driving a single synthesis at a time.
+    audio = model.generate_audio(get_voice_state(POCKET_TTS_VOICE), text)
+    # audio is a 1D float tensor in [-1, 1] at model.sample_rate; pack it as int16 PCM.
+    samples = np.clip(audio.to("cpu").numpy().reshape(-1), -1.0, 1.0)
+    pcm16 = (samples * 32767.0).astype("<i2").tobytes()
+    segment = AudioSegment(
+        data=pcm16, sample_width=2, frame_rate=model.sample_rate, channels=1
     )
     out = io.BytesIO()
-    audio.export(out, format="mp3", bitrate="64k")
+    segment.export(out, format="mp3", bitrate="64k")
     return out.getvalue()
 
 
@@ -151,8 +156,7 @@ class SlideRecord:
 async def process_slide(
     slide: SlidePage, filename: str, table: lancedb.TableTarget[SlideRecord]
 ) -> None:
-    transcript = await extract_speaker_notes(slide.image)
-    notes = transcript.speaker_notes
+    notes = await extract_speaker_notes(slide.image)
     voice, embedding = await asyncio.gather(
         text_to_speech(notes),
         coco.use_context(EMBEDDER).embed(notes),
@@ -221,8 +225,12 @@ def query(text: str, *, top_k: int = 5) -> None:
     vec = asyncio.run(embedder.embed(text))
     db = lancedb_client.connect(os.environ.get("LANCEDB_URI", "./lancedb_data"))
     table = db.open_table(LANCEDB_TABLE)
-    for row in table.search(vec).limit(top_k).to_list():
-        print(f"[{1.0 - row['_distance']:.3f}] {row['filename']} slide {row['page']}")
+    # Ask for cosine distance explicitly — LanceDB defaults to L2, whose values
+    # exceed 1.0 and would make `1 - distance` go negative. Cosine distance is
+    # 1 - similarity, so flipping it yields a similarity score in [0, 1].
+    for row in table.search(vec).distance_type("cosine").limit(top_k).to_list():
+        score = 1.0 - row["_distance"]
+        print(f"[{score:.3f}] {row['filename']} slide {row['page']}")
         print(f"    {row['speaker_notes'][:120]}")
 
 
