@@ -125,6 +125,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<ops::PySeparatorSplitter>()?;
     m.add_class::<ops::PyCustomLanguageConfig>()?;
     m.add_class::<ops::PyRecursiveSplitter>()?;
+    m.add_class::<ops::PyViewSegment>()?;
+    m.add_class::<ops::PySourceView>()?;
+    m.add_function(wrap_pyfunction!(ops::render_ranges, m)?)?;
     m.add_function(wrap_pyfunction!(ops::detect_code_language, m)?)?;
     m.add_class::<ops::PyPatternMatcher>()?;
 

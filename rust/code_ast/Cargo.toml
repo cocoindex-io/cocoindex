@@ -6,6 +6,8 @@ rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 unicase = { workspace = true }
 
 # This crate is the single place in the workspace that links tree-sitter

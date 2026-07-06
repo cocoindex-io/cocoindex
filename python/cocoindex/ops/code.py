@@ -15,6 +15,7 @@ __all__ = [
     "FileMatch",
     "index_terms",
     "match_code",
+    "render_match",
 ]
 
 import typing as _typing
@@ -23,6 +24,7 @@ from dataclasses import dataclass as _dataclass
 
 from cocoindex._internal import core as _core
 from cocoindex.resources import chunk as _chunk
+from cocoindex.resources import view as _view
 
 
 class CodeSource:
@@ -263,6 +265,57 @@ def _convert_chunk(raw: "_core.Chunk", text: str) -> _chunk.Chunk:
             column=raw.end_column,
         ),
     )
+
+
+def render_match(source: "CodeSource", match: CodeMatch) -> _view.SourceView:
+    r"""Render a match as a source view: context frames of its enclosing scopes,
+    the matched range(s) verbatim, and elision cues where material is omitted.
+
+    The returned :class:`~cocoindex.resources.view.SourceView` carries synthetic
+    ``text`` plus source-grounded segments — frames are the head lines of
+    enclosing scopes, outermost first, and its ``start``/``end`` (frames
+    excluded) equal the match's span. Matched ranges are rendered exactly (no
+    widening to line starts).
+
+    Args:
+        source: The parsed source the match came from (e.g.
+            ``file_match.source``); its cached parse is reused.
+        match: A match produced against that same source.
+
+    Examples:
+        >>> fm = CodePattern(r"return \X", language="python").match_file(path)
+        >>> view = render_match(fm.source, fm.matches[0])
+        >>> print(view.text)  # frames + matched code
+    """
+    ranges = [(c.start.byte_offset, c.end.byte_offset) for c in match.chunks]
+    raw = _core.render_ranges(source._src, ranges)
+    return _convert_source_view(raw)
+
+
+def _convert_source_view(raw: "_core.SourceView") -> _view.SourceView:
+    """Convert a raw PyO3 source view to a Python dataclass."""
+    segments = [
+        _view.ViewSegment(
+            start=_chunk.TextPosition(
+                byte_offset=seg.start_byte,
+                char_offset=seg.start_char_offset,
+                line=seg.start_line,
+                column=seg.start_column,
+            ),
+            end=_chunk.TextPosition(
+                byte_offset=seg.end_byte,
+                char_offset=seg.end_char_offset,
+                line=seg.end_line,
+                column=seg.end_column,
+            ),
+            kind=_typing.cast('_typing.Literal["frame", "content"]', seg.kind),
+            summary=seg.summary,
+            rendered_start=seg.rendered_start,
+            rendered_end=seg.rendered_end,
+        )
+        for seg in raw.segments
+    ]
+    return _view.SourceView(text=raw.text, segments=segments)
 
 
 def __getattr__(name: str) -> _typing.Any:
