@@ -44,8 +44,14 @@ def timeout(duration: timedelta) -> Iterator[None]:
         _current_deadline.reset(token)
 
 
-def check_deadline() -> None:
-    """Raise DeadlineExceededError if the current deadline has passed."""
+def check_cancellation() -> None:
+    """Raise if the current work has been asked to stop.
+
+    Deadline expiry is the first cancellation source (raising
+    ``DeadlineExceededError``); future sources (e.g. a batched call whose
+    callers have all been cancelled) will surface through the same
+    checkpoint.
+    """
     _current_deadline.get().check()
 
 
@@ -176,7 +182,7 @@ async def retry_transient(
         # user's clock and wins the exception when both are expired. A
         # remaining budget of exactly zero counts as expired, so a sleep
         # clipped to the wall cannot spin at the boundary.
-        check_deadline()
+        check_cancellation()
         ambient_remaining = remaining_seconds()
         if ambient_remaining is not None and ambient_remaining <= 0:
             raise DeadlineExceededError("CocoIndex timeout deadline exceeded")
@@ -211,7 +217,7 @@ async def retry_transient(
             # attempt was never cancelled; its completion is simply not
             # accepted past the user's clock. Raising in `else` keeps the
             # checkpoint out of retry classification.
-            check_deadline()
+            check_cancellation()
             return result
 
         attempt_index += 1

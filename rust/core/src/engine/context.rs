@@ -673,7 +673,6 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
-    deadline: DeadlineContext,
 
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 
@@ -709,14 +708,12 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
-        deadline: DeadlineContext,
     ) -> Self {
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
-                deadline,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 host_ctx,
@@ -767,10 +764,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     pub fn stable_path(&self) -> &StablePath {
         self.inner.component.stable_path()
-    }
-
-    pub fn deadline(&self) -> DeadlineContext {
-        self.inner.deadline
     }
 
     /// Eagerly load every function-memo and user-state entry for this

@@ -20,7 +20,7 @@ from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
 from .deadline import (
     DeadlineExceededError,
     deadline_for_engine as _deadline_for_engine,
-    check_deadline,
+    check_cancellation,
     timeout,
 )
 from .update_stats import (
@@ -161,10 +161,10 @@ class ComponentMountHandle:
     async def ready(self) -> None:
         """Wait until all processing units are ready. Can be called multiple times."""
         # Fail fast before waiting behind another ready() caller.
-        check_deadline()
+        check_cancellation()
         async with self._lock:
             # The deadline may have expired while we were waiting for the lock.
-            check_deadline()
+            check_cancellation()
             while self._next_ready_index < len(self._cores):
                 # ready_async() consumes the Rust handle, so if a deadline fires
                 # after this await, the next ready() call must resume here.
@@ -172,7 +172,7 @@ class ComponentMountHandle:
                 self._next_ready_index += 1
                 # The child is ready; now check the caller's own timeout before
                 # it continues or waits on the next child.
-                check_deadline()
+                check_cancellation()
 
 
 @overload
@@ -256,7 +256,7 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
             coco.component_subpath("setup"), declare_table_target, table_name
         )
     """
-    check_deadline()
+    check_cancellation()
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         processor_fn = pos_args[1]
@@ -282,6 +282,9 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
 
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
+    # One explicit value travels through core: capture once, pass to both
+    # the processor (ContextVar restore in the wrapper) and the engine call.
+    deadline_snapshot = _deadline_for_engine()
 
     processor = create_core_component_processor(
         processor_fn,
@@ -289,14 +292,14 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
         child_path,
         args,
         kwargs,
-        deadline_snapshot=_deadline_for_engine(),
+        deadline_snapshot=deadline_snapshot,
     )
     core_handle = await core.use_mount_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
-        _deadline_for_engine(),
+        deadline_snapshot,
     )
     pyvalue = await core_handle.result_async(parent_ctx._core_processor_ctx)
     return pyvalue.get(fn_ret_deserializer(processor_fn))
@@ -371,7 +374,7 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # With explicit subpath:
         await coco.mount(coco.component_subpath("process", filename), process_file, file, target)
     """
-    check_deadline()
+    check_cancellation()
     check_not_in_process_live("coco.mount")
 
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
@@ -463,7 +466,7 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     Returns:
         A handle that can be used to wait until all processing units are ready.
     """
-    check_deadline()
+    check_cancellation()
     check_not_in_process_live("coco.mount_each")
 
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
@@ -569,17 +572,17 @@ async def map(
     Returns:
         Results from each invocation.
     """
-    check_deadline()
+    check_cancellation()
 
     async def _run_one(item: T) -> _MapTaskSuccess[ReturnT] | _MapTaskFailure:
         try:
             # A task may start after the caller's deadline moved forward while
             # earlier tasks were being scheduled.
-            check_deadline()
+            check_cancellation()
             result = await fn(item, *args, **kwargs)
             # Do not let a value returned after the deadline look successful to
             # the map caller.
-            check_deadline()
+            check_cancellation()
             return _MapTaskSuccess(result)
         except Exception as exc:
             return _MapTaskFailure(exc)
@@ -595,7 +598,7 @@ async def map(
         def _schedule_one(item: T) -> None:
             # Fail before enqueueing new work. Already-started tasks are still
             # drained by the TaskGroup below.
-            check_deadline()
+            check_cancellation()
             tasks.append(tg.create_task(_run_one(item)))
 
         try:
@@ -623,7 +626,7 @@ async def map(
         raise outcome.error
     # All started tasks completed successfully; check the caller's deadline
     # before returning their values.
-    check_deadline()
+    check_cancellation()
     return [cast(_MapTaskSuccess[ReturnT], outcome).value for outcome in results]
 
 
@@ -655,7 +658,7 @@ async def mount_target(
             target_db.table_target(table_name=TABLE_NAME, table_schema=schema)
         )
     """
-    check_deadline()
+    check_cancellation()
     subpath = ComponentSubpath(_MOUNT_TARGET_SYMBOL) / (
         *target_state._provider._core.stable_key_chain(),
         target_state._key,
@@ -902,7 +905,7 @@ __all__ = [
     "fn",
     "LogicTracking",
     "timeout",
-    "check_deadline",
+    "check_cancellation",
     "DeadlineExceededError",
     # .context_keys
     "ContextKey",

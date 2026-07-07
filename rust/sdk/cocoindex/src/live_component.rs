@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cocoindex_core::engine::component::OnError;
+use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::live_component::LiveComponentController;
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
 
@@ -216,7 +217,12 @@ impl LiveComponentOperator {
         let chain = self.handler_chain.clone();
         let processor = BoxedProcessor::new(
             move |comp_ctx| {
-                let ctx = Ctx::new_with_handlers(Some(comp_ctx), state.clone(), chain.clone());
+                let ctx = Ctx::new_with_handlers(
+                    Some(comp_ctx),
+                    state.clone(),
+                    chain.clone(),
+                    DeadlineContext::NONE,
+                );
                 let instance = instance.clone();
                 Box::pin(async move {
                     instance.process(ctx).await?;
@@ -248,7 +254,12 @@ impl LiveComponentOperator {
         let chain = self.handler_chain.clone();
         let processor = BoxedProcessor::new(
             move |comp_ctx| {
-                let ctx = Ctx::new_with_handlers(Some(comp_ctx), state.clone(), chain.clone());
+                let ctx = Ctx::new_with_handlers(
+                    Some(comp_ctx),
+                    state.clone(),
+                    chain.clone(),
+                    DeadlineContext::NONE,
+                );
                 Box::pin(async move {
                     f(ctx).await?;
                     Ok(Value::unit())

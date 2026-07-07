@@ -57,7 +57,7 @@ A timeout follows work the caller is directly waiting for. It does not follow ba
 | `await coco.map(fn, items)` | Item tasks inherit the timeout. Already-started items are allowed to finish. |
 | Batched function body | Does not inherit any one caller's timeout because a batch can contain work from multiple callers. |
 | Target writes and connector sink calls | Do not inherit the processor timeout. Once processing has succeeded, CocoIndex lets target synchronization finish consistently. |
-| Long loop inside a processor | Add `coco.check_deadline()` where you want the loop to stop promptly. |
+| Long loop inside a processor | Add `coco.check_cancellation()` where you want the loop to stop promptly. |
 
 ## Foreground child work
 
@@ -67,7 +67,7 @@ Use `use_mount()` when the parent depends on the child's value. The timeout appl
 @coco.fn
 async def parse_file(file: FileLike) -> ParsedDoc:
     text = await file.read_text()
-    coco.check_deadline()
+    coco.check_cancellation()
     return parse(text)
 
 
@@ -85,7 +85,7 @@ with coco.timeout(timedelta(seconds=30)):
     app.update_blocking()
 ```
 
-If the deadline passes while `parse_file()` is in `file.read_text()`, CocoIndex does not interrupt that await. The timeout is observed when control reaches the next CocoIndex check, such as `coco.check_deadline()` or the function return.
+If the deadline passes while `parse_file()` is in `file.read_text()`, CocoIndex does not interrupt that await. The timeout is observed when control reaches the next CocoIndex check, such as `coco.check_cancellation()` or the function return.
 
 ## Background child work
 
@@ -139,7 +139,7 @@ CocoIndex already checks common boundaries, but a long processor loop should add
 async def import_rows(rows: list[Row]) -> None:
     for row in rows:
         target.declare_row(row=transform(row))
-        coco.check_deadline()
+        coco.check_cancellation()
 ```
 
 This makes the loop stop near the deadline instead of waiting until the whole function returns.
@@ -155,7 +155,7 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> str:
     response = await client.get(url, timeout=10.0)
 
     # CocoIndex controls the orchestration around it.
-    coco.check_deadline()
+    coco.check_cancellation()
     return response.text
 ```
 
@@ -205,7 +205,7 @@ with coco.timeout(datetime.timedelta(seconds=30)):
 Sets a cooperative timeout for the current CocoIndex context.
 
 ```python
-coco.check_deadline()
+coco.check_cancellation()
 ```
 
 Raises `coco.DeadlineExceededError` if the current deadline has passed.

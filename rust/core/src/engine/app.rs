@@ -138,7 +138,6 @@ impl<Prof: EngineProfile> App<Prof> {
             options.live,
             preview_collector.clone(),
             host_ctx,
-            deadline,
             // Root has no installed on_error in Build mode — orphan-delete
             // failures from the root's GC sweep log + swallow. (Cascading
             // a raising on_error from root would equate "any orphan delete
@@ -157,7 +156,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 let run_fut = async {
                     root_component
                         .clone()
-                        .run(root_processor, context)
+                        .run(root_processor, context, deadline)
                         .await?
                         .result(None)
                         .await

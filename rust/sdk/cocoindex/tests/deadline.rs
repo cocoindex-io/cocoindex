@@ -144,8 +144,8 @@ async fn rust_sdk_deadline_conformance_subset() {
         assert_eq!(narrower.remaining_deadline(), Some(Duration::from_secs(1)));
 
         testing_advance_deadline_clock(Duration::from_secs(2));
-        assert_deadline(narrower.check_deadline().unwrap_err());
-        wider.check_deadline()?;
+        assert_deadline(narrower.check_cancellation().unwrap_err());
+        wider.check_cancellation()?;
         Ok(())
     })
     .await
@@ -253,7 +253,7 @@ async fn rust_sdk_deadline_conformance_subset() {
                                         );
                                         slow_released.notify_one();
                                         testing_advance_deadline_clock(Duration::from_secs(2));
-                                        check_ctx.check_deadline()?;
+                                        check_ctx.check_cancellation()?;
                                         Ok("deadline")
                                     }
                                     _ => unreachable!("test input is fixed"),
@@ -373,4 +373,68 @@ async fn rust_sdk_deadline_conformance_subset() {
         .unwrap_err();
     assert_deadline(err);
     assert_eq!(MEMO_CHILD_CALLS.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn mount_each_drains_started_siblings_on_deadline_error() {
+    // One child failing with DeadlineExceeded must not drop its started
+    // siblings: every started item runs to completion (including its
+    // commit), then the first error is returned. Child B only begins its
+    // work after A has already failed, so B's committed row below is only
+    // possible if mount_each drained instead of cancelling.
+    let _clock = TestClockGuard::new();
+    let (app, _dir) = temp_app("mount_each_drain").await;
+    let applied: Arc<Mutex<Vec<WriteAction>>> = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(Notify::new());
+
+    let applied_outer = applied.clone();
+    let result = app
+        .update(move |ctx| {
+            let applied = applied_outer.clone();
+            let gate = gate.clone();
+            async move {
+                let out = ctx
+                    .mount_each(
+                        ["a", "b"],
+                        |item| item.to_string(),
+                        move |child, item| {
+                            let applied = applied.clone();
+                            let gate = gate.clone();
+                            async move {
+                                if item == "a" {
+                                    gate.notify_one();
+                                    return Err(Error::DeadlineExceeded);
+                                }
+                                gate.notified().await; // begin only after A failed
+                                declare_memory_row(
+                                    &child,
+                                    "deadline/drain",
+                                    "b-done",
+                                    applied,
+                                    false,
+                                )?;
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await;
+                assert!(
+                    matches!(out, Err(ref e) if e.is_deadline_exceeded()),
+                    "mount_each must surface A's deadline error"
+                );
+                Ok(())
+            }
+        })
+        .await;
+    result.unwrap();
+
+    let rows = applied.lock().unwrap().clone();
+    assert_eq!(
+        rows,
+        vec![WriteAction {
+            key: "\"row-1\"".to_string(),
+            value: "b-done".to_string(),
+        }],
+        "B's started work must drain to commit before mount_each returns"
+    );
 }

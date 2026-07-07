@@ -41,7 +41,7 @@ from .component_ctx import (
 from .context_keys import resolve_awaitables_sync
 from .deadline import (
     DeadlineSnapshot,
-    check_deadline as _deadline_checkpoint,
+    check_cancellation as _deadline_checkpoint,
     restore as _restore_deadline,
 )
 from .memo_fingerprint import (

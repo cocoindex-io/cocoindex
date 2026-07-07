@@ -441,6 +441,9 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
 pub struct ComponentMountRunHandle<Prof: EngineProfile> {
     join_handle: tokio::task::JoinHandle<Result<ComponentBuildOutput<Prof>>>,
+    /// The caller's deadline at mount time, checked post-wait in `result()`
+    /// (caller-attributed: the child's committed success is preserved).
+    deadline: DeadlineContext,
 }
 
 impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
@@ -475,8 +478,12 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
                 Ok(())
             })?;
         }
-        if let Some(parent_context) = parent_context {
-            parent_context.deadline().check()?;
+        // Caller-attributed post-wait check: only when there IS a waiting
+        // parent (use_mount). The root update passes parent_context=None and
+        // its post-result observation point is AppOpHandle::result(), so the
+        // update task itself must not record the deadline as its own failure.
+        if parent_context.is_some() {
+            self.deadline.check()?;
         }
         Ok(output.ret)
     }
@@ -534,8 +541,9 @@ impl<Prof: EngineProfile> Component<Prof> {
     /// (`with coco.timeout(...)`) lives in the SDK's per-task carrier —
     /// concurrent tasks within one component can hold different narrowed
     /// scopes at the same moment, so the current value must travel with each
-    /// call. It becomes the child ctx's deadline, frozen at the child's
-    /// mount, same rule one level down.
+    /// call. It is threaded through the child's execution checkpoints and
+    /// captured by the returned handle for the post-wait check; it is never
+    /// stored on the ctx (the deadline only ever travels, never rests).
     pub async fn use_mount(
         self,
         parent_ctx: &ComponentProcessorContext<Prof>,
@@ -549,14 +557,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.live(), // use_mount inherits live from parent
             parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
-            deadline,
             // No build-mode on_error: use_mount is foreground; failures
             // propagate as `Err` to the awaiting parent via `.result()`.
             // Orphan-delete failures during this child's commit fall
             // through to the framework's default `error!` log.
             None,
         )?;
-        self.run(processor, child_ctx).await
+        self.run(processor, child_ctx, deadline).await
     }
 
     /// Mount and run a child in the background (mount path).
@@ -579,7 +586,6 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.live(), // mount inherits live from parent
             parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
-            DeadlineContext::NONE,
             on_error.clone(),
         )?;
         self.run_in_background(processor, child_ctx, on_error, pre_execute_check)
@@ -664,6 +670,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
+        deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         // Release parent's inflight permit (deadlock prevention).
         // On a component's first child mount, the parent gives up its slot
@@ -694,7 +701,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // work future is dropped, which cascades drop into from_py_future
                 // → CancelOnDropPy and cancels the underlying Python task.
                 let result = tokio::select! {
-                    r = self.execute_once(&context, Some(&processor)) => r,
+                    r = self.execute_once(&context, Some(&processor), deadline) => r,
                     _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
                 };
                 let (outcome, output) = match result {
@@ -711,7 +718,10 @@ impl<Prof: EngineProfile> Component<Prof> {
             }
             .instrument(span),
         );
-        Ok(ComponentMountRunHandle { join_handle })
+        Ok(ComponentMountRunHandle {
+            join_handle,
+            deadline,
+        })
     }
 
     pub(crate) async fn run_in_background(
@@ -761,7 +771,8 @@ impl<Prof: EngineProfile> Component<Prof> {
             // work future is dropped, which cascades drop into from_py_future
             // → CancelOnDropPy and cancels the underlying Python task.
             let result = tokio::select! {
-                r = self.execute_once(&context, Some(&processor)) => r,
+                // Background components are deadline-isolated by design.
+                r = self.execute_once(&context, Some(&processor), DeadlineContext::NONE) => r,
                 _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
             };
             // Background-style error handling:
@@ -835,7 +846,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                     }
                 }
                 trace!("deleting component at {}", self.stable_path());
-                let result = self.execute_once(&context, None).await;
+                // Delete/GC runs must never be deadline-bounded.
+                let result = self
+                    .execute_once(&context, None, DeadlineContext::NONE)
+                    .await;
                 // Same error model as `run_in_background`: cancellation
                 // filtered; with-handler delegates propagation to the
                 // handler's Result (Ok = swallow, Err = propagate);
@@ -878,6 +892,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self,
         processor_context: &ComponentProcessorContext<Prof>,
         processor: Option<&Prof::ComponentProc>,
+        deadline: DeadlineContext,
     ) -> Result<(ComponentRunOutcome, Option<ComponentBuildOutput<Prof>>)> {
         let mut reported_processor_name: Option<Cow<'_, str>> = None;
         let mut memo_fp_to_store: Option<Fingerprint> = None;
@@ -889,7 +904,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         if let Some(processor) = processor {
             let processor_name = processor.processor_info().name.as_str();
             memo_fp_to_store = processor.memo_key_fingerprint();
-            processor_context.deadline().check()?;
+            deadline.check()?;
 
             // Fast-path: component memoization check does not require acquiring the build permit.
             // If it hits, we can immediately return without processing/submitting/waiting.
@@ -995,7 +1010,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // spend time waiting for the build semaphore, existence upsert, or state
                     // prefetch before the user body starts, so check again at the actual
                     // processor-entry boundary.
-                    processor_context.deadline().check()?;
+                    deadline.check()?;
 
                     let ret: Result<Option<Prof::FunctionData>> = match &processor {
                         Some(processor) => processor
@@ -1027,7 +1042,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
 
                     let ret = ret?;
-                    processor_context.deadline().check()?;
+                    deadline.check()?;
                     let submit_output = submit(processor_context, processor, |name| {
                         if reported_processor_name.is_none() {
                             processing_stats.update(&name, |stats| {
@@ -1173,7 +1188,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
         host_ctx: Arc<Prof::HostCtx>,
-        deadline: DeadlineContext,
         on_error: Option<OnError>,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = parent_ctx {
@@ -1212,7 +1226,6 @@ impl<Prof: EngineProfile> Component<Prof> {
                 on_error,
                 preview_collector,
             ),
-            deadline,
         ))
     }
 
@@ -1233,7 +1246,6 @@ impl<Prof: EngineProfile> Component<Prof> {
                 providers,
                 on_error,
             }),
-            DeadlineContext::NONE,
         )
     }
 }

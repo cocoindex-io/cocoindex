@@ -199,8 +199,10 @@ pub struct Ctx {
     /// concurrent body receives its own scoped `Ctx`. `None` at the app root
     /// and in standalone use.
     pub(crate) fn_ctx: Option<Arc<FnCallContext>>,
-    /// Deadline carried by this SDK context. Component contexts supplied by the
-    /// Rust core set the initial value; `with_timeout` returns a narrowed clone.
+    /// Deadline carried by this SDK context. The `Ctx` is the SDK-side
+    /// carrier: constructors receive the initial value explicitly (core
+    /// component contexts do not store a deadline; core receives it as an
+    /// argument at each call). `with_timeout` returns a narrowed clone.
     pub(crate) deadline: DeadlineContext,
     /// Exception handlers in scope for background work mounted from this `Ctx`,
     /// ordered outermost→innermost. Empty at the root; extended by
@@ -213,10 +215,8 @@ impl Ctx {
     pub(crate) fn new(
         comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
         state: Arc<AppInner>,
+        deadline: DeadlineContext,
     ) -> Self {
-        let deadline = comp_ctx
-            .as_ref()
-            .map_or(DeadlineContext::NONE, |ctx| ctx.deadline());
         Self {
             comp_ctx,
             state,
@@ -230,10 +230,8 @@ impl Ctx {
         comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
         state: Arc<AppInner>,
         handler_chain: Arc<Vec<crate::live_component::ExceptionHandler>>,
+        deadline: DeadlineContext,
     ) -> Self {
-        let deadline = comp_ctx
-            .as_ref()
-            .map_or(DeadlineContext::NONE, |ctx| ctx.deadline());
         Self {
             comp_ctx,
             state,
@@ -244,9 +242,8 @@ impl Ctx {
     }
 
     fn child(&self, comp_ctx: Option<ComponentProcessorContext<RustProfile>>) -> Self {
-        let deadline = comp_ctx
-            .as_ref()
-            .map_or(self.deadline, |ctx| ctx.deadline());
+        // The SDK Ctx is the deadline carrier: derived views inherit it.
+        let deadline = self.deadline;
         Self {
             comp_ctx,
             state: self.state.clone(),
@@ -387,7 +384,7 @@ impl Ctx {
 
     /// Check the current deadline and return [`Error::DeadlineExceeded`] if it
     /// has expired.
-    pub fn check_deadline(&self) -> Result<()> {
+    pub fn check_cancellation(&self) -> Result<()> {
         self.deadline.check().map_err(Error::from)
     }
 
@@ -607,7 +604,7 @@ impl Ctx {
             comp_ctx: Some(derived.clone()),
             state: self.state.clone(),
             fn_ctx: self.fn_ctx.clone(),
-            deadline: derived.deadline(),
+            deadline: self.deadline,
             handler_chain: self.handler_chain.clone(),
         };
         let group_guard = StatsGroupEndGuard::new(derived);
@@ -911,9 +908,12 @@ impl Ctx {
         let state = self.state.clone();
         let scope_fn_ctx = fn_ctx.clone();
         let scope_handler_chain = self.handler_chain.clone();
+        // Foreground child inherits the caller's current scoped deadline —
+        // the same value passed to core use_mount below.
+        let child_deadline = self.deadline;
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
-                let deadline = child_comp_ctx.deadline();
+                let deadline = child_deadline;
                 let ctx = Ctx {
                     comp_ctx: Some(child_comp_ctx),
                     state: state.clone(),
@@ -1004,7 +1004,12 @@ impl Ctx {
             })
             .collect();
 
-        futures::future::try_join_all(futs).await
+        let outcomes = futures::future::join_all(futs).await;
+        let mut values = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            values.push(outcome?);
+        }
+        Ok(values)
     }
 
     /// Cached computation. If `key` hasn't changed since the last run,
@@ -1045,7 +1050,8 @@ impl Ctx {
     /// Run a closure concurrently for each item, creating a child scope per item.
     ///
     /// Each item gets its own `Ctx` child scope keyed by `key_fn(item)`.
-    /// All closures run concurrently via `try_join_all`.
+    /// All closures run concurrently; every started item runs to
+    /// completion, then the first error in input order is returned.
     ///
     /// # Examples
     ///
@@ -1103,7 +1109,12 @@ impl Ctx {
             })
             .collect();
 
-        futures::future::try_join_all(futs).await
+        let outcomes = futures::future::join_all(futs).await;
+        let mut values = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            values.push(outcome?);
+        }
+        Ok(values)
     }
 
     /// Run a closure concurrently for each item within the current scope (no child scopes).
@@ -1133,7 +1144,7 @@ impl Ctx {
         F: Fn(I::Item) -> Fut,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        self.check_deadline()?;
+        self.check_cancellation()?;
         let deadline = self.deadline;
         let futs: Vec<_> = items
             .into_iter()
@@ -1166,7 +1177,8 @@ where
 {
     BoxedProcessor::new(
         move |comp_ctx| {
-            let ctx = Ctx::new(Some(comp_ctx), state.clone());
+            // Live refresh components are deadline-isolated by design.
+            let ctx = Ctx::new(Some(comp_ctx), state.clone(), DeadlineContext::NONE);
             Box::pin(async move {
                 f(ctx).await?;
                 Ok(Value::unit())
@@ -1256,7 +1268,7 @@ mod tests {
             .update(|ctx| async move {
                 ctx.with_timeout_scope(Duration::from_secs(1), |ctx| async move {
                     testing_advance_deadline_clock(Duration::from_secs(2));
-                    ctx.check_deadline()
+                    ctx.check_cancellation()
                 })
                 .await
             })

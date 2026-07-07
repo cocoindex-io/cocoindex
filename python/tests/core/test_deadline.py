@@ -157,14 +157,14 @@ def test_timeout_nested_uses_min_and_restores_exactly(
     assert _deadline.remaining_seconds() is None
 
 
-def test_check_deadline_raises_only_after_deadline(fake_clock: _FakeClock) -> None:
+def test_check_cancellation_raises_only_after_deadline(fake_clock: _FakeClock) -> None:
     with coco.timeout(timedelta(seconds=10)):
         fake_clock.now = 10
-        coco.check_deadline()
+        coco.check_cancellation()
 
         fake_clock.now = 10.001
         with pytest.raises(coco.DeadlineExceededError):
-            coco.check_deadline()
+            coco.check_cancellation()
 
 
 def test_use_mount_child_processor_inherits_parent_deadline(
@@ -487,7 +487,7 @@ async def test_map_deadline_drains_started_siblings_without_cancelling(
 
         asyncio.create_task(release_sibling())
         fake_clock.now = 11
-        coco.check_deadline()
+        coco.check_cancellation()
         return label
 
     with coco.timeout(timedelta(seconds=10)):
@@ -511,7 +511,7 @@ async def test_map_mixed_failures_are_reported_by_input_order(
         if label == "runtime":
             raise RuntimeError("mapped boom")
         fake_clock.now = 11
-        coco.check_deadline()
+        coco.check_cancellation()
         return label
 
     with coco.timeout(timedelta(seconds=10)):
@@ -913,7 +913,7 @@ def test_deadline_after_declaring_target_states_applies_no_sink_actions(
         coco.declare_target_state(GlobalDictTarget.target_state("k", "v"))
         if should_timeout:
             fake_clock.now = 11
-            coco.check_deadline()
+            coco.check_cancellation()
 
     app = coco.App(coco.AppConfig(name="deadline_d9", environment=_env("d9")), main)
 
@@ -951,7 +951,7 @@ def test_deadline_exceptions_are_not_memoized(fake_clock: _FakeClock) -> None:
         calls += 1
         if should_timeout:
             fake_clock.now = 11
-            coco.check_deadline()
+            coco.check_cancellation()
         return "ok"
 
     @coco.fn
@@ -993,7 +993,7 @@ def test_deadline_exceptions_are_not_memoized(fake_clock: _FakeClock) -> None:
 def test_expired_deadline_boundary_matrix(fake_clock: _FakeClock) -> None:
     # Boundary matrix proof for an already-expired caller deadline:
     #
-    # inherited entry points:  check_deadline, coco.fn, map, use_mount,
+    # inherited entry points:  check_cancellation, coco.fn, map, use_mount,
     #                          mount entry, mount_each entry, mount_target,
     #                          next_id
     # isolated work bodies:    mounted children, mount_each children,
@@ -1013,7 +1013,7 @@ def test_expired_deadline_boundary_matrix(fake_clock: _FakeClock) -> None:
             /,
         ) -> None:
             vector["sink_body"] = (
-                "raise" if _raises_deadline(coco.check_deadline) else "no_raise"
+                "raise" if _raises_deadline(coco.check_cancellation) else "no_raise"
             )
 
         def reconcile(
@@ -1046,12 +1046,14 @@ def test_expired_deadline_boundary_matrix(fake_clock: _FakeClock) -> None:
 
     @coco.fn
     async def mounted(label: str) -> None:
-        vector[label] = "raise" if _raises_deadline(coco.check_deadline) else "no_raise"
+        vector[label] = (
+            "raise" if _raises_deadline(coco.check_cancellation) else "no_raise"
+        )
 
     @coco.fn.as_async(batching=True)
     def batched(items: list[int]) -> list[int]:
         vector["batched_body"] = (
-            "raise" if _raises_deadline(coco.check_deadline) else "no_raise"
+            "raise" if _raises_deadline(coco.check_cancellation) else "no_raise"
         )
         return items
 
@@ -1071,8 +1073,8 @@ def test_expired_deadline_boundary_matrix(fake_clock: _FakeClock) -> None:
 
         fake_clock.now = 11
 
-        vector["check_deadline"] = (
-            "raise" if _raises_deadline(coco.check_deadline) else "no_raise"
+        vector["check_cancellation"] = (
+            "raise" if _raises_deadline(coco.check_cancellation) else "no_raise"
         )
         vector["plain_coco_fn_call"] = (
             "raise" if await _raises_deadline_async(plain) else "no_raise"
@@ -1130,7 +1132,7 @@ def test_expired_deadline_boundary_matrix(fake_clock: _FakeClock) -> None:
         "mount_child": "no_raise",
         "mount_each_child": "no_raise",
         "batched_body": "no_raise",
-        "check_deadline": "raise",
+        "check_cancellation": "raise",
         "plain_coco_fn_call": "raise",
         "map_entry": "raise",
         "use_mount_entry": "raise",
@@ -1306,3 +1308,33 @@ async def test_retry_transient_never_retries_base_exceptions(
             backoff=lambda _n: 0.0,
         )
     assert len(calls) == 1
+
+
+def test_deadline_scopes_work_inside_batched_function_bodies(
+    fake_clock: _FakeClock,
+) -> None:
+    # Deadline APIs must work where no ComponentProcessorContext exists at
+    # all (e.g. inside a batched function body): a local coco.timeout scope
+    # applies and check_cancellation() is callable, while the CALLERS'
+    # deadlines stay isolated from the shared body.
+    observed: dict[str, float | None] = {}
+
+    @coco.fn.as_async(batching=True)
+    def batched(xs: list[int]) -> list[int]:
+        observed["ambient"] = _deadline.remaining_seconds()
+        with coco.timeout(timedelta(seconds=7)):
+            observed["scoped"] = _deadline.remaining_seconds()
+            coco.check_cancellation()  # the PUBLIC API works with no ctx around
+        return xs
+
+    @coco.fn
+    async def main() -> None:
+        with coco.timeout(timedelta(seconds=99)):
+            await batched(1)
+
+    env = _env("batched_body_scope")
+    app = coco.App(coco.AppConfig(name="deadline_batched_scope", environment=env), main)
+    app.update_blocking()
+
+    assert observed["ambient"] is None  # callers' deadlines never leak in
+    assert observed["scoped"] == pytest.approx(7.0)  # local scope works

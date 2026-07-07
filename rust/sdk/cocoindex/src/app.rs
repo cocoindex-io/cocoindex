@@ -509,9 +509,14 @@ impl App {
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
         let state = self.inner.clone();
+        // Root inherits the update options' timeout; the same value goes to
+        // core as AppUpdateOptions.deadline below.
+        let deadline = options.timeout.map_or(DeadlineContext::NONE, |timeout| {
+            DeadlineContext::NONE.with_timeout(timeout)
+        });
         let processor = BoxedProcessor::new(
             move |comp_ctx| {
-                let ctx = Ctx::new(Some(comp_ctx), state.clone());
+                let ctx = Ctx::new(Some(comp_ctx), state.clone(), deadline);
                 Box::pin(async move {
                     let ret = f(ctx).await?;
                     Value::from_serializable(&ret)
@@ -525,9 +530,7 @@ impl App {
         let core_options = AppUpdateOptions {
             full_reprocess: options.full_reprocess,
             live: options.live,
-            deadline: options.timeout.map_or(DeadlineContext::NONE, |timeout| {
-                DeadlineContext::NONE.with_timeout(timeout)
-            }),
+            deadline,
         };
 
         // In preview mode the engine collects target actions into this shared
