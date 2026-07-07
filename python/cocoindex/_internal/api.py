@@ -28,14 +28,13 @@ from .component_ctx import (
     ExceptionContext,
     ExceptionHandler,
     build_child_path,
-    get_component_selector,
     get_context_from_ctx,
     exception_handler,
     stats_group,
 )
 
 
-from .stable_path import StableKey, is_path_selected
+from .stable_path import StableKey
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -371,15 +370,12 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         processor_name=getattr(processor_fn, "__qualname__", None),
         mount_kind="mount",
     )
-    selector = get_component_selector()
-    skip = not is_path_selected(child_path, selector)
     core_handle = await core.mount_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
         resolved,
-        skip=skip,
     )
     return ComponentMountHandle([core_handle])
 
@@ -484,15 +480,12 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
             processor_name=getattr(fn, "__qualname__", None),
             mount_kind="mount_each",
         )
-        selector = get_component_selector()
-        skip = not is_path_selected(item_path, selector)
         core_handle = await core.mount_async(
             processor,
             item_path,
             parent_ctx._core_processor_ctx,
             parent_ctx._core_fn_call_ctx,
             resolved,
-            skip=skip,
         )
         core_handles.append(core_handle)
 

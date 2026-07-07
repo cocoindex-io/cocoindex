@@ -52,6 +52,12 @@ struct AppContextInner<Prof: EngineProfile> {
     live_components: parking_lot::Mutex<
         Vec<std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>>,
     >,
+
+    /// Optional component selector set per-update. When `Some`, only
+    /// components whose stable path matches one of the selector entries
+    /// should execute; unselected components are skipped (mount) and
+    /// their orphaned target states are preserved (GC sweep).
+    component_selector: parking_lot::Mutex<Option<Arc<[StablePath]>>>,
 }
 
 #[derive(Clone)]
@@ -79,6 +85,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
                 live_components: parking_lot::Mutex::new(Vec::new()),
+                component_selector: parking_lot::Mutex::new(None),
             }),
         }
     }
@@ -151,6 +158,19 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         if slot.is_cancelled() {
             *slot = crate::engine::runtime::global_cancellation_token().child_token();
         }
+    }
+
+    /// Set the component selector for the next update. Call before `App::update()`.
+    /// When `Some`, only matching components execute; unselected components are
+    /// skipped on mount and their orphaned target states are preserved during GC.
+    pub fn set_component_selector(&self, selector: Option<Vec<StablePath>>) {
+        *self.inner.component_selector.lock() = selector.map(|v| v.into());
+    }
+
+    /// Return a snapshot of the current component selector, or `None` when
+    /// everything should run.
+    pub fn component_selector(&self) -> Option<Arc<[StablePath]>> {
+        self.inner.component_selector.lock().clone()
     }
 
     /// Get the next ID for the given key.

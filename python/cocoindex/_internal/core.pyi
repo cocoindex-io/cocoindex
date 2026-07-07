@@ -265,6 +265,7 @@ class App:
     def __new__(
         cls, name: str, env: Environment, max_inflight_components: int | None = None
     ) -> App: ...
+    def set_component_selector(self, selector: list[StablePath] | None) -> None: ...
     def update(
         self,
         root_processor: ComponentProcessor[T_co],
@@ -370,8 +371,6 @@ async def mount_async(
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
     handler_callback: Any | None = None,
-    *,
-    skip: bool = False,
 ) -> ComponentMountHandle: ...
 async def use_mount_async(
     processor: ComponentProcessor[T_co],

@@ -345,3 +345,52 @@ async def test_unselected_input_changed_not_processed(
     # Unselected item NOT re-processed despite input change →
     # output still holds the OLD value, not "new_value_b".
     assert GlobalDictTarget.store.data["process/b"].data == "value_b"
+
+
+@pytest.mark.asyncio
+async def test_unselected_item_deleted_output_preserved(
+    request: pytest.FixtureRequest,
+) -> None:
+    """When a source item is deleted but the selector doesn't include
+    its component path, the output for that key is preserved (not cleaned up).
+
+    Sequence:
+    1. Run app.update() without selector → all items processed.
+    2. Delete item "b" from source.
+    3. Run app.update() with selector selecting only "a" → "a" is
+       processed; "b"'s output is preserved even though its source is gone.
+    """
+    GlobalDictTarget.store.clear()
+    env = _make_env(request.node.name)
+
+    items = {"a": "value_a", "b": "value_b"}
+
+    @coco.fn
+    async def app_main() -> None:
+        await coco.mount_each(
+            coco.component_subpath("process"),
+            process_item,
+            items.items(),
+        )
+
+    app = coco.App(
+        coco.AppConfig(name="test_unselected_deleted", environment=env),
+        app_main,
+    )
+
+    # Step 1: First run without selector.
+    await app.update()
+    assert GlobalDictTarget.store.data["process/a"].data == "value_a"
+    assert GlobalDictTarget.store.data["process/b"].data == "value_b"
+
+    # Step 2: Delete item "b" from source.
+    del items["b"]
+
+    # Step 3: Run with selector selecting only "process/a".
+    await app.update(component_selector=[_sel(coco.Symbol("process"), "a")])
+
+    # "a" should still be processed.
+    assert GlobalDictTarget.store.data["process/a"].data == "value_a"
+    # "b"'s output should be PRESERVED, not cleaned up.
+    assert "process/b" in GlobalDictTarget.store.data
+    assert GlobalDictTarget.store.data["process/b"].data == "value_b"

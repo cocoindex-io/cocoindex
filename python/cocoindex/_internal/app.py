@@ -321,6 +321,9 @@ class App(Generic[P, R]):
         async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
             env._component_selector = selector
+            # Set selector on the Rust side so the core engine can respect it
+            # during mounts and GC sweeps.
+            core_app.set_component_selector(list(selector) if selector else None)
             root_path = core.StablePath()
             processor = create_core_component_processor(
                 self._main_fn, env, root_path, self._app_args, self._app_kwargs
@@ -374,6 +377,9 @@ class App(Generic[P, R]):
 
         env, core_app = self._get_core_env_app_sync()
         env._component_selector = selector
+        # Set selector on the Rust side so the core engine can respect it
+        # during mounts and GC sweeps.
+        core_app.set_component_selector(list(selector) if selector else None)
         root_path = core.StablePath()
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
