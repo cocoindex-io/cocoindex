@@ -441,9 +441,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
 pub struct ComponentMountRunHandle<Prof: EngineProfile> {
     join_handle: tokio::task::JoinHandle<Result<ComponentBuildOutput<Prof>>>,
-    /// The caller's deadline at mount time, checked post-wait in `result()`
+    /// The waiting caller's deadline, checked post-wait in `result()`
     /// (caller-attributed: the child's committed success is preserved).
-    deadline: DeadlineContext,
+    /// Root runs store NONE here — the root's post-update observation
+    /// point is `AppOpHandle::result()`.
+    caller_deadline: DeadlineContext,
 }
 
 impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
@@ -478,13 +480,7 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
                 Ok(())
             })?;
         }
-        // Caller-attributed post-wait check: only when there IS a waiting
-        // parent (use_mount). The root update passes parent_context=None and
-        // its post-result observation point is AppOpHandle::result(), so the
-        // update task itself must not record the deadline as its own failure.
-        if parent_context.is_some() {
-            self.deadline.check()?;
-        }
+        self.caller_deadline.check()?;
         Ok(output.ret)
     }
 }
@@ -563,7 +559,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             // through to the framework's default `error!` log.
             None,
         )?;
-        self.run(processor, child_ctx, deadline).await
+        self.run(processor, child_ctx, deadline, deadline).await
     }
 
     /// Mount and run a child in the background (mount path).
@@ -666,11 +662,16 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
+    /// `deadline` governs this component's own execution checkpoints;
+    /// `caller_deadline` is stored in the returned handle for the post-wait
+    /// check. They coincide for use_mount; the root passes NONE as
+    /// `caller_deadline` since AppOpHandle owns the root's post-result check.
     pub(crate) async fn run(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
         deadline: DeadlineContext,
+        caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         // Release parent's inflight permit (deadlock prevention).
         // On a component's first child mount, the parent gives up its slot
@@ -720,7 +721,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         );
         Ok(ComponentMountRunHandle {
             join_handle,
-            deadline,
+            caller_deadline,
         })
     }
 

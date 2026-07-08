@@ -284,7 +284,7 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
     child_path = build_child_path(parent_ctx, subpath)
     # One explicit value travels through core: capture once, pass to both
     # the processor (ContextVar restore in the wrapper) and the engine call.
-    deadline_snapshot = _deadline_for_engine()
+    deadline_context = _deadline_for_engine()
 
     processor = create_core_component_processor(
         processor_fn,
@@ -292,14 +292,14 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
         child_path,
         args,
         kwargs,
-        deadline_snapshot=deadline_snapshot,
+        deadline_context=deadline_context,
     )
     core_handle = await core.use_mount_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
-        deadline_snapshot,
+        deadline_context,
     )
     pyvalue = await core_handle.result_async(parent_ctx._core_processor_ctx)
     return pyvalue.get(fn_ret_deserializer(processor_fn))

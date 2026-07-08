@@ -132,14 +132,15 @@ async def _retry_litellm_call(
     operation: _Callable[[], _Awaitable[_T]],
     operation_name: str,
 ) -> _T:
-    # Time is the brake here (no attempt cap): retry transient failures for
-    # up to the budget, with each in-flight attempt bounded to the tightest
-    # remaining wall. An ambient coco.timeout() can only stop retries sooner.
+    # Time is the brake here (no attempt cap): retry transient failures
+    # inside a 10-minute deadline scope, with each in-flight attempt
+    # bounded to the remaining time. An ambient coco.timeout() merges by
+    # min-nesting and can only stop retries sooner. Exhaustion raises
+    # DeadlineExceededError (one time concept: the deadline system).
     return await _deadline.retry_transient(
         operation,
         retry_on=_is_retryable_litellm_error,
-        max_attempts=None,
-        budget=_timedelta(seconds=_EMBEDDING_RETRY_TIMEOUT_SECONDS),
+        timeout=_timedelta(seconds=_EMBEDDING_RETRY_TIMEOUT_SECONDS),
         backoff=_deadline.exponential_backoff(
             initial=_EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS,
             multiplier=2.0,

@@ -295,7 +295,7 @@ class App(Generic[P, R]):
         Returns:
             An UpdateHandle that provides access to stats(), watch(), and result().
         """
-        deadline_snapshot = _deadline_for_engine()
+        deadline_context = _deadline_for_engine()
 
         async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
@@ -306,7 +306,7 @@ class App(Generic[P, R]):
                 root_path,
                 self._app_args,
                 self._app_kwargs,
-                deadline_snapshot=deadline_snapshot,
+                deadline_context=deadline_context,
             )
             return core_app.update_async(
                 processor,
@@ -314,7 +314,7 @@ class App(Generic[P, R]):
                 live=live,
                 preview=preview,
                 host_ctx=env._context_provider,
-                deadline=deadline_snapshot,
+                deadline=deadline_context,
             )
 
         return UpdateHandle(
@@ -349,14 +349,14 @@ class App(Generic[P, R]):
         """
         env, core_app = self._get_core_env_app_sync()
         root_path = core.StablePath()
-        deadline_snapshot = _deadline_for_engine()
+        deadline_context = _deadline_for_engine()
         processor = create_core_component_processor(
             self._main_fn,
             env,
             root_path,
             self._app_args,
             self._app_kwargs,
-            deadline_snapshot=deadline_snapshot,
+            deadline_context=deadline_context,
         )
         report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
         pyvalue: Any = core_app.update(
@@ -367,7 +367,7 @@ class App(Generic[P, R]):
             refresh_interval_secs=refresh_interval_secs,
             live=live,
             preview=preview,
-            deadline=deadline_snapshot,
+            deadline=deadline_context,
         )
         if preview:
             return pyvalue  # type: ignore[no-any-return]

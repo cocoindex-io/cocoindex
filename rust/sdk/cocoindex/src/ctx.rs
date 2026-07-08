@@ -1198,12 +1198,19 @@ mod tests {
         testing_reset_deadline_clock,
     };
 
-    struct TestClockGuard;
+    static TEST_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TestClockGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestClockGuard {
         fn new() -> Self {
+            let guard = TEST_CLOCK_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             testing_reset_deadline_clock();
-            Self
+            Self { _guard: guard }
         }
 
         fn reset(&self) {

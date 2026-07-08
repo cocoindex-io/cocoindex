@@ -2,7 +2,6 @@ use crate::prelude::*;
 
 use cocoindex_core::engine::{
     app::{App, AppOpHandle, AppUpdateOptions},
-    deadline::DeadlineContext,
     progress_display::{ProgressDisplayOptions, show_progress as rust_show_progress},
     runtime::get_runtime,
     stats::{ProcessingStats, VersionedProcessingStats},

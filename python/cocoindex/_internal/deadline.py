@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 from collections.abc import Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from datetime import timedelta
@@ -13,9 +14,11 @@ from . import core
 
 DeadlineExceededError = core.DeadlineExceededError
 
-DeadlineSnapshot = core.DeadlineContext
+DeadlineContext = (
+    core.DeadlineContext
+)  # re-export of the core type; one name everywhere
 
-_current_deadline: ContextVar[DeadlineSnapshot] = ContextVar(
+_current_deadline: ContextVar[DeadlineContext] = ContextVar(
     "coco_deadline", default=core.deadline_none()
 )
 
@@ -55,7 +58,7 @@ def check_cancellation() -> None:
     _current_deadline.get().check()
 
 
-def deadline_for_engine() -> DeadlineSnapshot:
+def deadline_for_engine() -> DeadlineContext:
     """The only sanctioned way to obtain the deadline for a core engine call.
 
     Engine entry points that perform a Rust-side deadline check take the
@@ -66,9 +69,9 @@ def deadline_for_engine() -> DeadlineSnapshot:
 
 
 @contextlib.contextmanager
-def restore(snapshot: DeadlineSnapshot) -> Iterator[None]:
-    """Temporarily restore a previously captured deadline snapshot."""
-    token = _current_deadline.set(snapshot)
+def restore(deadline: DeadlineContext) -> Iterator[None]:
+    """Temporarily restore a previously captured deadline context."""
+    token = _current_deadline.set(deadline)
     try:
         yield
     finally:
@@ -83,7 +86,7 @@ def without_deadline() -> Iterator[None]:
 
 
 def remaining_seconds() -> float | None:
-    """Return the remaining deadline budget, or None when no deadline is active."""
+    """Return the remaining deadline time, or None when no deadline is active."""
     return _current_deadline.get().remaining_secs()
 
 
@@ -96,9 +99,25 @@ def exponential_backoff(
     initial: float = 1.0,
     multiplier: float = 2.0,
     max_delay: float = 30.0,
+    jitter: float = 0.0,
 ) -> Callable[[int], float]:
-    """Return a backoff strategy: attempt index (0-based) to delay seconds."""
-    return lambda attempt: min(initial * multiplier**attempt, max_delay)
+    """Return a backoff strategy: attempt index (0-based) to delay seconds.
+
+    The returned strategy is STATEFUL (it advances its own delay on each
+    call, avoiding a power computation per attempt) — construct a fresh one
+    per retry operation. ``jitter`` scales each delay by a random factor in
+    ``[1 - jitter, 1 + jitter]``; the default of 0 keeps schedules exact.
+    """
+    delay = initial / multiplier
+
+    def next_delay(_attempt: int) -> float:
+        nonlocal delay
+        delay = min(delay * multiplier, max_delay)
+        if jitter:
+            return delay * random.uniform(1.0 - jitter, 1.0 + jitter)
+        return delay
+
+    return next_delay
 
 
 def _should_retry(retry_on: RetryOn, error: Exception) -> bool:
@@ -107,136 +126,113 @@ def _should_retry(retry_on: RetryOn, error: Exception) -> bool:
     return retry_on(error)
 
 
+# The module-level context manager, aliased so retry_transient's `timeout`
+# parameter doesn't shadow it.
+_timeout_scope = timeout
+
+
 async def retry_transient(
     fn: Callable[[], Awaitable[_RetryResultT]],
     *,
     retry_on: RetryOn,
-    max_attempts: int | None = 4,
-    budget: timedelta | None = None,
+    max_attempts: int | None = None,
+    timeout: timedelta | None = None,
     backoff: Callable[[int], float] | None = None,
     bound_attempt: bool = False,
     operation_name: str | None = None,
 ) -> _RetryResultT:
     """Retry ``fn`` on transient failures. The only retry loop in the tree.
 
-    Two kinds of wall, with different exhaustion semantics:
+    Exhaustion semantics:
 
-    - Policy walls (``max_attempts``, ``budget``): when exhausted, the last
-      transient error is re-raised. These belong to the call site.
-    - The ambient deadline (a ``coco.timeout(...)`` scope transferred from
-      the caller): raises ``DeadlineExceededError``. It fires only if the
-      user actually set one, and can only stop retries sooner.
+    - ``max_attempts`` (the only policy wall): when exhausted, the last
+      transient error is re-raised. Default ``None`` = no cap.
+    - Time limits are deadlines, and there is exactly one time concept:
+      ``timeout`` is sugar for running the loop inside a
+      ``coco.timeout(...)`` scope, merging with any ambient deadline by
+      min-nesting. Expiry raises ``DeadlineExceededError``.
 
-    No attempt starts past any wall, no result is accepted past the ambient
-    deadline (checked after each attempt completes), and backoff sleeps
-    never exceed the tightest remaining wall. ``bound_attempt=True``
-    additionally cancels an in-flight attempt at the remaining POLICY budget
-    via ``asyncio.wait_for`` (local policy over the caller's own coroutine).
-    The ambient deadline is deliberately never used to cancel an in-flight
-    attempt: CocoIndex timeouts are cooperative, so an attempt always runs
-    to completion and the deadline is enforced at the checkpoints around it.
+    Deadline enforcement is best-effort-or-better: no attempt starts past
+    the deadline, no result is accepted past it (checked after each attempt
+    completes), backoff sleeps never exceed the remaining time — and with
+    ``bound_attempt=True``, an in-flight attempt is additionally cancelled
+    at the effective deadline via ``asyncio.wait_for`` and surfaces as
+    ``DeadlineExceededError``.
+
+    With neither ``max_attempts`` nor a deadline, retries are unbounded;
+    this helper is internal and every call site sets at least one limit.
     Cancellation, ``KeyboardInterrupt``, and ``SystemExit`` always propagate
     untouched.
-
-    ``max_attempts=None`` means no attempt cap and requires ``budget``.
     """
-    if max_attempts is None and budget is None:
-        raise ValueError("retry_transient(max_attempts=None) requires a budget")
     if max_attempts is not None and max_attempts < 1:
         raise ValueError("retry_transient requires max_attempts >= 1")
-    if budget is not None and budget <= timedelta(0):
-        raise ValueError("retry_transient requires a positive budget")
+    if timeout is not None and timeout <= timedelta(0):
+        raise ValueError("retry_transient requires a positive timeout")
     if backoff is None:
         backoff = exponential_backoff()
 
-    budget_ctx = (
-        None
-        if budget is None
-        else core.deadline_none().with_timeout(budget.total_seconds())
-    )
-
-    def _budget_expired() -> bool:
-        if budget_ctx is None:
-            return False
-        return (budget_ctx.remaining_secs() or 0.0) <= 0.0
-
-    def _walls_remaining() -> float | None:
-        """Tightest remaining time across the budget and ambient deadline."""
-        remains = [
-            r
-            for r in (
-                remaining_seconds(),
-                budget_ctx.remaining_secs() if budget_ctx is not None else None,
-            )
-            if r is not None
-        ]
-        return min(remains) if remains else None
-
-    # Exception, not BaseException: doubles as a type-level guard — if the
-    # except clause below ever widens back to BaseException, this assignment
-    # becomes a mypy error.
-    last_error: Exception | None = None
-    attempt_index = 0
-    while True:
-        # Never start an attempt past a wall. The ambient deadline is the
-        # user's clock and wins the exception when both are expired. A
-        # remaining budget of exactly zero counts as expired, so a sleep
-        # clipped to the wall cannot spin at the boundary.
-        check_cancellation()
-        ambient_remaining = remaining_seconds()
-        if ambient_remaining is not None and ambient_remaining <= 0:
-            raise DeadlineExceededError("CocoIndex timeout deadline exceeded")
-        if last_error is not None and _budget_expired():
-            raise last_error
-
-        try:
-            if bound_attempt and budget_ctx is not None:
-                # Bound only by the policy budget, never the ambient
-                # deadline: hard-cancelling at the user's deadline would
-                # break the cooperative contract and surface TimeoutError
-                # instead of DeadlineExceededError.
-                bound = budget_ctx.remaining_secs()
-                result = (
-                    await asyncio.wait_for(fn(), timeout=bound)
-                    if bound is not None
-                    else await fn()
-                )
-            else:
-                result = await fn()
-        except Exception as error:
-            # Deliberately Exception, not BaseException: cancellation,
-            # KeyboardInterrupt, and SystemExit always propagate untouched,
-            # regardless of how broad the retry_on classification is.
-            if not _should_retry(retry_on, error):
-                raise
-            last_error = error
-        else:
-            # The helper is itself a cooperative checkpoint: a result that
-            # completed past the ambient deadline raises instead of
-            # returning, same as the coco.fn post-return checkpoint. The
-            # attempt was never cancelled; its completion is simply not
-            # accepted past the user's clock. Raising in `else` keeps the
-            # checkpoint out of retry classification.
+    scope = _timeout_scope(timeout) if timeout is not None else contextlib.nullcontext()
+    with scope:
+        # Exception, not BaseException: doubles as a type-level guard — if
+        # the except clause below ever widens back to BaseException, this
+        # assignment becomes a mypy error.
+        last_error: Exception | None = None
+        attempt_index = 0
+        while True:
+            # Never start an attempt past the deadline. A remaining time of
+            # exactly zero counts as expired, so a sleep clipped to the
+            # deadline cannot spin at the boundary.
             check_cancellation()
-            return result
+            remaining = remaining_seconds()
+            if remaining is not None and remaining <= 0:
+                raise DeadlineExceededError("CocoIndex timeout deadline exceeded")
 
-        attempt_index += 1
-        if max_attempts is not None and attempt_index >= max_attempts:
-            raise last_error
-        if _budget_expired():
-            raise last_error
+            try:
+                if bound_attempt and remaining is not None:
+                    try:
+                        result = await asyncio.wait_for(fn(), timeout=remaining)
+                    except TimeoutError as timeout_error:
+                        # Translate only a wait_for cancellation at the
+                        # deadline; a TimeoutError raised by fn itself
+                        # before the deadline re-raises as-is.
+                        remaining_now = remaining_seconds()
+                        if remaining_now is not None and remaining_now <= 0:
+                            raise DeadlineExceededError(
+                                "CocoIndex timeout deadline exceeded"
+                            ) from timeout_error
+                        raise
+                else:
+                    result = await fn()
+            except Exception as error:
+                # Deliberately Exception, not BaseException: cancellation,
+                # KeyboardInterrupt, and SystemExit always propagate
+                # untouched, regardless of how broad retry_on is.
+                if not _should_retry(retry_on, error):
+                    raise
+                last_error = error
+            else:
+                # The helper is itself a checkpoint: a result completing
+                # past the deadline raises instead of returning, same as
+                # the coco.fn post-return checkpoint. Raising in `else`
+                # keeps the checkpoint out of retry classification.
+                check_cancellation()
+                return result
 
-        delay = backoff(attempt_index - 1)
-        wall = _walls_remaining()
-        sleep_for = max(0.0, delay if wall is None else min(delay, wall))
-        if operation_name is not None:
-            _logger.warning(
-                "%s failed with transient error on attempt %d; retrying in %.1fs: %s",
-                operation_name,
-                attempt_index,
-                sleep_for,
-                last_error,
-            )
-        # Late attribute lookup so test fixtures that patch asyncio.sleep
-        # (to record sleeps and drive the virtual clock) take effect.
-        await asyncio.sleep(sleep_for)
+            attempt_index += 1
+            if max_attempts is not None and attempt_index >= max_attempts:
+                raise last_error
+
+            delay = backoff(attempt_index - 1)
+            remaining = remaining_seconds()
+            sleep_for = max(0.0, delay if remaining is None else min(delay, remaining))
+            if operation_name is not None:
+                _logger.warning(
+                    "%s failed with transient error on attempt %d; retrying in %.1fs: %s",
+                    operation_name,
+                    attempt_index,
+                    sleep_for,
+                    last_error,
+                )
+            # Late attribute lookup so test fixtures that patch asyncio.sleep
+            # (to record sleeps and drive the virtual clock) take effect.
+            await asyncio.sleep(sleep_for)

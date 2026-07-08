@@ -51,13 +51,13 @@ async def test_retry_litellm_call_delegates_with_historical_policy(
     result = await module._retry_litellm_call(op, "embedding call")
     assert result == "result"
 
-    # Time is the brake (no attempt cap), 10-minute budget, bounded attempts,
-    # the transient-classification predicate, and the historical backoff
-    # schedule (1s doubling, capped at 30s).
-    assert captured["max_attempts"] is None
-    assert captured["budget"] == timedelta(seconds=600)
+    # Time is the brake (no attempt cap), a 10-minute deadline scope,
+    # bounded attempts, the transient-classification predicate, and the
+    # historical backoff schedule (1s doubling, capped at 30s).
+    assert "max_attempts" not in captured  # default None: no attempt cap
+    assert captured["timeout"] == timedelta(seconds=600)
     assert captured["bound_attempt"] is True
     assert captured["retry_on"] is module._is_retryable_litellm_error
     assert captured["operation_name"] == "embedding call"
-    backoff = captured["backoff"]
-    assert [backoff(n) for n in (0, 1, 2, 5, 10)] == [1.0, 2.0, 4.0, 30.0, 30.0]
+    backoff = captured["backoff"]  # stateful: successive calls advance it
+    assert [backoff(n) for n in range(7)] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]

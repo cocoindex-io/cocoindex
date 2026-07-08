@@ -7,7 +7,7 @@ description: >
 ---
 Use `coco.timeout()` when a piece of CocoIndex work should stop after a time budget.
 
-The timeout is **cooperative**: CocoIndex checks the time at safe points and raises `coco.DeadlineExceededError` when the deadline has passed. It does not forcibly cancel Python code that is already inside an `await`, such as an HTTP request or database query. Use that library's own timeout for individual I/O calls.
+The timeout is **cooperative**: CocoIndex checks the time at safe points and raises `coco.DeadlineExceededError` when the deadline has passed. Enforcement is best-effort beyond that — CocoIndex may additionally cancel an in-flight `await` where that is known to be safe (the built-in retry helpers do), but your own code inside an `await`, such as an HTTP request or database query, is generally not interrupted. Use that library's own timeout for individual I/O calls.
 
 ## Quick start
 
@@ -190,10 +190,10 @@ Because components commit independently and the engine rolls forward, a whole-up
 
 Retry helpers distinguish two kinds of limit:
 
-- **Policy limits owned by the call site** — attempt caps and retry budgets. Exhausting them re-raises the last transient error, so your normal error handling still applies.
-- **The ambient `coco.timeout(...)` deadline** — raises `coco.DeadlineExceededError`, and can only stop retries sooner, never extend them. It fires only if you actually set a timeout.
+- **Attempt caps owned by the call site** — exhausting one re-raises the last transient error, so your normal error handling still applies.
+- **Deadlines** — the one time concept. A retry operation's own time limit is just a nested `coco.timeout(...)` scope, so it merges with any ambient deadline (the shorter wins) and exhaustion raises `coco.DeadlineExceededError`.
 
-Adding a timeout therefore never increases retry effort, and removing one never decreases it. No retry attempt starts past any limit, and backoff sleeps never exceed the tightest remaining budget. Built-in operations (`LlmPairResolver`, LiteLLM embedding retries) share one helper with these semantics.
+Adding a timeout therefore never increases retry effort, and removing one never decreases it. No retry attempt starts past any limit, no result is accepted past the deadline, and backoff sleeps never exceed the remaining time. Built-in operations (`LlmPairResolver`, LiteLLM embedding retries) share one helper with these semantics.
 
 ## API
 

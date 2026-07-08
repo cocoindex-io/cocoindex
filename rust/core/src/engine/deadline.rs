@@ -1,13 +1,14 @@
 //! Cooperative deadline state shared by all SDKs.
 //!
 //! [`DeadlineContext`] is intentionally just an immutable, copyable handle:
-//! an absolute monotonic-clock timestamp in nanoseconds, or [`DeadlineContext::NONE`].
-//! Lexical scoping belongs in SDK carriers (`ContextVar`, task-local context,
-//! `AsyncLocalStorage`, etc.); the core only receives and checks the 8-byte
-//! value at engine checkpoints.
+//! an absolute monotonic [`Instant`], or [`DeadlineContext::NONE`]. Lexical
+//! scoping belongs in SDK carriers (`ContextVar`, task-local context,
+//! `AsyncLocalStorage`, etc.); the core only receives and checks the value
+//! at engine checkpoints — it is never stored on engine contexts.
 //!
-//! Tests use a process-global clock offset. Conformance tests that advance this
-//! clock must run sequentially because every SDK handle observes the same clock.
+//! Tests use a process-global virtual clock. Conformance tests that advance
+//! this clock must run sequentially because every handle observes the same
+//! clock.
 
 use std::sync::{
     OnceLock,
@@ -17,84 +18,91 @@ use std::time::{Duration, Instant};
 
 use crate::prelude::*;
 
-const NO_DEADLINE_NS: u64 = u64::MAX;
-const MAX_DEADLINE_NS: u64 = u64::MAX - 1;
-
 static MONOTONIC_ANCHOR: OnceLock<Instant> = OnceLock::new();
 static TEST_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
 static TEST_CLOCK_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Immutable deadline handle carried through engine contexts.
+/// Immutable deadline handle carried through engine calls.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct DeadlineContext(u64);
-
-const _: () = assert!(std::mem::size_of::<DeadlineContext>() == 8);
+pub struct DeadlineContext(Option<Instant>);
 
 impl DeadlineContext {
     /// No active deadline.
-    pub const NONE: Self = Self(NO_DEADLINE_NS);
+    pub const NONE: Self = Self(None);
 
     pub const fn has_deadline(self) -> bool {
-        self.0 != NO_DEADLINE_NS
+        self.0.is_some()
     }
 
     /// Return a context with `timeout` applied, preserving the earlier
     /// existing deadline when nested.
     pub fn with_timeout(self, timeout: Duration) -> Self {
-        let timeout_ns = duration_to_ns(timeout);
-        let deadline = monotonic_ns()
-            .saturating_add(timeout_ns)
-            .min(MAX_DEADLINE_NS);
-        Self(self.0.min(deadline))
+        let now = now_instant();
+        let deadline = checked_add_saturating(now, timeout);
+        Self(Some(match self.0 {
+            Some(existing) => existing.min(deadline),
+            None => deadline,
+        }))
     }
 
     /// Raise a structured deadline error if this context has expired.
     pub fn check(self) -> Result<()> {
-        if !self.has_deadline() {
-            return Ok(());
-        }
-        if monotonic_ns() > self.0 {
+        if self.is_expired() {
             return Err(Error::deadline_exceeded());
         }
         Ok(())
     }
 
     pub fn remaining(self) -> Option<Duration> {
-        if !self.has_deadline() {
-            return None;
-        }
-        let now = monotonic_ns();
-        let remaining_ns = self.0.saturating_sub(now);
-        Some(Duration::from_nanos(remaining_ns))
+        self.0
+            .map(|deadline| deadline.saturating_duration_since(now_instant()))
     }
 
     pub fn is_expired(self) -> bool {
-        self.has_deadline() && monotonic_ns() > self.0
+        matches!(self.0, Some(deadline) if now_instant() > deadline)
     }
 }
 
-fn duration_to_ns(duration: Duration) -> u64 {
-    duration.as_nanos().min(MAX_DEADLINE_NS as u128) as u64
-}
-
-fn monotonic_ns() -> u64 {
+fn now_instant() -> Instant {
+    let anchor = *MONOTONIC_ANCHOR.get_or_init(Instant::now);
     if TEST_CLOCK_ENABLED.load(Ordering::Relaxed) {
-        return TEST_OFFSET_NS.load(Ordering::Relaxed).min(MAX_DEADLINE_NS);
+        // Fully virtual in test mode: the anchor plus the test offset, with
+        // no real-clock component, so conformance tests are deterministic.
+        return checked_add_saturating(
+            anchor,
+            Duration::from_nanos(TEST_OFFSET_NS.load(Ordering::Relaxed)),
+        );
     }
-    let elapsed = MONOTONIC_ANCHOR
-        .get_or_init(Instant::now)
-        .elapsed()
-        .as_nanos()
-        .min(MAX_DEADLINE_NS as u128) as u64;
-    elapsed
-        .saturating_add(TEST_OFFSET_NS.load(Ordering::Relaxed))
-        .min(MAX_DEADLINE_NS)
+    Instant::now()
+}
+
+fn checked_add_saturating(anchor: Instant, duration: Duration) -> Instant {
+    if let Some(deadline) = anchor.checked_add(duration) {
+        return deadline;
+    }
+
+    // `Instant` has platform-dependent range. If the requested duration
+    // overflows it, keep halving until we find the farthest representable
+    // future instant for this platform instead of panicking.
+    let mut fallback = duration;
+    loop {
+        fallback = Duration::new(fallback.as_secs() / 2, fallback.subsec_nanos() / 2);
+        if fallback.is_zero() {
+            return anchor;
+        }
+        if let Some(deadline) = anchor.checked_add(fallback) {
+            return deadline;
+        }
+    }
 }
 
 /// Enable the deterministic test clock and reset it to zero.
 pub fn testing_reset_deadline_clock() {
+    // Initialize the anchor before enabling, so virtual time never observes
+    // an anchor newer than a previously computed deadline.
+    MONOTONIC_ANCHOR.get_or_init(Instant::now);
     TEST_OFFSET_NS.store(0, Ordering::Relaxed);
     TEST_CLOCK_ENABLED.store(true, Ordering::Relaxed);
 }
@@ -107,10 +115,10 @@ pub fn testing_disable_deadline_clock() {
 
 /// Advance the deterministic test clock.
 pub fn testing_advance_deadline_clock(duration: Duration) {
-    let delta_ns = duration_to_ns(duration);
+    let delta_ns = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
     let mut current = TEST_OFFSET_NS.load(Ordering::Relaxed);
     loop {
-        let next = current.saturating_add(delta_ns).min(MAX_DEADLINE_NS);
+        let next = current.saturating_add(delta_ns);
         match TEST_OFFSET_NS.compare_exchange_weak(
             current,
             next,
@@ -189,10 +197,20 @@ mod tests {
     }
 
     #[test]
-    fn duration_max_cannot_create_none_sentinel() {
+    fn duration_max_saturates_to_far_future() {
         let _clock = TestClockGuard::new();
         let deadline = DeadlineContext::NONE.with_timeout(Duration::MAX);
         assert!(deadline.has_deadline());
-        assert_eq!(deadline.0, MAX_DEADLINE_NS);
+        assert!(!deadline.is_expired());
+        deadline.check().unwrap();
+    }
+
+    #[test]
+    fn huge_virtual_clock_offset_does_not_panic() {
+        let _clock = TestClockGuard::new();
+        testing_advance_deadline_clock(Duration::from_nanos(u64::MAX));
+
+        let deadline = DeadlineContext::NONE.with_timeout(Duration::MAX);
+        assert!(deadline.has_deadline());
     }
 }

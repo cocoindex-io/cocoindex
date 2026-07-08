@@ -156,7 +156,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 let run_fut = async {
                     root_component
                         .clone()
-                        .run(root_processor, context, deadline)
+                        .run(root_processor, context, deadline, DeadlineContext::NONE)
                         .await?
                         .result(None)
                         .await

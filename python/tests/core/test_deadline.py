@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import random
 from collections.abc import Callable, Collection
 from datetime import timedelta
 from typing import Any, Iterator
@@ -251,7 +252,7 @@ def test_app_drop_cleanup_ignores_expired_ambient_deadline(
 
 
 @pytest.mark.asyncio
-async def test_lazy_update_handle_uses_captured_deadline_snapshot(
+async def test_lazy_update_handle_uses_captured_deadline_context(
     fake_clock: _FakeClock,
 ) -> None:
     seen: list[tuple[str, float | None]] = []
@@ -771,39 +772,61 @@ async def test_retry_transient_cap_exhaustion_reraises_last_error(
 
 
 @pytest.mark.asyncio
-async def test_retry_transient_budget_exhaustion_reraises_last_error(
+async def test_retry_transient_default_has_no_attempt_cap(
     fake_clock: _FakeClock,
 ) -> None:
-    # The budget is a policy wall: exhausting it re-raises the transient
-    # error, NOT a deadline/timeout error — the caller never set a deadline.
+    calls = 0
+
+    async def succeeds_after_old_default_cap() -> str:
+        nonlocal calls
+        calls += 1
+        if calls <= 5:
+            raise _Boom("transient")
+        return "ok"
+
+    result = await _deadline.retry_transient(
+        succeeds_after_old_default_cap,
+        retry_on=(_Boom,),
+        backoff=lambda _n: 0.0,
+    )
+    assert result == "ok"
+    assert calls == 6
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_timeout_exhaustion_raises_deadline_exceeded(
+    fake_clock: _FakeClock,
+) -> None:
+    # There is one time concept: `timeout=` enters a coco.timeout scope
+    # around the loop, so exhausting it raises DeadlineExceededError — the
+    # same exception the same duration would produce as an ambient scope.
     attempts: list[float] = []
-    with pytest.raises(_Boom):
+    with pytest.raises(coco.DeadlineExceededError):
         await _deadline.retry_transient(
             lambda: _always_boom_recording(attempts, fake_clock),
             retry_on=(_Boom,),
-            max_attempts=None,
-            budget=timedelta(seconds=5),
+            timeout=timedelta(seconds=5),
             backoff=lambda _n: 2.0,
         )
     assert attempts == [0, 2, 4]
 
 
 @pytest.mark.asyncio
-async def test_retry_transient_ambient_deadline_beats_budget(
+async def test_retry_transient_timeout_min_nests_with_ambient_deadline(
     fake_clock: _FakeClock,
 ) -> None:
-    # When the user's clock and the policy budget are both expired, the
-    # user's clock wins the exception.
+    # `timeout=` merges with an ambient deadline by min-nesting: the
+    # narrower of the two governs, and it never leaks past the call.
     attempts: list[float] = []
     with coco.timeout(timedelta(seconds=4)):
         with pytest.raises(coco.DeadlineExceededError):
             await _deadline.retry_transient(
                 lambda: _always_boom_recording(attempts, fake_clock),
                 retry_on=(_Boom,),
-                max_attempts=None,
-                budget=timedelta(seconds=4),
+                timeout=timedelta(seconds=10),
                 backoff=lambda _n: 2.0,
             )
+        assert _deadline.remaining_seconds() == pytest.approx(0.0)
     assert attempts == [0, 2]
 
 
@@ -875,25 +898,50 @@ def test_retry_transient_validates_walls() -> None:
 
     loop = asyncio.new_event_loop()
     try:
-        with pytest.raises(ValueError, match="requires a budget"):
-            loop.run_until_complete(
-                _deadline.retry_transient(noop, retry_on=(_Boom,), max_attempts=None)
-            )
         with pytest.raises(ValueError, match="max_attempts >= 1"):
             loop.run_until_complete(
                 _deadline.retry_transient(noop, retry_on=(_Boom,), max_attempts=0)
             )
-        with pytest.raises(ValueError, match="positive budget"):
+        with pytest.raises(ValueError, match="positive timeout"):
             loop.run_until_complete(
                 _deadline.retry_transient(
                     noop,
                     retry_on=(_Boom,),
-                    max_attempts=None,
-                    budget=timedelta(0),
+                    timeout=timedelta(0),
                 )
             )
     finally:
         loop.close()
+
+
+def test_exponential_backoff_default_is_exact_and_stateful() -> None:
+    # jitter defaults to 0: schedules are exact and reproducible. The
+    # strategy is stateful (each call advances the delay), so a fresh one
+    # starts over from `initial`.
+    backoff = _deadline.exponential_backoff(initial=1.0, multiplier=2.0, max_delay=30.0)
+    assert [backoff(0) for _ in range(7)] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+    fresh = _deadline.exponential_backoff(initial=1.0, multiplier=2.0, max_delay=30.0)
+    assert fresh(0) == 1.0
+
+
+def test_exponential_backoff_jitter_scales_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With jitter=j, each delay is scaled by random.uniform(1-j, 1+j).
+    # Pin the RNG to make the assertion deterministic.
+    seen_bounds: list[tuple[float, float]] = []
+
+    def fake_uniform(low: float, high: float) -> float:
+        seen_bounds.append((low, high))
+        return high  # always the worst case
+
+    monkeypatch.setattr(random, "uniform", fake_uniform)
+
+    backoff = _deadline.exponential_backoff(
+        initial=1.0, multiplier=2.0, max_delay=30.0, jitter=0.5
+    )
+    assert [backoff(0) for _ in range(3)] == [1.5, 3.0, 6.0]
+    assert seen_bounds == [(0.5, 1.5)] * 3
 
 
 def test_deadline_after_declaring_target_states_applies_no_sink_actions(
@@ -1217,12 +1265,12 @@ def test_directory_map_children_inherit_distinct_narrowed_deadlines(
 
 
 @pytest.mark.asyncio
-async def test_retry_transient_bound_attempt_uses_tightest_wall(
+async def test_retry_transient_bound_attempt_uses_effective_deadline(
     fake_clock: _FakeClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # bound_attempt=True bounds each in-flight attempt with the remaining
-    # POLICY budget only. The ambient deadline must never cancel an
-    # in-flight attempt: CocoIndex timeouts are cooperative.
+    # EFFECTIVE deadline (ambient and `timeout=` min-nested), and applies
+    # no bound at all when no deadline is active.
     recorded: list[float] = []
 
     async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
@@ -1234,57 +1282,89 @@ async def test_retry_transient_bound_attempt_uses_tightest_wall(
     async def ok() -> str:
         return "ok"
 
-    # Even with a narrower ambient deadline, the wait_for bound is the
-    # policy budget, not min(ambient, budget).
+    # Narrower ambient deadline governs the bound, not the wider timeout=.
     with coco.timeout(timedelta(seconds=3)):
         result = await _deadline.retry_transient(
             ok,
             retry_on=(_Boom,),
-            max_attempts=None,
-            budget=timedelta(seconds=10),
+            timeout=timedelta(seconds=10),
             bound_attempt=True,
         )
     assert result == "ok"
-    assert recorded == [pytest.approx(10.0)]
+    assert recorded == [pytest.approx(3.0)]
 
+    # timeout= alone supplies the deadline (and so the bound).
     recorded.clear()
     result = await _deadline.retry_transient(
         ok,
         retry_on=(_Boom,),
-        max_attempts=None,
-        budget=timedelta(seconds=10),
+        timeout=timedelta(seconds=10),
         bound_attempt=True,
     )
     assert result == "ok"
     assert recorded == [pytest.approx(10.0)]
 
+    # No deadline anywhere: nothing to bound, wait_for is never used.
+    recorded.clear()
+    result = await _deadline.retry_transient(
+        ok,
+        retry_on=(_Boom,),
+        max_attempts=1,
+        bound_attempt=True,
+    )
+    assert result == "ok"
+    assert recorded == []
+
 
 @pytest.mark.asyncio
-async def test_retry_transient_ambient_deadline_never_cancels_in_flight_attempt(
+async def test_retry_transient_bound_attempt_cancels_at_deadline_and_translates(
     fake_clock: _FakeClock,
 ) -> None:
-    # Regression for the cooperative contract: an ambient deadline expiring
-    # mid-attempt must not hard-cancel the await (no builtins.TimeoutError).
-    # The attempt runs to completion, and the helper's own post-attempt
-    # checkpoint then raises DeadlineExceededError: no result is accepted
-    # past the user's clock, and no cancellation ever happened.
-    completed: list[str] = []
+    # Enforcement is best-effort-or-better: with bound_attempt=True, an
+    # attempt still in flight at the deadline is cancelled by wait_for and
+    # the failure surfaces as DeadlineExceededError, never a bare
+    # TimeoutError. Uses a tiny real-time deadline because wait_for runs on
+    # the loop's real clock; the virtual clock is advanced in the attempt so
+    # the deadline is genuinely expired when the cancellation fires.
+    state = {"cancelled": False}
 
-    async def expires_ambient_then_succeeds() -> str:
-        fake_clock.now += 5.0  # burn past the ambient deadline mid-attempt
-        completed.append("attempt ran to completion")
-        return "ok"
+    async def hangs_past_deadline() -> str:
+        fake_clock.now += 10.0  # deadline expires while the attempt hangs
+        try:
+            await asyncio.Event().wait()  # blocks forever without wait_for
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+        return "never"
 
-    with coco.timeout(timedelta(seconds=3)):
+    with coco.timeout(timedelta(milliseconds=50)):
         with pytest.raises(coco.DeadlineExceededError):
             await _deadline.retry_transient(
-                expires_ambient_then_succeeds,
+                hangs_past_deadline,
                 retry_on=(_Boom,),
-                max_attempts=None,
-                budget=timedelta(seconds=10),
                 bound_attempt=True,
             )
-    assert completed == ["attempt ran to completion"]  # not cancelled
+    assert state["cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_retry_transient_fn_timeout_error_before_deadline_not_translated(
+    fake_clock: _FakeClock,
+) -> None:
+    # A TimeoutError raised by fn itself before the deadline is an ordinary
+    # error: classified by retry_on and re-raised as-is, never rewritten to
+    # DeadlineExceededError.
+    async def raises_timeout() -> str:
+        raise TimeoutError("from fn, not from wait_for")
+
+    with coco.timeout(timedelta(seconds=60)):
+        with pytest.raises(TimeoutError, match="from fn") as excinfo:
+            await _deadline.retry_transient(
+                raises_timeout,
+                retry_on=(_Boom,),
+                bound_attempt=True,
+            )
+    assert not isinstance(excinfo.value, coco.DeadlineExceededError)
 
 
 @pytest.mark.asyncio
