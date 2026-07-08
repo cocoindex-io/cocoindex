@@ -51,9 +51,9 @@ A timeout follows work the caller is directly waiting for. It does not follow ba
 | Code shape | What happens |
 | --- | --- |
 | `with coco.timeout(...): app.update()` | The root processor inherits the timeout (see [Time-boxing a whole update](#time-boxing-a-whole-update-programmatic-callers)). |
-| Direct `@coco.fn` call | Inherits the current timeout and checks it at function entry and return. |
+| Direct `@coco.fn` call | Inherits the current timeout. |
 | `await coco.use_mount(child, ...)` | The child inherits the timeout because the parent needs the child's result. |
-| `await coco.mount(child, ...)` / `await coco.mount_each(...)` | The child does not inherit the parent's timeout. The caller still checks its own timeout before mounting and after `handle.ready()`. |
+| `await coco.mount(child, ...)` / `await coco.mount_each(...)` | The child does not inherit the parent's timeout. The caller's own waiting remains subject to the caller's timeout. |
 | `await coco.map(fn, items)` | Item tasks inherit the timeout. Already-started items are allowed to finish. |
 | Batched function body | Does not inherit any one caller's timeout because a batch can contain work from multiple callers. |
 | Target writes and connector sink calls | Do not inherit the processor timeout. Once processing has succeeded, CocoIndex lets target synchronization finish consistently. |
@@ -116,19 +116,17 @@ If the parent times out while waiting for `handle.ready()`, the timeout belongs 
 
 ## What happens on timeout
 
-| When the deadline is reached | Observable behavior |
-| --- | --- |
-| Before a processor starts | The processor body is not run. |
-| During processor code | The processor raises `DeadlineExceededError` at the next check. |
-| After target states were declared in memory | Those declarations are discarded; no connector sink actions are applied for that failed processor run. |
-| Before returning a memoized result | The cached value is not returned after the deadline. |
-| Inside a memoized body | The timeout is not cached as a successful result. |
-| While waiting for `use_mount()` | The parent waits until the child finishes or fails, then checks the timeout before continuing. |
-| While waiting for `mount().ready()` | The child remains independent; the caller can raise after the ready wait returns. |
-| Inside `coco.map()` | Started items are not cancelled. `map()` waits for them to finish, then raises the first failure by input order. |
-| After processor code succeeds and target synchronization starts | The caller's timeout is no longer active for connector writes. CocoIndex avoids interrupting target synchronization halfway through. |
+The timing contract is deliberately loose:
 
-The main consistency guarantee is: if a timeout happens during processing, CocoIndex does not apply partial target writes from that failed processor run. A later update can retry normally.
+- Any CocoIndex-managed call **may** raise `coco.DeadlineExceededError` if the deadline passes before it returns.
+- CocoIndex checkpoints — `coco.check_cancellation()`, calling a `@coco.fn`, engine calls such as `coco.use_mount()` — **guarantee** to raise if the deadline has already passed when they are called.
+
+Don't rely on the exact point where the error is raised. It can move between versions, and enforcement can get tighter where cancelling is safe (the built-in retry helpers already cancel an in-flight attempt at the deadline).
+
+What you can rely on is the outcome:
+
+- A processor run that times out applies no target writes and memoizes nothing; the next update retries it cleanly.
+- Completed work stays completed: committed components, finished `coco.map()` items, and in-progress target synchronization are never rolled back or interrupted by a timeout.
 
 ## Add checks in long processors
 
