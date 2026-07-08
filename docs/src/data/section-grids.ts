@@ -118,6 +118,19 @@ export const commonResourcesGroups: SectionGridGroup[] = [
       },
     ],
   },
+  {
+    label: 'Runtime',
+    blurb: 'Control how a pipeline talks to external services.',
+    accent: 'gold',
+    cards: [
+      {
+        href: '/docs/common_resources/rate_limiting/',
+        title: 'Rate limiting',
+        glyph: 'shield',
+        body: 'A token-bucket RateLimiter that throttles outbound work, shared by reference so concurrent components run under one budget.',
+      },
+    ],
+  },
 ];
 
 export const advancedTopicsGroups: SectionGridGroup[] = [

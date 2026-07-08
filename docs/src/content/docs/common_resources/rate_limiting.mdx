@@ -1,0 +1,98 @@
+---
+title: "*Rate limiting*"
+description: >
+  Throttle outbound work with a token-bucket RateLimiter — a sustained rate plus
+  a burst allowance, shared by reference so several callers run under one budget.
+---
+The rate-limiting module (`cocoindex.resources.rate_limit`) provides a
+token-bucket `RateLimiter` for throttling outbound work — typically the API calls
+a pipeline makes to an external service — so it stays within that service's rate
+limit.
+
+```python
+from cocoindex.resources.rate_limit import RateLimiter
+```
+
+## RateLimiter
+
+A token-bucket limiter. Acquire tokens with `await limiter.acquire(n)`; the call
+returns once `n` tokens are available, otherwise it waits.
+
+```python
+class RateLimiter:
+    def __init__(
+        self,
+        max_rows_per_second: float,
+        burst_window_secs: float = 1.0,
+    ) -> None: ...
+
+    async def acquire(self, n: int = 1) -> None: ...
+```
+
+**Constructor parameters:**
+
+- `max_rows_per_second` — the **sustained** rate, in tokens (think: units of
+  work) per second. Fractional rates are supported (e.g. `2.5` → one token every
+  0.4s). Must be positive.
+- `burst_window_secs` — the **burst** allowance, in seconds. Up to
+  `max_rows_per_second * burst_window_secs` tokens may accumulate while the
+  limiter is idle, letting a sudden fan-out proceed immediately before settling
+  to the sustained rate. Defaults to `1.0` (a one-second burst). Set to `0.0` for
+  no burst (strict spacing between tokens).
+
+**`acquire(n=1)`** — wait until `n` tokens are available, then consume them. A
+single `RateLimiter` is safe to share across concurrent callers; they are served
+in **FIFO order**, so no caller can be starved.
+
+```python
+limiter = RateLimiter(max_rows_per_second=20.0)
+
+# Pace outbound calls at ~20/s (with a 1s burst).
+async def fetch(item: Item) -> Data:
+    await limiter.acquire()          # one token
+    return await call_external_api(item)
+```
+
+## One budget per instance
+
+The budget lives in the `RateLimiter` **object**, not in its settings. So the unit
+of sharing is the instance: functions and components handed the *same*
+`RateLimiter` draw from one shared budget, while two separately-constructed
+limiters are two independent budgets — even with identical `max_rows_per_second`.
+
+The idiomatic way to share one budget is to bind a `RateLimiter` to a
+[context](../programming_guide/context) key and retrieve it with `coco.use_context`
+wherever you make outbound calls. Every component then draws from the same budget,
+with no limiter to thread through each signature:
+
+```python
+import cocoindex as coco
+from cocoindex.resources.rate_limit import RateLimiter
+
+RATE_LIMIT = coco.ContextKey[RateLimiter]("rate_limiter")
+
+
+@coco.lifespan
+async def lifespan(builder: coco.EnvironmentBuilder):
+    builder.provide(RATE_LIMIT, RateLimiter(max_rows_per_second=50.0))
+    yield
+
+
+@coco.fn
+async def fetch_one(item: Item) -> Data:
+    await coco.use_context(RATE_LIMIT).acquire()
+    return await call_external_api(item)
+```
+
+Because the key resolves to one shared instance, every `acquire()` across the app
+draws from the same 50/s budget.
+
+## When to use it
+
+Reach for a `RateLimiter` whenever a pipeline makes outbound calls to a
+rate-limited service — an API you query from a `@coco.fn`, an embedding or LLM
+endpoint, a bucket or database with a request cap — and you want the whole
+pipeline to stay within one budget rather than each call site guessing at its own
+`sleep`. Because a fan-out (e.g. one component per source item) can otherwise
+issue requests as fast as the engine schedules them, a shared limiter is the
+simplest way to keep concurrent components cooperatively under quota.

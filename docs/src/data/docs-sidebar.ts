@@ -55,6 +55,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'common_resources/vector_schema', label: 'Vector schema' },
       { type: 'doc', slug: 'common_resources/id_generation', label: 'ID generation' },
       { type: 'doc', slug: 'common_resources/live_map', label: 'LiveMap' },
+      { type: 'doc', slug: 'common_resources/rate_limiting', label: 'Rate limiting' },
     ],
   },
   {
