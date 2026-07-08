@@ -214,7 +214,7 @@ pub fn mount_async<'py>(
     let child = comp_ctx
         .0
         .component()
-        .mount_child(&fn_ctx.0, stable_path.0)
+        .mount_child(&fn_ctx.0, stable_path.0.clone())
         .into_py_result()?;
     // Register as an active member of any enclosing stats group(s) before the
     // run starts, so the group's liveness tracking can't miss it.
@@ -223,9 +223,21 @@ pub fn mount_async<'py>(
     let host_runtime_ctx = comp_ctx.0.app_ctx().env().host_runtime_ctx().clone();
     let on_error = build_on_error(host_runtime_ctx, handler_callback);
 
+    // Compute skip from the component selector stored on the AppContext.
+    let skip = {
+        let selector = comp_ctx.0.app_ctx().component_selector();
+        selector.is_some()
+            && !cocoindex_core::state::stable_path::is_path_selected(
+                &stable_path.0,
+                selector.as_deref(),
+            )
+    };
+    let pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>> =
+        if skip { Some(Box::new(|| false)) } else { None };
+
     future_into_py(py, async move {
         let handle = child
-            .mount(&comp_ctx.0, processor, on_error, None)
+            .mount(&comp_ctx.0, processor, on_error, pre_execute_check)
             .await
             .into_py_result()?;
         Ok(PyComponentMountHandle(Some(handle)))

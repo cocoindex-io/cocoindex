@@ -11,7 +11,10 @@ use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::watch;
 
-use crate::{component::PyComponentProcessor, environment::PyEnvironment, value::PyStoredValue};
+use crate::{
+    component::PyComponentProcessor, environment::PyEnvironment, stable_path::PyStablePath,
+    value::PyStoredValue,
+};
 
 fn snapshot_to_py<'py>(
     py: Python<'py>,
@@ -243,6 +246,15 @@ impl PyApp {
             .context(format!("failed to initialize app '{name}'"))
             .into_py_result()?;
         Ok(Self(Arc::new(app)))
+    }
+
+    /// Set the component selector for the next update. Call before `update()` /
+    /// `update_async()`. When `Some`, only matching components execute;
+    /// unselected components are skipped on mount and their orphaned target
+    /// states are preserved during GC.
+    pub fn set_component_selector(&self, selector: Option<Vec<PyStablePath>>) {
+        let sel = selector.map(|v| v.into_iter().map(|p| p.0).collect());
+        self.0.app_ctx().set_component_selector(sel);
     }
 
     #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false))]

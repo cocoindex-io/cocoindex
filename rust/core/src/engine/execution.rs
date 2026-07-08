@@ -17,7 +17,7 @@ use crate::engine::target_state::{
     ChildInvalidation, TargetActionSinkKeeper, TargetHandler, TargetStateProvider,
     TargetStateProviderRegistry,
 };
-use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
+use crate::state::stable_path::{StableKey, StablePath, StablePathRef, is_path_selected};
 use crate::state::stable_path_set::ChildStablePathSet;
 use crate::state::target_state_path::{
     TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
@@ -555,12 +555,30 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // The `Arc` makes cloning cheap regardless of how many
         // descendants we spawn.
         let cascaded_on_error = self.component_ctx.processing_action_on_error();
+        // Snapshot the component selector so the GC sweep can skip
+        // tombstones whose paths aren't selected — preserving their
+        // target states.
+        let component_selector = self.component_ctx.app_ctx().component_selector();
         // Standalone snapshot read — `list_tombstones` opens its own
         // fresh `RoTxn` internally.
         let tombstones = self.app_store.list_tombstones(&self.component_path).await?;
         let mut handles = Vec::with_capacity(tombstones.len());
         for relative_path in tombstones {
             let stable_path = self.component_path.concat(relative_path.as_ref());
+            // When a selector is active, preserve tombstones whose path
+            // is NOT selected — their target states shouldn't be cleaned
+            // up because the source deletion may be unrelated to the
+            // current selective update.
+            let pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>> =
+                if let Some(ref sel) = component_selector {
+                    if !is_path_selected(&stable_path, Some(sel)) {
+                        Some(Box::new(|| false))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
                 self.target_states_providers.clone(),
@@ -569,7 +587,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.component_ctx.host_ctx().clone(),
                 cascaded_on_error.clone(),
             );
-            handles.push(component.delete(delete_ctx, None)?);
+            handles.push(component.delete(delete_ctx, pre_execute_check)?);
         }
         // Await each handle so descendant failures (when on_error
         // propagates) reach our own task_result, which the parent

@@ -2,6 +2,196 @@ use crate::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{fmt::Write as FmtWrite, io::Write};
 
+// ---------------------------------------------------------------------------
+// Selector (fnmatch-style) path matching
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when *s* contains any fnmatch wildcard character.
+fn has_glob(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Simple fnmatch implementation supporting `*`, `?`, and `[...]` character classes.
+fn fnmatch_bytes(s: &[u8], p: &[u8]) -> bool {
+    // Backtracking state for `*` — store where we were in s and p after the star.
+    let mut star_s: Option<usize> = None;
+    let mut star_p: Option<usize> = None;
+    let mut si: usize = 0;
+    let mut pi: usize = 0;
+
+    loop {
+        if pi == p.len() {
+            // Pattern exhausted — match iff we consumed all of s.
+            return si == s.len();
+        }
+        match p[pi] {
+            b'*' => {
+                // Record state so we can backtrack: try matching zero chars first.
+                star_s = Some(si);
+                star_p = Some(pi);
+                pi += 1;
+            }
+            b'?' => {
+                if si < s.len() {
+                    si += 1;
+                    pi += 1;
+                } else {
+                    // Backtrack if possible; otherwise fail.
+                    match (star_s, star_p) {
+                        (Some(ss), Some(sp)) if ss < s.len() => {
+                            si = ss + 1;
+                            pi = sp + 1;
+                            star_s = Some(si);
+                        }
+                        _ => return false,
+                    }
+                }
+            }
+            b'[' => {
+                // Find the closing `]`.
+                let close = p[pi..].iter().position(|&c| c == b']');
+                if let Some(end) = close {
+                    let class_end = pi + end;
+                    if si < s.len() {
+                        let c = s[si];
+                        let negate = p[pi + 1] == b'!';
+                        let class_start = if negate { pi + 2 } else { pi + 1 };
+                        let in_class = p[class_start..class_end].contains(&c);
+                        if (negate && !in_class) || (!negate && in_class) {
+                            si += 1;
+                            pi = class_end + 1;
+                            continue;
+                        }
+                    }
+                    // Character didn't match class — backtrack or fail.
+                    match (star_s, star_p) {
+                        (Some(ss), Some(sp)) if ss < s.len() => {
+                            si = ss + 1;
+                            pi = sp + 1;
+                            star_s = Some(si);
+                        }
+                        _ => return false,
+                    }
+                } else {
+                    // Malformed `[` — treat as literal.
+                    if si < s.len() && s[si] == b'[' {
+                        si += 1;
+                        pi += 1;
+                    } else {
+                        match (star_s, star_p) {
+                            (Some(ss), Some(sp)) if ss < s.len() => {
+                                si = ss + 1;
+                                pi = sp + 1;
+                                star_s = Some(si);
+                            }
+                            _ => return false,
+                        }
+                    }
+                }
+            }
+            _ => {
+                if si < s.len() && s[si] == p[pi] {
+                    si += 1;
+                    pi += 1;
+                } else {
+                    match (star_s, star_p) {
+                        (Some(ss), Some(sp)) if ss < s.len() => {
+                            si = ss + 1;
+                            pi = sp + 1;
+                            star_s = Some(si);
+                        }
+                        _ => return false,
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Convert a [`StableKey`] to a selector-friendly string for matching.
+fn stable_key_to_selector_part(key: &StableKey) -> String {
+    match key {
+        StableKey::Null => "null".to_string(),
+        StableKey::Bool(b) => b.to_string(),
+        StableKey::Int(i) => i.to_string(),
+        StableKey::Str(s) => s.to_string(),
+        StableKey::Bytes(b) => String::from_utf8_lossy(b).to_string(),
+        StableKey::Uuid(u) => u.to_string(),
+        StableKey::Symbol(s) => s.to_string(),
+        StableKey::Array(a) => {
+            let parts: Vec<String> = a.iter().map(stable_key_to_selector_part).collect();
+            format!("[{}]", parts.join(","))
+        }
+        StableKey::Fingerprint(fp) => fp.to_string(),
+    }
+}
+
+/// Check if a single path part matches a selector part.
+///
+/// String selector parts may contain fnmatch glob patterns (`*`, `?`, `[...]`).
+/// A `str` and `Symbol` are treated as matching when the string equals the
+/// symbol's name (the two representations are interchangeable in CocoIndex paths).
+fn selector_part_matches(path_part: &StableKey, sel_part: &StableKey) -> bool {
+    // Glob matching for string selector parts.
+    if let StableKey::Str(sel_str) = sel_part {
+        if has_glob(sel_str) {
+            let path_str = stable_key_to_selector_part(path_part);
+            return fnmatch_bytes(path_str.as_bytes(), sel_str.as_bytes());
+        }
+    }
+
+    // Cross-type: str ↔ Symbol (interchangeable in paths).
+    match (path_part, sel_part) {
+        (StableKey::Str(p), StableKey::Symbol(s)) => return p.as_ref() == s.as_ref(),
+        (StableKey::Symbol(p), StableKey::Str(s)) => return p.as_ref() == s.as_ref(),
+        _ => {}
+    }
+
+    // Exact match: types must be the same.
+    if std::mem::discriminant(path_part) != std::mem::discriminant(sel_part) {
+        return false;
+    }
+
+    match (path_part, sel_part) {
+        (StableKey::Symbol(p), StableKey::Symbol(s)) => p.as_ref() == s.as_ref(),
+        (StableKey::Array(p), StableKey::Array(s)) => {
+            if p.len() != s.len() {
+                return false;
+            }
+            p.iter()
+                .zip(s.iter())
+                .all(|(a, b)| selector_part_matches(a, b))
+        }
+        _ => path_part == sel_part,
+    }
+}
+
+/// Check whether *path* matches any entry in the component *selector*.
+///
+/// Returns `true` when *selector* is `None` (meaning "run everything").
+/// Each selector entry is compared part-by-part against *path*; string
+/// selector parts may use fnmatch glob patterns.
+pub fn is_path_selected(path: &StablePath, selector: Option<&[StablePath]>) -> bool {
+    let Some(sel) = selector else {
+        return true;
+    };
+    let path_parts: &[StableKey] = path;
+    for sel_path in sel {
+        let sel_parts: &[StableKey] = sel_path;
+        if path_parts.len() != sel_parts.len() {
+            continue;
+        }
+        if path_parts
+            .iter()
+            .zip(sel_parts.iter())
+            .all(|(p, s)| selector_part_matches(p, s))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableKey {
     Null,
