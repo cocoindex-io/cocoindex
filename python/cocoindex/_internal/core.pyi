@@ -21,6 +21,19 @@ from cocoindex._internal.typing import StableKey as StableKey
 # Core
 ########################################################
 
+class DeadlineExceededError(TimeoutError): ...
+
+class DeadlineContext:
+    def with_timeout(self, seconds: float) -> DeadlineContext: ...
+    def check(self) -> None: ...
+    def remaining_secs(self) -> float | None: ...
+    def has_deadline(self) -> bool: ...
+
+def deadline_none() -> DeadlineContext: ...
+def testing_reset_deadline_clock() -> None: ...
+def testing_disable_deadline_clock() -> None: ...
+def testing_advance_deadline_clock(ms: int) -> None: ...
+
 # --- Symbol ---
 class Symbol:
     def __new__(cls, name: str) -> Symbol: ...
@@ -91,7 +104,9 @@ class ComponentProcessorContext:
     def initial_context_memo_states(
         self,
     ) -> dict[Fingerprint, list[Any]]: ...
-    async def next_id(self, key: StableKey | None = None) -> int: ...
+    async def next_id(
+        self, key: StableKey | None = None, *, deadline: DeadlineContext
+    ) -> int: ...
     def begin_stats_group(
         self,
         title: str,
@@ -274,6 +289,8 @@ class App:
         refresh_interval_secs: float | None = None,
         live: bool = False,
         preview: bool = False,
+        *,
+        deadline: DeadlineContext,
     ) -> StoredValue | list[Any]: ...
     def update_async(
         self,
@@ -282,6 +299,8 @@ class App:
         live: bool = False,
         preview: bool = False,
         host_ctx: Any = None,
+        *,
+        deadline: DeadlineContext,
     ) -> UpdateHandle: ...
     def drop(
         self,
@@ -376,6 +395,7 @@ async def use_mount_async(
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
+    deadline: DeadlineContext,
 ) -> ComponentMountRunHandle: ...
 def declare_target_state(
     comp_ctx: ComponentProcessorContext,

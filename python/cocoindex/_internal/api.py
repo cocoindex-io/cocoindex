@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterable, Coroutine
+from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
@@ -10,11 +11,18 @@ from typing import (
     Iterable,
     ParamSpec,
     TypeVar,
+    cast,
     overload,
 )
 
 from . import core, environment
 from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
+from .deadline import (
+    DeadlineExceededError,
+    deadline_for_engine as _deadline_for_engine,
+    check_cancellation,
+    timeout,
+)
 from .update_stats import (
     ComponentStats,
     StatsGroupHandle,
@@ -139,24 +147,32 @@ _ChildHandlerT = TypeVar("_ChildHandlerT", bound="TargetHandler[Any, Any, Any] |
 class ComponentMountHandle:
     """Handle for processing unit(s) started with `mount()` or `mount_each()`. Allows waiting until ready."""
 
-    __slots__ = ("_cores", "_lock", "_ready_called")
+    __slots__ = ("_cores", "_lock", "_next_ready_index")
 
     _cores: list[core.ComponentMountHandle]
     _lock: asyncio.Lock
-    _ready_called: bool
+    _next_ready_index: int
 
     def __init__(self, core_handles: list[core.ComponentMountHandle]) -> None:
         self._cores = core_handles
         self._lock = asyncio.Lock()
-        self._ready_called = False
+        self._next_ready_index = 0
 
     async def ready(self) -> None:
         """Wait until all processing units are ready. Can be called multiple times."""
+        # Fail fast before waiting behind another ready() caller.
+        check_cancellation()
         async with self._lock:
-            if not self._ready_called:
-                for c in self._cores:
-                    await c.ready_async()
-                self._ready_called = True
+            # The deadline may have expired while we were waiting for the lock.
+            check_cancellation()
+            while self._next_ready_index < len(self._cores):
+                # ready_async() consumes the Rust handle, so if a deadline fires
+                # after this await, the next ready() call must resume here.
+                await self._cores[self._next_ready_index].ready_async()
+                self._next_ready_index += 1
+                # The child is ready; now check the caller's own timeout before
+                # it continues or waits on the next child.
+                check_cancellation()
 
 
 @overload
@@ -240,6 +256,7 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
             coco.component_subpath("setup"), declare_table_target, table_name
         )
     """
+    check_cancellation()
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         processor_fn = pos_args[1]
@@ -265,15 +282,24 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
 
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
+    # One explicit value travels through core: capture once, pass to both
+    # the processor (ContextVar restore in the wrapper) and the engine call.
+    deadline_context = _deadline_for_engine()
 
     processor = create_core_component_processor(
-        processor_fn, parent_ctx._env, child_path, args, kwargs
+        processor_fn,
+        parent_ctx._env,
+        child_path,
+        args,
+        kwargs,
+        deadline_context=deadline_context,
     )
     core_handle = await core.use_mount_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
+        deadline_context,
     )
     pyvalue = await core_handle.result_async(parent_ctx._core_processor_ctx)
     return pyvalue.get(fn_ret_deserializer(processor_fn))
@@ -348,6 +374,7 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # With explicit subpath:
         await coco.mount(coco.component_subpath("process", filename), process_file, file, target)
     """
+    check_cancellation()
     check_not_in_process_live("coco.mount")
 
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
@@ -439,6 +466,7 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     Returns:
         A handle that can be used to wait until all processing units are ready.
     """
+    check_cancellation()
     check_not_in_process_live("coco.mount_each")
 
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
@@ -508,6 +536,18 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     return ComponentMountHandle(core_handles)
 
 
+# Keep map task failures wrapped so a user function can return an Exception
+# object as a normal value without being confused with a failed task.
+@dataclass(frozen=True, slots=True)
+class _MapTaskSuccess(Generic[ReturnT]):
+    value: ReturnT
+
+
+@dataclass(frozen=True, slots=True)
+class _MapTaskFailure:
+    error: Exception
+
+
 async def map(
     fn: Callable[Concatenate[T, P], Coroutine[Any, Any, ReturnT]],
     items: Iterable[T] | AsyncIterable[T],
@@ -519,6 +559,10 @@ async def map(
     No processing components are created — this is pure concurrent execution
     (async tasks) within the current component.
 
+    Once a task is started, ``map`` waits for it to finish even if another
+    task hits a deadline. If multiple tasks fail, the first failure in input
+    order is raised.
+
     Args:
         fn: The function to apply to each item. The item is passed as the first argument.
         items: The items to iterate (sync or async).
@@ -528,15 +572,62 @@ async def map(
     Returns:
         Results from each invocation.
     """
-    tasks: list[asyncio.Task[ReturnT]] = []
+    check_cancellation()
+
+    async def _run_one(item: T) -> _MapTaskSuccess[ReturnT] | _MapTaskFailure:
+        try:
+            # A task may start after the caller's deadline moved forward while
+            # earlier tasks were being scheduled.
+            check_cancellation()
+            result = await fn(item, *args, **kwargs)
+            # Do not let a value returned after the deadline look successful to
+            # the map caller.
+            check_cancellation()
+            return _MapTaskSuccess(result)
+        except Exception as exc:
+            return _MapTaskFailure(exc)
+
+    # Keep handles for every task that made it into the TaskGroup, so schedule
+    # failures do not prevent us from draining already-started work.
+    tasks: list[asyncio.Task[_MapTaskSuccess[ReturnT] | _MapTaskFailure]] = []
+    # Raised after the TaskGroup exits, so started tasks finish first.
+    schedule_error: Exception | None = None
+
     async with asyncio.TaskGroup() as tg:
-        if isinstance(items, AsyncIterable):
-            async for item in items:
-                tasks.append(tg.create_task(fn(item, *args, **kwargs)))
-        else:
-            for item in items:
-                tasks.append(tg.create_task(fn(item, *args, **kwargs)))
-    return [t.result() for t in tasks]
+
+        def _schedule_one(item: T) -> None:
+            # Fail before enqueueing new work. Already-started tasks are still
+            # drained by the TaskGroup below.
+            check_cancellation()
+            tasks.append(tg.create_task(_run_one(item)))
+
+        try:
+            if isinstance(items, AsyncIterable):
+                async for item in items:
+                    _schedule_one(item)
+            else:
+                for item in items:
+                    _schedule_one(item)
+        except Exception as exc:
+            schedule_error = exc
+
+    results = [task.result() for task in tasks]
+
+    if schedule_error is not None:
+        raise schedule_error
+
+    for outcome in results:
+        if not isinstance(outcome, _MapTaskFailure):
+            continue
+        if isinstance(outcome.error, DeadlineExceededError):
+            raise DeadlineExceededError(
+                "CocoIndex timeout deadline exceeded"
+            ) from outcome.error
+        raise outcome.error
+    # All started tasks completed successfully; check the caller's deadline
+    # before returning their values.
+    check_cancellation()
+    return [cast(_MapTaskSuccess[ReturnT], outcome).value for outcome in results]
 
 
 _MOUNT_TARGET_SYMBOL = Symbol("cocoindex/mount_target")
@@ -567,6 +658,7 @@ async def mount_target(
             target_db.table_target(table_name=TABLE_NAME, table_schema=schema)
         )
     """
+    check_cancellation()
     subpath = ComponentSubpath(_MOUNT_TARGET_SYMBOL) / (
         *target_state._provider._core.stable_key_chain(),
         target_state._key,
@@ -812,6 +904,9 @@ __all__ = [
     # .function
     "fn",
     "LogicTracking",
+    "timeout",
+    "check_cancellation",
+    "DeadlineExceededError",
     # .context_keys
     "ContextKey",
     "ContextProvider",

@@ -1,9 +1,11 @@
 use cocoindex_utils::error::{CError, CResult};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule, PyString};
 use std::any::Any;
 use std::fmt::{Debug, Display};
+
+pyo3::create_exception!(cocoindex_py_utils, DeadlineExceededError, PyTimeoutError);
 
 pub struct PythonExecutionContext {
     pub event_loop: Py<PyAny>,
@@ -117,10 +119,20 @@ fn cerror_to_pyerr(err: CError) -> PyErr {
             }
         });
     }
+    if err.is_deadline_exceeded() {
+        return DeadlineExceededError::new_err(format!("{}", err));
+    }
     if let CError::Client { .. } = inner {
         return PyValueError::new_err(format!("{}", err));
     }
     PyRuntimeError::new_err(format!("{}", err))
+}
+
+pub fn add_error_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "DeadlineExceededError",
+        m.py().get_type::<DeadlineExceededError>(),
+    )
 }
 
 pub trait FromPyResult<T> {

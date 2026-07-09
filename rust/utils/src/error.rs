@@ -60,6 +60,9 @@ impl HostError for CancelledError {
 pub enum Error {
     Context { msg: String, source: Box<SError> },
     HostLang(Box<dyn HostError>),
+    // `bt` follows the same sharing model as `Client`: replicas preserve the
+    // original cold-path capture site instead of re-capturing at fan-out.
+    DeadlineExceeded { bt: Arc<Backtrace> },
     // `bt` is shared via `Arc` so `Error::replica` can clone a `Client` error
     // while keeping the original capture site (capturing afresh would point
     // at the replica call instead).
@@ -72,6 +75,7 @@ impl Display for Error {
         match self.format_context(f)? {
             Error::Context { .. } => Ok(()),
             Error::HostLang(e) => write!(f, "{}", e),
+            Error::DeadlineExceeded { .. } => f.write_str("CocoIndex timeout deadline exceeded"),
             Error::Client { msg, .. } => write!(f, "Invalid Request: {}", msg),
             Error::Internal(e) => write!(f, "{}", e),
         }
@@ -82,6 +86,9 @@ impl Debug for Error {
         match self.format_context(f)? {
             Error::Context { .. } => Ok(()),
             Error::HostLang(e) => write!(f, "{:?}", e),
+            Error::DeadlineExceeded { bt } => {
+                write!(f, "CocoIndex timeout deadline exceeded\n\n{bt}\n")
+            }
             Error::Client { msg, bt } => {
                 write!(f, "Invalid Request: {msg}\n\n{bt}\n")
             }
@@ -116,6 +123,12 @@ impl Error {
         Self::Internal(anyhow::anyhow!("{}", msg.into()))
     }
 
+    pub fn deadline_exceeded() -> Self {
+        Self::DeadlineExceeded {
+            bt: Arc::new(Backtrace::capture()),
+        }
+    }
+
     /// Construct a cancellation-flavored error.
     ///
     /// Recognizable via [`Error::is_cancelled`] from any layer (e.g. drain
@@ -130,6 +143,7 @@ impl Error {
     pub fn backtrace(&self) -> Option<&Backtrace> {
         match self {
             Error::Client { bt, .. } => Some(bt.as_ref()),
+            Error::DeadlineExceeded { bt } => Some(bt.as_ref()),
             Error::Internal(e) => Some(e.backtrace()),
             Error::Context { source, .. } => source.0.backtrace(),
             Error::HostLang(_) => None,
@@ -150,6 +164,11 @@ impl Error {
             return host_err.is_cancelled();
         }
         false
+    }
+
+    /// Check if this error represents a cooperative CocoIndex deadline.
+    pub fn is_deadline_exceeded(&self) -> bool {
+        matches!(self.without_contexts(), Error::DeadlineExceeded { .. })
     }
 
     /// Produce a best-effort independent copy of this error.
@@ -179,6 +198,7 @@ impl Error {
                 Some(cloned) => Error::HostLang(cloned),
                 None => Error::internal(ResidualError::new(self)),
             },
+            Error::DeadlineExceeded { bt } => Error::DeadlineExceeded { bt: bt.clone() },
             Error::Client { msg, bt } => Error::Client {
                 msg: msg.clone(),
                 // Share the original capture site rather than re-capturing here.
@@ -192,6 +212,7 @@ impl Error {
         match self {
             Error::Context { source, .. } => Some(source.as_ref()),
             Error::HostLang(e) => Some(e.as_ref()),
+            Error::DeadlineExceeded { .. } => None,
             Error::Internal(e) => e.source(),
             Error::Client { .. } => None,
         }
@@ -277,6 +298,7 @@ impl IntoResponse for Error {
 
         let (status_code, error_msg) = match &self {
             Error::Client { msg, .. } => (StatusCode::BAD_REQUEST, msg.clone()),
+            Error::DeadlineExceeded { .. } => (StatusCode::REQUEST_TIMEOUT, self.to_string()),
             Error::HostLang(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             Error::Context { .. } | Error::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", self))
@@ -530,6 +552,7 @@ impl From<Error> for ApiError {
     fn from(err: Error) -> ApiError {
         let status_code = match err.without_contexts() {
             Error::Client { .. } => StatusCode::BAD_REQUEST,
+            Error::DeadlineExceeded { .. } => StatusCode::REQUEST_TIMEOUT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         ApiError {
@@ -686,6 +709,18 @@ mod tests {
         let err = Error::cancelled();
         assert!(err.is_cancelled());
         assert!(err.replica().is_cancelled());
+    }
+
+    #[test]
+    fn test_replica_preserves_deadline_exceeded() {
+        let err = Error::deadline_exceeded().context("deadline checkpoint");
+        assert!(err.is_deadline_exceeded());
+        let replica = err.replica();
+        assert!(replica.is_deadline_exceeded());
+        assert!(matches!(
+            replica.without_contexts(),
+            Error::DeadlineExceeded { .. }
+        ));
     }
 
     #[test]

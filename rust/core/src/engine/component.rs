@@ -9,6 +9,7 @@ use crate::engine::context::{
     AppContext, ComponentDeleteContext, ComponentProcessingAction, ComponentProcessingMode,
     ComponentProcessorContext, MemoStatesPayload, PreviewActionCollector,
 };
+use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
     cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
     update_component_memo_states, use_or_invalidate_component_memoization,
@@ -440,6 +441,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
 pub struct ComponentMountRunHandle<Prof: EngineProfile> {
     join_handle: tokio::task::JoinHandle<Result<ComponentBuildOutput<Prof>>>,
+    /// The waiting caller's deadline, checked post-wait in `result()`
+    /// (caller-attributed: the child's committed success is preserved).
+    /// Root runs store NONE here — the root's post-update observation
+    /// point is `AppOpHandle::result()`.
+    caller_deadline: DeadlineContext,
 }
 
 impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
@@ -474,6 +480,7 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
                 Ok(())
             })?;
         }
+        self.caller_deadline.check()?;
         Ok(output.ret)
     }
 }
@@ -523,10 +530,21 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     /// Mount and run a child in the foreground (use_mount path).
     /// Inherits live from the parent context.
+    ///
+    /// `deadline` is the deadline for the CHILD, taken from the caller's
+    /// current scope, and cannot be read from `parent_ctx.deadline`: that is
+    /// the caller's own base, frozen at the caller's mount, while narrowing
+    /// (`with coco.timeout(...)`) lives in the SDK's per-task carrier —
+    /// concurrent tasks within one component can hold different narrowed
+    /// scopes at the same moment, so the current value must travel with each
+    /// call. It is threaded through the child's execution checkpoints and
+    /// captured by the returned handle for the post-wait check; it is never
+    /// stored on the ctx (the deadline only ever travels, never rests).
     pub async fn use_mount(
         self,
         parent_ctx: &ComponentProcessorContext<Prof>,
         processor: Prof::ComponentProc,
+        deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         let child_ctx = self.new_processor_context_for_build(
             Some(parent_ctx),
@@ -541,7 +559,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             // through to the framework's default `error!` log.
             None,
         )?;
-        self.run(processor, child_ctx).await
+        self.run(processor, child_ctx, deadline, deadline).await
     }
 
     /// Mount and run a child in the background (mount path).
@@ -644,10 +662,16 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
+    /// `deadline` governs this component's own execution checkpoints;
+    /// `caller_deadline` is stored in the returned handle for the post-wait
+    /// check. They coincide for use_mount; the root passes NONE as
+    /// `caller_deadline` since AppOpHandle owns the root's post-result check.
     pub(crate) async fn run(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
+        deadline: DeadlineContext,
+        caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         // Release parent's inflight permit (deadlock prevention).
         // On a component's first child mount, the parent gives up its slot
@@ -678,7 +702,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // work future is dropped, which cascades drop into from_py_future
                 // → CancelOnDropPy and cancels the underlying Python task.
                 let result = tokio::select! {
-                    r = self.execute_once(&context, Some(&processor)) => r,
+                    r = self.execute_once(&context, Some(&processor), deadline) => r,
                     _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
                 };
                 let (outcome, output) = match result {
@@ -695,7 +719,10 @@ impl<Prof: EngineProfile> Component<Prof> {
             }
             .instrument(span),
         );
-        Ok(ComponentMountRunHandle { join_handle })
+        Ok(ComponentMountRunHandle {
+            join_handle,
+            caller_deadline,
+        })
     }
 
     pub(crate) async fn run_in_background(
@@ -745,7 +772,8 @@ impl<Prof: EngineProfile> Component<Prof> {
             // work future is dropped, which cascades drop into from_py_future
             // → CancelOnDropPy and cancels the underlying Python task.
             let result = tokio::select! {
-                r = self.execute_once(&context, Some(&processor)) => r,
+                // Background components are deadline-isolated by design.
+                r = self.execute_once(&context, Some(&processor), DeadlineContext::NONE) => r,
                 _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
             };
             // Background-style error handling:
@@ -819,7 +847,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                     }
                 }
                 trace!("deleting component at {}", self.stable_path());
-                let result = self.execute_once(&context, None).await;
+                // Delete/GC runs must never be deadline-bounded.
+                let result = self
+                    .execute_once(&context, None, DeadlineContext::NONE)
+                    .await;
                 // Same error model as `run_in_background`: cancellation
                 // filtered; with-handler delegates propagation to the
                 // handler's Result (Ok = swallow, Err = propagate);
@@ -862,6 +893,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self,
         processor_context: &ComponentProcessorContext<Prof>,
         processor: Option<&Prof::ComponentProc>,
+        deadline: DeadlineContext,
     ) -> Result<(ComponentRunOutcome, Option<ComponentBuildOutput<Prof>>)> {
         let mut reported_processor_name: Option<Cow<'_, str>> = None;
         let mut memo_fp_to_store: Option<Fingerprint> = None;
@@ -873,6 +905,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         if let Some(processor) = processor {
             let processor_name = processor.processor_info().name.as_str();
             memo_fp_to_store = processor.memo_key_fingerprint();
+            deadline.check()?;
 
             // Fast-path: component memoization check does not require acquiring the build permit.
             // If it hits, we can immediately return without processing/submitting/waiting.
@@ -974,6 +1007,12 @@ impl<Prof: EngineProfile> Component<Prof> {
                         // We can piggyback on the same processing to avoid duplicating the work.
                     }
 
+                    // The earlier deadline check guards memo lookup. A component can still
+                    // spend time waiting for the build semaphore, existence upsert, or state
+                    // prefetch before the user body starts, so check again at the actual
+                    // processor-entry boundary.
+                    deadline.check()?;
+
                     let ret: Result<Option<Prof::FunctionData>> = match &processor {
                         Some(processor) => processor
                             .process(
@@ -1004,6 +1043,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
 
                     let ret = ret?;
+                    deadline.check()?;
                     let submit_output = submit(processor_context, processor, |name| {
                         if reported_processor_name.is_none() {
                             processing_stats.update(&name, |stats| {
@@ -1213,8 +1253,27 @@ impl<Prof: EngineProfile> Component<Prof> {
 
 #[cfg(test)]
 mod tests {
-    use super::any_active;
-    use std::sync::{Arc, Weak};
+    use super::{ComponentProcessor, ComponentProcessorInfo, any_active};
+    use crate::engine::app::{App, AppUpdateOptions};
+    use crate::engine::context::{ComponentProcessorContext, MemoStatesPayload};
+    use crate::engine::deadline::{
+        DeadlineContext, testing_advance_deadline_clock, testing_deadline_clock_lock,
+        testing_disable_deadline_clock, testing_reset_deadline_clock,
+    };
+    use crate::engine::environment::Environment;
+    use crate::engine::profile::{EngineProfile, Persist};
+    use crate::engine::target_state::{
+        ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
+        TargetStateProviderRegistry,
+    };
+    use crate::state::stable_path::StableKey;
+    use crate::state_store::StorageSettings;
+    use async_trait::async_trait;
+    use cocoindex_utils::fingerprint::Fingerprint;
+    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, Weak};
+    use std::time::Duration;
 
     #[test]
     fn test_any_active_pop_prune() {
@@ -1240,5 +1299,238 @@ mod tests {
         drop(live);
         assert!(!any_active(&mut members));
         assert!(members.is_empty());
+    }
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
+    struct TestProfile;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TestData(Vec<u8>);
+
+    impl Persist for TestData {
+        fn to_bytes(&self) -> crate::prelude::Result<bytes::Bytes> {
+            Ok(bytes::Bytes::from(self.0.clone()))
+        }
+
+        fn from_bytes(data: &[u8]) -> crate::prelude::Result<Self> {
+            Ok(Self(data.to_vec()))
+        }
+    }
+
+    struct NoopSink;
+
+    #[async_trait]
+    impl TargetActionSink<TestProfile> for NoopSink {
+        async fn apply(
+            &self,
+            _host_runtime_ctx: &(),
+            _host_ctx: Arc<()>,
+            _actions: Vec<()>,
+        ) -> crate::prelude::Result<Option<Vec<Option<ChildTargetDef<TestProfile>>>>> {
+            Ok(None)
+        }
+    }
+
+    struct NoopHandler;
+
+    impl TargetHandler<TestProfile> for NoopHandler {
+        fn reconcile(
+            &self,
+            _key: StableKey,
+            _desired_target_state: Option<&()>,
+            _prev_possible_records: &[TestData],
+            _prev_may_be_missing: bool,
+        ) -> crate::prelude::Result<Option<TargetReconcileOutput<TestProfile>>> {
+            Ok(None)
+        }
+    }
+
+    impl Hash for TestProcessor {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.memo_fp.hash(state);
+        }
+    }
+
+    impl PartialEq for TestProcessor {
+        fn eq(&self, other: &Self) -> bool {
+            self.memo_fp == other.memo_fp
+        }
+    }
+
+    impl Eq for TestProcessor {}
+
+    impl EngineProfile for TestProfile {
+        type HostRuntimeCtx = ();
+        type HostCtx = ();
+        type ComponentProc = TestProcessor;
+        type FunctionData = TestData;
+        type TargetHdl = NoopHandler;
+        type TargetStateTrackingRecord = TestData;
+        type TargetAction = ();
+        type TargetActionSink = NoopSink;
+        type TargetStateValue = ();
+    }
+
+    struct TestProcessor {
+        info: ComponentProcessorInfo,
+        memo_fp: Fingerprint,
+        body_started: Arc<AtomicBool>,
+        advance_clock_in_state_handler: bool,
+    }
+
+    impl TestProcessor {
+        fn new(
+            name: &str,
+            memo_fp: Fingerprint,
+            body_started: Arc<AtomicBool>,
+            advance_clock_in_state_handler: bool,
+        ) -> Self {
+            Self {
+                info: ComponentProcessorInfo::new(name.to_string()),
+                memo_fp,
+                body_started,
+                advance_clock_in_state_handler,
+            }
+        }
+    }
+
+    impl ComponentProcessor<TestProfile> for TestProcessor {
+        fn process(
+            &self,
+            _host_runtime_ctx: &(),
+            _comp_ctx: &ComponentProcessorContext<TestProfile>,
+        ) -> crate::prelude::Result<
+            impl Future<Output = crate::prelude::Result<TestData>> + Send + 'static,
+        > {
+            let body_started = self.body_started.clone();
+            Ok(async move {
+                body_started.store(true, Ordering::SeqCst);
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }
+
+        fn memo_key_fingerprint(&self) -> Option<Fingerprint> {
+            Some(self.memo_fp)
+        }
+
+        fn processor_info(&self) -> &ComponentProcessorInfo {
+            &self.info
+        }
+
+        fn has_memo_state_handler(&self) -> bool {
+            true
+        }
+
+        fn handle_memo_states(
+            &self,
+            _host_runtime_ctx: &(),
+            _comp_ctx: &ComponentProcessorContext<TestProfile>,
+            _stored_states: Option<MemoStatesPayload<TestProfile>>,
+        ) -> crate::prelude::Result<
+            impl Future<Output = crate::prelude::Result<(MemoStatesPayload<TestProfile>, bool, bool)>>
+            + Send
+            + 'static,
+        > {
+            let advance_clock = self.advance_clock_in_state_handler;
+            Ok(async move {
+                if advance_clock {
+                    testing_advance_deadline_clock(Duration::from_secs(2));
+                }
+                Ok((
+                    MemoStatesPayload {
+                        positional: vec![TestData(b"state".to_vec())],
+                        by_context_fp: Vec::new(),
+                    },
+                    false,
+                    false,
+                ))
+            })
+        }
+    }
+
+    struct TestClockGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestClockGuard {
+        fn new() -> Self {
+            let guard = testing_deadline_clock_lock();
+            testing_reset_deadline_clock();
+            Self { _guard: guard }
+        }
+    }
+
+    impl Drop for TestClockGuard {
+        fn drop(&mut self) {
+            testing_disable_deadline_clock();
+        }
+    }
+
+    async fn test_app(name: &str) -> (App<TestProfile>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().join("lmdb"),
+            lmdb_max_dbs: 64,
+            lmdb_map_size: 1 << 24,
+        };
+        let providers = Arc::new(Mutex::new(TargetStateProviderRegistry::new(
+            Default::default(),
+        )));
+        let env = Environment::<TestProfile>::new(settings, providers, ())
+            .await
+            .unwrap();
+        let app = App::new(name, env, None).await.unwrap();
+        (app, dir)
+    }
+
+    #[tokio::test]
+    async fn deadline_rechecked_after_memo_state_handler_before_processor_body() {
+        let _clock = TestClockGuard::new();
+        let memo_fp = Fingerprint::from(&"processor-entry-deadline").unwrap();
+        let (app, _dir) = test_app("deadline_pre_body").await;
+
+        let first_body_started = Arc::new(AtomicBool::new(false));
+        let first_processor = TestProcessor::new(
+            "deadline_pre_body",
+            memo_fp,
+            first_body_started.clone(),
+            false,
+        );
+        let (handle, _) = app
+            .update(
+                first_processor,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert!(first_body_started.load(Ordering::SeqCst));
+
+        let second_body_started = Arc::new(AtomicBool::new(false));
+        let second_processor = TestProcessor::new(
+            "deadline_pre_body",
+            memo_fp,
+            second_body_started.clone(),
+            true,
+        );
+        let deadline = DeadlineContext::NONE.with_timeout(Duration::from_secs(1));
+        let (handle, _) = app
+            .update(
+                second_processor,
+                AppUpdateOptions {
+                    deadline,
+                    ..AppUpdateOptions::default()
+                },
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let err = handle.result().await.unwrap_err();
+        assert!(err.is_deadline_exceeded());
+        assert!(
+            !second_body_started.load(Ordering::SeqCst),
+            "processor body must not start after memo-state validation expires the deadline"
+        );
     }
 }

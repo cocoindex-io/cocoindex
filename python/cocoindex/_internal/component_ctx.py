@@ -18,6 +18,7 @@ from typing import (
 )
 
 from cocoindex._internal.context_keys import ContextKey
+from cocoindex._internal.deadline import deadline_for_engine
 from cocoindex._internal.environment import Environment
 
 from . import core
@@ -497,4 +498,6 @@ async def next_id(key: StableKey = None) -> int:
         RuntimeError: If called outside an active component context.
     """
     ctx = get_context_from_ctx()
-    return await ctx._core_processor_ctx.next_id(key)
+    # Required hand-off per the deadline contract: core checks the caller's
+    # current (possibly narrowed) scope, not the ctx's mount-time base.
+    return await ctx._core_processor_ctx.next_id(key, deadline=deadline_for_engine())

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
+use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -156,7 +157,8 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
-    pub async fn next_id(&self, key: Option<&StableKey>) -> Result<u64> {
+    pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
+        deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
         self.inner

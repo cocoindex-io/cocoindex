@@ -20,6 +20,10 @@ pub enum Error {
     #[error("{0}")]
     Engine(String),
 
+    /// The active CocoIndex deadline has expired.
+    #[error("CocoIndex timeout deadline exceeded")]
+    DeadlineExceeded,
+
     /// Requested type or key not found in context.
     #[error(
         "context: `{0}` not provided — call Environment::builder().provide() or provide_key() first"
@@ -41,11 +45,25 @@ impl Error {
     pub fn engine(msg: impl Into<String>) -> Self {
         Error::Engine(msg.into())
     }
+
+    pub fn is_deadline_exceeded(&self) -> bool {
+        matches!(self, Error::DeadlineExceeded)
+    }
+
+    pub(crate) fn into_core(self) -> cocoindex_utils::error::Error {
+        match self {
+            Error::DeadlineExceeded => cocoindex_utils::error::Error::deadline_exceeded(),
+            other => cocoindex_utils::error::Error::internal_msg(other.to_string()),
+        }
+    }
 }
 
 /// Convert from cocoindex_utils::error::Error (used by core).
 impl From<cocoindex_utils::error::Error> for Error {
     fn from(e: cocoindex_utils::error::Error) -> Self {
+        if e.is_deadline_exceeded() {
+            return Error::DeadlineExceeded;
+        }
         Error::Engine(format!("{e}"))
     }
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions};
+use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
 use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
@@ -449,7 +450,7 @@ impl App {
                 ),
             )
             .await
-            .map_err(|e| Error::engine(format!("{e}")))?;
+            .map_err(Error::from)?;
             value.deserialize()?
         } else {
             handle.result().await?
@@ -508,9 +509,14 @@ impl App {
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
         let state = self.inner.clone();
+        // Root inherits the update options' timeout; the same value goes to
+        // core as AppUpdateOptions.deadline below.
+        let deadline = options.timeout.map_or(DeadlineContext::NONE, |timeout| {
+            DeadlineContext::NONE.with_timeout(timeout)
+        });
         let processor = BoxedProcessor::new(
             move |comp_ctx| {
-                let ctx = Ctx::new(Some(comp_ctx), state.clone());
+                let ctx = Ctx::new(Some(comp_ctx), state.clone(), deadline);
                 Box::pin(async move {
                     let ret = f(ctx).await?;
                     Value::from_serializable(&ret)
@@ -524,6 +530,7 @@ impl App {
         let core_options = AppUpdateOptions {
             full_reprocess: options.full_reprocess,
             live: options.live,
+            deadline,
         };
 
         // In preview mode the engine collects target actions into this shared
@@ -658,6 +665,9 @@ impl App {
 pub struct UpdateOptions {
     pub full_reprocess: bool,
     pub live: bool,
+    /// Apply a cooperative deadline to this update. The core stores this as an
+    /// absolute monotonic deadline and checks it at engine checkpoints.
+    pub timeout: Option<Duration>,
     /// Compute target actions without applying them to external systems. The
     /// planned actions are collected and retrievable via
     /// [`UpdateHandle::preview_actions`] / [`App::preview`] (cf. Python's
@@ -772,10 +782,7 @@ where
         let collector = self.preview_collector.clone();
         // Run the pipeline to completion (the app result is discarded — preview
         // callers want the actions, not the return value).
-        self.core
-            .result()
-            .await
-            .map_err(|e| Error::engine(format!("{e}")))?;
+        self.core.result().await.map_err(Error::from)?;
         let actions = collector
             .map(|c| std::mem::take(&mut *c.lock().unwrap()))
             .unwrap_or_default();
@@ -802,20 +809,12 @@ where
     /// Wait for the operation to advance, returning whether it progressed or
     /// terminated. Loop until [`Progress::Done`] to drive it to completion.
     pub async fn changed(&mut self) -> Result<Progress> {
-        let version = self
-            .core
-            .changed()
-            .await
-            .map_err(|e| Error::engine(format!("{e}")))?;
+        let version = self.core.changed().await.map_err(Error::from)?;
         Ok(Progress::from_version(version))
     }
 
     pub async fn result(self) -> Result<T> {
-        let value = self
-            .core
-            .result()
-            .await
-            .map_err(|e| Error::engine(format!("{e}")))?;
+        let value = self.core.result().await.map_err(Error::from)?;
         value.deserialize()
     }
 }

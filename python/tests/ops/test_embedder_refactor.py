@@ -16,6 +16,12 @@ import pytest
 pytest.importorskip("litellm", reason="litellm not installed")
 
 from cocoindex.ops.litellm import LiteLLMEmbedder  # noqa: E402
+
+# Note on the sleep patch target below: retry sleeps now happen inside
+# cocoindex._internal.deadline via a late `asyncio.sleep` lookup. Patching
+# `cocoindex.ops.litellm._asyncio.sleep` still intercepts them because
+# `_asyncio` is an alias of the stdlib module object, so the patch mutates
+# the same `asyncio.sleep` attribute the deadline helper reads.
 from cocoindex.resources.embedder import Embedder  # noqa: E402
 
 

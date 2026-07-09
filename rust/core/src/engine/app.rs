@@ -4,6 +4,7 @@ use crate::prelude::*;
 
 use crate::engine::component::Component;
 use crate::engine::context::{AppContext, PreviewActionCollector};
+use crate::engine::deadline::DeadlineContext;
 use crate::engine::live_component::{LIVE_COMPONENT_DRAIN_TIMEOUT_SECS, LiveComponentState};
 
 use crate::engine::environment::{AppRegistration, Environment};
@@ -12,12 +13,24 @@ use crate::state::stable_path::StablePath;
 use tokio::sync::watch;
 
 /// Options for updating an app.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AppUpdateOptions {
     /// If true, reprocess everything and invalidate existing caches.
     pub full_reprocess: bool,
     /// If true, enable live component mode for this update.
     pub live: bool,
+    /// Deadline for the root processor and for observing the update result.
+    pub deadline: DeadlineContext,
+}
+
+impl Default for AppUpdateOptions {
+    fn default() -> Self {
+        Self {
+            full_reprocess: false,
+            live: false,
+            deadline: DeadlineContext::NONE,
+        }
+    }
 }
 
 /// Handle returned by `App::update` or `App::drop_app` that provides access to
@@ -28,6 +41,7 @@ pub struct AppOpHandle<T: Send + 'static> {
     version_rx: watch::Receiver<u64>,
     /// Whether this is a live-mode operation (affects progress display).
     pub live: bool,
+    deadline: DeadlineContext,
 }
 
 impl<T: Send + 'static> AppOpHandle<T> {
@@ -60,9 +74,13 @@ impl<T: Send + 'static> AppOpHandle<T> {
 
     /// Awaits the task completion and returns the result.
     pub async fn result(self) -> Result<T> {
-        self.task
+        let result = self
+            .task
             .await
-            .map_err(|e| internal_error!("operation task panicked: {e}"))?
+            .map_err(|e| internal_error!("operation task panicked: {e}"))?;
+        let value = result?;
+        self.deadline.check()?;
+        Ok(value)
     }
 }
 
@@ -112,6 +130,7 @@ impl<Prof: EngineProfile> App<Prof> {
         self.app_ctx().reset_cancellation_token_if_cancelled();
         let processing_stats = ProcessingStats::new();
         let version_rx = processing_stats.subscribe();
+        let deadline = options.deadline;
         let context = self.root_component.new_processor_context_for_build(
             None,
             processing_stats.clone(),
@@ -137,7 +156,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 let run_fut = async {
                     root_component
                         .clone()
-                        .run(root_processor, context)
+                        .run(root_processor, context, deadline, DeadlineContext::NONE)
                         .await?
                         .result(None)
                         .await
@@ -163,6 +182,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 stats: processing_stats,
                 version_rx,
                 live,
+                deadline,
             },
             preview_collector,
         ))
@@ -274,6 +294,7 @@ impl<Prof: EngineProfile> App<Prof> {
             stats: processing_stats,
             version_rx,
             live: false,
+            deadline: DeadlineContext::NONE,
         })
     }
 

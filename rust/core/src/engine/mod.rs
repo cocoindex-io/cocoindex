@@ -1,6 +1,7 @@
 pub mod app;
 pub mod component;
 pub mod context;
+pub mod deadline;
 pub mod environment;
 pub mod execution;
 pub mod function;

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::Environment;
 use cocoindex_core::engine::execution;
 use cocoindex_core::engine::live_component::mount_live_prepare;
@@ -198,6 +199,11 @@ pub struct Ctx {
     /// concurrent body receives its own scoped `Ctx`. `None` at the app root
     /// and in standalone use.
     pub(crate) fn_ctx: Option<Arc<FnCallContext>>,
+    /// Deadline carried by this SDK context. The `Ctx` is the SDK-side
+    /// carrier: constructors receive the initial value explicitly (core
+    /// component contexts do not store a deadline; core receives it as an
+    /// argument at each call). `with_timeout` returns a narrowed clone.
+    pub(crate) deadline: DeadlineContext,
     /// Exception handlers in scope for background work mounted from this `Ctx`,
     /// ordered outermost→innermost. Empty at the root; extended by
     /// `mount_live_with_handler` so nested live components inherit ancestors'
@@ -209,11 +215,13 @@ impl Ctx {
     pub(crate) fn new(
         comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
         state: Arc<AppInner>,
+        deadline: DeadlineContext,
     ) -> Self {
         Self {
             comp_ctx,
             state,
             fn_ctx: None,
+            deadline,
             handler_chain: Arc::new(Vec::new()),
         }
     }
@@ -222,20 +230,25 @@ impl Ctx {
         comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
         state: Arc<AppInner>,
         handler_chain: Arc<Vec<crate::live_component::ExceptionHandler>>,
+        deadline: DeadlineContext,
     ) -> Self {
         Self {
             comp_ctx,
             state,
             fn_ctx: None,
+            deadline,
             handler_chain,
         }
     }
 
     fn child(&self, comp_ctx: Option<ComponentProcessorContext<RustProfile>>) -> Self {
+        // The SDK Ctx is the deadline carrier: derived views inherit it.
+        let deadline = self.deadline;
         Self {
             comp_ctx,
             state: self.state.clone(),
             fn_ctx: None,
+            deadline,
             handler_chain: self.handler_chain.clone(),
         }
     }
@@ -247,6 +260,7 @@ impl Ctx {
             comp_ctx: self.comp_ctx.clone(),
             state: self.state.clone(),
             fn_ctx: Some(fn_ctx),
+            deadline: self.deadline,
             handler_chain: self.handler_chain.clone(),
         }
     }
@@ -342,6 +356,48 @@ impl Drop for StatsGroupEndGuard {
 }
 
 impl Ctx {
+    /// Return a cloned context with an additional timeout applied.
+    ///
+    /// If the current context already has an earlier deadline, the earlier one
+    /// wins. The returned context should be passed to child scopes and helper
+    /// calls whose work belongs to the narrower budget.
+    #[must_use = "returns a new scoped Ctx; the original is unchanged"]
+    pub fn with_timeout(&self, timeout: Duration) -> Self {
+        let mut scoped = self.clone();
+        scoped.deadline = scoped.deadline.with_timeout(timeout);
+        scoped
+    }
+
+    /// Run a closure with a cloned context carrying an additional timeout.
+    ///
+    /// This is the least error-prone spelling for scoped work: name the closure
+    /// argument `ctx` and it shadows the outer context, so calls inside the body
+    /// naturally use the scoped deadline.
+    pub async fn with_timeout_scope<F, Fut, T>(&self, timeout: Duration, f: F) -> T
+    where
+        F: FnOnce(Self) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let scoped = self.with_timeout(timeout);
+        f(scoped).await
+    }
+
+    /// Check the current deadline and return [`Error::DeadlineExceeded`] if it
+    /// has expired.
+    pub fn check_cancellation(&self) -> Result<()> {
+        self.deadline.check().map_err(Error::from)
+    }
+
+    /// Return true when this context carries an active deadline.
+    pub fn has_deadline(&self) -> bool {
+        self.deadline.has_deadline()
+    }
+
+    /// Return the remaining budget, or `None` when no deadline is active.
+    pub fn remaining_deadline(&self) -> Option<Duration> {
+        self.deadline.remaining()
+    }
+
     /// Try to get a shared resource and return a typed error if missing.
     ///
     /// # Errors
@@ -397,7 +453,11 @@ impl Ctx {
                 "IdGenerator requires an active pipeline context",
             ));
         };
-        comp_ctx.app_ctx().next_id(None).await.map_err(Error::from)
+        comp_ctx
+            .app_ctx()
+            .next_id(None, self.deadline)
+            .await
+            .map_err(Error::from)
     }
 
     /// Declare a persistent state for the current component.
@@ -544,6 +604,7 @@ impl Ctx {
             comp_ctx: Some(derived.clone()),
             state: self.state.clone(),
             fn_ctx: self.fn_ctx.clone(),
+            deadline: self.deadline,
             handler_chain: self.handler_chain.clone(),
         };
         let group_guard = StatsGroupEndGuard::new(derived);
@@ -847,12 +908,17 @@ impl Ctx {
         let state = self.state.clone();
         let scope_fn_ctx = fn_ctx.clone();
         let scope_handler_chain = self.handler_chain.clone();
+        // Foreground child inherits the caller's current scoped deadline —
+        // the same value passed to core use_mount below.
+        let child_deadline = self.deadline;
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
+                let deadline = child_deadline;
                 let ctx = Ctx {
                     comp_ctx: Some(child_comp_ctx),
                     state: state.clone(),
                     fn_ctx: Some(scope_fn_ctx.clone()),
+                    deadline,
                     handler_chain: scope_handler_chain.clone(),
                 };
                 Box::pin(async move {
@@ -864,17 +930,20 @@ impl Ctx {
             format!("mount:{key}"),
         );
 
-        let handle = match child_component.use_mount(comp_ctx, processor).await {
+        let handle = match child_component
+            .use_mount(comp_ctx, processor, self.deadline)
+            .await
+        {
             Ok(handle) => handle,
             Err(err) => {
-                return Err(Error::engine(format!("{err}")));
+                return Err(Error::from(err));
             }
         };
         let value = handle.result(Some(comp_ctx)).await;
         let value = match value {
             Ok(value) => value,
             Err(err) => {
-                return Err(Error::engine(format!("{err}")));
+                return Err(Error::from(err));
             }
         };
         let result: T = match value.deserialize() {
@@ -935,7 +1004,12 @@ impl Ctx {
             })
             .collect();
 
-        futures::future::try_join_all(futs).await
+        let outcomes = futures::future::join_all(futs).await;
+        let mut values = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            values.push(outcome?);
+        }
+        Ok(values)
     }
 
     /// Cached computation. If `key` hasn't changed since the last run,
@@ -976,7 +1050,8 @@ impl Ctx {
     /// Run a closure concurrently for each item, creating a child scope per item.
     ///
     /// Each item gets its own `Ctx` child scope keyed by `key_fn(item)`.
-    /// All closures run concurrently via `try_join_all`.
+    /// All closures run concurrently; every started item runs to
+    /// completion, then the first error in input order is returned.
     ///
     /// # Examples
     ///
@@ -1034,12 +1109,18 @@ impl Ctx {
             })
             .collect();
 
-        futures::future::try_join_all(futs).await
+        let outcomes = futures::future::join_all(futs).await;
+        let mut values = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            values.push(outcome?);
+        }
+        Ok(values)
     }
 
     /// Run a closure concurrently for each item within the current scope (no child scopes).
     ///
-    /// Like `futures::future::try_join_all` but with a mapping closure.
+    /// Like `futures::future::join_all` plus result collection: every started
+    /// item runs to completion, then the first error in input order is returned.
     ///
     /// # Examples
     ///
@@ -1063,8 +1144,25 @@ impl Ctx {
         F: Fn(I::Item) -> Fut,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let futs: Vec<_> = items.into_iter().map(f).collect();
-        futures::future::try_join_all(futs).await
+        self.check_cancellation()?;
+        let deadline = self.deadline;
+        let futs: Vec<_> = items
+            .into_iter()
+            .map(|item| async {
+                deadline.check().map_err(Error::from)?;
+                let result = f(item).await;
+                if result.is_ok() {
+                    deadline.check().map_err(Error::from)?;
+                }
+                result
+            })
+            .collect();
+        let outcomes = futures::future::join_all(futs).await;
+        let mut values = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            values.push(outcome?);
+        }
+        Ok(values)
     }
 }
 
@@ -1079,7 +1177,8 @@ where
 {
     BoxedProcessor::new(
         move |comp_ctx| {
-            let ctx = Ctx::new(Some(comp_ctx), state.clone());
+            // Live refresh components are deadline-isolated by design.
+            let ctx = Ctx::new(Some(comp_ctx), state.clone(), DeadlineContext::NONE);
             Box::pin(async move {
                 f(ctx).await?;
                 Ok(Value::unit())
@@ -1088,4 +1187,100 @@ where
         None,
         processor_name,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{App, UpdateOptions};
+    use cocoindex_core::engine::deadline::{
+        testing_advance_deadline_clock, testing_disable_deadline_clock,
+        testing_reset_deadline_clock,
+    };
+
+    static TEST_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TestClockGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestClockGuard {
+        fn new() -> Self {
+            let guard = TEST_CLOCK_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            testing_reset_deadline_clock();
+            Self { _guard: guard }
+        }
+
+        fn reset(&self) {
+            testing_reset_deadline_clock();
+        }
+    }
+
+    impl Drop for TestClockGuard {
+        fn drop(&mut self) {
+            testing_disable_deadline_clock();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn next_raw_id_checks_deadline_before_allocating() {
+        let clock = TestClockGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::builder("ctx_next_raw_id_deadline")
+            .db_path(dir.path().join("lmdb"))
+            .build()
+            .await
+            .unwrap();
+
+        let err = app
+            .update_with_options(
+                UpdateOptions {
+                    timeout: Some(Duration::from_secs(1)),
+                    ..UpdateOptions::default()
+                },
+                |ctx| async move {
+                    testing_advance_deadline_clock(Duration::from_secs(2));
+                    let _ = ctx.next_raw_id().await?;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.is_deadline_exceeded());
+
+        clock.reset();
+        let first_id_after_timeout = app
+            .update(|ctx| async move { ctx.next_raw_id().await })
+            .await
+            .unwrap();
+        assert_eq!(
+            first_id_after_timeout, 1,
+            "expired next_id must not consume an ID allocation"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn with_timeout_scope_applies_deadline_to_scoped_ctx() {
+        let _clock = TestClockGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::builder("ctx_with_timeout_scope_deadline")
+            .db_path(dir.path().join("lmdb"))
+            .build()
+            .await
+            .unwrap();
+
+        let err = app
+            .update(|ctx| async move {
+                ctx.with_timeout_scope(Duration::from_secs(1), |ctx| async move {
+                    testing_advance_deadline_clock(Duration::from_secs(2));
+                    ctx.check_cancellation()
+                })
+                .await
+            })
+            .await
+            .unwrap_err();
+        assert!(err.is_deadline_exceeded());
+    }
 }

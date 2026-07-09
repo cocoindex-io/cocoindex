@@ -13,6 +13,7 @@ import pydantic as _pydantic
 import cocoindex as _coco
 import instructor as _instructor
 import litellm as _litellm
+from cocoindex._internal import deadline as _deadline
 from cocoindex.ops.entity_resolution import (
     CanonicalSide as _CanonicalSide,
     PairDecision as _PairDecision,
@@ -48,6 +49,10 @@ of `matched` being null.
 """
 
 
+class _InvalidModelOutput(Exception):
+    """The model returned a `matched` value outside the candidate list."""
+
+
 class LlmPairResolver:
     """Built-in :class:`PairResolver` using ``instructor`` + ``litellm``.
 
@@ -64,7 +69,7 @@ class LlmPairResolver:
         model: str,
         entity_type: str | None = None,
         extra_guidance: str | None = None,
-        retries: int = 5,
+        retries: int = 2,
     ) -> None:
         """
         Args:
@@ -76,7 +81,8 @@ class LlmPairResolver:
             extra_guidance: Optional domain rules appended to the default
                 prompt. Do **not** include output-format instructions.
             retries: Max retries when the LLM returns an invalid ``matched``
-                value. Default 2.
+                value. Default 2. An active ``coco.timeout()`` deadline can
+                only stop retries sooner, never extend them.
         """
         self._model = model
         self._retries = retries
@@ -102,7 +108,7 @@ class LlmPairResolver:
             {"role": "user", "content": user_message},
         ]
 
-        for attempt in range(1 + self._retries):
+        async def _attempt() -> _PairDecision:
             result = await self._get_client().chat.completions.create(
                 model=self._model,
                 response_model=_LlmResponse,
@@ -118,8 +124,22 @@ class LlmPairResolver:
             )
             messages.append({"role": "assistant", "content": result.model_dump_json()})
             messages.append({"role": "user", "content": feedback})
+            raise _InvalidModelOutput(feedback)
 
-        return _PairDecision()
+        # Retry invalid model output up to the fixed cap. An active CocoIndex
+        # deadline can only stop retries sooner, never extend them. Historical
+        # behavior retries immediately, so the backoff is zero.
+        try:
+            return await _deadline.retry_transient(
+                _attempt,
+                retry_on=(_InvalidModelOutput,),
+                max_attempts=1 + self._retries,
+                backoff=lambda _attempt_index: 0.0,
+            )
+        except _InvalidModelOutput:
+            # Exhausted the cap without a valid answer: keep the public
+            # contract of returning an empty decision instead of raising.
+            return _PairDecision()
 
     def __coco_memo_key__(self) -> object:
         return self._memo_key
