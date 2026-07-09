@@ -88,14 +88,14 @@ def _process_stable_type_source_data() -> None:
         coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
 
 
-def test_stable_memo_type_id_reuses_memo_across_renamed_dataclass() -> None:
+def test_stable_type_id_reuses_memo_across_renamed_dataclass() -> None:
     GlobalDictTarget.store.clear()
     _stable_type_source_data.clear()
     _metrics.clear()
 
     app = coco.App(
         coco.AppConfig(
-            name="test_stable_memo_type_id_reuses_memo_across_renamed_dataclass",
+            name="test_stable_type_id_reuses_memo_across_renamed_dataclass",
             environment=coco_env,
         ),
         _process_stable_type_source_data,

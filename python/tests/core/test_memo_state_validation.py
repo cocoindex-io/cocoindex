@@ -14,6 +14,7 @@ from typing import Any
 
 import cocoindex as coco
 
+from cocoindex._internal.memo_fingerprint import unregister_memo_key_function
 from tests import common
 from tests.common.target_states import (
     DictDataWithPrev,
@@ -716,7 +717,7 @@ def test_state_changed_but_reusable_component_sync() -> None:
 
 
 # ============================================================================
-# Raw class-object metaclass state validation (sync)
+# Raw class-object metaclass memo methods are ignored (sync)
 # ============================================================================
 
 _class_object_source: dict[str, type] = {}
@@ -725,24 +726,30 @@ _class_object_prev_states: list[Any] = []
 
 class _ClassObjectMemoMeta(type):
     def __coco_memo_key__(cls) -> object:
-        return getattr(cls, "stable_key")
+        raise AssertionError("class objects must not call metaclass memo key")
 
     def __coco_memo_state__(cls, prev_state: Any) -> coco.MemoStateOutcome:
-        state_value = getattr(cls, "state_value")
         _class_object_prev_states.append(prev_state)
-        memo_valid = not coco.is_non_existence(prev_state) and prev_state == state_value
-        return coco.MemoStateOutcome(state=state_value, memo_valid=memo_valid)
+        raise AssertionError("class objects must not call metaclass memo state")
 
 
-def _make_class_object(stable_key: str, state_value: int, content: str) -> type:
+def _make_class_object(
+    stable_key: str,
+    state_value: int,
+    content: str,
+    stable_type_id: str | None = None,
+) -> type:
+    attrs: dict[str, object] = {
+        "stable_key": stable_key,
+        "state_value": state_value,
+        "content": content,
+    }
+    if stable_type_id is not None:
+        attrs["__coco_memo_type_id__"] = stable_type_id
     return _ClassObjectMemoMeta(
         f"ClassObject_{stable_key}_{state_value}_{content}",
         (),
-        {
-            "stable_key": stable_key,
-            "state_value": state_value,
-            "content": content,
-        },
+        attrs,
     )
 
 
@@ -759,8 +766,8 @@ def _process_class_objects() -> None:
         coco.declare_target_state(GlobalDictTarget.target_state(key, result))
 
 
-def test_class_object_metaclass_state_validation_sync() -> None:
-    """Class-object metaclass state participates in App memo validation."""
+def test_class_object_metaclass_memo_methods_are_ignored_sync() -> None:
+    """Class objects use stable type IDs and never call metaclass memo methods."""
     GlobalDictTarget.store.clear()
     _class_object_source.clear()
     _class_object_prev_states.clear()
@@ -768,53 +775,97 @@ def test_class_object_metaclass_state_validation_sync() -> None:
 
     app = coco.App(
         coco.AppConfig(
-            name="test_class_object_metaclass_state_validation_sync",
+            name="test_class_object_metaclass_memo_methods_are_ignored_sync",
             environment=coco_env,
         ),
         _process_class_objects,
     )
 
-    # Run 1: no previous state, so the transform executes and persists content A.
-    _class_object_source["row"] = _make_class_object("stable", 1, "A")
+    stable_type_id = "test.ClassObjectMemo/v1"
+    cls = _make_class_object("stable", 1, "A", stable_type_id)
+
+    # Run 1: the transform executes and no metaclass memo methods are called.
+    _class_object_source["row"] = cls
     app.update_blocking()
     assert _metrics.collect() == {"call.transform_class_object": 1}
-    assert len(_class_object_prev_states) == 1
-    assert coco.is_non_existence(_class_object_prev_states[0])
+    assert _class_object_prev_states == []
     assert GlobalDictTarget.store.data == {
         "row": DictDataWithPrev(
             data="class content: A", prev=[], prev_may_be_missing=True
         )
     }
 
-    # Run 2: equivalent replacement with same state is a cache hit; C is ignored.
-    _class_object_source["row"] = _make_class_object("stable", 1, "C")
+    # Run 2: a distinct class object with the same stable type ID is a cache hit.
+    # Class schema/state changes are intentionally not part of the class-object
+    # fingerprint; users who depend on them must include them with `memo_key=`.
+    _class_object_source["row"] = _make_class_object("renamed", 2, "B", stable_type_id)
     app.update_blocking()
     assert _metrics.collect() == {}
-    assert len(_class_object_prev_states) == 2
-    assert coco.is_non_existence(_class_object_prev_states[0])
-    assert _class_object_prev_states[1:] == [1]
+    assert _class_object_prev_states == []
     assert GlobalDictTarget.store.data["row"].data == "class content: A"
 
-    # Run 3: same key but new state invalidates the cache and persists content B.
-    _class_object_source["row"] = _make_class_object("stable", 2, "B")
+    # Run 3: a distinct stable type ID changes the fingerprint, so the transform
+    # re-executes and the previous target state is made available.
+    _class_object_source["row"] = _make_class_object(
+        "changed", 3, "C", "test.ClassObjectMemo/v2"
+    )
     app.update_blocking()
     assert _metrics.collect() == {"call.transform_class_object": 1}
-    assert len(_class_object_prev_states) == 3
-    assert coco.is_non_existence(_class_object_prev_states[0])
-    assert _class_object_prev_states[1:] == [1, 1]
+    assert _class_object_prev_states == []
     assert GlobalDictTarget.store.data == {
         "row": DictDataWithPrev(
-            data="class content: B",
+            data="class content: C",
             prev=["class content: A"],
             prev_may_be_missing=False,
         )
     }
 
-    # Run 4: state 2 was persisted, so another replacement hits cache; D is ignored.
-    _class_object_source["row"] = _make_class_object("stable", 2, "D")
-    app.update_blocking()
-    assert _metrics.collect() == {}
-    assert len(_class_object_prev_states) == 4
-    assert coco.is_non_existence(_class_object_prev_states[0])
-    assert _class_object_prev_states[1:] == [1, 1, 2]
-    assert GlobalDictTarget.store.data["row"].data == "class content: B"
+
+def test_class_object_registered_metaclass_memo_state_sync() -> None:
+    GlobalDictTarget.store.clear()
+    _class_object_source.clear()
+    _class_object_prev_states.clear()
+    _metrics.clear()
+
+    def class_object_key(cls: Any) -> object:
+        return cls.stable_key
+
+    def class_object_state(cls: Any, prev_state: Any) -> coco.MemoStateOutcome:
+        return coco.MemoStateOutcome(
+            state=cls.state_value,
+            memo_valid=(
+                not coco.is_non_existence(prev_state) and cls.state_value == prev_state
+            ),
+        )
+
+    coco.register_memo_key_function(
+        _ClassObjectMemoMeta,
+        class_object_key,
+        state_fn=class_object_state,
+    )
+    try:
+        app = coco.App(
+            coco.AppConfig(
+                name="test_class_object_registered_metaclass_memo_state_sync",
+                environment=coco_env,
+            ),
+            _process_class_objects,
+        )
+
+        _class_object_source["row"] = _make_class_object("row", 1, "A")
+        app.update_blocking()
+        assert _metrics.collect() == {"call.transform_class_object": 1}
+        assert GlobalDictTarget.store.data["row"].data == "class content: A"
+
+        _class_object_source["row"] = _make_class_object("row", 1, "B")
+        app.update_blocking()
+        assert _metrics.collect() == {}
+        assert GlobalDictTarget.store.data["row"].data == "class content: A"
+
+        _class_object_source["row"] = _make_class_object("row", 2, "C")
+        app.update_blocking()
+        assert _metrics.collect() == {"call.transform_class_object": 1}
+        assert GlobalDictTarget.store.data["row"].data == "class content: C"
+        assert _class_object_prev_states == []
+    finally:
+        unregister_memo_key_function(_ClassObjectMemoMeta)

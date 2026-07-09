@@ -77,6 +77,8 @@ A memoized function:
 
 When a memoized function's cache hits, its **body does not run** — and neither do any nested `@coco.fn` calls inside it. The cached output is replayed directly: the previous return value is returned, and any target states the function declared on its previous run are carried over.
 
+The fragment below omits the enclosing `App` and processing component. Treat the calls as invocations of the same processing component across successive application updates.
+
 ```python
 @coco.fn(memo=True)
 async def inner(text: str) -> str:
@@ -88,11 +90,11 @@ async def outer(text: str) -> str:
     print("outer ran")
     return await inner(text) + "!"
 
-# First call: both print, both bodies execute
+# First component update: both print, both bodies execute.
 result = await outer("hello")
 
-# Second call with same inputs: nothing prints — outer's cached value is returned
-# directly, and inner is not invoked at all.
+# Later component update with the same input: nothing prints. The cached value
+# from outer is returned directly, and inner is not invoked at all.
 result = await outer("hello")
 ```
 
@@ -174,11 +176,19 @@ def summarize(text: str) -> str:
     return call_llm(SYSTEM_PROMPT, text, model=MODEL)
 ```
 
-The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
+The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), including custom memo keys, registered memo key functions, stable type IDs, and built-in handling for primitives, containers, dataclasses, Pydantic models, and class objects.
 
-:::caution[Snapshotted at decoration time]
-`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values — instance attributes in a bound method, request-scoped config, anything that changes at runtime — pass them as regular function arguments instead, so the memoization layer observes each new value.
-:::
+:::::caution[Snapshotted at decoration time]
+`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call.
+
+Only `deps` is snapshotted at decoration time; regular function arguments are fingerprinted when the function is called.
+
+This has three consequences:
+
+- Register stable type IDs before decorating any function whose `deps` include values of that type: define `__coco_memo_type_id__` on the class, or call `register_memo_key_function(..., stable_type_id=...)`, before any `@coco.fn(..., deps=...)` or `@coco.fn.as_async(..., deps=...)` decorator that references those values.
+- A later registration can affect future argument fingerprints, but it cannot retroactively update the logic fingerprint already computed for that decorated function.
+- For per-call or per-instance values — instance attributes in a bound method, request-scoped config, anything that changes at runtime — pass them as regular function arguments instead, so the memoization layer observes each new value.
+:::::
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
