@@ -14,18 +14,20 @@ def get_env_db_path(name: str) -> pathlib.Path:
     return _tmp_db_path_base / name
 
 
-_PATH_PREFIX = str(pathlib.Path(__file__).parent.parent) + "/"
-
-
 def create_test_env(
     test_file_path: str,
     suffix: str | None = None,
     *,
     exception_handler: cocoindex.ExceptionHandler | None = None,
 ) -> cocoindex.Environment:
-    base_name = (
-        test_file_path.removeprefix(_PATH_PREFIX).removesuffix(".py").replace("/", "__")
-    )
+    tests_dir = pathlib.Path(__file__).parent.parent.resolve()
+    test_path = pathlib.Path(test_file_path).resolve()
+    try:
+        rel_path = test_path.relative_to(tests_dir)
+        base_name = str(rel_path.with_suffix("")).replace("\\", "__").replace("/", "__")
+    except ValueError:
+        base_name = test_path.name.removesuffix(".py")
+
     if suffix is not None:
         base_name = f"{base_name}__{suffix}"
     settings = cocoindex.Settings.from_env(db_path=get_env_db_path(base_name))
