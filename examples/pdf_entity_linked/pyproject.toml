@@ -1,0 +1,16 @@
+[project]
+name = "pdf-entity-linked"
+version = "0.1.0"
+description = "CocoIndex example: convert PDFs to entity-linked markdown using optimistic target state writes."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[postgres]>=1.0.7",
+    "asyncpg>=0.29.0",
+    "docling>=2.0.0",
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.uv.sources]
+cocoindex = { path = "../..", editable = true }
