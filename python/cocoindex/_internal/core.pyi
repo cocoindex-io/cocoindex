@@ -704,3 +704,31 @@ class RateLimiter:
         cls, max_rows_per_second: float, burst_window_secs: float = 1.0
     ) -> "RateLimiter": ...
     def acquire(self, n: int = 1) -> Coroutine[Any, Any, None]: ...
+
+########################################################
+# GPU pool
+########################################################
+
+class GPUPool:
+    def __init__(self, num_gpus: int = 1) -> None: ...
+    
+    @property
+    def num_gpus(self) -> int: ...
+
+    async def acquire(self, fraction: float) -> int:
+        """
+        Acquires a fraction of a GPU and returns the GPU ID.
+        """
+        ...
+
+    async def release(self, gpu_id: int, fraction: float) -> None:
+        """
+        Releases a fraction of capacity back to the specified GPU ID.
+        """
+        ...
+
+    @staticmethod
+    def default() -> "GPUPool": ...
+
+    @staticmethod
+    def from_config(config_str: str) -> "GPUPool": ...
