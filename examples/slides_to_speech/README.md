@@ -54,7 +54,7 @@ async def process_slide(slide: SlidePage, filename: str, table: lancedb.TableTar
         speaker_notes=notes, voice=voice, embedding=embedding,
     ))
 
-@coco.fn
+@coco.fn(memo=True)  # unchanged deck skips reading and rendering entirely
 async def process_file(file: FileLike, table: lancedb.TableTarget[SlideRecord]) -> None:
     slides = await pdf_to_slides(await file.read())
     await coco.mount_each(
@@ -67,7 +67,7 @@ async def process_file(file: FileLike, table: lancedb.TableTarget[SlideRecord]) 
 
 The MP3 audio is stored right in the LanceDB row, so a semantic-search hit comes with playable narration attached.
 
-When a PDF changes, its pages are rendered again to discover the new slide inputs. Each page is then matched to its own memoized component, so unchanged slides carry their existing rows forward while changed slides recompute and synchronize independently.
+An unchanged PDF is skipped at the `process_file` boundary, before CocoIndex reads or renders it. When a PDF does change, its pages are rendered again to discover the new slide inputs. Each page is then matched to its own memoized component, so unchanged slides carry their existing rows forward while changed slides recompute and synchronize independently.
 
 <p align="center">
   📘 <b><a href="https://cocoindex.io/docs/examples/slides-to-speech/">Full Tutorial →</a></b><br/>

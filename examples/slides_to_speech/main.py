@@ -173,7 +173,7 @@ async def process_slide(
     )
 
 
-@coco.fn
+@coco.fn(memo=True)
 async def process_file(file: FileLike, table: lancedb.TableTarget[SlideRecord]) -> None:
     slides = await pdf_to_slides(await file.read())
     await coco.mount_each(
