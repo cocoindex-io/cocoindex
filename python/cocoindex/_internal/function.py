@@ -34,6 +34,11 @@ from typing import (
 from cocoindex._internal.environment import Environment, get_event_loop_or_default
 
 from . import core
+from .batching import (
+    BatchItemFailure,
+    wrap_batch_fn_async,
+    wrap_batch_fn_sync,
+)
 from .component_ctx import (
     _context_var,
     _enter_component_context,
@@ -1480,9 +1485,15 @@ class AsyncFunction(Function[P, R_co]):
         try:
             result = await batcher.run(input_val)
             _deadline_checkpoint()
-            return result
         finally:
             self._release_batcher(batcher_key)
+        # After a RetryWithSmallerBatch split, a failed sub-batch delivers its
+        # error as a per-item sentinel through the output list (the batcher
+        # itself only supports whole-batch errors). Unwrap it here so only the
+        # affected callers see the failure.
+        if isinstance(result, BatchItemFailure):
+            raise result.error
+        return result
 
     async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
         assert self._orig_async_fn is not None
@@ -1643,6 +1654,14 @@ class AsyncFunction(Function[P, R_co]):
         options = core.BatchingOptions(
             max_batch_size=self._max_batch_size if self._batching else 1
         )
+        # Honor RetryWithSmallerBatch raised by the batch body: split the
+        # batch and retry the halves. Only meaningful in batching mode
+        # (runner-only batches always have exactly one item).
+        if self._batching:
+            if inspect.iscoroutinefunction(batch_runner_fn):
+                batch_runner_fn = wrap_batch_fn_async(batch_runner_fn)
+            else:
+                batch_runner_fn = wrap_batch_fn_sync(batch_runner_fn)  # type: ignore[arg-type]
         if inspect.iscoroutinefunction(batch_runner_fn):
             return core.Batcher.new_async(queue, options, batch_runner_fn, async_ctx)
         else:

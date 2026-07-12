@@ -1057,6 +1057,171 @@ async def test_batching_method_clears_idle_batchers_per_instance() -> None:
     assert async_fn._batchers == {}  # type: ignore[attr-defined]
 
 
+# ============================================================================
+# RetryWithSmallerBatch: the engine splits the batch and retries the halves
+# ============================================================================
+
+
+class _BatchLimitError(Exception):
+    """Stands in for a provider-side 'batch too large' rejection."""
+
+
+@pytest.mark.asyncio
+async def test_retry_with_smaller_batch_splits_until_success() -> None:
+    """A batch rejected as too large is halved until every item succeeds."""
+    batch_sizes: list[int] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @coco.fn.as_async(batching=True)
+    async def limited(inputs: list[int]) -> list[int]:
+        batch_sizes.append(len(inputs))
+        if len(batch_sizes) == 1:
+            started.set()
+            await release.wait()
+        if len(inputs) > 2:
+            raise coco.RetryWithSmallerBatch() from _BatchLimitError("too big")
+        return [x * 2 for x in inputs]
+
+    # First call runs inline and blocks, so the next four queue into one batch.
+    task0 = asyncio.create_task(limited(0))
+    await started.wait()
+    tasks = [asyncio.create_task(limited(v)) for v in [1, 2, 3, 4]]
+    await asyncio.sleep(0.05)  # let them enqueue behind the inline call
+    release.set()
+
+    results = await asyncio.gather(task0, *tasks)
+    assert results == [0, 2, 4, 6, 8]
+
+    # Inline [0], then the rejected batch of 4, then its two halves.
+    assert batch_sizes[:2] == [1, 4]
+    assert sorted(batch_sizes[2:]) == [2, 2]
+
+
+@pytest.mark.asyncio
+async def test_retry_with_smaller_batch_isolates_poison_item() -> None:
+    """One bad input fails only its own caller; the rest of the batch succeeds."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    call_count = 0
+
+    @coco.fn.as_async(batching=True)
+    async def embed(inputs: list[int]) -> list[int]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            started.set()
+            await release.wait()
+        if any(x < 0 for x in inputs):
+            if len(inputs) == 1:
+                raise ValueError(f"bad input {inputs[0]}")
+            raise coco.RetryWithSmallerBatch() from _BatchLimitError("rejected")
+        return [x * 2 for x in inputs]
+
+    task0 = asyncio.create_task(embed(1))
+    await started.wait()
+    tasks = [asyncio.create_task(embed(v)) for v in [2, 3, -7, 4]]
+    await asyncio.sleep(0.05)
+    release.set()
+
+    results = await asyncio.gather(task0, *tasks, return_exceptions=True)
+    assert results[:3] == [2, 4, 6]
+    assert isinstance(results[3], ValueError)
+    assert str(results[3]) == "bad input -7"
+    assert results[4] == 8
+
+
+@pytest.mark.asyncio
+async def test_retry_with_smaller_batch_single_item_raises_cause() -> None:
+    """At batch size 1 the wrapped original error surfaces, not the signal."""
+
+    @coco.fn.as_async(batching=True)
+    async def always_split(inputs: list[int]) -> list[int]:
+        raise coco.RetryWithSmallerBatch() from ValueError("real error")
+
+    with pytest.raises(ValueError, match="real error"):
+        await always_split(1)
+
+
+@pytest.mark.asyncio
+async def test_retry_with_smaller_batch_single_item_without_cause() -> None:
+    """Signal raised bare (no cause) at size 1 propagates as itself."""
+
+    @coco.fn.as_async(batching=True)
+    async def always_split(inputs: list[int]) -> list[int]:
+        raise coco.RetryWithSmallerBatch()
+
+    with pytest.raises(coco.RetryWithSmallerBatch):
+        await always_split(1)
+
+
+def test_retry_with_smaller_batch_sync_driver() -> None:
+    """The sync split driver: same halving semantics, sequential halves."""
+    from cocoindex._internal.batching import BatchItemFailure, wrap_batch_fn_sync
+
+    batch_sizes: list[int] = []
+
+    def body(inputs: list[int]) -> list[int]:
+        batch_sizes.append(len(inputs))
+        if len(inputs) > 1:
+            raise coco.RetryWithSmallerBatch() from _BatchLimitError("too big")
+        if inputs[0] < 0:
+            raise ValueError(f"bad input {inputs[0]}")
+        return [x * 2 for x in inputs]
+
+    run = wrap_batch_fn_sync(body)
+    outputs = run([1, 2, -3, 4])
+
+    assert outputs[0] == 2
+    assert outputs[1] == 4
+    assert isinstance(outputs[2], BatchItemFailure)
+    assert isinstance(outputs[2].error, ValueError)
+    assert outputs[3] == 8
+    # 4 -> (2, 2) -> four singles.
+    assert sorted(batch_sizes) == [1, 1, 1, 1, 2, 2, 4]
+
+
+def test_retry_with_smaller_batch_pickle_preserves_cause() -> None:
+    """The signal carries its cause through pickling (subprocess runners drop
+    ``__cause__`` and concurrent.futures then overwrites it with a
+    remote-traceback marker — the restored cause must win over that)."""
+    import pickle
+
+    from cocoindex._internal.batching import split_cause
+
+    try:
+        raise coco.RetryWithSmallerBatch() from ValueError("original failure")
+    except coco.RetryWithSmallerBatch as e:
+        signal = e
+
+    restored = pickle.loads(pickle.dumps(signal))
+    # Simulate concurrent.futures clobbering __cause__ on the parent side.
+    restored.__cause__ = RuntimeError("remote traceback marker")
+
+    cause = split_cause(restored)
+    assert isinstance(cause, ValueError)
+    assert str(cause) == "original failure"
+
+
+@coco.fn.as_async(batching=True, runner=coco.GPU)
+def _rwsb_subprocess_fn(inputs: list[int]) -> list[int]:
+    """Raises the split signal unconditionally — including at batch size 1."""
+    raise coco.RetryWithSmallerBatch() from ValueError("original failure")
+
+
+@pytest.mark.asyncio
+async def test_gpu_runner_subprocess_retry_with_smaller_batch(
+    monkeypatch: pytest.MonkeyPatch, _reset_gpu_runner: None
+) -> None:
+    """The signal raised at size 1 inside a real subprocess unwraps to the
+    original error on the caller side — no batch-size check in the body."""
+    monkeypatch.setenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", "1")
+    coco.GPU._use_subprocess = None
+
+    with pytest.raises(ValueError, match="original failure"):
+        await _rwsb_subprocess_fn(5)
+
+
 # Note: With always-async design, functions with batching/runner are always async.
 # The underlying implementation can be sync - it gets wrapped appropriately.
 # Both in-process and subprocess execution work for sync underlying functions.

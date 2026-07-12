@@ -22,6 +22,34 @@ if _typing.TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
 
+def _is_oom_error(error: BaseException) -> bool:
+    """Whether ``error`` is an accelerator/host out-of-memory failure.
+
+    Matches by message rather than type so it covers ``torch.OutOfMemoryError``
+    ("CUDA out of memory..."), MPS ("MPS backend out of memory..."), and older
+    torch versions that raise plain ``RuntimeError`` — without importing torch.
+    """
+    return isinstance(error, MemoryError) or "out of memory" in str(error).lower()
+
+
+def _empty_accelerator_cache() -> None:
+    """Best-effort release of cached accelerator memory after an OOM.
+
+    Without this, allocator fragmentation often makes the retried halves OOM
+    as well. Never raises — failure to release just means the retry is less
+    likely to succeed.
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
 class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
     """Wrapper for SentenceTransformer models that implements VectorSchemaProvider.
 
@@ -114,13 +142,26 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
             calls — mixing explicit values with defaults creates separate batchers.
         """
         model = self._get_model()
-        embeddings: _NDArray[_np.float32] = model.encode(
-            texts,
-            prompt_name=prompt_name,
-            convert_to_numpy=True,
-            normalize_embeddings=normalize_embeddings,
-            show_progress_bar=False,
-        )  # type: ignore[assignment]
+        try:
+            embeddings: _NDArray[_np.float32] = model.encode(
+                texts,
+                prompt_name=prompt_name,
+                convert_to_numpy=True,
+                normalize_embeddings=normalize_embeddings,
+                show_progress_bar=False,
+            )  # type: ignore[assignment]
+        except Exception as e:
+            # Out-of-memory scales with batch size × padded sequence length,
+            # so smaller batches may fit where this one didn't: ask the
+            # engine to halve and retry. Unlike remote providers, local
+            # failures are transparent — OOM is the one composition-dependent
+            # class, so everything else (config/model errors) propagates
+            # as-is. A single item that doesn't fit fails on its own: at
+            # size 1 the engine unwraps the signal and raises the OOM error.
+            if _is_oom_error(e):
+                _empty_accelerator_cache()
+                raise coco.RetryWithSmallerBatch() from e
+            raise
         return list(embeddings)
 
     @coco.fn(memo=True, version=1, logic_tracking="self")

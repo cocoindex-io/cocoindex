@@ -310,6 +310,23 @@ embeddings = await asyncio.gather(
 
 The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
 
+#### Retrying a failed batch as smaller batches
+
+Some batch failures depend on the batch's composition rather than any single input — e.g. a provider's per-request token or payload limit, or one input the provider rejects. No fixed `max_batch_size` can rule these out. When the function body hits such a failure, raise `coco.RetryWithSmallerBatch` from it: CocoIndex halves the batch and retries each half, recursing down to single items. At size 1, the wrapped original error is raised as that item's own failure — so one bad input fails only its own caller, while the rest of the batch still succeeds. There is no need to check the batch size before raising: at size 1 the engine simply unwraps the signal and raises the original error.
+
+```python
+@coco.fn(batching=True, max_batch_size=64)
+async def embed(texts: list[str]) -> list[list[float]]:
+    try:
+        return await provider.embed(texts)
+    except ProviderError as e:
+        if is_transient(e) or is_auth_error(e):
+            raise  # retrying smaller can't help these
+        raise coco.RetryWithSmallerBatch() from e
+```
+
+Raising it is safe for *any* deterministic batch failure, even when you can't tell whether the batch size was the cause: if the error was actually global (it would fail at any size), the recursion terminates at single items and every caller receives the underlying error, at the bounded cost of extra attempts. Only propagate directly for errors where splitting provably can't help — global errors like invalid credentials, and transient errors (rate limits, network blips) that haven't yet been retried at the same size. Once same-size retries are exhausted, splitting is a reasonable last resort: a smaller request may pass where the large one timed out.
+
 :::tip[When to use batching]
 
 Batching is beneficial when:
