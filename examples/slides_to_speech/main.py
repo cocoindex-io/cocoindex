@@ -40,11 +40,11 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 LANCEDB_TABLE = "slides_to_speech"
 LANCEDB_URI = os.environ.get("LANCEDB_URI", "./lancedb_data")
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-POCKET_TTS_VOICE = os.environ.get("POCKET_TTS_VOICE", "alba")
 
 LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("slides_lancedb")
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 LLM_MODEL = coco.ContextKey[str]("llm_model", detect_change=True)
+TTS_VOICE = coco.ContextKey[str]("tts_voice", detect_change=True)
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ class SlidePage:
     image: bytes
 
 
-@coco.fn.as_async(runner=coco.GPU)
+@coco.fn.as_async(runner=coco.GPU, memo=True)
 def pdf_to_slides(content: bytes) -> list[SlidePage]:
     import pymupdf
 
@@ -120,12 +120,12 @@ def get_voice_state(voice: str) -> dict:
     return get_tts_model().get_state_for_audio_prompt(voice)
 
 
-@coco.fn.as_async(runner=coco.GPU)
-def text_to_speech(text: str) -> bytes:
+@coco.fn.as_async(runner=coco.GPU, memo=True)
+def text_to_speech(text: str, voice: str) -> bytes:
     model = get_tts_model()
     # Pocket TTS is not thread-safe; the coco.GPU runner serializes calls so the one
     # cached model is only ever driving a single synthesis at a time.
-    audio = model.generate_audio(get_voice_state(POCKET_TTS_VOICE), text)
+    audio = model.generate_audio(get_voice_state(voice), text)
     # audio is a 1D float tensor in [-1, 1] at model.sample_rate; pack it as int16 PCM.
     samples = np.clip(audio.to("cpu").numpy().reshape(-1), -1.0, 1.0)
     pcm16 = (samples * 32767.0).astype("<i2").tobytes()
@@ -152,13 +152,13 @@ class SlideRecord:
     embedding: Annotated[NDArray, EMBEDDER]
 
 
-@coco.fn
+@coco.fn(memo=True)
 async def process_slide(
     slide: SlidePage, filename: str, table: lancedb.TableTarget[SlideRecord]
 ) -> None:
     notes = await extract_speaker_notes(slide.image)
     voice, embedding = await asyncio.gather(
-        text_to_speech(notes),
+        text_to_speech(notes, coco.use_context(TTS_VOICE)),
         coco.use_context(EMBEDDER).embed(notes),
     )
     table.declare_row(
@@ -176,7 +176,12 @@ async def process_slide(
 @coco.fn(memo=True)
 async def process_file(file: FileLike, table: lancedb.TableTarget[SlideRecord]) -> None:
     slides = await pdf_to_slides(await file.read())
-    await coco.map(process_slide, slides, str(file.file_path.path), table)
+    await coco.mount_each(
+        process_slide,
+        ((slide.page_number, slide) for slide in slides),
+        str(file.file_path.path),
+        table,
+    )
 
 
 @coco.lifespan
@@ -185,6 +190,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     builder.provide(LANCE_DB, conn)
     builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
     builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash"))
+    builder.provide(TTS_VOICE, os.environ.get("POCKET_TTS_VOICE", "alba"))
     yield
 
 
@@ -225,12 +231,8 @@ def query(text: str, *, top_k: int = 5) -> None:
     vec = asyncio.run(embedder.embed(text))
     db = lancedb_client.connect(os.environ.get("LANCEDB_URI", "./lancedb_data"))
     table = db.open_table(LANCEDB_TABLE)
-    # Ask for cosine distance explicitly — LanceDB defaults to L2, whose values
-    # exceed 1.0 and would make `1 - distance` go negative. Cosine distance is
-    # 1 - similarity, so flipping it yields a similarity score in [0, 1].
-    for row in table.search(vec).distance_type("cosine").limit(top_k).to_list():
-        score = 1.0 - row["_distance"]
-        print(f"[{score:.3f}] {row['filename']} slide {row['page']}")
+    for row in table.search(vec).limit(top_k).to_list():
+        print(f"{row['filename']} slide {row['page']}")
         print(f"    {row['speaker_notes'][:120]}")
 
 
