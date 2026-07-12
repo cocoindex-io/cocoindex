@@ -43,6 +43,7 @@ from .component_ctx import (
 
 
 from .stable_path import StableKey
+from .batching import RetryWithSmallerBatch
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -907,6 +908,8 @@ __all__ = [
     "timeout",
     "check_cancellation",
     "DeadlineExceededError",
+    # .batching
+    "RetryWithSmallerBatch",
     # .context_keys
     "ContextKey",
     "ContextProvider",

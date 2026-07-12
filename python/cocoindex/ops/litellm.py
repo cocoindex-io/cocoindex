@@ -93,6 +93,22 @@ _RETRYABLE_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes(
     "Timeout",
 )
 
+# Errors about who we are or what we asked for (credentials, permissions,
+# unknown model, exhausted budget) — batch composition can't affect them, so
+# splitting the batch can't help.
+_GLOBAL_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes(
+    "AuthenticationError",
+    "PermissionDeniedError",
+    "NotFoundError",
+    "BudgetExceededError",
+)
+
+
+def _is_global_litellm_error(error: BaseException) -> bool:
+    return isinstance(
+        error, _GLOBAL_LITELLM_EXCEPTION_CLASSES
+    ) or _message_indicates_non_retryable_credentials_error(str(error))
+
 
 def _http_status_code(error: BaseException) -> int | None:
     for attr in ("status_code", "exception_status_code"):
@@ -250,7 +266,22 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         extra: dict[str, _Any] = {}
         if input_type is not None:
             extra["input_type"] = input_type
-        response = await self._aembedding_with_retry(texts, **extra)
+        try:
+            response = await self._aembedding_with_retry(texts, **extra)
+        except Exception as e:
+            # Anything reaching here is either global (credentials/model —
+            # splitting can't help) or has already exhausted its same-size
+            # retry budget above. For the latter, ask the engine to halve the
+            # batch and retry: smaller requests may pass where the big one
+            # couldn't (a provider's token/payload cap, one rejected input,
+            # or a timeout on an oversized payload). If the error is actually
+            # global after all, splitting still terminates: every item fails
+            # with it at size 1, at the cost of the sub-batches' retries.
+            # (No batch-size check needed — at size 1 the engine unwraps the
+            # signal and raises the original error.)
+            if not _is_global_litellm_error(e):
+                raise coco.RetryWithSmallerBatch() from e
+            raise
         return [
             _np.array(item["embedding"], dtype=_np.float32) for item in response.data
         ]

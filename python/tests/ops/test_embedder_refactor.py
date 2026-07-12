@@ -8,6 +8,9 @@ single ``NDArray[np.float32]`` rather than a ``list[NDArray]``.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, call, patch
 
 import numpy as np
@@ -15,6 +18,9 @@ import pytest
 
 pytest.importorskip("litellm", reason="litellm not installed")
 
+from litellm.exceptions import AuthenticationError  # noqa: E402
+
+import cocoindex as coco  # noqa: E402
 from cocoindex.ops.litellm import LiteLLMEmbedder  # noqa: E402
 
 # Note on the sleep patch target below: retry sleeps now happen inside
@@ -139,6 +145,119 @@ async def test_litellm_embedder_does_not_retry_non_transient_embedding_errors() 
 
     mocked_embedding.assert_awaited_once()
     sleep.assert_not_called()
+
+
+# ============================================================================
+# RetryWithSmallerBatch: over-limit batches are split, global errors are not
+# ============================================================================
+
+
+def _fake_embedding_response(texts: list[str]) -> Any:
+    # Embedding derived from the text so tests can verify item alignment.
+    return SimpleNamespace(data=[{"embedding": [float(len(t))]} for t in texts])
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_splits_oversized_batch() -> None:
+    """A provider batch-size rejection splits the batch; every text succeeds
+    with its own embedding (results stay aligned through the split)."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    call_inputs: list[list[str]] = []
+
+    async def fake_aembedding(*, model: str, input: list[str], **kwargs: Any) -> Any:
+        call_inputs.append(list(input))
+        if len(call_inputs) == 1:
+            started.set()
+            await release.wait()
+        if len(input) > 2:
+            raise _FakeHTTPError(400, "TOO_MANY_TOKENS_IN_BATCH")
+        return _fake_embedding_response(input)
+
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch("cocoindex.ops.litellm.litellm.aembedding", new=fake_aembedding):
+        # First call runs inline and blocks, so the next four coalesce into
+        # one batch of 4 — which the fake provider rejects.
+        task0 = asyncio.create_task(embedder.embed("a"))
+        await started.wait()
+        texts = ["bb", "ccc", "dddd", "eeeee"]
+        tasks = [asyncio.create_task(embedder.embed(t)) for t in texts]
+        await asyncio.sleep(0.05)  # let them enqueue behind the inline call
+        release.set()
+        results = await asyncio.gather(task0, *tasks)
+
+    for text, vec in zip(["a", *texts], results):
+        assert vec.tolist() == [float(len(text))]
+    # Inline [1], rejected [4], then the two halves of 2.
+    assert [len(c) for c in call_inputs[:2]] == [1, 4]
+    assert sorted(len(c) for c in call_inputs[2:]) == [2, 2]
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_raises_retry_with_smaller_batch_on_400() -> None:
+    """A non-retryable, non-global error on a multi-text batch becomes the
+    RetryWithSmallerBatch signal (with the original error as its cause)."""
+    embedder = LiteLLMEmbedder("fake-model")
+    provider_error = _FakeHTTPError(400, "batch exceeds maximum context length")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding",
+        new=AsyncMock(side_effect=provider_error),
+    ):
+        with pytest.raises(coco.RetryWithSmallerBatch) as exc_info:
+            await embedder._embed._execute_orig_async_fn(["a", "b"])
+    assert exc_info.value.__cause__ is provider_error
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_single_text_error_surfaces_original() -> None:
+    """With one text there is nothing to split — the caller sees the original
+    provider error (the engine unwraps the size-1 signal)."""
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding",
+        new=AsyncMock(side_effect=_FakeHTTPError(400, "input too large")),
+    ):
+        with pytest.raises(_FakeHTTPError):
+            await embedder.embed("only")
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_splits_after_transient_retries_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient error that survives the same-size retry budget is still
+    splittable — a smaller request may pass where the large one timed out."""
+    # Near-zero retry budget: the retry wrapper exhausts its deadline almost
+    # immediately (DeadlineExceededError, a TimeoutError subclass).
+    monkeypatch.setattr("cocoindex.ops.litellm._EMBEDDING_RETRY_TIMEOUT_SECONDS", 0.05)
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding",
+        new=AsyncMock(side_effect=_FakeHTTPError(429)),
+    ):
+        with pytest.raises(coco.RetryWithSmallerBatch) as exc_info:
+            await embedder._embed._execute_orig_async_fn(["a", "b"])
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_does_not_split_global_errors() -> None:
+    """Credential / auth errors can't be fixed by splitting — they propagate
+    as-is even for multi-text batches."""
+    embedder = LiteLLMEmbedder("fake-model")
+    auth_error = AuthenticationError(
+        message="access denied", llm_provider="openai", model="fake-model"
+    )
+    for error in (
+        _FakeHTTPError(401, "Invalid API key provided"),
+        auth_error,
+    ):
+        with patch(
+            "cocoindex.ops.litellm.litellm.aembedding",
+            new=AsyncMock(side_effect=error),
+        ):
+            with pytest.raises(type(error)):
+                await embedder._embed._execute_orig_async_fn(["a", "b"])
 
 
 @pytest.mark.asyncio
