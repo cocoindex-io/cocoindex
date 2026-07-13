@@ -274,3 +274,14 @@ def test_type_with_attributes() -> None:
         annotations=("Annotation1", "Annotation2"),
         nullable=False,
     )
+
+
+def test_nullable_type_preserves_annotations() -> None:
+    typ = Annotated[Annotated[str, "Inner"] | None, "Outer"]
+
+    result = analyze_type_info(typ)
+
+    assert result.core_type is str
+    assert result.base_type is str
+    assert result.nullable
+    assert result.annotations == ("Inner", "Outer")

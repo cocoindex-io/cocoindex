@@ -1,9 +1,8 @@
 ---
 title: "*Vector schema* annotations"
 description: >
-  Describe vector columns with VectorSchema and VectorSchemaProvider. Covers
-  the three annotation patterns (ContextKey, embedder instance, explicit
-  schema) and MultiVectorSchema for models like ColBERT.
+  Describe dense, sparse, and multi-vector columns with shared schema types and
+  provider protocols.
 ---
 The schema module (`cocoindex.resources.schema`) defines types that describe vector columns. CocoIndex connectors use these to automatically configure the correct column type (e.g., `vector(384)` in Postgres, `fixed_size_list<float32>(384)` in LanceDB).
 
@@ -119,3 +118,39 @@ multi_schema = MultiVectorSchema(
     vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=128)
 )
 ```
+
+## SparseVector / SparseVectorSchema
+
+`SparseVector` is the canonical value shared by connectors that support sparse vectors. It stores parallel tuples of 0-based integer indices and finite float weights. Indices must be non-negative, sorted ascending, and unique. Direct construction accepts only that canonical tuple/int/float representation. Use `from_arrays()` to coerce parallel numeric iterables and sort them by index; `from_mapping()` delegates to the same normalization path. `as_sparse_vector()` accepts either an already-canonical value or a mapping.
+
+```python
+from cocoindex.resources.schema import SparseVector
+
+sparse = SparseVector.from_mapping({7: 0.9, 1: 0.5})
+assert sparse.indices == (1, 7)
+assert sparse.values == (0.5, 0.9)
+
+sparse = SparseVector.from_arrays(encoder.indices, encoder.values)
+assert sparse.indices == tuple(sorted(encoder.indices))
+```
+
+`SparseVectorSchema` carries optional dimensionality. Sparse values use float32 across CocoIndex connectors. When supplied, `size` must be positive. The dimension is required by Postgres `sparsevec(n)` but optional for backends such as zvec and Qdrant.
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+
+from cocoindex.resources.schema import SparseVector, SparseVectorSchema
+
+@dataclass
+class SparseDoc:
+    id: str
+    sparse: Annotated[
+        SparseVector,
+        SparseVectorSchema(size=50_000),
+    ]
+```
+
+`SparseVectorSchemaProvider` is the corresponding provider protocol. Its `__coco_sparse_vector_schema__()` method can be supplied directly or through a `ContextKey`, following the same resolution pattern as `VectorSchemaProvider`.
+
+Metrics, scoring modifiers, index methods, and quantization are connector-specific and therefore stay on connector configuration rather than `SparseVectorSchema`.

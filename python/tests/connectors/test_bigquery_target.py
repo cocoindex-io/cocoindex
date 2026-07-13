@@ -9,7 +9,9 @@ import os
 import uuid
 from typing import Annotated, Any, cast
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex.connectorkits import target
@@ -17,6 +19,9 @@ from cocoindex.connectors import bigquery
 from cocoindex.connectors.bigquery import _target
 
 BIGQUERY_DB = coco.ContextKey[bigquery.ConnectionConfig]("bigquery_test_db")
+_UNPROVIDED_VECTOR_SCHEMA = coco.ContextKey[object](
+    "bigquery_test_unprovided_vector_schema"
+)
 
 
 @dataclasses.dataclass
@@ -42,6 +47,12 @@ class TypedRow:
 class OverrideRow:
     id: Annotated[int, bigquery.BigQueryType("NUMERIC")]
     vector: Annotated[list[float], bigquery.BigQueryType("ARRAY<FLOAT64>")]
+
+
+@dataclasses.dataclass
+class ContextAnnotatedVectorRow:
+    id: int
+    embedding: Annotated[NDArray[np.float32], _UNPROVIDED_VECTOR_SCHEMA]
 
 
 class FakeClient:
@@ -107,6 +118,15 @@ async def test_table_target_rejects_invalid_table_identifier() -> None:
             table_schema=schema,
             dataset="analytics",
         )
+
+
+@pytest.mark.asyncio
+async def test_table_schema_does_not_resolve_vector_context_annotations() -> None:
+    schema = await bigquery.TableSchema.from_class(
+        ContextAnnotatedVectorRow, primary_key=["id"]
+    )
+
+    assert schema.columns["embedding"].type == "JSON"
 
 
 @pytest.mark.asyncio

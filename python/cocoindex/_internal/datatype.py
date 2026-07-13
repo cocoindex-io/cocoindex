@@ -252,13 +252,15 @@ def analyze_type_info(t: Any, *, nullable: bool = False) -> DataTypeInfo:
         variant = MappingType(key_type=key_type, value_type=elem_type)
     elif base_type in (types.UnionType, typing.Union):
         non_none_types = [arg for arg in type_args if arg not in (None, types.NoneType)]
-        if len(non_none_types) == 0:
-            return analyze_type_info(None)
-
-        if len(non_none_types) == 1:
-            return analyze_type_info(
-                non_none_types[0],
-                nullable=nullable or len(non_none_types) < len(type_args),
+        if len(non_none_types) <= 1:
+            nested_info = analyze_type_info(
+                non_none_types[0] if non_none_types else None,
+                nullable=nullable
+                or bool(non_none_types)
+                and len(non_none_types) < len(type_args),
+            )
+            return nested_info._replace(
+                annotations=nested_info.annotations + annotations
             )
 
         variant = UnionType(variant_types=non_none_types)

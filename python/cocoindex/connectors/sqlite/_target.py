@@ -35,7 +35,7 @@ from typing_extensions import TypeVar
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import resolve_vector_schemas, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.rwlock import RWLock
 import msgspec
@@ -226,7 +226,9 @@ _JSON_MAPPING = _TypeMapping("TEXT", lambda v: json.dumps(v, default=str))
 
 
 async def _get_type_mapping(
-    python_type: Any, *, vector_schema: res_schema.VectorSchema | None = None
+    python_type: Any,
+    *,
+    vector_schema: res_schema.VectorSchema | None = None,
 ) -> _TypeMapping:
     """
     Get the SQLite type mapping for a Python type.
@@ -240,13 +242,12 @@ async def _get_type_mapping(
     Use `SqliteType` annotation with `typing.Annotated` to override the default.
     """
     type_info = analyze_type_info(python_type)
+    base_type = type_info.base_type
 
     # Check for SqliteType annotation override
     for annotation in type_info.annotations:
         if isinstance(annotation, SqliteType):
             return _TypeMapping(annotation.sqlite_type, annotation.encoder)
-
-    base_type = type_info.base_type
 
     # Check direct leaf type mappings
     if base_type in _LEAF_TYPE_MAPPINGS:
@@ -340,7 +341,10 @@ class TableSchema(Generic[RowT]):
         record_type: type[RowT],
         primary_key: list[str],
         *,
-        column_overrides: dict[str, SqliteType | res_schema.VectorSchemaProvider]
+        column_overrides: dict[
+            str,
+            SqliteType | res_schema.VectorSchemaProvider,
+        ]
         | None = None,
     ) -> "TableSchema[RowT]":
         """
@@ -365,16 +369,21 @@ class TableSchema(Generic[RowT]):
     @staticmethod
     async def _columns_from_record_type(
         record_type: type,
-        column_overrides: dict[str, SqliteType | res_schema.VectorSchemaProvider]
+        column_overrides: dict[
+            str,
+            SqliteType | res_schema.VectorSchemaProvider,
+        ]
         | None,
     ) -> dict[str, ColumnDef]:
         """Convert a record type to a dict of column name -> ColumnDef."""
         record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
 
-        for field in record_info.fields:
-            override = column_overrides.get(field.name) if column_overrides else None
-            type_info = analyze_type_info(field.type_hint)
+        for record_field in record_info.fields:
+            override = (
+                column_overrides.get(record_field.name) if column_overrides else None
+            )
+            type_info = analyze_type_info(record_field.type_hint)
 
             all_annotations = []
             if override is not None:
@@ -385,14 +394,12 @@ class TableSchema(Generic[RowT]):
             sqlite_type_annotation = next(
                 (t for t in all_annotations if isinstance(t, SqliteType)), None
             )
-            vector_schema = await anext(
-                (
-                    s
-                    for annot in all_annotations
-                    if (s := await res_schema.get_vector_schema(annot)) is not None
-                ),
-                None,
+            vector_schemas = await resolve_vector_schemas(
+                type_info.base_type,
+                all_annotations,
+                reject_sparse_vectors_for="SQLite",
             )
+            vector_schema = vector_schemas.vector
 
             # Determine type mapping
             if sqlite_type_annotation is not None:
@@ -401,10 +408,11 @@ class TableSchema(Generic[RowT]):
                 )
             else:
                 type_mapping = await _get_type_mapping(
-                    field.type_hint, vector_schema=vector_schema
+                    record_field.type_hint,
+                    vector_schema=vector_schema,
                 )
 
-            columns[field.name] = ColumnDef(
+            columns[record_field.name] = ColumnDef(
                 type=type_mapping.sqlite_type.strip(),
                 nullable=type_info.nullable,
                 encoder=type_mapping.encoder,

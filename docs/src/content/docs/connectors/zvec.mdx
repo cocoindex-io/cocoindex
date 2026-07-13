@@ -122,7 +122,11 @@ async def CollectionSchema.from_class(
     record_type: type[RowT],
     primary_key: list[str],
     *,
-    column_overrides: dict[str, ZvecType | ZvecVectorDef | ZvecFtsType | VectorSchemaProvider] | None = None,
+    column_overrides: dict[
+        str,
+        ZvecType | ZvecVectorDef | ZvecFtsType
+        | VectorSchemaProvider | SparseVectorSchemaProvider,
+    ] | None = None,
 ) -> CollectionSchema[RowT]
 ```
 
@@ -175,6 +179,7 @@ Scalar Python types map to zvec field types as follows:
 | `list[str]` / `list[int]` / `list[float]` / `list[bool]` | `ARRAY_STRING` / `ARRAY_INT64` / `ARRAY_DOUBLE` / `ARRAY_BOOL` |
 | other `list`, `dict`, nested structs | `STRING` (JSON) |
 | `NDArray` (with vector schema) | `VECTOR_FP32` (float32) or `VECTOR_FP16` (float16) |
+| `SparseVector` | `SPARSE_VECTOR_FP32` |
 
 Scalar fields get an invert index by default so they can be used in query filters. The primary-key column maps to the document `id` and is not stored as a separate field.
 
@@ -237,14 +242,26 @@ class Doc:
 
 #### Sparse vectors
 
-Mark a `dict[int, float]` field (mapping dimension → weight) as sparse with `ZvecVectorDef(sparse=True)`:
+Use the shared `SparseVector` type. Sparse values use float32. `SparseVectorSchema` is optional; zvec does not require a dimension, so `size` is accepted but ignored.
 
 ```python
+from dataclasses import dataclass
+from typing import Annotated
+
+from cocoindex.resources.schema import SparseVector, SparseVectorSchema
+
 @dataclass
-class Doc:
+class SparseDoc:
     id: str
-    sparse: Annotated[dict[int, float], ZvecVectorDef(sparse=True)]
+    sparse: Annotated[
+        SparseVector,
+        SparseVectorSchema(size=50_000),
+    ]
+
+schema = await zvec.CollectionSchema.from_class(SparseDoc, primary_key=["id"])
 ```
+
+At declaration time, the value may also be an integer-to-float mapping; CocoIndex validates and sorts it before writing. The legacy `Annotated[dict[int, float], ZvecVectorDef(sparse=True)]` spelling remains supported, but `SparseVector` is preferred for portable pipeline code. `ZvecVectorDef` can still accompany the shared type when a connector-specific metric is needed.
 
 ## Full example
 

@@ -217,6 +217,37 @@ _shared_sink = coco.TargetActionSink.from_fn(_apply_actions)
 
 When building queries from user-provided names (table, column, index) or values (record IDs, keys), you must guard against injection and ensure correctness. See [input_safety.md](input_safety.md) for patterns on identifier validation, parameterized queries, and value escaping.
 
+### Vector Schema Resolution
+
+Table-like connectors that infer dense or sparse vector columns from annotations must use the shared connector-kit resolver:
+
+```python
+from cocoindex.connectorkits import resolve_vector_schemas
+
+schemas = await resolve_vector_schemas(
+    type_info.base_type,
+    all_annotations,
+    # Include this only when the connector supports dense but not sparse vectors.
+    reject_sparse_vectors_for="MyConnector",
+)
+```
+
+The resolver gives direct annotations precedence over `ContextKey` providers, detects dense/sparse conflicts, and validates that `SparseVectorSchema` is attached only to a `SparseVector` field. Do not duplicate these checks in the connector.
+
+Connectors that do not consume vector metadata but still need to reject sparse columns should use the non-resolving guard, which deliberately ignores `ContextKey` annotations:
+
+```python
+from cocoindex.connectorkits import reject_sparse_vectors
+
+reject_sparse_vectors(
+    type_info.base_type,
+    all_annotations,
+    connector_name="MyConnector",
+)
+```
+
+Do not add `SparseVectorSchemaProvider` to a public override union when the connector rejects sparse vectors; annotations remain runtime-guarded without advertising unsupported input.
+
 ## Completion Checklist
 
 After implementing the connector code, complete these additional steps:

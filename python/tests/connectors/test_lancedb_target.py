@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple, cast
 
+import numpy as np
 import pytest
 
 import cocoindex as coco
