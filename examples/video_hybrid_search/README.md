@@ -3,7 +3,7 @@
 Index a folder of videos into an embedded [zvec](https://zvec.org) collection, one document per scene,
 then search it by keyframe vector, spoken words, and time window in a single query. CocoIndex keeps the
 collection in sync as the folder changes: add a clip and only its scenes process, delete a clip and its
-scenes drop, change the CLIP model and the embeddings recompute while transcripts stay cached.
+scenes drop, change the CLIP model and the embedding step reruns while transcripts stay cached.
 
 ## The idea
 
@@ -20,9 +20,8 @@ query can use all three at once.
 
 People have been building local video search tools lately (the
 [Framedex](https://news.ycombinator.com/item?id=48222733) and
-[edit-mind](https://news.ycombinator.com/item?id=48528029) discussions on Hacker News). The part they
-tend to hand-roll is keeping the index in sync as the library changes. That is the part CocoIndex owns
-here.
+[edit-mind](https://news.ycombinator.com/item?id=48528029) discussions on Hacker News). Those projects
+still have to manage index freshness themselves. That is the part CocoIndex owns here.
 
 ## How it works
 
@@ -137,7 +136,7 @@ Re-run `cocoindex update main.py` after each change and watch what it does:
 
 - Add a clip to `./videos`, and only the new clip's scenes process. The rest are cache hits.
 - Delete a clip, and its scenes disappear from the collection.
-- Set `CLIP_MODEL` to a different model, and the embeddings recompute while the transcripts stay cached.
+- Set `CLIP_MODEL` to a different model, and the embedding step reruns while the transcripts stay cached.
   If the new model has a different vector size, zvec rebuilds the collection schema and rewrites the
   vectors. To see only the embeddings change, switch between two same-size models, for example
   `clip-vit-base-patch32` and `clip-vit-base-patch16`, both 512-dim.
@@ -160,21 +159,11 @@ rm -rf cocoindex.db zvec_data
   then `cocoindex update main.py`.
 - **Empty or odd query results after changing models.** Query with the same `CLIP_MODEL` you indexed
   under, so the query vector matches the stored size. Otherwise re-index.
-- **`Loaded environment variables from: ~/.env`.** The `cocoindex` CLI looks for a `.env` up the
-  directory tree and fell back to your home one. Harmless here, since the state db path is pinned in
-  `main.py`. Add a local `.env` (`cp .env.example .env`) to stop it climbing.
 - **Not on a Mac.** `make_sample_videos.sh` (the offline fallback) uses macOS `say`. Use
   `./download_sample_videos.sh` instead, or add your own clips to `./videos`.
 
 ## Notes
 
-- Scene IDs are the video path plus start time, sanitized to what zvec allows (`[A-Za-z0-9._-]`), with
-  the real path kept in the `video_path` field. Move or rename files and you will want a content hash
-  or a stable video id instead.
-- Out of scope here: captioning with a vision model, face and object detection, diarization,
-  scene-detection segmentation, and any UI past this CLI.
-- This stores one dense keyframe vector per scene. zvec can hold several named vector fields and fuse
-  them at query time, so a natural next step is two or three keyframes per scene. It has no
-  late-interaction (MaxSim / ColPali) multivector field, so that style of retrieval is not an option.
-- `download_sample_videos.sh` fetches the corpus at runtime and `make_sample_videos.sh` generates one,
-  so no video binaries live in the repo. Both write into `./videos`, which is gitignored.
+- Scene IDs come from the video path plus start time, so re-runs line up with previous rows. Moving or
+  renaming a file changes its id and reprocesses it.
+- Both sample scripts write into `./videos`, which is gitignored, so no video binaries live in the repo.

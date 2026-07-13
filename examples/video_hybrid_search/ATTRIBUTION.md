@@ -11,7 +11,8 @@ segment. Credits and licenses below. The trimmed files are not checked into the 
 - Source: https://mango.blender.org/
 - Direct file: https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
 - Modifications: trimmed to 22 seconds starting at 0:25, scaled to 640px wide, transcoded to H.264/AAC mp4.
-- Note: the license asks that images of the actors not be used in commercials. This demo does not.
+- Note: the license asks that images of the actors not be used in commercials. This example uses a short
+  non-commercial excerpt for local testing.
 
 ## sintel.mp4
 

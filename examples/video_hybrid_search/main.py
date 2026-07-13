@@ -7,8 +7,8 @@ document per scene into a zvec collection (dense keyframe vector + transcript FT
 field + scalar fields).
 
 CocoIndex owns the freshness: add a clip and only its scenes process, delete a clip
-and its scenes drop, swap the CLIP model and embeddings recompute while transcripts
-stay cached. Querying runs straight against zvec, see `query.py`.
+and its scenes drop, swap the CLIP model and the embedding step reruns while
+transcripts stay cached. Querying runs straight against zvec, see `query.py`.
 
 This module is imported by `query.py` for the CLIP helpers. To index, run:
 
