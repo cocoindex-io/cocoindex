@@ -135,15 +135,14 @@ fn validate_database(database: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::LazyLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde::Serialize;
 
     use super::*;
-    use crate::{App, ContextKey, Environment};
+    use crate::{App, Environment};
 
-    static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| ContextKey::new("neo4j_graph"));
+    crate::context_key!(static GRAPH: Graph = "neo4j_graph");
 
     #[derive(Serialize)]
     struct Person {

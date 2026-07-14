@@ -1,18 +1,16 @@
 #![cfg(feature = "postgres")]
 
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::postgres;
-use cocoindex::{ContextKey, Ctx, Environment, Result};
+use cocoindex::{Ctx, Environment, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
-static PG: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("postgres_target_test_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static PG: postgres::Database = "postgres_target_test_db",
+    state = postgres::Database::state_id
+);
 
 #[derive(Clone, Serialize)]
 struct TestRow {

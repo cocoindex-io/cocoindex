@@ -9,15 +9,13 @@
 #![cfg(feature = "lancedb")]
 
 use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
-use cocoindex::{ContextKey, Environment, ManagedTargetOptions, Result};
+use cocoindex::{Environment, ManagedTargetOptions, Result};
 use serde::Serialize;
-use std::sync::LazyLock;
 
-static DB: LazyLock<ContextKey<LanceDatabase>> = LazyLock::new(|| {
-    ContextKey::new_with_state("lancedb_test", |db: &LanceDatabase| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: LanceDatabase = "lancedb_test",
+    state = LanceDatabase::state_id
+);
 
 const TABLE: &str = "docs";
 

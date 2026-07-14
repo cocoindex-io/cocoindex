@@ -5,19 +5,17 @@
 //!     cargo test -p cocoindex --features postgres --test postgres_source
 #![cfg(feature = "postgres")]
 
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::postgres;
-use cocoindex::{ContextKey, Ctx, Environment, Result};
+use cocoindex::{Ctx, Environment, Result};
 use serde::{Deserialize, Serialize};
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("postgres_source_test_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "postgres_source_test_db",
+    state = postgres::Database::state_id
+);
 static CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Serialize, Deserialize)]

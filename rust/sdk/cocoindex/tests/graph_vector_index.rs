@@ -25,11 +25,9 @@ fn nonce() -> u128 {
 #[tokio::test]
 async fn neo4j_vector_index_create_then_drop_when_available() {
     use cocoindex::connectors::neo4j::{self, ColumnDef, TableSchema, VectorMetric};
-    use cocoindex::{App, ContextKey, Environment, Result};
-    use std::sync::LazyLock;
+    use cocoindex::{Environment, Result};
 
-    static G: LazyLock<ContextKey<neo4j::Graph>> =
-        LazyLock::new(|| ContextKey::new("neo4j_vidx_graph"));
+    cocoindex::context_key!(static G: neo4j::Graph = "neo4j_vidx_graph");
 
     let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
@@ -110,12 +108,10 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
 #[tokio::test]
 async fn falkordb_vector_index_create_then_drop_when_available() {
     use cocoindex::connectors::falkordb::{self, ColumnDef, TableSchema, VectorMetric};
-    use cocoindex::{App, ContextKey, Environment, Result};
-    use std::sync::LazyLock;
+    use cocoindex::{Environment, Result};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static G: LazyLock<ContextKey<falkordb::Graph>> =
-        LazyLock::new(|| ContextKey::new("falkordb_vidx_graph"));
+    cocoindex::context_key!(static G: falkordb::Graph = "falkordb_vidx_graph");
 
     let uri =
         std::env::var("FALKORDB_URI").unwrap_or_else(|_| "falkor://localhost:6379".to_string());

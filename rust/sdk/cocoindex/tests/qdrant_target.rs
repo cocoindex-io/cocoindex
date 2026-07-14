@@ -9,18 +9,16 @@
 //! in-place update, orphan delete, and schema-change collection recreate.
 #![cfg(feature = "qdrant")]
 
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
-use cocoindex::{ContextKey, Environment, Result};
+use cocoindex::{Environment, Result};
 use serde_json::json;
 
-static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("qdrant_test", |c: &QdrantConnection| {
-        c.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: QdrantConnection = "qdrant_test",
+    state = QdrantConnection::state_id
+);
 
 type Point = (u64, Vec<f32>, &'static str, &'static str);
 

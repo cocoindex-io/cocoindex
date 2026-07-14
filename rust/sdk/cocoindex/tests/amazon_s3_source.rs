@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cocoindex::connectors::amazon_s3::aws_sdk_s3::primitives::ByteStream;
 use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
 use cocoindex::resources::file::{FileLike, PatternFilePathMatcher};
-use cocoindex::{App, Environment, Result};
+use cocoindex::{Environment, Result};
 
 /// Build a client against MinIO, or `None` to skip when `AWS_ENDPOINT_URL` is unset.
 async fn try_client() -> Option<S3Client> {
@@ -226,12 +226,10 @@ async fn s3_source_mount_each_pipeline_when_available() -> Result<()> {
     )
     .await;
 
-    static S3: std::sync::LazyLock<cocoindex::ContextKey<S3Client>> =
-        std::sync::LazyLock::new(|| {
-            cocoindex::ContextKey::new_with_state("s3_test_client", |c: &S3Client| {
-                c.state_id().to_string()
-            })
-        });
+    cocoindex::context_key!(
+        static S3: S3Client = "s3_test_client",
+        state = S3Client::state_id
+    );
 
     #[cocoindex::function(memo)]
     async fn process(ctx: &cocoindex::Ctx, file: &S3File) -> Result<usize> {

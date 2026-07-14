@@ -17,18 +17,16 @@
 //! unit test rather than live here.
 #![cfg(feature = "doris")]
 
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::doris::{
     self, ColumnDef, DorisConfig, DorisConnection, DorisTableOptions, InvertedIndexDef, TableSchema,
 };
-use cocoindex::{ContextKey, Environment, Result};
+use cocoindex::{Environment, Result};
 use serde::Serialize;
 use sqlx::Row;
 
-static DORIS_DB: LazyLock<ContextKey<DorisConnection>> =
-    LazyLock::new(|| ContextKey::new("doris_target_test_db"));
+cocoindex::context_key!(static DORIS_DB: DorisConnection = "doris_target_test_db");
 
 #[derive(Serialize, Clone)]
 struct Item {

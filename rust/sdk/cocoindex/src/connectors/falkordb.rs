@@ -123,15 +123,14 @@ cypher_graph::graph_target_api!(Graph);
 
 #[cfg(test)]
 mod tests {
-    use std::sync::LazyLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde::Serialize;
 
     use super::*;
-    use crate::{App, ContextKey, Environment};
+    use crate::{App, Environment};
 
-    static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| ContextKey::new("falkordb_graph"));
+    crate::context_key!(static GRAPH: Graph = "falkordb_graph");
 
     #[derive(Serialize)]
     struct Person {
