@@ -3,6 +3,15 @@ use itertools::Itertools;
 use std::num::NonZeroUsize;
 use tokio::sync::{Mutex, Notify};
 
+/// Tracks fractional GPU capacity across multiple GPUs.
+///
+/// Each GPU starts with capacity 1.0. ``acquire(fraction)`` blocks until a
+/// GPU with enough remaining capacity is available, then returns its id.
+/// ``release(gpu_id, fraction)`` restores capacity and wakes waiters.
+///
+/// The default pool size is auto-detected from ``COCOINDEX_NUM_GPUS``,
+/// ``CUDA_VISIBLE_DEVICES``, or ``nvidia-smi`` (falling back to 1).
+/// Call ``configure_gpu_pool(N)`` to override programmatically.
 pub struct GPUPool {
     num_gpus: usize,
     capacity: Mutex<Vec<f32>>,
@@ -48,7 +57,17 @@ impl GPUPool {
         }
     }
 
+    /// Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.
+    ///
+    /// # Warning
+    /// * When the given gpu_count is larger than the total gpus, it crashes.
     pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Vec<usize> {
+        assert!(
+            gpu_count.get() < self.num_gpus(),
+            "Attempted to acquire {} GPUs but only has {}.",
+            gpu_count.get(),
+            self.num_gpus
+        );
         loop {
             let notified = self.release.notified();
             {
@@ -81,6 +100,24 @@ impl GPUPool {
         self.release.notify_waiters();
     }
 
+    /// detect the number of GPUs available for the default pool.
+    ///
+    /// # Returns:
+    /// * number of GPUs
+    ///
+    /// # Errors:
+    /// * failed to find environment variables
+    /// * failed to read environment variable values
+    /// * failed to parse a environment variable value to a number
+    /// * failed to find given commands
+    ///
+    /// # Detection order:
+    ///
+    /// 1. ``COCOINDEX_NUM_GPUS`` environment variable (explicit override).
+    /// 2. ``CUDA_VISIBLE_DEVICES`` environment variable (count of entries).
+    /// 3. ``nvidia-smi`` command output (if available).
+    /// 4. Default to ``1``.
+    ///
     fn detect_num_gpus() -> Result<usize> {
         if let Ok(env_num) = std::env::var("COCOINDEX_NUM_GPUS")
             .map_err(Error::from)
@@ -251,6 +288,14 @@ mod tests {
         for gpu in result.unwrap() {
             pool.release(gpu, 1.0).await;
         }
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_acquire_more_gpus_than_allowed() {
+        let pool = GPUPool::new(2);
+        pool.acquire_full(NonZeroUsize::new(3).expect("3 is not zero"))
+            .await;
     }
 
     #[test]
