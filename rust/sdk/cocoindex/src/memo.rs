@@ -1,4 +1,17 @@
 //! Memoization: skip re-execution when inputs haven't changed.
+//!
+//! Prefer `#[cocoindex::function(memo)]` for memoizing a whole pipeline
+//! function. The attribute builds the argument key, tracks the function body's
+//! logic, and passes an owned, memo-scoped [`Ctx`] into the body. Context
+//! resources can therefore be read normally with [`Ctx::get_or_err`] or
+//! [`Ctx::get_key`]. Use `memo_key(parameter = skip)` for an `Any + Clone`
+//! parameter that should not participate in the key; it does not need to
+//! implement Serde.
+//!
+//! [`Ctx::memo`] and [`cached`] are intended for block-level memoization inside
+//! a function. Their closure body is not logic-tracked. When a manual memo block
+//! must invalidate after its enclosing `#[cocoindex::function]` changes, include
+//! that function's generated `__COCO_FN_HASH_<NAME>` constant in the manual key.
 
 use std::any::Any;
 use std::future::Future;

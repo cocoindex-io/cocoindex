@@ -2852,18 +2852,20 @@ mod mock_bare {
 mod mock_memo {
     use super::*;
 
-    /// Memo function: cached by args. The body is a `'static` closure,
-    /// so `ctx` is NOT available inside. Clone the API before the body,
-    /// then use bare `#[cocoindex::function]` + manual `ctx.memo()`.
-    ///
-    /// This is the realistic pattern for memoizing an API call.
-    #[cocoindex::function]
-    async fn analyze(ctx: &cocoindex::Ctx, input: &str) -> cocoindex::Result<String> {
-        let api = ctx.get_or_err::<MockApi>().unwrap().clone();
-        let key = (__COCO_FN_HASH_ANALYZE, input.to_owned());
-        let input = input.to_owned();
-        ctx.memo(&key, move |_ctx| async move { api.call(&input).await })
-            .await
+    /// Whole-function memoization should use the attribute. Its body receives
+    /// the owned memo-scoped `Ctx`, so non-serializable resources remain
+    /// available through normal context lookup. A skipped argument needs only
+    /// `Any + Clone`; `MockApi` intentionally does not implement `Serialize`.
+    #[cocoindex::function(memo, memo_key(client = skip))]
+    async fn analyze(
+        ctx: &cocoindex::Ctx,
+        input: String,
+        client: &MockApi,
+    ) -> cocoindex::Result<String> {
+        // Keep the skipped parameter usable in the body while sourcing the
+        // configured client from the memo-scoped context.
+        let _observed_client_calls = client.call_count();
+        ctx.get_or_err::<MockApi>()?.call(&input).await
     }
 
     #[tokio::test]
@@ -2881,8 +2883,9 @@ mod mock_memo {
             .unwrap();
 
         // First run — cache miss, API called.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "hello").await?;
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
             assert_eq!(result, "api:hello");
             Ok(())
         })
@@ -2891,8 +2894,9 @@ mod mock_memo {
         assert_eq!(api.call_count(), 1);
 
         // Second run — same input, cache hit, API NOT called.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "hello").await?;
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
             assert_eq!(result, "api:hello");
             Ok(())
         })
@@ -2900,9 +2904,23 @@ mod mock_memo {
         .unwrap();
         assert_eq!(api.call_count(), 1, "memo should return cached result");
 
-        // Third run — different input, cache miss, API called again.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "world").await?;
+        // A distinct non-serializable skipped client does not alter the key.
+        let skipped_client = MockApi::new();
+        let client = skipped_client.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
+            assert_eq!(result, "api:hello");
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(api.call_count(), 1, "skipped client should not invalidate");
+        assert_eq!(skipped_client.call_count(), 0);
+
+        // A keyed argument change still misses the cache.
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "world".to_string(), &client).await?;
             assert_eq!(result, "api:world");
             Ok(())
         })

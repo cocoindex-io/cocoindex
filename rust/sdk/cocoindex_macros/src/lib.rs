@@ -798,6 +798,27 @@ fn expand_batching_function(
 /// #[cocoindex::function(memo)]
 /// async fn my_fn(ctx: &Ctx, arg: &String) -> Result<String> { ... }
 /// ```
+/// The body receives a memo-scoped `Ctx`, so it can call `ctx.get_or_err()` or
+/// `ctx.get_key()` directly. The attribute is the default way to memoize a
+/// whole function because it includes the function's logic hash and arguments
+/// in the key automatically.
+///
+/// Customize individual argument keys with `memo_key(...)`. A transform
+/// function replaces the argument's default representation; `skip` (or `None`)
+/// excludes it entirely. A skipped parameter needs only `Any + Clone`, not
+/// `Serialize`:
+/// ```ignore
+/// #[cocoindex::function(memo, memo_key(client = skip))]
+/// async fn fetch(ctx: &Ctx, url: &str, client: &ApiClient) -> Result<String> {
+///     let configured_client = ctx.get_or_err::<ApiClient>()?;
+///     configured_client.get(url).await
+/// }
+/// ```
+///
+/// Use `ctx.memo(...)` only for block-level memoization. Its closure body is not
+/// logic-tracked; a manual key that should follow edits to the enclosing
+/// `#[cocoindex::function]` must include that function's generated
+/// `__COCO_FN_HASH_<NAME>` constant explicitly.
 ///
 /// **With `batching`** — declare a batch-shaped body and call it with one item:
 /// ```ignore
