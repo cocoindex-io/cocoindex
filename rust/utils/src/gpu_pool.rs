@@ -61,9 +61,12 @@ impl GPUPool {
     ///
     /// # Warning
     /// * When the given gpu_count is larger than the total gpus, it crashes.
+    /// * All GPUs will be acquired at simultaneously.
+    ///   For instance, if user attempts to acquire 5 GPUs,
+    ///   the function will not partially acquire 4 and waiting for the last GPU.
     pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Vec<usize> {
         assert!(
-            gpu_count.get() < self.num_gpus(),
+            gpu_count.get() <= self.num_gpus(),
             "Attempted to acquire {} GPUs but only has {}.",
             gpu_count.get(),
             self.num_gpus
@@ -275,12 +278,38 @@ mod tests {
         let cloned_pool = pool.clone();
         let task = tokio::spawn(async move {
             cloned_pool
-                .acquire_full(NonZeroUsize::new(3).expect("2 is not zero"))
+                .acquire_full(NonZeroUsize::new(3).expect("3 is not zero"))
                 .await
         });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
         pool.release(partially_used_gpu, 0.6).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("task finished");
+        assert_eq!(result.as_ref().ok(), Some(&vec![0, 1, 2]));
+        for gpu in result.unwrap() {
+            pool.release(gpu, 1.0).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_gpus_no_partial_acquiring() {
+        let pool = Arc::new(GPUPool::new(3));
+        let partially_used_gpu = pool.acquire(0.6).await;
+        assert_eq!(partially_used_gpu, 2);
+        let cloned_pool = pool.clone();
+        let task = tokio::spawn(async move {
+            cloned_pool
+                .acquire_full(NonZeroUsize::new(3).expect("3 is not zero"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task.is_finished());
+        let second_acquired_gpu = pool.acquire(0.5).await;
+        assert_eq!(second_acquired_gpu, 1);
+        pool.release(partially_used_gpu, 0.6).await;
+        pool.release(second_acquired_gpu, 0.5).await;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished");
