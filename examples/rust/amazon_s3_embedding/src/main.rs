@@ -14,11 +14,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use cocoindex::amazon_s3::{self, ListOptions, S3Client, S3File};
-use cocoindex::file::PatternFilePathMatcher;
+use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
+use cocoindex::resources::file::PatternFilePathMatcher;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};

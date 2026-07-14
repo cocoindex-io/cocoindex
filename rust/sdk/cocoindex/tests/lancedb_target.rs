@@ -8,7 +8,7 @@
 //!   cargo test -p cocoindex --features lancedb --test lancedb_target
 #![cfg(feature = "lancedb")]
 
-use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
+use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
 use cocoindex::{ContextKey, Environment, ManagedTargetOptions, Result};
 use serde::Serialize;
 use std::sync::LazyLock;

@@ -1,8 +1,7 @@
 //! Integration tests for the pipeline: App::update, memo::cached, sync API.
 
-use cocoindex::{
-    App, ContextKey, Environment, IdGenerator, UuidGenerator, generate_id, generate_uuid,
-};
+use cocoindex::resources::id::{IdGenerator, UuidGenerator, generate_id, generate_uuid};
+use cocoindex::{App, ContextKey, Environment};
 use tokio::time::{Duration, sleep};
 
 /// Helper: create an App with a temp LMDB directory (async tests).
@@ -1787,8 +1786,9 @@ mod memo_test_file_state {
     use std::sync::{Arc, OnceLock};
     use std::time::Duration;
 
-    use cocoindex::fs::{FileEntry, FilePath, walk_dir};
-    use cocoindex::{ContextKey, Ctx, FileLike, Result};
+    use cocoindex::resources::file::FileLike;
+    use cocoindex::resources::fs::{FileEntry, FilePath, walk_dir};
+    use cocoindex::{ContextKey, Ctx, Result};
 
     fn calls_key() -> &'static ContextKey<Arc<AtomicUsize>> {
         static KEY: OnceLock<ContextKey<Arc<AtomicUsize>>> = OnceLock::new();
@@ -2762,7 +2762,7 @@ fn fs_walk_integration() {
     std::fs::write(dir.path().join("lib.rs"), "pub mod foo;").unwrap();
     std::fs::write(dir.path().join("readme.md"), "# Hello").unwrap();
 
-    let files = cocoindex::fs::walk(dir.path(), &["**/*.rs"]).unwrap();
+    let files = cocoindex::resources::fs::walk(dir.path(), &["**/*.rs"]).unwrap();
     assert_eq!(files.len(), 2);
 
     let file = &files[0]; // lib.rs (sorted)
@@ -2807,7 +2807,7 @@ async fn ctx_mount_each_rejects_duplicate_keys() {
 
 #[tokio::test]
 async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
-    use cocoindex::DirTarget;
+    use cocoindex::resources::fs::DirTarget;
     use std::fs;
     use std::time::Duration;
 
@@ -2882,7 +2882,7 @@ async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
 
 #[tokio::test]
 async fn dir_target_deletes_file_when_source_disappears_via_mount_each() {
-    use cocoindex::DirTarget;
+    use cocoindex::resources::fs::DirTarget;
 
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("lmdb");

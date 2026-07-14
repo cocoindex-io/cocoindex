@@ -15,7 +15,7 @@
 //!
 //! Like the Google Drive source, [`S3File`] serializes only stable metadata for
 //! memo keys. The clone-cheap client and read cache are skipped by serde, while
-//! the public type still implements the shared async [`crate::file::FileLike`]
+//! the public type still implements the shared async [`crate::resources::file::FileLike`]
 //! trait.
 
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 pub use aws_sdk_s3;
 
 use crate::error::{Error, Result};
-use crate::file::{
+use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
     MatchAllFilePathMatcher, decode_bytes,
 };
@@ -523,8 +523,8 @@ fn relative_key(prefix: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::FileLike;
-    use crate::fs::PatternFilePathMatcher;
+    use crate::resources::file::FileLike;
+    use crate::resources::fs::PatternFilePathMatcher;
 
     #[test]
     fn parse_uri_ok_and_errors() {

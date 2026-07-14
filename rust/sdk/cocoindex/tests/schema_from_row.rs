@@ -7,7 +7,7 @@
 #[test]
 fn doris_from_row_matches_explicit_schema() {
     use cocoindex::SchemaFields;
-    use cocoindex::doris::{ColumnDef, TableSchema};
+    use cocoindex::connectors::doris::{ColumnDef, TableSchema};
 
     #[derive(SchemaFields)]
     #[allow(dead_code)]
@@ -47,7 +47,7 @@ fn doris_from_row_matches_explicit_schema() {
 #[test]
 fn sqlite_from_row_matches_explicit_schema() {
     use cocoindex::SchemaFields;
-    use cocoindex::sqlite::{ColumnDef, TableSchema};
+    use cocoindex::connectors::sqlite::{ColumnDef, TableSchema};
 
     #[derive(SchemaFields)]
     #[allow(dead_code)]
@@ -79,7 +79,7 @@ fn sqlite_from_row_matches_explicit_schema() {
 #[test]
 fn postgres_from_row_matches_explicit_schema() {
     use cocoindex::SchemaFields;
-    use cocoindex::postgres::{ColumnDef, TableSchema};
+    use cocoindex::connectors::postgres::{ColumnDef, TableSchema};
 
     #[derive(SchemaFields)]
     #[allow(dead_code)]
@@ -119,7 +119,7 @@ fn postgres_from_row_matches_explicit_schema() {
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
-    use cocoindex::sqlite::{self, Database, TableSchema};
+    use cocoindex::connectors::sqlite::{self, Database, TableSchema};
     use cocoindex::{ContextKey, Environment, SchemaFields};
     use sqlx::Row as _;
 
@@ -193,7 +193,7 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
 #[cfg(feature = "doris")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn doris_from_row_round_trips_a_row() -> cocoindex::Result<()> {
-    use cocoindex::doris::{self, DorisConfig, DorisConnection, TableSchema};
+    use cocoindex::connectors::doris::{self, DorisConfig, DorisConnection, TableSchema};
     use cocoindex::{ContextKey, Environment, SchemaFields};
     use sqlx::Row as _;
 

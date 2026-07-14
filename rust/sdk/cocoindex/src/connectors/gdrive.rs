@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::error::{Error, Result};
-use crate::file::{
+use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FileSourceItem, decode_bytes,
 };
 

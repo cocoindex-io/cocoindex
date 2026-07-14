@@ -3,19 +3,19 @@
 Rust port of the Python [`text_embedding_turbopuffer`](../../text_embedding_turbopuffer)
 example. Same pipeline as [`text_embedding`](../text_embedding), but the vector
 store is **Turbopuffer** (a hosted vector database) via the native
-`cocoindex::turbopuffer` namespace target.
+`cocoindex::connectors::turbopuffer` namespace target.
 
 ## Parallel to the Python example
 
 | Concern          | Python                                   | Rust (this example)                                |
 | ---------------- | ---------------------------------------- | -------------------------------------------------- |
-| Source           | `localfs.walk_dir`                       | `cocoindex::fs::walk`                              |
+| Source           | `localfs.walk_dir`                       | `cocoindex::resources::fs::walk`                              |
 | Chunking         | `RecursiveSplitter` (markdown)           | `cocoindex_ops_text` `RecursiveChunker` (markdown)  |
 | Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `fastembed` `AllMiniLML6V2` (same model, 384-dim)   |
-| Target           | `turbopuffer.NamespaceTarget`            | `cocoindex::turbopuffer::NamespaceTarget`          |
-| Search           | `ns.query(rank_by=("vector","ANN",...))` | `cocoindex::turbopuffer::vector_search`            |
+| Target           | `turbopuffer.NamespaceTarget`            | `cocoindex::connectors::turbopuffer::NamespaceTarget`          |
+| Search           | `ns.query(rank_by=("vector","ANN",...))` | `cocoindex::connectors::turbopuffer::vector_search`            |
 
-The `cocoindex::turbopuffer` connector is a declarative two-level **managed
+The `cocoindex::connectors::turbopuffer` connector is a declarative two-level **managed
 target** (namespace → rows) built on CocoIndex's public target-state facade: it
 upserts changed rows, skips unchanged ones (fingerprint tracking), deletes
 orphaned rows, and clears the namespace if the vector schema changes. Turbopuffer

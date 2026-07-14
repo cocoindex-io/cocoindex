@@ -8,7 +8,7 @@
 //!   cargo run -- query "your query"    # Turbopuffer vector search
 //!
 //! Same pipeline as `text_embedding`, but the target is the native
-//! `cocoindex::turbopuffer` namespace connector (built on the public
+//! `cocoindex::connectors::turbopuffer` namespace connector (built on the public
 //! target-state facade). Parallels `cocoindex.connectors.turbopuffer`.
 //!
 //! Config (env, e.g. via `.env`):
@@ -22,7 +22,7 @@ use std::sync::LazyLock;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
-use cocoindex::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
+use cocoindex::connectors::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";

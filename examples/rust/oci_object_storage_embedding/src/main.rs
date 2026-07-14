@@ -15,11 +15,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use cocoindex::file::PatternFilePathMatcher;
-use cocoindex::oci_object_storage::{self, ListOptions, OciClient, OciFile};
+use cocoindex::resources::file::PatternFilePathMatcher;
+use cocoindex::connectors::oci_object_storage::{self, ListOptions, OciClient, OciFile};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};

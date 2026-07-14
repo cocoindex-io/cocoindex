@@ -19,7 +19,7 @@
 
 use std::sync::LazyLock;
 
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;

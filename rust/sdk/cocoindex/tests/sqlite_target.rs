@@ -8,7 +8,8 @@
 
 use std::sync::LazyLock;
 
-use cocoindex::{App, ContextKey, Ctx, Environment, Result, sqlite};
+use cocoindex::connectors::sqlite;
+use cocoindex::{App, ContextKey, Ctx, Environment, Result};
 use serde::Serialize;
 use serde_json::json;
 use sqlx::Row as _;

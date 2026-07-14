@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::resources::schema::VectorSchema;
-use cocoindex::valkey::{
+use cocoindex::connectors::valkey::{
     self, Distance, Document, FieldDef, FieldType, IndexSchema, VectorAlgorithm, VectorDef,
 };
+use cocoindex::resources::schema::VectorSchema;
 use cocoindex::{ContextKey, Environment};
 
 static VK: LazyLock<ContextKey<valkey::Valkey>> =

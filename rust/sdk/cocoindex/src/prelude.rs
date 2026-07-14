@@ -7,24 +7,24 @@ pub use crate::entity_resolution::{
     resolve_entities_with_events,
 };
 pub use crate::error::{Error, Result};
-pub use crate::file::{
-    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, PatternFilePathMatcher,
-};
-pub use crate::fs::{
-    DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
-    mount_dir_target, walk, walk_dir, walk_items,
-};
-pub use crate::id::{
-    IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
-    generate_uuid_default,
-};
 pub use crate::live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
     LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 pub use crate::resources::chunk::{Chunk, TextPosition};
 pub use crate::resources::embedder::Embedder;
+pub use crate::resources::file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
+    MatchAllFilePathMatcher, PatternFilePathMatcher,
+};
+pub use crate::resources::fs::{
+    DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
+    mount_dir_target, walk, walk_dir, walk_items,
+};
+pub use crate::resources::id::{
+    IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
+    generate_uuid_default,
+};
 pub use crate::resources::live_map::LiveMap;
 pub use crate::resources::rate_limit::RateLimiter;
 pub use crate::resources::schema::{

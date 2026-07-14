@@ -7,13 +7,13 @@
 //!   cargo run -- query "your query"    # LanceDB vector search
 //!
 //! Same pipeline as the `code_embedding` example, but the target is the native
-//! `cocoindex::lancedb` connector instead of Postgres/pgvector (parallels the
+//! `cocoindex::connectors::lancedb` connector instead of Postgres/pgvector (parallels the
 //! Python example's use of `cocoindex.connectors.lancedb`).
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
+use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, detect_code_language};
 use cocoindex::prelude::*;

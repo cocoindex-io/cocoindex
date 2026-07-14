@@ -24,7 +24,7 @@ fn nonce() -> u128 {
 #[cfg(feature = "neo4j")]
 #[tokio::test]
 async fn neo4j_vector_index_create_then_drop_when_available() {
-    use cocoindex::neo4j::{self, ColumnDef, TableSchema, VectorMetric};
+    use cocoindex::connectors::neo4j::{self, ColumnDef, TableSchema, VectorMetric};
     use cocoindex::{App, ContextKey, Environment, Result};
     use std::sync::LazyLock;
 
@@ -109,7 +109,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
 #[cfg(feature = "falkordb")]
 #[tokio::test]
 async fn falkordb_vector_index_create_then_drop_when_available() {
-    use cocoindex::falkordb::{self, ColumnDef, TableSchema, VectorMetric};
+    use cocoindex::connectors::falkordb::{self, ColumnDef, TableSchema, VectorMetric};
     use cocoindex::{App, ContextKey, Environment, Result};
     use std::sync::LazyLock;
     use std::time::{SystemTime, UNIX_EPOCH};

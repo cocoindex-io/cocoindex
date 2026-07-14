@@ -18,8 +18,8 @@
 //! Stream/topic are user-managed (CocoIndex never creates/drops them); `index`
 //! creates them up front as a convenience.
 
-use cocoindex::fs::FileEntry;
-use cocoindex::iggy::{self, IggyProducer};
+use cocoindex::resources::fs::FileEntry;
+use cocoindex::connectors::iggy::{self, IggyProducer};
 use cocoindex::prelude::*;
 use iggy::prelude::{
     CompressionAlgorithm, Consumer, Identifier, IggyExpiry, MaxTopicSize, MessageClient,
@@ -120,7 +120,7 @@ async fn index(producer: IggyProducer, stream: String, topic: String) -> Result<
                 let target =
                     iggy::mount_iggy_topic_target(&ctx, &producer, stream, topic, options)?;
 
-                let files = cocoindex::fs::walk_items("./data", &["**/*.csv"])?;
+                let files = cocoindex::resources::fs::walk_items("./data", &["**/*.csv"])?;
                 println!("found {} CSV file(s)", files.len());
 
                 let per_file = mount_each!(files, |file| process_csv(ctx, file)).await?;

@@ -3,7 +3,7 @@
 Rust port of the Python [`image_search_colpali`](../../image_search_colpali)
 example. Embeds each image with **ColPali** into a *list* of vectors
 (late-interaction), indexes them in a Qdrant **MAX_SIM multi-vector** collection
-(`cocoindex::qdrant::CollectionSchema::multivector` +
+(`cocoindex::connectors::qdrant::CollectionSchema::multivector` +
 `declare_multivector_point`), and searches with `qdrant::multivector_search`.
 
 ColPali has no pure-Rust model, so inference is offloaded to a small external

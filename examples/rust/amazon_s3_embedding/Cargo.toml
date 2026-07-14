@@ -18,7 +18,7 @@ cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
 ] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-# Query path (pgvector similarity); target writes go through cocoindex::postgres.
+# Query path (pgvector similarity); target writes go through cocoindex::connectors::postgres.
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",

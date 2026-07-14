@@ -77,7 +77,7 @@ impl FileEntry {
 ```
 
 ```rust
-let files = cocoindex::fs::walk(&dir, &["**/*.rs", "**/*.py"])?;
+let files = cocoindex::resources::fs::walk(&dir, &["**/*.rs", "**/*.py"])?;
 ```
 
 ### `RunStats`
@@ -281,7 +281,8 @@ async fn main() -> cocoindex::Result<()> {
             for entry in std::fs::read_dir(&root_dir)? {
                 let project_name = entry?.file_name().to_string_lossy().to_string();
                 let project_dir = entry?.path();
-                let files = cocoindex::fs::walk(&project_dir, &["*.py", "**/*.py"])?;
+                let files =
+                    cocoindex::resources::fs::walk(&project_dir, &["*.py", "**/*.py"])?;
 
                 let file_infos = ctx
                     .mount_each(

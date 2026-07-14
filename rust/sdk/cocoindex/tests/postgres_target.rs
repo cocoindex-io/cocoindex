@@ -3,7 +3,8 @@
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::{ContextKey, Ctx, Environment, Result, postgres};
+use cocoindex::connectors::postgres;
+use cocoindex::{ContextKey, Ctx, Environment, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 

@@ -20,7 +20,7 @@
 use std::sync::LazyLock;
 
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};

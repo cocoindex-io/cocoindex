@@ -9,7 +9,8 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::{ContextKey, Ctx, Environment, Result, postgres};
+use cocoindex::connectors::postgres;
+use cocoindex::{ContextKey, Ctx, Environment, Result};
 use serde::{Deserialize, Serialize};
 
 static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {

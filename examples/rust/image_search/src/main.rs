@@ -24,7 +24,7 @@ use std::sync::LazyLock;
 use cocoindex::ops::image::ImageEmbedder;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::prelude::*;
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde_json::json;
 
 /// CLIP ViT-B/32 vision tower (images) and text tower (queries). Both output

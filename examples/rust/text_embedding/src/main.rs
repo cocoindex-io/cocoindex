@@ -6,7 +6,7 @@
 //!   cargo run -- query "your query"    # pgvector similarity search
 //!
 //! Parallels the Python example:
-//!   - source           : `cocoindex::fs::walk` (cf. `localfs.walk_dir`)
+//!   - source           : `cocoindex::resources::fs::walk` (cf. `localfs.walk_dir`)
 //!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
 //!   - chunking          : `cocoindex::ops::text::RecursiveSplitter` (cf. `RecursiveSplitter`)
 //!   - embeddings        : `cocoindex::ops::sentence_transformers` all-MiniLM-L6-v2
@@ -17,7 +17,7 @@ use std::sync::LazyLock;
 
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};

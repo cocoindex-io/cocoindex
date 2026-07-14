@@ -13,14 +13,14 @@
 //! the no-change skip (which must not duplicate rows), and an inverted index.
 //!
 //! Note: `USING ANN` vector indexes require Doris 3.x; the all-in-one 2.1 image
-//! rejects that syntax, so the vector-index DDL is covered by a `src/doris.rs`
+//! rejects that syntax, so the vector-index DDL is covered by a `src/connectors/doris.rs`
 //! unit test rather than live here.
 #![cfg(feature = "doris")]
 
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::doris::{
+use cocoindex::connectors::doris::{
     self, ColumnDef, DorisConfig, DorisConnection, DorisTableOptions, InvertedIndexDef, TableSchema,
 };
 use cocoindex::{ContextKey, Environment, Result};

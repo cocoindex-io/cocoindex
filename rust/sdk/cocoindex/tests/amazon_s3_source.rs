@@ -11,10 +11,10 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::amazon_s3::aws_sdk_s3::primitives::ByteStream;
-use cocoindex::amazon_s3::{self, ListOptions, S3Client, S3File};
-use cocoindex::file::PatternFilePathMatcher;
-use cocoindex::{App, Environment, FileLike, Result};
+use cocoindex::connectors::amazon_s3::aws_sdk_s3::primitives::ByteStream;
+use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
+use cocoindex::resources::file::{FileLike, PatternFilePathMatcher};
+use cocoindex::{App, Environment, Result};
 
 /// Build a client against MinIO, or `None` to skip when `AWS_ENDPOINT_URL` is unset.
 async fn try_client() -> Option<S3Client> {

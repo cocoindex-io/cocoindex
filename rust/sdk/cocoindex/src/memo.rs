@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ctx::{Ctx, fn_call_guard};
 use crate::error::{Error, Result};
-use crate::file::FileLike;
 use crate::profile::Value;
+use crate::resources::file::FileLike;
 
 #[derive(Clone)]
 pub struct MemoStateValue(Value);
@@ -262,19 +262,19 @@ pub async fn collect_memo_arg_state<T: Any>(
 }
 
 fn as_file_like(value: &dyn Any) -> Option<&dyn FileLike> {
-    if let Some(file) = value.downcast_ref::<crate::fs::FileEntry>() {
+    if let Some(file) = value.downcast_ref::<crate::resources::fs::FileEntry>() {
         return Some(file);
     }
     #[cfg(feature = "amazon_s3")]
-    if let Some(file) = value.downcast_ref::<crate::amazon_s3::S3File>() {
+    if let Some(file) = value.downcast_ref::<crate::connectors::amazon_s3::S3File>() {
         return Some(file);
     }
     #[cfg(feature = "google_drive")]
-    if let Some(file) = value.downcast_ref::<crate::gdrive::DriveFile>() {
+    if let Some(file) = value.downcast_ref::<crate::connectors::gdrive::DriveFile>() {
         return Some(file);
     }
     #[cfg(feature = "oci_object_storage")]
-    if let Some(file) = value.downcast_ref::<crate::oci_object_storage::OciFile>() {
+    if let Some(file) = value.downcast_ref::<crate::connectors::oci_object_storage::OciFile>() {
         return Some(file);
     }
     None

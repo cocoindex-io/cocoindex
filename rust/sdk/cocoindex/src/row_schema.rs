@@ -17,7 +17,7 @@
 //! }
 //! // Postgres:  id text NOT NULL, title text, views bigint NOT NULL,
 //! //            embedding vector(384) NOT NULL
-//! let schema = postgres::TableSchema::from_row::<Doc>(["id"])?;
+//! let schema = cocoindex::connectors::postgres::TableSchema::from_row::<Doc>(["id"])?;
 //! ```
 //!
 //! Field attributes:

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use cocoindex::prelude::*;
-pub use cocoindex::surrealdb::Graph;
+pub use cocoindex::connectors::surrealdb::Graph;
 use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel, read_file_to_bytes,

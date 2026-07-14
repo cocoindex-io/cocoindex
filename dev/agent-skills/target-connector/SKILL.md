@@ -354,6 +354,8 @@ def test_vector_support(connector_with_vec: tuple[Connection, Path]) -> None:
 **Reference implementations:**
 
 - `python/tests/connectors/test_sqlite_target.py` - SQLite tests with vector support
+- Rust SDK target connectors live under `rust/sdk/cocoindex/src/connectors/`; see
+  `sqlite.rs`, `postgres.rs`, and `doris.rs` there for relational connector patterns.
 
 ## Attachment Providers
 

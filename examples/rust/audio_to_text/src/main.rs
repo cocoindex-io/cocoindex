@@ -9,7 +9,7 @@
 //!   cargo run -- [AUDIO_DIR]    # default AUDIO_DIR = ./audio_files
 //!
 //! Parallels the Python example:
-//!   - source        : `cocoindex::fs::walk` (cf. `localfs.walk_dir`)
+//!   - source        : `cocoindex::resources::fs::walk` (cf. `localfs.walk_dir`)
 //!   - per-file work : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
 //!   - transcription : `cocoindex::ops::api::ApiTranscriber` (cf. `LiteLLMTranscriber("whisper-1")`)
 //!   - target        : `postgres::TableTarget` (cf. `postgres.mount_table_target`)
@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use cocoindex::ops::api::ApiTranscriber;
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 
 const TABLE: &str = "audio_transcriptions";

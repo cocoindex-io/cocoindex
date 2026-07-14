@@ -12,7 +12,7 @@
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use cocoindex::{ContextKey, Environment, Result};
 use serde_json::json;
 

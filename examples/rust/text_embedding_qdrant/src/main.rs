@@ -7,7 +7,7 @@
 //!   cargo run -- query "your query"    # Qdrant vector search
 //!
 //! Same pipeline as `text_embedding`, but the target is the native
-//! `cocoindex::qdrant` collection connector (built on the public target-state
+//! `cocoindex::connectors::qdrant` collection connector (built on the public target-state
 //! facade). Parallels the Python example's `cocoindex.connectors.qdrant`.
 //!
 //! Build note: the `qdrant-client` crate compiles protobufs, so a `protoc`
@@ -19,7 +19,7 @@ use std::sync::LazyLock;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";

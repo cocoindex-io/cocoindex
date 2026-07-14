@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use cocoindex::fs::{FileEntry, walk};
+use cocoindex::resources::fs::{FileEntry, walk};
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

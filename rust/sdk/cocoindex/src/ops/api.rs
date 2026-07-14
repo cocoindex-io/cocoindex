@@ -21,7 +21,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
-use crate::file::FileLike;
+use crate::resources::file::FileLike;
 use crate::resources::schema::{VectorElementType, VectorSchema, VectorSchemaProvider};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";

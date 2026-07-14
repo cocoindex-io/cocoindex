@@ -7,10 +7,10 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use cocoindex::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
+use cocoindex::connectors::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;

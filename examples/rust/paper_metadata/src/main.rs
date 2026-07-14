@@ -8,7 +8,7 @@
 //!   cargo run -- query "your query"    # pgvector similarity search (no index)
 //!
 //! Parallels the Python example:
-//!   - source           : `cocoindex::fs::walk` (cf. `localfs.walk_dir`)
+//!   - source           : `cocoindex::resources::fs::walk` (cf. `localfs.walk_dir`)
 //!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
 //!   - PDF parsing       : `lopdf` (cf. `pypdf` first-page text + page count)
 //!   - LLM extraction    : OpenAI chat completions, JSON mode (cf. `openai` client)
@@ -28,10 +28,10 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use cocoindex::id::UuidGenerator;
+use cocoindex::resources::id::UuidGenerator;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{CustomLanguageConfig, RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use serde::de::DeserializeOwned;
 use sqlx::Row;

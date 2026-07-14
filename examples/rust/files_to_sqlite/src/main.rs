@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use cocoindex::prelude::*;
-use cocoindex::sqlite;
+use cocoindex::connectors::sqlite;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
@@ -85,7 +85,7 @@ async fn index(source_dir: PathBuf, db_path: String) -> Result<()> {
             async move {
                 let table = sqlite::mount_table_target(&ctx, &DB, TABLE, files_schema()?).await?;
 
-                let files = cocoindex::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
+                let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
                 mount_each!(files, |file| process_file(ctx, file, table)).await?;
                 Ok(())
             }

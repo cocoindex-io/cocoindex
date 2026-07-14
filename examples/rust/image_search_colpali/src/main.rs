@@ -19,7 +19,7 @@
 //! where `D` is the per-vector dimension (128 for `vidore/colpali-v1.2`). A
 //! reference Python server is in the README. Everything else — the incremental
 //! pipeline and the Qdrant MAX_SIM multi-vector collection — is native Rust via
-//! `cocoindex::qdrant`.
+//! `cocoindex::connectors::qdrant`.
 //!
 //! Build note: `qdrant-client` compiles protobufs, so `protoc` is required.
 
@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use cocoindex::prelude::*;
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde::Deserialize;
 use serde_json::json;
 
