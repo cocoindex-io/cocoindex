@@ -20,11 +20,13 @@
 //! let emb = EMBED.call(&ctx, text).await?;
 //! ```
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
+use cocoindex_core::engine::context::FnCallContext;
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -34,7 +36,12 @@ use crate::error::{Error, Result};
 
 type BatchFuture<Out> =
     Pin<Box<dyn Future<Output = cocoindex_utils::error::Result<Vec<Out>>> + Send>>;
-type BatchFn<In, Out> = Box<dyn Fn(Vec<In>) -> BatchFuture<Out> + Send + Sync>;
+type BatchFn<In, Out> = Arc<dyn Fn(Ctx, Vec<In>) -> BatchFuture<Out> + Send + Sync>;
+
+struct BatchCall<In> {
+    ctx: Ctx,
+    item: In,
+}
 
 /// Adapts a user closure `Vec<In> -> Result<Vec<Out>>` to the core batcher's `Runner`.
 struct FnRunner<In, Out> {
@@ -43,25 +50,76 @@ struct FnRunner<In, Out> {
 
 #[async_trait]
 impl<In: Send + 'static, Out: Send + 'static> Runner for FnRunner<In, Out> {
-    type Input = In;
+    type Input = BatchCall<In>;
     type Output = Out;
 
     async fn run(
         &self,
-        inputs: Vec<In>,
+        calls: Vec<BatchCall<In>>,
     ) -> cocoindex_utils::error::Result<impl ExactSizeIterator<Item = Out>> {
-        let outputs = (self.f)(inputs).await?;
+        let mut contexts = Vec::with_capacity(calls.len());
+        let mut inputs = Vec::with_capacity(calls.len());
+        for call in calls {
+            contexts.push(call.ctx);
+            inputs.push(call.item);
+        }
+
+        let batch_fn_ctx = Arc::new(FnCallContext::new(true));
+        let batch_ctx = contexts
+            .first()
+            .expect("the core batcher never executes an empty batch")
+            .with_fn_ctx(batch_fn_ctx.clone());
+        let result = (self.f)(batch_ctx, inputs).await;
+
+        // The body executes once, but each per-item memo/tracking context must
+        // inherit the dependencies it observed (context keys, nested function
+        // logic, target states, and child memo entries).
+        for ctx in contexts {
+            if let Some(parent_fn_ctx) = &ctx.fn_ctx {
+                parent_fn_ctx.join_child_shared(&batch_fn_ctx);
+            } else if let Some(comp_ctx) = &ctx.comp_ctx {
+                comp_ctx.join_fn_call(&batch_fn_ctx);
+            }
+        }
+
+        let outputs = result?;
         Ok(outputs.into_iter())
     }
 }
 
-/// A batched, memoized function. See the [module docs](self).
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ScheduledBatchKey {
+    app_id: usize,
+    code_hash: u64,
+    extra_args: Vec<u8>,
+}
+
+type FunctionBatcher<In, Out> = Batcher<FnRunner<In, Out>>;
+type ScheduledBatchers<In, Out> = Mutex<HashMap<ScheduledBatchKey, Weak<FunctionBatcher<In, Out>>>>;
+
+enum BatchedMode<In, Out>
+where
+    In: Send + 'static,
+    Out: Send + 'static,
+{
+    Fixed(Arc<FunctionBatcher<In, Out>>),
+    Scheduled {
+        options: BatchingOptions,
+        batchers: ScheduledBatchers<In, Out>,
+    },
+}
+
+/// A single-item interface over a batch-shaped async function.
+///
+/// [`Batched::new`] retains the explicit, memoized adapter API. The
+/// `#[cocoindex::function(batching)]` macro uses the hidden scheduled mode so
+/// each distinct extra-argument set gets its own short-lived batcher.
 pub struct Batched<In, Out>
 where
     In: Send + 'static,
     Out: Send + 'static,
 {
-    batcher: Arc<Batcher<FnRunner<In, Out>>>,
+    mode: BatchedMode<In, Out>,
     code_hash: u64,
 }
 
@@ -104,14 +162,15 @@ where
         F: Fn(Vec<In>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<Out>>> + Send + 'static,
     {
-        let wrapped: BatchFn<In, Out> = Box::new(move |inputs| {
+        let wrapped: BatchFn<In, Out> = Arc::new(move |_ctx, inputs| {
             let fut = f(inputs);
             Box::pin(async move { fut.await.map_err(Error::into_core) })
         });
-        let runner = FnRunner { f: wrapped };
-        let queue = Arc::new(BatchQueue::new());
-        let batcher = Arc::new(Batcher::new(runner, queue, options));
-        Self { batcher, code_hash }
+        let batcher = Self::new_batcher(wrapped, options);
+        Self {
+            mode: BatchedMode::Fixed(batcher),
+            code_hash,
+        }
     }
 
     /// Process one item. On a memo hit the stored result is returned; on a miss
@@ -120,14 +179,115 @@ where
     pub async fn call(&self, ctx: &Ctx, item: In) -> Result<Out> {
         let fp =
             crate::memo::key_fingerprint_result(&("cocoindex_batched", self.code_hash, &item))?;
-        let batcher = self.batcher.clone();
+        let BatchedMode::Fixed(batcher) = &self.mode else {
+            return Err(Error::engine(
+                "scheduled Batched instances must be called by #[cocoindex::function(batching)]",
+            ));
+        };
+        let batcher = batcher.clone();
         // A batch impl is ctx-free, so it makes no tracked child `#[function]`
         // calls; the `propagate_children_fn_logic` flag is therefore inert here.
         // Pass `true` (the default) — only the batch impl's own `code_hash`
         // (folded into the memo key above) tracks its logic.
-        crate::memo::cached_by_fingerprint(ctx, fp, true, move |_ctx| async move {
-            batcher.run(item).await.map_err(Error::from)
+        crate::memo::cached_by_fingerprint(ctx, fp, true, move |scoped_ctx| async move {
+            batcher
+                .run(BatchCall {
+                    ctx: scoped_ctx,
+                    item,
+                })
+                .await
+                .map_err(Error::from)
         })
         .await
+    }
+}
+
+impl<In, Out> Batched<In, Out>
+where
+    In: Send + 'static,
+    Out: Send + 'static,
+{
+    fn new_batcher(f: BatchFn<In, Out>, options: BatchingOptions) -> Arc<FunctionBatcher<In, Out>> {
+        Arc::new(Batcher::new(
+            FnRunner { f },
+            Arc::new(BatchQueue::new()),
+            options,
+        ))
+    }
+
+    /// Construct the scheduler used by generated batching wrappers.
+    #[doc(hidden)]
+    pub fn __scheduled(code_hash: u64) -> Self {
+        Self::__scheduled_with_options(code_hash, BatchingOptions::default())
+    }
+
+    /// Construct the generated scheduler with a maximum batch size.
+    #[doc(hidden)]
+    pub fn __scheduled_with_max_batch(code_hash: u64, max_batch_size: usize) -> Self {
+        Self::__scheduled_with_options(
+            code_hash,
+            BatchingOptions {
+                max_batch_size: Some(max_batch_size),
+            },
+        )
+    }
+
+    fn __scheduled_with_options(code_hash: u64, options: BatchingOptions) -> Self {
+        Self {
+            mode: BatchedMode::Scheduled {
+                options,
+                batchers: Mutex::new(HashMap::new()),
+            },
+            code_hash,
+        }
+    }
+
+    /// Schedule one generated function call. `extra_args_key` keeps calls with
+    /// different captured arguments in separate batches.
+    #[doc(hidden)]
+    pub async fn __call_scheduled<F, Fut>(
+        &self,
+        ctx: Ctx,
+        extra_args_key: Vec<u8>,
+        item: In,
+        f: F,
+    ) -> Result<Out>
+    where
+        F: Fn(Ctx, Vec<In>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<Out>>> + Send + 'static,
+    {
+        let BatchedMode::Scheduled { options, batchers } = &self.mode else {
+            return Err(Error::engine(
+                "explicit Batched instances must be called with Batched::call",
+            ));
+        };
+
+        let key = ScheduledBatchKey {
+            // A static generated scheduler may be used by multiple apps in the
+            // same process. Never let their context-bound calls share a body.
+            app_id: Arc::as_ptr(&ctx.state) as usize,
+            code_hash: self.code_hash,
+            extra_args: extra_args_key,
+        };
+        let f: BatchFn<In, Out> = Arc::new(move |ctx, inputs| {
+            let fut = f(ctx, inputs);
+            Box::pin(async move { fut.await.map_err(Error::into_core) })
+        });
+        let batcher = {
+            let mut batchers = batchers.lock().expect("batch scheduler mutex poisoned");
+            batchers.retain(|_, batcher| batcher.strong_count() != 0);
+            if let Some(batcher) = batchers.get(&key).and_then(Weak::upgrade) {
+                batcher
+            } else {
+                let batcher = Self::new_batcher(f, options.clone());
+                batchers.insert(key, Arc::downgrade(&batcher));
+                batcher
+            }
+        };
+
+        batcher
+            .run(BatchCall { ctx, item })
+            .await
+            .map_err(Error::from)
     }
 }

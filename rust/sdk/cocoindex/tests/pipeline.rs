@@ -1602,8 +1602,9 @@ async fn memo_with_function_dep_caches_when_unchanged() {
 
 mod batched_test {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, LazyLock};
 
     static ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
@@ -1663,6 +1664,166 @@ mod batched_test {
             ITEMS_PROCESSED.load(Ordering::SeqCst),
             3,
             "run 2 should be all cache hits; batch impl must not reprocess items"
+        );
+    }
+
+    type RecordedBatch = (i64, Vec<i64>);
+    static UNMEMOIZED_BATCHES: LazyLock<Mutex<Vec<RecordedBatch>>> =
+        LazyLock::new(|| Mutex::new(Vec::new()));
+
+    #[cocoindex::function(batching, max_batch_size = 2)]
+    async fn macro_unmemoized_batch(
+        _ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+        factor: i64,
+    ) -> cocoindex::Result<Vec<i64>> {
+        UNMEMOIZED_BATCHES
+            .lock()
+            .unwrap()
+            .push((factor, items.clone()));
+        if items == [0] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    #[tokio::test]
+    async fn function_batching_is_item_shaped_unmemoized_and_capped() {
+        UNMEMOIZED_BATCHES.lock().unwrap().clear();
+        let (app, _dir) = temp_app("function_batching_unmemoized").await;
+
+        for _ in 0..2 {
+            app.update(|ctx| async move {
+                let calls = (0..6).map(|item| macro_unmemoized_batch(&ctx, item, 3));
+                let outputs = futures::future::join_all(calls).await;
+                let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+                assert_eq!(outputs, vec![0, 3, 6, 9, 12, 15]);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        let batches = UNMEMOIZED_BATCHES.lock().unwrap();
+        assert_eq!(
+            batches.iter().map(|(_, items)| items.len()).sum::<usize>(),
+            12
+        );
+        assert!(batches.iter().any(|(_, items)| items.len() > 1));
+        assert!(batches.iter().all(|(_, items)| items.len() <= 2));
+    }
+
+    static MEMOIZED_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo, batching, max_batch_size = 8)]
+    async fn macro_memoized_batch(
+        _ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+        factor: i64,
+    ) -> cocoindex::Result<Vec<i64>> {
+        MEMOIZED_ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
+        if items == [1] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    async fn run_memoized_batch(app: &App, factor: i64) {
+        app.update(move |ctx| async move {
+            let calls = [1, 2, 3]
+                .into_iter()
+                .map(|item| macro_memoized_batch(&ctx, item, factor));
+            let outputs = futures::future::join_all(calls).await;
+            let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+            assert_eq!(outputs, vec![factor, factor * 2, factor * 3]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn function_memo_batching_caches_items_and_keys_extra_params() {
+        MEMOIZED_ITEMS_PROCESSED.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("function_memo_batching").await;
+
+        run_memoized_batch(&app, 2).await;
+        assert_eq!(MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst), 3);
+
+        run_memoized_batch(&app, 2).await;
+        assert_eq!(
+            MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            3,
+            "unchanged items should all hit their per-item memo entries"
+        );
+
+        run_memoized_batch(&app, 3).await;
+        assert_eq!(
+            MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            6,
+            "changing an extra parameter must invalidate every item's memo key"
+        );
+    }
+
+    static CONTEXT_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    fn batch_factor_key() -> &'static ContextKey<i64> {
+        static KEY: LazyLock<ContextKey<i64>> = LazyLock::new(|| {
+            ContextKey::new_detect_change("pipeline/function_batching_context_factor")
+        });
+        &KEY
+    }
+
+    #[cocoindex::function(memo, batching)]
+    async fn macro_context_batch(
+        ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+    ) -> cocoindex::Result<Vec<i64>> {
+        let factor = *ctx.get_key(batch_factor_key())?;
+        CONTEXT_ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
+        if items == [1] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    async fn run_context_batch(db_path: &std::path::Path, factor: i64) {
+        let app = Environment::builder()
+            .db_path(db_path)
+            .provide_key(batch_factor_key(), factor)
+            .build()
+            .await
+            .unwrap()
+            .app("function_context_batch")
+            .await
+            .unwrap();
+        app.update(move |ctx| async move {
+            let calls = [1, 2, 3]
+                .into_iter()
+                .map(|item| macro_context_batch(&ctx, item));
+            let outputs = futures::future::join_all(calls).await;
+            let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+            assert_eq!(outputs, vec![factor, factor * 2, factor * 3]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn function_memo_batching_shares_context_dependencies_with_every_item() {
+        CONTEXT_ITEMS_PROCESSED.store(0, Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("lmdb");
+
+        run_context_batch(&db_path, 2).await;
+        assert_eq!(CONTEXT_ITEMS_PROCESSED.load(Ordering::SeqCst), 3);
+
+        run_context_batch(&db_path, 3).await;
+        assert_eq!(
+            CONTEXT_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            6,
+            "every cached item must inherit the batch body's context-key dependency"
         );
     }
 }

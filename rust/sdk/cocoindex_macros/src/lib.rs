@@ -12,8 +12,10 @@ use syn::{
 };
 
 /// Information about a non-ctx parameter.
+#[derive(Clone, Debug)]
 struct ParamInfo {
     ident: syn::Ident,
+    ty: Type,
     is_ref: bool,
     is_str_ref: bool,
 }
@@ -51,6 +53,7 @@ fn parse_fn_params_opt(func: &ItemFn) -> syn::Result<(Option<syn::Ident>, Vec<Pa
         let is_str_ref = is_str_ref_type(ty);
         params.push(ParamInfo {
             ident,
+            ty: ty.as_ref().clone(),
             is_ref,
             is_str_ref,
         });
@@ -151,6 +154,8 @@ impl ToTokenStream for syn::Block {
 #[derive(Debug)]
 struct FunctionArgs {
     memo: bool,
+    batching: bool,
+    max_batch_size: Option<usize>,
     version: Option<u64>,
     memo_key: Vec<MemoKeyOverride>,
     logic_tracking: LogicTracking,
@@ -186,6 +191,8 @@ impl FunctionArgs {
 impl Parse for FunctionArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut memo = false;
+        let mut batching = false;
+        let mut max_batch_size = None;
         let mut version = None;
         let mut memo_key = Vec::new();
         let mut logic_tracking = LogicTracking::Full;
@@ -194,6 +201,27 @@ impl Parse for FunctionArgs {
             let name: Ident = input.parse()?;
             match name.to_string().as_str() {
                 "memo" => memo = true,
+                "batching" => batching = true,
+                "max_batch_size" => {
+                    input.parse::<Token![=]>()?;
+                    let value: LitInt = input.parse()?;
+                    if max_batch_size.is_some() {
+                        return Err(SynError::new(
+                            value.span(),
+                            "duplicate `max_batch_size` argument",
+                        ));
+                    }
+                    let value = value
+                        .base10_parse::<usize>()
+                        .map_err(|err| SynError::new(value.span(), err.to_string()))?;
+                    if value == 0 {
+                        return Err(SynError::new(
+                            name.span(),
+                            "`max_batch_size` must be greater than zero",
+                        ));
+                    }
+                    max_batch_size = Some(value);
+                }
                 "logic_tracking" => {
                     input.parse::<Token![=]>()?;
                     let mode: LitStr = input.parse()?;
@@ -245,7 +273,7 @@ impl Parse for FunctionArgs {
                 _ => {
                     return Err(SynError::new(
                         name.span(),
-                        "unsupported function attribute argument. expected `memo`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
+                        "unsupported function attribute argument. expected `memo`, `batching`, `max_batch_size = N`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
                     ));
                 }
             }
@@ -258,8 +286,17 @@ impl Parse for FunctionArgs {
             }
         }
 
+        if max_batch_size.is_some() && !batching {
+            return Err(SynError::new(
+                Span::call_site(),
+                "`max_batch_size` requires `batching`",
+            ));
+        }
+
         Ok(Self {
             memo,
+            batching,
+            max_batch_size,
             version,
             memo_key,
             logic_tracking,
@@ -369,6 +406,383 @@ fn gen_state_collect_for_param(
     }
 }
 
+#[derive(Debug)]
+struct BatchingSignature {
+    ctx_ident: Ident,
+    item_param: ParamInfo,
+    extra_params: Vec<ParamInfo>,
+    output_ty: Type,
+    wrapper_sig: syn::Signature,
+}
+
+fn vec_inner_type(ty: &Type) -> Option<Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty.clone()),
+        _ => None,
+    })
+}
+
+fn item_shaped_return_type(output: &syn::ReturnType) -> syn::Result<(Type, syn::ReturnType)> {
+    let syn::ReturnType::Type(_, result_ty) = output else {
+        return Err(SynError::new_spanned(
+            output,
+            "batching function return type must be `Result<Vec<_>>`",
+        ));
+    };
+    let Type::Path(result_path) = result_ty.as_ref() else {
+        return Err(SynError::new_spanned(
+            result_ty,
+            "batching function return type must be `Result<Vec<_>>`",
+        ));
+    };
+    let Some(result_segment) = result_path.path.segments.last() else {
+        return Err(SynError::new_spanned(
+            result_ty,
+            "batching function return type must be `Result<Vec<_>>`",
+        ));
+    };
+    if result_segment.ident != "Result" {
+        return Err(SynError::new_spanned(
+            result_ty,
+            "batching function return type must be `Result<Vec<_>>`",
+        ));
+    }
+    let syn::PathArguments::AngleBracketed(result_args) = &result_segment.arguments else {
+        return Err(SynError::new_spanned(
+            result_ty,
+            "batching function return type must be `Result<Vec<_>>`",
+        ));
+    };
+    let Some(syn::GenericArgument::Type(batch_output_ty)) = result_args.args.first() else {
+        return Err(SynError::new_spanned(
+            result_ty,
+            "batching function return type must be `Result<Vec<_>>`",
+        ));
+    };
+    let Some(item_output_ty) = vec_inner_type(batch_output_ty) else {
+        return Err(SynError::new_spanned(
+            batch_output_ty,
+            "batching function return type must be `Result<Vec<_>>`",
+        ));
+    };
+
+    let mut wrapper_output = output.clone();
+    let syn::ReturnType::Type(_, wrapper_result_ty) = &mut wrapper_output else {
+        unreachable!();
+    };
+    let Type::Path(wrapper_result_path) = wrapper_result_ty.as_mut() else {
+        unreachable!();
+    };
+    let wrapper_result_segment = wrapper_result_path.path.segments.last_mut().unwrap();
+    let syn::PathArguments::AngleBracketed(wrapper_args) = &mut wrapper_result_segment.arguments
+    else {
+        unreachable!();
+    };
+    let Some(syn::GenericArgument::Type(wrapper_item_ty)) = wrapper_args.args.first_mut() else {
+        unreachable!();
+    };
+    *wrapper_item_ty = item_output_ty.clone();
+    Ok((item_output_ty, wrapper_output))
+}
+
+fn parse_batching_signature(func: &ItemFn) -> syn::Result<BatchingSignature> {
+    if func.sig.asyncness.is_none() {
+        return Err(SynError::new(
+            func.sig.ident.span(),
+            "batching requires an async function",
+        ));
+    }
+    if !func.sig.generics.params.is_empty() {
+        return Err(SynError::new_spanned(
+            &func.sig.generics,
+            "batching functions cannot be generic because their scheduler is static",
+        ));
+    }
+    for input in &func.sig.inputs {
+        let FnArg::Typed(param) = input else {
+            return Err(SynError::new_spanned(
+                input,
+                "batching is supported only on free functions",
+            ));
+        };
+        if !matches!(param.pat.as_ref(), Pat::Ident(_)) {
+            return Err(SynError::new_spanned(
+                &param.pat,
+                "batching function parameters must be identifiers",
+            ));
+        }
+    }
+
+    let (ctx_ident, params) = parse_fn_params(func)?;
+    let Some(batch_param) = params.first() else {
+        return Err(SynError::new(
+            func.sig.ident.span(),
+            "batching requires a non-context `Vec<_>` parameter",
+        ));
+    };
+    let Some(item_ty) = vec_inner_type(&batch_param.ty) else {
+        return Err(SynError::new_spanned(
+            &batch_param.ty,
+            "batching requires the first non-context parameter to be `Vec<_>`",
+        ));
+    };
+    let (output_ty, wrapper_output) = item_shaped_return_type(&func.sig.output)?;
+
+    let mut wrapper_sig = func.sig.clone();
+    let mut found_batch_param = false;
+    for input in &mut wrapper_sig.inputs {
+        let FnArg::Typed(param) = input else {
+            return Err(SynError::new_spanned(
+                input,
+                "batching is supported only on free functions",
+            ));
+        };
+        let Pat::Ident(param_ident) = param.pat.as_ref() else {
+            return Err(SynError::new_spanned(
+                &param.pat,
+                "batching function parameters must be identifiers",
+            ));
+        };
+        if param_ident.ident == batch_param.ident {
+            *param.ty = item_ty.clone();
+            found_batch_param = true;
+            break;
+        }
+    }
+    debug_assert!(found_batch_param);
+    wrapper_sig.output = wrapper_output;
+
+    Ok(BatchingSignature {
+        ctx_ident,
+        item_param: ParamInfo {
+            ident: batch_param.ident.clone(),
+            ty: item_ty,
+            is_ref: false,
+            is_str_ref: false,
+        },
+        extra_params: params[1..].to_vec(),
+        output_ty,
+        wrapper_sig,
+    })
+}
+
+fn gen_owned_param_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
+    params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            quote! { let #ident = ::core::clone::Clone::clone(&#ident); }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_batching_function(
+    func: &ItemFn,
+    args: &FunctionArgs,
+    hash_const_name: &Ident,
+    hash_const_value: &TokenStream2,
+    logic_registration: &TokenStream2,
+    track_logic: bool,
+    propagate_children_fn_logic: bool,
+) -> syn::Result<TokenStream2> {
+    let batching = parse_batching_signature(func)?;
+    let fn_name = &func.sig.ident;
+    let vis = &func.vis;
+    let attrs = &func.attrs;
+    let body = &func.block;
+    let wrapper_sig = &batching.wrapper_sig;
+    let ctx_ident = &batching.ctx_ident;
+    let item_ident = &batching.item_param.ident;
+    let item_ty = &batching.item_param.ty;
+    let output_ty = &batching.output_ty;
+    let extra_params = &batching.extra_params;
+
+    let batch_impl_name = format_ident!("__coco_batch_impl_{}", fn_name);
+    let mut batch_impl_sig = func.sig.clone();
+    batch_impl_sig.ident = batch_impl_name.clone();
+    let batch_static_name = format_ident!("__COCO_BATCHED_{}", fn_name.to_string().to_uppercase());
+    let batch_static_init = match args.max_batch_size {
+        Some(max_batch_size) => quote! {
+            ::cocoindex::Batched::__scheduled_with_max_batch(
+                #hash_const_name,
+                #max_batch_size,
+            )
+        },
+        None => quote! { ::cocoindex::Batched::__scheduled(#hash_const_name) },
+    };
+
+    let mut batch_impl_args = Vec::new();
+    for input in &func.sig.inputs {
+        let FnArg::Typed(param) = input else {
+            return Err(SynError::new_spanned(
+                input,
+                "batching is supported only on free functions",
+            ));
+        };
+        let Pat::Ident(param_ident) = param.pat.as_ref() else {
+            return Err(SynError::new_spanned(
+                &param.pat,
+                "batching function parameters must be identifiers",
+            ));
+        };
+        let ident = &param_ident.ident;
+        if *ident == batching.ctx_ident {
+            batch_impl_args.push(quote! { &__coco_batch_ctx });
+        } else if *ident == batching.item_param.ident {
+            batch_impl_args.push(quote! { __coco_batch_items });
+        } else {
+            let param = extra_params
+                .iter()
+                .find(|param| param.ident == *ident)
+                .expect("validated non-context parameter");
+            if param.is_ref {
+                batch_impl_args.push(quote! { &#ident });
+            } else {
+                batch_impl_args.push(quote! { #ident });
+            }
+        }
+    }
+
+    let owned_extra_clones = gen_owned_param_clones(extra_params);
+    let extra_key_parts = extra_params.iter().map(|param| {
+        let ident = &param.ident;
+        quote! { &#ident }
+    });
+    let extra_args_key = if extra_params.is_empty() {
+        quote! { ::std::vec::Vec::new() }
+    } else {
+        quote! {
+            ::cocoindex::memo::key_bytes_result(&(#(#extra_key_parts,)*))?
+        }
+    };
+    let schedule_call = quote! {
+        let __coco_extra_args_key = #extra_args_key;
+        #batch_static_name
+            .__call_scheduled(
+                __coco_scoped_ctx,
+                __coco_extra_args_key,
+                #item_ident,
+                move |__coco_batch_ctx, __coco_batch_items| {
+                    #(#owned_extra_clones)*
+                    async move {
+                        #batch_impl_name(#(#batch_impl_args),*).await
+                    }
+                },
+            )
+            .await
+    };
+
+    let wrapper_body = if args.memo {
+        let mut key_params = vec![batching.item_param.clone()];
+        key_params.extend(extra_params.iter().cloned());
+        validate_memo_key_overrides(
+            &args.memo_key,
+            key_params.iter().map(|param| param.ident.to_string()),
+        )?;
+        let key_writes: Vec<TokenStream2> = key_params
+            .iter()
+            .filter_map(|param| {
+                gen_key_write_for_param(&format_ident!("__coco_key"), param, &args.memo_key)
+            })
+            .collect();
+        let state_collects: Vec<TokenStream2> = key_params
+            .iter()
+            .map(|param| {
+                gen_state_collect_for_param(
+                    &format_ident!("__coco_states"),
+                    &format_ident!("__coco_state_idx"),
+                    &format_ident!("__coco_prev_states"),
+                    param,
+                )
+            })
+            .collect();
+        let state_clones = gen_clones(&key_params);
+        let body_clones = gen_clones(&key_params);
+        quote! {{
+            let __coco_key = {
+                let mut __coco_key = ::cocoindex::memo::new_key_fingerprinter();
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &"cocoindex_fn")?;
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::module_path!())?;
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::stringify!(#fn_name))?;
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#hash_const_name)?;
+                #(#key_writes)*
+                ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
+            };
+
+            ::cocoindex::memo::cached_by_fingerprint_with_state(
+                #ctx_ident,
+                __coco_key,
+                #propagate_children_fn_logic,
+                {
+                    #(#state_clones)*
+                    move |__coco_prev_states| async move {
+                        let mut __coco_states = Vec::new();
+                        let mut __coco_state_idx = 0usize;
+                        #(#state_collects)*
+                        Ok(__coco_states)
+                    }
+                },
+                {
+                    #(#body_clones)*
+                    move |__coco_scoped_ctx| async move {
+                        #schedule_call
+                    }
+                },
+            )
+            .await
+        }}
+    } else {
+        let initial_extra_clones = gen_clones(extra_params);
+        if track_logic {
+            quote! {{
+                #(#initial_extra_clones)*
+                #ctx_ident
+                    .__coco_tracked_fn(
+                        ::core::module_path!(),
+                        ::core::stringify!(#fn_name),
+                        #hash_const_name,
+                        #propagate_children_fn_logic,
+                        move |__coco_scoped_ctx| async move {
+                            #schedule_call
+                        },
+                    )
+                    .await
+            }}
+        } else {
+            quote! {{
+                #(#initial_extra_clones)*
+                let __coco_scoped_ctx = ::core::clone::Clone::clone(#ctx_ident);
+                #schedule_call
+            }}
+        }
+    };
+
+    Ok(quote! {
+        #[doc(hidden)]
+        pub const #hash_const_name: u64 = #hash_const_value;
+        #logic_registration
+
+        static #batch_static_name: ::std::sync::LazyLock<::cocoindex::Batched<#item_ty, #output_ty>> =
+            ::std::sync::LazyLock::new(|| #batch_static_init);
+
+        #batch_impl_sig #body
+
+        #(#attrs)*
+        #vis #wrapper_sig #wrapper_body
+    })
+}
+
 /// `#[cocoindex::function]` — unified macro for cocoindex pipeline functions.
 ///
 /// ## Usage
@@ -383,6 +797,14 @@ fn gen_state_collect_for_param(
 /// ```ignore
 /// #[cocoindex::function(memo)]
 /// async fn my_fn(ctx: &Ctx, arg: &String) -> Result<String> { ... }
+/// ```
+///
+/// **With `batching`** — declare a batch-shaped body and call it with one item:
+/// ```ignore
+/// #[cocoindex::function(memo, batching, max_batch_size = 32)]
+/// async fn embed(ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> { ... }
+///
+/// let embedding: Vec<f32> = embed(ctx, text).await?;
 /// ```
 ///
 /// Optional `version` parameter forces cache invalidation:
@@ -455,6 +877,21 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             )
             .to_compile_error(),
         );
+    }
+
+    if args.batching {
+        return match expand_batching_function(
+            &func,
+            &args,
+            &hash_const_name,
+            &hash_const_value,
+            &logic_registration,
+            track_logic,
+            propagate_children_fn_logic,
+        ) {
+            Ok(expanded) => expanded.into(),
+            Err(err) => err.to_compile_error().into(),
+        };
     }
 
     if args.memo {
@@ -1020,7 +1457,23 @@ mod tests {
     fn parse_function_args_empty() {
         let args = FunctionArgs::parse(TokenStream2::new()).unwrap();
         assert!(!args.memo);
+        assert!(!args.batching);
+        assert!(args.max_batch_size.is_none());
         assert!(args.version.is_none());
+    }
+
+    #[test]
+    fn parse_function_args_accepts_batching_options() {
+        let args = FunctionArgs::parse(quote!(memo, batching, max_batch_size = 32)).unwrap();
+        assert!(args.memo);
+        assert!(args.batching);
+        assert_eq!(args.max_batch_size, Some(32));
+    }
+
+    #[test]
+    fn parse_function_args_rejects_max_batch_without_batching() {
+        let err = FunctionArgs::parse(quote!(max_batch_size = 32)).unwrap_err();
+        assert!(err.to_string().contains("requires `batching`"));
     }
 
     #[test]
@@ -1143,6 +1596,49 @@ mod tests {
         )
         .unwrap();
         assert!(parse_fn_params(&func).is_err());
+    }
+
+    #[test]
+    fn batching_signature_rewrites_input_and_output_to_item_shape() {
+        let func: ItemFn = parse_str(
+            "async fn embed(ctx: &Ctx, texts: Vec<String>, model: String) -> Result<Vec<Vec<f32>>> { unimplemented!() }",
+        )
+        .unwrap();
+        let batching = parse_batching_signature(&func).unwrap();
+        assert_eq!(batching.ctx_ident, "ctx");
+        assert_eq!(batching.item_param.ident, "texts");
+        assert_eq!(batching.extra_params.len(), 1);
+        let wrapper_sig = &batching.wrapper_sig;
+        assert_eq!(
+            quote!(#wrapper_sig).to_string(),
+            "async fn embed (ctx : & Ctx , texts : String , model : String) -> Result < Vec < f32 > >"
+        );
+    }
+
+    #[test]
+    fn batching_signature_requires_non_context_parameter() {
+        let func: ItemFn =
+            parse_str("async fn bad(ctx: &Ctx) -> Result<Vec<i32>> { Ok(vec![]) }").unwrap();
+        let err = parse_batching_signature(&func).unwrap_err();
+        assert!(err.to_string().contains("requires a non-context"));
+    }
+
+    #[test]
+    fn batching_signature_requires_vec_input() {
+        let func: ItemFn =
+            parse_str("async fn bad(ctx: &Ctx, item: String) -> Result<Vec<i32>> { Ok(vec![]) }")
+                .unwrap();
+        let err = parse_batching_signature(&func).unwrap_err();
+        assert!(err.to_string().contains("first non-context parameter"));
+    }
+
+    #[test]
+    fn batching_signature_requires_result_vec_output() {
+        let func: ItemFn =
+            parse_str("async fn bad(ctx: &Ctx, items: Vec<String>) -> Result<i32> { Ok(1) }")
+                .unwrap();
+        let err = parse_batching_signature(&func).unwrap_err();
+        assert!(err.to_string().contains("return type"));
     }
 
     #[test]
