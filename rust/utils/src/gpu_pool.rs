@@ -1,5 +1,6 @@
 use anyhow::{Error, Result};
 use itertools::Itertools;
+use std::num::NonZeroUsize;
 use tokio::sync::{Mutex, Notify};
 
 pub struct GPUPool {
@@ -47,6 +48,31 @@ impl GPUPool {
         }
     }
 
+    pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Vec<usize> {
+        loop {
+            let notified = self.release.notified();
+            {
+                let mut cap = self.capacity.lock().await;
+                let indexes = Self::find_fully_available(&cap, gpu_count);
+                if indexes.len() >= gpu_count.get() {
+                    for position in &indexes[..gpu_count.get()] {
+                        cap[*position] = 0_f32;
+                    }
+                    return indexes;
+                }
+            }
+            notified.await;
+        }
+    }
+
+    fn find_fully_available(capacity: &[f32], count: NonZeroUsize) -> Vec<usize> {
+        capacity
+            .iter()
+            .positions(|cap| (*cap - 1.0).abs() < f32::EPSILON)
+            .take(count.get())
+            .collect()
+    }
+
     pub async fn release(&self, gpu_id: usize, fraction: f32) {
         {
             let mut cap = self.capacity.lock().await;
@@ -78,11 +104,10 @@ impl GPUPool {
         #[cfg(test)]
         let output = {
             if std::env::var("MOCK_NVIDIA_SMI_NOT_FOUND").is_ok() {
-                return Err(std::io::Error::new(
+                return Err(Error::from(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "nvidia-smi not found",
-                ))
-                .map_err(Error::from);
+                )));
             }
             let mock_gpu_count = std::env::var("MOCK_NVIDIA_SMI_STDOUT").unwrap_or_default();
             let mock_exit_code = std::env::var("MOCK_NVIDIA_SMI_EXIT_CODE")
@@ -117,6 +142,7 @@ impl Default for GPUPool {
 #[cfg(test)]
 mod tests {
     use crate::gpu_pool::GPUPool;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -192,6 +218,38 @@ mod tests {
         assert_eq!(gpus.len(), 3);
         for g in gpus {
             pool.release(g, 1.0).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_gpus_enough() {
+        let pool = GPUPool::new(2);
+        let gpus = pool
+            .acquire_full(NonZeroUsize::new(2).expect("2 is not zero"))
+            .await;
+        assert_eq!(gpus, [0, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_gpus_not_enough() {
+        let pool = Arc::new(GPUPool::new(3));
+        let partially_used_gpu = pool.acquire(0.6).await;
+        assert_eq!(partially_used_gpu, 2);
+        let cloned_pool = pool.clone();
+        let task = tokio::spawn(async move {
+            cloned_pool
+                .acquire_full(NonZeroUsize::new(3).expect("2 is not zero"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task.is_finished());
+        pool.release(partially_used_gpu, 0.6).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("task finished");
+        assert_eq!(result.as_ref().ok(), Some(&vec![0, 1, 2]));
+        for gpu in result.unwrap() {
+            pool.release(gpu, 1.0).await;
         }
     }
 
