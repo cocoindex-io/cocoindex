@@ -1216,3 +1216,85 @@ async def test_postgres_cross_table_row_atomicity(pg_env: _PgEnv) -> None:
     finally:
         await _drop_table(pool, table_a_name)
         await _drop_table(pool, table_b_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_cross_table_ddl_atomicity(pg_env: _PgEnv) -> None:
+    """Table DDL across two tables sharing the same database must be atomic.
+
+    The table handler uses one sink per database (keyed by db_key), so table
+    actions declared in the same processing component reconcile into a single
+    ``_apply_actions`` batch and run in one connection/transaction. If one
+    table's ``CREATE TABLE`` fails (here: an invalid column type), the other
+    table declared in the same ``app.update()`` must NOT be created either --
+    the shared transaction rolls back both.
+    """
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_a_name = _unique_name("test_ddl_atomic_a")
+    table_b_name = _unique_name("test_ddl_atomic_b")
+
+    fail_table_b = True
+
+    try:
+
+        async def declare_fn() -> None:
+            # Declare both tables in the *same* component so their DDL actions
+            # reconcile into one per-database sink batch (one transaction).
+            postgres.declare_table_target(
+                _PG_DB_KEY,
+                table_a_name,
+                postgres.TableSchema(
+                    columns={
+                        "id": postgres.ColumnDef("text", nullable=False),
+                        "content": postgres.ColumnDef("text", nullable=False),
+                    },
+                    primary_key=["id"],
+                ),
+            )
+            # The column *type* string is interpolated into the CREATE TABLE
+            # DDL verbatim (only identifiers are validated), so a bogus type
+            # makes Postgres reject table B's DDL at execution time.
+            postgres.declare_table_target(
+                _PG_DB_KEY,
+                table_b_name,
+                postgres.TableSchema(
+                    columns={
+                        "id": postgres.ColumnDef("text", nullable=False),
+                        "content": postgres.ColumnDef(
+                            "not_a_real_type" if fail_table_b else "text",
+                            nullable=False,
+                        ),
+                    },
+                    primary_key=["id"],
+                ),
+            )
+
+        app = coco.App(
+            coco.AppConfig(
+                name=f"test_cross_table_ddl_atomicity_{table_a_name}",
+                environment=coco_env,
+            ),
+            declare_fn,
+        )
+
+        # t1: table B's DDL is invalid -> the whole update must fail, and
+        # table A must NOT be created (shared transaction rolled back).
+        fail_table_b = True
+        with pytest.raises(Exception):
+            await app.update()
+
+        assert not await _table_exists(pool, table_a_name), (
+            "Table A must not be created when table B's DDL fails in the same update"
+        )
+        assert not await _table_exists(pool, table_b_name)
+
+        # t2: fix table B's DDL -> both tables should now be created together.
+        fail_table_b = False
+        await app.update()
+        assert await _table_exists(pool, table_a_name)
+        assert await _table_exists(pool, table_b_name)
+
+    finally:
+        await _drop_table(pool, table_a_name)
+        await _drop_table(pool, table_b_name)

@@ -8,11 +8,11 @@ This module provides a two-level target state system for PostgreSQL:
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import decimal
 import ipaddress
 import json
+
 import logging
 import re
 import uuid
@@ -863,7 +863,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 return None
             return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None, handler=self),
-                sink=_ROW_SINK,
+                sink=_get_or_create_row_sink(self._pool),
                 tracking_record=coco.NON_EXISTENCE,
             )
 
@@ -877,51 +877,44 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
 
         return coco.TargetReconcileOutput(
             action=_RowAction(key=key, value=desired_state, handler=self),
-            sink=_ROW_SINK,
+            sink=_get_or_create_row_sink(self._pool),
             tracking_record=target_fp,
         )
 
 
-async def _apply_row_actions(
-    context_provider: ContextProvider, actions: Sequence[_RowAction]
-) -> None:
-    """Apply row actions across (possibly multiple) tables.
+# Registry of per-pool row sinks, keyed by pool identity.
+# Pools are long-lived (application lifetime), so a plain dict is safe here.
+_pool_to_row_sink: dict[asyncpg.Pool, coco.TargetActionSink[_RowAction]] = {}
 
-    Actions are grouped by their owning pool so unrelated databases can be
-    applied concurrently, and then by table (handler) within each pool so
-    that all row changes to tables sharing a database go through a single
-    connection and a single transaction — giving cross-table atomicity
-    within one database.
+
+def _get_or_create_row_sink(
+    pool: asyncpg.Pool,
+) -> coco.TargetActionSink[_RowAction]:
+    """Return the shared row sink for *pool*, creating it on first call.
+
+    All row handlers that share the same pool reference the same
+    TargetActionSink, so the engine can batch their actions together and
+    apply them in a single connection/transaction — giving cross-table
+    atomicity within one database.
     """
-    if not actions:
-        return
+    sink = _pool_to_row_sink.get(pool)
+    if sink is None:
 
-    by_pool: dict[asyncpg.Pool, list[_RowAction]] = {}
-    for action in actions:
-        by_pool.setdefault(action.handler._pool, []).append(action)
+        async def _apply_pool_row_actions(
+            context_provider: ContextProvider,
+            actions: Sequence[_RowAction],
+        ) -> None:
+            by_handler: dict[_RowHandler, list[_RowAction]] = {}
+            for action in actions:
+                by_handler.setdefault(action.handler, []).append(action)
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    for handler, handler_actions in by_handler.items():
+                        await handler._execute_actions(conn, handler_actions)
 
-    async with asyncio.TaskGroup() as tg:
-        for pool_actions in by_pool.values():
-            tg.create_task(_apply_pool_row_actions(pool_actions))
-
-
-async def _apply_pool_row_actions(actions: list[_RowAction]) -> None:
-    """Apply all row actions sharing one pool within a single connection/transaction."""
-    pool = actions[0].handler._pool
-
-    by_handler: dict[_RowHandler, list[_RowAction]] = {}
-    for action in actions:
-        by_handler.setdefault(action.handler, []).append(action)
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            for handler, handler_actions in by_handler.items():
-                await handler._execute_actions(conn, handler_actions)
-
-
-_ROW_SINK: coco.TargetActionSink[_RowAction] = coco.TargetActionSink.from_async_fn(
-    _apply_row_actions
-)
+        sink = coco.TargetActionSink.from_async_fn(_apply_pool_row_actions)
+        _pool_to_row_sink[pool] = sink
+    return sink
 
 
 class _TableKey(NamedTuple):
@@ -1014,67 +1007,80 @@ class _TableAction(NamedTuple):
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
-    _sink: coco.TargetActionSink[_TableAction, _RowHandler]
+    # One sink per database, keyed by db_key. Sharing a sink across all tables
+    # of the same database lets the engine batch their DDL into a single
+    # connection/transaction, so schema changes across tables are atomic.
+    _table_sinks: dict[str, coco.TargetActionSink[_TableAction, _RowHandler]]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._table_sinks = {}
+
+    def _get_table_sink(
+        self, db_key: str
+    ) -> coco.TargetActionSink[_TableAction, _RowHandler]:
+        """Return the shared table sink for *db_key*, creating it on first call."""
+        sink = self._table_sinks.get(db_key)
+        if sink is None:
+            sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+            self._table_sinks[db_key] = sink
+        return sink
 
     async def _apply_actions(
         self, context_provider: ContextProvider, actions: Collection[_TableAction]
     ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-        """Apply table actions (DDL) and return child row handlers."""
+        """Apply table actions (DDL) and return child row handlers.
+
+        All actions routed here share a single database (the sink is keyed by
+        db_key), so every table's DDL runs in one connection and one
+        transaction — making schema changes across tables of the same database
+        atomic.
+        """
         actions_list = list(actions)
         outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
             actions_list
         )
+        if not actions_list:
+            return outputs
 
-        # Group actions by table key so we can apply all DDL for the same table
-        # within a single transaction/connection.
-        by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
-            by_key.setdefault(action.key, []).append(i)
+        # The per-database sink guarantees a uniform db_key across the batch.
+        db_key = actions_list[0].key.db_key
+        pool = context_provider.get(db_key, asyncpg.Pool)
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for i, action in enumerate(actions_list):
+                    key = action.key
 
-        for key, idxs in by_key.items():
-            pool = context_provider.get(key.db_key, asyncpg.Pool)
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    for i in idxs:
-                        action = actions_list[i]
-                        assert action.key == key
+                    if action.main_action in ("replace", "delete"):
+                        await self._drop_table(conn, key.table_name, key.pg_schema_name)
 
-                        if action.main_action in ("replace", "delete"):
-                            await self._drop_table(
-                                conn, key.table_name, key.pg_schema_name
-                            )
+                    if coco.is_non_existence(action.spec):
+                        outputs[i] = None
+                        continue
 
-                        if coco.is_non_existence(action.spec):
-                            outputs[i] = None
-                            continue
-
-                        spec = action.spec
-                        outputs[i] = coco.ChildTargetDef(
-                            handler=_RowHandler(
-                                pool=pool,
-                                table_name=key.table_name,
-                                pg_schema_name=key.pg_schema_name,
-                                table_schema=spec.table_schema,
-                            )
+                    spec = action.spec
+                    outputs[i] = coco.ChildTargetDef(
+                        handler=_RowHandler(
+                            pool=pool,
+                            table_name=key.table_name,
+                            pg_schema_name=key.pg_schema_name,
+                            table_schema=spec.table_schema,
                         )
+                    )
 
-                        if action.main_action in ("insert", "upsert", "replace"):
-                            await self._create_table(
-                                conn,
-                                key,
-                                spec.table_schema,
-                                if_not_exists=(action.main_action == "upsert"),
-                            )
-                            continue
+                    if action.main_action in ("insert", "upsert", "replace"):
+                        await self._create_table(
+                            conn,
+                            key,
+                            spec.table_schema,
+                            if_not_exists=(action.main_action == "upsert"),
+                        )
+                        continue
 
-                        # No main change: reconcile non-PK columns incrementally.
-                        if action.column_actions:
-                            await self._apply_column_actions(
-                                conn, key, spec.table_schema, action.column_actions
-                            )
+                    # No main change: reconcile non-PK columns incrementally.
+                    if action.column_actions:
+                        await self._apply_column_actions(
+                            conn, key, spec.table_schema, action.column_actions
+                        )
 
         return outputs
 
@@ -1282,7 +1288,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 main_action=main_action,
                 column_actions=column_actions,
             ),
-            sink=self._sink,
+            sink=self._get_table_sink(key.db_key),
             tracking_record=tracking_record,
             child_invalidation=child_invalidation,
         )
