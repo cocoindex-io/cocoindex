@@ -1264,6 +1264,9 @@ def _get_db_sink(
     Table actions apply DDL (and yield a child row handler); row actions apply
     DML. Both branch on the action type inside a single connection and
     transaction, so any actions batched together for one database are atomic.
+    Within the transaction, actions run in three phases — create/alter tables,
+    then row DML, then drop tables — so the ordering is correct by construction
+    even if creates, deletes, and row changes are batched together.
     """
     sink = _db_sinks.get(db_key)
     if sink is None:
@@ -1276,20 +1279,41 @@ def _get_db_sink(
             outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
                 actions
             )
+
+            # Partition actions into three ordered phases so the transaction is
+            # correct by construction, independent of the order the engine
+            # batches actions in:
+            #   1. table DDL that leaves the table existing (create / alter /
+            #      replace) — must run before any row DML targeting it;
+            #   2. row DML (upserts + deletes);
+            #   3. table drops — must run after row DML, since deleting rows
+            #      from an already-dropped table would fail.
+            # `replace` drops-then-recreates internally, so it ends with the
+            # table existing and belongs to phase 1.
+            ensure_table_actions: list[tuple[int, _TableAction]] = []
+            drop_table_actions: list[tuple[int, _TableAction]] = []
             rows_by_handler: dict[_RowHandler, list[_RowAction]] = {}
+            for i, action in enumerate(actions):
+                if isinstance(action, _TableAction):
+                    if coco.is_non_existence(action.spec):
+                        drop_table_actions.append((i, action))
+                    else:
+                        ensure_table_actions.append((i, action))
+                else:
+                    rows_by_handler.setdefault(action.handler, []).append(action)
+
             async with pool.acquire() as conn:
                 async with conn.transaction():
-                    for i, action in enumerate(actions):
-                        if isinstance(action, _TableAction):
-                            outputs[i] = await _table_handler._apply_table_action(
-                                conn, pool, action
-                            )
-                        else:
-                            rows_by_handler.setdefault(action.handler, []).append(
-                                action
-                            )
+                    for i, action in ensure_table_actions:
+                        outputs[i] = await _table_handler._apply_table_action(
+                            conn, pool, action
+                        )
                     for handler, handler_actions in rows_by_handler.items():
                         await handler._execute_actions(conn, handler_actions)
+                    for i, action in drop_table_actions:
+                        outputs[i] = await _table_handler._apply_table_action(
+                            conn, pool, action
+                        )
             return outputs
 
         sink = coco.TargetActionSink.from_async_fn(_apply)
