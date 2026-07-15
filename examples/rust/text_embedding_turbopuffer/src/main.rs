@@ -17,12 +17,13 @@
 //!   TURBOPUFFER_NAMESPACE default `TextEmbedding`
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::turbopuffer::{
+    self, DistanceMetric, NamespaceSchema, TurbopufferConnection,
+};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
-use cocoindex::connectors::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
@@ -31,17 +32,14 @@ const TOP_K: usize = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
-static DB: LazyLock<ContextKey<TurbopufferConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state(
-        "text_embedding_turbopuffer_db",
-        |c: &TurbopufferConnection| c.state_id().to_string(),
-    )
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: TurbopufferConnection = "text_embedding_turbopuffer_db",
+    state = TurbopufferConnection::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 #[derive(Clone, Serialize, Deserialize)]
 struct RowData {

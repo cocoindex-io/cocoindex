@@ -18,7 +18,7 @@ sessions, statements, persons, techs, orgs, and the relationships between them.
 | Stable ids | `IdGenerator` | `cocoindex::IdGenerator` |
 | Entity resolution | `ops.entity_resolution` (faiss + LLM) | `cocoindex::entity_resolution` + `fastembed` Snowflake embeddings + LLM pair resolver |
 | Graph store | `surrealdb` connector (`TableTarget`/`RelationTarget`) | `cocoindex::connectors::surrealdb` targets over the native `surrealdb` crate |
-| Embedder change-detection | `ContextKey(..., detect_change=True)` | `ContextKey::new_with_state(...)` |
+| Embedder change-detection | `ContextKey(..., detect_change=True)` | `context_key!(..., state = Embedder::model_name)` |
 
 ### Design notes / where it differs
 

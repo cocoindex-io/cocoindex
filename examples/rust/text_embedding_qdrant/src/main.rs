@@ -14,12 +14,11 @@
 //! binary is required to build this example (set `PROTOC` or put it on `PATH`).
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
-use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
@@ -29,16 +28,14 @@ const TOP_K: u64 = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
-static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("text_embedding_qdrant_db", |c: &QdrantConnection| {
-        c.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: QdrantConnection = "text_embedding_qdrant_db",
+    state = QdrantConnection::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 /// A computed point: id + vector + payload fields.
 #[derive(Clone, Serialize, Deserialize)]

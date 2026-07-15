@@ -5,12 +5,11 @@
 //! Postgres/pgvector.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use cocoindex::connectors::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -22,23 +21,18 @@ const PG_SCHEMA: &str = "coco_examples_v1";
 const TABLE: &str = "doc_embeddings";
 const TOP_K: i64 = 5;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("gdrive_text_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-
-static GDRIVE: LazyLock<ContextKey<GoogleDriveClient>> = LazyLock::new(|| {
-    ContextKey::new_with_state("gdrive_client", |client: &GoogleDriveClient| {
-        client.state_id().to_string()
-    })
-});
-
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "gdrive_text_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static GDRIVE: GoogleDriveClient = "gdrive_client",
+    state = GoogleDriveClient::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbeddingRow {

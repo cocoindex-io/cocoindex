@@ -31,13 +31,16 @@ const MAX_TEXT: usize = 4000;
 
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-/// Shared Postgres target database.
-static PG: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("hn_db", |db: &postgres::Database| db.state_id().to_string())
-});
-/// LLM client; state-tracked on the model so changing it invalidates memos.
-static LLM: LazyLock<ContextKey<LlmClient>> =
-    LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
+// Shared Postgres target database.
+cocoindex::context_key!(
+    static PG: postgres::Database = "hn_db",
+    state = postgres::Database::state_id
+);
+// LLM client; state-tracked on the model so changing it invalidates memos.
+cocoindex::context_key!(
+    static LLM: LlmClient = "llm_model",
+    state = LlmClient::model_name
+);
 
 // ---------------------------------------------------------------------------
 // LLM client (OpenAI JSON mode)
@@ -75,6 +78,10 @@ const TOPICS_PROMPT: &str = "Extract topics from the user's text. Return a JSON 
     Example: \"John Kennedy\", \"JFK\".";
 
 impl LlmClient {
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
     fn new(model: String) -> Result<Self> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| std::env::var("LLM_API_KEY"))

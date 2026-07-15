@@ -14,11 +14,10 @@
 //! mirrors Python.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -31,16 +30,14 @@ const TOP_K: i64 = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("pdf_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "pdf_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct PdfEmbedding {
@@ -109,8 +106,7 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PdfEmbedding>> {
 }
 
 fn pdf_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::from_row::<PdfEmbedding>(["id"])?
-        .with_vector_dim("embedding", EMBED_DIM)
+    postgres::TableSchema::from_row::<PdfEmbedding>(["id"])?.with_vector_dim("embedding", EMBED_DIM)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {

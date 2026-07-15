@@ -13,14 +13,14 @@
 //! and profile.
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
-use cocoindex::resources::file::PatternFilePathMatcher;
 use cocoindex::connectors::oci_object_storage::{self, ListOptions, OciClient, OciFile};
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
+use cocoindex::resources::file::PatternFilePathMatcher;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -30,19 +30,18 @@ const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "oci_doc_embeddings";
 const TOP_K: i64 = 5;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("oci_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static OCI: LazyLock<ContextKey<OciClient>> = LazyLock::new(|| {
-    ContextKey::new_with_state("oci_client", |c: &OciClient| c.state_id().to_string())
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "oci_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static OCI: OciClient = "oci_client",
+    state = OciClient::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbeddingRow {

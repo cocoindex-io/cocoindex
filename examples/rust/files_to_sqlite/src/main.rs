@@ -13,18 +13,16 @@
 //! Defaults: SOURCE_DIR = this example's `data/`, DB_PATH = `./files.db`.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use cocoindex::prelude::*;
 use cocoindex::connectors::sqlite;
+use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
-static DB: LazyLock<ContextKey<sqlite::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("files_sqlite_db", |db: &sqlite::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: sqlite::Database = "files_sqlite_db",
+    state = sqlite::Database::state_id
+);
 
 const TABLE: &str = "files";
 
@@ -78,7 +76,8 @@ async fn index(source_dir: PathBuf, db_path: String) -> Result<()> {
             async move {
                 let table = sqlite::mount_table_target(&ctx, &DB, TABLE, files_schema()?).await?;
 
-                let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
+                let files =
+                    cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
                 mount_each!(files, |file| process_file(ctx, file, table)).await?;
                 Ok(())
             }

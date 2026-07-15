@@ -899,6 +899,7 @@ dependencies = [
  "fastembed",
  "futures",
  "globset",
+ "half",
  "lancedb",
  "linkme",
  "rmp-serde",

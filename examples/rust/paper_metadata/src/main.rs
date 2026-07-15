@@ -26,13 +26,12 @@
 //! created (the query demo does a sequential cosine scan).
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use cocoindex::resources::id::UuidGenerator;
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{CustomLanguageConfig, RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
+use cocoindex::resources::id::UuidGenerator;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -51,18 +50,18 @@ const ABSTRACT_MIN_CHUNK_SIZE: usize = 200;
 const ABSTRACT_CHUNK_OVERLAP: usize = 150;
 const LLM_INPUT_CHARS: usize = 4000;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("paper_metadata_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
-static LLM: LazyLock<ContextKey<LlmClient>> =
-    LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
+cocoindex::context_key!(
+    static DB: postgres::Database = "paper_metadata_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
+cocoindex::context_key!(
+    static LLM: LlmClient = "llm_model",
+    state = LlmClient::model_name
+);
 
 // ---------------------------------------------------------------------------
 // Clients: LLM (OpenAI JSON mode); embedder is `SentenceTransformerEmbedder`
@@ -77,6 +76,10 @@ struct LlmClient {
 }
 
 impl LlmClient {
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
     fn new(model: String) -> Result<Self> {
         let api_key =
             std::env::var("OPENAI_API_KEY").map_err(|_| Error::engine("set OPENAI_API_KEY"))?;

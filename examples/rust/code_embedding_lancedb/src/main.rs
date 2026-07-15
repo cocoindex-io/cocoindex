@@ -11,7 +11,6 @@
 //! Python example's use of `cocoindex.connectors.lancedb`).
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
@@ -25,16 +24,14 @@ const TOP_K: usize = 5;
 
 const INCLUDE_PATTERNS: &[&str] = &["**/*.py", "**/*.rs", "**/*.toml", "**/*.md", "**/*.mdx"];
 
-static DB: LazyLock<ContextKey<LanceDatabase>> = LazyLock::new(|| {
-    ContextKey::new_with_state("code_embedding_db", |db: &LanceDatabase| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: LanceDatabase = "code_embedding_db",
+    state = LanceDatabase::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct CodeEmbedding {

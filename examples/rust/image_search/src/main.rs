@@ -19,12 +19,11 @@
 //! the CLIP ONNX models on first run.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use cocoindex::ops::image::ImageEmbedder;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::prelude::*;
-use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde_json::json;
 
 /// CLIP ViT-B/32 vision tower (images) and text tower (queries). Both output
@@ -44,16 +43,14 @@ const IMAGE_GLOBS: &[&str] = &[
     "**/*.bmp",
 ];
 
-static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("image_search_db", |c: &QdrantConnection| {
-        c.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<ImageEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("image_embedder", |e: &ImageEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: QdrantConnection = "image_search_db",
+    state = QdrantConnection::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: ImageEmbedder = "image_embedder",
+    state = ImageEmbedder::model_name
+);
 
 /// A computed point: stable id + image vector + source filename.
 #[derive(Clone, Serialize, Deserialize)]

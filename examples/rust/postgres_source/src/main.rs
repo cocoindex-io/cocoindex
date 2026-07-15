@@ -17,10 +17,8 @@
 //! Incrementality: unchanged source rows are memo-skipped; rows deleted from the
 //! source have their derived output rows reconciled away automatically.
 
-use std::sync::LazyLock;
-
-use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::connectors::postgres;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -31,24 +29,21 @@ const PG_SCHEMA: &str = "coco_examples_v1";
 const TABLE: &str = "output";
 const TOP_K: i64 = 5;
 
-/// Target database.
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("postgres_source_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-/// Source database. Defaults to the target URL, but can point elsewhere via
-/// `SOURCE_DATABASE_URL`, matching the Python example.
-static SOURCE_DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("source_pool", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+// Target database.
+cocoindex::context_key!(
+    static DB: postgres::Database = "postgres_source_db",
+    state = postgres::Database::state_id
+);
+// Source database. Defaults to the target URL, but can point elsewhere via
+// `SOURCE_DATABASE_URL`, matching the Python example.
+cocoindex::context_key!(
+    static SOURCE_DB: postgres::Database = "source_pool",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 // ---------------------------------------------------------------------------
 // Data models

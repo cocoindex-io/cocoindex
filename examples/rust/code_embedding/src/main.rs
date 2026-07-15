@@ -15,11 +15,10 @@
 //!   - Postgres/pgvector TableTarget sync          -> from `cocoindex`
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, detect_code_language};
-use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -33,21 +32,19 @@ const TOP_K: i64 = 5;
 
 const INCLUDE_PATTERNS: &[&str] = &["**/*.py", "**/*.rs", "**/*.toml", "**/*.md", "**/*.mdx"];
 
-/// Shared Postgres target database.
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("code_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
+// Shared Postgres target database.
+cocoindex::context_key!(
+    static DB: postgres::Database = "code_embedding_db",
+    state = postgres::Database::state_id
+);
 
-/// Shared embedder. `new_with_state` tracks the model name, so changing the model
-/// invalidates memoized files — the parity for Python's
-/// `ContextKey(..., detect_change=True)` + `Annotated[NDArray, EMBEDDER]`.
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+// Shared embedder. The context key tracks the model name, so changing the model
+// invalidates memoized files — the parity for Python's
+// `ContextKey(..., detect_change=True)` + `Annotated[NDArray, EMBEDDER]`.
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct CodeEmbeddingRow {

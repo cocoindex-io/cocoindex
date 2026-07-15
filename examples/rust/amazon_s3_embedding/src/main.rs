@@ -12,14 +12,14 @@
 //! and `AWS_ENDPOINT_URL` for MinIO) plus `S3_BUCKET` (and optional `S3_PREFIX`).
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
-use cocoindex::resources::file::PatternFilePathMatcher;
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
+use cocoindex::resources::file::PatternFilePathMatcher;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -29,19 +29,18 @@ const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "amazon_s3_doc_embeddings";
 const TOP_K: i64 = 5;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("s3_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static S3: LazyLock<ContextKey<S3Client>> = LazyLock::new(|| {
-    ContextKey::new_with_state("s3_client", |c: &S3Client| c.state_id().to_string())
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "s3_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static S3: S3Client = "s3_client",
+    state = S3Client::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbeddingRow {

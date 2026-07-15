@@ -15,10 +15,9 @@
 //!   - target        : `postgres::TableTarget` (cf. `postgres.mount_table_target`)
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use cocoindex::ops::api::ApiTranscriber;
 use cocoindex::connectors::postgres;
+use cocoindex::ops::api::ApiTranscriber;
 use cocoindex::prelude::*;
 
 const TABLE: &str = "audio_transcriptions";
@@ -37,11 +36,10 @@ const AUDIO_PATTERNS: &[&str] = &[
     "**/*.webm",
 ];
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("audio_to_text_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "audio_to_text_db",
+    state = postgres::Database::state_id
+);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct AudioTranscription {
