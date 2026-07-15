@@ -20,9 +20,41 @@ use crate::resources::schema::{VectorElementType, VectorSchema, VectorSchemaProv
 /// Cheap to clone: the underlying model is shared behind an [`Arc`].
 #[derive(Clone)]
 pub struct SentenceTransformerEmbedder {
-    model: Arc<TextEmbedding>,
+    model: Arc<dyn _EmbeddingModel>,
     model_name: String,
     dimension: usize,
+}
+
+trait _EmbeddingModel: Send + Sync {
+    fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>>;
+}
+
+impl _EmbeddingModel for TextEmbedding {
+    fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        TextEmbedding::embed(self, texts, None)
+            .map_err(|e| Error::engine(format!("embedding failed: {e}")))
+    }
+}
+
+#[derive(Clone)]
+struct _ScheduledEmbedder(SentenceTransformerEmbedder);
+
+impl serde::Serialize for _ScheduledEmbedder {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&(self.0.model_name(), self.0.dimension()), serializer)
+    }
+}
+
+#[crate::function(memo, batching, max_batch_size = 64)]
+async fn _embed_scheduled(
+    _ctx: &crate::Ctx,
+    texts: Vec<String>,
+    embedder: _ScheduledEmbedder,
+) -> Result<Vec<Vec<f32>>> {
+    embedder.0.embed_batch(texts).await
 }
 
 impl SentenceTransformerEmbedder {
@@ -79,10 +111,14 @@ impl SentenceTransformerEmbedder {
         self.dimension
     }
 
-    /// Embed a single text into an `f32` vector.
-    pub async fn embed(&self, text: impl Into<String>) -> Result<Vec<f32>> {
-        let mut out = self.embed_batch(vec![text.into()]).await?;
-        Ok(out.pop().unwrap_or_default())
+    /// Embed one text with per-text memoization and automatic batching.
+    ///
+    /// Concurrent cache misses in the same update are coalesced into batches of
+    /// up to 64 texts. Repeated texts are served from the engine memo store.
+    /// Use [`SentenceTransformerEmbedder::embed_batch`] for an explicit raw
+    /// batch outside a CocoIndex update.
+    pub async fn embed(&self, ctx: &crate::Ctx, text: impl Into<String>) -> Result<Vec<f32>> {
+        _embed_scheduled(ctx, text.into(), _ScheduledEmbedder(self.clone())).await
     }
 
     /// Embed a batch of texts. Embedding runs on a blocking thread.
@@ -91,10 +127,9 @@ impl SentenceTransformerEmbedder {
             return Ok(Vec::new());
         }
         let model = self.model.clone();
-        tokio::task::spawn_blocking(move || model.embed(texts, None))
+        tokio::task::spawn_blocking(move || model.embed(texts))
             .await
             .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
-            .map_err(|e| Error::engine(format!("embedding failed: {e}")))
     }
 }
 
@@ -110,12 +145,84 @@ impl VectorSchemaProvider for SentenceTransformerEmbedder {
 
 #[async_trait]
 impl crate::resources::embedder::Embedder for SentenceTransformerEmbedder {
-    // Delegate to the inherent methods (method-call resolution prefers inherent,
-    // so these don't recurse).
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.embed(text).await
+        let mut embeddings = self.embed_batch(vec![text.to_string()]).await?;
+        Ok(embeddings.pop().unwrap_or_default())
     }
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.embed_batch(texts.to_vec()).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use futures::future::join_all;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct _CountingModel {
+        batches: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl _EmbeddingModel for _CountingModel {
+        fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+            self.batches.lock().unwrap().push(texts.clone());
+            Ok(texts
+                .into_iter()
+                .map(|text| vec![text.len() as f32])
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn single_text_embed_batches_misses_and_memoizes_results() {
+        let model = Arc::new(_CountingModel::default());
+        let embedder = SentenceTransformerEmbedder {
+            model: model.clone(),
+            model_name: "counting-model".to_string(),
+            dimension: 1,
+        };
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = crate::Environment::builder()
+            .db_path(tempdir.path().join("db"))
+            .build()
+            .await
+            .unwrap()
+            .app("sentence_transformer_batching")
+            .await
+            .unwrap();
+        let texts: Vec<String> = (0..70).map(|index| format!("text-{index}")).collect();
+
+        for _ in 0..2 {
+            let embedder = embedder.clone();
+            let texts = texts.clone();
+            app.update(move |ctx| async move {
+                let expected: Vec<Vec<f32>> =
+                    texts.iter().map(|text| vec![text.len() as f32]).collect();
+                let results = join_all(texts.into_iter().map(|text| embedder.embed(&ctx, text)))
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()?;
+                assert_eq!(results, expected);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        let batches = model.batches.lock().unwrap();
+        assert_eq!(
+            batches.iter().map(Vec::len).sum::<usize>(),
+            70,
+            "the second update should be served entirely from memo entries"
+        );
+        assert!(
+            batches.iter().any(|batch| batch.len() > 1),
+            "concurrent misses should be coalesced into a batch"
+        );
+        assert!(batches.iter().all(|batch| batch.len() <= 64));
     }
 }

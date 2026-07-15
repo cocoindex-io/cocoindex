@@ -1,3 +1,5 @@
+extern crate self as cocoindex;
+
 pub mod app;
 pub mod batched;
 pub mod connectors;

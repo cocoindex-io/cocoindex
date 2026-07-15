@@ -90,7 +90,10 @@ async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProd
         product.product_category, product.product_name, product.description
     );
     let total_value = product.price * product.amount as f64;
-    let embedding = ctx.get_key(&EMBEDDER)?.embed(&full_description).await?;
+    let embedding = ctx
+        .get_key(&EMBEDDER)?
+        .embed(ctx, &full_description)
+        .await?;
     Ok(OutputProduct {
         product_category: product.product_category.clone(),
         product_name: product.product_name.clone(),
@@ -143,7 +146,7 @@ async fn app_main(ctx: Ctx) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn query(pool: &PgPool, embedder: &SentenceTransformerEmbedder, q: &str) -> Result<()> {
-    let vec = embedder.embed(q).await?;
+    let vec = Embedder::embed(embedder, q).await?;
     let vec_lit = format!(
         "[{}]",
         vec.iter()

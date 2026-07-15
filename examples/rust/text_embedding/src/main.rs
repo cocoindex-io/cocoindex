@@ -68,7 +68,15 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     }
 
     let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
+    let embedder = ctx.get_key(&EMBEDDER)?.clone();
+    let embedding_ctx = ctx.clone();
+    let embeddings = ctx
+        .map(texts.clone(), move |chunk_text| {
+            let embedder = embedder.clone();
+            let ctx = embedding_ctx.clone();
+            async move { embedder.embed(&ctx, chunk_text).await }
+        })
+        .await?;
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
@@ -137,7 +145,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"

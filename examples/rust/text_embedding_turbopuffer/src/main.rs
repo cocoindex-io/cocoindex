@@ -136,7 +136,7 @@ async fn query_once(
     namespace: &str,
     query: &str,
 ) -> Result<()> {
-    let query_vec = embedder.embed(query).await?;
+    let query_vec = Embedder::embed(embedder, query).await?;
     let hits = turbopuffer::vector_search(conn, namespace, query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit

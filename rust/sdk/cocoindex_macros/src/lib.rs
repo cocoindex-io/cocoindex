@@ -608,7 +608,10 @@ fn expand_batching_function(
     let output_ty = &batching.output_ty;
     let extra_params = &batching.extra_params;
 
-    let batch_impl_name = format_ident!("__coco_batch_impl_{}", fn_name);
+    let batch_impl_name = format_ident!(
+        "__coco_batch_impl_{}",
+        fn_name.to_string().trim_start_matches('_')
+    );
     let mut batch_impl_sig = func.sig.clone();
     batch_impl_sig.ident = batch_impl_name.clone();
     let batch_static_name = format_ident!("__COCO_BATCHED_{}", fn_name.to_string().to_uppercase());

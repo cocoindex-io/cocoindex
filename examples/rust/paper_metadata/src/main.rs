@@ -264,7 +264,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     let mut embeddings = Vec::new();
 
     // Title embedding (one row).
-    let title_vec = embedder.embed(&metadata.title).await?;
+    let title_vec = embedder.embed(ctx, &metadata.title).await?;
     let title_id = uuid_gen
         .next_uuid(&ctx, &("title", &metadata.title))
         .await?
@@ -419,7 +419,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, location, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE_EMBEDDINGS}\" ORDER BY distance ASC LIMIT $2"
