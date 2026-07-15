@@ -136,6 +136,12 @@ The body receives only the items in the current batch. With `memo`, cache hits
 are returned per item and only misses enter the batch. Without `memo`, every
 call is processed. `max_batch_size` caps each physical request.
 
+A physical batch does not inherit any individual caller's deadline. A batch
+error currently fails every item in that physical batch; the Rust SDK does not
+yet retry smaller sub-batches automatically. A batching function must also not
+call itself recursively from its own body, because that waits on the batcher
+which is already executing the body.
+
 The built-in `SentenceTransformerEmbedder::embed(&ctx, text)` already uses
 this pattern: concurrent cache misses are batched up to 64 texts and repeated
 texts are memoized.

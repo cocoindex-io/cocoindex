@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -303,7 +304,11 @@ impl TableSchema {
             let name = name.into();
             validate_ident(&name, "column name")?;
             validate_doris_type(&def.doris_type)?;
-            out.insert(name, def);
+            if out.insert(name.clone(), def).is_some() {
+                return Err(Error::engine(format!(
+                    "Doris table schema contains duplicate column {name:?}"
+                )));
+            }
         }
         let primary_key: Vec<String> = primary_key.into_iter().map(Into::into).collect();
         if primary_key.is_empty() {
@@ -1493,10 +1498,50 @@ fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, 
         ));
     };
     fields.retain(|name, _| schema.columns().contains_key(name));
-    for name in schema.columns().keys() {
-        fields.entry(name.clone()).or_insert(JsonValue::Null);
+    for (name, column) in schema.columns() {
+        let value = fields.entry(name.clone()).or_insert(JsonValue::Null);
+        let column_type = column.doris_type.to_ascii_uppercase();
+        if is_string_type(&column_type)
+            && let Some(bytes) = json_byte_array(value)
+        {
+            *value = JsonValue::String(base64::engine::general_purpose::STANDARD.encode(bytes));
+        } else if is_integer_doris_type(&column_type)
+            && let Some((secs, nanos)) = crate::row_schema::serialized_duration_parts(value)
+        {
+            let micros = u128::from(secs) * 1_000_000 + u128::from(nanos / 1_000);
+            let micros = i64::try_from(micros).map_err(|_| {
+                Error::engine(format!("Doris duration field {name:?} overflows BIGINT"))
+            })?;
+            *value = JsonValue::from(micros);
+        }
     }
     Ok(fields)
+}
+
+fn json_byte_array(value: &JsonValue) -> Option<Vec<u8>> {
+    let JsonValue::Array(items) = value else {
+        return None;
+    };
+    let mut bytes = Vec::with_capacity(items.len());
+    for item in items {
+        let byte = item.as_u64().filter(|byte| *byte <= 255)?;
+        bytes.push(byte as u8);
+    }
+    Some(bytes)
+}
+
+fn is_string_type(doris_type: &str) -> bool {
+    doris_type == "STRING"
+        || doris_type == "TEXT"
+        || doris_type.starts_with("VARCHAR(")
+        || doris_type.starts_with("CHAR(")
+}
+
+fn is_integer_doris_type(doris_type: &str) -> bool {
+    matches!(
+        doris_type,
+        "TINYINT" | "SMALLINT" | "INT" | "BIGINT" | "LARGEINT"
+    )
 }
 
 fn pk_values(fields: &Map<String, JsonValue>, pk_cols: &[String]) -> Result<Vec<JsonValue>> {
@@ -1664,6 +1709,50 @@ mod tests {
             "{sql}"
         );
         assert!(sql.contains("\"replication_num\" = \"1\""), "{sql}");
+    }
+
+    #[test]
+    fn row_state_encodes_bytes_and_duration_for_stream_load() {
+        #[derive(Serialize)]
+        struct Row {
+            id: i64,
+            data: Vec<u8>,
+            elapsed: std::time::Duration,
+        }
+
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new("BIGINT")),
+                ("data", ColumnDef::new("STRING")),
+                ("elapsed", ColumnDef::new("BIGINT")),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        let fields = row_state(
+            &Row {
+                id: 1,
+                data: b"hi".to_vec(),
+                elapsed: std::time::Duration::new(2, 345_678_000),
+            },
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(fields["data"], JsonValue::String("aGk=".to_string()));
+        assert_eq!(fields["elapsed"], JsonValue::from(2_345_678));
+    }
+
+    #[test]
+    fn table_schema_rejects_duplicate_columns() {
+        let error = TableSchema::new(
+            [
+                ("id", ColumnDef::new("BIGINT")),
+                ("id", ColumnDef::new("TEXT")),
+            ],
+            ["id"],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate column \"id\""));
     }
 
     #[test]

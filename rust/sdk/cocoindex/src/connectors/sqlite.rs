@@ -124,7 +124,11 @@ impl TableSchema {
             let name = name.into();
             validate_ident(&name, "column name")?;
             validate_sqlite_type(&def.sqlite_type)?;
-            out.insert(name, def);
+            if out.insert(name.clone(), def).is_some() {
+                return Err(Error::engine(format!(
+                    "SQLite table schema contains duplicate column {name:?}"
+                )));
+            }
         }
         let primary_key: Vec<String> = primary_key.into_iter().map(Into::into).collect();
         if primary_key.is_empty() {
@@ -1175,6 +1179,9 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         };
     }
     if is_real_type(&t) {
+        if let Some((secs, nanos)) = crate::row_schema::serialized_duration_parts(value) {
+            return Ok(format!("{secs}.{nanos:09}"));
+        }
         return match value {
             JsonValue::Number(n) => Ok(n.to_string()),
             _ => Err(Error::engine(format!(
@@ -1186,6 +1193,9 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
     if is_text_type(&t) {
         return Ok(quote_string(value_to_string(value)));
     }
+    if is_blob_type(&t) {
+        return blob_literal(value);
+    }
     // Fallback (BLOB / unknown): store scalars directly, complex as JSON text.
     match value {
         JsonValue::String(s) => Ok(quote_string(s)),
@@ -1193,6 +1203,33 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         JsonValue::Bool(b) => Ok(if *b { "1" } else { "0" }.to_string()),
         other => Ok(quote_string(other.to_string())),
     }
+}
+
+fn blob_literal(value: &JsonValue) -> Result<String> {
+    let bytes: Vec<u8> = match value {
+        JsonValue::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_u64()
+                    .filter(|value| *value <= 255)
+                    .map(|value| value as u8)
+                    .ok_or_else(|| Error::engine("BLOB array elements must be integers 0..=255"))
+            })
+            .collect::<Result<_>>()?,
+        JsonValue::String(value) => value.as_bytes().to_vec(),
+        _ => {
+            return Err(Error::engine(
+                "BLOB column requires a byte array or string JSON value",
+            ));
+        }
+    };
+    let mut literal = String::with_capacity(3 + bytes.len() * 2);
+    literal.push_str("X'");
+    for byte in bytes {
+        literal.push_str(&format!("{byte:02x}"));
+    }
+    literal.push('\'');
+    Ok(literal)
 }
 
 fn value_to_string(value: &JsonValue) -> String {
@@ -1241,6 +1278,10 @@ fn is_real_type(t: &str) -> bool {
 
 fn is_text_type(t: &str) -> bool {
     ["char", "text", "clob"].iter().any(|k| t.contains(k))
+}
+
+fn is_blob_type(t: &str) -> bool {
+    t.contains("blob")
 }
 
 fn validate_sqlite_type(value: &str) -> Result<()> {
@@ -1381,6 +1422,29 @@ mod tests {
         assert_eq!(sql_literal(&JsonValue::from(true), &col).unwrap(), "1");
         // A fractional number must be rejected, not stored as REAL in an INTEGER column.
         assert!(sql_literal(&JsonValue::from(1.5), &col).is_err());
+    }
+
+    #[test]
+    fn blob_literal_encodes_byte_arrays_as_blob_storage() {
+        let col = ColumnDef::new("BLOB");
+        assert_eq!(
+            sql_literal(&serde_json::json!([0, 104, 105, 255]), &col).unwrap(),
+            "X'006869ff'"
+        );
+        assert!(sql_literal(&serde_json::json!([256]), &col).is_err());
+    }
+
+    #[test]
+    fn table_schema_rejects_duplicate_columns() {
+        let error = TableSchema::new(
+            [
+                ("id", ColumnDef::new("INTEGER")),
+                ("id", ColumnDef::new("TEXT")),
+            ],
+            ["id"],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate column \"id\""));
     }
 
     #[test]

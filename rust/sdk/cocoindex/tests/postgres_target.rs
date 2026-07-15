@@ -1,9 +1,11 @@
 #![cfg(feature = "postgres")]
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::str::FromStr as _;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::postgres;
-use cocoindex::{Ctx, Environment, Result};
+use cocoindex::{Ctx, Environment, Result, SchemaFields};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
@@ -803,6 +805,85 @@ async fn postgres_bytea_round_trips_byte_arrays_when_available() -> Result<()> {
         vec![(1, vec![0u8, 1, 2, 255, 104, 105]), (2, Vec::new())],
         "bytea byte arrays must round-trip exactly (hex-encoded literal)"
     );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct DecimalRow {
+    id: i64,
+    amount: Decimal,
+    elapsed: Duration,
+}
+
+async fn declare_decimals(ctx: Ctx, schema: String, rows: Vec<DecimalRow>) -> Result<()> {
+    let table = postgres::mount_table_target(
+        &ctx,
+        &PG,
+        "decimals",
+        postgres::TableSchema::from_row::<DecimalRow>(["id"])?,
+        Some(&schema),
+    )
+    .await?;
+    for row in &rows {
+        table.declare_row(&ctx, row)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_decimal_and_duration_round_trip_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres decimal test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_decimal_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?
+        .app("PostgresDecimalTest")
+        .await?;
+
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_decimals(
+                ctx,
+                schema,
+                vec![DecimalRow {
+                    id: 1,
+                    amount: Decimal::from_str("1234567890.012300").unwrap(),
+                    elapsed: Duration::new(2, 345_678_000),
+                }],
+            )
+        }
+    })
+    .await?;
+
+    let row = sqlx::query(&format!(
+        "SELECT amount::text AS amount, EXTRACT(EPOCH FROM elapsed)::double precision AS elapsed \
+         FROM \"{schema}\".\"decimals\" WHERE id = 1"
+    ))
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres query: {e}")))?;
+    assert_eq!(
+        row.try_get::<String, _>("amount").unwrap(),
+        "1234567890.012300"
+    );
+    assert_eq!(row.try_get::<f64, _>("elapsed").unwrap(), 2.345678);
 
     sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
         .execute(db.pool())

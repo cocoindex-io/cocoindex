@@ -188,10 +188,6 @@ impl TableSchema {
         &self.primary_key
     }
 
-    pub fn columns(&self) -> &[(String, ColumnDef)] {
-        &self.columns
-    }
-
     /// Derive a schema from a `#[derive(SchemaFields)]` row type.
     pub fn from_row<T: crate::row_schema::SchemaFields>(
         primary_key: impl IntoIterator<Item = impl Into<String>>,

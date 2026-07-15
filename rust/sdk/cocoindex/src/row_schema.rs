@@ -62,6 +62,17 @@ pub(crate) fn require_resolved_vector_dimension(
     Ok(())
 }
 
+#[cfg(any(feature = "postgres", feature = "sqlite", feature = "doris"))]
+pub(crate) fn serialized_duration_parts(value: &serde_json::Value) -> Option<(u64, u32)> {
+    let object = value.as_object()?;
+    if object.len() != 2 {
+        return None;
+    }
+    let secs = object.get("secs")?.as_u64()?;
+    let nanos = u32::try_from(object.get("nanos")?.as_u64()?).ok()?;
+    (nanos < 1_000_000_000).then_some((secs, nanos))
+}
+
 /// A connector-agnostic column type derived from a Rust field type. Each target
 /// connector maps these to its own SQL type strings.
 #[derive(Clone, Debug, PartialEq, Eq)]

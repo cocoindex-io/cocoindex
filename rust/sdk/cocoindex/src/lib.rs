@@ -50,6 +50,18 @@ pub use entity_resolution::{
     resolve_entities_with_events,
 };
 pub use error::{Error, Result};
+pub use resources::file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
+    MatchAllFilePathMatcher, PatternFilePathMatcher,
+};
+pub use resources::fs::{
+    DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
+    mount_dir_target, walk, walk_dir, walk_items,
+};
+pub use resources::id::{
+    IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
+    generate_uuid_default,
+};
 // Re-exported so `#[cocoindex::function]` output can register each function's
 // logic fingerprint without the user crate needing a direct `linkme` dependency.
 #[doc(hidden)]

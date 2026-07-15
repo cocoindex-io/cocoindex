@@ -10,7 +10,7 @@
 //! declared immediately. [`read_table`] and [`read_table_items`] read source rows
 //! for use with `Ctx::mount_each`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -89,6 +89,8 @@ impl ColumnDef {
 pub struct TableSchema {
     columns: BTreeMap<String, ColumnDef>,
     primary_key: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    unresolved_vector_columns: BTreeSet<String>,
 }
 
 impl TableSchema {
@@ -101,7 +103,11 @@ impl TableSchema {
             let name = name.into();
             validate_ident(&name, "column name")?;
             validate_pg_type(&def.pg_type)?;
-            out.insert(name, def);
+            if out.insert(name.clone(), def).is_some() {
+                return Err(Error::engine(format!(
+                    "Postgres table schema contains duplicate column {name:?}"
+                )));
+            }
         }
         let primary_key: Vec<String> = primary_key.into_iter().map(Into::into).collect::<Vec<_>>();
         if primary_key.is_empty() {
@@ -118,6 +124,7 @@ impl TableSchema {
         Ok(Self {
             columns: out,
             primary_key,
+            unresolved_vector_columns: BTreeSet::new(),
         })
     }
 
@@ -137,10 +144,20 @@ impl TableSchema {
     pub fn from_row<T: crate::row_schema::SchemaFields>(
         primary_key: impl IntoIterator<Item = impl Into<String>>,
     ) -> Result<Self> {
-        let columns = T::schema_fields()
+        let fields = T::schema_fields();
+        let unresolved_vector_columns = fields
+            .iter()
+            .filter_map(|field| match field.logical_type {
+                crate::row_schema::LogicalType::Vector { dim: 0, .. } => Some(field.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let columns = fields
             .into_iter()
             .map(|f| (f.name.clone(), postgres_column_def(&f)));
-        Self::new(columns, primary_key)
+        let mut schema = Self::new(columns, primary_key)?;
+        schema.unresolved_vector_columns = unresolved_vector_columns;
+        Ok(schema)
     }
 
     /// Resolve or override the dimension of a vector field derived from a row.
@@ -161,14 +178,13 @@ impl TableSchema {
             ))
         })?;
         def.pg_type = format!("{base}({dim})");
+        self.unresolved_vector_columns.remove(field_name);
         Ok(self)
     }
 
     fn validate_vector_dimensions(&self) -> Result<()> {
-        for (name, def) in &self.columns {
-            if matches!(def.pg_type.as_str(), "vector" | "halfvec") {
-                crate::row_schema::require_resolved_vector_dimension("Postgres", name, 0)?;
-            }
+        for name in &self.unresolved_vector_columns {
+            crate::row_schema::require_resolved_vector_dimension("Postgres", name, 0)?;
         }
         Ok(())
     }
@@ -1413,9 +1429,15 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
             .map(|b| if b { "TRUE" } else { "FALSE" }.to_string())
             .ok_or_else(|| Error::engine("boolean column requires bool JSON value"));
     }
+    if lower.starts_with("interval") {
+        return interval_literal(value, &col.pg_type);
+    }
     if is_numeric_type(&lower) {
         return match value {
             JsonValue::Number(n) => Ok(n.to_string()),
+            JsonValue::String(s) if is_decimal_type(&lower) && is_decimal_literal(s) => {
+                Ok(s.clone())
+            }
             _ => Err(Error::engine(format!(
                 "numeric column {} requires numeric JSON value",
                 col.pg_type
@@ -1454,6 +1476,21 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
             "{}::{}",
             quote_string(value.to_string()),
             col.pg_type
+        )),
+    }
+}
+
+fn interval_literal(value: &JsonValue, pg_type: &str) -> Result<String> {
+    if let Some((secs, nanos)) = crate::row_schema::serialized_duration_parts(value) {
+        return Ok(format!(
+            "{}::{pg_type}",
+            quote_string(format!("{secs}.{nanos:09} seconds"))
+        ));
+    }
+    match value {
+        JsonValue::String(s) => Ok(format!("{}::{pg_type}", quote_string(s))),
+        _ => Err(Error::engine(
+            "interval column requires a duration or string JSON value",
         )),
     }
 }
@@ -1668,7 +1705,27 @@ fn is_numeric_type(lower: &str) -> bool {
             | "double precision"
             | "float8"
             | "numeric"
-    )
+            | "decimal"
+    ) || lower.starts_with("numeric(")
+        || lower.starts_with("decimal(")
+}
+
+fn is_decimal_type(lower: &str) -> bool {
+    lower == "numeric"
+        || lower == "decimal"
+        || lower.starts_with("numeric(")
+        || lower.starts_with("decimal(")
+}
+
+fn is_decimal_literal(value: &str) -> bool {
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let mut parts = unsigned.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    !whole.is_empty()
+        && whole.bytes().all(|b| b.is_ascii_digit())
+        && fraction.is_none_or(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        && parts.next().is_none()
 }
 
 fn pg_err(e: sqlx::Error) -> Error {
@@ -1941,6 +1998,8 @@ fn pg_col_to_json(
 #[cfg(test)]
 mod review_fix_tests {
     use super::*;
+    use rust_decimal::Decimal;
+    use std::str::FromStr as _;
 
     // --- vector index WITH-clause gating (pgvector) ---
 
@@ -1995,5 +2054,57 @@ mod review_fix_tests {
     fn sanitize_json_nul_leaves_clean_values_untouched() {
         let value = serde_json::json!({"a": [1, 2], "b": "ok"});
         assert_eq!(sanitize_json_nul(&value), value);
+    }
+
+    #[test]
+    fn numeric_literal_accepts_rust_decimal_string_encoding() {
+        let value = serde_json::to_value(Decimal::from_str("1234567890.012300").unwrap()).unwrap();
+        assert_eq!(value, JsonValue::String("1234567890.012300".to_string()));
+        assert_eq!(
+            sql_literal(&value, &ColumnDef::new("numeric(28, 6)")).unwrap(),
+            "1234567890.012300"
+        );
+        assert!(
+            sql_literal(
+                &JsonValue::String("1); DROP TABLE rows; --".to_string()),
+                &ColumnDef::new("numeric")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn interval_literal_accepts_std_duration_encoding() {
+        let value = serde_json::to_value(std::time::Duration::new(12, 345_000_000)).unwrap();
+        assert_eq!(
+            sql_literal(&value, &ColumnDef::new("interval")).unwrap(),
+            "'12.345000000 seconds'::interval"
+        );
+    }
+
+    #[test]
+    fn explicit_dimensionless_vector_type_is_not_an_unresolved_derive_sentinel() {
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new("bigint")),
+                ("embedding", ColumnDef::new("vector")),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        schema.validate_vector_dimensions().unwrap();
+    }
+
+    #[test]
+    fn table_schema_rejects_duplicate_columns() {
+        let error = TableSchema::new(
+            [
+                ("id", ColumnDef::new("bigint")),
+                ("id", ColumnDef::new("text")),
+            ],
+            ["id"],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate column \"id\""));
     }
 }

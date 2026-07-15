@@ -2,23 +2,30 @@
 //! memoization and automatic coalescing of concurrent cache-misses into one
 //! batch call (via the core batcher, `cocoindex_utils::batching`).
 //!
-//! This is the single batching mechanism, composable with memoization: each
-//! `call` memo-probes its own item; only misses execute, and concurrent misses
-//! (even across different components) are combined into one invocation of the
-//! batch implementation. You never assemble a list yourself.
+//! The `#[cocoindex::function(batching)]` wrapper composes batching with
+//! per-item memoization: each call memo-probes its own item; only misses
+//! execute, and concurrent misses (even across different components) are
+//! combined into one invocation of the batch implementation.
 //!
 //! ```ignore
-//! #[cocoindex::function]                                   // ctx-free batch impl; emits a logic hash
-//! async fn embed_batch(texts: Vec<String>) -> coco::Result<Vec<Vec<f32>>> {
+//! #[cocoindex::function(memo, batching, max_batch_size = 64)]
+//! async fn embed_batch(
+//!     _ctx: &cocoindex::Ctx,
+//!     texts: Vec<String>,
+//! ) -> cocoindex::Result<Vec<Vec<f32>>> {
 //!     model.encode(&texts)
 //! }
 //!
-//! static EMBED: std::sync::LazyLock<coco::Batched<String, Vec<f32>>> =
-//!     std::sync::LazyLock::new(|| coco::Batched::new(embed_batch, __COCO_FN_HASH_EMBED_BATCH));
-//!
 //! // Call per single item (e.g. inside ctx.map over chunks):
-//! let emb = EMBED.call(&ctx, text).await?;
+//! let emb = embed_batch(&ctx, text).await?;
 //! ```
+//!
+//! A physical-batch error currently fails every item in that batch; the Rust
+//! SDK does not automatically retry smaller sub-batches. A batching function
+//! must not call itself recursively from its body because it would wait on the
+//! batcher that is already executing that body. [`Batched`] remains available
+//! as the lower-level explicit adapter when a generated function wrapper is not
+//! suitable.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -27,6 +34,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use cocoindex_core::engine::context::FnCallContext;
+use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -65,10 +73,13 @@ impl<In: Send + 'static, Out: Send + 'static> Runner for FnRunner<In, Out> {
         }
 
         let batch_fn_ctx = Arc::new(FnCallContext::new(true));
-        let batch_ctx = contexts
+        let mut batch_ctx = contexts
             .first()
             .expect("the core batcher never executes an empty batch")
             .with_fn_ctx(batch_fn_ctx.clone());
+        // A physical batch belongs to all of its callers, so it must not
+        // inherit any one caller's deadline.
+        batch_ctx.deadline = DeadlineContext::NONE;
         let result = (self.f)(batch_ctx, inputs).await;
 
         // The body executes once, but each per-item memo/tracking context must
@@ -208,6 +219,7 @@ where
     Out: Send + 'static,
 {
     fn new_batcher(f: BatchFn<In, Out>, options: BatchingOptions) -> Arc<FunctionBatcher<In, Out>> {
+        Self::validate_options(&options);
         Arc::new(Batcher::new(
             FnRunner { f },
             Arc::new(BatchQueue::new()),
@@ -233,12 +245,22 @@ where
     }
 
     fn __scheduled_with_options(code_hash: u64, options: BatchingOptions) -> Self {
+        Self::validate_options(&options);
         Self {
             mode: BatchedMode::Scheduled {
                 options,
                 batchers: Mutex::new(HashMap::new()),
             },
             code_hash,
+        }
+    }
+
+    fn validate_options(options: &BatchingOptions) {
+        if let Some(max_batch_size) = options.max_batch_size {
+            assert!(
+                max_batch_size > 0,
+                "max_batch_size must be greater than zero"
+            );
         }
     }
 

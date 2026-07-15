@@ -1421,6 +1421,7 @@ fn logical_type_tokens(ty: &Type, attr: &SchemaFieldAttr) -> TokenStream2 {
         Some("NaiveTime") => quote! { Time },
         Some("NaiveDateTime" | "DateTime") => quote! { DateTime },
         Some("Decimal") => quote! { Decimal },
+        Some("Duration") => quote! { Duration },
         // `Vec<u8>` is bytes; any other `Vec<_>` falls through to JSON.
         Some("Vec") if first_generic_ident(ty).as_deref() == Some("u8") => quote! { Bytes },
         // Everything else (collections, maps, nested structs, enums) → JSON.
@@ -1713,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn batching_memo_key_includes_body_hash() {
+    fn batching_memo_key_changes_with_body() {
         let first: ItemFn = parse_str(
             "async fn embed(ctx: &Ctx, items: Vec<i32>) -> Result<Vec<i32>> { Ok(items) }",
         )
@@ -1732,7 +1733,8 @@ mod tests {
         let args = FunctionArgs::parse(quote!(memo, batching)).unwrap();
         let hash_const_name = format_ident!("__COCO_FN_HASH_EMBED");
         let first_hash = compute_code_hash(&first.block, None);
-        let expanded = expand_batching_function(
+        let second_hash = compute_code_hash(&second.block, None);
+        let first_expanded = expand_batching_function(
             &first,
             &args,
             &hash_const_name,
@@ -1743,10 +1745,25 @@ mod tests {
         )
         .unwrap()
         .to_string();
-        assert!(
-            expanded
-                .contains("write_key_fingerprint_part (& mut __coco_key , & __COCO_FN_HASH_EMBED)"),
-            "the expanded batching memo key must include the body-derived hash: {expanded}"
+        let second_expanded = expand_batching_function(
+            &second,
+            &args,
+            &hash_const_name,
+            &quote!(#second_hash),
+            &quote!(),
+            true,
+            true,
+        )
+        .unwrap()
+        .to_string();
+        let key_part = "write_key_fingerprint_part (& mut __coco_key , & __COCO_FN_HASH_EMBED)";
+        assert!(first_expanded.contains(key_part));
+        assert!(second_expanded.contains(key_part));
+        assert!(first_expanded.contains(&first_hash.to_string()));
+        assert!(second_expanded.contains(&second_hash.to_string()));
+        assert_ne!(
+            first_hash, second_hash,
+            "two batching bodies must produce different memo-key constants"
         );
     }
 

@@ -2019,6 +2019,7 @@ dependencies = [
  "rmp-serde",
  "rsa",
  "rskafka",
+ "rust_decimal",
  "rustc-hash",
  "serde",
  "serde_json",

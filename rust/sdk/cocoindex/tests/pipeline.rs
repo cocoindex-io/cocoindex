@@ -1605,6 +1605,7 @@ mod batched_test {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, LazyLock};
+    use tokio::sync::Notify;
 
     static ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
@@ -1711,6 +1712,66 @@ mod batched_test {
         );
         assert!(batches.iter().any(|(_, items)| items.len() > 1));
         assert!(batches.iter().all(|(_, items)| items.len() <= 2));
+    }
+
+    static DEADLINE_BLOCKER_STARTED: Notify = Notify::const_new();
+    static DEADLINE_BLOCKER_RELEASE: Notify = Notify::const_new();
+
+    #[cocoindex::function(batching, max_batch_size = 2)]
+    async fn deadline_isolated_batch(
+        ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+    ) -> cocoindex::Result<Vec<i64>> {
+        if items == [0] {
+            DEADLINE_BLOCKER_STARTED.notify_one();
+            DEADLINE_BLOCKER_RELEASE.notified().await;
+        } else {
+            ctx.check_cancellation()?;
+            assert!(
+                !ctx.has_deadline(),
+                "a shared batch body must not inherit one caller's deadline"
+            );
+        }
+        Ok(items)
+    }
+
+    #[tokio::test]
+    async fn scheduled_batch_body_does_not_inherit_first_callers_deadline() {
+        let (app, _dir) = temp_app("batching_deadline_isolation").await;
+
+        app.update(|ctx| async move {
+            let blocker_ctx = ctx.clone();
+            let blocker =
+                tokio::spawn(async move { deadline_isolated_batch(&blocker_ctx, 0).await });
+            DEADLINE_BLOCKER_STARTED.notified().await;
+
+            // Queue a call whose deadline expires while the first physical
+            // batch is blocked, then fill the pending batch with an ordinary
+            // caller. The shared body must use neither caller's deadline.
+            let expiring_ctx = ctx.with_timeout(Duration::from_millis(10));
+            let expiring =
+                tokio::spawn(async move { deadline_isolated_batch(&expiring_ctx, 1).await });
+            sleep(Duration::from_millis(30)).await;
+            let ordinary = deadline_isolated_batch(&ctx, 2).await;
+            let expired = expiring.await.unwrap();
+
+            DEADLINE_BLOCKER_RELEASE.notify_one();
+            let blocked = blocker.await.unwrap();
+
+            assert_eq!(expired?, 1);
+            assert_eq!(ordinary?, 2);
+            assert_eq!(blocked?, 0);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "max_batch_size must be greater than zero")]
+    fn explicit_batched_rejects_zero_max_batch_size() {
+        let _ =
+            cocoindex::Batched::with_max_batch(|items: Vec<i64>| async move { Ok(items) }, 1, 0);
     }
 
     static MEMOIZED_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);

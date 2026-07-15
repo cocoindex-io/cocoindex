@@ -27,7 +27,13 @@ postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
 sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
 # Apache Doris target: MySQL protocol (DDL/DELETE) via sqlx + Stream Load (row
 # ingestion) over HTTP via reqwest.
-doris = ["dep:serde_json", "dep:sqlx", "sqlx/mysql", "dep:reqwest"]
+doris = [
+    "dep:serde_json",
+    "dep:sqlx",
+    "sqlx/mysql",
+    "dep:reqwest",
+    "dep:base64",
+]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
 kafka = ["dep:rskafka", "dep:chrono"]
 iggy = ["dep:iggy"]
@@ -146,6 +152,7 @@ rskafka = { version = "0.6", default-features = false }
 wiremock = "0.6"
 # Generate an ephemeral RSA key for the OCI signing unit test.
 rand = "0.8"
+rust_decimal = "1"
 
 [[bench]]
 name = "sdk_microbench"

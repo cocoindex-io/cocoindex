@@ -58,6 +58,8 @@ fn doris_from_row_matches_explicit_schema() {
         count: i64,
         score: f64,
         active: bool,
+        blob: Vec<u8>,
+        elapsed: std::time::Duration,
         #[coco(vector = 4)]
         embedding: Vec<f32>,
         #[coco(json)]
@@ -78,6 +80,8 @@ fn doris_from_row_matches_explicit_schema() {
             ("count", ColumnDef::new("BIGINT").not_null()),
             ("score", ColumnDef::new("DOUBLE").not_null()),
             ("active", ColumnDef::new("BOOLEAN").not_null()),
+            ("blob", ColumnDef::new("STRING").not_null()),
+            ("elapsed", ColumnDef::new("BIGINT").not_null()),
             ("embedding", ColumnDef::vector(4)),
             ("tags", ColumnDef::new("JSON").not_null()),
             ("code", ColumnDef::new("VARCHAR(10)").not_null()),
@@ -101,6 +105,7 @@ fn sqlite_from_row_matches_explicit_schema() {
         name: Option<String>,
         score: f64,
         blob: Vec<u8>,
+        elapsed: std::time::Duration,
         #[coco(vector)]
         embedding: Vec<f32>,
     }
@@ -116,12 +121,31 @@ fn sqlite_from_row_matches_explicit_schema() {
             ("name", ColumnDef::new("TEXT")),
             ("score", ColumnDef::new("REAL").not_null()),
             ("blob", ColumnDef::new("BLOB").not_null()),
+            ("elapsed", ColumnDef::new("REAL").not_null()),
             ("embedding", ColumnDef::new("float[3]").not_null()),
         ],
         ["id"],
     )
     .unwrap();
     assert_eq!(got, want);
+}
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn schema_from_row_rejects_duplicate_renamed_columns() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::sqlite::TableSchema;
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: i64,
+        #[coco(rename = "id")]
+        other_id: i64,
+    }
+
+    let error = TableSchema::from_row::<Row>(["id"]).unwrap_err();
+    assert!(error.to_string().contains("duplicate column \"id\""));
 }
 
 #[cfg(feature = "postgres")]
@@ -137,6 +161,7 @@ fn postgres_from_row_matches_explicit_schema() {
         title: Option<String>,
         views: i32,
         ratio: f32,
+        elapsed: std::time::Duration,
         #[coco(vector)]
         embedding: Vec<f32>,
         #[coco(vector = 8, half)]
@@ -157,6 +182,7 @@ fn postgres_from_row_matches_explicit_schema() {
             ("title", ColumnDef::new("text").nullable()),
             ("views", ColumnDef::new("integer")),
             ("ratio", ColumnDef::new("real")),
+            ("elapsed", ColumnDef::new("interval")),
             ("embedding", ColumnDef::new("vector(8)")),
             ("embedding_half", ColumnDef::new("halfvec(8)")),
             ("meta", ColumnDef::new("jsonb")),
@@ -433,6 +459,8 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
         id: i64,
         name: String,
         score: f64,
+        data: Vec<u8>,
+        elapsed: std::time::Duration,
     }
 
     let tmp = tempfile::tempdir().unwrap();
@@ -444,11 +472,15 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
             id: 1,
             name: "a".into(),
             score: 1.5,
+            data: vec![0, 104, 105, 255],
+            elapsed: std::time::Duration::new(1, 250_000_000),
         },
         Item {
             id: 2,
             name: "b".into(),
             score: 2.5,
+            data: Vec::new(),
+            elapsed: std::time::Duration::new(2, 500_000_000),
         },
     ];
 
@@ -472,23 +504,28 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
     })
     .await?;
 
-    let fetched = sqlx::query("SELECT id, name, score FROM items ORDER BY id")
+    let fetched = sqlx::query("SELECT id, name, score, data, elapsed FROM items ORDER BY id")
         .fetch_all(db.pool())
         .await
         .unwrap();
-    let got: Vec<(i64, String, f64)> = fetched
+    let got: Vec<(i64, String, f64, Vec<u8>, f64)> = fetched
         .iter()
         .map(|r| {
             (
                 r.get::<i64, _>("id"),
                 r.get::<String, _>("name"),
                 r.get::<f64, _>("score"),
+                r.get::<Vec<u8>, _>("data"),
+                r.get::<f64, _>("elapsed"),
             )
         })
         .collect();
     assert_eq!(
         got,
-        vec![(1, "a".to_string(), 1.5), (2, "b".to_string(), 2.5)]
+        vec![
+            (1, "a".to_string(), 1.5, vec![0, 104, 105, 255], 1.25),
+            (2, "b".to_string(), 2.5, Vec::new(), 2.5),
+        ]
     );
     Ok(())
 }
