@@ -304,10 +304,9 @@ impl NamespaceSchema {
     /// Resolve or override one named vector field's runtime dimension.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         if dim == 0 {
-            return Err(crate::row_schema::vector_dimension_error(
+            return Err(crate::row_schema::zero_vector_dimension_error(
                 "Turbopuffer",
                 field_name,
-                "requires a dimension greater than zero",
             ));
         }
         let mut fields = self.vector_fields();

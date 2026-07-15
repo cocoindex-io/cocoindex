@@ -173,10 +173,8 @@ impl TableSchema {
     /// Resolve or override the dimension of a vector field derived from a row.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         if dim == 0 {
-            return Err(crate::row_schema::vector_dimension_error(
-                "SQLite",
-                field_name,
-                "requires a dimension greater than zero",
+            return Err(crate::row_schema::zero_vector_dimension_error(
+                "SQLite", field_name,
             ));
         }
         let def = self

@@ -27,7 +27,6 @@ use cocoindex::prelude::*;
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
-const EMBED_DIM: usize = 384;
 const TOP_K: usize = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
@@ -72,7 +71,15 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
     }
 
     let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
+    let embedder = ctx.get_key(&EMBEDDER)?.clone();
+    let embedding_ctx = ctx.clone();
+    let embeddings = ctx
+        .map(texts.clone(), move |chunk_text| {
+            let embedder = embedder.clone();
+            let ctx = embedding_ctx.clone();
+            async move { embedder.embed(&ctx, chunk_text).await }
+        })
+        .await?;
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
@@ -91,12 +98,13 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()> {
+    let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
     let target = turbopuffer::mount_namespace_target(
         &ctx,
         &DB,
         &namespace,
         NamespaceSchema::from_row::<RowData>(DistanceMetric::CosineDistance)?
-            .with_vector_dim("vector", EMBED_DIM)?,
+            .with_vector_dim("vector", vector_dim)?,
     )
     .await?;
 

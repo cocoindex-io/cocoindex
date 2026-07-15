@@ -16,7 +16,6 @@
 use std::any::Any;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex_core::engine::context::{FnCallContext, MemoStatesPayload};
@@ -203,24 +202,8 @@ where
 
 /// Internal helper for stable memo keys in generated macros.
 ///
-/// Serializes key parts immediately into owned bytes to avoid leaking
-/// temporary references from generated closures.
-///
-/// This infallible helper never panics. Unsupported key types produce a unique,
-/// stable fallback payload that includes the key type and an incrementing
-/// sequence identifier to avoid collisions.
-#[doc(hidden)]
-pub fn key_bytes<T: Serialize + ?Sized>(value: &T) -> Vec<u8> {
-    match key_bytes_result(value) {
-        Ok(bytes) => bytes,
-        Err(err) => fallback_key_bytes::<T>(err),
-    }
-}
-
-/// Internal helper for stable memo keys in generated macros.
-///
-/// This variant returns an error instead of panicking so callers can fail
-/// fast with a typed error when serialization is not supported.
+/// Returns an error instead of panicking so callers can fail fast with a typed
+/// error when serialization is not supported.
 #[doc(hidden)]
 pub fn key_bytes_result<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     rmp_serde::to_vec_named(value).map_err(Error::from)
@@ -328,73 +311,4 @@ fn system_time_nanos(time: SystemTime) -> u128 {
     time.duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
-}
-
-fn fallback_key_bytes<T: ?Sized>(error: Error) -> Vec<u8> {
-    static KEY_BYTES_FALLBACK_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    let seq = KEY_BYTES_FALLBACK_SEQ.fetch_add(1, Ordering::AcqRel);
-    match rmp_serde::to_vec_named(&(
-        "__cocoindex_key_bytes_unsupported__",
-        std::any::type_name::<T>(),
-        seq,
-        error.to_string(),
-    )) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            let mut bytes = b"__cocoindex_key_bytes_unsupported__".to_vec();
-            bytes.extend_from_slice(std::any::type_name::<T>().as_bytes());
-            bytes.extend_from_slice(&seq.to_le_bytes());
-            bytes.extend_from_slice(error.to_string().as_bytes());
-            bytes
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::ser::Error as SerError;
-    use serde::{Serialize, Serializer};
-
-    #[derive(Debug)]
-    struct FailingSerialize;
-
-    impl Serialize for FailingSerialize {
-        fn serialize<S: Serializer>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error> {
-            Err(S::Error::custom("forced serialization failure"))
-        }
-    }
-
-    #[test]
-    fn key_bytes_result_serializes_supported_types() {
-        let value = ("hello", 123);
-        let bytes = key_bytes_result(&value).unwrap();
-        let decoded: (String, i32) = rmp_serde::from_slice(&bytes).unwrap();
-        assert_eq!(decoded, (value.0.to_string(), value.1));
-    }
-
-    #[test]
-    fn key_bytes_uses_fallback_on_serialization_error() {
-        let bytes = key_bytes(&FailingSerialize);
-        let (marker, type_name, _, message) =
-            rmp_serde::from_slice::<(String, String, u64, String)>(&bytes).unwrap();
-
-        assert_eq!(marker, "__cocoindex_key_bytes_unsupported__");
-        assert_eq!(type_name, std::any::type_name::<FailingSerialize>());
-        assert!(message.contains("forced serialization failure"));
-    }
-
-    #[test]
-    fn key_bytes_fallback_is_unique_per_failure() {
-        let first = key_bytes(&FailingSerialize);
-        let second = key_bytes(&FailingSerialize);
-
-        let (_, _, first_seq, _) =
-            rmp_serde::from_slice::<(String, String, u64, String)>(&first).unwrap();
-        let (_, _, second_seq, _) =
-            rmp_serde::from_slice::<(String, String, u64, String)>(&second).unwrap();
-
-        assert_ne!(first_seq, second_seq);
-    }
 }

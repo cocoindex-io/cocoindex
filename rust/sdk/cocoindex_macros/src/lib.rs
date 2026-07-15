@@ -617,7 +617,6 @@ fn gen_owned_param_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn expand_batching_function(
     func: &ItemFn,
     args: &FunctionArgs,
@@ -643,14 +642,9 @@ fn expand_batching_function(
     let mut batch_impl_sig = func.sig.clone();
     batch_impl_sig.ident = batch_impl_name.clone();
     let batch_static_name = format_ident!("__COCO_BATCHED_{}", fn_name.to_string().to_uppercase());
-    let batch_static_init = match args.max_batch_size {
-        Some(max_batch_size) => quote! {
-            ::cocoindex::batched::__ScheduledBatched::__with_max_batch(
-                #hash_const_name,
-                #max_batch_size,
-            )
-        },
-        None => quote! { ::cocoindex::batched::__ScheduledBatched::__new(#hash_const_name) },
+    let max_batch_size = match args.max_batch_size {
+        Some(max_batch_size) => quote! { ::core::option::Option::Some(#max_batch_size) },
+        None => quote! { ::core::option::Option::None },
     };
 
     let batch_impl_args = batching.batch_impl_params.iter().map(|param| match param {
@@ -744,7 +738,12 @@ fn expand_batching_function(
         #logic_registration
 
         static #batch_static_name: ::std::sync::LazyLock<::cocoindex::batched::__ScheduledBatched<#item_ty, #output_ty>> =
-            ::std::sync::LazyLock::new(|| #batch_static_init);
+            ::std::sync::LazyLock::new(|| {
+                ::cocoindex::batched::__ScheduledBatched::__new(
+                    #hash_const_name,
+                    #max_batch_size,
+                )
+            });
 
         #batch_impl_sig #body
 

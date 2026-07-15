@@ -358,10 +358,8 @@ impl TableSchema {
             )
         })?;
         if dim == 0 {
-            return Err(crate::row_schema::vector_dimension_error(
-                "Doris",
-                field_name,
-                "requires a dimension greater than zero",
+            return Err(crate::row_schema::zero_vector_dimension_error(
+                "Doris", field_name,
             ));
         }
         let def = self

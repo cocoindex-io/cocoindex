@@ -371,10 +371,8 @@ impl CollectionSchema {
     /// the single unnamed vector uses the field name `"vector"`.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         if dim == 0 {
-            return Err(crate::row_schema::vector_dimension_error(
-                "Qdrant",
-                field_name,
-                "has invalid dimension: qdrant vector size must be greater than zero",
+            return Err(crate::row_schema::zero_vector_dimension_error(
+                "Qdrant", field_name,
             ));
         }
         let mut fields = self.vector_fields();

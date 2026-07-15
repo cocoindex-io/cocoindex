@@ -79,6 +79,21 @@ pub(crate) fn vector_dimension_error(
     feature = "postgres",
     feature = "sqlite",
     feature = "doris",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn zero_vector_dimension_error(connector: &str, field_name: &str) -> Error {
+    vector_dimension_error(
+        connector,
+        field_name,
+        "requires a dimension greater than zero",
+    )
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
     feature = "lancedb",
     feature = "qdrant",
     feature = "turbopuffer"

@@ -13,7 +13,7 @@ store is **Turbopuffer** (a hosted vector database) via the native
 | Chunking         | `RecursiveSplitter` (markdown)           | `cocoindex_ops_text` `RecursiveChunker` (markdown)  |
 | Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `fastembed` `AllMiniLML6V2` (same model, 384-dim)   |
 | Target           | `turbopuffer.NamespaceTarget`            | `cocoindex::connectors::turbopuffer::NamespaceTarget`          |
-| Search           | `ns.query(rank_by=("vector","ANN",...))` | `cocoindex::connectors::turbopuffer::vector_search`            |
+| Search           | `ns.query(rank_by=("vector","ANN",...))` | `cocoindex::connectors::turbopuffer::vector_search_by_field`   |
 
 The `cocoindex::connectors::turbopuffer` connector is a declarative two-level **managed
 target** (namespace → rows) built on CocoIndex's public target-state facade: it

@@ -13,7 +13,7 @@ Same pipeline as [`text_embedding`](../text_embedding), but the vector store is
 | Chunking         | `RecursiveSplitter` (markdown)           | `cocoindex_ops_text` `RecursiveChunker` (markdown)  |
 | Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `fastembed` `AllMiniLML6V2` (same model, 384-dim)   |
 | Target           | `qdrant.CollectionTarget`                | `cocoindex::connectors::qdrant::CollectionTarget`              |
-| Search           | `client.query_points(...)`               | `cocoindex::connectors::qdrant::vector_search` (cosine score)   |
+| Search           | `client.query_points(...)`               | `cocoindex::connectors::qdrant::named_vector_search` (cosine score) |
 
 The `cocoindex::connectors::qdrant` connector is a declarative two-level **managed target**
 (collection → points) built on CocoIndex's public target-state facade: it

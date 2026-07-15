@@ -7,7 +7,7 @@
 //!
 //! Parallels the Python example:
 //!   - source           : `cocoindex::resources::fs::walk` (cf. `localfs.walk_dir`)
-//!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
+//!   - per-file compute  : `#[cocoindex::function]` (cf. `@coco.fn`)
 //!   - chunking          : `cocoindex::ops::text::RecursiveSplitter` (cf. `RecursiveSplitter`)
 //!   - embeddings        : `cocoindex::ops::sentence_transformers` all-MiniLM-L6-v2
 //!   - target            : `postgres::TableTarget` + pgvector index
@@ -96,18 +96,14 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     Ok(rows)
 }
 
-fn doc_embedding_schema(vector_dim: usize) -> Result<postgres::TableSchema> {
-    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
-        .with_vector_dim("embedding", vector_dim)
-}
-
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
     let table = postgres::mount_table_target(
         &ctx,
         &DB,
         TABLE,
-        doc_embedding_schema(vector_dim)?,
+        postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+            .with_vector_dim("embedding", vector_dim)?,
         Some(PG_SCHEMA),
     )
     .await?;

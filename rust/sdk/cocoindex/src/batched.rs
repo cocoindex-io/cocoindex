@@ -205,24 +205,9 @@ where
 {
     /// Construct the scheduler used by generated batching wrappers.
     #[doc(hidden)]
-    pub fn __new(code_hash: u64) -> Self {
-        Self::with_options(code_hash, BatchingOptions::default())
-    }
-
-    /// Construct the generated scheduler with a maximum batch size.
-    #[doc(hidden)]
-    pub fn __with_max_batch(code_hash: u64, max_batch_size: usize) -> Self {
-        Self::with_options(
-            code_hash,
-            BatchingOptions {
-                max_batch_size: Some(max_batch_size),
-            },
-        )
-    }
-
-    fn with_options(code_hash: u64, options: BatchingOptions) -> Self {
+    pub fn __new(code_hash: u64, max_batch_size: Option<usize>) -> Self {
         Self {
-            options,
+            options: BatchingOptions { max_batch_size },
             batchers: Mutex::new(HashMap::new()),
             code_hash,
         }
