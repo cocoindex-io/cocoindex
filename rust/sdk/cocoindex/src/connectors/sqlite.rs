@@ -186,6 +186,15 @@ impl TableSchema {
         def.sqlite_type = format!("float[{dim}]");
         Ok(self)
     }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            if def.sqlite_type == "float[0]" {
+                crate::row_schema::require_resolved_vector_dimension("SQLite", name, 0)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a
@@ -273,6 +282,7 @@ pub fn table_target_with_options(
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
+    table_schema.validate_vector_dimensions()?;
     if let Some(def) = &options.virtual_table_def {
         validate_vec0(&table_name, &table_schema, def)?;
     }

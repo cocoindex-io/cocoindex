@@ -13,13 +13,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
+use arrow_array::builder::{FixedSizeListBuilder, PrimitiveBuilder};
+use arrow_array::types::{ArrowPrimitiveType, Float16Type, Float32Type};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
     Int64Array, RecordBatch, RecordBatchIterator, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cocoindex_utils::fingerprint::Fingerprint;
+use half::f16;
 use lancedb::Connection;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::NewColumnTransform;
@@ -93,6 +95,8 @@ pub enum ColumnType {
     Json,
     /// Fixed-size float32 vector of the given dimension.
     Vector(usize),
+    /// Fixed-size float16 vector of the given dimension.
+    HalfVector(usize),
 }
 
 impl ColumnType {
@@ -108,6 +112,10 @@ impl ColumnType {
             ColumnType::Binary => DataType::Binary,
             ColumnType::Vector(dim) => DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
+                *dim as i32,
+            ),
+            ColumnType::HalfVector(dim) => DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float16, true)),
                 *dim as i32,
             ),
         }
@@ -214,13 +222,33 @@ impl TableSchema {
                     "LanceDB vector dimension override names unknown field {field_name:?}"
                 ))
             })?;
-        if !matches!(def.col_type, ColumnType::Vector(_)) {
-            return Err(Error::engine(format!(
-                "LanceDB field {field_name:?} is not a vector field"
-            )));
+        match &mut def.col_type {
+            ColumnType::Vector(current_dim) | ColumnType::HalfVector(current_dim) => {
+                *current_dim = dim;
+            }
+            _ => {
+                return Err(Error::engine(format!(
+                    "LanceDB field {field_name:?} is not a vector field"
+                )));
+            }
         }
-        def.col_type = ColumnType::Vector(dim);
         Ok(self)
+    }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            let dim = match def.col_type {
+                ColumnType::Vector(dim) | ColumnType::HalfVector(dim) => dim,
+                _ => continue,
+            };
+            crate::row_schema::require_resolved_vector_dimension("LanceDB", name, dim)?;
+            if i32::try_from(dim).is_err() {
+                return Err(Error::engine(format!(
+                    "LanceDB vector field {name:?} requires a dimension in 1..=i32::MAX"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn column_names(&self) -> impl Iterator<Item = &String> {
@@ -250,7 +278,13 @@ fn lancedb_column_def(field: &crate::row_schema::SchemaField) -> Result<ColumnDe
         L::Text | L::Uuid | L::Date | L::Time | L::DateTime => ColumnType::Text,
         L::Bytes => ColumnType::Binary,
         L::Decimal | L::Duration | L::Json => ColumnType::Json,
-        L::Vector { dim, .. } => ColumnType::Vector(*dim as usize),
+        L::Vector { dim, half } => {
+            if *half {
+                ColumnType::HalfVector(*dim as usize)
+            } else {
+                ColumnType::Vector(*dim as usize)
+            }
+        }
         L::Custom(custom) => {
             return Err(Error::engine(format!(
                 "LanceDB field {:?} has unsupported custom logical type {custom:?}",
@@ -303,6 +337,7 @@ pub fn table_target_with_options(
     options: ManagedTargetOptions,
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
+    table_schema.validate_vector_dimensions()?;
     let provider = register_root_target_states_provider(
         ctx,
         format!("cocoindex/lancedb/table/{}/{}", db.name(), table_name),
@@ -426,7 +461,7 @@ impl LanceTableTarget {
 
     /// Declare a vector index on `column` as an attachment of this table. The
     /// index is created/recreated/dropped to match the declared options. The
-    /// column must be a [`ColumnType::Vector`].
+    /// column must be a [`ColumnType::Vector`] or [`ColumnType::HalfVector`].
     pub fn declare_vector_index(
         &self,
         ctx: &Ctx,
@@ -435,7 +470,7 @@ impl LanceTableTarget {
     ) -> Result<()> {
         validate_identifier(column)?;
         match self.column_type(column) {
-            Some(ColumnType::Vector(_)) => {}
+            Some(ColumnType::Vector(_) | ColumnType::HalfVector(_)) => {}
             Some(_) => {
                 return Err(Error::engine(format!(
                     "LanceDB vector index column {column:?} is not a vector column"
@@ -1166,7 +1201,22 @@ fn build_record_batch(
                     })
                     .collect::<Result<Vec<_>>>()?,
             )),
-            ColumnType::Vector(dim) => build_vector_array(name, *dim, def.nullable, values)?,
+            ColumnType::Vector(dim) => build_vector_array::<Float32Type>(
+                name,
+                *dim,
+                def.nullable,
+                DataType::Float32,
+                values,
+                |value| value,
+            )?,
+            ColumnType::HalfVector(dim) => build_vector_array::<Float16Type>(
+                name,
+                *dim,
+                def.nullable,
+                DataType::Float16,
+                values,
+                f16::from_f32,
+            )?,
         };
         arrays.push(array);
     }
@@ -1174,14 +1224,16 @@ fn build_record_batch(
         .map_err(|e| Error::engine(format!("build LanceDB record batch: {e}")))
 }
 
-fn build_vector_array<'a>(
+fn build_vector_array<'a, T: ArrowPrimitiveType>(
     column: &str,
     dim: usize,
     nullable: bool,
+    item_type: DataType,
     values: impl Iterator<Item = &'a JsonValue>,
+    convert: impl Fn(f32) -> T::Native,
 ) -> Result<ArrayRef> {
-    let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), dim as i32)
-        .with_field(Arc::new(Field::new("item", DataType::Float32, true)));
+    let mut builder = FixedSizeListBuilder::new(PrimitiveBuilder::<T>::new(), dim as i32)
+        .with_field(Arc::new(Field::new("item", item_type, true)));
     let mut count = 0usize;
     for value in values {
         if value.is_null() {
@@ -1210,7 +1262,7 @@ fn build_vector_array<'a>(
             let f = v.as_f64().ok_or_else(|| {
                 Error::engine(format!("column {column:?} has non-numeric vector element"))
             })?;
-            builder.values().append_value(f as f32);
+            builder.values().append_value(convert(f as f32));
         }
         builder.append(true);
         count += 1;

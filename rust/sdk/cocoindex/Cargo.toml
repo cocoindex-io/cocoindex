@@ -52,7 +52,13 @@ oci_object_storage = [
     "dep:chrono",
     "chrono/clock",
 ]
-lancedb = ["dep:serde_json", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
+lancedb = [
+    "dep:serde_json",
+    "dep:lancedb",
+    "dep:arrow-array",
+    "dep:arrow-schema",
+    "dep:half",
+]
 qdrant = ["dep:serde_json", "dep:qdrant-client"]
 turbopuffer = ["dep:serde_json", "dep:reqwest"]
 neo4j = ["dep:serde_json", "dep:neo4rs"]
@@ -115,6 +121,7 @@ base64 = { version = "0.22", optional = true }
 lancedb = { version = "0.26", default-features = false, optional = true }
 arrow-array = { version = "57", optional = true }
 arrow-schema = { version = "57", optional = true }
+half = { version = "2", optional = true }
 # Qdrant vector-store target (gRPC client; build needs `protoc`).
 qdrant-client = { version = "1.18", optional = true }
 surrealdb = { version = "3", default-features = false, optional = true, features = [

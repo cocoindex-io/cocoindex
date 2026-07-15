@@ -406,11 +406,35 @@ fn gen_state_collect_for_param(
     }
 }
 
+fn gen_function_memo_key(
+    fn_name: &Ident,
+    hash_const_name: &Ident,
+    key_writes: &[TokenStream2],
+) -> TokenStream2 {
+    quote! {{
+        let mut __coco_key = ::cocoindex::memo::new_key_fingerprinter();
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &"cocoindex_fn")?;
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::module_path!())?;
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::stringify!(#fn_name))?;
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#hash_const_name)?;
+        #(#key_writes)*
+        ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
+    }}
+}
+
+#[derive(Debug)]
+enum BatchImplParam {
+    Context,
+    Items,
+    Extra(usize),
+}
+
 #[derive(Debug)]
 struct BatchingSignature {
     ctx_ident: Ident,
     item_param: ParamInfo,
     extra_params: Vec<ParamInfo>,
+    batch_impl_params: Vec<BatchImplParam>,
     output_ty: Type,
     wrapper_sig: syn::Signature,
 }
@@ -508,6 +532,7 @@ fn parse_batching_signature(func: &ItemFn) -> syn::Result<BatchingSignature> {
             "batching functions cannot be generic because their scheduler is static",
         ));
     }
+    let mut input_idents = Vec::with_capacity(func.sig.inputs.len());
     for input in &func.sig.inputs {
         let FnArg::Typed(param) = input else {
             return Err(SynError::new_spanned(
@@ -515,12 +540,13 @@ fn parse_batching_signature(func: &ItemFn) -> syn::Result<BatchingSignature> {
                 "batching is supported only on free functions",
             ));
         };
-        if !matches!(param.pat.as_ref(), Pat::Ident(_)) {
+        let Pat::Ident(param_ident) = param.pat.as_ref() else {
             return Err(SynError::new_spanned(
                 &param.pat,
                 "batching function parameters must be identifiers",
             ));
-        }
+        };
+        input_idents.push(param_ident.ident.clone());
     }
 
     let (ctx_ident, params) = parse_fn_params(func)?;
@@ -562,6 +588,24 @@ fn parse_batching_signature(func: &ItemFn) -> syn::Result<BatchingSignature> {
     debug_assert!(found_batch_param);
     wrapper_sig.output = wrapper_output;
 
+    let batch_impl_params = input_idents
+        .into_iter()
+        .map(|ident| {
+            if ident == ctx_ident {
+                BatchImplParam::Context
+            } else if ident == batch_param.ident {
+                BatchImplParam::Items
+            } else {
+                let param_index = params
+                    .iter()
+                    .position(|param| param.ident == ident)
+                    .expect("all non-context parameters were parsed");
+                debug_assert!(param_index > 0);
+                BatchImplParam::Extra(param_index - 1)
+            }
+        })
+        .collect();
+
     Ok(BatchingSignature {
         ctx_ident,
         item_param: ParamInfo {
@@ -571,6 +615,7 @@ fn parse_batching_signature(func: &ItemFn) -> syn::Result<BatchingSignature> {
             is_str_ref: false,
         },
         extra_params: params[1..].to_vec(),
+        batch_impl_params,
         output_ty,
         wrapper_sig,
     })
@@ -608,10 +653,7 @@ fn expand_batching_function(
     let output_ty = &batching.output_ty;
     let extra_params = &batching.extra_params;
 
-    let batch_impl_name = format_ident!(
-        "__coco_batch_impl_{}",
-        fn_name.to_string().trim_start_matches('_')
-    );
+    let batch_impl_name = format_ident!("__coco_batch_impl_{}", fn_name);
     let mut batch_impl_sig = func.sig.clone();
     batch_impl_sig.ident = batch_impl_name.clone();
     let batch_static_name = format_ident!("__COCO_BATCHED_{}", fn_name.to_string().to_uppercase());
@@ -625,37 +667,19 @@ fn expand_batching_function(
         None => quote! { ::cocoindex::Batched::__scheduled(#hash_const_name) },
     };
 
-    let mut batch_impl_args = Vec::new();
-    for input in &func.sig.inputs {
-        let FnArg::Typed(param) = input else {
-            return Err(SynError::new_spanned(
-                input,
-                "batching is supported only on free functions",
-            ));
-        };
-        let Pat::Ident(param_ident) = param.pat.as_ref() else {
-            return Err(SynError::new_spanned(
-                &param.pat,
-                "batching function parameters must be identifiers",
-            ));
-        };
-        let ident = &param_ident.ident;
-        if *ident == batching.ctx_ident {
-            batch_impl_args.push(quote! { &__coco_batch_ctx });
-        } else if *ident == batching.item_param.ident {
-            batch_impl_args.push(quote! { __coco_batch_items });
-        } else {
-            let param = extra_params
-                .iter()
-                .find(|param| param.ident == *ident)
-                .expect("validated non-context parameter");
+    let batch_impl_args = batching.batch_impl_params.iter().map(|param| match param {
+        BatchImplParam::Context => quote! { &__coco_batch_ctx },
+        BatchImplParam::Items => quote! { __coco_batch_items },
+        BatchImplParam::Extra(param_index) => {
+            let param = &extra_params[*param_index];
+            let ident = &param.ident;
             if param.is_ref {
-                batch_impl_args.push(quote! { &#ident });
+                quote! { &#ident }
             } else {
-                batch_impl_args.push(quote! { #ident });
+                quote! { #ident }
             }
         }
-    }
+    });
 
     let owned_extra_clones = gen_owned_param_clones(extra_params);
     let extra_key_parts = extra_params.iter().map(|param| {
@@ -712,16 +736,9 @@ fn expand_batching_function(
             .collect();
         let state_clones = gen_clones(&key_params);
         let body_clones = gen_clones(&key_params);
+        let memo_key = gen_function_memo_key(fn_name, hash_const_name, &key_writes);
         quote! {{
-            let __coco_key = {
-                let mut __coco_key = ::cocoindex::memo::new_key_fingerprinter();
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &"cocoindex_fn")?;
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::module_path!())?;
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::stringify!(#fn_name))?;
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#hash_const_name)?;
-                #(#key_writes)*
-                ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
-            };
+            let __coco_key = #memo_key;
 
             ::cocoindex::memo::cached_by_fingerprint_with_state(
                 #ctx_ident,
@@ -952,6 +969,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 )
             })
             .collect();
+        let memo_key = gen_function_memo_key(fn_name, &hash_const_name, &key_writes);
 
         let expanded = quote! {
             #[doc(hidden)]
@@ -960,15 +978,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             #(#attrs)*
             #vis #sig {
-                let __coco_key = {
-                    let mut __coco_key = ::cocoindex::memo::new_key_fingerprinter();
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &"cocoindex_fn")?;
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::module_path!())?;
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::stringify!(#fn_name))?;
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#hash_const_name)?;
-                    #(#key_writes)*
-                    ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
-                };
+                let __coco_key = #memo_key;
 
                 ::cocoindex::memo::cached_by_fingerprint_with_state(#ctx_ident, __coco_key, #propagate_children_fn_logic, {
                     #(#clone_stmts)*
@@ -1288,10 +1298,10 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
 /// Whether `expr` is exactly the identifier `ident` (a bare path with one
 /// segment), used to spot the `mount_each!` item-value argument.
 fn expr_is_ident(expr: &Expr, ident: &Ident) -> bool {
-    if let Expr::Path(path) = expr {
-        if path.qself.is_none() {
-            return path.path.is_ident(ident);
-        }
+    if let Expr::Path(path) = expr
+        && path.qself.is_none()
+    {
+        return path.path.is_ident(ident);
     }
     false
 }
@@ -1700,5 +1710,52 @@ mod tests {
             compute_code_hash(&func.block, Some(7)),
             compute_code_hash(&func.block, Some(8))
         );
+    }
+
+    #[test]
+    fn batching_memo_key_includes_body_hash() {
+        let first: ItemFn = parse_str(
+            "async fn embed(ctx: &Ctx, items: Vec<i32>) -> Result<Vec<i32>> { Ok(items) }",
+        )
+        .unwrap();
+        let second: ItemFn = parse_str(
+            "async fn embed(ctx: &Ctx, items: Vec<i32>) -> Result<Vec<i32>> { \
+             Ok(items.into_iter().map(|item| item * 2).collect()) }",
+        )
+        .unwrap();
+        assert_ne!(
+            compute_code_hash(&first.block, None),
+            compute_code_hash(&second.block, None),
+            "editing a batching body must change its generated logic hash"
+        );
+
+        let args = FunctionArgs::parse(quote!(memo, batching)).unwrap();
+        let hash_const_name = format_ident!("__COCO_FN_HASH_EMBED");
+        let first_hash = compute_code_hash(&first.block, None);
+        let expanded = expand_batching_function(
+            &first,
+            &args,
+            &hash_const_name,
+            &quote!(#first_hash),
+            &quote!(),
+            true,
+            true,
+        )
+        .unwrap()
+        .to_string();
+        assert!(
+            expanded
+                .contains("write_key_fingerprint_part (& mut __coco_key , & __COCO_FN_HASH_EMBED)"),
+            "the expanded batching memo key must include the body-derived hash: {expanded}"
+        );
+    }
+
+    #[test]
+    fn batching_impl_names_preserve_leading_underscores() {
+        let plain = format_ident!("__coco_batch_impl_{}", format_ident!("embed"));
+        let underscored = format_ident!("__coco_batch_impl_{}", format_ident!("_embed"));
+        assert_eq!(plain.to_string(), "__coco_batch_impl_embed");
+        assert_eq!(underscored.to_string(), "__coco_batch_impl__embed");
+        assert_ne!(plain, underscored);
     }
 }

@@ -1767,19 +1767,17 @@ mod batched_test {
 
     static CONTEXT_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
-    fn batch_factor_key() -> &'static ContextKey<i64> {
-        static KEY: LazyLock<ContextKey<i64>> = LazyLock::new(|| {
-            ContextKey::new_detect_change("pipeline/function_batching_context_factor")
-        });
-        &KEY
-    }
+    cocoindex::context_key!(
+        static BATCH_FACTOR: i64 = "pipeline/function_batching_context_factor",
+        detect_change
+    );
 
     #[cocoindex::function(memo, batching)]
     async fn macro_context_batch(
         ctx: &cocoindex::Ctx,
         items: Vec<i64>,
     ) -> cocoindex::Result<Vec<i64>> {
-        let factor = *ctx.get_key(batch_factor_key())?;
+        let factor = *ctx.get_key(&BATCH_FACTOR)?;
         CONTEXT_ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
         if items == [1] {
             tokio::time::sleep(Duration::from_millis(30)).await;
@@ -1790,7 +1788,7 @@ mod batched_test {
     async fn run_context_batch(db_path: &std::path::Path, factor: i64) {
         let app = Environment::builder()
             .db_path(db_path)
-            .provide_key(batch_factor_key(), factor)
+            .provide_key(&BATCH_FACTOR, factor)
             .build()
             .await
             .unwrap()
@@ -2856,15 +2854,12 @@ mod mock_memo {
     /// the owned memo-scoped `Ctx`, so non-serializable resources remain
     /// available through normal context lookup. A skipped argument needs only
     /// `Any + Clone`; `MockApi` intentionally does not implement `Serialize`.
-    #[cocoindex::function(memo, memo_key(client = skip))]
+    #[cocoindex::function(memo, memo_key(_client = skip))]
     async fn analyze(
         ctx: &cocoindex::Ctx,
         input: String,
-        client: &MockApi,
+        _client: &MockApi,
     ) -> cocoindex::Result<String> {
-        // Keep the skipped parameter usable in the body while sourcing the
-        // configured client from the memo-scoped context.
-        let _observed_client_calls = client.call_count();
         ctx.get_or_err::<MockApi>()?.call(&input).await
     }
 

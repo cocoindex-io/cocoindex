@@ -30,6 +30,38 @@
 //! * `#[coco(json)]` — force JSON storage for a field.
 //! * `#[coco(rename = "…")]` — use a different column name.
 
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+use crate::error::{Error, Result};
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn require_resolved_vector_dimension(
+    connector: &str,
+    field_name: &str,
+    dimension: usize,
+) -> Result<()> {
+    if dimension == 0 {
+        return Err(Error::engine(format!(
+            "{connector} vector field {field_name:?} has an unresolved dimension; call \
+             with_vector_dim({field_name:?}, dimension) before declaring the target"
+        )));
+    }
+    Ok(())
+}
+
 /// A connector-agnostic column type derived from a Rust field type. Each target
 /// connector maps these to its own SQL type strings.
 #[derive(Clone, Debug, PartialEq, Eq)]

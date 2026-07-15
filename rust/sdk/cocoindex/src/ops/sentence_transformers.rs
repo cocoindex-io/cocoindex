@@ -20,16 +20,16 @@ use crate::resources::schema::{VectorElementType, VectorSchema, VectorSchemaProv
 /// Cheap to clone: the underlying model is shared behind an [`Arc`].
 #[derive(Clone)]
 pub struct SentenceTransformerEmbedder {
-    model: Arc<dyn _EmbeddingModel>,
+    model: Arc<dyn EmbeddingModel>,
     model_name: String,
     dimension: usize,
 }
 
-trait _EmbeddingModel: Send + Sync {
+trait EmbeddingModel: Send + Sync {
     fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>>;
 }
 
-impl _EmbeddingModel for TextEmbedding {
+impl EmbeddingModel for TextEmbedding {
     fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         TextEmbedding::embed(self, texts, None)
             .map_err(|e| Error::engine(format!("embedding failed: {e}")))
@@ -37,9 +37,9 @@ impl _EmbeddingModel for TextEmbedding {
 }
 
 #[derive(Clone)]
-struct _ScheduledEmbedder(SentenceTransformerEmbedder);
+struct ScheduledEmbedder(SentenceTransformerEmbedder);
 
-impl serde::Serialize for _ScheduledEmbedder {
+impl serde::Serialize for ScheduledEmbedder {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
@@ -49,10 +49,10 @@ impl serde::Serialize for _ScheduledEmbedder {
 }
 
 #[crate::function(memo, batching, max_batch_size = 64)]
-async fn _embed_scheduled(
+async fn embed_scheduled(
     _ctx: &crate::Ctx,
     texts: Vec<String>,
-    embedder: _ScheduledEmbedder,
+    embedder: ScheduledEmbedder,
 ) -> Result<Vec<Vec<f32>>> {
     embedder.0.embed_batch(texts).await
 }
@@ -118,7 +118,7 @@ impl SentenceTransformerEmbedder {
     /// Use [`SentenceTransformerEmbedder::embed_batch`] for an explicit raw
     /// batch outside a CocoIndex update.
     pub async fn embed(&self, ctx: &crate::Ctx, text: impl Into<String>) -> Result<Vec<f32>> {
-        _embed_scheduled(ctx, text.into(), _ScheduledEmbedder(self.clone())).await
+        embed_scheduled(ctx, text.into(), ScheduledEmbedder(self.clone())).await
     }
 
     /// Embed a batch of texts. Embedding runs on a blocking thread.
@@ -163,11 +163,11 @@ mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct _CountingModel {
+    struct CountingModel {
         batches: Mutex<Vec<Vec<String>>>,
     }
 
-    impl _EmbeddingModel for _CountingModel {
+    impl EmbeddingModel for CountingModel {
         fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
             self.batches.lock().unwrap().push(texts.clone());
             Ok(texts
@@ -179,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_text_embed_batches_misses_and_memoizes_results() {
-        let model = Arc::new(_CountingModel::default());
+        let model = Arc::new(CountingModel::default());
         let embedder = SentenceTransformerEmbedder {
             model: model.clone(),
             model_name: "counting-model".to_string(),

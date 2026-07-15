@@ -427,7 +427,7 @@ async fn show_progress_pty<T: Send + 'static>(
         tokio::select! {
             result = handle.changed() => {
                 let version = result?;
-                if version == TERMINATED_VERSION {
+                if version >= TERMINATED_VERSION {
                     break;
                 }
             }

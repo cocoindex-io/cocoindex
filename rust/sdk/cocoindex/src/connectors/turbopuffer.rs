@@ -329,6 +329,26 @@ impl NamespaceSchema {
         Ok(self)
     }
 
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        match self.vector_fields() {
+            VectorFields::Single(def) => crate::row_schema::require_resolved_vector_dimension(
+                "Turbopuffer",
+                DEFAULT_VECTOR_FIELD,
+                def.schema.size,
+            ),
+            VectorFields::Named(vectors) => {
+                for (name, def) in vectors {
+                    crate::row_schema::require_resolved_vector_dimension(
+                        "Turbopuffer",
+                        &name,
+                        def.schema.size,
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// The `schema` payload Turbopuffer's write API expects.
     fn write_schema(&self) -> Result<JsonValue> {
         let mut fields = Map::new();
@@ -579,6 +599,7 @@ pub fn namespace_target_with_options(
 ) -> Result<TargetState<NamespaceSpec>> {
     let namespace = namespace.into();
     validate_namespace(&namespace)?;
+    schema.validate_vector_dimensions()?;
     let provider = register_root_target_states_provider(
         ctx,
         format!(

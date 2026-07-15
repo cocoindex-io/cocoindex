@@ -9,7 +9,7 @@
 #![cfg(feature = "lancedb")]
 
 use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
-use cocoindex::{Environment, ManagedTargetOptions, Result};
+use cocoindex::{Environment, ManagedTargetOptions, Result, SchemaFields};
 use serde::Serialize;
 
 cocoindex::context_key!(
@@ -18,6 +18,7 @@ cocoindex::context_key!(
 );
 
 const TABLE: &str = "docs";
+const HALF_TABLE: &str = "half_docs";
 
 #[derive(Clone, Serialize)]
 struct Row {
@@ -40,6 +41,62 @@ struct RowV2Nullable {
     text: String,
     summary: Option<String>,
     embedding: Vec<f32>,
+}
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct HalfRow {
+    id: i64,
+    #[coco(vector, half)]
+    embedding: Vec<f32>,
+}
+
+#[tokio::test]
+async fn lancedb_from_row_writes_float16_vectors_without_downgrading() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceHalfVectorTest")
+        .await?;
+
+    app.run(move |ctx| async move {
+        let schema = TableSchema::from_row::<HalfRow>(["id"])?.with_vector_dim("embedding", 3)?;
+        let table = lancedb::mount_table_target(&ctx, &DB, HALF_TABLE, schema).await?;
+        table.declare_row(
+            &ctx,
+            &HalfRow {
+                id: 1,
+                embedding: vec![0.25, 0.5, 0.75],
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db
+        .connection()
+        .open_table(HALF_TABLE)
+        .execute()
+        .await
+        .unwrap();
+    let schema = table.schema().await.unwrap();
+    assert_eq!(
+        schema.field_with_name("embedding").unwrap().data_type(),
+        &arrow_schema::DataType::FixedSizeList(
+            std::sync::Arc::new(arrow_schema::Field::new(
+                "item",
+                arrow_schema::DataType::Float16,
+                true,
+            )),
+            3,
+        )
+    );
+    assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    Ok(())
 }
 
 fn schema() -> TableSchema {

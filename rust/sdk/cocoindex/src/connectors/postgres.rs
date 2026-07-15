@@ -163,6 +163,15 @@ impl TableSchema {
         def.pg_type = format!("{base}({dim})");
         Ok(self)
     }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            if matches!(def.pg_type.as_str(), "vector" | "halfvec") {
+                crate::row_schema::require_resolved_vector_dimension("Postgres", name, 0)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn pgvector_type_base(pg_type: &str) -> Option<&'static str> {
@@ -264,6 +273,7 @@ pub fn table_target_with_options(
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
+    table_schema.validate_vector_dimensions()?;
     if let Some(schema) = pg_schema_name {
         validate_ident(schema, "schema name")?;
     }

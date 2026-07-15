@@ -366,7 +366,9 @@ impl CollectionSchema {
         })
     }
 
-    /// Resolve or override one named vector field's runtime dimension.
+    /// Resolve or override one vector field's runtime dimension. For schemas
+    /// built with [`CollectionSchema::new`] or [`CollectionSchema::multivector`],
+    /// the single unnamed vector uses the field name `"vector"`.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         validate_vector_size(dim).map_err(|err| {
             Error::engine(format!(
@@ -395,6 +397,26 @@ impl CollectionSchema {
         };
         self.vector_size = first.vector_size();
         Ok(self)
+    }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        match self.vector_fields() {
+            VectorFields::Single(def) => crate::row_schema::require_resolved_vector_dimension(
+                "Qdrant",
+                "vector",
+                def.vector_size() as usize,
+            ),
+            VectorFields::Named(vectors) => {
+                for (name, def) in vectors {
+                    crate::row_schema::require_resolved_vector_dimension(
+                        "Qdrant",
+                        &name,
+                        def.vector_size() as usize,
+                    )?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn vectors_config(&self) -> VectorsConfigBuilder {
@@ -682,6 +704,7 @@ pub fn collection_target_with_options(
     options: ManagedTargetOptions,
 ) -> Result<TargetState<CollectionSpec>> {
     let collection_name = collection_name.into();
+    schema.validate_vector_dimensions()?;
     let provider = register_root_target_states_provider(
         ctx,
         format!(

@@ -368,6 +368,16 @@ impl TableSchema {
         def.vector_dimension = Some(dim);
         Ok(self)
     }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            if def.is_vector {
+                let dim = def.vector_dimension.unwrap_or(0) as usize;
+                crate::row_schema::require_resolved_vector_dimension("Doris", name, dim)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a
@@ -518,6 +528,7 @@ pub fn table_target_with_options(
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
+    table_schema.validate_vector_dimensions()?;
     validate_indexes(&table_schema, &options)?;
     let provider = register_root_target_states_provider(
         ctx,

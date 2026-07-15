@@ -2006,6 +2006,7 @@ dependencies = [
  "futures",
  "glob",
  "globset",
+ "half",
  "iggy",
  "lancedb",
  "linkme",

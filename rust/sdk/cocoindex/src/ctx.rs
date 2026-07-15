@@ -36,7 +36,6 @@ type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Sen
 /// [`ContextKey::new_detect_change`], and [`ContextKey::new_with_state`]:
 ///
 /// ```
-/// # use cocoindex::ContextKey;
 /// # #[derive(serde::Serialize)]
 /// # struct AppConfig;
 /// # struct Database;
