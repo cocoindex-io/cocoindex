@@ -41,9 +41,10 @@ cocoindex::context_key!(
     state = SentenceTransformerEmbedder::model_name
 );
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct RowData {
     id: String,
+    #[coco(vector)]
     vector: Vec<f32>,
     filename: String,
     chunk_start: i64,
@@ -90,12 +91,12 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()> {
-    let conn = ctx.get_key(&DB)?;
     let target = turbopuffer::mount_namespace_target(
         &ctx,
         &DB,
         &namespace,
-        NamespaceSchema::new(EMBED_DIM, DistanceMetric::CosineDistance),
+        NamespaceSchema::from_row::<RowData>(DistanceMetric::CosineDistance)?
+            .with_vector_dim("vector", EMBED_DIM)?,
     )
     .await?;
 
@@ -121,7 +122,12 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()>
             .as_object()
             .unwrap()
             .clone();
-            target.declare_row(&ctx, r.id.clone(), r.vector.clone(), attributes)?;
+            target.declare_named_row(
+                &ctx,
+                r.id.clone(),
+                [("vector", r.vector.clone())],
+                attributes,
+            )?;
         }
     }
     println!("indexed {count} chunk(s) total");
@@ -135,7 +141,8 @@ async fn query_once(
     query: &str,
 ) -> Result<()> {
     let query_vec = Embedder::embed(embedder, query).await?;
-    let hits = turbopuffer::vector_search(conn, namespace, query_vec, TOP_K).await?;
+    let hits = turbopuffer::vector_search_by_field(conn, namespace, "vector", query_vec, TOP_K)
+        .await?;
     for hit in hits {
         let filename = hit
             .attributes

@@ -205,27 +205,25 @@ impl TableSchema {
     /// Resolve or override the dimension of a vector field derived from a row.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         if dim == 0 || i32::try_from(dim).is_err() {
-            return Err(Error::engine(format!(
-                "LanceDB vector field {field_name:?} requires a dimension in 1..=i32::MAX"
-            )));
+            return Err(crate::row_schema::vector_dimension_error(
+                "LanceDB",
+                field_name,
+                "requires a dimension in 1..=i32::MAX",
+            ));
         }
         let (_, def) = self
             .columns
             .iter_mut()
             .find(|(name, _)| name == field_name)
-            .ok_or_else(|| {
-                Error::engine(format!(
-                    "LanceDB vector dimension override names unknown field {field_name:?}"
-                ))
-            })?;
+            .ok_or_else(|| crate::row_schema::unknown_vector_field_error("LanceDB", field_name))?;
         match &mut def.col_type {
             ColumnType::Vector(current_dim) | ColumnType::HalfVector(current_dim) => {
                 *current_dim = dim;
             }
             _ => {
-                return Err(Error::engine(format!(
-                    "LanceDB field {field_name:?} is not a vector field"
-                )));
+                return Err(crate::row_schema::not_vector_field_error(
+                    "LanceDB", field_name,
+                ));
             }
         }
         Ok(self)
@@ -237,11 +235,15 @@ impl TableSchema {
                 ColumnType::Vector(dim) | ColumnType::HalfVector(dim) => dim,
                 _ => continue,
             };
-            crate::row_schema::require_resolved_vector_dimension("LanceDB", name, dim)?;
+            if dim == 0 {
+                crate::row_schema::require_resolved_vector_dimension("LanceDB", name)?;
+            }
             if i32::try_from(dim).is_err() {
-                return Err(Error::engine(format!(
-                    "LanceDB vector field {name:?} requires a dimension in 1..=i32::MAX"
-                )));
+                return Err(crate::row_schema::vector_dimension_error(
+                    "LanceDB",
+                    name,
+                    "requires a dimension in 1..=i32::MAX",
+                ));
             }
         }
         Ok(())

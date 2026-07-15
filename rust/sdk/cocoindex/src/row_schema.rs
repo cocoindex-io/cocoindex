@@ -48,18 +48,57 @@ use crate::error::{Error, Result};
     feature = "qdrant",
     feature = "turbopuffer"
 ))]
-pub(crate) fn require_resolved_vector_dimension(
+pub(crate) fn require_resolved_vector_dimension(connector: &str, field_name: &str) -> Result<()> {
+    Err(vector_dimension_error(
+        connector,
+        field_name,
+        format_args!(
+            "has an unresolved dimension; call with_vector_dim({field_name:?}, dimension) before \
+             declaring the target"
+        ),
+    ))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn vector_dimension_error(
     connector: &str,
     field_name: &str,
-    dimension: usize,
-) -> Result<()> {
-    if dimension == 0 {
-        return Err(Error::engine(format!(
-            "{connector} vector field {field_name:?} has an unresolved dimension; call \
-             with_vector_dim({field_name:?}, dimension) before declaring the target"
-        )));
-    }
-    Ok(())
+    detail: impl std::fmt::Display,
+) -> Error {
+    Error::engine(format!("{connector} vector field {field_name:?} {detail}"))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn unknown_vector_field_error(connector: &str, field_name: &str) -> Error {
+    Error::engine(format!(
+        "{connector} vector dimension override names unknown field {field_name:?}"
+    ))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb"
+))]
+pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error {
+    Error::engine(format!(
+        "{connector} field {field_name:?} is not a vector field"
+    ))
 }
 
 #[cfg(any(feature = "postgres", feature = "sqlite", feature = "doris"))]

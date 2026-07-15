@@ -351,24 +351,27 @@ impl TableSchema {
     /// Resolve or override the dimension of a vector field derived from a row.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         let dim = u32::try_from(dim).map_err(|_| {
-            Error::engine(format!(
-                "Doris vector field {field_name:?} dimension does not fit u32"
-            ))
+            crate::row_schema::vector_dimension_error(
+                "Doris",
+                field_name,
+                "dimension does not fit u32",
+            )
         })?;
         if dim == 0 {
-            return Err(Error::engine(format!(
-                "Doris vector field {field_name:?} requires a dimension greater than zero"
-            )));
+            return Err(crate::row_schema::vector_dimension_error(
+                "Doris",
+                field_name,
+                "requires a dimension greater than zero",
+            ));
         }
-        let def = self.columns.get_mut(field_name).ok_or_else(|| {
-            Error::engine(format!(
-                "Doris vector dimension override names unknown field {field_name:?}"
-            ))
-        })?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Doris", field_name))?;
         if !def.is_vector {
-            return Err(Error::engine(format!(
-                "Doris field {field_name:?} is not a vector field"
-            )));
+            return Err(crate::row_schema::not_vector_field_error(
+                "Doris", field_name,
+            ));
         }
         def.vector_dimension = Some(dim);
         Ok(self)
@@ -378,7 +381,9 @@ impl TableSchema {
         for (name, def) in &self.columns {
             if def.is_vector {
                 let dim = def.vector_dimension.unwrap_or(0) as usize;
-                crate::row_schema::require_resolved_vector_dimension("Doris", name, dim)?;
+                if dim == 0 {
+                    crate::row_schema::require_resolved_vector_dimension("Doris", name)?;
+                }
             }
         }
         Ok(())

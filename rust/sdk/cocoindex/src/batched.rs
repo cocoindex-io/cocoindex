@@ -108,29 +108,31 @@ struct ScheduledBatchKey {
 type FunctionBatcher<In, Out> = Batcher<FnRunner<In, Out>>;
 type ScheduledBatchers<In, Out> = Mutex<HashMap<ScheduledBatchKey, Weak<FunctionBatcher<In, Out>>>>;
 
-enum BatchedMode<In, Out>
+fn new_batcher<In, Out>(
+    f: BatchFn<In, Out>,
+    options: BatchingOptions,
+) -> Arc<FunctionBatcher<In, Out>>
 where
     In: Send + 'static,
     Out: Send + 'static,
 {
-    Fixed(Arc<FunctionBatcher<In, Out>>),
-    Scheduled {
-        options: BatchingOptions,
-        batchers: ScheduledBatchers<In, Out>,
-    },
+    Arc::new(Batcher::new(
+        FnRunner { f },
+        Arc::new(BatchQueue::new()),
+        options,
+    ))
 }
 
 /// A single-item interface over a batch-shaped async function.
 ///
-/// [`Batched::new`] retains the explicit, memoized adapter API. The
-/// `#[cocoindex::function(batching)]` macro uses the hidden scheduled mode so
-/// each distinct extra-argument set gets its own short-lived batcher.
+/// `#[cocoindex::function(batching)]` is the usual entry point. [`Batched::new`]
+/// is the explicit, memoized adapter for code that cannot use the macro.
 pub struct Batched<In, Out>
 where
     In: Send + 'static,
     Out: Send + 'static,
 {
-    mode: BatchedMode<In, Out>,
+    batcher: Arc<FunctionBatcher<In, Out>>,
     code_hash: u64,
 }
 
@@ -150,36 +152,12 @@ where
         F: Fn(Vec<In>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<Out>>> + Send + 'static,
     {
-        Self::with_options(f, code_hash, BatchingOptions::default())
-    }
-
-    /// Like [`Batched::new`], but caps how many items are processed per batch.
-    pub fn with_max_batch<F, Fut>(f: F, code_hash: u64, max_batch_size: usize) -> Self
-    where
-        F: Fn(Vec<In>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Vec<Out>>> + Send + 'static,
-    {
-        Self::with_options(
-            f,
-            code_hash,
-            BatchingOptions {
-                max_batch_size: Some(max_batch_size),
-            },
-        )
-    }
-
-    fn with_options<F, Fut>(f: F, code_hash: u64, options: BatchingOptions) -> Self
-    where
-        F: Fn(Vec<In>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Vec<Out>>> + Send + 'static,
-    {
         let wrapped: BatchFn<In, Out> = Arc::new(move |_ctx, inputs| {
             let fut = f(inputs);
             Box::pin(async move { fut.await.map_err(Error::into_core) })
         });
-        let batcher = Self::new_batcher(wrapped, options);
         Self {
-            mode: BatchedMode::Fixed(batcher),
+            batcher: new_batcher(wrapped, BatchingOptions::default()),
             code_hash,
         }
     }
@@ -190,12 +168,7 @@ where
     pub async fn call(&self, ctx: &Ctx, item: In) -> Result<Out> {
         let fp =
             crate::memo::key_fingerprint_result(&("cocoindex_batched", self.code_hash, &item))?;
-        let BatchedMode::Fixed(batcher) = &self.mode else {
-            return Err(Error::engine(
-                "scheduled Batched instances must be called by #[cocoindex::function(batching)]",
-            ));
-        };
-        let batcher = batcher.clone();
+        let batcher = self.batcher.clone();
         // A batch impl is ctx-free, so it makes no tracked child `#[function]`
         // calls; the `propagate_children_fn_logic` flag is therefore inert here.
         // Pass `true` (the default) — only the batch impl's own `code_hash`
@@ -213,30 +186,33 @@ where
     }
 }
 
-impl<In, Out> Batched<In, Out>
+/// Scheduler backing generated `#[cocoindex::function(batching)]` wrappers.
+#[doc(hidden)]
+pub struct __ScheduledBatched<In, Out>
 where
     In: Send + 'static,
     Out: Send + 'static,
 {
-    fn new_batcher(f: BatchFn<In, Out>, options: BatchingOptions) -> Arc<FunctionBatcher<In, Out>> {
-        Self::validate_options(&options);
-        Arc::new(Batcher::new(
-            FnRunner { f },
-            Arc::new(BatchQueue::new()),
-            options,
-        ))
-    }
+    options: BatchingOptions,
+    batchers: ScheduledBatchers<In, Out>,
+    code_hash: u64,
+}
 
+impl<In, Out> __ScheduledBatched<In, Out>
+where
+    In: Send + 'static,
+    Out: Send + 'static,
+{
     /// Construct the scheduler used by generated batching wrappers.
     #[doc(hidden)]
-    pub fn __scheduled(code_hash: u64) -> Self {
-        Self::__scheduled_with_options(code_hash, BatchingOptions::default())
+    pub fn __new(code_hash: u64) -> Self {
+        Self::with_options(code_hash, BatchingOptions::default())
     }
 
     /// Construct the generated scheduler with a maximum batch size.
     #[doc(hidden)]
-    pub fn __scheduled_with_max_batch(code_hash: u64, max_batch_size: usize) -> Self {
-        Self::__scheduled_with_options(
+    pub fn __with_max_batch(code_hash: u64, max_batch_size: usize) -> Self {
+        Self::with_options(
             code_hash,
             BatchingOptions {
                 max_batch_size: Some(max_batch_size),
@@ -244,23 +220,11 @@ where
         )
     }
 
-    fn __scheduled_with_options(code_hash: u64, options: BatchingOptions) -> Self {
-        Self::validate_options(&options);
+    fn with_options(code_hash: u64, options: BatchingOptions) -> Self {
         Self {
-            mode: BatchedMode::Scheduled {
-                options,
-                batchers: Mutex::new(HashMap::new()),
-            },
+            options,
+            batchers: Mutex::new(HashMap::new()),
             code_hash,
-        }
-    }
-
-    fn validate_options(options: &BatchingOptions) {
-        if let Some(max_batch_size) = options.max_batch_size {
-            assert!(
-                max_batch_size > 0,
-                "max_batch_size must be greater than zero"
-            );
         }
     }
 
@@ -278,12 +242,6 @@ where
         F: Fn(Ctx, Vec<In>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<Out>>> + Send + 'static,
     {
-        let BatchedMode::Scheduled { options, batchers } = &self.mode else {
-            return Err(Error::engine(
-                "explicit Batched instances must be called with Batched::call",
-            ));
-        };
-
         let key = ScheduledBatchKey {
             // A static generated scheduler may be used by multiple apps in the
             // same process. Never let their context-bound calls share a body.
@@ -296,12 +254,15 @@ where
             Box::pin(async move { fut.await.map_err(Error::into_core) })
         });
         let batcher = {
-            let mut batchers = batchers.lock().expect("batch scheduler mutex poisoned");
+            let mut batchers = self
+                .batchers
+                .lock()
+                .expect("batch scheduler mutex poisoned");
             batchers.retain(|_, batcher| batcher.strong_count() != 0);
             if let Some(batcher) = batchers.get(&key).and_then(Weak::upgrade) {
                 batcher
             } else {
-                let batcher = Self::new_batcher(f, options.clone());
+                let batcher = new_batcher(f, self.options.clone());
                 batchers.insert(key, Arc::downgrade(&batcher));
                 batcher
             }

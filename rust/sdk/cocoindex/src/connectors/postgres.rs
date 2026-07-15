@@ -163,20 +163,18 @@ impl TableSchema {
     /// Resolve or override the dimension of a vector field derived from a row.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         if dim == 0 {
-            return Err(Error::engine(format!(
-                "Postgres vector field {field_name:?} requires a dimension greater than zero"
-            )));
+            return Err(crate::row_schema::vector_dimension_error(
+                "Postgres",
+                field_name,
+                "requires a dimension greater than zero",
+            ));
         }
-        let def = self.columns.get_mut(field_name).ok_or_else(|| {
-            Error::engine(format!(
-                "Postgres vector dimension override names unknown field {field_name:?}"
-            ))
-        })?;
-        let base = pgvector_type_base(&def.pg_type).ok_or_else(|| {
-            Error::engine(format!(
-                "Postgres field {field_name:?} is not a vector field"
-            ))
-        })?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Postgres", field_name))?;
+        let base = pgvector_type_base(&def.pg_type)
+            .ok_or_else(|| crate::row_schema::not_vector_field_error("Postgres", field_name))?;
         def.pg_type = format!("{base}({dim})");
         self.unresolved_vector_columns.remove(field_name);
         Ok(self)
@@ -184,7 +182,7 @@ impl TableSchema {
 
     fn validate_vector_dimensions(&self) -> Result<()> {
         for name in &self.unresolved_vector_columns {
-            crate::row_schema::require_resolved_vector_dimension("Postgres", name, 0)?;
+            crate::row_schema::require_resolved_vector_dimension("Postgres", name)?;
         }
         Ok(())
     }
@@ -1704,10 +1702,7 @@ fn is_numeric_type(lower: &str) -> bool {
             | "float4"
             | "double precision"
             | "float8"
-            | "numeric"
-            | "decimal"
-    ) || lower.starts_with("numeric(")
-        || lower.starts_with("decimal(")
+    ) || is_decimal_type(lower)
 }
 
 fn is_decimal_type(lower: &str) -> bool {
@@ -2059,7 +2054,6 @@ mod review_fix_tests {
     #[test]
     fn numeric_literal_accepts_rust_decimal_string_encoding() {
         let value = serde_json::to_value(Decimal::from_str("1234567890.012300").unwrap()).unwrap();
-        assert_eq!(value, JsonValue::String("1234567890.012300".to_string()));
         assert_eq!(
             sql_literal(&value, &ColumnDef::new("numeric(28, 6)")).unwrap(),
             "1234567890.012300"

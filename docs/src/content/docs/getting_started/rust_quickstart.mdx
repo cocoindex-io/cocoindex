@@ -1,5 +1,5 @@
 ---
-title: Rust SDK *quickstart*
+title: Rust SDK quickstart
 description: >
   Build an incremental Rust pipeline that chunks Markdown, batches and caches
   local embeddings, and keeps a Postgres/pgvector table in sync.
@@ -194,10 +194,6 @@ component. It also fingerprints `process_file` and its arguments, so an
 unchanged file can skip the entire component on the next run. If a file or
 chunk disappears, the rows its component used to own are removed during table
 reconciliation.
-
-For normal function-shaped components, prefer `use_mount!` and `mount_each!`.
-Use `ctx.scope` or `ctx.mount_each` when you deliberately want an explicit-key
-closure without the macros' function-and-argument fingerprint.
 
 ## Build the environment and run
 

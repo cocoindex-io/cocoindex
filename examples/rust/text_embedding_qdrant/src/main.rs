@@ -15,14 +15,16 @@
 
 use std::path::PathBuf;
 
-use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
+use cocoindex::connectors::qdrant::{
+    self, CollectionSchema, Distance, NamedPointVector, QdrantConnection,
+};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
-const EMBED_DIM: u64 = 384;
+const EMBED_DIM: usize = 384;
 const COLLECTION: &str = "TextEmbedding";
 const TOP_K: u64 = 5;
 const CHUNK_SIZE: usize = 2000;
@@ -38,9 +40,10 @@ cocoindex::context_key!(
 );
 
 /// A computed point: id + vector + payload fields.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct PointData {
     id: u64,
+    #[coco(vector)]
     vector: Vec<f32>,
     filename: String,
     chunk_start: i64,
@@ -87,12 +90,12 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PointData>> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let conn = ctx.get_key(&DB)?;
     let target = qdrant::mount_collection_target(
         &ctx,
         &DB,
         COLLECTION,
-        CollectionSchema::new(EMBED_DIM, Distance::Cosine),
+        CollectionSchema::from_row::<PointData>(Distance::Cosine)?
+            .with_vector_dim("vector", EMBED_DIM)?,
     )
     .await?;
 
@@ -118,7 +121,12 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
             .as_object()
             .unwrap()
             .clone();
-            target.declare_point(&ctx, p.id, p.vector.clone(), payload)?;
+            target.declare_named_vectors_point(
+                &ctx,
+                p.id,
+                [("vector", NamedPointVector::Single(p.vector.clone()))],
+                payload,
+            )?;
         }
     }
     println!("indexed {count} chunk(s) total");
@@ -131,7 +139,7 @@ async fn query_once(
     query: &str,
 ) -> Result<()> {
     let query_vec = Embedder::embed(embedder, query).await?;
-    let hits = qdrant::vector_search(conn, COLLECTION, query_vec, TOP_K).await?;
+    let hits = qdrant::named_vector_search(conn, COLLECTION, "vector", query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit
             .payload

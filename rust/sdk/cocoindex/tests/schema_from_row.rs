@@ -11,23 +11,13 @@
     feature = "sqlite",
     feature = "turbopuffer"
 ))]
-async fn capture_target_construction_error(
-    app_name: &'static str,
-    check: impl FnOnce(&cocoindex::Ctx) -> cocoindex::Result<()> + Send + 'static,
-) -> String {
-    let tmp = tempfile::tempdir().unwrap();
-    let app = cocoindex::App::open(app_name, tmp.path().join("db"))
-        .await
-        .unwrap();
-    app.update(move |ctx| async move {
-        let error = match check(&ctx) {
-            Ok(()) => panic!("unresolved vector schema unexpectedly reached target construction"),
-            Err(error) => error,
-        };
-        Ok(error.to_string())
-    })
-    .await
-    .unwrap()
+fn assert_unresolved_dimension_error(result: cocoindex::Result<()>, connector: &str) {
+    let message = result
+        .expect_err("unresolved vector schema unexpectedly reached target construction")
+        .to_string();
+    assert!(message.contains(connector), "{message}");
+    assert!(message.contains("embedding"), "{message}");
+    assert!(message.contains("with_vector_dim"), "{message}");
 }
 
 #[cfg(any(
@@ -38,10 +28,12 @@ async fn capture_target_construction_error(
     feature = "sqlite",
     feature = "turbopuffer"
 ))]
-fn assert_unresolved_dimension_error(message: &str, connector: &str) {
-    assert!(message.contains(connector), "{message}");
-    assert!(message.contains("embedding"), "{message}");
-    assert!(message.contains("with_vector_dim"), "{message}");
+#[derive(cocoindex::SchemaFields)]
+#[allow(dead_code)]
+struct UnresolvedVectorRow {
+    id: i64,
+    #[coco(vector)]
+    embedding: Vec<f32>,
 }
 
 #[cfg(feature = "doris")]
@@ -307,142 +299,82 @@ fn turbopuffer_from_row_derives_named_vectors_and_runtime_dimension() {
     assert_eq!(got, want);
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(any(
+    feature = "doris",
+    feature = "lancedb",
+    feature = "postgres",
+    feature = "qdrant",
+    feature = "sqlite",
+    feature = "turbopuffer"
+))]
 #[tokio::test]
-async fn sqlite_target_rejects_unresolved_vector_dimensions() {
-    use cocoindex::connectors::sqlite::{self, Database, TableSchema};
-    use cocoindex::{ContextKey, SchemaFields};
-
-    #[allow(dead_code)]
-    #[derive(SchemaFields)]
-    struct Row {
-        id: i64,
-        #[coco(vector)]
-        embedding: Vec<f32>,
+async fn targets_reject_unresolved_vector_dimensions() {
+    macro_rules! check_target {
+        ($ctx:expr, $connector:literal, $schema:expr, $target:path $(, $extra:expr)*) => {{
+            let key = cocoindex::ContextKey::new($connector);
+            assert_unresolved_dimension_error(
+                $target($ctx, &key, "docs", $schema $(, $extra)*).map(|_| ()),
+                $connector,
+            );
+        }};
     }
 
-    let db = ContextKey::<Database>::new("sqlite_unresolved_vector_db");
-    let message = capture_target_construction_error("sqlite_unresolved_vector", move |ctx| {
-        let schema = TableSchema::from_row::<Row>(["id"])?;
-        sqlite::table_target(ctx, &db, "docs", schema).map(|_| ())
+    let tmp = tempfile::tempdir().unwrap();
+    let app = cocoindex::App::open("unresolved_vector_dimensions", tmp.path().join("db"))
+        .await
+        .unwrap();
+    app.update(|ctx| async move {
+        #[cfg(feature = "sqlite")]
+        check_target!(
+            &ctx,
+            "SQLite",
+            cocoindex::connectors::sqlite::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::sqlite::table_target
+        );
+        #[cfg(feature = "postgres")]
+        check_target!(
+            &ctx,
+            "Postgres",
+            cocoindex::connectors::postgres::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::postgres::table_target,
+            None
+        );
+        #[cfg(feature = "doris")]
+        check_target!(
+            &ctx,
+            "Doris",
+            cocoindex::connectors::doris::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::doris::table_target
+        );
+        #[cfg(feature = "lancedb")]
+        check_target!(
+            &ctx,
+            "LanceDB",
+            cocoindex::connectors::lancedb::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::lancedb::table_target
+        );
+        #[cfg(feature = "qdrant")]
+        check_target!(
+            &ctx,
+            "Qdrant",
+            cocoindex::connectors::qdrant::CollectionSchema::from_row::<UnresolvedVectorRow>(
+                cocoindex::connectors::qdrant::Distance::Cosine
+            )?,
+            cocoindex::connectors::qdrant::collection_target
+        );
+        #[cfg(feature = "turbopuffer")]
+        check_target!(
+            &ctx,
+            "Turbopuffer",
+            cocoindex::connectors::turbopuffer::NamespaceSchema::from_row::<UnresolvedVectorRow>(
+                cocoindex::connectors::turbopuffer::DistanceMetric::CosineDistance
+            )?,
+            cocoindex::connectors::turbopuffer::namespace_target
+        );
+        Ok(())
     })
-    .await;
-    assert_unresolved_dimension_error(&message, "SQLite");
-}
-
-#[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_target_rejects_unresolved_vector_dimensions() {
-    use cocoindex::connectors::postgres::{self, Database, TableSchema};
-    use cocoindex::{ContextKey, SchemaFields};
-
-    #[allow(dead_code)]
-    #[derive(SchemaFields)]
-    struct Row {
-        id: i64,
-        #[coco(vector)]
-        embedding: Vec<f32>,
-    }
-
-    let db = ContextKey::<Database>::new("postgres_unresolved_vector_db");
-    let message = capture_target_construction_error("postgres_unresolved_vector", move |ctx| {
-        let schema = TableSchema::from_row::<Row>(["id"])?;
-        postgres::table_target(ctx, &db, "docs", schema, None).map(|_| ())
-    })
-    .await;
-    assert_unresolved_dimension_error(&message, "Postgres");
-}
-
-#[cfg(feature = "doris")]
-#[tokio::test]
-async fn doris_target_rejects_unresolved_vector_dimensions() {
-    use cocoindex::connectors::doris::{self, DorisConnection, TableSchema};
-    use cocoindex::{ContextKey, SchemaFields};
-
-    #[allow(dead_code)]
-    #[derive(SchemaFields)]
-    struct Row {
-        id: String,
-        #[coco(vector)]
-        embedding: Vec<f32>,
-    }
-
-    let db = ContextKey::<DorisConnection>::new("doris_unresolved_vector_db");
-    let message = capture_target_construction_error("doris_unresolved_vector", move |ctx| {
-        let schema = TableSchema::from_row::<Row>(["id"])?;
-        doris::table_target(ctx, &db, "docs", schema).map(|_| ())
-    })
-    .await;
-    assert_unresolved_dimension_error(&message, "Doris");
-}
-
-#[cfg(feature = "lancedb")]
-#[tokio::test]
-async fn lancedb_target_rejects_unresolved_vector_dimensions() {
-    use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
-    use cocoindex::{ContextKey, SchemaFields};
-
-    #[allow(dead_code)]
-    #[derive(SchemaFields)]
-    struct Row {
-        id: i64,
-        #[coco(vector)]
-        embedding: Vec<f32>,
-    }
-
-    let db = ContextKey::<LanceDatabase>::new("lancedb_unresolved_vector_db");
-    let message = capture_target_construction_error("lancedb_unresolved_vector", move |ctx| {
-        let schema = TableSchema::from_row::<Row>(["id"])?;
-        lancedb::table_target(ctx, &db, "docs", schema).map(|_| ())
-    })
-    .await;
-    assert_unresolved_dimension_error(&message, "LanceDB");
-}
-
-#[cfg(feature = "qdrant")]
-#[tokio::test]
-async fn qdrant_target_rejects_unresolved_vector_dimensions() {
-    use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
-    use cocoindex::{ContextKey, SchemaFields};
-
-    #[allow(dead_code)]
-    #[derive(SchemaFields)]
-    struct Row {
-        #[coco(vector)]
-        embedding: Vec<f32>,
-    }
-
-    let db = ContextKey::<QdrantConnection>::new("qdrant_unresolved_vector_db");
-    let message = capture_target_construction_error("qdrant_unresolved_vector", move |ctx| {
-        let schema = CollectionSchema::from_row::<Row>(Distance::Cosine)?;
-        qdrant::collection_target(ctx, &db, "docs", schema).map(|_| ())
-    })
-    .await;
-    assert_unresolved_dimension_error(&message, "Qdrant");
-}
-
-#[cfg(feature = "turbopuffer")]
-#[tokio::test]
-async fn turbopuffer_target_rejects_unresolved_vector_dimensions() {
-    use cocoindex::connectors::turbopuffer::{
-        self, DistanceMetric, NamespaceSchema, TurbopufferConnection,
-    };
-    use cocoindex::{ContextKey, SchemaFields};
-
-    #[allow(dead_code)]
-    #[derive(SchemaFields)]
-    struct Row {
-        #[coco(vector)]
-        embedding: Vec<f32>,
-    }
-
-    let db = ContextKey::<TurbopufferConnection>::new("turbopuffer_unresolved_vector_db");
-    let message = capture_target_construction_error("turbopuffer_unresolved_vector", move |ctx| {
-        let schema = NamespaceSchema::from_row::<Row>(DistanceMetric::CosineDistance)?;
-        turbopuffer::namespace_target(ctx, &db, "docs", schema).map(|_| ())
-    })
-    .await;
-    assert_unresolved_dimension_error(&message, "Turbopuffer");
+    .await
+    .unwrap();
 }
 
 /// End-to-end: a `from_row`-derived schema actually creates a SQLite table and

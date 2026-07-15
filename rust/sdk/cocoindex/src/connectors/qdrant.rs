@@ -370,22 +370,20 @@ impl CollectionSchema {
     /// built with [`CollectionSchema::new`] or [`CollectionSchema::multivector`],
     /// the single unnamed vector uses the field name `"vector"`.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
-        validate_vector_size(dim).map_err(|err| {
-            Error::engine(format!(
-                "Qdrant vector field {field_name:?} has invalid dimension: {err}"
-            ))
-        })?;
+        if dim == 0 {
+            return Err(crate::row_schema::vector_dimension_error(
+                "Qdrant",
+                field_name,
+                "has invalid dimension: qdrant vector size must be greater than zero",
+            ));
+        }
         let mut fields = self.vector_fields();
         let def = match &mut fields {
             VectorFields::Named(vectors) => vectors.get_mut(field_name),
             VectorFields::Single(def) if field_name == "vector" => Some(def),
             VectorFields::Single(_) => None,
         }
-        .ok_or_else(|| {
-            Error::engine(format!(
-                "Qdrant vector dimension override names unknown vector field {field_name:?}"
-            ))
-        })?;
+        .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Qdrant", field_name))?;
         match &mut def.schema {
             QdrantVectorSchema::Dense(schema) => schema.size = dim,
             QdrantVectorSchema::Multi(schema) => schema.vector_schema.size = dim,
@@ -401,18 +399,17 @@ impl CollectionSchema {
 
     fn validate_vector_dimensions(&self) -> Result<()> {
         match self.vector_fields() {
-            VectorFields::Single(def) => crate::row_schema::require_resolved_vector_dimension(
-                "Qdrant",
-                "vector",
-                def.vector_size() as usize,
-            ),
+            VectorFields::Single(def) => {
+                if def.vector_size() == 0 {
+                    crate::row_schema::require_resolved_vector_dimension("Qdrant", "vector")?;
+                }
+                Ok(())
+            }
             VectorFields::Named(vectors) => {
                 for (name, def) in vectors {
-                    crate::row_schema::require_resolved_vector_dimension(
-                        "Qdrant",
-                        &name,
-                        def.vector_size() as usize,
-                    )?;
+                    if def.vector_size() == 0 {
+                        crate::row_schema::require_resolved_vector_dimension("Qdrant", &name)?;
+                    }
                 }
                 Ok(())
             }

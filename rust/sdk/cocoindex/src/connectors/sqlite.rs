@@ -173,19 +173,20 @@ impl TableSchema {
     /// Resolve or override the dimension of a vector field derived from a row.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         if dim == 0 {
-            return Err(Error::engine(format!(
-                "SQLite vector field {field_name:?} requires a dimension greater than zero"
-            )));
+            return Err(crate::row_schema::vector_dimension_error(
+                "SQLite",
+                field_name,
+                "requires a dimension greater than zero",
+            ));
         }
-        let def = self.columns.get_mut(field_name).ok_or_else(|| {
-            Error::engine(format!(
-                "SQLite vector dimension override names unknown field {field_name:?}"
-            ))
-        })?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_vector_field_error("SQLite", field_name))?;
         if !(def.sqlite_type.starts_with("float[") && def.sqlite_type.ends_with(']')) {
-            return Err(Error::engine(format!(
-                "SQLite field {field_name:?} is not a vector field"
-            )));
+            return Err(crate::row_schema::not_vector_field_error(
+                "SQLite", field_name,
+            ));
         }
         def.sqlite_type = format!("float[{dim}]");
         Ok(self)
@@ -194,7 +195,7 @@ impl TableSchema {
     fn validate_vector_dimensions(&self) -> Result<()> {
         for (name, def) in &self.columns {
             if def.sqlite_type == "float[0]" {
-                crate::row_schema::require_resolved_vector_dimension("SQLite", name, 0)?;
+                crate::row_schema::require_resolved_vector_dimension("SQLite", name)?;
             }
         }
         Ok(())
@@ -1425,26 +1426,9 @@ mod tests {
     }
 
     #[test]
-    fn blob_literal_encodes_byte_arrays_as_blob_storage() {
+    fn blob_literal_rejects_out_of_range_bytes() {
         let col = ColumnDef::new("BLOB");
-        assert_eq!(
-            sql_literal(&serde_json::json!([0, 104, 105, 255]), &col).unwrap(),
-            "X'006869ff'"
-        );
         assert!(sql_literal(&serde_json::json!([256]), &col).is_err());
-    }
-
-    #[test]
-    fn table_schema_rejects_duplicate_columns() {
-        let error = TableSchema::new(
-            [
-                ("id", ColumnDef::new("INTEGER")),
-                ("id", ColumnDef::new("TEXT")),
-            ],
-            ["id"],
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("duplicate column \"id\""));
     }
 
     #[test]

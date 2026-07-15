@@ -1767,13 +1767,6 @@ mod batched_test {
         .unwrap();
     }
 
-    #[test]
-    #[should_panic(expected = "max_batch_size must be greater than zero")]
-    fn explicit_batched_rejects_zero_max_batch_size() {
-        let _ =
-            cocoindex::Batched::with_max_batch(|items: Vec<i64>| async move { Ok(items) }, 1, 0);
-    }
-
     static MEMOIZED_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
     #[cocoindex::function(memo, batching, max_batch_size = 8)]

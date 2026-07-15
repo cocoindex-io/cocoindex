@@ -304,9 +304,11 @@ impl NamespaceSchema {
     /// Resolve or override one named vector field's runtime dimension.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         if dim == 0 {
-            return Err(Error::engine(format!(
-                "Turbopuffer vector field {field_name:?} requires a dimension greater than zero"
-            )));
+            return Err(crate::row_schema::vector_dimension_error(
+                "Turbopuffer",
+                field_name,
+                "requires a dimension greater than zero",
+            ));
         }
         let mut fields = self.vector_fields();
         let def = match &mut fields {
@@ -314,11 +316,7 @@ impl NamespaceSchema {
             VectorFields::Single(def) if field_name == DEFAULT_VECTOR_FIELD => Some(def),
             VectorFields::Single(_) => None,
         }
-        .ok_or_else(|| {
-            Error::engine(format!(
-                "Turbopuffer vector dimension override names unknown vector field {field_name:?}"
-            ))
-        })?;
+        .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Turbopuffer", field_name))?;
         def.schema.size = dim;
         vector_type_str(&def.schema)?;
         self.vectors = Some(fields);
@@ -331,18 +329,20 @@ impl NamespaceSchema {
 
     fn validate_vector_dimensions(&self) -> Result<()> {
         match self.vector_fields() {
-            VectorFields::Single(def) => crate::row_schema::require_resolved_vector_dimension(
-                "Turbopuffer",
-                DEFAULT_VECTOR_FIELD,
-                def.schema.size,
-            ),
-            VectorFields::Named(vectors) => {
-                for (name, def) in vectors {
+            VectorFields::Single(def) => {
+                if def.schema.size == 0 {
                     crate::row_schema::require_resolved_vector_dimension(
                         "Turbopuffer",
-                        &name,
-                        def.schema.size,
+                        DEFAULT_VECTOR_FIELD,
                     )?;
+                }
+                Ok(())
+            }
+            VectorFields::Named(vectors) => {
+                for (name, def) in vectors {
+                    if def.schema.size == 0 {
+                        crate::row_schema::require_resolved_vector_dimension("Turbopuffer", &name)?;
+                    }
                 }
                 Ok(())
             }
