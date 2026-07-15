@@ -29,7 +29,7 @@ static DB: LazyLock<ContextKey<sqlite::Database>> = LazyLock::new(|| {
 const TABLE: &str = "files";
 
 /// One output row: the file path is the primary key.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct FileRow {
     path: String,
     word_count: i64,
@@ -37,14 +37,7 @@ struct FileRow {
 }
 
 fn files_schema() -> Result<sqlite::TableSchema> {
-    sqlite::TableSchema::new(
-        [
-            ("path", sqlite::ColumnDef::new("TEXT")),
-            ("word_count", sqlite::ColumnDef::new("INTEGER")),
-            ("first_line", sqlite::ColumnDef::new("TEXT")),
-        ],
-        ["path"],
-    )
+    sqlite::TableSchema::from_row::<FileRow>(["path"])
 }
 
 /// Summarize one file. Logic-tracked, so editing it invalidates cached files.

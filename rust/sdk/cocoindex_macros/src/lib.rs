@@ -1322,8 +1322,15 @@ fn parse_schema_field_attr(attrs: &[syn::Attribute]) -> syn::Result<SchemaFieldA
                 let v: syn::LitStr = meta.value()?.parse()?;
                 out.custom_type = Some(v.value());
             } else if meta.path.is_ident("vector") {
-                let v: LitInt = meta.value()?.parse()?;
-                out.vector_dim = Some(v.base10_parse()?);
+                out.vector_dim = Some(if meta.input.peek(Token![=]) {
+                    let v: LitInt = meta.value()?.parse()?;
+                    v.base10_parse()?
+                } else {
+                    // Zero is an unresolved sentinel. Connector schemas accept
+                    // it only from `from_row` and resolve it through
+                    // `with_vector_dim` before use.
+                    0
+                });
             } else if meta.path.is_ident("half") {
                 out.vector_half = true;
             } else if meta.path.is_ident("json") {
@@ -1414,7 +1421,10 @@ fn logical_type_tokens(ty: &Type, attr: &SchemaFieldAttr) -> TokenStream2 {
 /// type to a connector's `TableSchema::from_row::<T>(primary_key)`.
 ///
 /// `Option<T>` fields become nullable columns; everything else is `NOT NULL`.
-/// See [`cocoindex::row_schema`] for the `#[coco(...)]` field attributes.
+/// Use `#[coco(vector)]` with `TableSchema::with_vector_dim(...)` when the
+/// dimension is available only at runtime, or `#[coco(vector = N)]` when it is
+/// a compile-time constant. See [`cocoindex::row_schema`] for the other field
+/// attributes.
 #[proc_macro_derive(SchemaFields, attributes(coco))]
 pub fn derive_schema_fields(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);

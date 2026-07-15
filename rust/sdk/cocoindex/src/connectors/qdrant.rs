@@ -317,6 +317,86 @@ impl CollectionSchema {
         })
     }
 
+    /// Derive named vector definitions from a `#[derive(SchemaFields)]` row.
+    /// Non-vector fields remain schemaless Qdrant payload fields, matching the
+    /// Python connector. Bare `#[coco(vector)]` fields are resolved later with
+    /// [`CollectionSchema::with_vector_dim`].
+    pub fn from_row<T: crate::row_schema::SchemaFields>(distance: Distance) -> Result<Self> {
+        use crate::row_schema::LogicalType;
+
+        let mut vectors = BTreeMap::new();
+        for field in T::schema_fields() {
+            let LogicalType::Vector { dim, half } = field.logical_type else {
+                continue;
+            };
+            let size = dim as usize;
+            if size > 0 {
+                validate_vector_size(size).map_err(|err| {
+                    Error::engine(format!(
+                        "Qdrant vector field {:?} is invalid: {err}",
+                        field.name
+                    ))
+                })?;
+            }
+            let schema = if half {
+                VectorSchema::f16(size)
+            } else {
+                VectorSchema::f32(size)
+            };
+            vectors.insert(
+                field.name,
+                QdrantVectorDef {
+                    schema: QdrantVectorSchema::Dense(schema),
+                    distance,
+                    multivector_comparator: MultivectorComparator::MaxSim,
+                },
+            );
+        }
+        if vectors.is_empty() {
+            return Err(Error::engine(
+                "Qdrant row schema does not contain a vector field",
+            ));
+        }
+        let first = vectors.values().next().expect("non-empty");
+        Ok(Self {
+            vector_size: first.vector_size(),
+            distance: first.distance,
+            multivector: false,
+            vectors: Some(VectorFields::Named(vectors)),
+        })
+    }
+
+    /// Resolve or override one named vector field's runtime dimension.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        validate_vector_size(dim).map_err(|err| {
+            Error::engine(format!(
+                "Qdrant vector field {field_name:?} has invalid dimension: {err}"
+            ))
+        })?;
+        let mut fields = self.vector_fields();
+        let def = match &mut fields {
+            VectorFields::Named(vectors) => vectors.get_mut(field_name),
+            VectorFields::Single(def) if field_name == "vector" => Some(def),
+            VectorFields::Single(_) => None,
+        }
+        .ok_or_else(|| {
+            Error::engine(format!(
+                "Qdrant vector dimension override names unknown vector field {field_name:?}"
+            ))
+        })?;
+        match &mut def.schema {
+            QdrantVectorSchema::Dense(schema) => schema.size = dim,
+            QdrantVectorSchema::Multi(schema) => schema.vector_schema.size = dim,
+        }
+        self.vectors = Some(fields);
+        let first = match self.vectors.as_ref().expect("set above") {
+            VectorFields::Single(def) => def,
+            VectorFields::Named(vectors) => vectors.values().next().expect("non-empty"),
+        };
+        self.vector_size = first.vector_size();
+        Ok(self)
+    }
+
     fn vectors_config(&self) -> VectorsConfigBuilder {
         let mut builder = VectorsConfigBuilder::default();
         match self.vector_fields() {

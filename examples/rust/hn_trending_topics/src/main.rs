@@ -148,7 +148,7 @@ struct Thread {
     messages: Vec<Message>, // [0] is the thread itself, rest are comments
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct HnMessageRow {
     id: String,
     thread_id: String,
@@ -159,7 +159,7 @@ struct HnMessageRow {
     created_at: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct HnTopicRow {
     topic: String,
     message_id: String,
@@ -351,31 +351,11 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn message_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("text")),
-            ("thread_id", postgres::ColumnDef::new("text")),
-            ("content_type", postgres::ColumnDef::new("text")),
-            ("author", postgres::ColumnDef::new("text").nullable()),
-            ("text", postgres::ColumnDef::new("text").nullable()),
-            ("url", postgres::ColumnDef::new("text").nullable()),
-            ("created_at", postgres::ColumnDef::new("text").nullable()),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<HnMessageRow>(["id"])
 }
 
 fn topic_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("topic", postgres::ColumnDef::new("text")),
-            ("message_id", postgres::ColumnDef::new("text")),
-            ("thread_id", postgres::ColumnDef::new("text")),
-            ("content_type", postgres::ColumnDef::new("text")),
-            ("created_at", postgres::ColumnDef::new("text").nullable()),
-        ],
-        ["topic", "message_id"],
-    )
+    postgres::TableSchema::from_row::<HnTopicRow>(["topic", "message_id"])
 }
 
 async fn show_trending(pool: &PgPool, limit: i64) -> Result<()> {

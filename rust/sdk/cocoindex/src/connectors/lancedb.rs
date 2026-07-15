@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
 use arrow_array::{
-    Array, ArrayRef, Float64Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
+    Int64Array, RecordBatch, RecordBatchIterator, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -80,9 +81,16 @@ impl LanceDatabase {
 /// A LanceDB column type (the subset CocoIndex maps natively).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ColumnType {
+    Bool,
+    Int16,
+    Int32,
     Int64,
+    Float32,
     Float64,
     Text,
+    Binary,
+    /// Complex values encoded as JSON strings, matching Python's fallback.
+    Json,
     /// Fixed-size float32 vector of the given dimension.
     Vector(usize),
 }
@@ -90,9 +98,14 @@ pub enum ColumnType {
 impl ColumnType {
     fn arrow_data_type(&self) -> DataType {
         match self {
+            ColumnType::Bool => DataType::Boolean,
+            ColumnType::Int16 => DataType::Int16,
+            ColumnType::Int32 => DataType::Int32,
             ColumnType::Int64 => DataType::Int64,
+            ColumnType::Float32 => DataType::Float32,
             ColumnType::Float64 => DataType::Float64,
-            ColumnType::Text => DataType::Utf8,
+            ColumnType::Text | ColumnType::Json => DataType::Utf8,
+            ColumnType::Binary => DataType::Binary,
             ColumnType::Vector(dim) => DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
                 *dim as i32,
@@ -167,6 +180,49 @@ impl TableSchema {
         &self.primary_key
     }
 
+    pub fn columns(&self) -> &[(String, ColumnDef)] {
+        &self.columns
+    }
+
+    /// Derive a schema from a `#[derive(SchemaFields)]` row type.
+    pub fn from_row<T: crate::row_schema::SchemaFields>(
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
+        let columns = T::schema_fields()
+            .into_iter()
+            .map(|field| {
+                let def = lancedb_column_def(&field)?;
+                Ok((field.name, def))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::new(columns, primary_key)
+    }
+
+    /// Resolve or override the dimension of a vector field derived from a row.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        if dim == 0 || i32::try_from(dim).is_err() {
+            return Err(Error::engine(format!(
+                "LanceDB vector field {field_name:?} requires a dimension in 1..=i32::MAX"
+            )));
+        }
+        let (_, def) = self
+            .columns
+            .iter_mut()
+            .find(|(name, _)| name == field_name)
+            .ok_or_else(|| {
+                Error::engine(format!(
+                    "LanceDB vector dimension override names unknown field {field_name:?}"
+                ))
+            })?;
+        if !matches!(def.col_type, ColumnType::Vector(_)) {
+            return Err(Error::engine(format!(
+                "LanceDB field {field_name:?} is not a vector field"
+            )));
+        }
+        def.col_type = ColumnType::Vector(dim);
+        Ok(self)
+    }
+
     fn column_names(&self) -> impl Iterator<Item = &String> {
         self.columns.iter().map(|(n, _)| n)
     }
@@ -179,6 +235,31 @@ impl TableSchema {
             .collect();
         Arc::new(Schema::new(fields))
     }
+}
+
+fn lancedb_column_def(field: &crate::row_schema::SchemaField) -> Result<ColumnDef> {
+    use crate::row_schema::LogicalType as L;
+
+    let col_type = match &field.logical_type {
+        L::Bool => ColumnType::Bool,
+        L::Int16 => ColumnType::Int16,
+        L::Int32 => ColumnType::Int32,
+        L::Int64 => ColumnType::Int64,
+        L::Float32 => ColumnType::Float32,
+        L::Float64 => ColumnType::Float64,
+        L::Text | L::Uuid | L::Date | L::Time | L::DateTime => ColumnType::Text,
+        L::Bytes => ColumnType::Binary,
+        L::Decimal | L::Duration | L::Json => ColumnType::Json,
+        L::Vector { dim, .. } => ColumnType::Vector(*dim as usize),
+        L::Custom(custom) => {
+            return Err(Error::engine(format!(
+                "LanceDB field {:?} has unsupported custom logical type {custom:?}",
+                field.name
+            )));
+        }
+    };
+    let def = ColumnDef::new(col_type);
+    Ok(if field.nullable { def.nullable() } else { def })
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,9 +1081,35 @@ fn build_record_batch(
     for (name, def) in &schema.columns {
         let values = rows.iter().map(|r| r.get(name).unwrap_or(&JsonValue::Null));
         let array: ArrayRef = match &def.col_type {
+            ColumnType::Bool => Arc::new(BooleanArray::from(
+                values
+                    .map(|v| nullable_value(name, def, v).map(JsonValue::as_bool))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Int16 => Arc::new(Int16Array::from(
+                values
+                    .map(|v| {
+                        nullable_value(name, def, v)
+                            .map(|v| v.as_i64().and_then(|n| i16::try_from(n).ok()))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Int32 => Arc::new(Int32Array::from(
+                values
+                    .map(|v| {
+                        nullable_value(name, def, v)
+                            .map(|v| v.as_i64().and_then(|n| i32::try_from(n).ok()))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             ColumnType::Int64 => Arc::new(Int64Array::from(
                 values
                     .map(|v| nullable_value(name, def, v).map(|v| v.as_i64()))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Float32 => Arc::new(Float32Array::from(
+                values
+                    .map(|v| nullable_value(name, def, v).map(|v| v.as_f64().map(|n| n as f32)))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Float64 => Arc::new(Float64Array::from(
@@ -1013,6 +1120,50 @@ fn build_record_batch(
             ColumnType::Text => Arc::new(StringArray::from(
                 values
                     .map(|v| nullable_value(name, def, v).map(|v| v.as_str().map(str::to_string)))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Binary => {
+                let bytes = values
+                    .map(|v| {
+                        let value = nullable_value(name, def, v)?;
+                        if value.is_null() {
+                            return Ok(None);
+                        }
+                        let values = value.as_array().ok_or_else(|| {
+                            Error::engine(format!("column {name:?} must be a byte array"))
+                        })?;
+                        values
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_u64()
+                                    .and_then(|n| u8::try_from(n).ok())
+                                    .ok_or_else(|| {
+                                        Error::engine(format!(
+                                            "column {name:?} has a non-byte element"
+                                        ))
+                                    })
+                            })
+                            .collect::<Result<Vec<_>>>()
+                            .map(Some)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Arc::new(BinaryArray::from_iter(
+                    bytes.iter().map(|value| value.as_deref()),
+                ))
+            }
+            ColumnType::Json => Arc::new(StringArray::from(
+                values
+                    .map(|v| {
+                        let value = nullable_value(name, def, v)?;
+                        if value.is_null() {
+                            Ok(None)
+                        } else {
+                            serde_json::to_string(value).map(Some).map_err(|e| {
+                                Error::engine(format!("encode LanceDB JSON field {name:?}: {e}"))
+                            })
+                        }
+                    })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Vector(dim) => build_vector_array(name, *dim, def.nullable, values)?,

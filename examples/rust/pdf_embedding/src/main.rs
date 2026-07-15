@@ -42,13 +42,14 @@ static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::n
     })
 });
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct PdfEmbedding {
     id: i64,
     filename: String,
     chunk_start: i32,
     chunk_end: i32,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -108,20 +109,8 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PdfEmbedding>> {
 }
 
 fn pdf_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("chunk_start", postgres::ColumnDef::new("integer")),
-            ("chunk_end", postgres::ColumnDef::new("integer")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<PdfEmbedding>(["id"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {

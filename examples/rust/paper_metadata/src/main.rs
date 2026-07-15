@@ -153,28 +153,32 @@ struct PaperMetadataModel {
     abstract_text: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct PaperMetadataRow {
     filename: String,
     title: String,
+    #[coco(json)]
     authors: serde_json::Value, // jsonb: [{name, email, affiliation}]
     #[serde(rename = "abstract")]
+    #[coco(rename = "abstract")]
     abstract_text: String,
     num_pages: i32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct AuthorPaperRow {
     author_name: String,
     filename: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct MetadataEmbeddingRow {
+    #[coco(type = "uuid")]
     id: String, // uuid
     filename: String,
     location: String,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -323,42 +327,16 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
 // ---------------------------------------------------------------------------
 
 fn metadata_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("filename", postgres::ColumnDef::new("text")),
-            ("title", postgres::ColumnDef::new("text")),
-            ("authors", postgres::ColumnDef::new("jsonb")),
-            ("abstract", postgres::ColumnDef::new("text")),
-            ("num_pages", postgres::ColumnDef::new("integer")),
-        ],
-        ["filename"],
-    )
+    postgres::TableSchema::from_row::<PaperMetadataRow>(["filename"])
 }
 
 fn author_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("author_name", postgres::ColumnDef::new("text")),
-            ("filename", postgres::ColumnDef::new("text")),
-        ],
-        ["author_name", "filename"],
-    )
+    postgres::TableSchema::from_row::<AuthorPaperRow>(["author_name", "filename"])
 }
 
 fn embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("uuid")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("location", postgres::ColumnDef::new("text")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<MetadataEmbeddingRow>(["id"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 // ---------------------------------------------------------------------------

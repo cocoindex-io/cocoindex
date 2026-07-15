@@ -43,20 +43,14 @@ static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
     })
 });
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct AudioTranscription {
     filename: String,
     text: String,
 }
 
 fn transcription_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("filename", postgres::ColumnDef::new("text")),
-            ("text", postgres::ColumnDef::new("text")),
-        ],
-        ["filename"],
-    )
+    postgres::TableSchema::from_row::<AudioTranscription>(["filename"])
 }
 
 /// Transcribe one audio file with OpenAI Whisper via the SDK's

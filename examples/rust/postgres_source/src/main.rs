@@ -65,7 +65,7 @@ struct SourceProduct {
 }
 
 /// One row written to the output table.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct OutputProduct {
     product_category: String,
     product_name: String,
@@ -73,6 +73,7 @@ struct OutputProduct {
     price: f64,
     amount: i64,
     total_value: f64,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -102,21 +103,8 @@ async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProd
 }
 
 fn output_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("product_category", postgres::ColumnDef::new("text")),
-            ("product_name", postgres::ColumnDef::new("text")),
-            ("description", postgres::ColumnDef::new("text")),
-            ("price", postgres::ColumnDef::new("double precision")),
-            ("amount", postgres::ColumnDef::new("bigint")),
-            ("total_value", postgres::ColumnDef::new("double precision")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["product_category", "product_name"],
-    )
+    postgres::TableSchema::from_row::<OutputProduct>(["product_category", "product_name"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 async fn app_main(ctx: Ctx) -> Result<()> {

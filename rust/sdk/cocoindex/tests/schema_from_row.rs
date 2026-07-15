@@ -56,11 +56,14 @@ fn sqlite_from_row_matches_explicit_schema() {
         name: Option<String>,
         score: f64,
         blob: Vec<u8>,
-        #[coco(vector = 3)]
+        #[coco(vector)]
         embedding: Vec<f32>,
     }
 
-    let got = TableSchema::from_row::<Row>(["id"]).unwrap();
+    let got = TableSchema::from_row::<Row>(["id"])
+        .unwrap()
+        .with_vector_dim("embedding", 3)
+        .unwrap();
     let want = TableSchema::new(
         [
             ("id", ColumnDef::new("INTEGER").not_null()),
@@ -88,7 +91,7 @@ fn postgres_from_row_matches_explicit_schema() {
         title: Option<String>,
         views: i32,
         ratio: f32,
-        #[coco(vector = 8)]
+        #[coco(vector)]
         embedding: Vec<f32>,
         #[coco(vector = 8, half)]
         embedding_half: Vec<f32>,
@@ -96,7 +99,10 @@ fn postgres_from_row_matches_explicit_schema() {
         meta: Vec<String>,
     }
 
-    let got = TableSchema::from_row::<Row>(["id"]).unwrap();
+    let got = TableSchema::from_row::<Row>(["id"])
+        .unwrap()
+        .with_vector_dim("embedding", 8)
+        .unwrap();
     // Postgres ColumnDef::new is NOT NULL by default; `.nullable()` opts in.
     let want = TableSchema::new(
         [
@@ -109,6 +115,112 @@ fn postgres_from_row_matches_explicit_schema() {
             ("meta", ColumnDef::new("jsonb")),
         ],
         ["id"],
+    )
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[cfg(feature = "lancedb")]
+#[test]
+fn lancedb_from_row_matches_explicit_schema() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::lancedb::{ColumnDef, ColumnType, TableSchema};
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: i64,
+        count: i32,
+        ratio: f32,
+        active: bool,
+        title: Option<String>,
+        #[coco(json)]
+        tags: Vec<String>,
+        #[coco(vector)]
+        embedding: Vec<f32>,
+    }
+
+    let got = TableSchema::from_row::<Row>(["id"])
+        .unwrap()
+        .with_vector_dim("embedding", 4)
+        .unwrap();
+    let want = TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("count", ColumnDef::new(ColumnType::Int32)),
+            ("ratio", ColumnDef::new(ColumnType::Float32)),
+            ("active", ColumnDef::new(ColumnType::Bool)),
+            ("title", ColumnDef::new(ColumnType::Text).nullable()),
+            ("tags", ColumnDef::new(ColumnType::Json)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(4))),
+        ],
+        ["id"],
+    )
+    .unwrap();
+    assert_eq!(got, want);
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Unsupported {
+        id: i64,
+        #[coco(type = "struct<x: int>")]
+        details: String,
+    }
+    let err = TableSchema::from_row::<Unsupported>(["id"]).unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("LanceDB"), "{message}");
+    assert!(message.contains("details"), "{message}");
+}
+
+#[cfg(feature = "qdrant")]
+#[test]
+fn qdrant_from_row_derives_named_vectors_and_runtime_dimension() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::qdrant::{CollectionSchema, Distance, QdrantVectorDef};
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: u64,
+        text: String,
+        #[coco(vector)]
+        embedding: Vec<f32>,
+    }
+
+    let got = CollectionSchema::from_row::<Row>(Distance::Cosine)
+        .unwrap()
+        .with_vector_dim("embedding", 3)
+        .unwrap();
+    let want = CollectionSchema::named([(
+        "embedding",
+        QdrantVectorDef::f32(3, Distance::Cosine).unwrap(),
+    )])
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[cfg(feature = "turbopuffer")]
+#[test]
+fn turbopuffer_from_row_derives_named_vectors_and_runtime_dimension() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::turbopuffer::{DistanceMetric, NamespaceSchema, VectorDef};
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: String,
+        text: String,
+        #[coco(vector)]
+        embedding: Vec<f32>,
+    }
+
+    let got = NamespaceSchema::from_row::<Row>(DistanceMetric::CosineDistance)
+        .unwrap()
+        .with_vector_dim("embedding", 3)
+        .unwrap();
+    let want = NamespaceSchema::named(
+        [("embedding", VectorDef::f32(3).unwrap())],
+        DistanceMetric::CosineDistance,
     )
     .unwrap();
     assert_eq!(got, want);

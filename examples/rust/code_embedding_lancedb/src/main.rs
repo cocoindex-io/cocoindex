@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
+use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, detect_code_language};
 use cocoindex::prelude::*;
@@ -36,11 +36,12 @@ static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::n
     })
 });
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct CodeEmbedding {
     id: i64,
     filename: String,
     code: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
     start_line: i64,
     end_line: i64,
@@ -88,17 +89,7 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<CodeEmbedding>> 
 }
 
 fn code_embedding_schema() -> Result<TableSchema> {
-    TableSchema::new(
-        [
-            ("id", ColumnDef::new(ColumnType::Int64)),
-            ("filename", ColumnDef::new(ColumnType::Text)),
-            ("code", ColumnDef::new(ColumnType::Text)),
-            ("embedding", ColumnDef::new(ColumnType::Vector(EMBED_DIM))),
-            ("start_line", ColumnDef::new(ColumnType::Int64)),
-            ("end_line", ColumnDef::new(ColumnType::Int64)),
-        ],
-        ["id"],
-    )
+    TableSchema::from_row::<CodeEmbedding>(["id"])?.with_vector_dim("embedding", EMBED_DIM)
 }
 
 fn is_excluded(key: &str) -> bool {
@@ -107,7 +98,6 @@ fn is_excluded(key: &str) -> bool {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let table = lancedb::mount_table_target(&ctx, &DB, TABLE, code_embedding_schema()?).await?;
 
     let files: Vec<(String, FileEntry)> = walk_items(&sourcedir, INCLUDE_PATTERNS)?

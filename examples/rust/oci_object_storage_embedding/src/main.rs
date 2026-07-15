@@ -44,11 +44,12 @@ static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::n
     })
 });
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbeddingRow {
     id: i64,
     filename: String,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -169,18 +170,8 @@ async fn query_once(
 }
 
 fn doc_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<DocEmbeddingRow>(["id"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 fn vector_param(vec: &[f32]) -> String {

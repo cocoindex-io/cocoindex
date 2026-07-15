@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
+use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
@@ -36,13 +36,14 @@ static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::n
     })
 });
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbedding {
     id: i64,
     filename: String,
     chunk_start: i64,
     chunk_end: i64,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -87,21 +88,10 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
 }
 
 fn doc_embedding_schema() -> Result<TableSchema> {
-    TableSchema::new(
-        [
-            ("id", ColumnDef::new(ColumnType::Int64)),
-            ("filename", ColumnDef::new(ColumnType::Text)),
-            ("chunk_start", ColumnDef::new(ColumnType::Int64)),
-            ("chunk_end", ColumnDef::new(ColumnType::Int64)),
-            ("text", ColumnDef::new(ColumnType::Text)),
-            ("embedding", ColumnDef::new(ColumnType::Vector(EMBED_DIM))),
-        ],
-        ["id"],
-    )
+    TableSchema::from_row::<DocEmbedding>(["id"])?.with_vector_dim("embedding", EMBED_DIM)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let table = lancedb::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?).await?;
 
     let files = walk_items(&sourcedir, &["**/*.md"])?;

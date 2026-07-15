@@ -22,7 +22,6 @@ use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
-const EMBED_DIM: usize = 384;
 const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "doc_embeddings";
 const TOP_K: i64 = 5;
@@ -38,13 +37,14 @@ cocoindex::context_key!(
     state = SentenceTransformerEmbedder::model_name
 );
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbedding {
     id: i64,
     filename: String,
     chunk_start: i32,
     chunk_end: i32,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -88,27 +88,21 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     Ok(rows)
 }
 
-fn doc_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("chunk_start", postgres::ColumnDef::new("integer")),
-            ("chunk_end", postgres::ColumnDef::new("integer")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+fn doc_embedding_schema(vector_dim: usize) -> Result<postgres::TableSchema> {
+    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+        .with_vector_dim("embedding", vector_dim)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let table =
-        postgres::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
-            .await?;
+    let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
+    let table = postgres::mount_table_target(
+        &ctx,
+        &DB,
+        TABLE,
+        doc_embedding_schema(vector_dim)?,
+        Some(PG_SCHEMA),
+    )
+    .await?;
     table.declare_vector_index(
         &ctx,
         "embedding",

@@ -342,6 +342,32 @@ impl TableSchema {
             .map(|f| (f.name.clone(), doris_column_def(&f)));
         Self::new(columns, primary_key)
     }
+
+    /// Resolve or override the dimension of a vector field derived from a row.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        let dim = u32::try_from(dim).map_err(|_| {
+            Error::engine(format!(
+                "Doris vector field {field_name:?} dimension does not fit u32"
+            ))
+        })?;
+        if dim == 0 {
+            return Err(Error::engine(format!(
+                "Doris vector field {field_name:?} requires a dimension greater than zero"
+            )));
+        }
+        let def = self.columns.get_mut(field_name).ok_or_else(|| {
+            Error::engine(format!(
+                "Doris vector dimension override names unknown field {field_name:?}"
+            ))
+        })?;
+        if !def.is_vector {
+            return Err(Error::engine(format!(
+                "Doris field {field_name:?} is not a vector field"
+            )));
+        }
+        def.vector_dimension = Some(dim);
+        Ok(self)
+    }
 }
 
 /// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a

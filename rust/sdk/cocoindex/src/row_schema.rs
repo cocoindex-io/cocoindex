@@ -21,6 +21,8 @@
 //! ```
 //!
 //! Field attributes:
+//! * `#[coco(vector)]` — a dense `f32` vector whose dimension is supplied with
+//!   the connector schema's `with_vector_dim` builder.
 //! * `#[coco(vector = N)]` — a dense `f32` vector column of dimension `N`.
 //! * `#[coco(vector = N, half)]` — a 16-bit (half-precision) vector column.
 //! * `#[coco(type = "…")]` — a raw connector SQL type, used verbatim (the escape
@@ -48,7 +50,9 @@ pub enum LogicalType {
     Duration,
     /// A complex value (collection / map / nested struct / `Any`) stored as JSON.
     Json,
-    /// A dense float vector of fixed dimension (`half` → 16-bit element type).
+    /// A dense float vector (`half` → 16-bit element type). A dimension of zero
+    /// is the unresolved form emitted by `#[coco(vector)]`; connector schemas
+    /// resolve it through `with_vector_dim` before use.
     Vector {
         dim: u32,
         half: bool,

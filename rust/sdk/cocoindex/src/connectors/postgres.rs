@@ -142,6 +142,36 @@ impl TableSchema {
             .map(|f| (f.name.clone(), postgres_column_def(&f)));
         Self::new(columns, primary_key)
     }
+
+    /// Resolve or override the dimension of a vector field derived from a row.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        if dim == 0 {
+            return Err(Error::engine(format!(
+                "Postgres vector field {field_name:?} requires a dimension greater than zero"
+            )));
+        }
+        let def = self.columns.get_mut(field_name).ok_or_else(|| {
+            Error::engine(format!(
+                "Postgres vector dimension override names unknown field {field_name:?}"
+            ))
+        })?;
+        let base = pgvector_type_base(&def.pg_type).ok_or_else(|| {
+            Error::engine(format!(
+                "Postgres field {field_name:?} is not a vector field"
+            ))
+        })?;
+        def.pg_type = format!("{base}({dim})");
+        Ok(self)
+    }
+}
+
+fn pgvector_type_base(pg_type: &str) -> Option<&'static str> {
+    ["vector", "halfvec"].into_iter().find(|base| {
+        pg_type == *base
+            || pg_type
+                .strip_prefix(*base)
+                .is_some_and(|suffix| suffix.starts_with('(') && suffix.ends_with(')'))
+    })
 }
 
 /// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a
@@ -165,10 +195,11 @@ fn postgres_column_def(field: &crate::row_schema::SchemaField) -> ColumnDef {
         L::Duration => "interval".to_string(),
         L::Json => "jsonb".to_string(),
         L::Vector { dim, half } => {
-            if *half {
-                format!("halfvec({dim})")
+            let base = if *half { "halfvec" } else { "vector" };
+            if *dim == 0 {
+                base.to_string()
             } else {
-                format!("vector({dim})")
+                format!("{base}({dim})")
             }
         }
         L::Custom(s) => s.clone(),

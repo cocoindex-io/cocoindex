@@ -165,6 +165,27 @@ impl TableSchema {
             .map(|f| (f.name.clone(), sqlite_column_def(&f)));
         Self::new(columns, primary_key)
     }
+
+    /// Resolve or override the dimension of a vector field derived from a row.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        if dim == 0 {
+            return Err(Error::engine(format!(
+                "SQLite vector field {field_name:?} requires a dimension greater than zero"
+            )));
+        }
+        let def = self.columns.get_mut(field_name).ok_or_else(|| {
+            Error::engine(format!(
+                "SQLite vector dimension override names unknown field {field_name:?}"
+            ))
+        })?;
+        if !(def.sqlite_type.starts_with("float[") && def.sqlite_type.ends_with(']')) {
+            return Err(Error::engine(format!(
+                "SQLite field {field_name:?} is not a vector field"
+            )));
+        }
+        def.sqlite_type = format!("float[{dim}]");
+        Ok(self)
+    }
 }
 
 /// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a
