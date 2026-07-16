@@ -64,7 +64,6 @@ impl GPUPool {
     /// * All GPUs will be acquired at simultaneously.
     ///   For instance, if user attempts to acquire 5 GPUs,
     ///   the function will not partially acquire 4 and waiting for the last GPU.
-    #[cfg(test)]
     pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Vec<usize> {
         assert!(
             gpu_count.get() <= self.num_gpus(),
@@ -88,7 +87,6 @@ impl GPUPool {
         }
     }
 
-    #[cfg(test)]
     fn find_fully_available(capacity: &[f32], count: NonZeroUsize) -> Vec<usize> {
         capacity
             .iter()

@@ -9,6 +9,7 @@
 use crate::prelude::*;
 use cocoindex_utils::gpu_pool::GPUPool;
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::num::NonZeroUsize;
 
 #[pyclass(name = "GPUPool")]
 #[derive(Clone)]
@@ -40,6 +41,20 @@ impl PyGPUPool {
     pub fn acquire<'py>(&self, py: Python<'py>, fraction: f32) -> PyResult<Bound<'py, PyAny>> {
         let gpu_pool = self.inner.clone();
         future_into_py(py, async move { Ok(gpu_pool.acquire(fraction).await) })
+    }
+
+    pub fn acquire_full<'py>(
+        &self,
+        py: Python<'py>,
+        gpu_count: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        assert!(gpu_count > 0, "gpu_count must be > 0, got {gpu_count}");
+        let gpu_pool = self.inner.clone();
+        future_into_py(py, async move {
+            Ok(gpu_pool
+                .acquire_full(NonZeroUsize::new(gpu_count).unwrap())
+                .await)
+        })
     }
 
     pub fn release<'py>(
