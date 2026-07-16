@@ -16,7 +16,7 @@ use crate::code::PyCodeSource;
 /// Note: This struct does not include the text content itself. Instead, it provides
 /// byte offsets (start_byte, end_byte) so Python can efficiently slice the original
 /// text without copying data across the FFI boundary.
-#[pyclass(name = "Chunk")]
+#[pyclass(name = "Chunk", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyChunk {
     #[pyo3(get)]
@@ -129,7 +129,7 @@ impl PySeparatorSplitter {
 }
 
 /// Configuration for a custom language with regex-based separators.
-#[pyclass(name = "CustomLanguageConfig")]
+#[pyclass(name = "CustomLanguageConfig", from_py_object)]
 #[derive(Clone)]
 pub struct PyCustomLanguageConfig {
     #[pyo3(get)]
@@ -289,7 +289,7 @@ impl PyPatternMatcher {
 }
 
 /// One contiguous piece of a source view's synthetic text, grounded in the source.
-#[pyclass(name = "ViewSegment")]
+#[pyclass(name = "ViewSegment", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyViewSegment {
     #[pyo3(get)]

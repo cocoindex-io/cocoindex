@@ -29,7 +29,7 @@ pub fn list_stable_paths(py: Python<'_>, app: &PyApp) -> PyResult<Vec<PyStablePa
     Ok(py_stable_paths)
 }
 
-#[pyclass(name = "StablePathNodeType")]
+#[pyclass(name = "StablePathNodeType", skip_from_py_object)]
 #[derive(Clone, Copy, Debug)]
 pub struct PyStablePathNodeType(pub StablePathNodeType);
 
@@ -61,7 +61,7 @@ impl PyStablePathNodeType {
     }
 }
 
-#[pyclass(name = "StablePathInfo")]
+#[pyclass(name = "StablePathInfo", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStablePathInfo {
     #[pyo3(get)]
@@ -164,7 +164,7 @@ pub fn list_app_names(py: Python<'_>, env: &PyEnvironment) -> PyResult<Vec<Strin
     .into_py_result()
 }
 
-#[pyclass(name = "TargetStateVersion")]
+#[pyclass(name = "TargetStateVersion", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTargetStateVersion {
     #[pyo3(get)]
@@ -173,7 +173,7 @@ pub struct PyTargetStateVersion {
     pub state: String,
 }
 
-#[pyclass(name = "ProviderGeneration")]
+#[pyclass(name = "ProviderGeneration", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyProviderGeneration {
     #[pyo3(get)]
@@ -182,7 +182,7 @@ pub struct PyProviderGeneration {
     pub provider_schema_version: u64,
 }
 
-#[pyclass(name = "TargetStateInfoItemSummary")]
+#[pyclass(name = "TargetStateInfoItemSummary", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTargetStateInfoItemSummary {
     #[pyo3(get)]
@@ -204,7 +204,7 @@ impl PyTargetStateInfoItemSummary {
     }
 }
 
-#[pyclass(name = "StablePathDetail")]
+#[pyclass(name = "StablePathDetail", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStablePathDetail {
     #[pyo3(get)]

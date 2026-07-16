@@ -22,7 +22,7 @@ use cocoindex_core::engine::{
 use pyo3_async_runtimes::tokio::future_into_py;
 
 /// Python wrapper for ComponentProcessorInfo that shares the same Arc instance.
-#[pyclass(name = "ComponentProcessorInfo")]
+#[pyclass(name = "ComponentProcessorInfo", from_py_object)]
 #[derive(Clone)]
 pub struct PyComponentProcessorInfo(pub Arc<ComponentProcessorInfo>);
 
@@ -39,7 +39,7 @@ impl PyComponentProcessorInfo {
     }
 }
 
-#[pyclass(name = "ComponentProcessor")]
+#[pyclass(name = "ComponentProcessor", from_py_object)]
 #[derive(Clone)]
 pub struct PyComponentProcessor {
     processor_fn: PyCallback,
