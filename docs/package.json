@@ -13,12 +13,12 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/mdx": "^5.0.3",
+    "@astrojs/mdx": "^7.0.3",
     "@astrojs/sitemap": "^3.7.2",
     "@cocoindex/brand": "github:cocoindex-io/cocoindex-brand#v0.4.41",
     "@docsearch/css": "^4.6.2",
     "@docsearch/js": "^4.6.2",
-    "astro": "^6.1.8",
+    "astro": "^7.1.0",
     "mdast-util-to-string": "^4.0.0",
     "mermaid": "^11.15.0",
     "mixpanel-browser": "^2.78.0",
