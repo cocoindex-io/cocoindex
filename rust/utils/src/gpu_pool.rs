@@ -1,7 +1,7 @@
 use anyhow::{Error, Result};
 use itertools::Itertools;
-use std::num::NonZeroUsize;
-use tokio::sync::{Mutex, Notify};
+use std::{collections::LinkedList, num::NonZeroUsize};
+use tokio::sync::{Mutex, oneshot};
 
 /// Tracks fractional GPU capacity across multiple GPUs.
 ///
@@ -14,17 +14,43 @@ use tokio::sync::{Mutex, Notify};
 /// Call ``configure_gpu_pool(N)`` to override programmatically.
 pub struct GPUPool {
     num_gpus: usize,
-    capacity: Mutex<Vec<f32>>,
-    release: Notify,
+    state: Mutex<GPUPoolState>,
 }
+
+struct GPUPoolState {
+    capacity: Vec<f32>,
+    waiters: LinkedList<(DesiredCapacity, oneshot::Sender<AcquiredGPUs>)>,
+}
+
+#[derive(Clone, Copy)]
+enum DesiredCapacity {
+    Fraction(f32),
+    Multiple(usize),
+}
+
+impl DesiredCapacity {
+    fn capacity(&self) -> f32 {
+        match self {
+            DesiredCapacity::Fraction(f) => *f,
+            DesiredCapacity::Multiple(_) => 1.0,
+        }
+    }
+}
+
+/// AcquiredGPUs is a vector of GPU indices that are acquired.
+/// It can be 1 or many, but can never be 0.
+type AcquiredGPUs = Vec<usize>;
 
 impl GPUPool {
     pub fn new(num_gpus: usize) -> Self {
         assert!(num_gpus >= 1, "num_gpus must be >= 1, got {num_gpus}");
+        let state = GPUPoolState {
+            capacity: vec![1.0; num_gpus],
+            waiters: LinkedList::new(),
+        };
         GPUPool {
             num_gpus,
-            capacity: Mutex::new(vec![1.0; num_gpus]),
-            release: Notify::new(),
+            state: Mutex::new(state),
         }
     }
 
@@ -33,16 +59,25 @@ impl GPUPool {
     }
 
     pub async fn acquire(&self, fraction: f32) -> usize {
-        loop {
-            let notified = self.release.notified();
-            {
-                let mut cap = self.capacity.lock().await;
-                if let Some(index) = Self::find_available(&cap, fraction) {
-                    cap[index] -= fraction;
-                    return index;
-                }
+        let mut state = self.state.lock().await;
+        if let Some(index) = Self::find_available(&state.capacity, fraction) {
+            state.capacity[index] -= fraction;
+            return index;
+        }
+        let (sender, recv) = oneshot::channel();
+        state
+            .waiters
+            .push_back((DesiredCapacity::Fraction(fraction), sender));
+        drop(state);
+        match recv.await {
+            Ok(mut gpus) => {
+                debug_assert!(
+                    gpus.len() == 1,
+                    "Expected a fraction of a single GPU, but received multiple: {gpus:?}"
+                );
+                gpus.pop().unwrap()
             }
-            notified.await;
+            Err(err) => panic!("GPUPool dropped while waiting: {err}"),
         }
     }
 
@@ -67,43 +102,90 @@ impl GPUPool {
     ///   For instance, if user attempts to acquire 5 GPUs,
     ///   the function will not partially acquire 4 and waiting for the last GPU.
     pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Result<Vec<usize>> {
-        if gpu_count.get() > self.num_gpus() {
+        let gpu_count = gpu_count.get();
+        if gpu_count > self.num_gpus() {
             return Err(anyhow::format_err!(
                 "Attempted to acquire {} GPUs but only has {}.",
-                gpu_count.get(),
+                gpu_count,
                 self.num_gpus
             ));
         }
-        loop {
-            let notified = self.release.notified();
-            {
-                let mut cap = self.capacity.lock().await;
-                let indexes = Self::find_fully_available(&cap, gpu_count);
-                if indexes.len() >= gpu_count.get() {
-                    for position in &indexes[..gpu_count.get()] {
-                        cap[*position] = 0_f32;
-                    }
-                    return Ok(indexes);
-                }
+        let mut state = self.state.lock().await;
+        let indexes = Self::find_fully_available(&state.capacity, gpu_count);
+        if indexes.len() >= gpu_count {
+            for position in &indexes[..gpu_count] {
+                state.capacity[*position] = 0_f32;
             }
-            notified.await;
+            return Ok(indexes);
+        }
+        let (sender, recv) = oneshot::channel();
+        state
+            .waiters
+            .push_back((DesiredCapacity::Multiple(gpu_count), sender));
+        drop(state);
+        match recv.await {
+            Ok(gpus) => {
+                debug_assert!(
+                    gpus.len() == gpu_count,
+                    "Expected {} GPUs, but received {}",
+                    gpu_count,
+                    gpus.len()
+                );
+                Ok(gpus)
+            }
+            Err(err) => panic!("GPUPool dropped while waiting: {err}"),
         }
     }
 
-    fn find_fully_available(capacity: &[f32], count: NonZeroUsize) -> Vec<usize> {
+    fn find_fully_available(capacity: &[f32], count: usize) -> Vec<usize> {
+        debug_assert!(count >= 1, "count must be >= 1, got {count}");
         capacity
             .iter()
             .positions(|cap| (*cap - 1.0).abs() < f32::EPSILON)
-            .take(count.get())
+            .take(count)
             .collect()
     }
 
     pub async fn release(&self, gpu_id: usize, fraction: f32) {
-        {
-            let mut cap = self.capacity.lock().await;
-            cap[gpu_id] += fraction;
+        let mut state = self.state.lock().await;
+        state.capacity[gpu_id] += fraction;
+        let length = state.waiters.len();
+        for _ in 0..length {
+            let (desired_capacity, sender) = state.waiters.pop_front().unwrap();
+            if sender.is_closed() {
+                continue;
+            }
+            match Self::fulfill_capacity(&state.capacity, desired_capacity) {
+                Some(gpus) => {
+                    if sender.send(gpus.clone()).is_ok() {
+                        for gpu in gpus {
+                            state.capacity[gpu] -= desired_capacity.capacity();
+                        }
+                    }
+                }
+                None => state.waiters.push_back((desired_capacity, sender)),
+            }
         }
-        self.release.notify_waiters();
+    }
+
+    fn fulfill_capacity(
+        capacities: &[f32],
+        desired_capacity: DesiredCapacity,
+    ) -> Option<AcquiredGPUs> {
+        match desired_capacity {
+            DesiredCapacity::Fraction(fraction) => {
+                if let Some(gpu) = Self::find_available(capacities, fraction) {
+                    return Some(vec![gpu]);
+                }
+            }
+            DesiredCapacity::Multiple(count) => {
+                let gpus = Self::find_fully_available(capacities, count);
+                if gpus.len() == count {
+                    return Some(gpus);
+                }
+            }
+        }
+        None
     }
 
     /// detect the number of GPUs available for the default pool.
@@ -270,7 +352,7 @@ mod tests {
         let gpus = pool
             .acquire_full(NonZeroUsize::new(2).expect("2 is not zero"))
             .await;
-        assert_eq!(gpus, [0, 1]);
+        assert_eq!(gpus.ok(), Some(vec![0, 1]));
     }
 
     #[tokio::test]
@@ -289,7 +371,8 @@ mod tests {
         pool.release(partially_used_gpu, 0.6).await;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
-            .expect("task finished");
+            .expect("task finished")
+            .expect("no timeout");
         assert_eq!(result.as_ref().ok(), Some(&vec![0, 1, 2]));
         for gpu in result.unwrap() {
             pool.release(gpu, 1.0).await;
@@ -315,7 +398,8 @@ mod tests {
         pool.release(second_acquired_gpu, 0.5).await;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
-            .expect("task finished");
+            .expect("task finished")
+            .expect("no timeout");
         assert_eq!(result.as_ref().ok(), Some(&vec![0, 1, 2]));
         for gpu in result.unwrap() {
             pool.release(gpu, 1.0).await;
@@ -323,11 +407,16 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic]
     async fn test_acquire_more_gpus_than_allowed() {
         let pool = GPUPool::new(2);
-        pool.acquire_full(NonZeroUsize::new(3).expect("3 is not zero"))
+        let result = pool
+            .acquire_full(NonZeroUsize::new(3).expect("3 is not zero"))
             .await;
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Attempted to acquire 3 GPUs but only has 2."
+        );
     }
 
     #[test]
