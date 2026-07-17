@@ -64,13 +64,14 @@ impl GPUPool {
     /// * All GPUs will be acquired at simultaneously.
     ///   For instance, if user attempts to acquire 5 GPUs,
     ///   the function will not partially acquire 4 and waiting for the last GPU.
-    pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Vec<usize> {
-        assert!(
-            gpu_count.get() <= self.num_gpus(),
-            "Attempted to acquire {} GPUs but only has {}.",
-            gpu_count.get(),
-            self.num_gpus
-        );
+    pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Result<Vec<usize>> {
+        if gpu_count.get() > self.num_gpus() {
+            return Err(anyhow::format_err!(
+                "Attempted to acquire {} GPUs but only has {}.",
+                gpu_count.get(),
+                self.num_gpus
+            ));
+        }
         loop {
             let notified = self.release.notified();
             {
@@ -80,7 +81,7 @@ impl GPUPool {
                     for position in &indexes[..gpu_count.get()] {
                         cap[*position] = 0_f32;
                     }
-                    return indexes;
+                    return Ok(indexes);
                 }
             }
             notified.await;
