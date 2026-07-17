@@ -59,8 +59,10 @@ impl GPUPool {
 
     /// Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.
     ///
+    /// # Error:
+    /// * When the given gpu_count is larger than the total gpus, it returns an error.
+    ///
     /// # Warning
-    /// * When the given gpu_count is larger than the total gpus, it crashes.
     /// * All GPUs will be acquired at simultaneously.
     ///   For instance, if user attempts to acquire 5 GPUs,
     ///   the function will not partially acquire 4 and waiting for the last GPU.
@@ -101,7 +103,7 @@ impl GPUPool {
             let mut cap = self.capacity.lock().await;
             cap[gpu_id] += fraction;
         }
-        self.release.notify_one();
+        self.release.notify_waiters();
     }
 
     /// detect the number of GPUs available for the default pool.
