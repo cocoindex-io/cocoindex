@@ -19,7 +19,13 @@ pub struct GPUPool {
 
 struct GPUPoolState {
     capacity: Vec<f32>,
-    waiters: LinkedList<(DesiredCapacity, oneshot::Sender<AcquiredGPUs>)>,
+    waiters: LinkedList<Waiter>,
+}
+
+/// A waiter for a GPU acquisition.
+struct Waiter {
+    desired_capacity: DesiredCapacity,
+    sender: oneshot::Sender<AcquiredGPUs>,
 }
 
 #[derive(Clone, Copy)]
@@ -65,9 +71,10 @@ impl GPUPool {
             return index;
         }
         let (sender, recv) = oneshot::channel();
-        state
-            .waiters
-            .push_back((DesiredCapacity::Fraction(fraction), sender));
+        state.waiters.push_back(Waiter {
+            desired_capacity: DesiredCapacity::Fraction(fraction),
+            sender,
+        });
         drop(state);
         match recv.await {
             Ok(mut gpus) => {
@@ -119,9 +126,10 @@ impl GPUPool {
             return Ok(indexes);
         }
         let (sender, recv) = oneshot::channel();
-        state
-            .waiters
-            .push_back((DesiredCapacity::Multiple(gpu_count), sender));
+        state.waiters.push_back(Waiter {
+            desired_capacity: DesiredCapacity::Multiple(gpu_count),
+            sender,
+        });
         drop(state);
         match recv.await {
             Ok(gpus) => {
@@ -151,19 +159,20 @@ impl GPUPool {
         state.capacity[gpu_id] += fraction;
         let length = state.waiters.len();
         for _ in 0..length {
-            let (desired_capacity, sender) = state.waiters.pop_front().unwrap();
-            if sender.is_closed() {
+            let waiter = state.waiters.pop_front().unwrap();
+            if waiter.sender.is_closed() {
                 continue;
             }
-            match Self::fulfill_capacity(&state.capacity, desired_capacity) {
+            match Self::fulfill_capacity(&state.capacity, waiter.desired_capacity) {
                 Some(gpus) => {
-                    if sender.send(gpus.clone()).is_ok() {
+                    if waiter.sender.send(gpus.clone()).is_ok() {
+                        // if fails to send, it means it's no longer waiting.
                         for gpu in gpus {
-                            state.capacity[gpu] -= desired_capacity.capacity();
+                            state.capacity[gpu] -= waiter.desired_capacity.capacity();
                         }
                     }
                 }
-                None => state.waiters.push_back((desired_capacity, sender)),
+                None => state.waiters.push_back(waiter),
             }
         }
     }
