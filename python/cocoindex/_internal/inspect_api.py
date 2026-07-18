@@ -108,6 +108,20 @@ async def query_stable_path_details_by_name(
     )
 
 
+async def list_target_states(app: App[Any, Any]) -> list[core.TargetStateEntry]:
+    """List all tracked target states with their owner components."""
+    core_app = await app._get_core()
+    return core.list_target_states(core_app)
+
+
+async def list_target_states_by_name(
+    env: Environment,
+    app_name: str,
+) -> list[core.TargetStateEntry]:
+    """List all tracked target states with their owner components (by app name)."""
+    return core.list_target_states_by_name(env._core_env, app_name)
+
+
 __all__ = [
     "iter_stable_paths",
     "iter_stable_paths_by_name",
@@ -118,4 +132,6 @@ __all__ = [
     "get_stable_path_detail_by_name",
     "query_stable_path_details",
     "query_stable_path_details_by_name",
+    "list_target_states",
+    "list_target_states_by_name",
 ]

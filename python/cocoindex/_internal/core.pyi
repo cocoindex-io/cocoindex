@@ -254,6 +254,16 @@ def query_stable_path_details_by_name(
     include_parents: bool,
 ) -> list[StablePathDetail]: ...
 
+class TargetStateEntry:
+    """A tracked target state entry from the inverted owner index."""
+
+    fingerprint_path: str
+    readable_path: str
+    owner_component_path: StablePath
+
+def list_target_states(app: App) -> list[TargetStateEntry]: ...
+def list_target_states_by_name(env: Any, app_name: str) -> list[TargetStateEntry]: ...
+
 # --- UpdateHandle ---
 class UpdateHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
@@ -534,7 +544,6 @@ class SourceView:
     def segments(self) -> list[ViewSegment]: ...
 
 def render_ranges(source: CodeSource, ranges: list[tuple[int, int]]) -> SourceView: ...
-
 def detect_code_language(*, filename: str) -> str | None: ...
 
 # --- CodeSource (source text + lazily-parsed, shared AST) ---

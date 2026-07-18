@@ -301,6 +301,60 @@ pub fn get_stable_path_detail_by_name(
     detail.map(|d| convert_detail(py, d)).transpose()
 }
 
+#[pyclass(name = "TargetStateEntry", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyTargetStateEntry {
+    #[pyo3(get)]
+    pub fingerprint_path: String,
+    #[pyo3(get)]
+    pub readable_path: String,
+    #[pyo3(get)]
+    pub owner_component_path: PyStablePath,
+}
+
+fn convert_target_state_entry(e: db_inspect::TargetStateEntry) -> PyTargetStateEntry {
+    PyTargetStateEntry {
+        fingerprint_path: e.fingerprint_path,
+        readable_path: e.readable_path,
+        owner_component_path: PyStablePath(e.owner_component_path),
+    }
+}
+
+#[pyfunction]
+pub fn list_target_states(py: Python<'_>, app: &PyApp) -> PyResult<Vec<PyTargetStateEntry>> {
+    let app = app.0.clone();
+    let entries = py
+        .detach(|| {
+            get_runtime().block_on(async move { db_inspect::list_target_states(&app).await })
+        })
+        .into_py_result()?;
+    Ok(entries
+        .into_iter()
+        .map(convert_target_state_entry)
+        .collect())
+}
+
+#[pyfunction]
+pub fn list_target_states_by_name(
+    py: Python<'_>,
+    env: &PyEnvironment,
+    app_name: &str,
+) -> PyResult<Vec<PyTargetStateEntry>> {
+    let env = env.0.clone();
+    let app_name = app_name.to_string();
+    let entries = py
+        .detach(|| {
+            get_runtime().block_on(async move {
+                db_inspect::list_target_states_by_name(&env, &app_name).await
+            })
+        })
+        .into_py_result()?;
+    Ok(entries
+        .into_iter()
+        .map(convert_target_state_entry)
+        .collect())
+}
+
 #[pyfunction]
 pub fn query_stable_path_details(
     py: Python<'_>,
