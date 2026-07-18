@@ -627,6 +627,13 @@ def ls(app_target: str | None, db: str | None) -> None:
     default=False,
     help="Show all parent paths (requires stable_path).",
 )
+@click.option(
+    "--fingerprints",
+    "fingerprints",
+    is_flag=True,
+    default=False,
+    help="Show target-state paths as raw fingerprints (as stored) instead of readable keys.",
+)
 def show(
     app_target: str | None,
     db: str | None,
@@ -636,6 +643,7 @@ def show(
     stable_path: str | None,
     recursive: bool,
     parents: bool,
+    fingerprints: bool,
 ) -> None:
     """
     Show the app's stable paths.
@@ -665,6 +673,7 @@ def show(
                 stable_path=stable_path,
                 recursive=recursive,
                 parents=parents,
+                fingerprints=fingerprints,
             )
         )
     elif db and app_name:
@@ -677,6 +686,7 @@ def show(
                 stable_path=stable_path,
                 recursive=recursive,
                 parents=parents,
+                fingerprints=fingerprints,
             )
         )
     elif db or app_name:
@@ -718,6 +728,7 @@ async def _show_from_app(
     stable_path: str | None = None,
     recursive: bool = False,
     parents: bool = False,
+    fingerprints: bool = False,
 ) -> None:
     try:
         if stable_path is not None:
@@ -730,7 +741,7 @@ async def _show_from_app(
                 recursive=recursive,
                 include_parents=parents,
             )
-            _print_details(details)
+            _print_details(details, fingerprints)
         elif long_format:
             # Stream paths, fetch detail one-by-one (no buffering)
             click.echo("Stable paths:")
@@ -739,7 +750,7 @@ async def _show_from_app(
                 path_obj = StablePath(item.path)
                 detail = await get_stable_path_detail(app, path_obj)
                 if detail:
-                    _print_one_detail(detail)
+                    _print_one_detail(detail, fingerprints)
                 count += 1
             if count == 0:
                 click.echo("  (none)")
@@ -762,6 +773,7 @@ async def _show_from_database(
     stable_path: str | None = None,
     recursive: bool = False,
     parents: bool = False,
+    fingerprints: bool = False,
 ) -> None:
     db_path_obj = pathlib.Path(db_path)
     if not db_path_obj.exists():
@@ -784,7 +796,7 @@ async def _show_from_database(
             recursive=recursive,
             include_parents=parents,
         )
-        _print_details(details)
+        _print_details(details, fingerprints)
     elif long_format:
         click.echo("Stable paths:")
         count = 0
@@ -792,7 +804,7 @@ async def _show_from_database(
             path_obj = StablePath(item.path)
             detail = await get_stable_path_detail_by_name(env, app_name, path_obj)
             if detail:
-                _print_one_detail(detail)
+                _print_one_detail(detail, fingerprints)
             count += 1
         if count == 0:
             click.echo("  (none)")
@@ -807,7 +819,9 @@ async def _show_from_database(
             click.echo(f"  {StablePath(item.path)}")
 
 
-def _print_details(details: list[_core.StablePathDetail]) -> None:
+def _print_details(
+    details: list[_core.StablePathDetail], fingerprints: bool = False
+) -> None:
     """Print a list of StablePathDetail in multi-line format."""
     if not details:
         click.echo("Stable paths:")
@@ -816,10 +830,12 @@ def _print_details(details: list[_core.StablePathDetail]) -> None:
 
     click.echo("Stable paths:")
     for detail in details:
-        _print_one_detail(detail)
+        _print_one_detail(detail, fingerprints)
 
 
-def _print_one_detail(detail: _core.StablePathDetail) -> None:
+def _print_one_detail(
+    detail: _core.StablePathDetail, fingerprints: bool = False
+) -> None:
     """Print a single StablePathDetail in multi-line format."""
     path = StablePath(detail.path)
     node_type = (
@@ -846,7 +862,12 @@ def _print_one_detail(detail: _core.StablePathDetail) -> None:
                 else "None"
             )
             states = ", ".join(f"{s.version}:{s.state}" for s in item_summary.states)
-            click.echo(f"      - path:{item_summary.target_state_path}")
+            path_str = (
+                item_summary.fingerprint_path
+                if fingerprints
+                else item_summary.target_state_path
+            )
+            click.echo(f"      - path:{path_str}")
             click.echo(
                 f"        states:{states or '-'}"
                 f" schema_version:{item_summary.provider_schema_version}"

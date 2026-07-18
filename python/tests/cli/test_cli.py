@@ -931,3 +931,21 @@ class TestShowLong:
         assert '/"x"' in path_line
         assert "@test_cli/flat_preview" in path_line
         assert "#" not in path_line
+
+    def test_show_long_fingerprints_flag_shows_raw_paths(self) -> None:
+        """show -l --fingerprints should render raw fingerprint paths."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "-l", "--fingerprints")
+
+        path_line = next(
+            (
+                line
+                for line in result.stdout.split("\n")
+                if line.strip().startswith("- path:")
+            ),
+            None,
+        )
+        assert path_line is not None
+        assert "/#" in path_line
+        assert "@test_cli/flat_preview" not in path_line

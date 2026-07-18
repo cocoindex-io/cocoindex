@@ -217,6 +217,7 @@ class ProviderGeneration:
 
 class TargetStateInfoItemSummary:
     target_state_path: str
+    fingerprint_path: str
     key: StableKey
     states: list[TargetStateVersion]
     provider_schema_version: int

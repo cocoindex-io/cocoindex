@@ -187,6 +187,8 @@ pub struct PyProviderGeneration {
 pub struct PyTargetStateInfoItemSummary {
     #[pyo3(get)]
     pub target_state_path: String,
+    #[pyo3(get)]
+    pub fingerprint_path: String,
     pub key: StableKey,
     #[pyo3(get)]
     pub states: Vec<PyTargetStateVersion>,
@@ -240,6 +242,7 @@ fn convert_detail(
             .map(|item| -> PyResult<PyTargetStateInfoItemSummary> {
                 Ok(PyTargetStateInfoItemSummary {
                     target_state_path: item.target_state_path,
+                    fingerprint_path: item.fingerprint_path,
                     key: item.key,
                     states: item
                         .states

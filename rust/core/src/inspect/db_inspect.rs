@@ -77,7 +77,10 @@ pub struct ProviderGeneration {
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct TargetStateInfoItemSummary {
+    /// Readable rendering, e.g. `/@target/"file.md"/[13][provider_id=0]`.
     pub target_state_path: String,
+    /// Raw fingerprint rendering as stored, e.g. `/#96..../#48....[provider_id=0]`.
+    pub fingerprint_path: String,
     pub key: StableKey,
     pub states: Vec<TargetStateVersion>,
     pub provider_schema_version: u64,
@@ -268,6 +271,7 @@ fn summarize_target_state_items(
 
             Ok(TargetStateInfoItemSummary {
                 target_state_path,
+                fingerprint_path: path_with_pid.to_string(),
                 key,
                 states,
                 provider_schema_version: item.provider_schema_version,
@@ -679,6 +683,10 @@ mod tests {
         assert_eq!(
             detail.target_state_items[0].target_state_path,
             format!("{root_seg}/\"table\"/13[provider_id=0]")
+        );
+        assert_eq!(
+            detail.target_state_items[0].fingerprint_path,
+            format!("{row_path}[provider_id=0]")
         );
         assert_eq!(detail.target_state_items[0].key, row_key);
     }
