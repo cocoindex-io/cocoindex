@@ -540,6 +540,10 @@ pub struct TargetStateEntry {
     /// `#hex` for segments that cannot be resolved.
     pub readable_path: String,
     pub owner_component_path: StablePath,
+    /// True when the owner index entry has no matching item in the owner
+    /// component's tracking info — an inconsistency, e.g. left behind by a
+    /// crashed run or an interrupted cleanup.
+    pub dangling: bool,
 }
 
 fn list_target_states_in_txn(
@@ -560,11 +564,15 @@ fn list_target_states_in_txn(
             }
         };
         let owner: db_schema::TargetStateOwnerInfo = from_msgpack_slice(raw_value)?;
+        // The leaf segment must be recorded in the owner's tracking info;
+        // ancestors may legitimately be unresolvable (root providers).
+        let dangling = resolver.resolve_segment(db, txn, &path)?.is_none();
         let readable_path = resolver.render_path(db, txn, &path, None)?;
         results.push(TargetStateEntry {
             fingerprint_path: path.to_string(),
             readable_path,
             owner_component_path: owner.component_path,
+            dangling,
         });
     }
     Ok(results)
@@ -744,6 +752,45 @@ mod tests {
         let mut resolver = TargetKeyResolver::new(seed);
         let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
         assert_eq!(rendered, "/@my_root/\"file.md\"");
+    }
+
+    #[tokio::test]
+    async fn flags_dangling_entries_without_tracking_items() {
+        let (store, _dir) = make_test_store().await;
+        let root_path = TargetStatePath::new(Fingerprint::from(&"root").unwrap(), None);
+        let good_key = StableKey::Str(Arc::from("good"));
+        let good_path = root_path.concat(&good_key);
+        let dangling_path = root_path.concat(&StableKey::Str(Arc::from("gone")));
+        let comp = comp_path("comp");
+        // Owner entries for both paths, but tracking info only records "good".
+        commit_writes(
+            &store,
+            vec![(
+                comp.clone(),
+                tracking_bytes(vec![(with_pid(&good_path, None), good_key.clone())]),
+            )],
+            vec![
+                (good_path.clone(), comp.clone()),
+                (dangling_path.clone(), comp.clone()),
+            ],
+        )
+        .await;
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let entries = list_target_states_in_txn(&db, &txn, &mut resolver).unwrap();
+        assert_eq!(entries.len(), 2);
+        let good = entries
+            .iter()
+            .find(|e| e.fingerprint_path == good_path.to_string())
+            .unwrap();
+        assert!(!good.dangling);
+        let dangling = entries
+            .iter()
+            .find(|e| e.fingerprint_path == dangling_path.to_string())
+            .unwrap();
+        assert!(dangling.dangling);
     }
 
     #[tokio::test]

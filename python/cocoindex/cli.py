@@ -886,7 +886,8 @@ def _print_target_states(
         return
     for entry in entries:
         path = entry.fingerprint_path if fingerprints else entry.readable_path
-        click.echo(f"  {path}")
+        marker = " [dangling]" if entry.dangling else ""
+        click.echo(f"  {path}{marker}")
         owner = str(StablePath(entry.owner_component_path))
         click.echo(f"    owner:{owner or '/'}")
 

@@ -964,6 +964,7 @@ class TestShowTargetStates:
         assert '@test_cli/flat_preview/"x"' in result.stdout
         assert "owner:/" in result.stdout
         assert "/#" not in result.stdout
+        assert "[dangling]" not in result.stdout
 
     def test_show_target_states_fingerprints_flag_shows_raw_paths(self) -> None:
         """show --target-states --fingerprints should print raw stored paths."""

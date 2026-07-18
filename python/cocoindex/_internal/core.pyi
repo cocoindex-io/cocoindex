@@ -260,6 +260,7 @@ class TargetStateEntry:
     fingerprint_path: str
     readable_path: str
     owner_component_path: StablePath
+    dangling: bool
 
 def list_target_states(app: App) -> list[TargetStateEntry]: ...
 def list_target_states_by_name(env: Any, app_name: str) -> list[TargetStateEntry]: ...
