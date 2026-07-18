@@ -45,6 +45,25 @@ class _StableNewEntry:
     __coco_memo_type_id__ = "test.FunctionMemoEntry/v1"
 
 
+@dataclass(frozen=True)
+class _PreviousIdentityOldEntry:
+    name: str
+    version: int
+    content: str
+
+
+@dataclass(frozen=True)
+class _PreviousIdentityMovedEntry:
+    name: str
+    version: int
+    content: str
+
+    __coco_memo_type_id__ = coco.prev_type_id(
+        _PreviousIdentityOldEntry.__module__,
+        _PreviousIdentityOldEntry.__qualname__,
+    )
+
+
 @dataclass
 class DictSourceDataEntry:
     name: str
@@ -116,6 +135,41 @@ def test_stable_type_id_reuses_memo_across_renamed_dataclass() -> None:
     assert GlobalDictTarget.store.data["A"].data == "processed: contentA1"
 
     _stable_type_source_data["A"] = _StableNewEntry(
+        name="A", version=2, content="contentA2"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_stable_type_entry": 1}
+    assert GlobalDictTarget.store.data["A"].data == "processed: contentA2"
+
+
+def test_prev_type_id_reuses_existing_memo_after_dataclass_move() -> None:
+    GlobalDictTarget.store.clear()
+    _stable_type_source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_prev_type_id_reuses_existing_memo_after_dataclass_move",
+            environment=coco_env,
+        ),
+        _process_stable_type_source_data,
+    )
+
+    _stable_type_source_data["A"] = _PreviousIdentityOldEntry(
+        name="A", version=1, content="contentA1"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_stable_type_entry": 1}
+    assert GlobalDictTarget.store.data["A"].data == "processed: contentA1"
+
+    _stable_type_source_data["A"] = _PreviousIdentityMovedEntry(
+        name="A", version=1, content="contentA1"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data["A"].data == "processed: contentA1"
+
+    _stable_type_source_data["A"] = _PreviousIdentityMovedEntry(
         name="A", version=2, content="contentA2"
     )
     app.update_blocking()

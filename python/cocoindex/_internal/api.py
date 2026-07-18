@@ -94,6 +94,7 @@ from .runner import (
 
 from .memo_fingerprint import (
     memo_fingerprint,
+    prev_type_id,
     register_memo_key_function,
     NotMemoKeyable,
 )
@@ -845,6 +846,7 @@ __all__ = [
     "serialize_by_pickle",
     # .memo_fingerprint
     "memo_fingerprint",
+    "prev_type_id",
     "register_memo_key_function",
     "NotMemoKeyable",
     # .pending_marker
