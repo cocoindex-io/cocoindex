@@ -394,6 +394,11 @@ impl Storage {
         let _guard = self.inner.coord.read().await;
         let rtxn = self.inner.db_env.read_txn()?;
         let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
+        // The dbi handle opened in a read txn only becomes usable by other
+        // transactions after this txn commits; dropping (aborting) it instead
+        // leaves the handle invalid and later reads fail with EINVAL when the
+        // sub-database was created by another process.
+        rtxn.commit()?;
         let env = self.inner.db_env.clone();
         let storage = self.clone();
         Ok(db.map(|db| AppStore::new(db, env, storage.clone())))
@@ -408,9 +413,14 @@ impl Storage {
         let db = {
             let _guard = self.inner.coord.read().await;
             let rtxn = self.inner.db_env.read_txn()?;
-            self.inner
+            let db = self
+                .inner
                 .db_env
-                .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?
+                .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?;
+            // See `open_app_store_by_name`: commit so the dbi handle stays
+            // valid for the write txn below.
+            rtxn.commit()?;
+            db
         };
         let Some(db) = db else {
             return Ok(());

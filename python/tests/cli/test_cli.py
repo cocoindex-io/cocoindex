@@ -861,3 +861,42 @@ class TestShowTree:
         assert file1_indent > files_indent, (
             "file1.txt should be indented as child of files"
         )
+
+
+# =============================================================================
+# Test: Show command reading directly from a database (--db/--app-name)
+# =============================================================================
+
+
+class TestShowFromDatabase:
+    """Tests for show --db/--app-name: opening a database from a fresh process
+    without loading the app module.
+
+    Regression tests: these flows used to fail with EINVAL (os error 22)
+    because the sub-database handle was opened in a read txn that was dropped
+    without commit, which leaves the handle invalid in any process other than
+    the one that created the sub-database.
+    """
+
+    def test_show_db_long_lists_details(self) -> None:
+        """show --db/--app-name -l should render details without the module."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show", "--db", "./cocoindex.db", "--app-name", "FlatPreviewApp", "-l"
+        )
+
+        assert "Stable paths:" in result.stdout
+        assert "- path:" in result.stdout
+        assert "states:1:Existing" in result.stdout
+
+    def test_show_db_tree_displays_components(self) -> None:
+        """show --db/--app-name --tree should render the tree without the module."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show", "--db", "./cocoindex.db", "--app-name", "FlatPreviewApp", "--tree"
+        )
+
+        assert "Stable paths" in result.stdout
+        assert "[component]" in result.stdout
