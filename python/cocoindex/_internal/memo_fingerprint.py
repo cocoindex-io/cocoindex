@@ -151,6 +151,34 @@ def _memo_type_label(typ: type) -> str:
     return f"{canonical_module_name(typ)}.{getattr(typ, '__qualname__', '<unknown>')}"
 
 
+class _PreviousTypeId(str):
+    """A prior automatic type identity carried through the stable-ID path."""
+
+    __slots__ = ()
+
+    def __new__(cls, module: str, qualname: str | None = None) -> _PreviousTypeId:
+        payload = module if qualname is None else f"{len(module)}:{module}{qualname}"
+        return super().__new__(cls, payload)
+
+    def __getnewargs__(self) -> tuple[str]:
+        return (str(self),)
+
+    def _identity_parts(self) -> tuple[str, str]:
+        module_length_str, separator, payload = self.partition(":")
+        if separator == "":
+            raise ValueError("invalid previous type identity payload")
+        module_length = int(module_length_str)
+        return payload[:module_length], payload[module_length:]
+
+    @property
+    def module(self) -> str:
+        return self._identity_parts()[0]
+
+    @property
+    def qualname(self) -> str:
+        return self._identity_parts()[1]
+
+
 def _validate_stable_type_id(stable_type_id: object, *, source: str) -> str:
     """Validate a non-empty stable type ID."""
     if not isinstance(stable_type_id, str):
@@ -160,6 +188,22 @@ def _validate_stable_type_id(stable_type_id: object, *, source: str) -> str:
             f"{source} must be non-empty and contain non-whitespace characters"
         )
     return stable_type_id
+
+
+def _validate_previous_type_id_part(value: object, *, source: str) -> str:
+    """Validate and normalize one previous automatic identity part."""
+    if isinstance(value, str):
+        return _validate_stable_type_id(str.__str__(value), source=source)
+    return _validate_stable_type_id(value, source=source)
+
+
+def prev_type_id(module: str, qualname: str) -> str:
+    """Return a marker that reuses a type's prior automatic identity."""
+    module = _validate_previous_type_id_part(module, source="prev_type_id() module")
+    qualname = _validate_previous_type_id_part(
+        qualname, source="prev_type_id() qualname"
+    )
+    return _PreviousTypeId(module, qualname)
 
 
 def _remove_stable_type_id(type_id: int, dead_ref: weakref.ReferenceType[type]) -> None:
@@ -273,6 +317,8 @@ def _type_identity_parts(typ: type) -> tuple[Fingerprintable, Fingerprintable]:
     names; ``None`` fills the qualname slot.
     """
     stable_type_id = _lookup_stable_type_id(typ)
+    if isinstance(stable_type_id, _PreviousTypeId):
+        return stable_type_id._identity_parts()
     if stable_type_id is not None:
         return (("__coco_memo_type_id__", stable_type_id), None)
     return (canonical_module_name(typ), getattr(typ, "__qualname__", None))
@@ -730,6 +776,7 @@ def fingerprint_call(
 
 __all__ = [
     "NotMemoKeyable",
+    "prev_type_id",
     "register_memo_key_function",
     "register_not_memo_keyable",
     "unregister_memo_key_function",

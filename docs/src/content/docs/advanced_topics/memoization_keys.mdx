@@ -28,10 +28,9 @@ Timing depends on where the value comes from. Function arguments are fingerprint
 
 For each data value, CocoIndex derives a canonical form with this precedence:
 
-1. **Class objects** (`type`) — the class values themselves, such as `ProductRow`, not instances such as `ProductRow(...)`. CocoIndex first checks for an explicit memo key registration on the class object's metaclass or its bases, including `type`. If none exists, it uses the built-in class-object identity path. It never calls memo-key or memo-state attributes on the class object itself. See the class-object notes below for what is and isn't included.
-2. For non-class objects, if the object implements **`__coco_memo_key__()`**, CocoIndex uses its return value.
-3. Otherwise, if you registered a **memo key function** for the object's type, CocoIndex uses that.
-4. Otherwise, CocoIndex uses built-in canonicalization for supported automatic types, including primitives, containers, dataclasses, Pydantic models, and pickle fallback.
+1. If the object implements **`__coco_memo_key__()`**, CocoIndex uses its return value. This applies to class instances, not class objects (`type`).
+2. Otherwise, if a **memo key function** is registered for the object's type, CocoIndex uses it.
+3. Otherwise, CocoIndex uses its built-in canonicalization.
 
 The following types are handled automatically (no custom key needed):
 
@@ -126,11 +125,35 @@ class SourceEntry:
     content: str
 ```
 
-To preserve reuse **after** a refactor, add the stable type ID before moving or renaming the class and ensure every affected memoized call executes under that ID. This seeding execution is cold for affected values: the stable type ID replaces the old module-plus-qualified-name namespace, so CocoIndex creates new memo entries instead of reusing the old ones.
+**Choose a durable string ID proactively.** For a new type, or before any memo entries for it matter, use a globally unique durable string `__coco_memo_type_id__` as shown above when memo stability is important and a future move or rename cannot be ruled out. Introducing or changing an ordinary string ID after entries exist creates a new memo namespace and causes one cold execution for affected memoized calls.
 
-An application update seeds only memoized calls that actually execute. A cached parent does not run its body or nested `@coco.fn` calls, so invalidate or reprocess affected parents—or otherwise invoke the affected nested calls—before the refactor.
+**Retain an existing automatic identity.** If a type already has reusable entries under its automatic identity, assign that exact previous identity to the moved class:
 
-After seeding, move or rename the class while keeping the same stable type ID so later updates can reuse the entries created under that ID. Stable type IDs preserve an input type's identity across refactors; normal function logic tracking still invalidates memo entries when the decorated function's source changes. Adding the stable type ID only after the move does not reconstruct entries created under the old module plus qualified name.
+```python
+from dataclasses import dataclass
+from typing import ClassVar
+import cocoindex as coco
+
+@dataclass
+class SourceEntry:
+    __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
+        "old_package.models",
+        "SourceEntry",
+    )
+
+    name: str
+    version: int
+```
+
+The arguments to `prev_type_id` are the exact previous canonical module and qualified name. Nested classes retain their enclosing names in the qualified name, such as `"Container.SourceEntry"`. A file-backed class previously defined in `__main__` uses the entry script's basename without `.py`; for example, `main.py` becomes `"main"`.
+
+`prev_type_id` does not scan, copy, promote, or migrate records. For a type-aware canonical form that already included the type's automatic identity, it keeps emitting the same `(old_module, old_qualname)`, so those existing entries remain directly addressable. Entries created through pickle fallback did not include this identity. Adding `prev_type_id` alone has no effect on pickle-fallback canonicalization and cannot recover those entries. Adding a memo key function makes future entries type-aware, changes the canonical form, and therefore starts cold; it still cannot recover prior pickle-fallback entries. Keep `prev_type_id` on the moved class for as long as that historical identity is desired. Replacing it later with an ordinary string stable ID intentionally starts a new namespace. Normal decorated-function logic changes can still invalidate memoization.
+
+`prev_type_id` preserves only this input type's identity within the memo key. Reuse still requires every other call-key component and normal reuse check to remain compatible; moving or renaming the memoized function can therefore start cold independently of the input type.
+
+Treat that previous canonical `(module, qualname)` as reserved while any active type emits it, and afterward for as long as entries under the historical identity may still be addressed. If a semantically different type later uses the same module and qualified name, matching memo-key payloads can share cached results.
+
+Assign the value returned by `prev_type_id` directly, or pass it intact as `stable_type_id`. Converting or serializing it to a plain string removes the historical-identity marker. For text-only persistence, store the module and qualified name separately and call `prev_type_id` again after loading.
 
 If you control the class definition, set `__coco_memo_type_id__` on the class. If you cannot or do not want to edit the class definition, register the same stable type ID with `register_memo_key_function`.
 
@@ -266,7 +289,7 @@ coco.register_memo_key_function(
 # MRO lookup and handles the Child value.
 ```
 
-Stable type IDs do not retroactively migrate memo entries created before the stable type ID existed.
+Adding a new ordinary string stable type ID does not retroactively migrate memo entries created under the automatic identity or a different string ID. Use `prev_type_id(...)` to retain a previous automatic identity; it keeps those entries directly addressable rather than migrating them.
 
 #### Class objects as inputs
 

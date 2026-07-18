@@ -1,5 +1,8 @@
+import copy
 import dataclasses
 import math
+import pickle
+import sys
 import weakref
 from typing import Any, ClassVar, cast
 
@@ -165,6 +168,210 @@ def test_dataclass_stable_type_id_reuses_fingerprint_across_module_move() -> Non
     )
     assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) != fingerprint_call(
         _dummy_fn, (NewEntry(2),), {}, []
+    )
+
+
+def test_prev_type_id_reuses_previous_automatic_identity() -> None:
+    import cocoindex as coco
+
+    class OldSourceEntry:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("source-entry", self.value)
+
+    class MovedSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
+            "old_package.models", "SourceEntry"
+        )
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("source-entry", self.value)
+
+    class DifferentModuleSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
+            "other_package.models", "SourceEntry"
+        )
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("source-entry", self.value)
+
+    class DifferentQualnameSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
+            "old_package.models", "OtherSourceEntry"
+        )
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("source-entry", self.value)
+
+    class StableStringSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = "old_package.models.SourceEntry"
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("source-entry", self.value)
+
+    OldSourceEntry.__module__ = "old_package.models"
+    OldSourceEntry.__qualname__ = "SourceEntry"
+
+    old_instance_fingerprint = fingerprint_call(_dummy_fn, (OldSourceEntry(1),), {}, [])
+    moved_instance_fingerprint = fingerprint_call(
+        _dummy_fn, (MovedSourceEntry(1),), {}, []
+    )
+    old_class_fingerprint = fingerprint_call(_dummy_fn, (OldSourceEntry,), {}, [])
+    moved_class_fingerprint = fingerprint_call(_dummy_fn, (MovedSourceEntry,), {}, [])
+
+    assert old_instance_fingerprint == moved_instance_fingerprint
+    assert old_class_fingerprint == moved_class_fingerprint
+    assert old_class_fingerprint != old_instance_fingerprint
+    assert moved_class_fingerprint != moved_instance_fingerprint
+
+    for changed_type in (DifferentModuleSourceEntry, DifferentQualnameSourceEntry):
+        assert old_instance_fingerprint != fingerprint_call(
+            _dummy_fn, (changed_type(1),), {}, []
+        )
+        assert old_class_fingerprint != fingerprint_call(
+            _dummy_fn, (changed_type,), {}, []
+        )
+
+    assert old_instance_fingerprint != fingerprint_call(
+        _dummy_fn, (StableStringSourceEntry(1),), {}, []
+    )
+    assert old_class_fingerprint != fingerprint_call(
+        _dummy_fn, (StableStringSourceEntry,), {}, []
+    )
+
+
+def test_prev_type_id_uses_canonical_main_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cocoindex as coco
+
+    class OldSourceEntry:
+        def __coco_memo_key__(self) -> object:
+            return "source-entry"
+
+    class CanonicalModuleSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id("main", "SourceEntry")
+
+        def __coco_memo_key__(self) -> object:
+            return "source-entry"
+
+    class LiteralMainModuleSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
+            "__main__", "SourceEntry"
+        )
+
+        def __coco_memo_key__(self) -> object:
+            return "source-entry"
+
+    main_module = sys.modules["__main__"]
+    monkeypatch.setattr(main_module, "__file__", "/tmp/main.py", raising=False)
+    OldSourceEntry.__module__ = "__main__"
+    OldSourceEntry.__qualname__ = "SourceEntry"
+
+    old_fingerprint = fingerprint_call(_dummy_fn, (OldSourceEntry(),), {}, [])
+    assert old_fingerprint == fingerprint_call(
+        _dummy_fn, (CanonicalModuleSourceEntry(),), {}, []
+    )
+    assert old_fingerprint != fingerprint_call(
+        _dummy_fn, (LiteralMainModuleSourceEntry(),), {}, []
+    )
+
+
+def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
+    import cocoindex as coco
+
+    left = coco.prev_type_id("a.b", "C")
+    right = coco.prev_type_id("a", "b.C")
+    assert str(left) != str(right)
+    assert left != right
+    assert len({left, right}) == 2
+
+    class HostileString(str):
+        def __len__(self) -> int:
+            return 1
+
+        def __str__(self) -> str:
+            return "wrong-str"
+
+        def __format__(self, format_spec: str) -> str:
+            return "wrong-format"
+
+        def strip(self, chars: str | None = None) -> str:
+            raise AssertionError("subclass strip should not be called")
+
+    normalized_marker = cast(
+        Any,
+        coco.prev_type_id(HostileString("old.package"), HostileString("Outer.Entry")),
+    )
+    assert (normalized_marker.module, normalized_marker.qualname) == (
+        "old.package",
+        "Outer.Entry",
+    )
+    assert normalized_marker == coco.prev_type_id("old.package", "Outer.Entry")
+    with pytest.raises(ValueError, match="non-empty"):
+        coco.prev_type_id(HostileString("   "), "Entry")
+
+    module = "old:package.models"
+    qualname = "Outer.Source.Entry"
+    marker = cast(Any, coco.prev_type_id(module, qualname))
+
+    for attribute in ("module", "qualname"):
+        with pytest.raises(AttributeError):
+            setattr(marker, attribute, "mutated")
+
+    variants: list[Any] = [
+        marker,
+        copy.copy(marker),
+        copy.deepcopy(marker),
+        *(
+            pickle.loads(pickle.dumps(marker, protocol=protocol))
+            for protocol in range(pickle.HIGHEST_PROTOCOL + 1)
+        ),
+    ]
+    for variant in variants:
+        assert type(variant) is type(marker)
+        assert (variant.module, variant.qualname) == (module, qualname)
+
+        class MovedSourceEntry:
+            __coco_memo_type_id__: ClassVar[str] = variant
+
+        assert _memo_fingerprint._type_identity_parts(MovedSourceEntry) == (
+            module,
+            qualname,
+        )
+
+    class RegisteredSourceEntry:
+        pass
+
+    try:
+        register_memo_key_function(RegisteredSourceEntry, stable_type_id=variants[-1])
+        assert _memo_fingerprint._type_identity_parts(RegisteredSourceEntry) == (
+            module,
+            qualname,
+        )
+    finally:
+        unregister_memo_key_function(RegisteredSourceEntry)
+
+    class OrdinaryStringSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = str(marker)
+
+    assert _memo_fingerprint._type_identity_parts(OrdinaryStringSourceEntry) == (
+        ("__coco_memo_type_id__", str(marker)),
+        None,
     )
 
 
@@ -472,6 +679,45 @@ def test_raw_class_object_honors_registered_metaclass_memo_key_and_state() -> No
         unregister_memo_key_function(MemoMeta)
 
 
+def test_prev_type_id_reuses_registered_metaclass_owner_identity() -> None:
+    import cocoindex as coco
+
+    class OldMemoMeta(type):
+        pass
+
+    class MovedMemoMeta(type):
+        pass
+
+    class OldEntry(metaclass=OldMemoMeta):
+        pass
+
+    class MovedEntry(metaclass=MovedMemoMeta):
+        pass
+
+    OldMemoMeta.__module__ = "old_package.models"
+    OldMemoMeta.__qualname__ = "SourceMeta"
+
+    def metaclass_key(cls: type) -> object:
+        return "source-class"
+
+    try:
+        register_memo_key_function(OldMemoMeta, metaclass_key)
+        register_memo_key_function(
+            MovedMemoMeta,
+            metaclass_key,
+            stable_type_id=coco.prev_type_id(
+                "old_package.models",
+                "SourceMeta",
+            ),
+        )
+        assert fingerprint_call(_dummy_fn, (OldEntry,), {}, []) == fingerprint_call(
+            _dummy_fn, (MovedEntry,), {}, []
+        )
+    finally:
+        unregister_memo_key_function(OldMemoMeta)
+        unregister_memo_key_function(MovedMemoMeta)
+
+
 def test_raw_class_object_honors_registered_type_memo_key_and_state() -> None:
     key_calls: list[type] = []
     state_calls: list[tuple[type, object]] = []
@@ -620,6 +866,50 @@ def test_register_memo_key_function_registers_key_function_and_stable_type_id_fo
         )
     finally:
         unregister_memo_key_function(Base)
+
+
+def test_prev_type_id_reuses_registered_mro_owner_identity() -> None:
+    import cocoindex as coco
+
+    class OldBase:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+    class OldChild(OldBase):
+        pass
+
+    class MovedBase:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+    class MovedChild(MovedBase):
+        pass
+
+    OldBase.__module__ = "old_package.models"
+    OldBase.__qualname__ = "SourceBase"
+
+    def base_key(entry: OldBase | MovedBase) -> object:
+        return ("base", entry.value)
+
+    try:
+        register_memo_key_function(OldBase, base_key)
+        register_memo_key_function(
+            MovedBase,
+            base_key,
+            stable_type_id=coco.prev_type_id(
+                "old_package.models",
+                "SourceBase",
+            ),
+        )
+        assert fingerprint_call(_dummy_fn, (OldChild(1),), {}, []) == fingerprint_call(
+            _dummy_fn, (MovedChild(1),), {}, []
+        )
+        assert fingerprint_call(_dummy_fn, (OldChild(1),), {}, []) != fingerprint_call(
+            _dummy_fn, (MovedChild(2),), {}, []
+        )
+    finally:
+        unregister_memo_key_function(OldBase)
+        unregister_memo_key_function(MovedBase)
 
 
 def test_register_memo_key_function_registers_stable_type_id_without_key_function() -> (
@@ -1199,6 +1489,18 @@ def test_register_memo_key_function_validation_and_public_export() -> None:
         pass
 
     assert coco.register_memo_key_function is register_memo_key_function
+    assert coco.prev_type_id is _memo_fingerprint.prev_type_id
+    assert "prev_type_id" in coco.__all__
+    previous_type_id = coco.prev_type_id("old_package.models", "SourceEntry")
+    assert isinstance(previous_type_id, str)
+    with pytest.raises(TypeError, match="prev_type_id.*module must be a str"):
+        coco.prev_type_id(cast(Any, object()), "SourceEntry")
+    with pytest.raises(TypeError, match="prev_type_id.*qualname must be a str"):
+        coco.prev_type_id("old_package.models", cast(Any, object()))
+    with pytest.raises(ValueError, match="prev_type_id.*module must be non-empty"):
+        coco.prev_type_id("", "SourceEntry")
+    with pytest.raises(ValueError, match="prev_type_id.*qualname must be non-empty"):
+        coco.prev_type_id("old_package.models", "   ")
     assert "register_memo_type_identifier" not in coco.__all__
     assert not hasattr(coco, "register_memo_type_identifier")
     assert "register_not_memo_keyable" not in coco.__all__
