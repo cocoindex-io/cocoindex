@@ -5,7 +5,15 @@ description: >
   registered memo key functions, or stable type IDs, and layer state validation
   (e.g. mtime, then content hash) on top.
 ---
-As described in [Function — Change detection](../programming_guide/function#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
+As described in [Function — Change detection](../programming_guide/function#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether a memo can be reused. By default, most types are fingerprinted automatically.
+
+Fingerprinting happens at these points:
+
+- **Function arguments** — when the function is called.
+- **Change-detected context values** — when they are provided (for example, by `builder.provide()`), before `use_context()` reads them.
+- **`deps` values** — once, when the `@coco.fn(..., deps=...)` or `@coco.fn.as_async(..., deps=...)` decorator is applied.
+
+This page covers how to customize that pipeline — how objects are fingerprinted and validated:
 
 - **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
 - **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
@@ -23,8 +31,6 @@ Most values need no customization. CocoIndex already handles primitives, contain
 :::
 
 ## How data fingerprinting works
-
-Timing depends on where the value comes from. Function arguments are fingerprinted when the function is called. Change-detected context values are fingerprinted when they are provided (for example, by `builder.provide()`), before `use_context()` reads them. `deps` values are fingerprinted once when the `@coco.fn(..., deps=...)` or `@coco.fn.as_async(..., deps=...)` decorator is applied.
 
 For each data value, CocoIndex derives a canonical form with this precedence:
 
@@ -161,7 +167,7 @@ Use `stable_type_id` without a key function only when CocoIndex already fingerpr
 
 Rule of thumb: if CocoIndex would otherwise use pickle for your object, `stable_type_id` by itself is not enough; register a key function and stable type ID together.
 
-Omit the key function argument entirely when registering only a stable type ID; do not pass `None` as the second argument.
+Either omit the key function argument or pass `None` when registering only a stable type ID; both forms are equivalent.
 
 ```python
 from dataclasses import dataclass
