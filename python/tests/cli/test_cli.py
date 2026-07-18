@@ -931,4 +931,3 @@ class TestShowLong:
         assert '/"x"' in path_line
         assert "@test_cli/flat_preview" in path_line
         assert "#" not in path_line
-        assert "key:'x'" in path_line

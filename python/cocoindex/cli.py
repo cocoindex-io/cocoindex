@@ -846,9 +846,7 @@ def _print_one_detail(detail: _core.StablePathDetail) -> None:
                 else "None"
             )
             states = ", ".join(f"{s.version}:{s.state}" for s in item_summary.states)
-            click.echo(
-                f"      - path:{item_summary.target_state_path} key:{item_summary.key!r}"
-            )
+            click.echo(f"      - path:{item_summary.target_state_path}")
             click.echo(
                 f"        states:{states or '-'}"
                 f" schema_version:{item_summary.provider_schema_version}"
