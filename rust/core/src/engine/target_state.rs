@@ -276,6 +276,10 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         self.register_all_attachment_providers(registry)
     }
 
+    pub fn stable_key(&self) -> &StableKey {
+        &self.inner.stable_key
+    }
+
     pub fn stable_key_chain(&self) -> Vec<StableKey> {
         let mut chain = vec![self.inner.stable_key.clone()];
         let mut current = self;
