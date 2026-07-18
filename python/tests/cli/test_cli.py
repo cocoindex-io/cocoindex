@@ -903,3 +903,32 @@ class TestShowFromDatabase:
 
         assert "Stable paths" in result.stdout
         assert "[component]" in result.stdout
+
+
+class TestShowLong:
+    """Tests for target-state rendering in show -l."""
+
+    def test_show_long_renders_readable_target_state_path(self) -> None:
+        """show -l should render target state paths with readable keys."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "-l")
+
+        path_line = next(
+            (
+                line
+                for line in result.stdout.split("\n")
+                if line.strip().startswith("- path:")
+            ),
+            None,
+        )
+        assert path_line is not None, (
+            f"Should have a target state path line:\n{result.stdout}"
+        )
+        # The leaf key "x" is resolved from tracking info; the root provider
+        # segment is resolved from the live provider registry (the app module
+        # is loaded), so no fingerprint remains.
+        assert '/"x"' in path_line
+        assert "@test_cli/flat_preview" in path_line
+        assert "#" not in path_line
+        assert "key:'x'" in path_line

@@ -106,9 +106,15 @@ struct TargetKeyResolver {
 }
 
 impl TargetKeyResolver {
-    fn new() -> Self {
+    /// `provider_keys` seeds the cache with the original keys of live
+    /// registered providers (see [`provider_key_seed`]); root provider
+    /// segments are resolvable only through this seed.
+    fn new(provider_keys: std::collections::HashMap<TargetStatePath, StableKey>) -> Self {
         Self {
-            cache: std::collections::HashMap::new(),
+            cache: provider_keys
+                .into_iter()
+                .map(|(path, key)| (path, Some(key)))
+                .collect(),
         }
     }
 
@@ -197,6 +203,26 @@ impl TargetKeyResolver {
         }
         Ok(rendered)
     }
+}
+
+/// Collect the original keys of all target-state providers registered in the
+/// live environment: root providers and their attachments, registered by name
+/// at module import time and never persisted, so this registry is the only
+/// source that can render their path segments readably. Two classes of
+/// provider-only segments remain unresolvable and keep the fingerprint
+/// fallback: providers whose modules aren't imported in this process (e.g.
+/// inspecting a database without loading the app), and attachments of nested
+/// providers, which live in build-local registries that are discarded when
+/// the run finishes.
+fn provider_key_seed<Prof: EngineProfile>(
+    env: &Environment<Prof>,
+) -> std::collections::HashMap<TargetStatePath, StableKey> {
+    let registry = env.target_states_providers().lock().unwrap();
+    registry
+        .providers
+        .iter()
+        .map(|(path, provider)| (path.clone(), provider.stable_key().clone()))
+        .collect()
 }
 
 fn summarize_target_state_items(
@@ -335,11 +361,12 @@ fn read_detail_in_txn(
 
 async fn get_stable_path_detail_from_store(
     store: &AppStore,
+    provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
     let db = store.db();
     let txn = store.read_txn().await?;
-    let mut resolver = TargetKeyResolver::new();
+    let mut resolver = TargetKeyResolver::new(provider_keys);
     Ok(Some(read_detail_in_txn(&db, &*txn, &mut resolver, path)?))
 }
 
@@ -348,7 +375,8 @@ pub async fn get_stable_path_detail<Prof: EngineProfile>(
     app: &App<Prof>,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
-    get_stable_path_detail_from_store(app.app_ctx().app_store(), path).await
+    let seed = provider_key_seed(app.app_ctx().env());
+    get_stable_path_detail_from_store(app.app_ctx().app_store(), seed, path).await
 }
 
 pub async fn get_stable_path_detail_by_name<Prof: EngineProfile>(
@@ -360,7 +388,7 @@ pub async fn get_stable_path_detail_by_name<Prof: EngineProfile>(
         Some(store) => store,
         None => return Ok(None),
     };
-    get_stable_path_detail_from_store(&store, path).await
+    get_stable_path_detail_from_store(&store, provider_key_seed(env), path).await
 }
 
 /// List direct children of a path. With `recursive=true`, walks the full subtree.
@@ -418,6 +446,7 @@ fn list_parents_in_txn(
 /// Query details for a path with optional children/parents, all in a single read txn.
 async fn query_details_from_store(
     store: &AppStore,
+    provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
     path: &StablePath,
     include_children: bool,
     recursive: bool,
@@ -425,7 +454,7 @@ async fn query_details_from_store(
 ) -> Result<Vec<StablePathDetail>> {
     let db = store.db();
     let txn = store.read_txn().await?;
-    let mut resolver = TargetKeyResolver::new();
+    let mut resolver = TargetKeyResolver::new(provider_keys);
 
     let mut results = Vec::new();
 
@@ -458,6 +487,7 @@ pub async fn query_stable_path_details<Prof: EngineProfile>(
 ) -> Result<Vec<StablePathDetail>> {
     query_details_from_store(
         app.app_ctx().app_store(),
+        provider_key_seed(app.app_ctx().env()),
         path,
         include_children,
         recursive,
@@ -479,7 +509,15 @@ pub async fn query_stable_path_details_by_name<Prof: EngineProfile>(
         Some(store) => store,
         None => return Ok(Vec::new()),
     };
-    query_details_from_store(&store, path, include_children, recursive, include_parents).await
+    query_details_from_store(
+        &store,
+        provider_key_seed(env),
+        path,
+        include_children,
+        recursive,
+        include_parents,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -487,7 +525,63 @@ mod tests {
     use super::*;
     use crate::state_store::test_support::make_test_store;
     use cocoindex_utils::fingerprint::Fingerprint;
+    use std::borrow::Cow;
     use std::sync::Arc;
+
+    fn comp_path(name: &str) -> StablePath {
+        StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
+    }
+
+    fn with_pid(path: &TargetStatePath, provider_id: Option<u64>) -> TargetStatePathWithProviderId {
+        TargetStatePathWithProviderId {
+            target_state_path: path.clone(),
+            provider_id,
+        }
+    }
+
+    fn tracking_bytes(items: Vec<(TargetStatePathWithProviderId, StableKey)>) -> Vec<u8> {
+        let mut info = db_schema::StablePathEntryTrackingInfo::new(Cow::Borrowed("test"));
+        for (path_with_pid, key) in items {
+            info.target_state_items.insert(
+                path_with_pid,
+                db_schema::TargetStateInfoItem {
+                    key: Cow::Owned(storekey::encode_vec(&key).unwrap()),
+                    states: Vec::new(),
+                    provider_schema_version: 0,
+                    provider_generation: None,
+                },
+            );
+        }
+        rmp_serde::to_vec_named(&info).unwrap()
+    }
+
+    async fn commit_writes(
+        store: &AppStore,
+        tracking: Vec<(StablePath, Vec<u8>)>,
+        owners: Vec<(TargetStatePath, StablePath)>,
+    ) {
+        let store2 = store.clone();
+        store
+            .storage
+            .run_txn(move |wtxn| {
+                let store = store2.clone();
+                let tracking = tracking.clone();
+                let owners = owners.clone();
+                Box::pin(async move {
+                    for (path, bytes) in &tracking {
+                        store.write_tracking_info_raw(wtxn, path, bytes).await?;
+                    }
+                    for (ts_path, owner) in &owners {
+                        store
+                            .upsert_target_state_owner(wtxn, ts_path, owner)
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn render_path_falls_back_to_fingerprints() {
@@ -497,11 +591,95 @@ mod tests {
 
         let db = store.db();
         let txn = store.read_txn().await.unwrap();
-        let mut resolver = TargetKeyResolver::new();
+        let mut resolver = TargetKeyResolver::new(Default::default());
         let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
 
         // Nothing is resolvable in an empty store: both segments stay fingerprints.
         assert_eq!(rendered, path.to_string());
         assert_eq!(rendered.matches("/#").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolves_root_segment_from_provider_seed() {
+        let (store, _dir) = make_test_store().await;
+        let root_path = TargetStatePath::new(Fingerprint::from(&"my_root").unwrap(), None);
+        let key = StableKey::Str(Arc::from("file.md"));
+        let path = root_path.concat(&key);
+        let comp = comp_path("comp");
+        commit_writes(
+            &store,
+            vec![(
+                comp.clone(),
+                tracking_bytes(vec![(with_pid(&path, None), key.clone())]),
+            )],
+            vec![(path.clone(), comp)],
+        )
+        .await;
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+        // Seed the root provider's key, as provider_key_seed does from the
+        // live registry (root providers are never persisted).
+        let seed = std::collections::HashMap::from([(
+            root_path.clone(),
+            StableKey::Symbol(Arc::from("my_root")),
+        )]);
+        let mut resolver = TargetKeyResolver::new(seed);
+        let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
+        assert_eq!(rendered, "/@my_root/\"file.md\"");
+    }
+
+    #[tokio::test]
+    async fn resolves_readable_paths_in_detail() {
+        let (store, _dir) = make_test_store().await;
+
+        // comp_c declares a "table" target state under an (unresolvable) root
+        // provider; the table creates a provider under which comp_d declares
+        // a row keyed by the integer 13.
+        let root_path = TargetStatePath::new(Fingerprint::from(&"root_target").unwrap(), None);
+        let table_key = StableKey::Str(Arc::from("table"));
+        let table_path = root_path.concat(&table_key);
+        let row_key = StableKey::Int(13);
+        let row_path = table_path.concat(&row_key);
+
+        let comp_c = comp_path("comp_c");
+        let comp_d = comp_path("comp_d");
+
+        commit_writes(
+            &store,
+            vec![
+                (
+                    comp_c.clone(),
+                    tracking_bytes(vec![(with_pid(&table_path, None), table_key.clone())]),
+                ),
+                (
+                    comp_d.clone(),
+                    tracking_bytes(vec![(with_pid(&row_path, Some(0)), row_key.clone())]),
+                ),
+            ],
+            vec![
+                (table_path.clone(), comp_c.clone()),
+                (row_path.clone(), comp_d.clone()),
+            ],
+        )
+        .await;
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+
+        let root_seg = root_path.to_string();
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let rendered = resolver.render_path(&db, &txn, &row_path, None).unwrap();
+        assert_eq!(rendered, format!("{root_seg}/\"table\"/13"));
+
+        // Detail summary renders readable paths (with provider_id suffix).
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let detail = read_detail_in_txn(&db, &txn, &mut resolver, &comp_d).unwrap();
+        assert_eq!(detail.target_state_items.len(), 1);
+        assert_eq!(
+            detail.target_state_items[0].target_state_path,
+            format!("{root_seg}/\"table\"/13[provider_id=0]")
+        );
+        assert_eq!(detail.target_state_items[0].key, row_key);
     }
 }
