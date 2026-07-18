@@ -524,6 +524,76 @@ pub async fn query_stable_path_details_by_name<Prof: EngineProfile>(
     .await
 }
 
+/// A tracked target state entry from the inverted owner index.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TargetStateEntry {
+    /// Raw fingerprint rendering, e.g. `/#96330b5a.../#4866...`.
+    pub fingerprint_path: String,
+    /// Readable rendering, e.g. `/@doc_store/"file.md"/[13]`; falls back to
+    /// `#hex` for segments that cannot be resolved.
+    pub readable_path: String,
+    pub owner_component_path: StablePath,
+}
+
+fn list_target_states_in_txn(
+    db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+    txn: &heed::RoTxn<'_, heed::WithoutTls>,
+    resolver: &mut TargetKeyResolver,
+) -> Result<Vec<TargetStateEntry>> {
+    let prefix = DbEntryKey::TargetStatePrefix.encode()?;
+    let mut results = Vec::new();
+    for entry in db.prefix_iter(txn, &prefix)? {
+        let (raw_key, raw_value) = entry?;
+        let path = match DbEntryKey::decode(raw_key)? {
+            DbEntryKey::TargetState(path) => path,
+            key => {
+                return Err(internal_error!(
+                    "Unexpected key in target state keyspace: {key:?}"
+                ));
+            }
+        };
+        let owner: db_schema::TargetStateOwnerInfo = from_msgpack_slice(raw_value)?;
+        let readable_path = resolver.render_path(db, txn, &path, None)?;
+        results.push(TargetStateEntry {
+            fingerprint_path: path.to_string(),
+            readable_path,
+            owner_component_path: owner.component_path,
+        });
+    }
+    Ok(results)
+}
+
+async fn list_target_states_from_store(
+    store: &AppStore,
+    provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
+) -> Result<Vec<TargetStateEntry>> {
+    let db = store.db();
+    let txn = store.read_txn().await?;
+    let mut resolver = TargetKeyResolver::new(provider_keys);
+    list_target_states_in_txn(&db, &*txn, &mut resolver)
+}
+
+/// List all tracked target states with their owner components from a live App.
+pub async fn list_target_states<Prof: EngineProfile>(
+    app: &App<Prof>,
+) -> Result<Vec<TargetStateEntry>> {
+    let seed = provider_key_seed(app.app_ctx().env());
+    list_target_states_from_store(app.app_ctx().app_store(), seed).await
+}
+
+/// Like [`list_target_states`], but takes an environment and an app name.
+/// Returns an empty list if the app's database doesn't exist.
+pub async fn list_target_states_by_name<Prof: EngineProfile>(
+    env: &Environment<Prof>,
+    app_name: &str,
+) -> Result<Vec<TargetStateEntry>> {
+    let store = match env.storage().open_app_store_by_name(app_name).await? {
+        Some(store) => store,
+        None => return Ok(Vec::new()),
+    };
+    list_target_states_from_store(&store, provider_key_seed(env)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +658,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lists_target_states_via_open_by_name() {
+        use crate::state_store::{Storage, StorageSettings};
+        let dir = tempfile::TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: 4 * 1024 * 1024,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+        let store = storage.create_app_store("TestApp").await.unwrap();
+        let root_path = TargetStatePath::new(Fingerprint::from(&"root").unwrap(), None);
+        let key = StableKey::Str(Arc::from("x"));
+        let ts_path = root_path.concat(&key);
+        let comp = comp_path("comp");
+        commit_writes(
+            &store,
+            vec![(
+                comp.clone(),
+                tracking_bytes(vec![(with_pid(&ts_path, None), key.clone())]),
+            )],
+            vec![(ts_path.clone(), comp.clone())],
+        )
+        .await;
+
+        let store2 = storage
+            .open_app_store_by_name("TestApp")
+            .await
+            .unwrap()
+            .unwrap();
+        let entries = list_target_states_from_store(&store2, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[tokio::test]
     async fn render_path_falls_back_to_fingerprints() {
         let (store, _dir) = make_test_store().await;
         let path = TargetStatePath::new(Fingerprint::from(&"root_target").unwrap(), None)
@@ -634,7 +740,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolves_readable_paths_in_detail() {
+    async fn resolves_readable_paths_and_lists_target_states() {
         let (store, _dir) = make_test_store().await;
 
         // comp_c declares a "table" target state under an (unresolvable) root
@@ -689,5 +795,22 @@ mod tests {
             format!("{row_path}[provider_id=0]")
         );
         assert_eq!(detail.target_state_items[0].key, row_key);
+
+        // Listing returns every owner-index entry with both path forms.
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let entries = list_target_states_in_txn(&db, &txn, &mut resolver).unwrap();
+        assert_eq!(entries.len(), 2);
+        let table_entry = entries
+            .iter()
+            .find(|e| e.fingerprint_path == table_path.to_string())
+            .unwrap();
+        assert_eq!(table_entry.readable_path, format!("{root_seg}/\"table\""));
+        assert_eq!(table_entry.owner_component_path, comp_c);
+        let row_entry = entries
+            .iter()
+            .find(|e| e.fingerprint_path == row_path.to_string())
+            .unwrap();
+        assert_eq!(row_entry.readable_path, format!("{root_seg}/\"table\"/13"));
+        assert_eq!(row_entry.owner_component_path, comp_d);
     }
 }

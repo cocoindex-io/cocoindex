@@ -159,6 +159,8 @@ pub enum DbEntryKey<'a> {
     StablePathPrefixPrefix(StablePathPrefix<'a>),
     StablePathPrefix(StablePathRef<'a>),
     StablePath(StablePath, StablePathEntryKey),
+    /// Prefix covering all `TargetState` entries, for prefix scans.
+    TargetStatePrefix,
     TargetState(TargetStatePath),
 
     /// Value type: IdSequencerInfo
@@ -183,6 +185,9 @@ impl<'a> storekey::Encode for DbEntryKey<'a> {
                 key.encode(e)?;
             }
 
+            DbEntryKey::TargetStatePrefix => {
+                e.write_u8(0x20)?;
+            }
             DbEntryKey::TargetState(path) => {
                 e.write_u8(0x20)?;
                 path.encode(e)?;
