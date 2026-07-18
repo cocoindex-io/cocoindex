@@ -575,6 +575,12 @@ fn list_target_states_in_txn(
             dangling,
         });
     }
+    // LMDB iteration yields fingerprint (i.e. effectively random) order;
+    // sort by the readable rendering for human consumption.
+    results.sort_by(|a, b| {
+        (a.readable_path.as_str(), a.fingerprint_path.as_str())
+            .cmp(&(b.readable_path.as_str(), b.fingerprint_path.as_str()))
+    });
     Ok(results)
 }
 
@@ -854,6 +860,8 @@ mod tests {
         let mut resolver = TargetKeyResolver::new(Default::default());
         let entries = list_target_states_in_txn(&db, &txn, &mut resolver).unwrap();
         assert_eq!(entries.len(), 2);
+        // Sorted by readable path: the table precedes its row.
+        assert_eq!(entries[0].fingerprint_path, table_path.to_string());
         let table_entry = entries
             .iter()
             .find(|e| e.fingerprint_path == table_path.to_string())
