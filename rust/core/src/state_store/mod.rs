@@ -11,6 +11,8 @@
 mod app_store;
 mod storage;
 mod submit_session;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod txn;
 
 pub use app_store::AppStore;
