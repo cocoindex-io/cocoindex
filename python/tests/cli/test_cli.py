@@ -949,3 +949,54 @@ class TestShowLong:
         assert path_line is not None
         assert "/#" in path_line
         assert "@test_cli/flat_preview" not in path_line
+
+
+class TestShowTargetStates:
+    """Tests for the --target-states flag on show."""
+
+    def test_show_target_states_lists_entries(self) -> None:
+        """show --target-states should list target states with owner components."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "--target-states")
+
+        assert "Target states:" in result.stdout
+        assert '@test_cli/flat_preview/"x"' in result.stdout
+        assert "owner:/" in result.stdout
+        assert "/#" not in result.stdout
+
+    def test_show_target_states_fingerprints_flag_shows_raw_paths(self) -> None:
+        """show --target-states --fingerprints should print raw stored paths."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show", "./flat_target_app.py", "--target-states", "--fingerprints"
+        )
+
+        assert "/#" in result.stdout
+        assert "@test_cli/flat_preview" not in result.stdout
+
+    def test_show_target_states_from_database(self) -> None:
+        """show --db/--app-name --target-states should work without the module."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show",
+            "--db",
+            "./cocoindex.db",
+            "--app-name",
+            "FlatPreviewApp",
+            "--target-states",
+        )
+
+        assert '/"x"' in result.stdout
+        assert "owner:/" in result.stdout
+
+    def test_show_target_states_rejects_incompatible_flags(self) -> None:
+        """--target-states cannot be combined with the detail-view flags."""
+        for flag in ("--tree", "-l"):
+            result = run_cli(
+                "show", "./flat_target_app.py", "--target-states", flag, check=False
+            )
+            assert result.returncode != 0
+            assert "cannot be combined" in result.stderr.lower()

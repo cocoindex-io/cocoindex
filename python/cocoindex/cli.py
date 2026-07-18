@@ -27,6 +27,8 @@ from cocoindex.inspect import (
     iter_stable_paths_by_name,
     get_stable_path_detail,
     get_stable_path_detail_by_name,
+    list_target_states,
+    list_target_states_by_name,
     query_stable_path_details,
     query_stable_path_details_by_name,
 )
@@ -634,6 +636,13 @@ def ls(app_target: str | None, db: str | None) -> None:
     default=False,
     help="Show target-state paths as raw fingerprints (as stored) instead of readable keys.",
 )
+@click.option(
+    "--target-states",
+    "target_states",
+    is_flag=True,
+    default=False,
+    help="List all tracked target states with their owner components.",
+)
 def show(
     app_target: str | None,
     db: str | None,
@@ -644,6 +653,7 @@ def show(
     recursive: bool,
     parents: bool,
     fingerprints: bool,
+    target_states: bool,
 ) -> None:
     """
     Show the app's stable paths.
@@ -658,6 +668,10 @@ def show(
         raise click.ClickException(
             "-r/--recursive and -p/--parents require a stable_path argument."
         )
+    if target_states and (stable_path or tree or long_format or recursive or parents):
+        raise click.ClickException(
+            "--target-states cannot be combined with stable_path, --tree, -l, -r or -p."
+        )
 
     if app_target:
         if db or app_name:
@@ -665,6 +679,13 @@ def show(
                 "Warning: --db/--app-name are ignored when APP_TARGET is specified.",
                 err=True,
             )
+        if target_states:
+            asyncio.run(
+                _show_target_states_from_app(
+                    _load_app(app_target), fingerprints=fingerprints
+                )
+            )
+            return
         asyncio.run(
             _show_from_app(
                 _load_app(app_target),
@@ -677,6 +698,13 @@ def show(
             )
         )
     elif db and app_name:
+        if target_states:
+            asyncio.run(
+                _show_target_states_from_database(
+                    db, app_name, fingerprints=fingerprints
+                )
+            )
+            return
         asyncio.run(
             _show_from_database(
                 db,
@@ -817,6 +845,50 @@ async def _show_from_database(
         click.echo("Stable paths:")
         async for item in iter_stable_paths_by_name(env, app_name):
             click.echo(f"  {StablePath(item.path)}")
+
+
+async def _show_target_states_from_app(
+    app: App[Any, Any],
+    fingerprints: bool = False,
+) -> None:
+    try:
+        entries = await list_target_states(app)
+        _print_target_states(entries, fingerprints)
+    finally:
+        await _stop_all_environments()
+
+
+async def _show_target_states_from_database(
+    db_path: str,
+    app_name: str,
+    fingerprints: bool = False,
+) -> None:
+    db_path_obj = pathlib.Path(db_path)
+    if not db_path_obj.exists():
+        raise click.ClickException(f"Database path does not exist: {db_path}")
+
+    from cocoindex._internal.setting import Settings
+
+    env = Environment(
+        Settings(db_path=db_path_obj),
+        event_loop=asyncio.get_running_loop(),
+    )
+    entries = await list_target_states_by_name(env, app_name)
+    _print_target_states(entries, fingerprints)
+
+
+def _print_target_states(
+    entries: list[_core.TargetStateEntry], fingerprints: bool
+) -> None:
+    click.echo("Target states:")
+    if not entries:
+        click.echo("  (none)")
+        return
+    for entry in entries:
+        path = entry.fingerprint_path if fingerprints else entry.readable_path
+        click.echo(f"  {path}")
+        owner = str(StablePath(entry.owner_component_path))
+        click.echo(f"    owner:{owner or '/'}")
 
 
 def _print_details(
