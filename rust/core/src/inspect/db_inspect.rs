@@ -106,6 +106,9 @@ fn decode_target_state_key(key_bytes: &[u8]) -> StableKey {
 /// resolved once per read txn.
 struct TargetKeyResolver {
     cache: std::collections::HashMap<TargetStatePath, Option<StableKey>>,
+    /// Owner components whose tracking items have already been folded into
+    /// `cache`, so each tracking blob is deserialized at most once per txn.
+    loaded_owners: std::collections::HashSet<StablePath>,
 }
 
 impl TargetKeyResolver {
@@ -118,6 +121,7 @@ impl TargetKeyResolver {
                 .into_iter()
                 .map(|(path, key)| (path, Some(key)))
                 .collect(),
+            loaded_owners: std::collections::HashSet::new(),
         }
     }
 
@@ -135,42 +139,45 @@ impl TargetKeyResolver {
         if let Some(cached) = self.cache.get(prefix) {
             return Ok(cached.clone());
         }
-        let resolved = Self::resolve_segment_uncached(db, txn, prefix)?;
+        self.load_owner_items(db, txn, prefix)?;
+        let resolved = self.cache.get(prefix).cloned().flatten();
+        // Also cache misses so unresolvable prefixes aren't retried per item.
         self.cache.insert(prefix.clone(), resolved.clone());
         Ok(resolved)
     }
 
-    fn resolve_segment_uncached(
+    /// Look up `prefix`'s owner component and fold all of the owner's
+    /// tracking items into the cache. Caching the whole blob at once keeps
+    /// resolution linear when one component owns many target states.
+    fn load_owner_items(
+        &mut self,
         db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
         txn: &heed::RoTxn<'_, heed::WithoutTls>,
         prefix: &TargetStatePath,
-    ) -> Result<Option<StableKey>> {
+    ) -> Result<()> {
         let owner_key = DbEntryKey::TargetState(prefix.clone()).encode()?;
         let owner_bytes = match db.get(txn, owner_key.as_slice())? {
             Some(bytes) => bytes,
-            None => return Ok(None),
+            None => return Ok(()),
         };
         let owner: db_schema::TargetStateOwnerInfo = from_msgpack_slice(owner_bytes)?;
+        if !self.loaded_owners.insert(owner.component_path.clone()) {
+            return Ok(());
+        }
         let tracking_key =
             DbEntryKey::StablePath(owner.component_path, StablePathEntryKey::TrackingInfo)
                 .encode()?;
         let tracking_bytes = match db.get(txn, tracking_key.as_slice())? {
             Some(bytes) => bytes,
-            None => return Ok(None),
+            None => return Ok(()),
         };
         let info: db_schema::StablePathEntryTrackingInfo = from_msgpack_slice(tracking_bytes)?;
-        // Items are ordered by (target_state_path, provider_id) with `None < Some`,
-        // so the first item at or after (prefix, None) has the matching path, if any.
-        let start = TargetStatePathWithProviderId {
-            target_state_path: prefix.clone(),
-            provider_id: None,
-        };
-        Ok(info
-            .target_state_items
-            .range(start..)
-            .next()
-            .filter(|(path_with_pid, _)| path_with_pid.target_state_path == *prefix)
-            .map(|(_, item)| decode_target_state_key(item.key.as_ref())))
+        for (path_with_pid, item) in &info.target_state_items {
+            self.cache
+                .entry(path_with_pid.target_state_path.clone())
+                .or_insert_with(|| Some(decode_target_state_key(item.key.as_ref())));
+        }
+        Ok(())
     }
 
     /// Render a readable path like `/@target/"file.md"/[13]`, falling back to
