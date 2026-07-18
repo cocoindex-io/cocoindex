@@ -983,6 +983,30 @@ def test_stable_type_id_only_registration_is_exact_for_subclasses() -> None:
         unregister_memo_key_function(SameStableTypeId)
 
 
+def test_stable_type_id_only_subclass_registration_does_not_hide_base_key() -> None:
+    class Parent:
+        def __init__(self, value: object, ignored: object) -> None:
+            self.value = value
+            self.ignored = ignored
+
+    class Child(Parent):
+        pass
+
+    try:
+        register_memo_key_function(Parent, lambda entry: ("parent", entry.value))
+        register_memo_key_function(Child, stable_type_id="test.RegisteredExactChild/v1")
+
+        assert fingerprint_call(_dummy_fn, (Child(1, "a"),), {}, []) == (
+            fingerprint_call(_dummy_fn, (Child(1, "b"),), {}, [])
+        )
+        assert fingerprint_call(_dummy_fn, (Child(1, "a"),), {}, []) != (
+            fingerprint_call(_dummy_fn, (Child(2, "a"),), {}, [])
+        )
+    finally:
+        unregister_memo_key_function(Child)
+        unregister_memo_key_function(Parent)
+
+
 def test_stable_type_id_only_registration_replaces_key_and_state_functions() -> None:
     @dataclasses.dataclass
     class Entry:
@@ -1226,14 +1250,26 @@ def test_register_not_memo_keyable_replaces_stable_type_id_for_class_objects() -
         unregister_memo_key_function(SameStableTypeId)
 
 
-def test_register_memo_key_function_rejects_explicit_none_key_function() -> None:
+def test_register_memo_key_function_accepts_explicit_none_key_function() -> None:
     class Entry:
-        pass
+        def __coco_memo_key__(self) -> object:
+            return ("entry",)
 
-    with pytest.raises(TypeError, match="key_fn"):
+    class SameStableTypeId:
+        def __coco_memo_key__(self) -> object:
+            return ("entry",)
+
+    try:
+        register_memo_key_function(Entry, None, stable_type_id="test.ExplicitNone/v1")
         register_memo_key_function(
-            Entry, cast(Any, None), stable_type_id="test.ExplicitNone/v1"
+            SameStableTypeId, stable_type_id="test.ExplicitNone/v1"
         )
+        assert fingerprint_call(_dummy_fn, (Entry(),), {}, []) == fingerprint_call(
+            _dummy_fn, (SameStableTypeId(),), {}, []
+        )
+    finally:
+        unregister_memo_key_function(Entry)
+        unregister_memo_key_function(SameStableTypeId)
 
 
 @pytest.mark.parametrize(
@@ -1467,6 +1503,12 @@ def test_stable_type_id_exact_type_and_validation() -> None:
         def __coco_memo_key__(self) -> object:
             return ("bad", 1)
 
+    class NoneId:
+        __coco_memo_type_id__ = None
+
+        def __coco_memo_key__(self) -> object:
+            return ("bad", 1)
+
     assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) == fingerprint_call(
         _dummy_fn, (NewEntry(1),), {}, []
     )
@@ -1478,6 +1520,8 @@ def test_stable_type_id_exact_type_and_validation() -> None:
     )
     with pytest.raises(TypeError, match="must be a str"):
         fingerprint_call(_dummy_fn, (BadObjectId(),), {}, [])
+    with pytest.raises(TypeError, match="must be a str"):
+        fingerprint_call(_dummy_fn, (NoneId(),), {}, [])
     with pytest.raises(ValueError, match="non-empty"):
         fingerprint_call(_dummy_fn, (EmptyId(),), {}, [])
 

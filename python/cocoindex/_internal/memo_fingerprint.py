@@ -32,21 +32,16 @@ _KeyFn = typing.Callable[[typing.Any], typing.Any]
 _StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
 
 
-class _KeyFnUnset:
-    def __repr__(self) -> str:
-        return "<omitted>"
-
-
-_KEY_FN_UNSET = _KeyFnUnset()
-
-
-class _MemoFns(typing.NamedTuple):
-    key_fn: _KeyFn
+class _MemoTypeRegistry(typing.NamedTuple):
+    key_fn: _KeyFn | None = None
     state_fn: _StateFn | None = None
+    stable_type_id: str | None = None
 
 
-_memo_fns: dict[int, tuple[weakref.ReferenceType[type], _MemoFns]] = {}
-_stable_type_ids: dict[int, tuple[weakref.ReferenceType[type], str]] = {}
+_STABLE_TYPE_ID_MISSING = object()
+_memo_type_registry: dict[
+    int, tuple[weakref.ReferenceType[type], _MemoTypeRegistry]
+] = {}
 
 
 class StateFnEntry(typing.NamedTuple):
@@ -206,98 +201,62 @@ def prev_type_id(module: str, qualname: str) -> str:
     return _PreviousTypeId(module, qualname)
 
 
-def _remove_stable_type_id(type_id: int, dead_ref: weakref.ReferenceType[type]) -> None:
+def _remove_memo_type_registry(
+    type_id: int, dead_ref: weakref.ReferenceType[type]
+) -> None:
     """Remove ``type_id`` only if ``dead_ref`` is still the stored weakref."""
-    entry = _stable_type_ids.get(type_id)
+    entry = _memo_type_registry.get(type_id)
     if entry is not None and entry[0] is dead_ref:
-        _stable_type_ids.pop(type_id, None)
+        _memo_type_registry.pop(type_id, None)
 
 
-def _register_stable_type_id(typ: type, stable_type_id: str) -> None:
-    """Register a stable type ID for one exact Python type."""
+def _register_memo_type_registry(typ: type, registry: _MemoTypeRegistry) -> None:
+    """Register memo configuration for one exact Python type."""
     type_id = id(typ)
 
-    def _remove_stale_type_id(
-        dead_ref: weakref.ReferenceType[type],
-    ) -> None:
-        _remove_stable_type_id(type_id, dead_ref)
+    def _remove_stale_registry(dead_ref: weakref.ReferenceType[type]) -> None:
+        _remove_memo_type_registry(type_id, dead_ref)
 
-    _stable_type_ids[type_id] = (
-        weakref.ref(typ, _remove_stale_type_id),
-        stable_type_id,
+    _memo_type_registry[type_id] = (
+        weakref.ref(typ, _remove_stale_registry),
+        registry,
     )
 
 
-def _unregister_stable_type_id(typ: type) -> None:
-    """Best-effort removal of an exact-type stable type ID registration."""
+def _unregister_memo_type_registry(typ: type) -> None:
+    """Best-effort removal of an exact-type memo registration."""
     type_id = id(typ)
-    entry = _stable_type_ids.get(type_id)
+    entry = _memo_type_registry.get(type_id)
     if entry is not None and entry[0]() is typ:
-        _stable_type_ids.pop(type_id, None)
+        _memo_type_registry.pop(type_id, None)
 
 
-def _registered_stable_type_id(typ: type) -> str | None:
-    """Return the registered stable type ID for ``typ`` from the id-keyed table."""
+def _registered_memo_type_registry(typ: type) -> _MemoTypeRegistry | None:
+    """Return the exact type's registration from the identity-keyed table."""
     type_id = id(typ)
-    entry = _stable_type_ids.get(type_id)
+    entry = _memo_type_registry.get(type_id)
     if entry is None:
         return None
-    ref, stable_type_id = entry
+    ref, registry = entry
     if ref() is typ:
-        return stable_type_id
-    _stable_type_ids.pop(type_id, None)
+        return registry
+    _memo_type_registry.pop(type_id, None)
     return None
 
 
 def _lookup_stable_type_id(typ: type) -> str | None:
     """Resolve a registered or exact ``__coco_memo_type_id__`` stable type ID."""
-    stable_type_id = _registered_stable_type_id(typ)
-    if stable_type_id is not None:
-        return stable_type_id
-    if "__coco_memo_type_id__" in typ.__dict__:
-        return _validate_stable_type_id(
-            typ.__dict__["__coco_memo_type_id__"],
-            source=f"{_memo_type_label(typ)}.__coco_memo_type_id__",
-        )
-    return None
+    registry = _registered_memo_type_registry(typ)
+    if registry is not None and registry.stable_type_id is not None:
+        return registry.stable_type_id
 
-
-def _remove_memo_fns(type_id: int, dead_ref: weakref.ReferenceType[type]) -> None:
-    """Remove ``type_id`` only if ``dead_ref`` is still the stored weakref."""
-    entry = _memo_fns.get(type_id)
-    if entry is not None and entry[0] is dead_ref:
-        _memo_fns.pop(type_id, None)
-
-
-def _register_memo_fns(typ: type, memo_fns: _MemoFns) -> None:
-    """Register memo functions for one exact Python type."""
-    type_id = id(typ)
-
-    def _remove_stale_memo_fns(dead_ref: weakref.ReferenceType[type]) -> None:
-        _remove_memo_fns(type_id, dead_ref)
-
-    _memo_fns[type_id] = (weakref.ref(typ, _remove_stale_memo_fns), memo_fns)
-
-
-def _unregister_memo_fns(typ: type) -> None:
-    """Best-effort removal of an exact-type memo function registration."""
-    type_id = id(typ)
-    entry = _memo_fns.get(type_id)
-    if entry is not None and entry[0]() is typ:
-        _memo_fns.pop(type_id, None)
-
-
-def _registered_memo_fns(typ: type) -> _MemoFns | None:
-    """Return registered memo functions for ``typ`` from the id-keyed table."""
-    type_id = id(typ)
-    entry = _memo_fns.get(type_id)
-    if entry is None:
+    stable_type_id = typ.__dict__.get("__coco_memo_type_id__", _STABLE_TYPE_ID_MISSING)
+    if stable_type_id is _STABLE_TYPE_ID_MISSING:
         return None
-    ref, memo_fns = entry
-    if ref() is typ:
-        return memo_fns
-    _memo_fns.pop(type_id, None)
-    return None
+    return _validate_stable_type_id(
+        stable_type_id,
+        source=f"{_memo_type_label(typ)}.__coco_memo_type_id__",
+    )
 
 
 _MEMO_KEY_ATTR = "__coco_memo_key__"
@@ -342,16 +301,18 @@ def _canonicalize_key_fragment(
 def _canonicalize_registered_memo_key(
     obj: object,
     owner: type,
-    memo: _MemoFns,
+    registry: _MemoTypeRegistry,
     state: _CanonicalizeState,
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
-    key = memo.key_fn(obj)
+    key_fn = registry.key_fn
+    assert key_fn is not None
+    key = key_fn(obj)
     tag = "hook"
-    if memo.state_fn is not None:
+    if registry.state_fn is not None:
         tag = "shook"
-        bound = functools.partial(memo.state_fn, obj)
-        state_methods.append(_make_state_fn_entry(bound, memo.state_fn))
+        bound = functools.partial(registry.state_fn, obj)
+        state_methods.append(_make_state_fn_entry(bound, registry.state_fn))
     return (
         tag,
         *_type_identity_parts(owner),
@@ -370,10 +331,10 @@ def _canonicalize_class_object(
     for owner in metaclass.__mro__:
         if owner is object:
             break
-        memo = _registered_memo_fns(owner)
-        if memo is not None:
+        registry = _registered_memo_type_registry(owner)
+        if registry is not None and registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
-                cls, owner, memo, state, state_methods
+                cls, owner, registry, state, state_methods
             )
 
     return (
@@ -471,6 +432,7 @@ def register_memo_key_function(
 @typing.overload
 def register_memo_key_function(
     typ: type,
+    key_fn: None = None,
     *,
     stable_type_id: str,
 ) -> None: ...
@@ -478,7 +440,7 @@ def register_memo_key_function(
 
 def register_memo_key_function(
     typ: type,
-    key_fn: _KeyFn | object = _KEY_FN_UNSET,
+    key_fn: _KeyFn | None = None,
     *,
     state_fn: _StateFn | None = None,
     stable_type_id: str | None = None,
@@ -489,14 +451,14 @@ def register_memo_key_function(
     type wins. Stable type IDs registered without a key function apply to the
     exact type only; stable type IDs registered with a key function identify
     that selected owner type. Each call replaces the full registration for
-    ``typ``: omitting ``stable_type_id`` clears any previous stable type ID registered for ``typ``,
-    and omitting ``key_fn`` clears any previous key/state functions.
+    ``typ``: omitting ``stable_type_id`` clears any previous registered stable
+    type ID, and omitting ``key_fn`` or passing ``None`` clears any previous
+    key/state functions.
 
-    To register only a stable type ID, omit ``key_fn`` rather than passing
-    ``None``. When a registered stable type ID should affect a value used in
-    ``deps=``, call this before the corresponding ``@coco.fn`` /
-    ``@coco.fn.as_async`` decorator is applied because ``deps`` fingerprints are
-    computed at decoration time.
+    When a registered stable type ID should affect a value used in ``deps=``,
+    call this before the corresponding ``@coco.fn`` / ``@coco.fn.as_async``
+    decorator is applied because ``deps`` fingerprints are computed at
+    decoration time.
     """
 
     if not isinstance(typ, type):
@@ -510,11 +472,6 @@ def register_memo_key_function(
             source="register_memo_key_function(..., stable_type_id)",
         )
     if key_fn is None:
-        raise TypeError(
-            "register_memo_key_function() key_fn must be callable; omit key_fn "
-            "when registering only a stable type ID"
-        )
-    if key_fn is _KEY_FN_UNSET:
         if state_fn is not None:
             raise TypeError(
                 "register_memo_key_function() state_fn requires a memo key function"
@@ -534,14 +491,14 @@ def register_memo_key_function(
             f"got {type(state_fn).__name__}"
         )
 
-    if stable_type_id is not None:
-        _register_stable_type_id(typ, stable_type_id)
-    else:
-        _unregister_stable_type_id(typ)
-    if key_fn is not _KEY_FN_UNSET:
-        _register_memo_fns(typ, _MemoFns(typing.cast(_KeyFn, key_fn), state_fn))
-    else:
-        _unregister_memo_fns(typ)
+    _register_memo_type_registry(
+        typ,
+        _MemoTypeRegistry(
+            key_fn=key_fn,
+            state_fn=state_fn,
+            stable_type_id=stable_type_id,
+        ),
+    )
 
 
 def register_not_memo_keyable(typ: type) -> None:
@@ -566,16 +523,14 @@ def register_not_memo_keyable(typ: type) -> None:
             "This type maintains internal state that is incompatible with memoization."
         )
 
-    _unregister_stable_type_id(typ)
-    _register_memo_fns(typ, _MemoFns(_raise_not_memo_keyable))
+    _register_memo_type_registry(typ, _MemoTypeRegistry(key_fn=_raise_not_memo_keyable))
 
 
 def unregister_memo_key_function(typ: type) -> None:
     """Remove registered memo key function and stable type ID (best-effort)."""
 
     if isinstance(typ, type):
-        _unregister_stable_type_id(typ)
-        _unregister_memo_fns(typ)
+        _unregister_memo_type_registry(typ)
 
 
 def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
@@ -648,10 +603,10 @@ def _canonicalize(
         )
 
     for owner in type(obj).__mro__:
-        memo = _registered_memo_fns(owner)
-        if memo is not None:
+        registry = _registered_memo_type_registry(owner)
+        if registry is not None and registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
-                obj, owner, memo, state, state_methods
+                obj, owner, registry, state, state_methods
             )
 
     # 3) Cycle / shared-reference tracking
