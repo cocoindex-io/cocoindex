@@ -66,6 +66,10 @@ impl TargetStatePath {
         &self.0[..self.0.len() - 1]
     }
 
+    pub fn prefix(&self, len: usize) -> Self {
+        Self(Arc::from(&self.0[..len]))
+    }
+
     pub fn as_slice(&self) -> &[utils::fingerprint::Fingerprint] {
         &self.0
     }

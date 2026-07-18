@@ -7,6 +7,7 @@ use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::{self, ChildExistenceInfo, DbEntryKey, StablePathEntryKey};
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
+use crate::state::target_state_path::{TargetStatePath, TargetStatePathWithProviderId};
 use crate::state_store::AppStore;
 use cocoindex_utils::deser::from_msgpack_slice;
 use futures::stream::{Stream, StreamExt};
@@ -96,12 +97,117 @@ fn decode_target_state_key(key_bytes: &[u8]) -> StableKey {
     }
 }
 
+/// Resolves fingerprinted target state path segments back to their original
+/// `StableKey`s via the inverted owner index + the owner's tracking info.
+/// Caches per path prefix, including misses, so items sharing ancestors are
+/// resolved once per read txn.
+struct TargetKeyResolver {
+    cache: std::collections::HashMap<TargetStatePath, Option<StableKey>>,
+}
+
+impl TargetKeyResolver {
+    fn new() -> Self {
+        Self {
+            cache: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Resolve the original `StableKey` for the last segment of `prefix`.
+    /// Returns `None` when the prefix has no owner entry or tracking item:
+    /// provider-only path segments (root providers, provider attachments) are
+    /// never declared as target states so they have neither, and a crashed or
+    /// in-flight run can leave either record missing.
+    fn resolve_segment(
+        &mut self,
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        prefix: &TargetStatePath,
+    ) -> Result<Option<StableKey>> {
+        if let Some(cached) = self.cache.get(prefix) {
+            return Ok(cached.clone());
+        }
+        let resolved = Self::resolve_segment_uncached(db, txn, prefix)?;
+        self.cache.insert(prefix.clone(), resolved.clone());
+        Ok(resolved)
+    }
+
+    fn resolve_segment_uncached(
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        prefix: &TargetStatePath,
+    ) -> Result<Option<StableKey>> {
+        let owner_key = DbEntryKey::TargetState(prefix.clone()).encode()?;
+        let owner_bytes = match db.get(txn, owner_key.as_slice())? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let owner: db_schema::TargetStateOwnerInfo = from_msgpack_slice(owner_bytes)?;
+        let tracking_key =
+            DbEntryKey::StablePath(owner.component_path, StablePathEntryKey::TrackingInfo)
+                .encode()?;
+        let tracking_bytes = match db.get(txn, tracking_key.as_slice())? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let info: db_schema::StablePathEntryTrackingInfo = from_msgpack_slice(tracking_bytes)?;
+        // Items are ordered by (target_state_path, provider_id) with `None < Some`,
+        // so the first item at or after (prefix, None) has the matching path, if any.
+        let start = TargetStatePathWithProviderId {
+            target_state_path: prefix.clone(),
+            provider_id: None,
+        };
+        Ok(info
+            .target_state_items
+            .range(start..)
+            .next()
+            .filter(|(path_with_pid, _)| path_with_pid.target_state_path == *prefix)
+            .map(|(_, item)| decode_target_state_key(item.key.as_ref())))
+    }
+
+    /// Render a readable path like `/@target/"file.md"/[13]`, falling back to
+    /// the `#hex` fingerprint for any segment that cannot be resolved.
+    /// `leaf_key` supplies the already-decoded key for the last segment.
+    fn render_path(
+        &mut self,
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        path: &TargetStatePath,
+        leaf_key: Option<&StableKey>,
+    ) -> Result<String> {
+        let num_segments = path.as_slice().len();
+        let mut rendered = String::new();
+        for i in 0..num_segments {
+            let key = if i + 1 == num_segments {
+                match leaf_key {
+                    Some(key) => {
+                        // Seed the cache: a provider item's full path is an
+                        // ancestor prefix of its child items' paths.
+                        self.cache.insert(path.clone(), Some(key.clone()));
+                        Some(key.clone())
+                    }
+                    None => self.resolve_segment(db, txn, path)?,
+                }
+            } else {
+                self.resolve_segment(db, txn, &path.prefix(i + 1))?
+            };
+            match key {
+                Some(key) => rendered.push_str(&format!("/{key}")),
+                None => rendered.push_str(&format!("/{}", path.as_slice()[i])),
+            }
+        }
+        Ok(rendered)
+    }
+}
+
 fn summarize_target_state_items(
+    db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+    txn: &heed::RoTxn<'_, heed::WithoutTls>,
+    resolver: &mut TargetKeyResolver,
     target_state_items: &std::collections::BTreeMap<
-        crate::state::target_state_path::TargetStatePathWithProviderId,
+        TargetStatePathWithProviderId,
         db_schema::TargetStateInfoItem,
     >,
-) -> Vec<TargetStateInfoItemSummary> {
+) -> Result<Vec<TargetStateInfoItemSummary>> {
     target_state_items
         .iter()
         .map(|(path_with_pid, item)| {
@@ -128,13 +234,19 @@ fn summarize_target_state_items(
                         provider_schema_version: generation.provider_schema_version,
                     });
 
-            TargetStateInfoItemSummary {
-                target_state_path: path_with_pid.to_string(),
+            let mut target_state_path =
+                resolver.render_path(db, txn, &path_with_pid.target_state_path, Some(&key))?;
+            if let Some(id) = path_with_pid.provider_id {
+                target_state_path.push_str(&format!("[provider_id={id}]"));
+            }
+
+            Ok(TargetStateInfoItemSummary {
+                target_state_path,
                 key,
                 states,
                 provider_schema_version: item.provider_schema_version,
                 provider_generation,
-            }
+            })
         })
         .collect()
 }
@@ -183,6 +295,7 @@ fn lookup_node_type(
 fn read_detail_in_txn(
     db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
     txn: &heed::RoTxn<'_, heed::WithoutTls>,
+    resolver: &mut TargetKeyResolver,
     path: &StablePath,
 ) -> Result<StablePathDetail> {
     // Get TrackingInfo (version, processor_name, target_state_items)
@@ -196,7 +309,7 @@ fn read_detail_in_txn(
                 info.version,
                 info.processor_name.to_string(),
                 info.target_state_items.len(),
-                summarize_target_state_items(&info.target_state_items),
+                summarize_target_state_items(db, txn, resolver, &info.target_state_items)?,
             )
         } else {
             (0, String::new(), 0, Vec::new())
@@ -226,7 +339,8 @@ async fn get_stable_path_detail_from_store(
 ) -> Result<Option<StablePathDetail>> {
     let db = store.db();
     let txn = store.read_txn().await?;
-    Ok(Some(read_detail_in_txn(&db, &*txn, path)?))
+    let mut resolver = TargetKeyResolver::new();
+    Ok(Some(read_detail_in_txn(&db, &*txn, &mut resolver, path)?))
 }
 
 /// Get detailed information about a single stable path from LMDB
@@ -253,6 +367,7 @@ pub async fn get_stable_path_detail_by_name<Prof: EngineProfile>(
 fn list_children_in_txn(
     db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
     txn: &heed::RoTxn<'_, heed::WithoutTls>,
+    resolver: &mut TargetKeyResolver,
     path: &StablePath,
     recursive: bool,
 ) -> Result<Vec<StablePathDetail>> {
@@ -275,7 +390,7 @@ fn list_children_in_txn(
                 queue.push_back(child_path.clone());
             }
 
-            results.push(read_detail_in_txn(db, txn, &child_path)?);
+            results.push(read_detail_in_txn(db, txn, resolver, &child_path)?);
         }
     }
     Ok(results)
@@ -285,13 +400,14 @@ fn list_children_in_txn(
 fn list_parents_in_txn(
     db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
     txn: &heed::RoTxn<'_, heed::WithoutTls>,
+    resolver: &mut TargetKeyResolver,
     path: &StablePath,
 ) -> Result<Vec<StablePathDetail>> {
     let mut results = Vec::new();
     let mut current: StablePathRef<'_> = path.as_ref();
     while let Some((parent_ref, _key)) = current.split_parent() {
         let parent_path: StablePath = parent_ref.into();
-        results.push(read_detail_in_txn(db, txn, &parent_path)?);
+        results.push(read_detail_in_txn(db, txn, resolver, &parent_path)?);
         current = parent_ref;
     }
     // Reverse so parents appear root-first
@@ -309,17 +425,24 @@ async fn query_details_from_store(
 ) -> Result<Vec<StablePathDetail>> {
     let db = store.db();
     let txn = store.read_txn().await?;
+    let mut resolver = TargetKeyResolver::new();
 
     let mut results = Vec::new();
 
     if include_parents {
-        results.extend(list_parents_in_txn(&db, &*txn, path)?);
+        results.extend(list_parents_in_txn(&db, &*txn, &mut resolver, path)?);
     }
 
-    results.push(read_detail_in_txn(&db, &*txn, path)?);
+    results.push(read_detail_in_txn(&db, &*txn, &mut resolver, path)?);
 
     if include_children {
-        results.extend(list_children_in_txn(&db, &*txn, path, recursive)?);
+        results.extend(list_children_in_txn(
+            &db,
+            &*txn,
+            &mut resolver,
+            path,
+            recursive,
+        )?);
     }
 
     Ok(results)
@@ -357,4 +480,28 @@ pub async fn query_stable_path_details_by_name<Prof: EngineProfile>(
         None => return Ok(Vec::new()),
     };
     query_details_from_store(&store, path, include_children, recursive, include_parents).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_store::test_support::make_test_store;
+    use cocoindex_utils::fingerprint::Fingerprint;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn render_path_falls_back_to_fingerprints() {
+        let (store, _dir) = make_test_store().await;
+        let path = TargetStatePath::new(Fingerprint::from(&"root_target").unwrap(), None)
+            .concat(&StableKey::Str(Arc::from("file.md")));
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+        let mut resolver = TargetKeyResolver::new();
+        let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
+
+        // Nothing is resolvable in an empty store: both segments stay fingerprints.
+        assert_eq!(rendered, path.to_string());
+        assert_eq!(rendered.matches("/#").count(), 2);
+    }
 }

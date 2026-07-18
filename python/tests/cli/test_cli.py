@@ -888,6 +888,9 @@ class TestShowFromDatabase:
 
         assert "Stable paths:" in result.stdout
         assert "- path:" in result.stdout
+        # The leaf key "x" is resolved from tracking info even without the
+        # app module loaded; the root provider segment stays a fingerprint.
+        assert '/"x"' in result.stdout
         assert "states:1:Existing" in result.stdout
 
     def test_show_db_tree_displays_components(self) -> None:
