@@ -19,7 +19,9 @@
 //!    txn-scoped batching / streaming-detail fix.
 //! 2. `list_target_states` — full listing in one txn with one shared
 //!    resolver: the "how much is on the table" reference for (1).
-//! 3. `resolver_prefix_sharing` — same total states, varying provider
+//! 3. `detail_all_paths` — full-store detail queries, per-path shape vs
+//!    the streaming iterator sharing one txn + resolver across paths.
+//! 4. `resolver_prefix_sharing` — same total states, varying provider
 //!    fanout and persisted-name availability: the axes #2300 moves.
 
 use std::collections::HashMap;
@@ -33,7 +35,7 @@ use futures::StreamExt;
 use tempfile::TempDir;
 
 use cocoindex_core::inspect::db_inspect::{
-    get_stable_path_detail_from_store, spawn_target_state_iter,
+    get_stable_path_detail_from_store, spawn_stable_path_detail_iter, spawn_target_state_iter,
 };
 use cocoindex_core::state::stable_path::StablePath;
 use cocoindex_core::state_store::{AppStore, Storage, StorageSettings};
@@ -262,6 +264,7 @@ const DETAIL_SAMPLE: usize = 100;
 struct SeededStore {
     store: AppStore,
     detail_paths: Vec<StablePath>,
+    component_paths: Vec<StablePath>,
     num_target_states: usize,
     _dir: TempDir,
 }
@@ -306,6 +309,7 @@ fn seed(rt: &tokio::runtime::Runtime, shape: SyntheticStoreShape) -> SeededStore
         SeededStore {
             store,
             detail_paths,
+            component_paths: paths.component_paths,
             num_target_states: paths.num_target_states,
             _dir: dir,
         }
@@ -390,6 +394,46 @@ fn bench_list_target_states(c: &mut Criterion) {
     group.finish();
 }
 
+/// Full-store detail queries: the per-path shape (fresh txn + resolver
+/// per call, what `show -l` used to do) vs the streaming iterator (one
+/// txn, one shared resolver — PR #2301's review r3609040686).
+fn bench_detail_all_paths(c: &mut Criterion) {
+    let rt = runtime();
+    let mut group = c.benchmark_group("detail_all_paths");
+    group.sampling_mode(SamplingMode::Flat);
+    for (label, num_components, states_per_component) in SCALES {
+        let seeded = seed(&rt, scale_shape(num_components, states_per_component));
+        group.throughput(Throughput::Elements(seeded.component_paths.len() as u64));
+        group.bench_function(BenchmarkId::new("per_path", label), |b| {
+            b.to_async(&rt).iter(|| async {
+                let mut total_items = 0;
+                for path in &seeded.component_paths {
+                    let detail =
+                        get_stable_path_detail_from_store(&seeded.store, HashMap::new(), path)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    total_items += detail.target_state_items.len();
+                }
+                black_box(total_items)
+            });
+        });
+        group.bench_function(BenchmarkId::new("stream", label), |b| {
+            b.to_async(&rt).iter(|| async {
+                let mut stream = std::pin::pin!(
+                    spawn_stable_path_detail_iter(seeded.store.clone(), HashMap::new()).await
+                );
+                let mut total_items = 0;
+                while let Some(detail) = stream.next().await {
+                    total_items += detail.unwrap().target_state_items.len();
+                }
+                black_box(total_items)
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_resolver_prefix_sharing(c: &mut Criterion) {
     let rt = runtime();
     let mut group = c.benchmark_group("resolver_prefix_sharing");
@@ -435,6 +479,6 @@ fn benchmark_config() -> Criterion {
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_detail_per_path, bench_list_target_states, bench_resolver_prefix_sharing
+    targets = bench_detail_per_path, bench_list_target_states, bench_detail_all_paths, bench_resolver_prefix_sharing
 }
 criterion_main!(benches);

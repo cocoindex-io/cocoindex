@@ -234,6 +234,16 @@ class StablePathDetail:
     has_memoization: bool
     target_state_items: list[TargetStateInfoItemSummary]
 
+class StablePathDetailAsyncIterator:
+    """Async iterator of StablePathDetail; use with async for."""
+
+    def __aiter__(self) -> StablePathDetailAsyncIterator: ...
+    def __anext__(self) -> Awaitable[StablePathDetail]: ...
+
+def iter_stable_path_details(app: App) -> StablePathDetailAsyncIterator: ...
+def iter_stable_path_details_by_name(
+    env: Environment, app_name: str
+) -> StablePathDetailAsyncIterator: ...
 def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
 def get_stable_path_detail_by_name(
     env: Any, app_name: str, path: StablePath

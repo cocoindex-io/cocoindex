@@ -288,6 +288,84 @@ pub fn get_stable_path_detail_by_name(
     detail.map(|d| convert_detail(py, d)).transpose()
 }
 
+/// Python async iterator that yields `StablePathDetail` items one-by-one
+/// (same shape as [`PyStablePathInfoAsyncIterator`]).
+#[pyclass(name = "StablePathDetailAsyncIterator")]
+pub struct PyStablePathDetailAsyncIterator {
+    stream: Arc<
+        tokio::sync::Mutex<
+            Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathDetail>> + Send>>,
+        >,
+    >,
+}
+
+#[pymethods]
+impl PyStablePathDetailAsyncIterator {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        use futures::StreamExt;
+
+        let stream = Arc::clone(&self.stream);
+        future_into_py(py, async move {
+            let mut guard = stream.lock().await;
+            match StreamExt::next(&mut *guard).await {
+                None => Err(PyStopAsyncIteration::new_err(())),
+                Some(result) => {
+                    let detail = result.into_py_result()?;
+                    Python::attach(|py| {
+                        let converted = convert_detail(py, detail)?;
+                        Py::new(py, converted).map(|p| p.into_any())
+                    })
+                    .map_err(|e| e.into())
+                }
+            }
+        })
+    }
+}
+
+fn wrap_detail_stream_as_async_iterator<'py>(
+    stream: impl Stream<Item = Result<db_inspect::StablePathDetail>> + Send + 'static,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathDetail>> + Send>> =
+        Box::pin(stream);
+    let iterator = PyStablePathDetailAsyncIterator {
+        stream: Arc::new(tokio::sync::Mutex::new(stream)),
+    };
+    Ok(Py::new(py, iterator)?.into_any().into_bound(py))
+}
+
+#[pyfunction]
+pub fn iter_stable_path_details<'py>(app: &PyApp, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    let app_clone = app.0.clone();
+    let stream = py.detach(|| {
+        get_runtime()
+            .block_on(async move { db_inspect::iter_stable_path_details(&app_clone).await })
+    });
+    wrap_detail_stream_as_async_iterator(stream, py)
+}
+
+#[pyfunction]
+pub fn iter_stable_path_details_by_name<'py>(
+    env: &PyEnvironment,
+    app_name: &str,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let env_clone = env.0.clone();
+    let app_name = app_name.to_string();
+    let stream = py
+        .detach(|| {
+            get_runtime().block_on(async move {
+                db_inspect::iter_stable_path_details_by_name(&env_clone, &app_name).await
+            })
+        })
+        .into_py_result()?;
+    wrap_detail_stream_as_async_iterator(stream, py)
+}
+
 #[pyclass(name = "TargetStateEntry", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTargetStateEntry {

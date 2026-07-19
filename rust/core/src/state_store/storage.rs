@@ -481,56 +481,72 @@ impl Storage {
         app_store: AppStore,
     ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
         self.spawn_read_txn_receiver(app_store, |db, txn, tx| {
-            let encoded_key_prefix =
-                DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-
-            let mut last_prefix: Option<Vec<u8>> = None;
-            for entry in db.prefix_iter(txn, &encoded_key_prefix)? {
-                let (raw_key, _) = entry?;
-                if let Some(last_prefix) = &last_prefix
-                    && raw_key.starts_with(last_prefix)
-                {
-                    continue;
-                }
-                let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
-                let path = match key {
-                    DbEntryKey::StablePath(path, _) => path,
-                    other => {
-                        return Err(internal_error!("Expected StablePath, got {other:?}"));
-                    }
-                };
-                last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
-
-                let node_type = if path.as_ref().is_empty() {
-                    StablePathNodeType::Component
-                } else {
-                    let path_ref: StablePathRef<'_> = path.as_ref();
-                    if let Some((parent_ref, key)) = path_ref.split_parent() {
-                        let parent_owned: StablePath = parent_ref.into();
-                        let info = {
-                            let key_encoded = DbEntryKey::StablePath(
-                                parent_owned,
-                                StablePathEntryKey::ChildExistence(key.clone()),
-                            )
-                            .encode()?;
-                            db.get(txn, &key_encoded)?
-                                .map(from_msgpack_slice::<ChildExistenceInfo>)
-                                .transpose()?
-                        };
-                        info.map(|i| i.node_type)
-                            .unwrap_or(StablePathNodeType::Directory)
-                    } else {
-                        StablePathNodeType::Component
-                    }
-                };
-
-                if tx.blocking_send(Ok((path, node_type))).is_err() {
-                    break;
-                }
-            }
-            Ok(())
+            Self::for_each_stable_path_in_txn(db, txn, |path, node_type| {
+                Ok(tx.blocking_send(Ok((path, node_type))).is_ok())
+            })
         })
         .await
+    }
+
+    /// Walk every stable path in `db` within an open read txn, calling
+    /// `emit(path, node_type)` per path in stored order. `emit` returns
+    /// `false` to stop early (e.g. when a channel receiver is gone).
+    /// Shared by the stable-path streaming above and the detail streaming
+    /// in `inspect::db_inspect`, which folds per-path reads into the same
+    /// txn.
+    pub(crate) fn for_each_stable_path_in_txn(
+        db: &Database,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        mut emit: impl FnMut(StablePath, StablePathNodeType) -> Result<bool>,
+    ) -> Result<()> {
+        let encoded_key_prefix =
+            DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
+
+        let mut last_prefix: Option<Vec<u8>> = None;
+        for entry in db.prefix_iter(txn, &encoded_key_prefix)? {
+            let (raw_key, _) = entry?;
+            if let Some(last_prefix) = &last_prefix
+                && raw_key.starts_with(last_prefix)
+            {
+                continue;
+            }
+            let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
+            let path = match key {
+                DbEntryKey::StablePath(path, _) => path,
+                other => {
+                    return Err(internal_error!("Expected StablePath, got {other:?}"));
+                }
+            };
+            last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
+
+            let node_type = if path.as_ref().is_empty() {
+                StablePathNodeType::Component
+            } else {
+                let path_ref: StablePathRef<'_> = path.as_ref();
+                if let Some((parent_ref, key)) = path_ref.split_parent() {
+                    let parent_owned: StablePath = parent_ref.into();
+                    let info = {
+                        let key_encoded = DbEntryKey::StablePath(
+                            parent_owned,
+                            StablePathEntryKey::ChildExistence(key.clone()),
+                        )
+                        .encode()?;
+                        db.get(txn, &key_encoded)?
+                            .map(from_msgpack_slice::<ChildExistenceInfo>)
+                            .transpose()?
+                    };
+                    info.map(|i| i.node_type)
+                        .unwrap_or(StablePathNodeType::Directory)
+                } else {
+                    StablePathNodeType::Component
+                }
+            };
+
+            if !emit(path, node_type)? {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Resolves the app store by name, then spawns the stable-path iteration

@@ -25,8 +25,8 @@ from cocoindex._internal.setting import get_default_db_path
 from cocoindex.inspect import (
     iter_stable_paths,
     iter_stable_paths_by_name,
-    get_stable_path_detail,
-    get_stable_path_detail_by_name,
+    iter_stable_path_details,
+    iter_stable_path_details_by_name,
     iter_target_states,
     iter_target_states_by_name,
     query_stable_path_details,
@@ -771,14 +771,12 @@ async def _show_from_app(
             )
             _print_details(details, fingerprints)
         elif long_format:
-            # Stream paths, fetch detail one-by-one (no buffering)
+            # Stream details in one read txn with one shared resolver
+            # (no buffering, no per-path txn/resolver).
             click.echo("Stable paths:")
             count = 0
-            async for item in iter_stable_paths(app):
-                path_obj = StablePath(item.path)
-                detail = await get_stable_path_detail(app, path_obj)
-                if detail:
-                    _print_one_detail(detail, fingerprints)
+            async for detail in iter_stable_path_details(app):
+                _print_one_detail(detail, fingerprints)
                 count += 1
             if count == 0:
                 click.echo("  (none)")
@@ -828,11 +826,8 @@ async def _show_from_database(
     elif long_format:
         click.echo("Stable paths:")
         count = 0
-        async for item in iter_stable_paths_by_name(env, app_name):
-            path_obj = StablePath(item.path)
-            detail = await get_stable_path_detail_by_name(env, app_name, path_obj)
-            if detail:
-                _print_one_detail(detail, fingerprints)
+        async for detail in iter_stable_path_details_by_name(env, app_name):
+            _print_one_detail(detail, fingerprints)
             count += 1
         if count == 0:
             click.echo("  (none)")
