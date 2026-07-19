@@ -323,39 +323,80 @@ fn convert_target_state_entry(e: db_inspect::TargetStateEntry) -> PyTargetStateE
     }
 }
 
-#[pyfunction]
-pub fn list_target_states(py: Python<'_>, app: &PyApp) -> PyResult<Vec<PyTargetStateEntry>> {
-    let app = app.0.clone();
-    let entries = py
-        .detach(|| {
-            get_runtime().block_on(async move { db_inspect::list_target_states(&app).await })
+/// Python async iterator that yields `TargetStateEntry` items one-by-one
+/// (same shape as [`PyStablePathInfoAsyncIterator`]).
+#[pyclass(name = "TargetStateEntryAsyncIterator")]
+pub struct PyTargetStateEntryAsyncIterator {
+    stream: Arc<
+        tokio::sync::Mutex<
+            Pin<Box<dyn Stream<Item = Result<db_inspect::TargetStateEntry>> + Send>>,
+        >,
+    >,
+}
+
+#[pymethods]
+impl PyTargetStateEntryAsyncIterator {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        use futures::StreamExt;
+
+        let stream = Arc::clone(&self.stream);
+        future_into_py(py, async move {
+            let mut guard = stream.lock().await;
+            match StreamExt::next(&mut *guard).await {
+                None => Err(PyStopAsyncIteration::new_err(())),
+                Some(result) => {
+                    let entry = result.into_py_result()?;
+                    Python::attach(|py| {
+                        Py::new(py, convert_target_state_entry(entry)).map(|p| p.into_any())
+                    })
+                    .map_err(|e| e.into())
+                }
+            }
         })
-        .into_py_result()?;
-    Ok(entries
-        .into_iter()
-        .map(convert_target_state_entry)
-        .collect())
+    }
+}
+
+fn wrap_target_state_stream_as_async_iterator<'py>(
+    stream: impl Stream<Item = Result<db_inspect::TargetStateEntry>> + Send + 'static,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::TargetStateEntry>> + Send>> =
+        Box::pin(stream);
+    let iterator = PyTargetStateEntryAsyncIterator {
+        stream: Arc::new(tokio::sync::Mutex::new(stream)),
+    };
+    Ok(Py::new(py, iterator)?.into_any().into_bound(py))
 }
 
 #[pyfunction]
-pub fn list_target_states_by_name(
-    py: Python<'_>,
+pub fn iter_target_states<'py>(app: &PyApp, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    let app_clone = app.0.clone();
+    let stream = py.detach(|| {
+        get_runtime().block_on(async move { db_inspect::iter_target_states(&app_clone).await })
+    });
+    wrap_target_state_stream_as_async_iterator(stream, py)
+}
+
+#[pyfunction]
+pub fn iter_target_states_by_name<'py>(
     env: &PyEnvironment,
     app_name: &str,
-) -> PyResult<Vec<PyTargetStateEntry>> {
-    let env = env.0.clone();
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let env_clone = env.0.clone();
     let app_name = app_name.to_string();
-    let entries = py
+    let stream = py
         .detach(|| {
             get_runtime().block_on(async move {
-                db_inspect::list_target_states_by_name(&env, &app_name).await
+                db_inspect::iter_target_states_by_name(&env_clone, &app_name).await
             })
         })
         .into_py_result()?;
-    Ok(entries
-        .into_iter()
-        .map(convert_target_state_entry)
-        .collect())
+    wrap_target_state_stream_as_async_iterator(stream, py)
 }
 
 #[pyfunction]

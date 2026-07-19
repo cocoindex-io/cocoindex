@@ -27,8 +27,8 @@ from cocoindex.inspect import (
     iter_stable_paths_by_name,
     get_stable_path_detail,
     get_stable_path_detail_by_name,
-    list_target_states,
-    list_target_states_by_name,
+    iter_target_states,
+    iter_target_states_by_name,
     query_stable_path_details,
     query_stable_path_details_by_name,
 )
@@ -852,8 +852,7 @@ async def _show_target_states_from_app(
     fingerprints: bool = False,
 ) -> None:
     try:
-        entries = await list_target_states(app)
-        _print_target_states(entries, fingerprints)
+        await _print_target_states(iter_target_states(app), fingerprints)
     finally:
         await _stop_all_environments()
 
@@ -873,23 +872,23 @@ async def _show_target_states_from_database(
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
-    entries = await list_target_states_by_name(env, app_name)
-    _print_target_states(entries, fingerprints)
+    await _print_target_states(iter_target_states_by_name(env, app_name), fingerprints)
 
 
-def _print_target_states(
-    entries: list[_core.TargetStateEntry], fingerprints: bool
+async def _print_target_states(
+    entries: AsyncIterator[_core.TargetStateEntry], fingerprints: bool
 ) -> None:
     click.echo("Target states:")
-    if not entries:
-        click.echo("  (none)")
-        return
-    for entry in entries:
+    count = 0
+    async for entry in entries:
+        count += 1
         path = entry.fingerprint_path if fingerprints else entry.readable_path
         marker = " [dangling]" if entry.dangling else ""
         click.echo(f"  {path}{marker}")
         owner = str(StablePath(entry.owner_component_path))
         click.echo(f"    owner:{owner or '/'}")
+    if count == 0:
+        click.echo("  (none)")
 
 
 def _print_details(

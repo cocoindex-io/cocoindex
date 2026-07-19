@@ -546,13 +546,17 @@ pub struct TargetStateEntry {
     pub dangling: bool,
 }
 
-fn list_target_states_in_txn(
+/// Iterate the target-state keyspace in stored (fingerprint) order, calling
+/// `emit` for each entry. `emit` returns `false` to stop early (e.g. when the
+/// receiving end of a channel is gone). Stored order keeps children of the
+/// same parent adjacent, but has no global human-meaningful ordering.
+fn for_each_target_state_in_txn(
     db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
     txn: &heed::RoTxn<'_, heed::WithoutTls>,
     resolver: &mut TargetKeyResolver,
-) -> Result<Vec<TargetStateEntry>> {
+    mut emit: impl FnMut(TargetStateEntry) -> bool,
+) -> Result<()> {
     let prefix = DbEntryKey::TargetStatePrefix.encode()?;
-    let mut results = Vec::new();
     for entry in db.prefix_iter(txn, &prefix)? {
         let (raw_key, raw_value) = entry?;
         let path = match DbEntryKey::decode(raw_key)? {
@@ -568,51 +572,58 @@ fn list_target_states_in_txn(
         // ancestors may legitimately be unresolvable (root providers).
         let dangling = resolver.resolve_segment(db, txn, &path)?.is_none();
         let readable_path = resolver.render_path(db, txn, &path, None)?;
-        results.push(TargetStateEntry {
+        let entry = TargetStateEntry {
             fingerprint_path: path.to_string(),
             readable_path,
             owner_component_path: owner.component_path,
             dangling,
-        });
+        };
+        if !emit(entry) {
+            break;
+        }
     }
-    // LMDB iteration yields fingerprint (i.e. effectively random) order;
-    // sort by the readable rendering for human consumption.
-    results.sort_by(|a, b| {
-        (a.readable_path.as_str(), a.fingerprint_path.as_str())
-            .cmp(&(b.readable_path.as_str(), b.fingerprint_path.as_str()))
-    });
-    Ok(results)
+    Ok(())
 }
 
-async fn list_target_states_from_store(
-    store: &AppStore,
+async fn spawn_target_state_iter(
+    store: AppStore,
     provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
-) -> Result<Vec<TargetStateEntry>> {
-    let db = store.db();
-    let txn = store.read_txn().await?;
-    let mut resolver = TargetKeyResolver::new(provider_keys);
-    list_target_states_in_txn(&db, &*txn, &mut resolver)
+) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static {
+    let storage = store.storage.clone();
+    let rx = storage
+        .spawn_read_iter(store, move |db, txn, tx| {
+            let mut resolver = TargetKeyResolver::new(provider_keys);
+            for_each_target_state_in_txn(db, txn, &mut resolver, |entry| {
+                tx.blocking_send(Ok(entry)).is_ok()
+            })
+        })
+        .await;
+    ReceiverStream::new(rx)
 }
 
-/// List all tracked target states with their owner components from a live App.
-pub async fn list_target_states<Prof: EngineProfile>(
+/// Stream all tracked target states with their owner components from a live
+/// App, in stored (fingerprint) order. Iteration runs on a dedicated thread
+/// (read txns/cursors are !Send); items are sent over a channel.
+pub async fn iter_target_states<Prof: EngineProfile>(
     app: &App<Prof>,
-) -> Result<Vec<TargetStateEntry>> {
+) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static + use<Prof> {
     let seed = provider_key_seed(app.app_ctx().env());
-    list_target_states_from_store(app.app_ctx().app_store(), seed).await
+    spawn_target_state_iter(app.app_ctx().app_store().clone(), seed).await
 }
 
-/// Like [`list_target_states`], but takes an environment and an app name.
-/// Returns an empty list if the app's database doesn't exist.
-pub async fn list_target_states_by_name<Prof: EngineProfile>(
+/// Like [`iter_target_states`], but takes an environment and an app name.
+/// Returns an empty stream if the app's database doesn't exist.
+pub async fn iter_target_states_by_name<Prof: EngineProfile>(
     env: &Environment<Prof>,
     app_name: &str,
-) -> Result<Vec<TargetStateEntry>> {
+) -> Result<Pin<Box<dyn Stream<Item = Result<TargetStateEntry>> + Send + 'static>>> {
     let store = match env.storage().open_app_store_by_name(app_name).await? {
         Some(store) => store,
-        None => return Ok(Vec::new()),
+        None => return Ok(Box::pin(futures::stream::empty())),
     };
-    list_target_states_from_store(&store, provider_key_seed(env)).await
+    Ok(Box::pin(
+        spawn_target_state_iter(store, provider_key_seed(env)).await,
+    ))
 }
 
 #[cfg(test)]
@@ -708,10 +719,26 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let entries = list_target_states_from_store(&store2, Default::default())
+        let entries: Vec<_> = spawn_target_state_iter(store2, Default::default())
             .await
-            .unwrap();
+            .collect()
+            .await;
         assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_ok());
+    }
+
+    fn collect_target_states(
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        resolver: &mut TargetKeyResolver,
+    ) -> Vec<TargetStateEntry> {
+        let mut entries = Vec::new();
+        for_each_target_state_in_txn(db, txn, resolver, |e| {
+            entries.push(e);
+            true
+        })
+        .unwrap();
+        entries
     }
 
     #[tokio::test]
@@ -785,7 +812,7 @@ mod tests {
         let db = store.db();
         let txn = store.read_txn().await.unwrap();
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let entries = list_target_states_in_txn(&db, &txn, &mut resolver).unwrap();
+        let entries = collect_target_states(&db, &txn, &mut resolver);
         assert_eq!(entries.len(), 2);
         let good = entries
             .iter()
@@ -858,9 +885,9 @@ mod tests {
 
         // Listing returns every owner-index entry with both path forms.
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let entries = list_target_states_in_txn(&db, &txn, &mut resolver).unwrap();
+        let entries = collect_target_states(&db, &txn, &mut resolver);
         assert_eq!(entries.len(), 2);
-        // Sorted by readable path: the table precedes its row.
+        // Stored (bytewise) order places a parent before its children.
         assert_eq!(entries[0].fingerprint_path, table_path.to_string());
         let table_entry = entries
             .iter()
