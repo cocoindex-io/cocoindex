@@ -441,7 +441,7 @@ impl Storage {
     /// dropped). The rtxn open uses the same `MDB_READERS_FULL` retry policy
     /// as [`AppStore::read_txn`], but sync (since we're off the runtime).
     /// An `Err` from `f` is sent as the final item.
-    pub(crate) async fn spawn_read_iter<T, F>(
+    pub(crate) async fn spawn_read_txn_receiver<T, F>(
         &self,
         app_store: AppStore,
         f: F,
@@ -475,12 +475,12 @@ impl Storage {
     }
 
     /// Stream every `(StablePath, node_type)` entry from `app_store` via
-    /// a channel (see [`Self::spawn_read_iter`] for the threading shape).
+    /// a channel (see [`Self::spawn_read_txn_receiver`] for the threading shape).
     pub async fn spawn_stable_path_iter(
         &self,
         app_store: AppStore,
     ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
-        self.spawn_read_iter(app_store, |db, txn, tx| {
+        self.spawn_read_txn_receiver(app_store, |db, txn, tx| {
             let encoded_key_prefix =
                 DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
 

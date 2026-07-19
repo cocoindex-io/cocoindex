@@ -612,7 +612,7 @@ async fn spawn_target_state_iter(
 ) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static {
     let storage = store.storage.clone();
     let rx = storage
-        .spawn_read_iter(store, move |db, txn, tx| {
+        .spawn_read_txn_receiver(store, move |db, txn, tx| {
             let mut resolver = TargetKeyResolver::new(provider_keys);
             for_each_target_state_in_txn(db, txn, &mut resolver, |entry| {
                 tx.blocking_send(Ok(entry)).is_ok()
