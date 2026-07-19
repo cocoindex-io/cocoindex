@@ -80,7 +80,6 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<environment::PyEnvironment>()?;
 
-    m.add_function(wrap_pyfunction!(inspect::list_stable_paths, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::iter_stable_paths, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::iter_stable_paths_by_name, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::list_app_names, m)?)?;
@@ -94,14 +93,18 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
         inspect::query_stable_path_details_by_name,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(inspect::iter_target_states, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect::iter_target_states_by_name, m)?)?;
 
     m.add_class::<inspect::PyStablePathNodeType>()?;
     m.add_class::<inspect::PyStablePathInfo>()?;
     m.add_class::<inspect::PyStablePathInfoAsyncIterator>()?;
+    m.add_class::<inspect::PyTargetStateEntryAsyncIterator>()?;
     m.add_class::<inspect::PyTargetStateVersion>()?;
     m.add_class::<inspect::PyProviderGeneration>()?;
     m.add_class::<inspect::PyTargetStateInfoItemSummary>()?;
     m.add_class::<inspect::PyStablePathDetail>()?;
+    m.add_class::<inspect::PyTargetStateEntry>()?;
 
     m.add_class::<runtime::PyAsyncContext>()?;
 

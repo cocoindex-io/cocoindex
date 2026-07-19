@@ -254,6 +254,26 @@ def query_stable_path_details_by_name(
     include_parents: bool,
 ) -> list[StablePathDetail]: ...
 
+class TargetStateEntry:
+    """A tracked target state entry from the inverted owner index."""
+
+    fingerprint_path: str
+    readable_path: str
+    readable_segments: list[str]
+    owner_component_path: StablePath
+    dangling: bool
+
+class TargetStateEntryAsyncIterator:
+    """Async iterator of TargetStateEntry; use with async for."""
+
+    def __aiter__(self) -> TargetStateEntryAsyncIterator: ...
+    def __anext__(self) -> Awaitable[TargetStateEntry]: ...
+
+def iter_target_states(app: App) -> TargetStateEntryAsyncIterator: ...
+def iter_target_states_by_name(
+    env: Any, app_name: str
+) -> TargetStateEntryAsyncIterator: ...
+
 # --- UpdateHandle ---
 class UpdateHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
@@ -430,12 +450,6 @@ async def reserve_memoization_async(
 ) -> FnCallMemoGuard: ...
 
 ########################################################
-# Inspect
-########################################################
-
-def list_stable_paths(app: App) -> list[StablePath]: ...
-
-########################################################
 # Ops (Text Processing Operations)
 ########################################################
 
@@ -534,7 +548,6 @@ class SourceView:
     def segments(self) -> list[ViewSegment]: ...
 
 def render_ranges(source: CodeSource, ranges: list[tuple[int, int]]) -> SourceView: ...
-
 def detect_code_language(*, filename: str) -> str | None: ...
 
 # --- CodeSource (source text + lazily-parsed, shared AST) ---

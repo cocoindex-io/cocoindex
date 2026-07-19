@@ -13,10 +13,6 @@ use cocoindex_utils::deser::from_msgpack_slice;
 use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 
-pub async fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
-    app.app_ctx().app_store().list_all_stable_paths().await
-}
-
 /// Represents a stable path with metadata (e.g. node type); more properties may be added.
 #[derive(Clone, Debug)]
 pub struct StablePathInfo {
@@ -106,6 +102,9 @@ fn decode_target_state_key(key_bytes: &[u8]) -> StableKey {
 /// resolved once per read txn.
 struct TargetKeyResolver {
     cache: std::collections::HashMap<TargetStatePath, Option<StableKey>>,
+    /// Owner components whose tracking items have already been folded into
+    /// `cache`, so each tracking blob is deserialized at most once per txn.
+    loaded_owners: std::collections::HashSet<StablePath>,
 }
 
 impl TargetKeyResolver {
@@ -118,6 +117,7 @@ impl TargetKeyResolver {
                 .into_iter()
                 .map(|(path, key)| (path, Some(key)))
                 .collect(),
+            loaded_owners: std::collections::HashSet::new(),
         }
     }
 
@@ -135,56 +135,63 @@ impl TargetKeyResolver {
         if let Some(cached) = self.cache.get(prefix) {
             return Ok(cached.clone());
         }
-        let resolved = Self::resolve_segment_uncached(db, txn, prefix)?;
+        self.load_owner_items(db, txn, prefix)?;
+        let resolved = self.cache.get(prefix).cloned().flatten();
+        // Also cache misses so unresolvable prefixes aren't retried per item.
         self.cache.insert(prefix.clone(), resolved.clone());
         Ok(resolved)
     }
 
-    fn resolve_segment_uncached(
+    /// Look up `prefix`'s owner component and fold all of the owner's
+    /// tracking items into the cache. Caching the whole blob at once keeps
+    /// resolution linear when one component owns many target states.
+    fn load_owner_items(
+        &mut self,
         db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
         txn: &heed::RoTxn<'_, heed::WithoutTls>,
         prefix: &TargetStatePath,
-    ) -> Result<Option<StableKey>> {
+    ) -> Result<()> {
         let owner_key = DbEntryKey::TargetState(prefix.clone()).encode()?;
         let owner_bytes = match db.get(txn, owner_key.as_slice())? {
             Some(bytes) => bytes,
-            None => return Ok(None),
+            None => return Ok(()),
         };
         let owner: db_schema::TargetStateOwnerInfo = from_msgpack_slice(owner_bytes)?;
+        if !self.loaded_owners.insert(owner.component_path.clone()) {
+            return Ok(());
+        }
         let tracking_key =
             DbEntryKey::StablePath(owner.component_path, StablePathEntryKey::TrackingInfo)
                 .encode()?;
         let tracking_bytes = match db.get(txn, tracking_key.as_slice())? {
             Some(bytes) => bytes,
-            None => return Ok(None),
+            None => return Ok(()),
         };
         let info: db_schema::StablePathEntryTrackingInfo = from_msgpack_slice(tracking_bytes)?;
-        // Items are ordered by (target_state_path, provider_id) with `None < Some`,
-        // so the first item at or after (prefix, None) has the matching path, if any.
-        let start = TargetStatePathWithProviderId {
-            target_state_path: prefix.clone(),
-            provider_id: None,
-        };
-        Ok(info
-            .target_state_items
-            .range(start..)
-            .next()
-            .filter(|(path_with_pid, _)| path_with_pid.target_state_path == *prefix)
-            .map(|(_, item)| decode_target_state_key(item.key.as_ref())))
+        for (path_with_pid, item) in &info.target_state_items {
+            self.cache
+                .entry(path_with_pid.target_state_path.clone())
+                .or_insert_with(|| Some(decode_target_state_key(item.key.as_ref())));
+        }
+        Ok(())
     }
 
     /// Render a readable path like `/@target/"file.md"/[13]`, falling back to
     /// the `#hex` fingerprint for any segment that cannot be resolved.
     /// `leaf_key` supplies the already-decoded key for the last segment.
-    fn render_path(
+    /// Render each segment of `path` (readable key, or `#hex` fallback),
+    /// without leading slashes. Kept per-segment because readable keys may
+    /// themselves contain `/` (e.g. list keys), so a joined string can't be
+    /// split back reliably.
+    fn render_segments(
         &mut self,
         db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
         txn: &heed::RoTxn<'_, heed::WithoutTls>,
         path: &TargetStatePath,
         leaf_key: Option<&StableKey>,
-    ) -> Result<String> {
+    ) -> Result<Vec<String>> {
         let num_segments = path.as_slice().len();
-        let mut rendered = String::new();
+        let mut rendered = Vec::with_capacity(num_segments);
         for i in 0..num_segments {
             let key = if i + 1 == num_segments {
                 match leaf_key {
@@ -199,13 +206,29 @@ impl TargetKeyResolver {
             } else {
                 self.resolve_segment(db, txn, &path.prefix(i + 1))?
             };
-            match key {
-                Some(key) => rendered.push_str(&format!("/{key}")),
-                None => rendered.push_str(&format!("/{}", path.as_slice()[i])),
-            }
+            rendered.push(match key {
+                Some(key) => key.to_string(),
+                None => path.as_slice()[i].to_string(),
+            });
         }
         Ok(rendered)
     }
+
+    fn render_path(
+        &mut self,
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        path: &TargetStatePath,
+        leaf_key: Option<&StableKey>,
+    ) -> Result<String> {
+        Ok(join_segments(
+            &self.render_segments(db, txn, path, leaf_key)?,
+        ))
+    }
+}
+
+fn join_segments(segments: &[String]) -> String {
+    segments.iter().map(|s| format!("/{s}")).collect()
 }
 
 /// Collect the original keys of all target-state providers registered in the
@@ -524,6 +547,106 @@ pub async fn query_stable_path_details_by_name<Prof: EngineProfile>(
     .await
 }
 
+/// A tracked target state entry from the inverted owner index.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TargetStateEntry {
+    /// Raw fingerprint rendering, e.g. `/#96330b5a.../#4866...`.
+    pub fingerprint_path: String,
+    /// Readable rendering, e.g. `/@doc_store/"file.md"/[13]`; falls back to
+    /// `#hex` for segments that cannot be resolved.
+    pub readable_path: String,
+    /// Per-segment form of `readable_path` (no leading slashes). Readable
+    /// keys may contain `/`, so consumers that need segments (e.g. tree
+    /// rendering) must use this instead of splitting the joined string.
+    pub readable_segments: Vec<String>,
+    pub owner_component_path: StablePath,
+    /// True when the owner index entry has no matching item in the owner
+    /// component's tracking info — an inconsistency, e.g. left behind by a
+    /// crashed run or an interrupted cleanup.
+    pub dangling: bool,
+}
+
+/// Iterate the target-state keyspace in stored (fingerprint) order, calling
+/// `emit` for each entry. `emit` returns `false` to stop early (e.g. when the
+/// receiving end of a channel is gone). Stored order keeps children of the
+/// same parent adjacent, but has no global human-meaningful ordering.
+fn for_each_target_state_in_txn(
+    db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+    txn: &heed::RoTxn<'_, heed::WithoutTls>,
+    resolver: &mut TargetKeyResolver,
+    mut emit: impl FnMut(TargetStateEntry) -> bool,
+) -> Result<()> {
+    let prefix = DbEntryKey::TargetStatePrefix.encode()?;
+    for entry in db.prefix_iter(txn, &prefix)? {
+        let (raw_key, raw_value) = entry?;
+        let path = match DbEntryKey::decode(raw_key)? {
+            DbEntryKey::TargetState(path) => path,
+            key => {
+                return Err(internal_error!(
+                    "Unexpected key in target state keyspace: {key:?}"
+                ));
+            }
+        };
+        let owner: db_schema::TargetStateOwnerInfo = from_msgpack_slice(raw_value)?;
+        // The leaf segment must be recorded in the owner's tracking info;
+        // ancestors may legitimately be unresolvable (root providers).
+        let dangling = resolver.resolve_segment(db, txn, &path)?.is_none();
+        let readable_segments = resolver.render_segments(db, txn, &path, None)?;
+        let entry = TargetStateEntry {
+            fingerprint_path: path.to_string(),
+            readable_path: join_segments(&readable_segments),
+            readable_segments,
+            owner_component_path: owner.component_path,
+            dangling,
+        };
+        if !emit(entry) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn spawn_target_state_iter(
+    store: AppStore,
+    provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
+) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static {
+    let storage = store.storage.clone();
+    let rx = storage
+        .spawn_read_txn_receiver(store, move |db, txn, tx| {
+            let mut resolver = TargetKeyResolver::new(provider_keys);
+            for_each_target_state_in_txn(db, txn, &mut resolver, |entry| {
+                tx.blocking_send(Ok(entry)).is_ok()
+            })
+        })
+        .await;
+    ReceiverStream::new(rx)
+}
+
+/// Stream all tracked target states with their owner components from a live
+/// App, in stored (fingerprint) order. Iteration runs on a dedicated thread
+/// (read txns/cursors are !Send); items are sent over a channel.
+pub async fn iter_target_states<Prof: EngineProfile>(
+    app: &App<Prof>,
+) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static + use<Prof> {
+    let seed = provider_key_seed(app.app_ctx().env());
+    spawn_target_state_iter(app.app_ctx().app_store().clone(), seed).await
+}
+
+/// Like [`iter_target_states`], but takes an environment and an app name.
+/// Returns an empty stream if the app's database doesn't exist.
+pub async fn iter_target_states_by_name<Prof: EngineProfile>(
+    env: &Environment<Prof>,
+    app_name: &str,
+) -> Result<Pin<Box<dyn Stream<Item = Result<TargetStateEntry>> + Send + 'static>>> {
+    let store = match env.storage().open_app_store_by_name(app_name).await? {
+        Some(store) => store,
+        None => return Ok(Box::pin(futures::stream::empty())),
+    };
+    Ok(Box::pin(
+        spawn_target_state_iter(store, provider_key_seed(env)).await,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +711,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lists_target_states_via_open_by_name() {
+        use crate::state_store::{Storage, StorageSettings};
+        let dir = tempfile::TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: 4 * 1024 * 1024,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+        let store = storage.create_app_store("TestApp").await.unwrap();
+        let root_path = TargetStatePath::new(Fingerprint::from(&"root").unwrap(), None);
+        let key = StableKey::Str(Arc::from("x"));
+        let ts_path = root_path.concat(&key);
+        let comp = comp_path("comp");
+        commit_writes(
+            &store,
+            vec![(
+                comp.clone(),
+                tracking_bytes(vec![(with_pid(&ts_path, None), key.clone())]),
+            )],
+            vec![(ts_path.clone(), comp.clone())],
+        )
+        .await;
+
+        let store2 = storage
+            .open_app_store_by_name("TestApp")
+            .await
+            .unwrap()
+            .unwrap();
+        let entries: Vec<_> = spawn_target_state_iter(store2, Default::default())
+            .await
+            .collect()
+            .await;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_ok());
+    }
+
+    fn collect_target_states(
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        resolver: &mut TargetKeyResolver,
+    ) -> Vec<TargetStateEntry> {
+        let mut entries = Vec::new();
+        for_each_target_state_in_txn(db, txn, resolver, |e| {
+            entries.push(e);
+            true
+        })
+        .unwrap();
+        entries
+    }
+
+    #[tokio::test]
     async fn render_path_falls_back_to_fingerprints() {
         let (store, _dir) = make_test_store().await;
         let path = TargetStatePath::new(Fingerprint::from(&"root_target").unwrap(), None)
@@ -634,7 +809,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolves_readable_paths_in_detail() {
+    async fn flags_dangling_entries_without_tracking_items() {
+        let (store, _dir) = make_test_store().await;
+        let root_path = TargetStatePath::new(Fingerprint::from(&"root").unwrap(), None);
+        let good_key = StableKey::Str(Arc::from("good"));
+        let good_path = root_path.concat(&good_key);
+        let dangling_path = root_path.concat(&StableKey::Str(Arc::from("gone")));
+        let comp = comp_path("comp");
+        // Owner entries for both paths, but tracking info only records "good".
+        commit_writes(
+            &store,
+            vec![(
+                comp.clone(),
+                tracking_bytes(vec![(with_pid(&good_path, None), good_key.clone())]),
+            )],
+            vec![
+                (good_path.clone(), comp.clone()),
+                (dangling_path.clone(), comp.clone()),
+            ],
+        )
+        .await;
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let entries = collect_target_states(&db, &txn, &mut resolver);
+        assert_eq!(entries.len(), 2);
+        let good = entries
+            .iter()
+            .find(|e| e.fingerprint_path == good_path.to_string())
+            .unwrap();
+        assert!(!good.dangling);
+        let dangling = entries
+            .iter()
+            .find(|e| e.fingerprint_path == dangling_path.to_string())
+            .unwrap();
+        assert!(dangling.dangling);
+    }
+
+    #[tokio::test]
+    async fn resolves_readable_paths_and_lists_target_states() {
         let (store, _dir) = make_test_store().await;
 
         // comp_c declares a "table" target state under an (unresolvable) root
@@ -689,5 +903,32 @@ mod tests {
             format!("{row_path}[provider_id=0]")
         );
         assert_eq!(detail.target_state_items[0].key, row_key);
+
+        // Listing returns every owner-index entry with both path forms.
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let entries = collect_target_states(&db, &txn, &mut resolver);
+        assert_eq!(entries.len(), 2);
+        // Stored (bytewise) order places a parent before its children.
+        assert_eq!(entries[0].fingerprint_path, table_path.to_string());
+        let table_entry = entries
+            .iter()
+            .find(|e| e.fingerprint_path == table_path.to_string())
+            .unwrap();
+        assert_eq!(table_entry.readable_path, format!("{root_seg}/\"table\""));
+        assert_eq!(table_entry.owner_component_path, comp_c);
+        let row_entry = entries
+            .iter()
+            .find(|e| e.fingerprint_path == row_path.to_string())
+            .unwrap();
+        assert_eq!(row_entry.readable_path, format!("{root_seg}/\"table\"/13"));
+        assert_eq!(
+            row_entry.readable_segments,
+            vec![
+                root_seg.trim_start_matches('/').to_string(),
+                "\"table\"".to_string(),
+                "13".to_string(),
+            ]
+        );
+        assert_eq!(row_entry.owner_component_path, comp_d);
     }
 }

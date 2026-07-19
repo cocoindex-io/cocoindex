@@ -108,6 +108,29 @@ async def query_stable_path_details_by_name(
     )
 
 
+async def iter_target_states(
+    app: App[Any, Any],
+) -> AsyncIterator[core.TargetStateEntry]:
+    """
+    Async iterator of tracked target states with their owner components.
+
+    Entries come in stored (fingerprint) order: children of the same parent
+    are adjacent, but there is no global human-meaningful ordering.
+    """
+    core_app = await app._get_core()
+    async for entry in core.iter_target_states(core_app):
+        yield entry
+
+
+async def iter_target_states_by_name(
+    env: Environment,
+    app_name: str,
+) -> AsyncIterator[core.TargetStateEntry]:
+    """Like :func:`iter_target_states`, but takes an environment and an app name."""
+    async for entry in core.iter_target_states_by_name(env._core_env, app_name):
+        yield entry
+
+
 __all__ = [
     "iter_stable_paths",
     "iter_stable_paths_by_name",
@@ -118,4 +141,6 @@ __all__ = [
     "get_stable_path_detail_by_name",
     "query_stable_path_details",
     "query_stable_path_details_by_name",
+    "iter_target_states",
+    "iter_target_states_by_name",
 ]

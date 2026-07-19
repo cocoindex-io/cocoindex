@@ -27,6 +27,8 @@ from cocoindex.inspect import (
     iter_stable_paths_by_name,
     get_stable_path_detail,
     get_stable_path_detail_by_name,
+    iter_target_states,
+    iter_target_states_by_name,
     query_stable_path_details,
     query_stable_path_details_by_name,
 )
@@ -602,7 +604,7 @@ def ls(app_target: str | None, db: str | None) -> None:
     "--tree",
     is_flag=True,
     default=False,
-    help="Display stable paths as a tree with component annotations.",
+    help="Display stable paths (or --target-states entries) as a tree.",
 )
 @click.option(
     "-l",
@@ -634,6 +636,13 @@ def ls(app_target: str | None, db: str | None) -> None:
     default=False,
     help="Show target-state paths as raw fingerprints (as stored) instead of readable keys.",
 )
+@click.option(
+    "--target-states",
+    "target_states",
+    is_flag=True,
+    default=False,
+    help="List all tracked target states with their owner components.",
+)
 def show(
     app_target: str | None,
     db: str | None,
@@ -644,6 +653,7 @@ def show(
     recursive: bool,
     parents: bool,
     fingerprints: bool,
+    target_states: bool,
 ) -> None:
     """
     Show the app's stable paths.
@@ -658,6 +668,10 @@ def show(
         raise click.ClickException(
             "-r/--recursive and -p/--parents require a stable_path argument."
         )
+    if target_states and (stable_path or long_format or recursive or parents):
+        raise click.ClickException(
+            "--target-states cannot be combined with stable_path, -l, -r or -p."
+        )
 
     if app_target:
         if db or app_name:
@@ -665,6 +679,13 @@ def show(
                 "Warning: --db/--app-name are ignored when APP_TARGET is specified.",
                 err=True,
             )
+        if target_states:
+            asyncio.run(
+                _show_target_states_from_app(
+                    _load_app(app_target), tree=tree, fingerprints=fingerprints
+                )
+            )
+            return
         asyncio.run(
             _show_from_app(
                 _load_app(app_target),
@@ -677,6 +698,13 @@ def show(
             )
         )
     elif db and app_name:
+        if target_states:
+            asyncio.run(
+                _show_target_states_from_database(
+                    db, app_name, tree=tree, fingerprints=fingerprints
+                )
+            )
+            return
         asyncio.run(
             _show_from_database(
                 db,
@@ -817,6 +845,82 @@ async def _show_from_database(
         click.echo("Stable paths:")
         async for item in iter_stable_paths_by_name(env, app_name):
             click.echo(f"  {StablePath(item.path)}")
+
+
+async def _show_target_states_from_app(
+    app: App[Any, Any],
+    tree: bool = False,
+    fingerprints: bool = False,
+) -> None:
+    try:
+        await _print_target_states(iter_target_states(app), fingerprints, tree)
+    finally:
+        await _stop_all_environments()
+
+
+async def _show_target_states_from_database(
+    db_path: str,
+    app_name: str,
+    tree: bool = False,
+    fingerprints: bool = False,
+) -> None:
+    db_path_obj = pathlib.Path(db_path)
+    if not db_path_obj.exists():
+        raise click.ClickException(f"Database path does not exist: {db_path}")
+
+    from cocoindex._internal.setting import Settings
+
+    env = Environment(
+        Settings(db_path=db_path_obj),
+        event_loop=asyncio.get_running_loop(),
+    )
+    await _print_target_states(
+        iter_target_states_by_name(env, app_name), fingerprints, tree
+    )
+
+
+async def _print_target_states(
+    entries: AsyncIterator[_core.TargetStateEntry], fingerprints: bool, tree: bool
+) -> None:
+    click.echo("Target states:")
+    count = 0
+    if tree:
+        # Stored order yields a parent's entry before its descendants and keeps
+        # subtrees contiguous, so comparing against the previously printed path
+        # is enough to place each entry (same shape as _print_tree_streaming).
+        # Segment identity uses fingerprint segments (fixed-form, safe to
+        # split); labels come from readable_segments, which may contain "/".
+        prev_segments: list[str] = []
+        async for entry in entries:
+            count += 1
+            fp_segments = entry.fingerprint_path.lstrip("/").split("/")
+            labels = fp_segments if fingerprints else entry.readable_segments
+            common = 0
+            while (
+                common < len(prev_segments)
+                and common < len(fp_segments) - 1
+                and prev_segments[common] == fp_segments[common]
+            ):
+                common += 1
+            # Ancestor segments that have no entry of their own (e.g. root
+            # providers) still get a node line the first time they appear.
+            for depth in range(common, len(fp_segments) - 1):
+                click.echo("  " * depth + f"- {labels[depth]}")
+            depth = len(fp_segments) - 1
+            marker = " [dangling]" if entry.dangling else ""
+            owner = str(StablePath(entry.owner_component_path))
+            click.echo("  " * depth + f"- {labels[depth]}{marker} owner:{owner or '/'}")
+            prev_segments = fp_segments
+    else:
+        async for entry in entries:
+            count += 1
+            path = entry.fingerprint_path if fingerprints else entry.readable_path
+            marker = " [dangling]" if entry.dangling else ""
+            click.echo(f"  {path}{marker}")
+            owner = str(StablePath(entry.owner_component_path))
+            click.echo(f"    owner:{owner or '/'}")
+    if count == 0:
+        click.echo("  (none)")
 
 
 def _print_details(
