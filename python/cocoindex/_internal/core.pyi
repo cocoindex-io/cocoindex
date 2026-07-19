@@ -449,12 +449,6 @@ async def reserve_memoization_async(
 ) -> FnCallMemoGuard: ...
 
 ########################################################
-# Inspect
-########################################################
-
-def list_stable_paths(app: App) -> list[StablePath]: ...
-
-########################################################
 # Ops (Text Processing Operations)
 ########################################################
 

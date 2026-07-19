@@ -33,7 +33,7 @@ use crate::state::db_schema::{
     ChildExistenceInfo, DbEntryKey, FunctionMemoizationEntry, IdSequencerInfo, StablePathEntryKey,
     StablePathNodeType, StateKind, TargetStateOwnerInfo,
 };
-use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
+use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
 use crate::state_store::txn::{ReadTxn, WriteTxn};
 
@@ -1320,39 +1320,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-    }
-}
-
-// --- Inspection (cross-component scans within one app) -------------------
-
-impl AppStore {
-    /// Scan all stable-path entries in this app and return one path per
-    /// component / directory, from a fresh snapshot.
-    pub async fn list_all_stable_paths(&self) -> Result<Vec<StablePath>> {
-        let rtxn = self.read_txn().await?;
-        let encoded_key_prefix =
-            DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-        let db = self.db();
-        let mut out = Vec::new();
-        let mut last_prefix: Option<Vec<u8>> = None;
-        for entry in db.prefix_iter(&*rtxn, &encoded_key_prefix)? {
-            let (raw_key, _) = entry?;
-            if let Some(last_prefix) = &last_prefix
-                && raw_key.starts_with(last_prefix)
-            {
-                continue;
-            }
-            let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
-            let path = match key {
-                DbEntryKey::StablePath(path, _) => path,
-                other => {
-                    return Err(internal_error!("Expected StablePath, got {other:?}"));
-                }
-            };
-            last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
-            out.push(path);
-        }
-        Ok(out)
     }
 }
 

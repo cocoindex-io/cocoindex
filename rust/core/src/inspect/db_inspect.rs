@@ -13,10 +13,6 @@ use cocoindex_utils::deser::from_msgpack_slice;
 use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 
-pub async fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
-    app.app_ctx().app_store().list_all_stable_paths().await
-}
-
 /// Represents a stable path with metadata (e.g. node type); more properties may be added.
 #[derive(Clone, Debug)]
 pub struct StablePathInfo {

@@ -80,7 +80,6 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<environment::PyEnvironment>()?;
 
-    m.add_function(wrap_pyfunction!(inspect::list_stable_paths, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::iter_stable_paths, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::iter_stable_paths_by_name, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::list_app_names, m)?)?;

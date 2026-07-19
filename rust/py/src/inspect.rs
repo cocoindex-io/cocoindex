@@ -16,19 +16,6 @@ use futures::stream::Stream;
 use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-#[pyfunction]
-pub fn list_stable_paths(py: Python<'_>, app: &PyApp) -> PyResult<Vec<PyStablePath>> {
-    let app = app.0.clone();
-    let stable_paths = py
-        .detach(|| get_runtime().block_on(async move { db_inspect::list_stable_paths(&app).await }))
-        .into_py_result()?;
-    let py_stable_paths = stable_paths
-        .into_iter()
-        .map(|path| PyStablePath(path))
-        .collect();
-    Ok(py_stable_paths)
-}
-
 #[pyclass(name = "StablePathNodeType", skip_from_py_object)]
 #[derive(Clone, Copy, Debug)]
 pub struct PyStablePathNodeType(pub StablePathNodeType);
