@@ -259,6 +259,7 @@ class TargetStateEntry:
 
     fingerprint_path: str
     readable_path: str
+    readable_segments: list[str]
     owner_component_path: StablePath
     dangling: bool
 

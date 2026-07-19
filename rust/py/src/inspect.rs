@@ -296,6 +296,8 @@ pub struct PyTargetStateEntry {
     #[pyo3(get)]
     pub readable_path: String,
     #[pyo3(get)]
+    pub readable_segments: Vec<String>,
+    #[pyo3(get)]
     pub owner_component_path: PyStablePath,
     #[pyo3(get)]
     pub dangling: bool,
@@ -305,6 +307,7 @@ fn convert_target_state_entry(e: db_inspect::TargetStateEntry) -> PyTargetStateE
     PyTargetStateEntry {
         fingerprint_path: e.fingerprint_path,
         readable_path: e.readable_path,
+        readable_segments: e.readable_segments,
         owner_component_path: PyStablePath(e.owner_component_path),
         dangling: e.dangling,
     }

@@ -993,11 +993,23 @@ class TestShowTargetStates:
         assert '/"x"' in result.stdout
         assert "owner:/" in result.stdout
 
+    def test_show_target_states_tree(self) -> None:
+        """show --target-states --tree should nest entries under their parents."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "--target-states", "--tree")
+
+        assert "Target states:" in result.stdout
+        # The root provider has no entry of its own but still gets a parent
+        # node line; the entry nests beneath it with its owner inline.
+        assert "- @test_cli/flat_preview\n" in result.stdout
+        assert '  - "x" owner:/' in result.stdout
+
     def test_show_target_states_rejects_incompatible_flags(self) -> None:
-        """--target-states cannot be combined with the detail-view flags."""
-        for flag in ("--tree", "-l"):
+        """--target-states cannot be combined with the per-component views."""
+        for extra in ("-l", '/"x"'):
             result = run_cli(
-                "show", "./flat_target_app.py", "--target-states", flag, check=False
+                "show", "./flat_target_app.py", "--target-states", extra, check=False
             )
             assert result.returncode != 0
             assert "cannot be combined" in result.stderr.lower()

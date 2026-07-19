@@ -179,15 +179,19 @@ impl TargetKeyResolver {
     /// Render a readable path like `/@target/"file.md"/[13]`, falling back to
     /// the `#hex` fingerprint for any segment that cannot be resolved.
     /// `leaf_key` supplies the already-decoded key for the last segment.
-    fn render_path(
+    /// Render each segment of `path` (readable key, or `#hex` fallback),
+    /// without leading slashes. Kept per-segment because readable keys may
+    /// themselves contain `/` (e.g. list keys), so a joined string can't be
+    /// split back reliably.
+    fn render_segments(
         &mut self,
         db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
         txn: &heed::RoTxn<'_, heed::WithoutTls>,
         path: &TargetStatePath,
         leaf_key: Option<&StableKey>,
-    ) -> Result<String> {
+    ) -> Result<Vec<String>> {
         let num_segments = path.as_slice().len();
-        let mut rendered = String::new();
+        let mut rendered = Vec::with_capacity(num_segments);
         for i in 0..num_segments {
             let key = if i + 1 == num_segments {
                 match leaf_key {
@@ -202,13 +206,29 @@ impl TargetKeyResolver {
             } else {
                 self.resolve_segment(db, txn, &path.prefix(i + 1))?
             };
-            match key {
-                Some(key) => rendered.push_str(&format!("/{key}")),
-                None => rendered.push_str(&format!("/{}", path.as_slice()[i])),
-            }
+            rendered.push(match key {
+                Some(key) => key.to_string(),
+                None => path.as_slice()[i].to_string(),
+            });
         }
         Ok(rendered)
     }
+
+    fn render_path(
+        &mut self,
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        path: &TargetStatePath,
+        leaf_key: Option<&StableKey>,
+    ) -> Result<String> {
+        Ok(join_segments(
+            &self.render_segments(db, txn, path, leaf_key)?,
+        ))
+    }
+}
+
+fn join_segments(segments: &[String]) -> String {
+    segments.iter().map(|s| format!("/{s}")).collect()
 }
 
 /// Collect the original keys of all target-state providers registered in the
@@ -535,6 +555,10 @@ pub struct TargetStateEntry {
     /// Readable rendering, e.g. `/@doc_store/"file.md"/[13]`; falls back to
     /// `#hex` for segments that cannot be resolved.
     pub readable_path: String,
+    /// Per-segment form of `readable_path` (no leading slashes). Readable
+    /// keys may contain `/`, so consumers that need segments (e.g. tree
+    /// rendering) must use this instead of splitting the joined string.
+    pub readable_segments: Vec<String>,
     pub owner_component_path: StablePath,
     /// True when the owner index entry has no matching item in the owner
     /// component's tracking info — an inconsistency, e.g. left behind by a
@@ -567,10 +591,11 @@ fn for_each_target_state_in_txn(
         // The leaf segment must be recorded in the owner's tracking info;
         // ancestors may legitimately be unresolvable (root providers).
         let dangling = resolver.resolve_segment(db, txn, &path)?.is_none();
-        let readable_path = resolver.render_path(db, txn, &path, None)?;
+        let readable_segments = resolver.render_segments(db, txn, &path, None)?;
         let entry = TargetStateEntry {
             fingerprint_path: path.to_string(),
-            readable_path,
+            readable_path: join_segments(&readable_segments),
+            readable_segments,
             owner_component_path: owner.component_path,
             dangling,
         };
@@ -896,6 +921,14 @@ mod tests {
             .find(|e| e.fingerprint_path == row_path.to_string())
             .unwrap();
         assert_eq!(row_entry.readable_path, format!("{root_seg}/\"table\"/13"));
+        assert_eq!(
+            row_entry.readable_segments,
+            vec![
+                root_seg.trim_start_matches('/').to_string(),
+                "\"table\"".to_string(),
+                "13".to_string(),
+            ]
+        );
         assert_eq!(row_entry.owner_component_path, comp_d);
     }
 }

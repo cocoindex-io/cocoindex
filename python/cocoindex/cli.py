@@ -604,7 +604,7 @@ def ls(app_target: str | None, db: str | None) -> None:
     "--tree",
     is_flag=True,
     default=False,
-    help="Display stable paths as a tree with component annotations.",
+    help="Display stable paths (or --target-states entries) as a tree.",
 )
 @click.option(
     "-l",
@@ -668,9 +668,9 @@ def show(
         raise click.ClickException(
             "-r/--recursive and -p/--parents require a stable_path argument."
         )
-    if target_states and (stable_path or tree or long_format or recursive or parents):
+    if target_states and (stable_path or long_format or recursive or parents):
         raise click.ClickException(
-            "--target-states cannot be combined with stable_path, --tree, -l, -r or -p."
+            "--target-states cannot be combined with stable_path, -l, -r or -p."
         )
 
     if app_target:
@@ -682,7 +682,7 @@ def show(
         if target_states:
             asyncio.run(
                 _show_target_states_from_app(
-                    _load_app(app_target), fingerprints=fingerprints
+                    _load_app(app_target), tree=tree, fingerprints=fingerprints
                 )
             )
             return
@@ -701,7 +701,7 @@ def show(
         if target_states:
             asyncio.run(
                 _show_target_states_from_database(
-                    db, app_name, fingerprints=fingerprints
+                    db, app_name, tree=tree, fingerprints=fingerprints
                 )
             )
             return
@@ -849,10 +849,11 @@ async def _show_from_database(
 
 async def _show_target_states_from_app(
     app: App[Any, Any],
+    tree: bool = False,
     fingerprints: bool = False,
 ) -> None:
     try:
-        await _print_target_states(iter_target_states(app), fingerprints)
+        await _print_target_states(iter_target_states(app), fingerprints, tree)
     finally:
         await _stop_all_environments()
 
@@ -860,6 +861,7 @@ async def _show_target_states_from_app(
 async def _show_target_states_from_database(
     db_path: str,
     app_name: str,
+    tree: bool = False,
     fingerprints: bool = False,
 ) -> None:
     db_path_obj = pathlib.Path(db_path)
@@ -872,21 +874,51 @@ async def _show_target_states_from_database(
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
-    await _print_target_states(iter_target_states_by_name(env, app_name), fingerprints)
+    await _print_target_states(
+        iter_target_states_by_name(env, app_name), fingerprints, tree
+    )
 
 
 async def _print_target_states(
-    entries: AsyncIterator[_core.TargetStateEntry], fingerprints: bool
+    entries: AsyncIterator[_core.TargetStateEntry], fingerprints: bool, tree: bool
 ) -> None:
     click.echo("Target states:")
     count = 0
-    async for entry in entries:
-        count += 1
-        path = entry.fingerprint_path if fingerprints else entry.readable_path
-        marker = " [dangling]" if entry.dangling else ""
-        click.echo(f"  {path}{marker}")
-        owner = str(StablePath(entry.owner_component_path))
-        click.echo(f"    owner:{owner or '/'}")
+    if tree:
+        # Stored order yields a parent's entry before its descendants and keeps
+        # subtrees contiguous, so comparing against the previously printed path
+        # is enough to place each entry (same shape as _print_tree_streaming).
+        # Segment identity uses fingerprint segments (fixed-form, safe to
+        # split); labels come from readable_segments, which may contain "/".
+        prev_segments: list[str] = []
+        async for entry in entries:
+            count += 1
+            fp_segments = entry.fingerprint_path.lstrip("/").split("/")
+            labels = fp_segments if fingerprints else entry.readable_segments
+            common = 0
+            while (
+                common < len(prev_segments)
+                and common < len(fp_segments) - 1
+                and prev_segments[common] == fp_segments[common]
+            ):
+                common += 1
+            # Ancestor segments that have no entry of their own (e.g. root
+            # providers) still get a node line the first time they appear.
+            for depth in range(common, len(fp_segments) - 1):
+                click.echo("  " * depth + f"- {labels[depth]}")
+            depth = len(fp_segments) - 1
+            marker = " [dangling]" if entry.dangling else ""
+            owner = str(StablePath(entry.owner_component_path))
+            click.echo("  " * depth + f"- {labels[depth]}{marker} owner:{owner or '/'}")
+            prev_segments = fp_segments
+    else:
+        async for entry in entries:
+            count += 1
+            path = entry.fingerprint_path if fingerprints else entry.readable_path
+            marker = " [dangling]" if entry.dangling else ""
+            click.echo(f"  {path}{marker}")
+            owner = str(StablePath(entry.owner_component_path))
+            click.echo(f"    owner:{owner or '/'}")
     if count == 0:
         click.echo("  (none)")
 
