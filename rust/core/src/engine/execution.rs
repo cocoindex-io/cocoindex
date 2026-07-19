@@ -781,6 +781,29 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     if pending_retry {
         return Ok(PreCommitOutcome::PendingRetry);
     }
+
+    // Readable names for the provider segments (root → … → immediate
+    // provider) of every declared target-state path. Provider-only segments
+    // (root providers, attachments) have no owner-index/tracking record, so
+    // these write-once name entries are the only persisted source inspection
+    // can resolve them from (see `DbEntryKey::TargetSegmentName`). Deduped
+    // here by fingerprint; the apply step skips already-persisted entries.
+    let segment_names: Vec<(Fingerprint, StableKey)> = {
+        let guard = declared_target_states.lock().await;
+        let mut seen: HashSet<Fingerprint> = HashSet::new();
+        let mut names = Vec::new();
+        for decl in guard.values() {
+            let provider_path = decl.provider.target_state_path().as_slice();
+            for (fp, key) in std::iter::zip(provider_path.iter(), decl.provider.stable_key_chain())
+            {
+                if seen.insert(*fp) {
+                    names.push((*fp, key));
+                }
+            }
+        }
+        names
+    };
+
     let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
@@ -1174,6 +1197,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             self_path: stable_path.clone(),
             new_tracking_info: new_tracking_info_bytes,
             preempted_owner_updates,
+            segment_names,
         },
     })
 }

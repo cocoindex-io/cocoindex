@@ -888,9 +888,10 @@ class TestShowFromDatabase:
 
         assert "Stable paths:" in result.stdout
         assert "- path:" in result.stdout
-        # The leaf key "x" is resolved from tracking info even without the
-        # app module loaded; the root provider segment stays a fingerprint.
-        assert '/"x"' in result.stdout
+        # All segments resolve without the app module loaded: the leaf key
+        # from tracking info, the root provider from the segment-name entries
+        # persisted at update time.
+        assert '@test_cli/flat_preview/"x"' in result.stdout
         assert "states:1:Existing" in result.stdout
 
     def test_show_db_tree_displays_components(self) -> None:
@@ -990,8 +991,11 @@ class TestShowTargetStates:
             "--target-states",
         )
 
-        assert '/"x"' in result.stdout
+        # Fully readable without the app module: the root provider segment
+        # resolves from the persisted segment-name entries.
+        assert '@test_cli/flat_preview/"x"' in result.stdout
         assert "owner:/" in result.stdout
+        assert "/#" not in result.stdout
 
     def test_show_target_states_tree(self) -> None:
         """show --target-states --tree should nest entries under their parents."""

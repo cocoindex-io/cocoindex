@@ -211,6 +211,10 @@ fn key_target_state_owner(path: &TargetStatePath) -> Result<Vec<u8>> {
     DbEntryKey::TargetState(path.clone()).encode()
 }
 
+fn key_target_segment_name(fp: Fingerprint) -> Result<Vec<u8>> {
+    DbEntryKey::TargetSegmentName(fp).encode()
+}
+
 fn key_id_sequencer(key: &StableKey) -> Result<Vec<u8>> {
     DbEntryKey::IdSequencer(key.clone()).encode()
 }
@@ -696,6 +700,25 @@ impl AppStore {
     ) -> Result<()> {
         let key = key_target_state_owner(path)?;
         self.db().delete(&mut **txn, &key)?;
+        Ok(())
+    }
+
+    /// Persist the readable name for one target-state path segment, keyed by
+    /// the lone segment fingerprint. Write-once: an existing entry is left
+    /// untouched (the fingerprint is a pure function of the key, so any
+    /// existing value is already correct).
+    pub async fn write_target_segment_name_if_missing(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        fp: Fingerprint,
+        segment_key: &StableKey,
+    ) -> Result<()> {
+        let key = key_target_segment_name(fp)?;
+        if self.db().get(&**txn, &key)?.is_some() {
+            return Ok(());
+        }
+        let value = rmp_serde::to_vec_named(segment_key)?;
+        self.db().put(&mut **txn, &key, &value)?;
         Ok(())
     }
 }

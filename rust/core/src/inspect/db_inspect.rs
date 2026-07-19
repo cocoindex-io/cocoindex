@@ -10,6 +10,7 @@ use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::{TargetStatePath, TargetStatePathWithProviderId};
 use crate::state_store::AppStore;
 use cocoindex_utils::deser::from_msgpack_slice;
+use cocoindex_utils::fingerprint::Fingerprint;
 use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -97,7 +98,9 @@ fn decode_target_state_key(key_bytes: &[u8]) -> StableKey {
 }
 
 /// Resolves fingerprinted target state path segments back to their original
-/// `StableKey`s via the inverted owner index + the owner's tracking info.
+/// `StableKey`s via the inverted owner index + the owner's tracking info,
+/// falling back to the persisted segment-name entries
+/// ([`db_schema::DbEntryKey::TargetSegmentName`]) for provider-only segments.
 /// Caches per path prefix, including misses, so items sharing ancestors are
 /// resolved once per read txn.
 struct TargetKeyResolver {
@@ -105,12 +108,17 @@ struct TargetKeyResolver {
     /// Owner components whose tracking items have already been folded into
     /// `cache`, so each tracking blob is deserialized at most once per txn.
     loaded_owners: std::collections::HashSet<StablePath>,
+    /// Persisted segment-name entries, cached per lone segment fingerprint,
+    /// including misses. Kept separate from `cache` so
+    /// [`Self::resolve_segment`] stays a pure owner-index/tracking signal
+    /// (its miss is what flags an entry as dangling).
+    segment_names: std::collections::HashMap<Fingerprint, Option<StableKey>>,
 }
 
 impl TargetKeyResolver {
     /// `provider_keys` seeds the cache with the original keys of live
-    /// registered providers (see [`provider_key_seed`]); root provider
-    /// segments are resolvable only through this seed.
+    /// registered providers (see [`provider_key_seed`]); it covers provider
+    /// segments whose persisted name entries don't exist yet.
     fn new(provider_keys: std::collections::HashMap<TargetStatePath, StableKey>) -> Self {
         Self {
             cache: provider_keys
@@ -118,14 +126,18 @@ impl TargetKeyResolver {
                 .map(|(path, key)| (path, Some(key)))
                 .collect(),
             loaded_owners: std::collections::HashSet::new(),
+            segment_names: std::collections::HashMap::new(),
         }
     }
 
-    /// Resolve the original `StableKey` for the last segment of `prefix`.
-    /// Returns `None` when the prefix has no owner entry or tracking item:
-    /// provider-only path segments (root providers, provider attachments) are
-    /// never declared as target states so they have neither, and a crashed or
-    /// in-flight run can leave either record missing.
+    /// Resolve the original `StableKey` for the last segment of `prefix` via
+    /// the inverted owner index + the owner's tracking info. Returns `None`
+    /// when the prefix has no owner entry or tracking item: provider-only
+    /// path segments (root providers, provider attachments) are never
+    /// declared as target states so they have neither, and a crashed or
+    /// in-flight run can leave either record missing. A `None` from here is
+    /// the dangling signal; rendering additionally falls back to
+    /// [`Self::lookup_segment_name`].
     fn resolve_segment(
         &mut self,
         db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
@@ -176,6 +188,28 @@ impl TargetKeyResolver {
         Ok(())
     }
 
+    /// Look up the persisted readable name for a lone segment fingerprint
+    /// (see [`db_schema::DbEntryKey::TargetSegmentName`]). This is the only
+    /// persisted source for provider-only segments (root providers,
+    /// attachments), which have no owner-index/tracking record.
+    fn lookup_segment_name(
+        &mut self,
+        db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+        txn: &heed::RoTxn<'_, heed::WithoutTls>,
+        fp: Fingerprint,
+    ) -> Result<Option<StableKey>> {
+        if let Some(cached) = self.segment_names.get(&fp) {
+            return Ok(cached.clone());
+        }
+        let key = DbEntryKey::TargetSegmentName(fp).encode()?;
+        let resolved = db
+            .get(txn, key.as_slice())?
+            .map(from_msgpack_slice::<StableKey>)
+            .transpose()?;
+        self.segment_names.insert(fp, resolved.clone());
+        Ok(resolved)
+    }
+
     /// Render a readable path like `/@target/"file.md"/[13]`, falling back to
     /// the `#hex` fingerprint for any segment that cannot be resolved.
     /// `leaf_key` supplies the already-decoded key for the last segment.
@@ -193,7 +227,7 @@ impl TargetKeyResolver {
         let num_segments = path.as_slice().len();
         let mut rendered = Vec::with_capacity(num_segments);
         for i in 0..num_segments {
-            let key = if i + 1 == num_segments {
+            let mut key = if i + 1 == num_segments {
                 match leaf_key {
                     Some(key) => {
                         // Seed the cache: a provider item's full path is an
@@ -206,6 +240,9 @@ impl TargetKeyResolver {
             } else {
                 self.resolve_segment(db, txn, &path.prefix(i + 1))?
             };
+            if key.is_none() {
+                key = self.lookup_segment_name(db, txn, path.as_slice()[i])?;
+            }
             rendered.push(match key {
                 Some(key) => key.to_string(),
                 None => path.as_slice()[i].to_string(),
@@ -233,13 +270,11 @@ fn join_segments(segments: &[String]) -> String {
 
 /// Collect the original keys of all target-state providers registered in the
 /// live environment: root providers and their attachments, registered by name
-/// at module import time and never persisted, so this registry is the only
-/// source that can render their path segments readably. Two classes of
-/// provider-only segments remain unresolvable and keep the fingerprint
-/// fallback: providers whose modules aren't imported in this process (e.g.
-/// inspecting a database without loading the app), and attachments of nested
-/// providers, which live in build-local registries that are discarded when
-/// the run finishes.
+/// at module import time. Provider segments are also persisted as
+/// [`db_schema::DbEntryKey::TargetSegmentName`] entries at precommit time, so
+/// this seed only adds coverage for segments the database doesn't know yet:
+/// providers registered in this process whose target states were last
+/// committed before name persistence existed, or not committed at all.
 fn provider_key_seed<Prof: EngineProfile>(
     env: &Environment<Prof>,
 ) -> std::collections::HashMap<TargetStatePath, StableKey> {
@@ -717,6 +752,26 @@ mod tests {
             .unwrap();
     }
 
+    async fn commit_segment_names(store: &AppStore, names: Vec<(Fingerprint, StableKey)>) {
+        let store2 = store.clone();
+        store
+            .storage
+            .run_txn(move |wtxn| {
+                let store = store2.clone();
+                let names = names.clone();
+                Box::pin(async move {
+                    for (fp, key) in &names {
+                        store
+                            .write_target_segment_name_if_missing(wtxn, *fp, key)
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn lists_target_states_via_open_by_name() {
         use crate::state_store::{Storage, StorageSettings};
@@ -813,6 +868,94 @@ mod tests {
         let mut resolver = TargetKeyResolver::new(seed);
         let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
         assert_eq!(rendered, "/@my_root/\"file.md\"");
+    }
+
+    /// Provider-only segments (root provider, attachment) resolve from
+    /// persisted segment-name entries with no live registry seed — the
+    /// `--db`/`--app-name` inspection flow of issue #2300.
+    #[tokio::test]
+    async fn resolves_provider_segments_from_persisted_names() {
+        let (store, _dir) = make_test_store().await;
+        let root_fp = Fingerprint::from(&"my_root").unwrap();
+        let root_path = TargetStatePath::new(root_fp, None);
+        let table_key = StableKey::Str(Arc::from("table"));
+        let table_path = root_path.concat(&table_key);
+        let att_key = StableKey::Symbol(Arc::from("vector_index"));
+        let att_path = table_path.concat(&att_key);
+        let idx_key = StableKey::Str(Arc::from("idx"));
+        let idx_path = att_path.concat(&idx_key);
+
+        let comp_t = comp_path("comp_t");
+        let comp_i = comp_path("comp_i");
+        commit_writes(
+            &store,
+            vec![
+                (
+                    comp_t.clone(),
+                    tracking_bytes(vec![(with_pid(&table_path, None), table_key.clone())]),
+                ),
+                (
+                    comp_i.clone(),
+                    tracking_bytes(vec![(with_pid(&idx_path, Some(0)), idx_key.clone())]),
+                ),
+            ],
+            vec![(table_path.clone(), comp_t), (idx_path.clone(), comp_i)],
+        )
+        .await;
+        // Names the precommit apply step would persist for the declared
+        // states' provider chains: root, table, attachment.
+        commit_segment_names(
+            &store,
+            vec![
+                (root_fp, StableKey::Symbol(Arc::from("my_root"))),
+                (Fingerprint::from(&table_key).unwrap(), table_key.clone()),
+                (Fingerprint::from(&att_key).unwrap(), att_key.clone()),
+            ],
+        )
+        .await;
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let rendered = resolver.render_path(&db, &txn, &idx_path, None).unwrap();
+        assert_eq!(rendered, "/@my_root/\"table\"/@vector_index/\"idx\"");
+    }
+
+    /// Segment-name entries are write-once, and rendering an entry from them
+    /// must not clear its dangling flag (which tracks owner-index/tracking
+    /// consistency, not renderability).
+    #[tokio::test]
+    async fn segment_names_are_write_once_and_do_not_mask_dangling() {
+        let (store, _dir) = make_test_store().await;
+        let root_fp = Fingerprint::from(&"root").unwrap();
+        let root_path = TargetStatePath::new(root_fp, None);
+        let key = StableKey::Str(Arc::from("gone"));
+        let dangling_path = root_path.concat(&key);
+        let comp = comp_path("comp");
+        // Owner entry without a tracking item → dangling.
+        commit_writes(&store, vec![], vec![(dangling_path.clone(), comp)]).await;
+        commit_segment_names(
+            &store,
+            vec![
+                (root_fp, StableKey::Symbol(Arc::from("root"))),
+                (Fingerprint::from(&key).unwrap(), key.clone()),
+            ],
+        )
+        .await;
+        // A second write under an already-persisted fingerprint is a no-op.
+        commit_segment_names(
+            &store,
+            vec![(root_fp, StableKey::Symbol(Arc::from("other")))],
+        )
+        .await;
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let entries = collect_target_states(&db, &txn, &mut resolver);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].dangling);
+        assert_eq!(entries[0].readable_path, "/@root/\"gone\"");
     }
 
     #[tokio::test]
