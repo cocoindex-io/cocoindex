@@ -721,6 +721,23 @@ impl AppStore {
         self.db().put(&mut **txn, &key, &value)?;
         Ok(())
     }
+
+    /// Delete every persisted target-segment-name entry. Benchmark support
+    /// only: lets the read-path benches measure resolution against stores
+    /// written before segment names existed (the fallback-miss shape).
+    #[cfg(feature = "bench-support")]
+    pub async fn delete_all_target_segment_names(&self, txn: &mut WriteTxn<'_>) -> Result<()> {
+        let prefix = DbEntryKey::TargetSegmentNamePrefix.encode()?;
+        let db = self.db();
+        let mut iter = db.prefix_iter_mut(&mut **txn, &prefix)?;
+        while iter.next().transpose()?.is_some() {
+            // Safety: we drop the borrowed key/value before the next `next()`.
+            unsafe {
+                iter.del_current()?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // --- ID sequencer --------------------------------------------------------

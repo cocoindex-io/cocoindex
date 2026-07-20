@@ -4,7 +4,7 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo bench -p cocoindex --bench state_store_read
+//! cargo bench -p cocoindex --features bench-support --bench state_store_read
 //! ```
 //!
 //! All groups measure against a store seeded by a real end-to-end noop
@@ -20,7 +20,7 @@
 //! 2. `list_target_states` — full listing in one txn with one shared
 //!    resolver: the "how much is on the table" reference for (1).
 //! 3. `resolver_prefix_sharing` — same total states, varying provider
-//!    fanout: how much shared-prefix reuse the resolver sees.
+//!    fanout and persisted-name availability: the axes #2300 moves.
 
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -70,6 +70,11 @@ mod fixture {
         /// These segments are provider-only: never declared as target
         /// states themselves.
         pub extra_depth: usize,
+        /// Keep the `TargetSegmentName` entries the engine persists at
+        /// commit time (the data issue #2300 added). `false` deletes them
+        /// after seeding, reproducing a store written before segment
+        /// names existed (the fallback-miss shape).
+        pub with_names: bool,
     }
 
     /// A noop target handler for one node of the provider chain. Every
@@ -280,6 +285,16 @@ fn seed(rt: &tokio::runtime::Runtime, shape: SyntheticStoreShape) -> SeededStore
             .await
             .unwrap()
             .expect("seeded app store must exist");
+        if !shape.with_names {
+            let store2 = store.clone();
+            storage
+                .run_txn(move |wtxn| {
+                    let store = store2.clone();
+                    Box::pin(async move { store.delete_all_target_segment_names(wtxn).await })
+                })
+                .await
+                .unwrap();
+        }
         let step = (paths.component_paths.len() / DETAIL_SAMPLE).max(1);
         let detail_paths: Vec<StablePath> = paths
             .component_paths
@@ -315,6 +330,7 @@ fn scale_shape(num_components: usize, states_per_component: usize) -> SyntheticS
         states_per_component,
         fanout: 16,
         extra_depth: 1,
+        with_names: true,
     }
 }
 
@@ -379,26 +395,32 @@ fn bench_resolver_prefix_sharing(c: &mut Criterion) {
     let mut group = c.benchmark_group("resolver_prefix_sharing");
     group.sampling_mode(SamplingMode::Flat);
     // Fixed ~10k states; deeper provider-only chains (attachment-like) so
-    // shared-prefix resolution actually participates.
+    // the persisted-name lookups actually participate in resolution.
     for fanout in [1usize, 100] {
-        let shape = SyntheticStoreShape {
-            num_components: 1_000,
-            states_per_component: 10,
-            fanout,
-            extra_depth: 2,
-        };
-        let seeded = seed(&rt, shape);
-        let cfg = format!("fanout{fanout}");
-        group.throughput(Throughput::Elements(seeded.num_target_states as u64));
-        group.bench_function(BenchmarkId::new("list", &cfg), |b| {
-            b.to_async(&rt)
-                .iter(|| async { black_box(drain_listing(&seeded).await) });
-        });
-        group.throughput(Throughput::Elements(seeded.detail_paths.len() as u64));
-        group.bench_function(BenchmarkId::new("detail", &cfg), |b| {
-            b.to_async(&rt)
-                .iter(|| async { black_box(query_detail_sample(&seeded).await) });
-        });
+        for with_names in [true, false] {
+            let shape = SyntheticStoreShape {
+                num_components: 1_000,
+                states_per_component: 10,
+                fanout,
+                extra_depth: 2,
+                with_names,
+            };
+            let seeded = seed(&rt, shape);
+            let cfg = format!(
+                "fanout{fanout}/names_{}",
+                if with_names { "on" } else { "off" }
+            );
+            group.throughput(Throughput::Elements(seeded.num_target_states as u64));
+            group.bench_function(BenchmarkId::new("list", &cfg), |b| {
+                b.to_async(&rt)
+                    .iter(|| async { black_box(drain_listing(&seeded).await) });
+            });
+            group.throughput(Throughput::Elements(seeded.detail_paths.len() as u64));
+            group.bench_function(BenchmarkId::new("detail", &cfg), |b| {
+                b.to_async(&rt)
+                    .iter(|| async { black_box(query_detail_sample(&seeded).await) });
+            });
+        }
     }
     group.finish();
 }

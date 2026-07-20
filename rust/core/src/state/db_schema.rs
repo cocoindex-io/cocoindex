@@ -172,6 +172,10 @@ pub enum DbEntryKey<'a> {
     /// shared across paths.
     /// Value type: StableKey (msgpack)
     TargetSegmentName(Fingerprint),
+    /// Prefix covering all `TargetSegmentName` entries, for prefix scans.
+    /// Only used by the bench-support store hooks today.
+    #[cfg(feature = "bench-support")]
+    TargetSegmentNamePrefix,
 
     /// Value type: IdSequencerInfo
     IdSequencer(StableKey),
@@ -206,6 +210,10 @@ impl<'a> storekey::Encode for DbEntryKey<'a> {
             DbEntryKey::TargetSegmentName(fp) => {
                 e.write_u8(0x28)?;
                 fp.encode(e)?;
+            }
+            #[cfg(feature = "bench-support")]
+            DbEntryKey::TargetSegmentNamePrefix => {
+                e.write_u8(0x28)?;
             }
 
             DbEntryKey::IdSequencer(key) => {

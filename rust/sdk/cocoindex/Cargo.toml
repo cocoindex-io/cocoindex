@@ -59,6 +59,9 @@ neo4j = ["dep:serde_json", "dep:neo4rs"]
 falkordb = ["dep:serde_json", "dep:redis"]
 # Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
 valkey = ["dep:redis", "dep:serde_json"]
+# Extra core store hooks for the `state_store_read` bench (its
+# `required-features`). Never enabled by production dependents.
+bench-support = ["cocoindex_core/bench-support"]
 
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }
@@ -147,3 +150,5 @@ harness = false
 [[bench]]
 name = "state_store_read"
 harness = false
+# Run with: cargo bench -p cocoindex --features bench-support
+required-features = ["bench-support"]
