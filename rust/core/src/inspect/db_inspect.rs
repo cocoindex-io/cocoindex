@@ -386,7 +386,10 @@ fn read_detail_in_txn(
     })
 }
 
-async fn get_stable_path_detail_from_store(
+/// Store-scoped detail query: one fresh read txn + resolver per call —
+/// the per-path shape `show -l` drives via the App/Environment wrappers
+/// below. Public so benchmarks can measure it directly against a store.
+pub async fn get_stable_path_detail_from_store(
     store: &AppStore,
     provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
     path: &StablePath,
@@ -606,7 +609,11 @@ fn for_each_target_state_in_txn(
     Ok(())
 }
 
-async fn spawn_target_state_iter(
+/// Store-scoped target-state listing: one read txn + one shared resolver
+/// for the whole iteration. Public so benchmarks can measure it directly
+/// against a store (the App/Environment wrappers below add only the
+/// provider-key seed).
+pub async fn spawn_target_state_iter(
     store: AppStore,
     provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
 ) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static {

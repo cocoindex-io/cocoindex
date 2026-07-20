@@ -131,7 +131,7 @@ redis = { version = "0.32.7", default-features = false, optional = true, feature
 tempfile = "3"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-criterion = "0.5"
+criterion = { version = "0.5", features = ["async_tokio"] }
 glob = "0.3"
 # Used by the live Kafka integration test to consume produced records back.
 rskafka = { version = "0.6", default-features = false }
@@ -142,4 +142,8 @@ rand = "0.8"
 
 [[bench]]
 name = "sdk_microbench"
+harness = false
+
+[[bench]]
+name = "state_store_read"
 harness = false
