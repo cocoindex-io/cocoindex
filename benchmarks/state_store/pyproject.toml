@@ -1,0 +1,14 @@
+[project]
+name = "state_store_bench"
+version = "0.1.0"
+description = "Latency benchmark for the cocoindex state store (LMDB)"
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+cocoindex = {path = "../../", editable = true}
