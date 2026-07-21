@@ -781,6 +781,27 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     if pending_retry {
         return Ok(PreCommitOutcome::PendingRetry);
     }
+
+    // Readable names for the provider-only segments (root providers,
+    // attachments) reachable from every declared target-state path. Such
+    // segments have no owner-index/tracking record, so these write-once name
+    // entries are the only persisted source inspection can resolve them from
+    // (see `DbEntryKey::TargetSegmentName`). Each chain walk stops at the
+    // first target-state-backed ancestor — its declaring component covers
+    // itself and everything above — so N sibling declarations under the same
+    // backed provider contribute no entries here (and no existence-check
+    // reads at apply time). Deduped by fingerprint; the apply step skips
+    // already-persisted entries.
+    let segment_names: HashMap<Fingerprint, StableKey> = {
+        let guard = declared_target_states.lock().await;
+        let mut names = HashMap::new();
+        for decl in guard.values() {
+            decl.provider
+                .collect_provider_only_segment_names(&mut names);
+        }
+        names
+    };
+
     let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
@@ -1174,6 +1195,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             self_path: stable_path.clone(),
             new_tracking_info: new_tracking_info_bytes,
             preempted_owner_updates,
+            segment_names,
         },
     })
 }

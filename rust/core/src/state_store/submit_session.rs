@@ -64,7 +64,7 @@
 //! ```
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -179,6 +179,11 @@ pub struct PrecommitWritePlan {
     /// For each preempted other-owner: their new tracking-info bytes
     /// (with the preempted item removed by the engine).
     pub preempted_owner_updates: BTreeMap<StablePath, Vec<u8>>,
+    /// Readable names for the provider segments of the declared
+    /// target-state paths, keyed by lone segment fingerprint. Applied
+    /// write-once (existing entries left untouched) so inspection can
+    /// resolve provider-only segments without the app module loaded.
+    pub segment_names: HashMap<Fingerprint, StableKey>,
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +443,11 @@ impl AppStore {
                             for (owner_path, bytes) in plan.preempted_owner_updates {
                                 app_store
                                     .write_tracking_info_raw(wtxn, &owner_path, &bytes)
+                                    .await?;
+                            }
+                            for (fp, segment_key) in &plan.segment_names {
+                                app_store
+                                    .write_target_segment_name_if_missing(wtxn, *fp, segment_key)
                                     .await?;
                             }
                             Ok(Some(output))

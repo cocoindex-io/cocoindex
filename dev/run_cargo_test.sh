@@ -77,4 +77,4 @@ fi
 
 # Plain `cargo test` never compiles bench targets; compile-check (not run)
 # them here to keep them from bit-rotting.
-cargo check -p cocoindex --benches
+cargo check -p cocoindex --features bench-support --benches
