@@ -8,7 +8,7 @@ use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::{self, ChildExistenceInfo, DbEntryKey, StablePathEntryKey};
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::{TargetStatePath, TargetStatePathWithProviderId};
-use crate::state_store::AppStore;
+use crate::state_store::{AppStore, Storage};
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 use futures::stream::{Stream, StreamExt};
@@ -386,6 +386,21 @@ fn read_detail_in_txn(
     resolver: &mut TargetKeyResolver,
     path: &StablePath,
 ) -> Result<StablePathDetail> {
+    let node_type = lookup_node_type(db, txn, path)?;
+    read_detail_in_txn_at(db, txn, resolver, path, node_type)
+}
+
+/// Like [`read_detail_in_txn`], for callers that already know the node
+/// type (e.g. the stable-path walk, which reads the parent's
+/// child-existence entry as part of enumeration) — skips the duplicate
+/// lookup.
+fn read_detail_in_txn_at(
+    db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
+    txn: &heed::RoTxn<'_, heed::WithoutTls>,
+    resolver: &mut TargetKeyResolver,
+    path: &StablePath,
+    node_type: db_schema::StablePathNodeType,
+) -> Result<StablePathDetail> {
     // Get TrackingInfo (version, processor_name, target_state_items)
     let tracking_key =
         DbEntryKey::StablePath(path.clone(), StablePathEntryKey::TrackingInfo).encode()?;
@@ -407,8 +422,6 @@ fn read_detail_in_txn(
     let mem_key =
         DbEntryKey::StablePath(path.clone(), StablePathEntryKey::ComponentMemoization).encode()?;
     let has_memoization = db.get(txn, mem_key.as_slice())?.is_some();
-
-    let node_type = lookup_node_type(db, txn, path)?;
 
     Ok(StablePathDetail {
         path: path.clone(),
@@ -454,6 +467,53 @@ pub async fn get_stable_path_detail_by_name<Prof: EngineProfile>(
         None => return Ok(None),
     };
     get_stable_path_detail_from_store(&store, provider_key_seed(env), path).await
+}
+
+/// Stream `StablePathDetail` for every stable path, in one read txn with
+/// ONE shared resolver — provider prefixes and owner tracking blobs are
+/// resolved once for the whole iteration instead of once per path (the
+/// per-call shape of [`get_stable_path_detail_from_store`]). Iteration
+/// runs on a dedicated thread (read txns/cursors are !Send); items are
+/// sent over a channel.
+pub async fn spawn_stable_path_detail_iter(
+    store: AppStore,
+    provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
+) -> impl Stream<Item = Result<StablePathDetail>> + Send + 'static {
+    let storage = store.storage.clone();
+    let rx = storage
+        .spawn_read_txn_receiver(store, move |db, txn, tx| {
+            let mut resolver = TargetKeyResolver::new(provider_keys);
+            Storage::for_each_stable_path_in_txn(db, txn, |path, node_type| {
+                let detail = read_detail_in_txn_at(db, txn, &mut resolver, &path, node_type)?;
+                Ok(tx.blocking_send(Ok(detail)).is_ok())
+            })
+        })
+        .await;
+    ReceiverStream::new(rx)
+}
+
+/// Stream details for all stable paths from a live App (see
+/// [`spawn_stable_path_detail_iter`]).
+pub async fn iter_stable_path_details<Prof: EngineProfile>(
+    app: &App<Prof>,
+) -> impl Stream<Item = Result<StablePathDetail>> + Send + 'static + use<Prof> {
+    let seed = provider_key_seed(app.app_ctx().env());
+    spawn_stable_path_detail_iter(app.app_ctx().app_store().clone(), seed).await
+}
+
+/// Like [`iter_stable_path_details`], but takes an environment and an app
+/// name. Returns an empty stream if the app's database doesn't exist.
+pub async fn iter_stable_path_details_by_name<Prof: EngineProfile>(
+    env: &Environment<Prof>,
+    app_name: &str,
+) -> Result<Pin<Box<dyn Stream<Item = Result<StablePathDetail>> + Send + 'static>>> {
+    let store = match env.storage().open_app_store_by_name(app_name).await? {
+        Some(store) => store,
+        None => return Ok(Box::pin(futures::stream::empty())),
+    };
+    Ok(Box::pin(
+        spawn_stable_path_detail_iter(store, provider_key_seed(env)).await,
+    ))
 }
 
 /// List direct children of a path. With `recursive=true`, walks the full subtree.
@@ -868,6 +928,74 @@ mod tests {
         let mut resolver = TargetKeyResolver::new(seed);
         let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
         assert_eq!(rendered, "/@my_root/\"file.md\"");
+    }
+
+    /// The streaming detail iterator (one txn, one shared resolver) yields
+    /// the same details as the per-path query shape, for every stable path.
+    #[tokio::test]
+    async fn streamed_details_match_per_path_queries() {
+        let (store, _dir) = make_test_store().await;
+        let root_path = TargetStatePath::new(Fingerprint::from(&"root_target").unwrap(), None);
+        let table_key = StableKey::Str(Arc::from("table"));
+        let table_path = root_path.concat(&table_key);
+        let row_key = StableKey::Int(13);
+        let row_path = table_path.concat(&row_key);
+        let comp_c = comp_path("comp_c");
+        let comp_d = comp_path("comp_d");
+        commit_writes(
+            &store,
+            vec![
+                (
+                    comp_c.clone(),
+                    tracking_bytes(vec![(with_pid(&table_path, None), table_key.clone())]),
+                ),
+                (
+                    comp_d.clone(),
+                    tracking_bytes(vec![(with_pid(&row_path, Some(0)), row_key.clone())]),
+                ),
+            ],
+            vec![
+                (table_path.clone(), comp_c.clone()),
+                (row_path.clone(), comp_d.clone()),
+            ],
+        )
+        .await;
+
+        let streamed: Vec<StablePathDetail> =
+            spawn_stable_path_detail_iter(store.clone(), Default::default())
+                .await
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<_>>()
+                .unwrap();
+        assert_eq!(streamed.len(), 2);
+        assert_eq!(
+            streamed.iter().map(|d| d.path.clone()).collect::<Vec<_>>(),
+            vec![comp_c, comp_d]
+        );
+
+        for detail in &streamed {
+            let single =
+                get_stable_path_detail_from_store(&store, Default::default(), &detail.path)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(single.node_type, detail.node_type);
+            assert_eq!(single.processor_name, detail.processor_name);
+            assert_eq!(
+                single
+                    .target_state_items
+                    .iter()
+                    .map(|item| item.target_state_path.clone())
+                    .collect::<Vec<_>>(),
+                detail
+                    .target_state_items
+                    .iter()
+                    .map(|item| item.target_state_path.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     /// Provider-only segments (root provider, attachment) resolve from

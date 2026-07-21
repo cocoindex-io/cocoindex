@@ -57,6 +57,30 @@ def list_stable_paths_info_sync(
     return asyncio.run(_iter_stable_paths_collected(app))
 
 
+async def iter_stable_path_details(
+    app: App[Any, Any],
+) -> AsyncIterator[core.StablePathDetail]:
+    """
+    Async iterator of details for every stable path.
+
+    Runs the whole iteration in one read transaction with one shared
+    path-key resolver, so provider prefixes shared across paths are
+    resolved once — unlike calling :func:`get_stable_path_detail` per path.
+    """
+    core_app = await app._get_core()
+    async for detail in core.iter_stable_path_details(core_app):
+        yield detail
+
+
+async def iter_stable_path_details_by_name(
+    env: Environment,
+    app_name: str,
+) -> AsyncIterator[core.StablePathDetail]:
+    """Like :func:`iter_stable_path_details`, but takes an environment and an app name."""
+    async for detail in core.iter_stable_path_details_by_name(env._core_env, app_name):
+        yield detail
+
+
 async def get_stable_path_detail(
     app: App[Any, Any],
     path: StablePath,
@@ -139,6 +163,8 @@ __all__ = [
     "list_stable_paths_sync",
     "get_stable_path_detail",
     "get_stable_path_detail_by_name",
+    "iter_stable_path_details",
+    "iter_stable_path_details_by_name",
     "query_stable_path_details",
     "query_stable_path_details_by_name",
     "iter_target_states",
