@@ -782,24 +782,23 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         return Ok(PreCommitOutcome::PendingRetry);
     }
 
-    // Readable names for the provider segments (root → … → immediate
-    // provider) of every declared target-state path. Provider-only segments
-    // (root providers, attachments) have no owner-index/tracking record, so
-    // these write-once name entries are the only persisted source inspection
-    // can resolve them from (see `DbEntryKey::TargetSegmentName`). Deduped
-    // here by fingerprint; the apply step skips already-persisted entries.
+    // Readable names for the provider-only segments (root providers,
+    // attachments) reachable from every declared target-state path. Such
+    // segments have no owner-index/tracking record, so these write-once name
+    // entries are the only persisted source inspection can resolve them from
+    // (see `DbEntryKey::TargetSegmentName`). Each chain walk stops at the
+    // first target-state-backed ancestor — its declaring component covers
+    // itself and everything above — so N sibling declarations under the same
+    // backed provider contribute no entries here (and no existence-check
+    // reads at apply time). Deduped by fingerprint; the apply step skips
+    // already-persisted entries.
     let segment_names: Vec<(Fingerprint, StableKey)> = {
         let guard = declared_target_states.lock().await;
         let mut seen: HashSet<Fingerprint> = HashSet::new();
         let mut names = Vec::new();
         for decl in guard.values() {
-            let provider_path = decl.provider.target_state_path().as_slice();
-            for (fp, key) in std::iter::zip(provider_path.iter(), decl.provider.stable_key_chain())
-            {
-                if seen.insert(*fp) {
-                    names.push((*fp, key));
-                }
-            }
+            decl.provider
+                .collect_provider_only_segment_names(&mut seen, &mut names);
         }
         names
     };

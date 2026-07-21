@@ -10,7 +10,7 @@ use crate::{
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
 };
 
@@ -241,6 +241,12 @@ pub(crate) struct TargetStateProviderInner<Prof: EngineProfile> {
     parent_provider: Option<TargetStateProvider<Prof>>,
     stable_key: StableKey,
     target_state_path: TargetStatePath,
+    /// Whether this provider was created for a declared target state (child
+    /// providers from `register_lazy`), as opposed to provider-only segments
+    /// (root providers, attachments). Target-state-backed segments resolve
+    /// via the declaring component's owner-index/tracking records, so they
+    /// need no persisted segment-name entry.
+    backed_by_target_state: bool,
     handler: OnceLock<Prof::TargetHdl>,
     orphaned: OnceLock<()>,
     provider_generation: OnceLock<TargetStateProviderGeneration>,
@@ -291,6 +297,40 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         chain
     }
 
+    /// Collect segment-name entries (lone segment fingerprint → stable key)
+    /// for this provider and its ancestors, stopping at the first ancestor
+    /// backed by a declared target state: that segment resolves via its
+    /// declaring component's owner-index/tracking records, and that
+    /// component's own pre-commit covers the segments above it. `seen`
+    /// dedups across calls; a seen fingerprint is skipped but the walk
+    /// continues, since providers at different depths can share a segment
+    /// (e.g. the same attachment type on two tables).
+    pub fn collect_provider_only_segment_names(
+        &self,
+        seen: &mut HashSet<utils::fingerprint::Fingerprint>,
+        out: &mut Vec<(utils::fingerprint::Fingerprint, StableKey)>,
+    ) {
+        let mut current = self;
+        loop {
+            if current.inner.backed_by_target_state {
+                return;
+            }
+            let fp = *current
+                .inner
+                .target_state_path
+                .as_slice()
+                .last()
+                .expect("target state path is never empty");
+            if seen.insert(fp) {
+                out.push((fp, current.inner.stable_key.clone()));
+            }
+            match &current.inner.parent_provider {
+                Some(parent) => current = parent,
+                None => return,
+            }
+        }
+    }
+
     pub fn is_orphaned(&self) -> bool {
         self.inner.orphaned.get().is_some()
     }
@@ -334,6 +374,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                     parent_provider: Some(self.clone()),
                     stable_key: symbol_key,
                     target_state_path: target_state_path.clone(),
+                    backed_by_target_state: false,
                     handler: OnceLock::from(att_handler),
                     orphaned: OnceLock::new(),
                     provider_generation: OnceLock::from(provider_generation.clone()),
@@ -387,6 +428,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                 parent_provider: Some(self.clone()),
                 stable_key: symbol_key,
                 target_state_path: target_state_path.clone(),
+                backed_by_target_state: false,
                 handler: OnceLock::from(att_handler),
                 orphaned: OnceLock::new(),
                 provider_generation: OnceLock::from(provider_generation),
@@ -451,6 +493,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 parent_provider: None,
                 stable_key: StableKey::Symbol(name.into()),
                 target_state_path: target_state_path.clone(),
+                backed_by_target_state: false,
                 handler: OnceLock::from(handler),
                 orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
@@ -473,6 +516,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 parent_provider: Some(parent_provider.clone()),
                 stable_key,
                 target_state_path: target_state_path.clone(),
+                backed_by_target_state: true,
                 handler: OnceLock::new(),
                 orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
