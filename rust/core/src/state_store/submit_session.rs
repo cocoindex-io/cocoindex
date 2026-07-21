@@ -64,7 +64,7 @@
 //! ```
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -183,7 +183,7 @@ pub struct PrecommitWritePlan {
     /// target-state paths, keyed by lone segment fingerprint. Applied
     /// write-once (existing entries left untouched) so inspection can
     /// resolve provider-only segments without the app module loaded.
-    pub segment_names: Vec<(Fingerprint, StableKey)>,
+    pub segment_names: HashMap<Fingerprint, StableKey>,
 }
 
 // ---------------------------------------------------------------------------

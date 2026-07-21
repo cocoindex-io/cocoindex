@@ -792,13 +792,12 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     // backed provider contribute no entries here (and no existence-check
     // reads at apply time). Deduped by fingerprint; the apply step skips
     // already-persisted entries.
-    let segment_names: Vec<(Fingerprint, StableKey)> = {
+    let segment_names: HashMap<Fingerprint, StableKey> = {
         let guard = declared_target_states.lock().await;
-        let mut seen: HashSet<Fingerprint> = HashSet::new();
-        let mut names = Vec::new();
+        let mut names = HashMap::new();
         for decl in guard.values() {
             decl.provider
-                .collect_provider_only_segment_names(&mut seen, &mut names);
+                .collect_provider_only_segment_names(&mut names);
         }
         names
     };

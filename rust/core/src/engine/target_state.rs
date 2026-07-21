@@ -10,7 +10,7 @@ use crate::{
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     hash::{Hash, Hasher},
 };
 
@@ -301,14 +301,13 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
     /// for this provider and its ancestors, stopping at the first ancestor
     /// backed by a declared target state: that segment resolves via its
     /// declaring component's owner-index/tracking records, and that
-    /// component's own pre-commit covers the segments above it. `seen`
-    /// dedups across calls; a seen fingerprint is skipped but the walk
+    /// component's own pre-commit covers the segments above it. `out` dedups
+    /// across calls; an already-present fingerprint is skipped but the walk
     /// continues, since providers at different depths can share a segment
     /// (e.g. the same attachment type on two tables).
-    pub fn collect_provider_only_segment_names(
+    pub(crate) fn collect_provider_only_segment_names(
         &self,
-        seen: &mut HashSet<utils::fingerprint::Fingerprint>,
-        out: &mut Vec<(utils::fingerprint::Fingerprint, StableKey)>,
+        out: &mut HashMap<utils::fingerprint::Fingerprint, StableKey>,
     ) {
         let mut current = self;
         loop {
@@ -321,9 +320,8 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                 .as_slice()
                 .last()
                 .expect("target state path is never empty");
-            if seen.insert(fp) {
-                out.push((fp, current.inner.stable_key.clone()));
-            }
+            out.entry(fp)
+                .or_insert_with(|| current.inner.stable_key.clone());
             match &current.inner.parent_provider {
                 Some(parent) => current = parent,
                 None => return,
