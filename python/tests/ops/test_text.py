@@ -18,6 +18,7 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="App.svelte") == "svelte"
     assert detect_code_language(filename="App.vue") == "vue"
     assert detect_code_language(filename="script.jl") == "julia"
+    assert detect_code_language(filename="main.dart") == "dart"
     assert detect_code_language(filename="Main.elm") == "elm"
     assert detect_code_language(filename="index.astro") == "astro"
     assert detect_code_language(filename="deploy.sh") == "bash"
@@ -205,6 +206,24 @@ def test_recursive_splitter_with_julia() -> None:
         'module MyModule\n    export hello\n    hello() = println("hi")\nend\n'
     )
     chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="julia")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_dart() -> None:
+    """Test RecursiveSplitter with Dart syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "void main() {\n  print('Hello');\n}\n\n"
+        "class Point {\n"
+        "  final int x;\n"
+        "  final int y;\n"
+        "  Point(this.x, this.y);\n\n"
+        "  int sum() => x + y;\n"
+        "}\n"
+    )
+    chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="dart")
 
     assert len(chunks) >= 1
     assert all(isinstance(c, Chunk) for c in chunks)
