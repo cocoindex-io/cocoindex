@@ -1,7 +1,7 @@
 use anyhow::{Error, Result};
 use std::collections::HashSet;
 use std::{collections::VecDeque, num::NonZeroUsize};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 /// Tracks fractional GPU capacity across multiple GPUs.
 ///
@@ -132,10 +132,7 @@ impl GPUPool {
             pending_tasks.push(task);
         }
         drop(state);
-        futures::future::join_all(pending_tasks)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
+        futures::future::try_join_all(pending_tasks).await?;
         acquired_gpus.extend(pending_gpus);
         Ok(acquired_gpus)
     }
