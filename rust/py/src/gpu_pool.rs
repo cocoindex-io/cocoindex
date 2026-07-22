@@ -21,10 +21,12 @@ pub struct PyGPUPool {
 #[pymethods]
 impl PyGPUPool {
     #[new]
-    pub fn new(num_gpus: usize) -> Self {
-        Self {
-            inner: Arc::new(GPUPool::new(num_gpus)),
-        }
+    pub fn new(num_gpus: usize) -> PyResult<Self> {
+        NonZeroUsize::new(num_gpus)
+            .ok_or_else(|| PyValueError::new_err("num_gpus must be > 0"))
+            .map(GPUPool::new)
+            .map(Arc::new)
+            .map(|gpu_pool| Self { inner: gpu_pool })
     }
 
     #[staticmethod]
@@ -41,7 +43,12 @@ impl PyGPUPool {
 
     pub fn acquire<'py>(&self, py: Python<'py>, fraction: f32) -> PyResult<Bound<'py, PyAny>> {
         let gpu_pool = self.inner.clone();
-        future_into_py(py, async move { Ok(gpu_pool.acquire(fraction).await) })
+        future_into_py(py, async move {
+            gpu_pool
+                .acquire(fraction)
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
     }
 
     pub fn acquire_full<'py>(
@@ -70,9 +77,11 @@ impl PyGPUPool {
         fraction: f32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let gpu_pool = self.inner.clone();
-        future_into_py(
-            py,
-            async move { Ok(gpu_pool.release(gpu_id, fraction).await) },
-        )
+        future_into_py(py, async move {
+            gpu_pool
+                .release(gpu_id, fraction)
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
     }
 }
