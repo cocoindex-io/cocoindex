@@ -444,6 +444,23 @@ class LiveComponentOperator:
         controller = self._require_controller()
         await controller.write_committed_state_async(key, serialize(value))
 
+    async def processing_unchanged(self) -> bool:
+        """Whether this component's processing logic is unchanged since its
+        last committed scan.
+
+        The framework persists the subtree's logic-dependency set after each
+        committed scan (``update_full`` / incremental ``update``); this checks
+        that set still resolves against the currently registered logic. A
+        durable connector pairs this with its own cursor to decide whether the
+        startup full scan can be skipped — ``<durable cursor> and await
+        subscriber.processing_unchanged()``.
+
+        Failure-safe: returns ``False`` when no scan has been committed yet or
+        when any dependency's code changed — either way, re-scan.
+        """
+        controller = self._require_controller()
+        return await controller.processing_unchanged_async()
+
     async def report_exception(self, exc: BaseException) -> None:
         """Route an exception raised during ``process_live`` to the parent's exception handler chain.
 
@@ -562,6 +579,16 @@ class LiveMapSubscriber(Generic[_K, _V]):
         :meth:`read_committed_state`.
         """
         await self._operator.write_committed_state(key, value)
+
+    async def processing_unchanged(self) -> bool:
+        """Whether the processing logic is unchanged since the last scan.
+
+        Delegates to :meth:`LiveComponentOperator.processing_unchanged` so a
+        ``watch()`` implementation can gate its startup ``update_all()`` on the
+        framework-computed logic-change signal, paired with its own durable
+        cursor.
+        """
+        return await self._operator.processing_unchanged()
 
 
 class _MountEachLiveComponent:

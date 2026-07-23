@@ -1,17 +1,23 @@
 use std::collections::HashMap;
 use std::future::Future;
 
+use std::collections::BTreeSet;
+use std::collections::HashSet;
+
 use crate::engine::component::{
     Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle, OnError,
 };
 use crate::engine::context::{ComponentProcessingAction, ComponentProcessorContext, FnCallContext};
+use crate::engine::logic_registry;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
+use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::error::{SharedError, SharedResult};
+use cocoindex_utils::fingerprint::Fingerprint;
 
 use tokio::sync::oneshot;
 
@@ -528,6 +534,37 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             .await
     }
 
+    /// Whether this live component's processing logic is unchanged since its
+    /// last committed scan: the persisted subtree dependency set `S` exists and
+    /// every fingerprint in it is still registered in the current logic set.
+    ///
+    /// `S` lives in this component's own memoization entry (the same DB row a
+    /// regular component uses) as a `ComponentMemoizationInfo` carrying only
+    /// `logic_deps`. Callable from `process_live` to decide whether a durable
+    /// connector can skip its startup full scan. Failure-safe — returns `false`
+    /// when no `S` was ever committed (never scanned), when the stored value
+    /// can't be decoded, or when any fingerprint is gone (code changed); each
+    /// means "re-scan to be safe."
+    pub async fn processing_unchanged(&self) -> Result<bool> {
+        let Some(bytes) = self
+            .component
+            .app_ctx()
+            .app_store()
+            .read_component_memo(self.component.stable_path())
+            .await?
+        else {
+            return Ok(false);
+        };
+        let memo_info: db_schema::ComponentMemoizationInfo<'_> = match from_msgpack_slice(&bytes) {
+            Ok(info) => info,
+            Err(_) => return Ok(false),
+        };
+        Ok(logic_registry::all_contained_with_env(
+            &memo_info.logic_deps,
+            self.component.app_ctx().env(),
+        ))
+    }
+
     /// Full processing cycle. Acquires `update_full_lock` (serializes with
     /// concurrent `update_full()` calls), waits for any in-flight subpath
     /// drains to quiesce, then runs `process()` via `run_in_background`.
@@ -577,13 +614,22 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             ),
         );
 
+        let (deps_tx, deps_rx) = oneshot::channel();
         let handle = self
             .component
             .clone()
-            .run_in_background(processor, context, on_error, None)
+            .run_in_background(processor, context, on_error, None, Some(deps_tx))
             .await?;
 
         handle.ready().await?;
+
+        // The root build has no parent readiness guard; its full subtree logic
+        // deps arrive via the sink (sent before the spawned task returns, so
+        // already available once `ready()` resolves). Recompute-and-replace so
+        // a fingerprint whose code was edited away drops out of the aggregate.
+        if let Ok(outcome) = deps_rx.await {
+            persist_logic_deps_replace(&self.component, &outcome.into_logic_deps()).await?;
+        }
 
         Ok(())
     }
@@ -1146,6 +1192,94 @@ async fn drain_task_body<Prof: EngineProfile>(
     }
 }
 
+/// Build a `ComponentMemoizationInfo` that carries only the aggregate logic-
+/// dependency set `S`. `processor_fp`/`return_value` are `None` so the entry can
+/// never be mistaken for a reusable regular memo (the memo skip compares against
+/// `Some(fp)`). `logic_deps` is stored sorted for deterministic on-disk bytes.
+fn logic_deps_memo_info(
+    logic_deps: Vec<Fingerprint>,
+) -> db_schema::ComponentMemoizationInfo<'static> {
+    db_schema::ComponentMemoizationInfo {
+        processor_fp: None,
+        return_value: None,
+        logic_deps,
+        memo_states: vec![],
+        context_memo_states: vec![],
+    }
+}
+
+/// Persist `deps` as the new aggregate `S`, replacing any prior value. `S` is
+/// stored in the component's own memoization entry (the same DB row a regular
+/// component uses). Used by `update_full`, which recomputes the whole subtree
+/// authoritatively — so a fingerprint whose code was edited away simply drops
+/// out of the set.
+///
+/// The live root is not a memoized component, so the memo check at the start of
+/// every `update_full` build invalidates (deletes) this entry; it is rewritten
+/// here only after the build succeeds. `S` is therefore present iff the last
+/// full scan completed — a failed scan leaves no `S`, correctly forcing a
+/// re-scan on the next run.
+async fn persist_logic_deps_replace<Prof: EngineProfile>(
+    component: &Component<Prof>,
+    deps: &HashSet<Fingerprint>,
+) -> Result<()> {
+    let mut logic_deps: Vec<Fingerprint> = deps.iter().copied().collect();
+    logic_deps.sort();
+    let encoded = rmp_serde::to_vec_named(&logic_deps_memo_info(logic_deps))?;
+    component
+        .app_ctx()
+        .app_store()
+        .finalize_memoization(component.stable_path(), &encoded)
+        .await
+}
+
+/// Extend the aggregate `S` with `deps`, used by an incremental `update` op: a
+/// streamed item is an existing item on the next restart, so its subtree code
+/// must be in `S`. Read-merge-writes the component's memo entry in a single txn
+/// so concurrent per-subpath drains cannot lose each other's additions; skips
+/// the write entirely when `deps` is already covered (steady state: the same
+/// functions process every item), keeping incremental ops cheap.
+async fn persist_logic_deps_extend<Prof: EngineProfile>(
+    component: &Component<Prof>,
+    deps: &HashSet<Fingerprint>,
+) -> Result<()> {
+    let app_store = component.app_ctx().app_store().clone();
+    let path = component.stable_path().clone();
+    let deps = deps.clone();
+    component
+        .app_ctx()
+        .env()
+        .run_txn(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            let deps = deps.clone();
+            Box::pin(async move {
+                // BTreeSet gives sorted, de-duplicated storage for free.
+                let mut merged: BTreeSet<Fingerprint> =
+                    match app_store.read_component_memo_in_txn(wtxn, &path).await? {
+                        Some(bytes) => {
+                            let info: db_schema::ComponentMemoizationInfo<'_> =
+                                from_msgpack_slice(&bytes)?;
+                            info.logic_deps.into_iter().collect()
+                        }
+                        None => BTreeSet::new(),
+                    };
+                let before = merged.len();
+                merged.extend(deps.iter().copied());
+                // Every new dep already stored — nothing to persist.
+                if merged.len() == before {
+                    return Ok(());
+                }
+                let logic_deps: Vec<Fingerprint> = merged.into_iter().collect();
+                let encoded = rmp_serde::to_vec_named(&logic_deps_memo_info(logic_deps))?;
+                app_store
+                    .write_component_memo_raw(wtxn, &path, &encoded)
+                    .await
+            })
+        })
+        .await
+}
+
 /// Execute a single op. Returns `Result<()>` from the underlying child
 /// `run_in_background` / `delete` flow.
 async fn run_op<Prof: EngineProfile>(
@@ -1182,10 +1316,18 @@ async fn run_op<Prof: EngineProfile>(
                     None,
                 ),
             );
+            let (deps_tx, deps_rx) = oneshot::channel();
             let inner_handle = child
-                .run_in_background(processor, context, on_error, None)
+                .run_in_background(processor, context, on_error, None, Some(deps_tx))
                 .await?;
-            inner_handle.ready().await
+            inner_handle.ready().await?;
+            // Extend the aggregate `S` with this item's subtree deps. `component`
+            // is the live root that owns the `Live` keyspace (a child build's
+            // deps roll up to the root's persisted set).
+            if let Ok(outcome) = deps_rx.await {
+                persist_logic_deps_extend(component, &outcome.into_logic_deps()).await?;
+            }
+            Ok(())
         }
         Op::Delete { on_error } => {
             let context = child.new_processor_context_for_delete(
