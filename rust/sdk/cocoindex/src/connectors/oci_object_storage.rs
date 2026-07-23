@@ -24,7 +24,7 @@
 //! Like the Amazon S3 and Google Drive sources, [`OciFile`] serializes only
 //! stable metadata for memo keys. The clone-cheap client and read cache are
 //! skipped by serde, while the public type still implements the shared async
-//! [`crate::file::FileLike`] trait.
+//! [`crate::resources::file::FileLike`] trait.
 //!
 //! Not yet supported (parity follow-ups): live bucket watching via OCI
 //! Events/Streaming, and pass-phrase-encrypted private keys.
@@ -46,12 +46,12 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::error::{Error, Result};
-use crate::file::{
-    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, decode_bytes,
-};
 use crate::live_component::{
     LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard,
+};
+use crate::resources::file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
+    MatchAllFilePathMatcher, decode_bytes,
 };
 
 /// Object metadata fields requested from the ListObjects API.
@@ -1234,7 +1234,7 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{FileLike, PatternFilePathMatcher};
+    use crate::resources::file::{FileLike, PatternFilePathMatcher};
     use rsa::pkcs1v15::{Signature, VerifyingKey};
     use rsa::signature::Verifier;
     use rsa::{RsaPrivateKey, RsaPublicKey};

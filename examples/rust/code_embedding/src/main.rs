@@ -15,11 +15,10 @@
 //!   - Postgres/pgvector TableTarget sync          -> from `cocoindex`
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, detect_code_language};
-use cocoindex::postgres;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -33,27 +32,26 @@ const TOP_K: i64 = 5;
 
 const INCLUDE_PATTERNS: &[&str] = &["**/*.py", "**/*.rs", "**/*.toml", "**/*.md", "**/*.mdx"];
 
-/// Shared Postgres target database.
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("code_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
+// Shared Postgres target database.
+cocoindex::context_key!(
+    static DB: postgres::Database = "code_embedding_db",
+    state = postgres::Database::state_id
+);
 
-/// Shared embedder. `new_with_state` tracks the model name, so changing the model
-/// invalidates memoized files — the parity for Python's
-/// `ContextKey(..., detect_change=True)` + `Annotated[NDArray, EMBEDDER]`.
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+// Shared embedder. The context key tracks the model name, so changing the model
+// invalidates memoized files — the parity for Python's
+// `ContextKey(..., detect_change=True)` + `Annotated[NDArray, EMBEDDER]`.
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct CodeEmbeddingRow {
     id: i64,
     filename: String,
     code: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
     start_line: i32,
     end_line: i32,
@@ -156,7 +154,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
 
     let rows = sqlx::query(&format!(
         "SELECT filename, code, start_line, end_line, embedding <=> $1::vector AS distance \
@@ -188,20 +186,8 @@ async fn query_once(
 // ---------------------------------------------------------------------------
 
 fn code_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("code", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-            ("start_line", postgres::ColumnDef::new("integer")),
-            ("end_line", postgres::ColumnDef::new("integer")),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<CodeEmbeddingRow>(["id"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 fn vector_param(vec: &[f32]) -> String {

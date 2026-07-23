@@ -1,17 +1,13 @@
-#[cfg(feature = "amazon_s3")]
-pub mod amazon_s3;
+extern crate self as cocoindex;
+
 pub mod app;
 pub mod batched;
+pub mod connectors;
 pub mod ctx;
 #[cfg(any(feature = "neo4j", feature = "falkordb"))]
 mod cypher_graph;
-#[cfg(feature = "doris")]
-pub mod doris;
 pub mod entity_resolution;
 pub mod error;
-#[cfg(feature = "falkordb")]
-pub mod falkordb;
-pub mod file;
 // Rejects non-finite floats before the JSON round-trip in target connectors that
 // serialize rows through `serde_json` (which maps NaN/±Inf to null).
 #[cfg(any(
@@ -23,49 +19,23 @@ pub mod file;
     feature = "falkordb"
 ))]
 mod finite;
-pub mod fs;
-#[cfg(feature = "google_drive")]
-pub mod gdrive;
-pub mod id;
-#[cfg(feature = "iggy")]
-pub mod iggy;
-#[cfg(feature = "kafka")]
-pub mod kafka;
-#[cfg(feature = "lancedb")]
-pub mod lancedb;
 pub mod live_component;
 #[doc(hidden)]
 pub mod logic;
 pub mod memo;
 pub mod mount;
-#[cfg(feature = "neo4j")]
-pub mod neo4j;
-#[cfg(feature = "oci_object_storage")]
-pub mod oci_object_storage;
 pub mod ops;
-#[cfg(feature = "postgres")]
-pub mod postgres;
 pub mod prelude;
 pub(crate) mod profile;
-#[cfg(feature = "qdrant")]
-pub mod qdrant;
 pub mod resources;
 pub mod row_schema;
 #[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
 pub(crate) mod sql_ident;
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
 pub mod statediff;
 mod stats;
-#[cfg(feature = "surrealdb")]
-pub mod surrealdb;
 pub mod target_state;
-#[cfg(feature = "turbopuffer")]
-pub mod turbopuffer;
 mod typemap;
 pub mod user_state;
-#[cfg(feature = "valkey")]
-pub mod valkey;
 
 // Flat re-exports — the public API surface
 pub use app::{
@@ -80,15 +50,15 @@ pub use entity_resolution::{
     resolve_entities_with_events,
 };
 pub use error::{Error, Result};
-pub use file::{
+pub use resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
     MatchAllFilePathMatcher, PatternFilePathMatcher,
 };
-pub use fs::{
+pub use resources::fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
     mount_dir_target, walk, walk_dir, walk_items,
 };
-pub use id::{
+pub use resources::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };

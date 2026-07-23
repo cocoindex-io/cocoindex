@@ -6,18 +6,16 @@
 //! user-managed, multiple tables, and the declare (pending) variant.
 #![cfg(feature = "sqlite")]
 
-use std::sync::LazyLock;
-
-use cocoindex::{App, ContextKey, Ctx, Environment, Result, sqlite};
+use cocoindex::connectors::sqlite;
+use cocoindex::{App, Ctx, Environment, Result};
 use serde::Serialize;
 use serde_json::json;
 use sqlx::Row as _;
 
-static DB: LazyLock<ContextKey<sqlite::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("sqlite_target_test_db", |db: &sqlite::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: sqlite::Database = "sqlite_target_test_db",
+    state = sqlite::Database::state_id
+);
 
 #[derive(Clone, Serialize)]
 struct Item {

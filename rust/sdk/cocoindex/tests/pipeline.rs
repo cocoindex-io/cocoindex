@@ -1,8 +1,7 @@
 //! Integration tests for the pipeline: App::update, memo::cached, sync API.
 
-use cocoindex::{
-    App, ContextKey, Environment, IdGenerator, UuidGenerator, generate_id, generate_uuid,
-};
+use cocoindex::resources::id::{IdGenerator, UuidGenerator, generate_id, generate_uuid};
+use cocoindex::{App, ContextKey, Environment};
 use tokio::time::{Duration, sleep};
 
 /// Helper: create an App with a temp LMDB directory (async tests).
@@ -1603,8 +1602,10 @@ async fn memo_with_function_dep_caches_when_unchanged() {
 
 mod batched_test {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, LazyLock};
+    use tokio::sync::Notify;
 
     static ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
@@ -1664,6 +1665,217 @@ mod batched_test {
             ITEMS_PROCESSED.load(Ordering::SeqCst),
             3,
             "run 2 should be all cache hits; batch impl must not reprocess items"
+        );
+    }
+
+    type RecordedBatch = (i64, Vec<i64>);
+    static UNMEMOIZED_BATCHES: LazyLock<Mutex<Vec<RecordedBatch>>> =
+        LazyLock::new(|| Mutex::new(Vec::new()));
+
+    #[cocoindex::function(batching, max_batch_size = 2)]
+    async fn macro_unmemoized_batch(
+        _ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+        factor: i64,
+    ) -> cocoindex::Result<Vec<i64>> {
+        UNMEMOIZED_BATCHES
+            .lock()
+            .unwrap()
+            .push((factor, items.clone()));
+        if items == [0] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    #[tokio::test]
+    async fn function_batching_is_item_shaped_unmemoized_and_capped() {
+        UNMEMOIZED_BATCHES.lock().unwrap().clear();
+        let (app, _dir) = temp_app("function_batching_unmemoized").await;
+
+        for _ in 0..2 {
+            app.update(|ctx| async move {
+                let calls = (0..6).map(|item| macro_unmemoized_batch(&ctx, item, 3));
+                let outputs = futures::future::join_all(calls).await;
+                let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+                assert_eq!(outputs, vec![0, 3, 6, 9, 12, 15]);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        let batches = UNMEMOIZED_BATCHES.lock().unwrap();
+        assert_eq!(
+            batches.iter().map(|(_, items)| items.len()).sum::<usize>(),
+            12
+        );
+        assert!(batches.iter().any(|(_, items)| items.len() > 1));
+        assert!(batches.iter().all(|(_, items)| items.len() <= 2));
+    }
+
+    static DEADLINE_BLOCKER_STARTED: Notify = Notify::const_new();
+    static DEADLINE_BLOCKER_RELEASE: Notify = Notify::const_new();
+
+    #[cocoindex::function(batching, max_batch_size = 2)]
+    async fn deadline_isolated_batch(
+        ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+    ) -> cocoindex::Result<Vec<i64>> {
+        if items == [0] {
+            DEADLINE_BLOCKER_STARTED.notify_one();
+            DEADLINE_BLOCKER_RELEASE.notified().await;
+        } else {
+            ctx.check_cancellation()?;
+            assert!(
+                !ctx.has_deadline(),
+                "a shared batch body must not inherit one caller's deadline"
+            );
+        }
+        Ok(items)
+    }
+
+    #[tokio::test]
+    async fn scheduled_batch_body_does_not_inherit_first_callers_deadline() {
+        let (app, _dir) = temp_app("batching_deadline_isolation").await;
+
+        app.update(|ctx| async move {
+            let blocker_ctx = ctx.clone();
+            let blocker =
+                tokio::spawn(async move { deadline_isolated_batch(&blocker_ctx, 0).await });
+            DEADLINE_BLOCKER_STARTED.notified().await;
+
+            // Queue a call whose deadline expires while the first physical
+            // batch is blocked, then fill the pending batch with an ordinary
+            // caller. The shared body must use neither caller's deadline.
+            let expiring_ctx = ctx.with_timeout(Duration::from_millis(10));
+            let expiring =
+                tokio::spawn(async move { deadline_isolated_batch(&expiring_ctx, 1).await });
+            sleep(Duration::from_millis(30)).await;
+            let ordinary = deadline_isolated_batch(&ctx, 2).await;
+            let expired = expiring.await.unwrap();
+
+            DEADLINE_BLOCKER_RELEASE.notify_one();
+            let blocked = blocker.await.unwrap();
+
+            assert_eq!(expired?, 1);
+            assert_eq!(ordinary?, 2);
+            assert_eq!(blocked?, 0);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    static MEMOIZED_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo, batching, max_batch_size = 8)]
+    async fn macro_memoized_batch(
+        _ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+        factor: i64,
+    ) -> cocoindex::Result<Vec<i64>> {
+        MEMOIZED_ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
+        if items == [1] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    async fn run_memoized_batch(app: &App, factor: i64) {
+        app.update(move |ctx| async move {
+            let calls = [1, 2, 3]
+                .into_iter()
+                .map(|item| macro_memoized_batch(&ctx, item, factor));
+            let outputs = futures::future::join_all(calls).await;
+            let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+            assert_eq!(outputs, vec![factor, factor * 2, factor * 3]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn function_memo_batching_caches_items_and_keys_extra_params() {
+        MEMOIZED_ITEMS_PROCESSED.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("function_memo_batching").await;
+
+        run_memoized_batch(&app, 2).await;
+        assert_eq!(MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst), 3);
+
+        run_memoized_batch(&app, 2).await;
+        assert_eq!(
+            MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            3,
+            "unchanged items should all hit their per-item memo entries"
+        );
+
+        run_memoized_batch(&app, 3).await;
+        assert_eq!(
+            MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            6,
+            "changing an extra parameter must invalidate every item's memo key"
+        );
+    }
+
+    static CONTEXT_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    cocoindex::context_key!(
+        static BATCH_FACTOR: i64 = "pipeline/function_batching_context_factor",
+        detect_change
+    );
+
+    #[cocoindex::function(memo, batching)]
+    async fn macro_context_batch(
+        ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+    ) -> cocoindex::Result<Vec<i64>> {
+        let factor = *ctx.get_key(&BATCH_FACTOR)?;
+        CONTEXT_ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
+        if items == [1] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    async fn run_context_batch(db_path: &std::path::Path, factor: i64) {
+        let app = Environment::builder()
+            .db_path(db_path)
+            .provide_key(&BATCH_FACTOR, factor)
+            .build()
+            .await
+            .unwrap()
+            .app("function_context_batch")
+            .await
+            .unwrap();
+        app.update(move |ctx| async move {
+            let calls = [1, 2, 3]
+                .into_iter()
+                .map(|item| macro_context_batch(&ctx, item));
+            let outputs = futures::future::join_all(calls).await;
+            let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+            assert_eq!(outputs, vec![factor, factor * 2, factor * 3]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn function_memo_batching_shares_context_dependencies_with_every_item() {
+        CONTEXT_ITEMS_PROCESSED.store(0, Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("lmdb");
+
+        run_context_batch(&db_path, 2).await;
+        assert_eq!(CONTEXT_ITEMS_PROCESSED.load(Ordering::SeqCst), 3);
+
+        run_context_batch(&db_path, 3).await;
+        assert_eq!(
+            CONTEXT_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            6,
+            "every cached item must inherit the batch body's context-key dependency"
         );
     }
 }
@@ -1787,8 +1999,9 @@ mod memo_test_file_state {
     use std::sync::{Arc, OnceLock};
     use std::time::Duration;
 
-    use cocoindex::fs::{FileEntry, FilePath, walk_dir};
-    use cocoindex::{ContextKey, Ctx, FileLike, Result};
+    use cocoindex::resources::file::FileLike;
+    use cocoindex::resources::fs::{FileEntry, FilePath, walk_dir};
+    use cocoindex::{ContextKey, Ctx, Result};
 
     fn calls_key() -> &'static ContextKey<Arc<AtomicUsize>> {
         static KEY: OnceLock<ContextKey<Arc<AtomicUsize>>> = OnceLock::new();
@@ -2691,18 +2904,17 @@ mod mock_bare {
 mod mock_memo {
     use super::*;
 
-    /// Memo function: cached by args. The body is a `'static` closure,
-    /// so `ctx` is NOT available inside. Clone the API before the body,
-    /// then use bare `#[cocoindex::function]` + manual `ctx.memo()`.
-    ///
-    /// This is the realistic pattern for memoizing an API call.
-    #[cocoindex::function]
-    async fn analyze(ctx: &cocoindex::Ctx, input: &str) -> cocoindex::Result<String> {
-        let api = ctx.get_or_err::<MockApi>().unwrap().clone();
-        let key = (__COCO_FN_HASH_ANALYZE, input.to_owned());
-        let input = input.to_owned();
-        ctx.memo(&key, move |_ctx| async move { api.call(&input).await })
-            .await
+    /// Whole-function memoization should use the attribute. Its body receives
+    /// the owned memo-scoped `Ctx`, so non-serializable resources remain
+    /// available through normal context lookup. A skipped argument needs only
+    /// `Any + Clone`; `MockApi` intentionally does not implement `Serialize`.
+    #[cocoindex::function(memo, memo_key(_client = skip))]
+    async fn analyze(
+        ctx: &cocoindex::Ctx,
+        input: String,
+        _client: &MockApi,
+    ) -> cocoindex::Result<String> {
+        ctx.get_or_err::<MockApi>()?.call(&input).await
     }
 
     #[tokio::test]
@@ -2720,8 +2932,9 @@ mod mock_memo {
             .unwrap();
 
         // First run — cache miss, API called.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "hello").await?;
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
             assert_eq!(result, "api:hello");
             Ok(())
         })
@@ -2730,8 +2943,9 @@ mod mock_memo {
         assert_eq!(api.call_count(), 1);
 
         // Second run — same input, cache hit, API NOT called.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "hello").await?;
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
             assert_eq!(result, "api:hello");
             Ok(())
         })
@@ -2739,9 +2953,23 @@ mod mock_memo {
         .unwrap();
         assert_eq!(api.call_count(), 1, "memo should return cached result");
 
-        // Third run — different input, cache miss, API called again.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "world").await?;
+        // A distinct non-serializable skipped client does not alter the key.
+        let skipped_client = MockApi::new();
+        let client = skipped_client.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
+            assert_eq!(result, "api:hello");
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(api.call_count(), 1, "skipped client should not invalidate");
+        assert_eq!(skipped_client.call_count(), 0);
+
+        // A keyed argument change still misses the cache.
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "world".to_string(), &client).await?;
             assert_eq!(result, "api:world");
             Ok(())
         })
@@ -2762,7 +2990,7 @@ fn fs_walk_integration() {
     std::fs::write(dir.path().join("lib.rs"), "pub mod foo;").unwrap();
     std::fs::write(dir.path().join("readme.md"), "# Hello").unwrap();
 
-    let files = cocoindex::fs::walk(dir.path(), &["**/*.rs"]).unwrap();
+    let files = cocoindex::resources::fs::walk(dir.path(), &["**/*.rs"]).unwrap();
     assert_eq!(files.len(), 2);
 
     let file = &files[0]; // lib.rs (sorted)
@@ -2807,7 +3035,7 @@ async fn ctx_mount_each_rejects_duplicate_keys() {
 
 #[tokio::test]
 async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
-    use cocoindex::DirTarget;
+    use cocoindex::resources::fs::DirTarget;
     use std::fs;
     use std::time::Duration;
 
@@ -2882,7 +3110,7 @@ async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
 
 #[tokio::test]
 async fn dir_target_deletes_file_when_source_disappears_via_mount_each() {
-    use cocoindex::DirTarget;
+    use cocoindex::resources::fs::DirTarget;
 
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("lmdb");

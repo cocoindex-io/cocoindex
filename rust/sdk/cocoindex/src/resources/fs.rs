@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-pub use crate::file::{
+pub use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
     MatchAllFilePathMatcher, PatternFilePathMatcher, decode_bytes,
 };
@@ -176,7 +176,7 @@ pub struct FileEntry {
     root: FilePath,
     relative: PathBuf,
     size: u64,
-    #[serde(with = "crate::file::system_time_serde")]
+    #[serde(with = "crate::resources::file::system_time_serde")]
     modified: SystemTime,
     #[serde(skip)]
     cache: Arc<FileContentCache>,
@@ -274,7 +274,7 @@ impl FileSourceItem for FileEntry {}
 ///
 /// # Examples
 /// ```ignore
-/// let files = cocoindex::fs::walk("./src", &["**/*.rs", "**/*.toml"])?;
+/// let files = cocoindex::resources::fs::walk("./src", &["**/*.rs", "**/*.toml"])?;
 /// ```
 pub fn walk(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<FileEntry>> {
     let matcher = PatternFilePathMatcher::include(patterns.iter().copied())?;
@@ -444,7 +444,7 @@ impl DirTarget {
     /// # Examples
     ///
     /// ```no_run
-    /// # use cocoindex::{ctx::Ctx, fs::DirTarget};
+    /// # use cocoindex::{ctx::Ctx, resources::fs::DirTarget};
     /// # async fn doc(ctx: &Ctx) -> cocoindex::error::Result<()> {
     /// let target = DirTarget::mount(ctx, "./output")?;
     /// target.declare_file(ctx, "result.txt", b"final output")?;

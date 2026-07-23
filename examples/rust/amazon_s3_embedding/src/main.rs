@@ -12,14 +12,14 @@
 //! and `AWS_ENDPOINT_URL` for MinIO) plus `S3_BUCKET` (and optional `S3_PREFIX`).
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
-use cocoindex::amazon_s3::{self, ListOptions, S3Client, S3File};
-use cocoindex::file::PatternFilePathMatcher;
+use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
 use cocoindex::prelude::*;
+use cocoindex::resources::file::PatternFilePathMatcher;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -29,25 +29,25 @@ const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "amazon_s3_doc_embeddings";
 const TOP_K: i64 = 5;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("s3_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static S3: LazyLock<ContextKey<S3Client>> = LazyLock::new(|| {
-    ContextKey::new_with_state("s3_client", |c: &S3Client| c.state_id().to_string())
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "s3_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static S3: S3Client = "s3_client",
+    state = S3Client::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbeddingRow {
     id: i64,
     filename: String,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -143,7 +143,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"
@@ -167,18 +167,8 @@ async fn query_once(
 }
 
 fn doc_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<DocEmbeddingRow>(["id"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 fn vector_param(vec: &[f32]) -> String {

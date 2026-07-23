@@ -6,48 +6,45 @@
 //!   cargo run -- query "your query"    # pgvector similarity search
 //!
 //! Parallels the Python example:
-//!   - source           : `cocoindex::fs::walk` (cf. `localfs.walk_dir`)
-//!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
+//!   - source           : `cocoindex::resources::fs::walk` (cf. `localfs.walk_dir`)
+//!   - per-file compute  : `#[cocoindex::function]` (cf. `@coco.fn`)
 //!   - chunking          : `cocoindex::ops::text::RecursiveSplitter` (cf. `RecursiveSplitter`)
 //!   - embeddings        : `cocoindex::ops::sentence_transformers` all-MiniLM-L6-v2
 //!   - target            : `postgres::TableTarget` + pgvector index
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
-const EMBED_DIM: usize = 384;
 const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "doc_embeddings";
 const TOP_K: i64 = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("text_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "text_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbedding {
     id: i64,
     filename: String,
     chunk_start: i32,
     chunk_end: i32,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -71,7 +68,15 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     }
 
     let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
+    let embedder = ctx.get_key(&EMBEDDER)?.clone();
+    let embedding_ctx = ctx.clone();
+    let embeddings = ctx
+        .map(texts.clone(), move |chunk_text| {
+            let embedder = embedder.clone();
+            let ctx = embedding_ctx.clone();
+            async move { embedder.embed(&ctx, chunk_text).await }
+        })
+        .await?;
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
@@ -91,27 +96,17 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     Ok(rows)
 }
 
-fn doc_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("chunk_start", postgres::ColumnDef::new("integer")),
-            ("chunk_end", postgres::ColumnDef::new("integer")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
-}
-
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let table =
-        postgres::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
-            .await?;
+    let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
+    let table = postgres::mount_table_target(
+        &ctx,
+        &DB,
+        TABLE,
+        postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+            .with_vector_dim("embedding", vector_dim)?,
+        Some(PG_SCHEMA),
+    )
+    .await?;
     table.declare_vector_index(
         &ctx,
         "embedding",
@@ -146,7 +141,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"

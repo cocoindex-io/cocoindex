@@ -19,15 +19,14 @@
 //! where `D` is the per-vector dimension (128 for `vidore/colpali-v1.2`). A
 //! reference Python server is in the README. Everything else — the incremental
 //! pipeline and the Qdrant MAX_SIM multi-vector collection — is native Rust via
-//! `cocoindex::qdrant`.
+//! `cocoindex::connectors::qdrant`.
 //!
 //! Build note: `qdrant-client` compiles protobufs, so `protoc` is required.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use cocoindex::prelude::*;
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -45,13 +44,14 @@ const IMAGE_GLOBS: &[&str] = &[
     "**/*.bmp",
 ];
 
-static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("image_search_colpali_db", |c: &QdrantConnection| {
-        c.state_id().to_string()
-    })
-});
-static COLPALI: LazyLock<ContextKey<ColpaliClient>> =
-    LazyLock::new(|| ContextKey::new_with_state("colpali", |c: &ColpaliClient| c.url.clone()));
+cocoindex::context_key!(
+    static DB: QdrantConnection = "image_search_colpali_db",
+    state = QdrantConnection::state_id
+);
+cocoindex::context_key!(
+    static COLPALI: ColpaliClient = "colpali",
+    state = ColpaliClient::state_id
+);
 
 /// HTTP client for an external ColPali inference service (see module docs).
 #[derive(Clone)]
@@ -67,6 +67,10 @@ struct EmbeddingResponse {
 }
 
 impl ColpaliClient {
+    fn state_id(&self) -> &str {
+        &self.url
+    }
+
     fn new(url: String) -> Self {
         Self {
             http: reqwest::Client::new(),

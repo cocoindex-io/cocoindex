@@ -30,6 +30,48 @@ use crate::user_state::{IntoStateKey, StateHandle};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
 
+/// Declare a process-wide [`ContextKey`] backed by a [`std::sync::LazyLock`].
+///
+/// The three forms correspond to [`ContextKey::new`],
+/// [`ContextKey::new_detect_change`], and [`ContextKey::new_with_state`]:
+///
+/// ```
+/// # #[derive(serde::Serialize)]
+/// # struct AppConfig;
+/// # struct Database;
+/// # impl Database { fn state_id(&self) -> &str { "database" } }
+/// cocoindex::context_key!(static CONFIG: AppConfig = "app_config");
+/// cocoindex::context_key!(static TRACKED_CONFIG: AppConfig = "tracked_config", detect_change);
+/// cocoindex::context_key!(
+///     static DB: Database = "database",
+///     state = Database::state_id
+/// );
+/// ```
+///
+/// The key name must be an explicit string literal. It is a stable persistent
+/// identity used in target-state and memo keys, so it must not change merely
+/// because the Rust item moves to another module. The `state =` expression may
+/// be any path or closure implementing `Fn(&T) -> S` where `S: ToString`.
+#[macro_export]
+macro_rules! context_key {
+    ($vis:vis static $key:ident: $value:ty = $name:literal, detect_change $(,)?) => {
+        $vis static $key: ::std::sync::LazyLock<$crate::ContextKey<$value>> =
+            ::std::sync::LazyLock::new(|| $crate::ContextKey::new_detect_change($name));
+    };
+    ($vis:vis static $key:ident: $value:ty = $name:literal, state = $state:expr $(,)?) => {
+        $vis static $key: ::std::sync::LazyLock<$crate::ContextKey<$value>> =
+            ::std::sync::LazyLock::new(|| {
+                $crate::ContextKey::new_with_state($name, |value: &$value| {
+                    ($state)(value).to_string()
+                })
+            });
+    };
+    ($vis:vis static $key:ident: $value:ty = $name:literal $(,)?) => {
+        $vis static $key: ::std::sync::LazyLock<$crate::ContextKey<$value>> =
+            ::std::sync::LazyLock::new(|| $crate::ContextKey::new($name));
+    };
+}
+
 /// A named context key for app-provided resources.
 ///
 /// - [`ContextKey::new`] stores arbitrary `Send + Sync` resources (no change
@@ -1200,6 +1242,27 @@ mod tests {
 
     static TEST_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[derive(Serialize)]
+    struct TrackedConfig;
+
+    struct StatefulResource;
+
+    impl StatefulResource {
+        fn state_id(&self) -> u64 {
+            42
+        }
+    }
+
+    crate::context_key!(static PLAIN_KEY: String = "ctx_macro_plain");
+    crate::context_key!(
+        static DETECT_CHANGE_KEY: TrackedConfig = "ctx_macro_detect_change",
+        detect_change
+    );
+    crate::context_key!(
+        static DERIVED_STATE_KEY: StatefulResource = "ctx_macro_derived_state",
+        state = StatefulResource::state_id
+    );
+
     struct TestClockGuard {
         _guard: std::sync::MutexGuard<'static, ()>,
     }
@@ -1222,6 +1285,16 @@ mod tests {
         fn drop(&mut self) {
             testing_disable_deadline_clock();
         }
+    }
+
+    #[test]
+    fn context_key_macro_supports_all_three_forms() {
+        assert_eq!(PLAIN_KEY.name(), "ctx_macro_plain");
+        assert!(!PLAIN_KEY.detect_change());
+        assert_eq!(DETECT_CHANGE_KEY.name(), "ctx_macro_detect_change");
+        assert!(DETECT_CHANGE_KEY.detect_change());
+        assert_eq!(DERIVED_STATE_KEY.name(), "ctx_macro_derived_state");
+        assert!(DERIVED_STATE_KEY.detect_change());
     }
 
     #[tokio::test(flavor = "current_thread")]

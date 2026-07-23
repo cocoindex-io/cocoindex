@@ -7,13 +7,12 @@
 //!   cargo run -- query "your query"    # LanceDB vector search
 //!
 //! Same pipeline as the `text_embedding` example, but the target is the native
-//! `cocoindex::lancedb` connector instead of Postgres/pgvector. Parallels the
+//! `cocoindex::connectors::lancedb` connector instead of Postgres/pgvector. Parallels the
 //! Python example's use of `cocoindex.connectors.lancedb`.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
+use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
@@ -25,24 +24,23 @@ const TOP_K: usize = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
-static DB: LazyLock<ContextKey<LanceDatabase>> = LazyLock::new(|| {
-    ContextKey::new_with_state("text_embedding_lancedb_db", |db: &LanceDatabase| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: LanceDatabase = "text_embedding_lancedb_db",
+    state = LanceDatabase::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbedding {
     id: i64,
     filename: String,
     chunk_start: i64,
     chunk_end: i64,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -87,21 +85,10 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
 }
 
 fn doc_embedding_schema() -> Result<TableSchema> {
-    TableSchema::new(
-        [
-            ("id", ColumnDef::new(ColumnType::Int64)),
-            ("filename", ColumnDef::new(ColumnType::Text)),
-            ("chunk_start", ColumnDef::new(ColumnType::Int64)),
-            ("chunk_end", ColumnDef::new(ColumnType::Int64)),
-            ("text", ColumnDef::new(ColumnType::Text)),
-            ("embedding", ColumnDef::new(ColumnType::Vector(EMBED_DIM))),
-        ],
-        ["id"],
-    )
+    TableSchema::from_row::<DocEmbedding>(["id"])?.with_vector_dim("embedding", EMBED_DIM)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let table = lancedb::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?).await?;
 
     let files = walk_items(&sourcedir, &["**/*.md"])?;
@@ -129,7 +116,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = embedder.embed(query).await?;
+    let query_vec = Embedder::embed(embedder, query).await?;
     let results = lancedb::vector_search(db, TABLE, "embedding", query_vec, TOP_K).await?;
     for r in results {
         let filename = r.get("filename").and_then(|v| v.as_str()).unwrap_or("");

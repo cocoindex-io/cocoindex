@@ -8,7 +8,7 @@
 //!   cargo run -- query "your query"    # pgvector similarity search (no index)
 //!
 //! Parallels the Python example:
-//!   - source           : `cocoindex::fs::walk` (cf. `localfs.walk_dir`)
+//!   - source           : `cocoindex::resources::fs::walk` (cf. `localfs.walk_dir`)
 //!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
 //!   - PDF parsing       : `lopdf` (cf. `pypdf` first-page text + page count)
 //!   - LLM extraction    : OpenAI chat completions, JSON mode (cf. `openai` client)
@@ -26,13 +26,12 @@
 //! created (the query demo does a sequential cosine scan).
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use cocoindex::id::UuidGenerator;
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{CustomLanguageConfig, RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
 use cocoindex::prelude::*;
+use cocoindex::resources::id::UuidGenerator;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -51,18 +50,18 @@ const ABSTRACT_MIN_CHUNK_SIZE: usize = 200;
 const ABSTRACT_CHUNK_OVERLAP: usize = 150;
 const LLM_INPUT_CHARS: usize = 4000;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("paper_metadata_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
-static LLM: LazyLock<ContextKey<LlmClient>> =
-    LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
+cocoindex::context_key!(
+    static DB: postgres::Database = "paper_metadata_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
+cocoindex::context_key!(
+    static LLM: LlmClient = "llm_model",
+    state = LlmClient::model_name
+);
 
 // ---------------------------------------------------------------------------
 // Clients: LLM (OpenAI JSON mode); embedder is `SentenceTransformerEmbedder`
@@ -77,6 +76,10 @@ struct LlmClient {
 }
 
 impl LlmClient {
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
     fn new(model: String) -> Result<Self> {
         let api_key =
             std::env::var("OPENAI_API_KEY").map_err(|_| Error::engine("set OPENAI_API_KEY"))?;
@@ -153,28 +156,32 @@ struct PaperMetadataModel {
     abstract_text: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct PaperMetadataRow {
     filename: String,
     title: String,
+    #[coco(json)]
     authors: serde_json::Value, // jsonb: [{name, email, affiliation}]
     #[serde(rename = "abstract")]
+    #[coco(rename = "abstract")]
     abstract_text: String,
     num_pages: i32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct AuthorPaperRow {
     author_name: String,
     filename: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct MetadataEmbeddingRow {
+    #[coco(type = "uuid")]
     id: String, // uuid
     filename: String,
     location: String,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -260,7 +267,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     let mut embeddings = Vec::new();
 
     // Title embedding (one row).
-    let title_vec = embedder.embed(&metadata.title).await?;
+    let title_vec = embedder.embed(ctx, &metadata.title).await?;
     let title_id = uuid_gen
         .next_uuid(&ctx, &("title", &metadata.title))
         .await?
@@ -323,42 +330,16 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
 // ---------------------------------------------------------------------------
 
 fn metadata_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("filename", postgres::ColumnDef::new("text")),
-            ("title", postgres::ColumnDef::new("text")),
-            ("authors", postgres::ColumnDef::new("jsonb")),
-            ("abstract", postgres::ColumnDef::new("text")),
-            ("num_pages", postgres::ColumnDef::new("integer")),
-        ],
-        ["filename"],
-    )
+    postgres::TableSchema::from_row::<PaperMetadataRow>(["filename"])
 }
 
 fn author_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("author_name", postgres::ColumnDef::new("text")),
-            ("filename", postgres::ColumnDef::new("text")),
-        ],
-        ["author_name", "filename"],
-    )
+    postgres::TableSchema::from_row::<AuthorPaperRow>(["author_name", "filename"])
 }
 
 fn embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("uuid")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("location", postgres::ColumnDef::new("text")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<MetadataEmbeddingRow>(["id"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +422,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, location, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE_EMBEDDINGS}\" ORDER BY distance ASC LIMIT $2"

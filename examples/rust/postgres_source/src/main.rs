@@ -17,10 +17,8 @@
 //! Incrementality: unchanged source rows are memo-skipped; rows deleted from the
 //! source have their derived output rows reconciled away automatically.
 
-use std::sync::LazyLock;
-
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
-use cocoindex::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -31,24 +29,21 @@ const PG_SCHEMA: &str = "coco_examples_v1";
 const TABLE: &str = "output";
 const TOP_K: i64 = 5;
 
-/// Target database.
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("postgres_source_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-/// Source database. Defaults to the target URL, but can point elsewhere via
-/// `SOURCE_DATABASE_URL`, matching the Python example.
-static SOURCE_DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("source_pool", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+// Target database.
+cocoindex::context_key!(
+    static DB: postgres::Database = "postgres_source_db",
+    state = postgres::Database::state_id
+);
+// Source database. Defaults to the target URL, but can point elsewhere via
+// `SOURCE_DATABASE_URL`, matching the Python example.
+cocoindex::context_key!(
+    static SOURCE_DB: postgres::Database = "source_pool",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
 // ---------------------------------------------------------------------------
 // Data models
@@ -65,7 +60,7 @@ struct SourceProduct {
 }
 
 /// One row written to the output table.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct OutputProduct {
     product_category: String,
     product_name: String,
@@ -73,6 +68,7 @@ struct OutputProduct {
     price: f64,
     amount: i64,
     total_value: f64,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -89,7 +85,10 @@ async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProd
         product.product_category, product.product_name, product.description
     );
     let total_value = product.price * product.amount as f64;
-    let embedding = ctx.get_key(&EMBEDDER)?.embed(&full_description).await?;
+    let embedding = ctx
+        .get_key(&EMBEDDER)?
+        .embed(ctx, &full_description)
+        .await?;
     Ok(OutputProduct {
         product_category: product.product_category.clone(),
         product_name: product.product_name.clone(),
@@ -102,21 +101,8 @@ async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProd
 }
 
 fn output_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("product_category", postgres::ColumnDef::new("text")),
-            ("product_name", postgres::ColumnDef::new("text")),
-            ("description", postgres::ColumnDef::new("text")),
-            ("price", postgres::ColumnDef::new("double precision")),
-            ("amount", postgres::ColumnDef::new("bigint")),
-            ("total_value", postgres::ColumnDef::new("double precision")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["product_category", "product_name"],
-    )
+    postgres::TableSchema::from_row::<OutputProduct>(["product_category", "product_name"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 async fn app_main(ctx: Ctx) -> Result<()> {
@@ -155,7 +141,7 @@ async fn app_main(ctx: Ctx) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn query(pool: &PgPool, embedder: &SentenceTransformerEmbedder, q: &str) -> Result<()> {
-    let vec = embedder.embed(q).await?;
+    let vec = Embedder::embed(embedder, q).await?;
     let vec_lit = format!(
         "[{}]",
         vec.iter()

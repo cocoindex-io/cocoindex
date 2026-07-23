@@ -19,7 +19,7 @@
 
 use std::sync::LazyLock;
 
-use cocoindex::postgres;
+use cocoindex::connectors::postgres;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -31,13 +31,16 @@ const MAX_TEXT: usize = 4000;
 
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-/// Shared Postgres target database.
-static PG: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("hn_db", |db: &postgres::Database| db.state_id().to_string())
-});
-/// LLM client; state-tracked on the model so changing it invalidates memos.
-static LLM: LazyLock<ContextKey<LlmClient>> =
-    LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
+// Shared Postgres target database.
+cocoindex::context_key!(
+    static PG: postgres::Database = "hn_db",
+    state = postgres::Database::state_id
+);
+// LLM client; state-tracked on the model so changing it invalidates memos.
+cocoindex::context_key!(
+    static LLM: LlmClient = "llm_model",
+    state = LlmClient::model_name
+);
 
 // ---------------------------------------------------------------------------
 // LLM client (OpenAI JSON mode)
@@ -75,6 +78,10 @@ const TOPICS_PROMPT: &str = "Extract topics from the user's text. Return a JSON 
     Example: \"John Kennedy\", \"JFK\".";
 
 impl LlmClient {
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
     fn new(model: String) -> Result<Self> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| std::env::var("LLM_API_KEY"))
@@ -148,7 +155,7 @@ struct Thread {
     messages: Vec<Message>, // [0] is the thread itself, rest are comments
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct HnMessageRow {
     id: String,
     thread_id: String,
@@ -159,7 +166,7 @@ struct HnMessageRow {
     created_at: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct HnTopicRow {
     topic: String,
     message_id: String,
@@ -351,31 +358,11 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn message_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("text")),
-            ("thread_id", postgres::ColumnDef::new("text")),
-            ("content_type", postgres::ColumnDef::new("text")),
-            ("author", postgres::ColumnDef::new("text").nullable()),
-            ("text", postgres::ColumnDef::new("text").nullable()),
-            ("url", postgres::ColumnDef::new("text").nullable()),
-            ("created_at", postgres::ColumnDef::new("text").nullable()),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<HnMessageRow>(["id"])
 }
 
 fn topic_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("topic", postgres::ColumnDef::new("text")),
-            ("message_id", postgres::ColumnDef::new("text")),
-            ("thread_id", postgres::ColumnDef::new("text")),
-            ("content_type", postgres::ColumnDef::new("text")),
-            ("created_at", postgres::ColumnDef::new("text").nullable()),
-        ],
-        ["topic", "message_id"],
-    )
+    postgres::TableSchema::from_row::<HnTopicRow>(["topic", "message_id"])
 }
 
 async fn show_trending(pool: &PgPool, limit: i64) -> Result<()> {

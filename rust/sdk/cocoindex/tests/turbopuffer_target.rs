@@ -8,18 +8,18 @@
 //!     cargo test -p cocoindex --features turbopuffer --test turbopuffer_target
 #![cfg(feature = "turbopuffer")]
 
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
-use cocoindex::{ContextKey, Environment, Result};
+use cocoindex::connectors::turbopuffer::{
+    self, DistanceMetric, NamespaceSchema, TurbopufferConnection,
+};
+use cocoindex::{Environment, Result};
 use serde_json::json;
 
-static DB: LazyLock<ContextKey<TurbopufferConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("turbopuffer_test", |c: &TurbopufferConnection| {
-        c.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: TurbopufferConnection = "turbopuffer_test",
+    state = TurbopufferConnection::state_id
+);
 
 type RowSpec = (&'static str, Vec<f32>, &'static str);
 

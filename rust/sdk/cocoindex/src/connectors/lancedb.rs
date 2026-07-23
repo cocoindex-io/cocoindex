@@ -13,12 +13,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
+use arrow_array::builder::{FixedSizeListBuilder, PrimitiveBuilder};
+use arrow_array::types::{ArrowPrimitiveType, Float16Type, Float32Type};
 use arrow_array::{
-    Array, ArrayRef, Float64Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
+    Int64Array, RecordBatch, RecordBatchIterator, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cocoindex_utils::fingerprint::Fingerprint;
+use half::f16;
 use lancedb::Connection;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::NewColumnTransform;
@@ -80,21 +83,39 @@ impl LanceDatabase {
 /// A LanceDB column type (the subset CocoIndex maps natively).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ColumnType {
+    Bool,
+    Int16,
+    Int32,
     Int64,
+    Float32,
     Float64,
     Text,
+    Binary,
+    /// Complex values encoded as JSON strings, matching Python's fallback.
+    Json,
     /// Fixed-size float32 vector of the given dimension.
     Vector(usize),
+    /// Fixed-size float16 vector of the given dimension.
+    HalfVector(usize),
 }
 
 impl ColumnType {
     fn arrow_data_type(&self) -> DataType {
         match self {
+            ColumnType::Bool => DataType::Boolean,
+            ColumnType::Int16 => DataType::Int16,
+            ColumnType::Int32 => DataType::Int32,
             ColumnType::Int64 => DataType::Int64,
+            ColumnType::Float32 => DataType::Float32,
             ColumnType::Float64 => DataType::Float64,
-            ColumnType::Text => DataType::Utf8,
+            ColumnType::Text | ColumnType::Json => DataType::Utf8,
+            ColumnType::Binary => DataType::Binary,
             ColumnType::Vector(dim) => DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
+                *dim as i32,
+            ),
+            ColumnType::HalfVector(dim) => DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float16, true)),
                 *dim as i32,
             ),
         }
@@ -167,6 +188,67 @@ impl TableSchema {
         &self.primary_key
     }
 
+    /// Derive a schema from a `#[derive(SchemaFields)]` row type.
+    pub fn from_row<T: crate::row_schema::SchemaFields>(
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
+        let columns = T::schema_fields()
+            .into_iter()
+            .map(|field| {
+                let def = lancedb_column_def(&field)?;
+                Ok((field.name, def))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::new(columns, primary_key)
+    }
+
+    /// Resolve or override the dimension of a vector field derived from a row.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        if dim == 0 || i32::try_from(dim).is_err() {
+            return Err(crate::row_schema::vector_dimension_error(
+                "LanceDB",
+                field_name,
+                "requires a dimension in 1..=i32::MAX",
+            ));
+        }
+        let (_, def) = self
+            .columns
+            .iter_mut()
+            .find(|(name, _)| name == field_name)
+            .ok_or_else(|| crate::row_schema::unknown_vector_field_error("LanceDB", field_name))?;
+        match &mut def.col_type {
+            ColumnType::Vector(current_dim) | ColumnType::HalfVector(current_dim) => {
+                *current_dim = dim;
+            }
+            _ => {
+                return Err(crate::row_schema::not_vector_field_error(
+                    "LanceDB", field_name,
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            let dim = match def.col_type {
+                ColumnType::Vector(dim) | ColumnType::HalfVector(dim) => dim,
+                _ => continue,
+            };
+            if dim == 0 {
+                crate::row_schema::require_resolved_vector_dimension("LanceDB", name)?;
+            }
+            if i32::try_from(dim).is_err() {
+                return Err(crate::row_schema::vector_dimension_error(
+                    "LanceDB",
+                    name,
+                    "requires a dimension in 1..=i32::MAX",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn column_names(&self) -> impl Iterator<Item = &String> {
         self.columns.iter().map(|(n, _)| n)
     }
@@ -179,6 +261,37 @@ impl TableSchema {
             .collect();
         Arc::new(Schema::new(fields))
     }
+}
+
+fn lancedb_column_def(field: &crate::row_schema::SchemaField) -> Result<ColumnDef> {
+    use crate::row_schema::LogicalType as L;
+
+    let col_type = match &field.logical_type {
+        L::Bool => ColumnType::Bool,
+        L::Int16 => ColumnType::Int16,
+        L::Int32 => ColumnType::Int32,
+        L::Int64 => ColumnType::Int64,
+        L::Float32 => ColumnType::Float32,
+        L::Float64 => ColumnType::Float64,
+        L::Text | L::Uuid | L::Date | L::Time | L::DateTime => ColumnType::Text,
+        L::Bytes => ColumnType::Binary,
+        L::Decimal | L::Duration | L::Json => ColumnType::Json,
+        L::Vector { dim, half } => {
+            if *half {
+                ColumnType::HalfVector(*dim as usize)
+            } else {
+                ColumnType::Vector(*dim as usize)
+            }
+        }
+        L::Custom(custom) => {
+            return Err(Error::engine(format!(
+                "LanceDB field {:?} has unsupported custom logical type {custom:?}",
+                field.name
+            )));
+        }
+    };
+    let def = ColumnDef::new(col_type);
+    Ok(if field.nullable { def.nullable() } else { def })
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +335,7 @@ pub fn table_target_with_options(
     options: ManagedTargetOptions,
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
+    table_schema.validate_vector_dimensions()?;
     let provider = register_root_target_states_provider(
         ctx,
         format!("cocoindex/lancedb/table/{}/{}", db.name(), table_name),
@@ -345,7 +459,7 @@ impl LanceTableTarget {
 
     /// Declare a vector index on `column` as an attachment of this table. The
     /// index is created/recreated/dropped to match the declared options. The
-    /// column must be a [`ColumnType::Vector`].
+    /// column must be a [`ColumnType::Vector`] or [`ColumnType::HalfVector`].
     pub fn declare_vector_index(
         &self,
         ctx: &Ctx,
@@ -354,7 +468,7 @@ impl LanceTableTarget {
     ) -> Result<()> {
         validate_identifier(column)?;
         match self.column_type(column) {
-            Some(ColumnType::Vector(_)) => {}
+            Some(ColumnType::Vector(_) | ColumnType::HalfVector(_)) => {}
             Some(_) => {
                 return Err(Error::engine(format!(
                     "LanceDB vector index column {column:?} is not a vector column"
@@ -1000,9 +1114,35 @@ fn build_record_batch(
     for (name, def) in &schema.columns {
         let values = rows.iter().map(|r| r.get(name).unwrap_or(&JsonValue::Null));
         let array: ArrayRef = match &def.col_type {
+            ColumnType::Bool => Arc::new(BooleanArray::from(
+                values
+                    .map(|v| nullable_value(name, def, v).map(JsonValue::as_bool))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Int16 => Arc::new(Int16Array::from(
+                values
+                    .map(|v| {
+                        nullable_value(name, def, v)
+                            .map(|v| v.as_i64().and_then(|n| i16::try_from(n).ok()))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Int32 => Arc::new(Int32Array::from(
+                values
+                    .map(|v| {
+                        nullable_value(name, def, v)
+                            .map(|v| v.as_i64().and_then(|n| i32::try_from(n).ok()))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             ColumnType::Int64 => Arc::new(Int64Array::from(
                 values
                     .map(|v| nullable_value(name, def, v).map(|v| v.as_i64()))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Float32 => Arc::new(Float32Array::from(
+                values
+                    .map(|v| nullable_value(name, def, v).map(|v| v.as_f64().map(|n| n as f32)))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Float64 => Arc::new(Float64Array::from(
@@ -1015,7 +1155,66 @@ fn build_record_batch(
                     .map(|v| nullable_value(name, def, v).map(|v| v.as_str().map(str::to_string)))
                     .collect::<Result<Vec<_>>>()?,
             )),
-            ColumnType::Vector(dim) => build_vector_array(name, *dim, def.nullable, values)?,
+            ColumnType::Binary => {
+                let bytes = values
+                    .map(|v| {
+                        let value = nullable_value(name, def, v)?;
+                        if value.is_null() {
+                            return Ok(None);
+                        }
+                        let values = value.as_array().ok_or_else(|| {
+                            Error::engine(format!("column {name:?} must be a byte array"))
+                        })?;
+                        values
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_u64()
+                                    .and_then(|n| u8::try_from(n).ok())
+                                    .ok_or_else(|| {
+                                        Error::engine(format!(
+                                            "column {name:?} has a non-byte element"
+                                        ))
+                                    })
+                            })
+                            .collect::<Result<Vec<_>>>()
+                            .map(Some)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Arc::new(BinaryArray::from_iter(
+                    bytes.iter().map(|value| value.as_deref()),
+                ))
+            }
+            ColumnType::Json => Arc::new(StringArray::from(
+                values
+                    .map(|v| {
+                        let value = nullable_value(name, def, v)?;
+                        if value.is_null() {
+                            Ok(None)
+                        } else {
+                            serde_json::to_string(value).map(Some).map_err(|e| {
+                                Error::engine(format!("encode LanceDB JSON field {name:?}: {e}"))
+                            })
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Vector(dim) => build_vector_array::<Float32Type>(
+                name,
+                *dim,
+                def.nullable,
+                DataType::Float32,
+                values,
+                |value| value,
+            )?,
+            ColumnType::HalfVector(dim) => build_vector_array::<Float16Type>(
+                name,
+                *dim,
+                def.nullable,
+                DataType::Float16,
+                values,
+                f16::from_f32,
+            )?,
         };
         arrays.push(array);
     }
@@ -1023,14 +1222,16 @@ fn build_record_batch(
         .map_err(|e| Error::engine(format!("build LanceDB record batch: {e}")))
 }
 
-fn build_vector_array<'a>(
+fn build_vector_array<'a, T: ArrowPrimitiveType>(
     column: &str,
     dim: usize,
     nullable: bool,
+    item_type: DataType,
     values: impl Iterator<Item = &'a JsonValue>,
+    convert: impl Fn(f32) -> T::Native,
 ) -> Result<ArrayRef> {
-    let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), dim as i32)
-        .with_field(Arc::new(Field::new("item", DataType::Float32, true)));
+    let mut builder = FixedSizeListBuilder::new(PrimitiveBuilder::<T>::new(), dim as i32)
+        .with_field(Arc::new(Field::new("item", item_type, true)));
     let mut count = 0usize;
     for value in values {
         if value.is_null() {
@@ -1059,7 +1260,7 @@ fn build_vector_array<'a>(
             let f = v.as_f64().ok_or_else(|| {
                 Error::engine(format!("column {column:?} has non-numeric vector element"))
             })?;
-            builder.values().append_value(f as f32);
+            builder.values().append_value(convert(f as f32));
         }
         builder.append(true);
         count += 1;

@@ -2,7 +2,7 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
     Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, LitStr, Pat, PatType, Path, Stmt, Token,
     Type, TypeReference, parenthesized,
@@ -12,8 +12,10 @@ use syn::{
 };
 
 /// Information about a non-ctx parameter.
+#[derive(Clone, Debug)]
 struct ParamInfo {
     ident: syn::Ident,
+    ty: Type,
     is_ref: bool,
     is_str_ref: bool,
 }
@@ -36,7 +38,7 @@ fn parse_fn_params_opt(func: &ItemFn) -> syn::Result<(Option<syn::Ident>, Vec<Pa
         let ident = pat_ident.ident.clone();
 
         // Detect the `&Ctx` parameter used by the function macro contract.
-        if is_ctx_type(ty) {
+        if is_ref_to(ty, "Ctx") {
             if ctx_ident.is_some() {
                 return Err(SynError::new(
                     ident.span(),
@@ -48,9 +50,10 @@ fn parse_fn_params_opt(func: &ItemFn) -> syn::Result<(Option<syn::Ident>, Vec<Pa
         }
 
         let is_ref = matches!(ty.as_ref(), Type::Reference(_));
-        let is_str_ref = is_str_ref_type(ty);
+        let is_str_ref = is_ref_to(ty, "str");
         params.push(ParamInfo {
             ident,
+            ty: ty.as_ref().clone(),
             is_ref,
             is_str_ref,
         });
@@ -72,7 +75,7 @@ fn parse_fn_params(func: &ItemFn) -> syn::Result<(syn::Ident, Vec<ParamInfo>)> {
     Ok((ctx_ident, params))
 }
 
-fn is_str_ref_type(ty: &Type) -> bool {
+fn is_ref_to(ty: &Type, name: &str) -> bool {
     if let Type::Reference(TypeReference { elem, .. }) = ty
         && let Type::Path(type_path) = elem.as_ref()
     {
@@ -80,21 +83,7 @@ fn is_str_ref_type(ty: &Type) -> bool {
             .path
             .segments
             .last()
-            .is_some_and(|seg| seg.ident == "str");
-    }
-    false
-}
-
-/// Check if a type is a `&Ctx` reference.
-fn is_ctx_type(ty: &Type) -> bool {
-    if let Type::Reference(TypeReference { elem, .. }) = ty
-        && let Type::Path(type_path) = elem.as_ref()
-    {
-        return type_path
-            .path
-            .segments
-            .last()
-            .is_some_and(|seg| seg.ident == "Ctx");
+            .is_some_and(|segment| segment.ident == name);
     }
     false
 }
@@ -135,22 +124,12 @@ fn compute_code_hash(block: &syn::Block, version: Option<u64>) -> u64 {
     hash
 }
 
-use proc_macro2::TokenStream as Pm2TokenStream;
-
-trait ToTokenStream {
-    fn to_token_stream(&self) -> Pm2TokenStream;
-}
-
-impl ToTokenStream for syn::Block {
-    fn to_token_stream(&self) -> Pm2TokenStream {
-        quote! { #self }
-    }
-}
-
 /// Parsed arguments for `#[function(...)]`.
 #[derive(Debug)]
 struct FunctionArgs {
     memo: bool,
+    batching: bool,
+    max_batch_size: Option<usize>,
     version: Option<u64>,
     memo_key: Vec<MemoKeyOverride>,
     logic_tracking: LogicTracking,
@@ -186,6 +165,8 @@ impl FunctionArgs {
 impl Parse for FunctionArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut memo = false;
+        let mut batching = false;
+        let mut max_batch_size = None;
         let mut version = None;
         let mut memo_key = Vec::new();
         let mut logic_tracking = LogicTracking::Full;
@@ -194,6 +175,27 @@ impl Parse for FunctionArgs {
             let name: Ident = input.parse()?;
             match name.to_string().as_str() {
                 "memo" => memo = true,
+                "batching" => batching = true,
+                "max_batch_size" => {
+                    input.parse::<Token![=]>()?;
+                    let value: LitInt = input.parse()?;
+                    if max_batch_size.is_some() {
+                        return Err(SynError::new(
+                            value.span(),
+                            "duplicate `max_batch_size` argument",
+                        ));
+                    }
+                    let value = value
+                        .base10_parse::<usize>()
+                        .map_err(|err| SynError::new(value.span(), err.to_string()))?;
+                    if value == 0 {
+                        return Err(SynError::new(
+                            name.span(),
+                            "`max_batch_size` must be greater than zero",
+                        ));
+                    }
+                    max_batch_size = Some(value);
+                }
                 "logic_tracking" => {
                     input.parse::<Token![=]>()?;
                     let mode: LitStr = input.parse()?;
@@ -245,7 +247,7 @@ impl Parse for FunctionArgs {
                 _ => {
                     return Err(SynError::new(
                         name.span(),
-                        "unsupported function attribute argument. expected `memo`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
+                        "unsupported function attribute argument. expected `memo`, `batching`, `max_batch_size = N`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
                     ));
                 }
             }
@@ -258,8 +260,17 @@ impl Parse for FunctionArgs {
             }
         }
 
+        if max_batch_size.is_some() && !batching {
+            return Err(SynError::new(
+                Span::call_site(),
+                "`max_batch_size` requires `batching`",
+            ));
+        }
+
         Ok(Self {
             memo,
+            batching,
+            max_batch_size,
             version,
             memo_key,
             logic_tracking,
@@ -347,7 +358,6 @@ fn gen_key_write_for_param(
 
 fn gen_state_collect_for_param(
     states_ident: &Ident,
-    state_idx_ident: &Ident,
     prev_states_ident: &Ident,
     param: &ParamInfo,
 ) -> TokenStream2 {
@@ -359,14 +369,387 @@ fn gen_state_collect_for_param(
     quote! {
         let __coco_prev_state = #prev_states_ident
             .as_ref()
-            .and_then(|__coco_states| __coco_states.get(#state_idx_ident));
+            .and_then(|__coco_previous_states| __coco_previous_states.get(#states_ident.len()));
         if let Some(__coco_state) =
             ::cocoindex::memo::collect_memo_arg_state(#default_arg, __coco_prev_state).await?
         {
             #states_ident.push(__coco_state);
-            #state_idx_ident += 1;
         }
     }
+}
+
+fn gen_function_memo_key(
+    fn_name: &Ident,
+    hash_const_name: &Ident,
+    key_writes: &[TokenStream2],
+) -> TokenStream2 {
+    quote! {{
+        let mut __coco_key = ::cocoindex::memo::new_key_fingerprinter();
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &"cocoindex_fn")?;
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::module_path!())?;
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::stringify!(#fn_name))?;
+        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#hash_const_name)?;
+        #(#key_writes)*
+        ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
+    }}
+}
+
+fn gen_memo_wrapper_block(
+    fn_name: &Ident,
+    hash_const_name: &Ident,
+    ctx_ident: &Ident,
+    params: &[ParamInfo],
+    overrides: &[MemoKeyOverride],
+    propagate_children_fn_logic: bool,
+    body_closure: TokenStream2,
+) -> syn::Result<TokenStream2> {
+    validate_memo_key_overrides(
+        overrides,
+        params.iter().map(|param| param.ident.to_string()),
+    )?;
+    let key_ident = format_ident!("__coco_key");
+    let states_ident = format_ident!("__coco_states");
+    let prev_states_ident = format_ident!("__coco_prev_states");
+    let key_writes = params
+        .iter()
+        .filter_map(|param| gen_key_write_for_param(&key_ident, param, overrides))
+        .collect::<Vec<_>>();
+    let state_collects = params
+        .iter()
+        .map(|param| gen_state_collect_for_param(&states_ident, &prev_states_ident, param))
+        .collect::<Vec<_>>();
+    let clone_stmts = gen_clones(params);
+    let memo_key = gen_function_memo_key(fn_name, hash_const_name, &key_writes);
+
+    Ok(quote! {{
+        let __coco_key = #memo_key;
+
+        ::cocoindex::memo::cached_by_fingerprint_with_state(
+            #ctx_ident,
+            __coco_key,
+            #propagate_children_fn_logic,
+            {
+                #(#clone_stmts)*
+                move |__coco_prev_states| async move {
+                    let mut __coco_states = Vec::new();
+                    #(#state_collects)*
+                    Ok(__coco_states)
+                }
+            },
+            {
+                #(#clone_stmts)*
+                #body_closure
+            },
+        )
+        .await
+    }})
+}
+
+#[derive(Debug)]
+enum BatchImplParam {
+    Context,
+    Items,
+    Extra(usize),
+}
+
+#[derive(Debug)]
+struct BatchingSignature {
+    ctx_ident: Ident,
+    item_param: ParamInfo,
+    extra_params: Vec<ParamInfo>,
+    batch_impl_params: Vec<BatchImplParam>,
+    output_ty: Type,
+    wrapper_sig: syn::Signature,
+}
+
+fn vec_inner_type(ty: &Type) -> Option<Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty.clone()),
+        _ => None,
+    })
+}
+
+fn item_shaped_return_type(output: &syn::ReturnType) -> syn::Result<(Type, syn::ReturnType)> {
+    let mut wrapper_output = output.clone();
+    let invalid = || {
+        SynError::new_spanned(
+            output,
+            "batching function return type must be `Result<Vec<_>>`",
+        )
+    };
+    let syn::ReturnType::Type(_, wrapper_result_ty) = &mut wrapper_output else {
+        return Err(invalid());
+    };
+    let Type::Path(wrapper_result_path) = wrapper_result_ty.as_mut() else {
+        return Err(invalid());
+    };
+    let Some(wrapper_result_segment) = wrapper_result_path.path.segments.last_mut() else {
+        return Err(invalid());
+    };
+    if wrapper_result_segment.ident != "Result" {
+        return Err(invalid());
+    }
+    let syn::PathArguments::AngleBracketed(wrapper_args) = &mut wrapper_result_segment.arguments
+    else {
+        return Err(invalid());
+    };
+    let Some(syn::GenericArgument::Type(batch_output_ty)) = wrapper_args.args.first_mut() else {
+        return Err(invalid());
+    };
+    let Some(item_output_ty) = vec_inner_type(batch_output_ty) else {
+        return Err(invalid());
+    };
+    *batch_output_ty = item_output_ty.clone();
+    Ok((item_output_ty, wrapper_output))
+}
+
+fn parse_batching_signature(func: &ItemFn) -> syn::Result<BatchingSignature> {
+    if func.sig.asyncness.is_none() {
+        return Err(SynError::new(
+            func.sig.ident.span(),
+            "batching requires an async function",
+        ));
+    }
+    if !func.sig.generics.params.is_empty() {
+        return Err(SynError::new_spanned(
+            &func.sig.generics,
+            "batching functions cannot be generic because their scheduler is static",
+        ));
+    }
+    let mut input_idents = Vec::with_capacity(func.sig.inputs.len());
+    for input in &func.sig.inputs {
+        let FnArg::Typed(param) = input else {
+            return Err(SynError::new_spanned(
+                input,
+                "batching is supported only on free functions",
+            ));
+        };
+        let Pat::Ident(param_ident) = param.pat.as_ref() else {
+            return Err(SynError::new_spanned(
+                &param.pat,
+                "batching function parameters must be identifiers",
+            ));
+        };
+        input_idents.push(param_ident.ident.clone());
+    }
+
+    let (ctx_ident, params) = parse_fn_params(func)?;
+    let Some(batch_param) = params.first() else {
+        return Err(SynError::new(
+            func.sig.ident.span(),
+            "batching requires a non-context `Vec<_>` parameter",
+        ));
+    };
+    let Some(item_ty) = vec_inner_type(&batch_param.ty) else {
+        return Err(SynError::new_spanned(
+            &batch_param.ty,
+            "batching requires the first non-context parameter to be `Vec<_>`",
+        ));
+    };
+    let (output_ty, wrapper_output) = item_shaped_return_type(&func.sig.output)?;
+
+    let mut wrapper_sig = func.sig.clone();
+    let batch_input = wrapper_sig
+        .inputs
+        .iter_mut()
+        .find_map(|input| match input {
+            FnArg::Typed(param)
+                if matches!(param.pat.as_ref(), Pat::Ident(ident) if ident.ident == batch_param.ident) =>
+            {
+                Some(param)
+            }
+            _ => None,
+        })
+        .expect("batch parameter was validated above");
+    *batch_input.ty = item_ty.clone();
+    wrapper_sig.output = wrapper_output;
+
+    let batch_impl_params = input_idents
+        .into_iter()
+        .map(|ident| {
+            if ident == ctx_ident {
+                BatchImplParam::Context
+            } else if ident == batch_param.ident {
+                BatchImplParam::Items
+            } else {
+                let param_index = params
+                    .iter()
+                    .position(|param| param.ident == ident)
+                    .expect("all non-context parameters were parsed");
+                debug_assert!(param_index > 0);
+                BatchImplParam::Extra(param_index - 1)
+            }
+        })
+        .collect();
+
+    Ok(BatchingSignature {
+        ctx_ident,
+        item_param: ParamInfo {
+            ident: batch_param.ident.clone(),
+            ty: item_ty,
+            is_ref: false,
+            is_str_ref: false,
+        },
+        extra_params: params[1..].to_vec(),
+        batch_impl_params,
+        output_ty,
+        wrapper_sig,
+    })
+}
+
+fn gen_owned_param_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
+    params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            quote! { let #ident = ::core::clone::Clone::clone(&#ident); }
+        })
+        .collect()
+}
+
+fn expand_batching_function(
+    func: &ItemFn,
+    args: &FunctionArgs,
+    hash_const_name: &Ident,
+    hash_const_value: &TokenStream2,
+    logic_registration: &TokenStream2,
+    track_logic: bool,
+    propagate_children_fn_logic: bool,
+) -> syn::Result<TokenStream2> {
+    let batching = parse_batching_signature(func)?;
+    let fn_name = &func.sig.ident;
+    let vis = &func.vis;
+    let attrs = &func.attrs;
+    let body = &func.block;
+    let wrapper_sig = &batching.wrapper_sig;
+    let ctx_ident = &batching.ctx_ident;
+    let item_ident = &batching.item_param.ident;
+    let item_ty = &batching.item_param.ty;
+    let output_ty = &batching.output_ty;
+    let extra_params = &batching.extra_params;
+
+    let batch_impl_name = format_ident!("__coco_batch_impl_{}", fn_name);
+    let mut batch_impl_sig = func.sig.clone();
+    batch_impl_sig.ident = batch_impl_name.clone();
+    let batch_static_name = format_ident!("__COCO_BATCHED_{}", fn_name.to_string().to_uppercase());
+    let max_batch_size = match args.max_batch_size {
+        Some(max_batch_size) => quote! { ::core::option::Option::Some(#max_batch_size) },
+        None => quote! { ::core::option::Option::None },
+    };
+
+    let batch_impl_args = batching.batch_impl_params.iter().map(|param| match param {
+        BatchImplParam::Context => quote! { &__coco_batch_ctx },
+        BatchImplParam::Items => quote! { __coco_batch_items },
+        BatchImplParam::Extra(param_index) => {
+            let param = &extra_params[*param_index];
+            let ident = &param.ident;
+            if param.is_ref {
+                quote! { &#ident }
+            } else {
+                quote! { #ident }
+            }
+        }
+    });
+
+    let owned_extra_clones = gen_owned_param_clones(extra_params);
+    let extra_key_parts = extra_params.iter().map(|param| {
+        let ident = &param.ident;
+        quote! { &#ident }
+    });
+    let extra_args_key = if extra_params.is_empty() {
+        quote! { ::std::vec::Vec::new() }
+    } else {
+        quote! {
+            ::cocoindex::memo::key_bytes_result(&(#(#extra_key_parts,)*))?
+        }
+    };
+    let schedule_call = quote! {
+        let __coco_extra_args_key = #extra_args_key;
+        #batch_static_name
+            .__call_scheduled(
+                __coco_scoped_ctx,
+                __coco_extra_args_key,
+                #item_ident,
+                move |__coco_batch_ctx, __coco_batch_items| {
+                    #(#owned_extra_clones)*
+                    async move {
+                        #batch_impl_name(#(#batch_impl_args),*).await
+                    }
+                },
+            )
+            .await
+    };
+
+    let wrapper_body = if args.memo {
+        let mut key_params = vec![batching.item_param.clone()];
+        key_params.extend(extra_params.iter().cloned());
+        gen_memo_wrapper_block(
+            fn_name,
+            hash_const_name,
+            ctx_ident,
+            &key_params,
+            &args.memo_key,
+            propagate_children_fn_logic,
+            quote! {
+                move |__coco_scoped_ctx| async move {
+                    #schedule_call
+                }
+            },
+        )?
+    } else {
+        let initial_extra_clones = gen_clones(extra_params);
+        if track_logic {
+            quote! {{
+                #(#initial_extra_clones)*
+                #ctx_ident
+                    .__coco_tracked_fn(
+                        ::core::module_path!(),
+                        ::core::stringify!(#fn_name),
+                        #hash_const_name,
+                        #propagate_children_fn_logic,
+                        move |__coco_scoped_ctx| async move {
+                            #schedule_call
+                        },
+                    )
+                    .await
+            }}
+        } else {
+            quote! {{
+                #(#initial_extra_clones)*
+                let __coco_scoped_ctx = ::core::clone::Clone::clone(#ctx_ident);
+                #schedule_call
+            }}
+        }
+    };
+
+    Ok(quote! {
+        #[doc(hidden)]
+        pub const #hash_const_name: u64 = #hash_const_value;
+        #logic_registration
+
+        static #batch_static_name: ::std::sync::LazyLock<::cocoindex::batched::__ScheduledBatched<#item_ty, #output_ty>> =
+            ::std::sync::LazyLock::new(|| {
+                ::cocoindex::batched::__ScheduledBatched::__new(
+                    #hash_const_name,
+                    #max_batch_size,
+                )
+            });
+
+        #batch_impl_sig #body
+
+        #(#attrs)*
+        #vis #wrapper_sig #wrapper_body
+    })
 }
 
 /// `#[cocoindex::function]` — unified macro for cocoindex pipeline functions.
@@ -383,6 +766,35 @@ fn gen_state_collect_for_param(
 /// ```ignore
 /// #[cocoindex::function(memo)]
 /// async fn my_fn(ctx: &Ctx, arg: &String) -> Result<String> { ... }
+/// ```
+/// The body receives a memo-scoped `Ctx`, so it can call `ctx.get_or_err()` or
+/// `ctx.get_key()` directly. The attribute is the default way to memoize a
+/// whole function because it includes the function's logic hash and arguments
+/// in the key automatically.
+///
+/// Customize individual argument keys with `memo_key(...)`. A transform
+/// function replaces the argument's default representation; `skip` (or `None`)
+/// excludes it entirely. A skipped parameter needs only `Any + Clone`, not
+/// `Serialize`:
+/// ```ignore
+/// #[cocoindex::function(memo, memo_key(client = skip))]
+/// async fn fetch(ctx: &Ctx, url: &str, client: &ApiClient) -> Result<String> {
+///     let configured_client = ctx.get_or_err::<ApiClient>()?;
+///     configured_client.get(url).await
+/// }
+/// ```
+///
+/// Use `ctx.memo(...)` only for block-level memoization. Its closure body is not
+/// logic-tracked; a manual key that should follow edits to the enclosing
+/// `#[cocoindex::function]` must include that function's generated
+/// `__COCO_FN_HASH_<NAME>` constant explicitly.
+///
+/// **With `batching`** — declare a batch-shaped body and call it with one item:
+/// ```ignore
+/// #[cocoindex::function(memo, batching, max_batch_size = 32)]
+/// async fn embed(ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> { ... }
+///
+/// let embedding: Vec<f32> = embed(ctx, text).await?;
 /// ```
 ///
 /// Optional `version` parameter forces cache invalidation:
@@ -457,6 +869,21 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         );
     }
 
+    if args.batching {
+        return match expand_batching_function(
+            &func,
+            &args,
+            &hash_const_name,
+            &hash_const_value,
+            &logic_registration,
+            track_logic,
+            propagate_children_fn_logic,
+        ) {
+            Ok(expanded) => expanded.into(),
+            Err(err) => err.to_compile_error().into(),
+        };
+    }
+
     if args.memo {
         // memo: wrap body in ctx.memo()
         let (ctx_ident, params) = match parse_fn_params(&func) {
@@ -467,30 +894,18 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let sig = &func.sig;
         let attrs = &func.attrs;
         let body = &func.block;
-        let clone_stmts = gen_clones(&params);
-        if let Err(err) =
-            validate_memo_key_overrides(&args.memo_key, params.iter().map(|p| p.ident.to_string()))
-        {
-            return TokenStream::from(err.to_compile_error());
-        }
-
-        let key_writes: Vec<TokenStream2> = params
-            .iter()
-            .filter_map(|p| {
-                gen_key_write_for_param(&format_ident!("__coco_key"), p, &args.memo_key)
-            })
-            .collect();
-        let state_collects: Vec<TokenStream2> = params
-            .iter()
-            .map(|p| {
-                gen_state_collect_for_param(
-                    &format_ident!("__coco_states"),
-                    &format_ident!("__coco_state_idx"),
-                    &format_ident!("__coco_prev_states"),
-                    p,
-                )
-            })
-            .collect();
+        let wrapper_body = match gen_memo_wrapper_block(
+            fn_name,
+            &hash_const_name,
+            &ctx_ident,
+            &params,
+            &args.memo_key,
+            propagate_children_fn_logic,
+            quote! { move |#ctx_ident| async move #body },
+        ) {
+            Ok(wrapper) => wrapper,
+            Err(err) => return TokenStream::from(err.to_compile_error()),
+        };
 
         let expanded = quote! {
             #[doc(hidden)]
@@ -498,30 +913,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             #logic_registration
 
             #(#attrs)*
-            #vis #sig {
-                let __coco_key = {
-                    let mut __coco_key = ::cocoindex::memo::new_key_fingerprinter();
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &"cocoindex_fn")?;
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::module_path!())?;
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::stringify!(#fn_name))?;
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#hash_const_name)?;
-                    #(#key_writes)*
-                    ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
-                };
-
-                ::cocoindex::memo::cached_by_fingerprint_with_state(#ctx_ident, __coco_key, #propagate_children_fn_logic, {
-                    #(#clone_stmts)*
-                    move |__coco_prev_states| async move {
-                        let mut __coco_states = Vec::new();
-                        let mut __coco_state_idx = 0usize;
-                        #(#state_collects)*
-                        Ok(__coco_states)
-                    }
-                }, {
-                    #(#clone_stmts)*
-                    move |#ctx_ident| async move #body
-                }).await
-            }
+            #vis #sig #wrapper_body
         };
 
         expanded.into()
@@ -574,8 +966,6 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         } else {
-            // No `&Ctx`: a pure logic-tracked helper, typically a batch impl for
-            // `coco::Batched`.
             quote! {
                 #[doc(hidden)]
                 pub const #hash_const_name: u64 = #hash_const_value;
@@ -827,10 +1217,10 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
 /// Whether `expr` is exactly the identifier `ident` (a bare path with one
 /// segment), used to spot the `mount_each!` item-value argument.
 fn expr_is_ident(expr: &Expr, ident: &Ident) -> bool {
-    if let Expr::Path(path) = expr {
-        if path.qself.is_none() {
-            return path.path.is_ident(ident);
-        }
+    if let Expr::Path(path) = expr
+        && path.qself.is_none()
+    {
+        return path.path.is_ident(ident);
     }
     false
 }
@@ -864,8 +1254,15 @@ fn parse_schema_field_attr(attrs: &[syn::Attribute]) -> syn::Result<SchemaFieldA
                 let v: syn::LitStr = meta.value()?.parse()?;
                 out.custom_type = Some(v.value());
             } else if meta.path.is_ident("vector") {
-                let v: LitInt = meta.value()?.parse()?;
-                out.vector_dim = Some(v.base10_parse()?);
+                out.vector_dim = Some(if meta.input.peek(Token![=]) {
+                    let v: LitInt = meta.value()?.parse()?;
+                    v.base10_parse()?
+                } else {
+                    // Zero is an unresolved sentinel. Connector schemas accept
+                    // it only from `from_row` and resolve it through
+                    // `with_vector_dim` before use.
+                    0
+                });
             } else if meta.path.is_ident("half") {
                 out.vector_half = true;
             } else if meta.path.is_ident("json") {
@@ -943,6 +1340,7 @@ fn logical_type_tokens(ty: &Type, attr: &SchemaFieldAttr) -> TokenStream2 {
         Some("NaiveTime") => quote! { Time },
         Some("NaiveDateTime" | "DateTime") => quote! { DateTime },
         Some("Decimal") => quote! { Decimal },
+        Some("Duration") => quote! { Duration },
         // `Vec<u8>` is bytes; any other `Vec<_>` falls through to JSON.
         Some("Vec") if first_generic_ident(ty).as_deref() == Some("u8") => quote! { Bytes },
         // Everything else (collections, maps, nested structs, enums) → JSON.
@@ -956,7 +1354,10 @@ fn logical_type_tokens(ty: &Type, attr: &SchemaFieldAttr) -> TokenStream2 {
 /// type to a connector's `TableSchema::from_row::<T>(primary_key)`.
 ///
 /// `Option<T>` fields become nullable columns; everything else is `NOT NULL`.
-/// See [`cocoindex::row_schema`] for the `#[coco(...)]` field attributes.
+/// Use `#[coco(vector)]` with `TableSchema::with_vector_dim(...)` when the
+/// dimension is available only at runtime, or `#[coco(vector = N)]` when it is
+/// a compile-time constant. See [`cocoindex::row_schema`] for the other field
+/// attributes.
 #[proc_macro_derive(SchemaFields, attributes(coco))]
 pub fn derive_schema_fields(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
@@ -1020,7 +1421,23 @@ mod tests {
     fn parse_function_args_empty() {
         let args = FunctionArgs::parse(TokenStream2::new()).unwrap();
         assert!(!args.memo);
+        assert!(!args.batching);
+        assert!(args.max_batch_size.is_none());
         assert!(args.version.is_none());
+    }
+
+    #[test]
+    fn parse_function_args_accepts_batching_options() {
+        let args = FunctionArgs::parse(quote!(memo, batching, max_batch_size = 32)).unwrap();
+        assert!(args.memo);
+        assert!(args.batching);
+        assert_eq!(args.max_batch_size, Some(32));
+    }
+
+    #[test]
+    fn parse_function_args_rejects_max_batch_without_batching() {
+        let err = FunctionArgs::parse(quote!(max_batch_size = 32)).unwrap_err();
+        assert!(err.to_string().contains("requires `batching`"));
     }
 
     #[test]
@@ -1146,6 +1563,49 @@ mod tests {
     }
 
     #[test]
+    fn batching_signature_rewrites_input_and_output_to_item_shape() {
+        let func: ItemFn = parse_str(
+            "async fn embed(ctx: &Ctx, texts: Vec<String>, model: String) -> Result<Vec<Vec<f32>>> { unimplemented!() }",
+        )
+        .unwrap();
+        let batching = parse_batching_signature(&func).unwrap();
+        assert_eq!(batching.ctx_ident, "ctx");
+        assert_eq!(batching.item_param.ident, "texts");
+        assert_eq!(batching.extra_params.len(), 1);
+        let wrapper_sig = &batching.wrapper_sig;
+        assert_eq!(
+            quote!(#wrapper_sig).to_string(),
+            "async fn embed (ctx : & Ctx , texts : String , model : String) -> Result < Vec < f32 > >"
+        );
+    }
+
+    #[test]
+    fn batching_signature_requires_non_context_parameter() {
+        let func: ItemFn =
+            parse_str("async fn bad(ctx: &Ctx) -> Result<Vec<i32>> { Ok(vec![]) }").unwrap();
+        let err = parse_batching_signature(&func).unwrap_err();
+        assert!(err.to_string().contains("requires a non-context"));
+    }
+
+    #[test]
+    fn batching_signature_requires_vec_input() {
+        let func: ItemFn =
+            parse_str("async fn bad(ctx: &Ctx, item: String) -> Result<Vec<i32>> { Ok(vec![]) }")
+                .unwrap();
+        let err = parse_batching_signature(&func).unwrap_err();
+        assert!(err.to_string().contains("first non-context parameter"));
+    }
+
+    #[test]
+    fn batching_signature_requires_result_vec_output() {
+        let func: ItemFn =
+            parse_str("async fn bad(ctx: &Ctx, items: Vec<String>) -> Result<i32> { Ok(1) }")
+                .unwrap();
+        let err = parse_batching_signature(&func).unwrap_err();
+        assert!(err.to_string().contains("return type"));
+    }
+
+    #[test]
     fn explicit_version_replaces_body_hash() {
         let first: ItemFn =
             parse_str("async fn f(ctx: &Ctx) -> Result<i32, ()> { Ok(1) }").unwrap();
@@ -1169,6 +1629,60 @@ mod tests {
         assert_ne!(
             compute_code_hash(&func.block, Some(7)),
             compute_code_hash(&func.block, Some(8))
+        );
+    }
+
+    #[test]
+    fn batching_memo_key_changes_with_body() {
+        let first: ItemFn = parse_str(
+            "async fn embed(ctx: &Ctx, items: Vec<i32>) -> Result<Vec<i32>> { Ok(items) }",
+        )
+        .unwrap();
+        let second: ItemFn = parse_str(
+            "async fn embed(ctx: &Ctx, items: Vec<i32>) -> Result<Vec<i32>> { \
+             Ok(items.into_iter().map(|item| item * 2).collect()) }",
+        )
+        .unwrap();
+        assert_ne!(
+            compute_code_hash(&first.block, None),
+            compute_code_hash(&second.block, None),
+            "editing a batching body must change its generated logic hash"
+        );
+
+        let args = FunctionArgs::parse(quote!(memo, batching)).unwrap();
+        let hash_const_name = format_ident!("__COCO_FN_HASH_EMBED");
+        let first_hash = compute_code_hash(&first.block, None);
+        let second_hash = compute_code_hash(&second.block, None);
+        let first_expanded = expand_batching_function(
+            &first,
+            &args,
+            &hash_const_name,
+            &quote!(#first_hash),
+            &quote!(),
+            true,
+            true,
+        )
+        .unwrap()
+        .to_string();
+        let second_expanded = expand_batching_function(
+            &second,
+            &args,
+            &hash_const_name,
+            &quote!(#second_hash),
+            &quote!(),
+            true,
+            true,
+        )
+        .unwrap()
+        .to_string();
+        let key_part = "write_key_fingerprint_part (& mut __coco_key , & __COCO_FN_HASH_EMBED)";
+        assert!(first_expanded.contains(key_part));
+        assert!(second_expanded.contains(key_part));
+        assert!(first_expanded.contains(&first_hash.to_string()));
+        assert!(second_expanded.contains(&second_hash.to_string()));
+        assert_ne!(
+            first_hash, second_hash,
+            "two batching bodies must produce different memo-key constants"
         );
     }
 }

@@ -27,7 +27,13 @@ postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
 sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
 # Apache Doris target: MySQL protocol (DDL/DELETE) via sqlx + Stream Load (row
 # ingestion) over HTTP via reqwest.
-doris = ["dep:serde_json", "dep:sqlx", "sqlx/mysql", "dep:reqwest"]
+doris = [
+    "dep:serde_json",
+    "dep:sqlx",
+    "sqlx/mysql",
+    "dep:reqwest",
+    "dep:base64",
+]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
 kafka = ["dep:rskafka", "dep:chrono"]
 iggy = ["dep:iggy"]
@@ -52,7 +58,13 @@ oci_object_storage = [
     "dep:chrono",
     "chrono/clock",
 ]
-lancedb = ["dep:serde_json", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
+lancedb = [
+    "dep:serde_json",
+    "dep:lancedb",
+    "dep:arrow-array",
+    "dep:arrow-schema",
+    "dep:half",
+]
 qdrant = ["dep:serde_json", "dep:qdrant-client"]
 turbopuffer = ["dep:serde_json", "dep:reqwest"]
 neo4j = ["dep:serde_json", "dep:neo4rs"]
@@ -118,6 +130,7 @@ base64 = { version = "0.22", optional = true }
 lancedb = { version = "0.26", default-features = false, optional = true }
 arrow-array = { version = "57", optional = true }
 arrow-schema = { version = "57", optional = true }
+half = { version = "2", optional = true }
 # Qdrant vector-store target (gRPC client; build needs `protoc`).
 qdrant-client = { version = "1.18", optional = true }
 surrealdb = { version = "3", default-features = false, optional = true, features = [
@@ -142,6 +155,7 @@ rskafka = { version = "0.6", default-features = false }
 wiremock = "0.6"
 # Generate an ephemeral RSA key for the OCI signing unit test.
 rand = "0.8"
+rust_decimal = "1"
 
 [[bench]]
 name = "sdk_microbench"

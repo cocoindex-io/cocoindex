@@ -8,7 +8,7 @@
 //!   cargo run -- query "your query"    # Turbopuffer vector search
 //!
 //! Same pipeline as `text_embedding`, but the target is the native
-//! `cocoindex::turbopuffer` namespace connector (built on the public
+//! `cocoindex::connectors::turbopuffer` namespace connector (built on the public
 //! target-state facade). Parallels `cocoindex.connectors.turbopuffer`.
 //!
 //! Config (env, e.g. via `.env`):
@@ -17,35 +17,33 @@
 //!   TURBOPUFFER_NAMESPACE default `TextEmbedding`
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::turbopuffer::{
+    self, DistanceMetric, NamespaceSchema, TurbopufferConnection,
+};
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
-use cocoindex::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
-const EMBED_DIM: usize = 384;
 const TOP_K: usize = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
-static DB: LazyLock<ContextKey<TurbopufferConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state(
-        "text_embedding_turbopuffer_db",
-        |c: &TurbopufferConnection| c.state_id().to_string(),
-    )
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: TurbopufferConnection = "text_embedding_turbopuffer_db",
+    state = TurbopufferConnection::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct RowData {
     id: String,
+    #[coco(vector)]
     vector: Vec<f32>,
     filename: String,
     chunk_start: i64,
@@ -73,7 +71,15 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
     }
 
     let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
+    let embedder = ctx.get_key(&EMBEDDER)?.clone();
+    let embedding_ctx = ctx.clone();
+    let embeddings = ctx
+        .map(texts.clone(), move |chunk_text| {
+            let embedder = embedder.clone();
+            let ctx = embedding_ctx.clone();
+            async move { embedder.embed(&ctx, chunk_text).await }
+        })
+        .await?;
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
@@ -92,12 +98,13 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()> {
-    let conn = ctx.get_key(&DB)?;
+    let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
     let target = turbopuffer::mount_namespace_target(
         &ctx,
         &DB,
         &namespace,
-        NamespaceSchema::new(EMBED_DIM, DistanceMetric::CosineDistance),
+        NamespaceSchema::from_row::<RowData>(DistanceMetric::CosineDistance)?
+            .with_vector_dim("vector", vector_dim)?,
     )
     .await?;
 
@@ -123,7 +130,12 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()>
             .as_object()
             .unwrap()
             .clone();
-            target.declare_row(&ctx, r.id.clone(), r.vector.clone(), attributes)?;
+            target.declare_named_row(
+                &ctx,
+                r.id.clone(),
+                [("vector", r.vector.clone())],
+                attributes,
+            )?;
         }
     }
     println!("indexed {count} chunk(s) total");
@@ -136,8 +148,9 @@ async fn query_once(
     namespace: &str,
     query: &str,
 ) -> Result<()> {
-    let query_vec = embedder.embed(query).await?;
-    let hits = turbopuffer::vector_search(conn, namespace, query_vec, TOP_K).await?;
+    let query_vec = Embedder::embed(embedder, query).await?;
+    let hits = turbopuffer::vector_search_by_field(conn, namespace, "vector", query_vec, TOP_K)
+        .await?;
     for hit in hits {
         let filename = hit
             .attributes

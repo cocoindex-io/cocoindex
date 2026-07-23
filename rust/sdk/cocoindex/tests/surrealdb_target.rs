@@ -1,12 +1,9 @@
 #![cfg(feature = "surrealdb")]
 
-use std::sync::LazyLock;
-
+use cocoindex::connectors::surrealdb::{self, ColumnDef, Graph, TableSchema, VectorIndexOptions};
 use cocoindex::prelude::*;
-use cocoindex::surrealdb::{self, ColumnDef, Graph, TableSchema, VectorIndexOptions};
 
-static GRAPH: LazyLock<ContextKey<Graph>> =
-    LazyLock::new(|| ContextKey::new("surrealdb_smoke_graph"));
+cocoindex::context_key!(static GRAPH: Graph = "surrealdb_smoke_graph");
 
 async fn try_graph(db_name: &str) -> Option<Graph> {
     let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| "127.0.0.1:8787".to_string());

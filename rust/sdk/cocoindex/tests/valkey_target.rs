@@ -4,17 +4,15 @@
 #![cfg(feature = "valkey")]
 
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::resources::schema::VectorSchema;
-use cocoindex::valkey::{
+use cocoindex::Environment;
+use cocoindex::connectors::valkey::{
     self, Distance, Document, FieldDef, FieldType, IndexSchema, VectorAlgorithm, VectorDef,
 };
-use cocoindex::{ContextKey, Environment};
+use cocoindex::resources::schema::VectorSchema;
 
-static VK: LazyLock<ContextKey<valkey::Valkey>> =
-    LazyLock::new(|| ContextKey::new("valkey_target_conn"));
+cocoindex::context_key!(static VK: valkey::Valkey = "valkey_target_conn");
 
 fn nonce() -> u128 {
     SystemTime::now()

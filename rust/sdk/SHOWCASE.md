@@ -1,305 +1,24 @@
 # Ergonomic Rust SDK
 
-**What is the use case?**
+CocoIndex's Rust SDK provides the same declarative, incremental processing
+model as the Python SDK. Rust pipelines use attribute and function-like macros
+for logic tracking, memoization, batching, and mounting, while an explicit
+`&Ctx` carries component and resource state.
 
-An idiomatic Rust SDK for CocoIndex with the same incremental pipeline capabilities as the Python SDK — memoized computation, scoped components, file walking with fingerprinting — but using proc macros instead of decorators and explicit `&Ctx` instead of hidden globals.
+## Open and run an app
 
-**Describe the solution you'd like**
-
-### `App`
-
-Entry point. Open an LMDB-backed app and run a pipeline:
-
-```rust
-let app = cocoindex::App::open("my_app", ".cocoindex_db")?;
-
-let stats = app.run(|ctx| async move {
-    // pipeline logic using ctx
-    Ok(())
-}).await?;
-
-println!("{stats}");  // "processed 5, wrote 3, skipped 2 in 0.4s"
-```
-
-| Method | Signature |
-|--------|-----------|
-| `App::open` | `(name: &str, db_path: impl Into<PathBuf>) -> Result<App>` |
-| `App::builder` | `(name: &str) -> AppBuilder` — configure `.db_path()`, `.provide()`, `.build()` |
-| `app.run` | `(F: FnOnce(Ctx) -> Future<Result<()>>) -> Result<RunStats>` |
-
-### `Ctx`
-
-Pipeline context, threaded explicitly through every function:
-
-```rust
-impl Ctx {
-    /// Create a named sub-component. Scopes track what changed between runs.
-    pub async fn scope(&self, key: &impl Display, f: impl FnOnce(Ctx) -> Future<Result<T>>) -> Result<T>;
-
-    /// Memoized computation. Skips the closure if the key hasn't changed since last run.
-    pub async fn memo(&self, key: &impl Serialize, f: impl FnOnce() -> Future<Result<T>>) -> Result<T>;
-
-    /// Batch-process items with per-item memoization.
-    /// Cache hits return stored values. Cache misses are collected and passed to `f`
-    /// as a single batch. Results stored back and merged in original order.
-    pub async fn batch(&self, items: I, key_fn: impl Fn(&Item) -> K, f: impl FnOnce(Vec<Item>) -> Future<Result<Vec<T>>>) -> Result<Vec<T>>;
-
-    /// Run a closure concurrently for each item, creating a child scope per item.
-    pub async fn mount_each(&self, items: I, key_fn: impl Fn(&Item) -> K, f: impl Fn(Ctx, Item) -> Fut) -> Result<Vec<T>>;
-
-    /// Run a closure concurrently for each item within the current scope (no child scopes).
-    pub async fn map(&self, items: I, f: impl Fn(Item) -> Fut) -> Result<Vec<T>>;
-
-    /// Get a shared resource by type, returning a typed error if missing.
-    pub fn get_or_err<T: Send + Sync + 'static>(&self) -> Result<&T>;
-
-    /// Try to get a shared resource by type.
-    pub fn try_get<T: Send + Sync + 'static>(&self) -> Option<&T>;
-
-    /// Write a file output. CocoIndex tracks it for incremental updates.
-    pub fn write_file(&self, path: impl AsRef<Path>, content: &[u8]) -> Result<()>;
-}
-```
-
-### `FileEntry`
-
-Returned by `fs::walk()`. Lazy content, eager fingerprint — the fingerprint is used as a memo key so unchanged files skip processing entirely:
-
-```rust
-impl FileEntry {
-    pub fn path(&self) -> PathBuf;
-    pub fn relative_path(&self) -> &Path;
-    pub fn stem(&self) -> &str;
-    pub fn fingerprint(&self) -> impl Serialize;
-    pub fn content(&self) -> Result<Vec<u8>>;
-    pub fn content_str(&self) -> Result<String>;
-}
-```
-
-```rust
-let files = cocoindex::fs::walk(&dir, &["**/*.rs", "**/*.py"])?;
-```
-
-### `RunStats`
-
-```rust
-pub struct RunStats {
-    pub processed: u64,
-    pub skipped: u64,
-    pub written: u64,
-    pub deleted: u64,
-    pub elapsed: Duration,
-}
-```
-
-### `#[cocoindex::function]`
-
-Mark a pipeline function. Emits a compile-time code hash constant (`__COCO_FN_HASH_<NAME>`) for automatic cache invalidation when the function body changes:
-
-```rust
-#[cocoindex::function]
-async fn process(ctx: &Ctx, file: &FileEntry) -> Result<String> {
-    // function body — code hash is computed at compile time
-    Ok(file.content_str()?)
-}
-```
-
-The constant can be included in manual `ctx.memo()` / `ctx.batch()` keys so that changing the function body automatically invalidates the cache — even when the function uses non-serializable resources:
-
-```rust
-#[cocoindex::function]
-async fn analyze(ctx: &Ctx, file: &FileEntry) -> Result<Info> {
-    let client = ctx.get_or_err::<Client>()?.clone(); // non-serializable — not in key
-    let content = file.content_str()?;
-    ctx.memo(&(__COCO_FN_HASH_ANALYZE, file.fingerprint()), move || async move {
-        client.call(&content).await // only serializable data in the key
-    }).await
-}
-```
-
-### `#[cocoindex::function(memo)]`
-
-Memoize a function by its arguments. The first `&Ctx` parameter is recognized automatically; remaining parameters become the cache key. The code hash is prepended to the key, so changing the function body automatically invalidates the cache.
-
-Best for pure computations where all parameters are `Serialize`:
-
-```rust
-#[cocoindex::function(memo)]
-async fn extract_pub_fns(ctx: &Ctx, file: &FileEntry) -> Result<Vec<String>> {
-    Ok(file.content_str()?.lines()
-        .filter(|l| l.trim_start().starts_with("pub fn "))
-        .map(|l| l.trim().to_string())
-        .collect())
-}
-```
-
-Conceptually similar to:
-
-```rust
-pub const __COCO_FN_HASH_EXTRACT_PUB_FNS: u64 = 0x...;
-
-async fn extract_pub_fns(ctx: &Ctx, file: &FileEntry) -> Result<Vec<String>> {
-    let __coco_key = build_fingerprint(__COCO_FN_HASH_EXTRACT_PUB_FNS, file);
-    cached_by_fingerprint(ctx, __coco_key, {
-        let file = file.clone();
-        move || async move { /* original body */ }
-    }).await
-}
-```
-
-Optional `version` parameter for manual cache busting:
-
-```rust
-#[cocoindex::function(memo, version = 2)]
-async fn analyze(ctx: &Ctx, file: &FileEntry) -> Result<Info> { ... }
-```
-
-### `#[cocoindex::function(batching)]`
-
-Batch processing without caching. The first non-ctx parameter is the items collection. The function body receives **all** items every time — no per-item cache probing.
-
-Use this when you always want to reprocess all items (e.g., a batch API call where caching is handled externally, or when results depend on the full set of items).
-
-```rust
-#[cocoindex::function(batching)]
-async fn embed_all(ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-    let client = ctx.get::<EmbeddingClient>().clone();
-    // Always processes all texts — no caching
-    client.embed_batch(&texts).await
-}
-```
-
-### `#[cocoindex::function(memo, batching)]`
-
-Batch processing **with** per-item memoization. The first non-ctx parameter is the items collection. The macro wraps the function body in `ctx.batch()` — cache hits return stored values, cache misses are collected and passed to the body as a single batch.
-
-The code hash is included in each item's cache key, so changing the function body invalidates all cached results.
-
-The function body **can** access `ctx` (e.g., `ctx.get::<T>()` for non-serializable resources).
-
-```rust
-#[cocoindex::function(memo, batching)]
-async fn extract(ctx: &Ctx, files: Vec<FileEntry>) -> Result<Vec<Info>> {
-    let client = ctx.get::<Client>().clone();
-    // `files` here is only the cache misses
-    let mut results = Vec::new();
-    for file in &files {
-        results.push(client.analyze(&file.content_str()?).await?);
-    }
-    Ok(results)
-}
-```
-
-Conceptually similar to:
-
-```rust
-pub const __COCO_FN_HASH_EXTRACT: u64 = 0x...;
-
-async fn extract(ctx: &Ctx, files: Vec<FileEntry>) -> Result<Vec<Info>> {
-    batch_by_fingerprint(
-        files,
-        |__coco_item| build_fingerprint(__COCO_FN_HASH_EXTRACT, __coco_item),
-        move |files| async move { /* original body */ }
-    ).await
-}
-```
-
-Extra parameters beyond the items collection are cloned into the closure and included in the per-item cache key:
-
-```rust
-#[cocoindex::function(memo, batching)]
-async fn extract(ctx: &Ctx, files: Vec<FileEntry>, model: String) -> Result<Vec<Info>> {
-    // `model` is included in each item's key: (hash, &model, item.clone())
-    // ...
-}
-```
-
-**Additional context**
-
-### Example: Multi-Codebase Summarization
-
-The current checked-in example is `examples/rust/multi_codebase_summarization`. It scans project subdirectories, memoizes per-file extraction, memoizes per-project aggregation, writes markdown summaries, and removes stale outputs when a project disappears.
-
-Key patterns demonstrated:
-- **module-level `OnceLock<LlmClient>`** — shared `reqwest`-based LLM client usable from `#[cocoindex::function(memo)]` bodies
-- **`#[cocoindex::function(memo)]`** — per-file extraction cached by file fingerprint
-- **`#[cocoindex::function(memo)]`** — project aggregation cached until the input file summaries change
-- **`ctx.mount_each()`** — concurrent per-file extraction within each project
-- **`ctx.write_file()` + stale-output cleanup** — incremental markdown writes plus removal of deleted-project outputs
-
-```toml
-# Cargo.toml
-[dependencies]
-cocoindex = { path = "../../cocoindex" }
-dotenvy = "0.15"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-```
+`App::open` is asynchronous. `App::open_blocking` is available when an async
+entry point is not convenient.
 
 ```rust
 use cocoindex::prelude::*;
-use serde::Deserialize;
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::OnceLock;
-
-struct LlmClient { /* fields omitted */ }
-static LLM: OnceLock<LlmClient> = OnceLock::new();
-
-fn init_llm() { /* initialize reqwest client from env */ }
-fn llm() -> &'static LlmClient { LLM.get().unwrap() }
-
-#[cocoindex::function(memo)]
-async fn extract_file_info(_ctx: &Ctx, file: &FileEntry) -> Result<CodebaseInfo> {
-    let content = file.content_str()?;
-    let file_path = file.key();
-    llm().extract(/* prompt using file_path + content */).await
-}
-
-#[cocoindex::function(memo)]
-async fn aggregate_project_info(
-    _ctx: &Ctx,
-    project_name: String,
-    file_infos: Vec<CodebaseInfo>,
-) -> Result<CodebaseInfo> {
-    if file_infos.len() <= 1 {
-        /* shortcut small projects */
-    }
-    llm().extract(/* aggregation prompt */).await
-}
 
 #[tokio::main]
-async fn main() -> cocoindex::Result<()> {
-    init_llm();
-    let app = cocoindex::App::open("multi_codebase_summarization", ".cocoindex_db")?;
-
+async fn main() -> Result<()> {
+    let app = App::open("my_app", ".cocoindex_db").await?;
     let stats = app
         .run(|ctx| async move {
-            let mut active_projects = HashSet::new();
-            for entry in std::fs::read_dir(&root_dir)? {
-                let project_name = entry?.file_name().to_string_lossy().to_string();
-                let project_dir = entry?.path();
-                let files = cocoindex::fs::walk(&project_dir, &["*.py", "**/*.py"])?;
-
-                let file_infos = ctx
-                    .mount_each(
-                        files,
-                        |f| format!("{project_name}/{}", f.key()),
-                        |child_ctx, file| async move { extract_file_info(&child_ctx, &file).await },
-                    )
-                    .await?;
-
-                let project_info =
-                    aggregate_project_info(&ctx, project_name.clone(), file_infos.clone()).await?;
-                let markdown =
-                    generate_markdown(&ctx, project_name.clone(), project_info, file_infos).await?;
-                ctx.write_file(output_dir.join(format!("{project_name}.md")), markdown.as_bytes())?;
-                active_projects.insert(project_name);
-            }
-
-            cleanup_stale_outputs(&output_dir, &active_projects)?;
+            // Declare the desired target state using ctx.
             Ok(())
         })
         .await?;
@@ -309,15 +28,189 @@ async fn main() -> cocoindex::Result<()> {
 }
 ```
 
-**What's happening:**
+Use `App::builder(name).db_path(path).build().await` for single-app
+configuration. When an app needs shared resources, build an `Environment`,
+provide the resources, and then create the app:
 
-| Run | Behavior |
-|-----|----------|
-| First | All Python files are cache misses. Full extraction + aggregation cost. |
-| Second (no changes) | Every file fingerprint and project summary hits cache. Zero LLM calls. |
-| After editing one `*.py` file | Only that file is re-extracted, and only that project's aggregation reruns. |
-| After deleting a project directory | The stale `output/<project>.md` file is removed on the next run. |
+```rust
+let app = Environment::builder()
+    .db_path(".cocoindex_db")
+    .provide_key(&DB, database)
+    .build()
+    .await?
+    .app("my_app")
+    .await?;
+```
 
----
-Contributors, please refer to [Contributing Guide](https://cocoindex.io/docs/about/contributing).
-Unless the PR can be sent immediately (e.g. just a few lines of code), we recommend you to leave a comment on the issue like **`I'm working on it`** or **`Can I work on this issue?`** to avoid duplicating work. Our [Discord server](https://discord.com/invite/zpA9S2DR7s) is always open and friendly.
+## Declare typed context resources
+
+`context_key!` gives a resource a stable name and type without requiring users
+to write their own `LazyLock<ContextKey<_>>`. The name is persistent identity;
+do not derive it from the Rust module path.
+
+```rust
+use cocoindex::connectors::postgres;
+
+cocoindex::context_key!(
+    static DB: postgres::Database = "app_database",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(static CONFIG: AppConfig = "app_config", detect_change);
+cocoindex::context_key!(static CLIENT: ApiClient = "api_client");
+```
+
+- The plain form provides a typed resource without change tracking.
+- `detect_change` fingerprints the complete serializable value.
+- `state = expression` fingerprints only a stable derived state, which is
+  useful for connections and model clients whose runtime handles are not
+  serializable.
+
+Provide resources with `EnvironmentBuilder::provide_key` and read them with
+`ctx.get_key(&KEY)`. Reads inside memoized functions are tracked as
+dependencies when the key uses a change-detecting form.
+
+## Define functions
+
+`#[cocoindex::function]` tracks the function's logic. Adding `memo` caches the
+result by the function logic, serializable arguments, and context dependencies:
+
+```rust
+#[cocoindex::function(memo)]
+async fn parse_file(_ctx: &Ctx, file: FileEntry) -> Result<Vec<Section>> {
+    parse(file.content_str()?)
+}
+```
+
+Use `memo_key(...)` when the default representation of an argument is either
+too broad or not serializable. A transform replaces that argument's memo key;
+`skip` (also spelled `None`) excludes it:
+
+```rust
+fn entry_identity(entry: &Entry) -> (String, u64) {
+    (entry.name.clone(), entry.version)
+}
+
+#[cocoindex::function(
+    memo,
+    memo_key(entry = entry_identity, client = skip)
+)]
+async fn fetch(_ctx: &Ctx, entry: &Entry, client: &ApiClient) -> Result<String> {
+    client.fetch(&entry.name).await
+}
+```
+
+Only skip an argument when changes to it cannot affect the result, or when the
+equivalent dependency is tracked through a context key. Use `ctx.memo(...)`
+for a memoized block within a function; prefer `#[function(memo)]` for a whole
+function because the macro tracks its logic automatically.
+
+## Batch item-shaped calls
+
+A function marked `batching` has a batch-shaped implementation but an
+item-shaped call site. Concurrent calls are coalesced automatically, so callers
+do not construct or manage a `Batched` value:
+
+```rust
+#[cocoindex::function(memo, batching, max_batch_size = 64)]
+async fn embed_batch(
+    ctx: &Ctx,
+    texts: Vec<String>,
+    model: String,
+) -> Result<Vec<Vec<f32>>> {
+    ctx.get_key(&EMBEDDING_CLIENT)?.embed(texts, &model).await
+}
+
+let embeddings = ctx
+    .map(texts, {
+        let ctx = ctx.clone();
+        move |text| {
+            let ctx = ctx.clone();
+            let model = model.clone();
+            async move { embed_batch(&ctx, text, model).await }
+        }
+    })
+    .await?;
+```
+
+The body receives only the items in the current batch. With `memo`, cache hits
+are returned per item and only misses enter the batch. Without `memo`, every
+call is processed. `max_batch_size` caps each physical request.
+
+A physical batch does not inherit any individual caller's deadline. A batch
+error currently fails every item in that physical batch; the Rust SDK does not
+yet retry smaller sub-batches automatically. A batching function must also not
+call itself recursively from its own body, because that waits on the batcher
+which is already executing the body.
+
+The built-in `SentenceTransformerEmbedder::embed(&ctx, text)` already uses
+this pattern: concurrent cache misses are batched up to 64 texts and repeated
+texts are memoized.
+
+## Mount processing components
+
+For normal function calls, prefer the macros that include function logic and
+arguments in a component-memo fingerprint:
+
+```rust
+let summary = use_mount!(summarize(ctx, document)).await?;
+
+let outputs = mount_each!(files, |file| process_file(ctx, file, target)).await?;
+```
+
+`mount_each!` accepts `(key, value)` items, creates one child component per
+key, and runs them concurrently. Without an explicit prefix, the entry
+function's name is used; the prefixed form is
+`mount_each!("documents", files, |file| process_file(ctx, file))`.
+
+Use `ctx.scope(key, body)` or `ctx.mount_each(items, key_fn, body)` only when
+the component key and closure are deliberately dynamic and no automatic
+function/argument fingerprint is wanted. These methods always execute their
+closures; they still provide stable child ownership and reconciliation.
+
+## Read files and declare output files
+
+`walk_items` produces stable `(relative_path, FileEntry)` pairs ready for
+`mount_each!`. `FileEntry` is serializable, so a mounted or memoized function
+can use it directly as an input.
+
+```rust
+#[cocoindex::function]
+async fn render_file(ctx: &Ctx, file: FileEntry, target: DirTarget) -> Result<()> {
+    let markdown = render(file.content_str()?);
+    target.declare_file(ctx, &format!("{}.md", file.stem()), markdown.as_bytes())?;
+    Ok(())
+}
+
+let target = DirTarget::mount(&ctx, "./output")?;
+let files = walk_items("./input", &["**/*.txt"])?;
+mount_each!(files, |file| render_file(ctx, file, target.clone())).await?;
+```
+
+`DirTarget` is declarative: new and changed files are written, unchanged files
+are skipped, and files no longer declared by their owning components are
+removed during reconciliation.
+
+## Derive connector schemas from row types
+
+`SchemaFields` keeps the Rust row and connector schema in one place. A bare
+`#[coco(vector)]` marks a vector whose runtime dimension can be supplied after
+the embedding model is loaded:
+
+```rust
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+let dim = ctx.get_key(&EMBEDDER)?.dimension();
+let schema = postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+    .with_vector_dim("embedding", dim)?;
+```
+
+The current end-to-end reference is
+[`examples/rust/text_embedding`](../../examples/rust/text_embedding). It walks
+Markdown files, splits them into chunks, memoizes and batches embeddings, and
+declares Postgres/pgvector rows using a schema derived from the Rust row type.

@@ -13,23 +13,21 @@
 //! Defaults: SOURCE_DIR = this example's `data/`, DB_PATH = `./files.db`.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::sqlite;
 use cocoindex::prelude::*;
-use cocoindex::sqlite;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
-static DB: LazyLock<ContextKey<sqlite::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("files_sqlite_db", |db: &sqlite::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: sqlite::Database = "files_sqlite_db",
+    state = sqlite::Database::state_id
+);
 
 const TABLE: &str = "files";
 
 /// One output row: the file path is the primary key.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct FileRow {
     path: String,
     word_count: i64,
@@ -37,14 +35,7 @@ struct FileRow {
 }
 
 fn files_schema() -> Result<sqlite::TableSchema> {
-    sqlite::TableSchema::new(
-        [
-            ("path", sqlite::ColumnDef::new("TEXT")),
-            ("word_count", sqlite::ColumnDef::new("INTEGER")),
-            ("first_line", sqlite::ColumnDef::new("TEXT")),
-        ],
-        ["path"],
-    )
+    sqlite::TableSchema::from_row::<FileRow>(["path"])
 }
 
 /// Summarize one file. Logic-tracked, so editing it invalidates cached files.
@@ -85,7 +76,8 @@ async fn index(source_dir: PathBuf, db_path: String) -> Result<()> {
             async move {
                 let table = sqlite::mount_table_target(&ctx, &DB, TABLE, files_schema()?).await?;
 
-                let files = cocoindex::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
+                let files =
+                    cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
                 mount_each!(files, |file| process_file(ctx, file, table)).await?;
                 Ok(())
             }

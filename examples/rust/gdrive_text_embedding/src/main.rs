@@ -5,12 +5,11 @@
 //! Postgres/pgvector.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use cocoindex::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
+use cocoindex::connectors::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -22,29 +21,25 @@ const PG_SCHEMA: &str = "coco_examples_v1";
 const TABLE: &str = "doc_embeddings";
 const TOP_K: i64 = 5;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("gdrive_text_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "gdrive_text_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static GDRIVE: GoogleDriveClient = "gdrive_client",
+    state = GoogleDriveClient::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
-static GDRIVE: LazyLock<ContextKey<GoogleDriveClient>> = LazyLock::new(|| {
-    ContextKey::new_with_state("gdrive_client", |client: &GoogleDriveClient| {
-        client.state_id().to_string()
-    })
-});
-
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct DocEmbeddingRow {
     id: i64,
     filename: String,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -126,7 +121,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
 
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
@@ -152,18 +147,8 @@ async fn query_once(
 }
 
 fn doc_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<DocEmbeddingRow>(["id"])?
+        .with_vector_dim("embedding", EMBED_DIM)
 }
 
 fn vector_param(vec: &[f32]) -> String {

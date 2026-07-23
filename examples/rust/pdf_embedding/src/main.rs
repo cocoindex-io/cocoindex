@@ -14,11 +14,10 @@
 //! mirrors Python.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
-use cocoindex::postgres;
 use cocoindex::prelude::*;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -31,24 +30,23 @@ const TOP_K: i64 = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
-static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("pdf_embedding_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: postgres::Database = "pdf_embedding_db",
+    state = postgres::Database::state_id
+);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
+    state = SentenceTransformerEmbedder::model_name
+);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct PdfEmbedding {
     id: i64,
     filename: String,
     chunk_start: i32,
     chunk_end: i32,
     text: String,
+    #[coco(vector)]
     embedding: Vec<f32>,
 }
 
@@ -108,20 +106,7 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PdfEmbedding>> {
 }
 
 fn pdf_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("chunk_start", postgres::ColumnDef::new("integer")),
-            ("chunk_end", postgres::ColumnDef::new("integer")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
+    postgres::TableSchema::from_row::<PdfEmbedding>(["id"])?.with_vector_dim("embedding", EMBED_DIM)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
@@ -154,7 +139,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed(query).await?);
+    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"
