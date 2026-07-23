@@ -2029,7 +2029,8 @@ class _FunctionDecorator:
                 string or model identifier. The value is canonicalized via the
                 memoization-key pipeline (see
                 :doc:`/advanced_topics/memoization_keys` for the full contract,
-                including ``__coco_memo_key__()`` and registered key functions)
+                including ``__coco_memo_key__()``, registered memo key functions,
+                stable type IDs, and built-in handling)
                 and folded into the function's logic fingerprint; when the
                 canonical form changes, memoized results are invalidated and
                 the change propagates to callers according to ``logic_tracking``
@@ -2043,6 +2044,13 @@ class _FunctionDecorator:
                 values — instance attributes in a bound method, request-scoped
                 config, anything that changes at runtime — pass them as regular
                 function arguments instead.
+
+                Stable type IDs used by ``deps`` must therefore exist before the
+                decorator is applied: define ``__coco_memo_type_id__`` on the class
+                or call ``register_memo_key_function(..., stable_type_id=...)``
+                before decorating. A later registration can affect future argument
+                fingerprints, but it cannot retroactively update this function's
+                already-computed logic fingerprint.
 
                 Requires ``logic_tracking`` to be enabled; raises ``ValueError`` if
                 combined with ``logic_tracking=None``.
@@ -2157,9 +2165,11 @@ class _FunctionDecorator:
                 "self": Track own code only, not children.
                 None: No function logic tracking (incompatible with ``deps``).
             deps: Additional value(s) the function logic depends on but that
-                aren't visible in its body. See :func:`fn` for the full
-                contract — the value is canonicalized through the memoization
-                key pipeline and folded into the function's logic fingerprint.
+                aren't visible in its body. See :func:`fn` for the full contract,
+                including stable type IDs and their decoration-time registration
+                order requirement for ``deps``. The value is canonicalized through
+                the memoization-key pipeline and folded into the function's logic
+                fingerprint.
 
         Batching and runner are fully supported since the result is always async.
 
