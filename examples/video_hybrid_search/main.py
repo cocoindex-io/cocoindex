@@ -195,6 +195,27 @@ def _extract_keyframe(video_path: str, ts: float) -> bytes:
     return out.stdout
 
 
+def _has_audio_stream(video_path: str) -> bool:
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            video_path,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return bool(out.stdout.strip())
+
+
 def _extract_audio(video_path: str, start: float, dur: float) -> bytes:
     out = subprocess.run(
         [
@@ -283,25 +304,30 @@ async def process_video(
         tmp.write(content)
         tmp.flush()
         duration = await asyncio.to_thread(_ffprobe_duration, tmp.name)
+        # Some videos have no audio track. Skip transcription for those so the
+        # visual side still indexes, instead of failing on the audio extraction.
+        has_audio = await asyncio.to_thread(_has_audio_stream, tmp.name)
 
         for start, end in _scene_bounds(duration):
             scene_id = _scene_id(video_path, start)
             mid = (start + end) / 2.0
             frame_bytes = await asyncio.to_thread(_extract_keyframe, tmp.name, mid)
-            audio_bytes = await asyncio.to_thread(
-                _extract_audio, tmp.name, start, end - start
-            )
 
             embedding = await coco.use_mount(
                 coco.component_subpath("embed", scene_id),
                 embed_keyframe,
                 frame_bytes,
             )
-            transcript = await coco.use_mount(
-                coco.component_subpath("transcribe", scene_id),
-                transcribe_audio,
-                audio_bytes,
-            )
+            transcript = ""
+            if has_audio:
+                audio_bytes = await asyncio.to_thread(
+                    _extract_audio, tmp.name, start, end - start
+                )
+                transcript = await coco.use_mount(
+                    coco.component_subpath("transcribe", scene_id),
+                    transcribe_audio,
+                    audio_bytes,
+                )
 
             target.declare_row(
                 row=Scene(
