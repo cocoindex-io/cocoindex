@@ -1,0 +1,18 @@
+[project]
+name = "video-hybrid-search-v1"
+version = "0.1.0"
+description = "CocoIndex v1 example: incremental video indexing into a zvec hybrid store (keyframe vector + transcript FTS + scalar), queried directly."
+requires-python = ">=3.11"
+dependencies = [
+    # 1.0.14 is the first release with the zvec FTS connector (ZvecFtsType).
+    "cocoindex[zvec]>=1.0.14",
+    "torch>=2.0.0",
+    "transformers>=4.29.0",
+    "pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "faster-whisper>=1.0.0",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.setuptools]
+packages = []
