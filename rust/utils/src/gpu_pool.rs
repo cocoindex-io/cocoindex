@@ -65,13 +65,12 @@ impl GPUPool {
         fraction: f32,
         exclude: &[VecDeque<T>],
     ) -> Option<usize> {
-        let max_position = capacity
+        capacity
             .iter()
             .enumerate()
             .filter(|(gpu_id, _)| exclude[*gpu_id].is_empty())
-            .max_by(|(_, cap_a), (_, cap_b)| cap_a.partial_cmp(cap_b).unwrap())
-            .map(|(gpu_id, _)| gpu_id)?;
-        (capacity[max_position] >= fraction).then_some(max_position)
+            .find(|(_, cap)| **cap >= fraction)
+            .map(|(gpu_id, _)| gpu_id)
     }
 
     fn reserve_gpu(fraction: f32, state: &mut GPUPoolState) -> (usize, oneshot::Receiver<()>) {
