@@ -22,6 +22,7 @@ import json
 import re
 import threading
 import uuid
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,10 +51,11 @@ except ImportError as e:
 import msgspec
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import resolve_vector_schemas, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
+    MappingType,
     RecordType,
     SequenceType,
     TypeChecker,
@@ -233,7 +235,9 @@ class ZvecVectorDef(NamedTuple):
     ``VectorSchema`` (via ``Annotated`` or ``column_overrides``). This annotation
     tunes the index and marks sparse fields.
 
-    For sparse vectors, set ``sparse=True`` on a ``dict[int, float]`` field.
+    For sparse vectors, prefer a ``SparseVector`` field, optionally annotated
+    with ``SparseVectorSchema``. ``sparse=True`` on a ``dict[int, float]`` field
+    remains supported for compatibility.
     """
 
     metric: Literal["cosine", "ip", "l2"] = "cosine"
@@ -342,6 +346,7 @@ async def _resolve_column(
     | ZvecVectorDef
     | ZvecFtsType
     | res_schema.VectorSchemaProvider
+    | res_schema.SparseVectorSchemaProvider
     | None,
 ) -> _Column:
     type_info = analyze_type_info(type_hint)
@@ -351,18 +356,18 @@ async def _resolve_column(
         annotations.append(override)
     annotations.extend(type_info.annotations)
 
-    vector_schema: res_schema.VectorSchema | None = None
-    for annot in annotations:
-        vs = await res_schema.get_vector_schema(annot)
-        if vs is not None:
-            vector_schema = vs
-            break
+    vector_schemas = await resolve_vector_schemas(
+        type_info.base_type,
+        annotations,
+    )
+    vector_schema = vector_schemas.vector
+    sparse_vector_schema = vector_schemas.sparse
 
     vector_def = next((a for a in annotations if isinstance(a, ZvecVectorDef)), None)
     zvec_type = next((a for a in annotations if isinstance(a, ZvecType)), None)
     fts_type = next((a for a in annotations if isinstance(a, ZvecFtsType)), None)
 
-    # Dense vector: NumPy ndarray with a VectorSchema.
+    # Dense vector: a VectorSchema marks any sequence accepted by zvec.
     if vector_schema is not None:
         if vector_schema.size <= 0:
             raise ValueError(
@@ -379,14 +384,33 @@ async def _resolve_column(
             quantize=vd.quantize,
         )
 
-    # Sparse vector: explicitly marked via ZvecVectorDef(sparse=True).
-    if vector_def is not None and vector_def.sparse:
+    # Sparse vector: shared canonical type/schema or legacy sparse vector def.
+    if (
+        sparse_vector_schema is not None
+        or (vector_def is not None and vector_def.sparse)
+        or type_info.base_type is res_schema.SparseVector
+    ):
+        if (
+            vector_def is not None
+            and vector_def.sparse
+            and type_info.base_type is not res_schema.SparseVector
+            and not isinstance(type_info.variant, MappingType)
+        ):
+            raise ValueError(
+                f"ZvecVectorDef(sparse=True) on column {name!r} requires a "
+                f"SparseVector or mapping field, got {type_info.base_type!r}."
+            )
+        if zvec_type is not None:
+            raise ValueError(
+                f"Column {name!r} cannot combine ZvecType with sparse vector metadata."
+            )
+        vd = vector_def or ZvecVectorDef()
         return _Column(
             name=name,
             kind="sparse",
             data_type=_zvec.DataType.SPARSE_VECTOR_FP32,
             nullable=type_info.nullable,
-            metric=vector_def.metric,
+            metric=vd.metric,
         )
 
     if type_info.base_type is np.ndarray:
@@ -480,7 +504,11 @@ class CollectionSchema(Generic[RowT]):
         *,
         column_overrides: dict[
             str,
-            ZvecType | ZvecVectorDef | ZvecFtsType | res_schema.VectorSchemaProvider,
+            ZvecType
+            | ZvecVectorDef
+            | ZvecFtsType
+            | res_schema.VectorSchemaProvider
+            | res_schema.SparseVectorSchemaProvider,
         ]
         | None = None,
     ) -> "CollectionSchema[RowT]":
@@ -870,9 +898,16 @@ def _row_get(row: Any, name: str) -> Any:
 
 
 def _to_float_list(value: Any) -> list[float]:
+    if isinstance(value, (Mapping, res_schema.SparseVector)):
+        raise ValueError("zvec does not support sparse values in dense vector columns.")
     if isinstance(value, np.ndarray):
         return cast(list[float], value.astype(float).tolist())
     return [float(x) for x in value]
+
+
+def _to_sparse_dict(value: Any) -> dict[int, float]:
+    sparse_vector = res_schema.as_sparse_vector(value)
+    return dict(zip(sparse_vector.indices, sparse_vector.values))
 
 
 class CollectionTarget(
@@ -913,11 +948,10 @@ class CollectionTarget(
             if col.kind == "dense":
                 vectors[name] = None if value is None else _to_float_list(value)
             elif col.kind == "sparse":
-                vectors[name] = (
-                    None
-                    if value is None
-                    else {int(k): float(v) for k, v in dict(value).items()}
-                )
+                if value is None:
+                    vectors[name] = None
+                else:
+                    vectors[name] = _to_sparse_dict(value)
             else:
                 if value is not None and col.encoder is not None:
                     value = col.encoder(value)

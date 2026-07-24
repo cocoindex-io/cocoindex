@@ -8,7 +8,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Iterator
+from typing import Annotated, Any, Iterator, cast
 
 import numpy as np
 import pytest
@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextProvider
 from cocoindex.connectorkits import target
-from cocoindex.resources.schema import VectorSchema
+from cocoindex.resources.schema import SparseVector, SparseVectorSchema, VectorSchema
 
 from tests import common
 
@@ -25,6 +25,7 @@ try:
     import zvec
 
     from cocoindex.connectors import zvec as zc
+    from cocoindex.connectors.zvec._target import _to_float_list, _to_sparse_dict
 
     HAS_ZVEC = True
 except ImportError:
@@ -121,6 +122,22 @@ class SparseDoc:
 
 
 @dataclass
+class CanonicalSparseDoc:
+    id: str
+    title: str
+    sparse: SparseVector
+
+
+@dataclass
+class AnnotatedSparseDoc:
+    id: str
+    sparse: Annotated[
+        SparseVector,
+        SparseVectorSchema(size=10_000),
+    ]
+
+
+@dataclass
 class MultiVectorDoc:
     id: str
     dense: _Embedding
@@ -138,6 +155,12 @@ class Fp16Doc:
     id: str
     title: str
     embedding: _Embedding16
+
+
+@dataclass
+class ListVectorDoc:
+    id: str
+    embedding: Annotated[list[float], VectorSchema(dtype=np.dtype(np.float32), size=4)]
 
 
 @dataclass
@@ -365,6 +388,21 @@ def test_dense_vector(conn: Any) -> None:
     assert [d.id for d in results] == ["1"]
 
 
+def test_list_dense_vector_compatibility(conn: Any) -> None:
+    _reset(ListVectorDoc, "test_list_dense")
+    app = _make_app(conn, "test_list_dense_vector_compatibility")
+
+    _rows.append(ListVectorDoc(id="1", embedding=[0.1, 0.2, 0.3, 0.4]))
+    app.update_blocking()
+
+    col = conn.open_existing("test_list_dense")
+    results = col.query(
+        zvec.Query(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]),
+        topk=5,
+    )
+    assert [d.id for d in results] == ["1"]
+
+
 def test_sparse_vector(conn: Any) -> None:
     _reset(SparseDoc, "test_sparse")
     app = _make_app(conn, "test_sparse_vector")
@@ -381,6 +419,56 @@ def test_sparse_vector(conn: Any) -> None:
         zvec.Query(field_name="sparse", vector={1: 0.5, 7: 0.9}), topk=5
     )
     assert [d.id for d in results] == ["1"]
+
+
+def test_canonical_sparse_vector_and_mapping_values(conn: Any) -> None:
+    _reset(CanonicalSparseDoc, "test_canonical_sparse")
+    app = _make_app(conn, "test_canonical_sparse_vector")
+
+    _rows.extend(
+        [
+            CanonicalSparseDoc(
+                id="1",
+                title="canonical",
+                sparse=SparseVector(indices=(1, 7), values=(0.5, 0.9)),
+            ),
+            CanonicalSparseDoc(
+                id="2",
+                title="mapping",
+                sparse=cast(SparseVector, {9: 0.8, 2: 0.4}),
+            ),
+        ]
+    )
+    app.update_blocking()
+
+    col = conn.open_existing("test_canonical_sparse")
+    canonical_results = col.query(
+        zvec.Query(field_name="sparse", vector={1: 0.5, 7: 0.9}), topk=5
+    )
+    mapping_results = col.query(
+        zvec.Query(field_name="sparse", vector={2: 0.4, 9: 0.8}), topk=5
+    )
+    assert canonical_results[0].id == "1"
+    assert mapping_results[0].id == "2"
+
+
+def test_sparse_mapping_is_normalized_before_zvec_write() -> None:
+    assert list(_to_sparse_dict({7: 0.9, 1: 0.5}).items()) == [
+        (1, 0.5),
+        (7, 0.9),
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {1: 0.5, 7: 0.9},
+        SparseVector(indices=(1, 7), values=(0.5, 0.9)),
+    ],
+)
+def test_dense_value_conversion_rejects_sparse_shapes(value: object) -> None:
+    with pytest.raises(ValueError, match="does not support sparse values"):
+        _to_float_list(value)
 
 
 def test_fts_field(conn: Any) -> None:
@@ -566,6 +654,58 @@ async def test_schema_validation(conn: Any) -> None:
 
     with pytest.raises(ValueError, match="float32 or float16"):
         await zc.CollectionSchema.from_class(Float64Doc, primary_key=["id"])
+
+    canonical_schema = await zc.CollectionSchema.from_class(
+        CanonicalSparseDoc, primary_key=["id"]
+    )
+    annotated_schema = await zc.CollectionSchema.from_class(
+        AnnotatedSparseDoc, primary_key=["id"]
+    )
+    override_schema = await zc.CollectionSchema.from_class(
+        CanonicalSparseDoc,
+        primary_key=["id"],
+        column_overrides={"sparse": SparseVectorSchema(size=None)},
+    )
+    for sparse_schema in (canonical_schema, annotated_schema, override_schema):
+        assert sparse_schema.columns["sparse"].kind == "sparse"
+        assert (
+            sparse_schema.columns["sparse"].data_type
+            == zvec.DataType.SPARSE_VECTOR_FP32
+        )
+
+    @dataclass
+    class NullableSparseDoc:
+        id: str
+        sparse: Annotated[SparseVector | None, SparseVectorSchema()]
+
+    nullable_schema = await zc.CollectionSchema.from_class(
+        NullableSparseDoc, primary_key=["id"]
+    )
+    assert nullable_schema.columns["sparse"].kind == "sparse"
+    assert nullable_schema.columns["sparse"].nullable
+
+    @dataclass
+    class InvalidLegacySparseDoc:
+        id: str
+        sparse: Annotated[str, zc.ZvecVectorDef(sparse=True)]
+
+    with pytest.raises(ValueError, match="requires a SparseVector or mapping field"):
+        await zc.CollectionSchema.from_class(InvalidLegacySparseDoc, primary_key=["id"])
+
+    @dataclass
+    class NativeAndSparseDoc:
+        id: str
+        sparse: Annotated[
+            SparseVector,
+            SparseVectorSchema(),
+        ]
+
+    with pytest.raises(ValueError, match="cannot combine ZvecType"):
+        await zc.CollectionSchema.from_class(
+            NativeAndSparseDoc,
+            primary_key=["id"],
+            column_overrides={"sparse": zc.ZvecType(zvec.DataType.STRING)},
+        )
 
 
 def test_fp16_dense_vector(conn: Any) -> None:

@@ -29,7 +29,7 @@ SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("sqlite_test_db")
 # =============================================================================
 
 try:
-    import sqlite_vec  # type: ignore[import-not-found]
+    __import__("sqlite_vec")
 
     HAS_SQLITE_VEC = True
 except ImportError:

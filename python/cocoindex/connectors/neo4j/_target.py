@@ -63,7 +63,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import resolve_vector_schemas, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex.resources import schema as res_schema
 
@@ -431,12 +431,12 @@ class TableSchema(Generic[RowT]):
             neo4j_type_annotation = next(
                 (t for t in all_annotations if isinstance(t, Neo4jType)), None
             )
-            vector_schema = None
-            for annot in all_annotations:
-                vs = await res_schema.get_vector_schema(annot)
-                if vs is not None:
-                    vector_schema = vs
-                    break
+            vector_schemas = await resolve_vector_schemas(
+                type_info.base_type,
+                all_annotations,
+                reject_sparse_vectors_for="Neo4j",
+            )
+            vector_schema = vector_schemas.vector
 
             if neo4j_type_annotation is not None:
                 type_mapping = _TypeMapping(
