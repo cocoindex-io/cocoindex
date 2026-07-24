@@ -70,7 +70,8 @@ impl GPUPool {
             .iter()
             .enumerate()
             .filter(|(gpu_id, _)| exclude[*gpu_id].is_empty())
-            .find(|(_, cap)| **cap >= fraction)
+            .filter(|(_, cap)| **cap >= fraction)
+            .min_by(|(_, cap1), (_, cap2)| cap1.partial_cmp(cap2).unwrap())
             .map(|(gpu_id, _)| gpu_id)
     }
 
