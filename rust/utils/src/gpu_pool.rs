@@ -1,4 +1,5 @@
 use anyhow::{Error, Result};
+use gpu_fraction::GPUFraction;
 use std::collections::HashSet;
 use std::{collections::VecDeque, num::NonZeroUsize};
 use tokio::sync::{Mutex, oneshot};
@@ -18,15 +19,15 @@ pub struct GPUPool {
 }
 
 struct GPUPoolState {
-    capacity: Vec<f32>,
-    reserved: Vec<VecDeque<(f32, oneshot::Sender<()>)>>,
+    capacity: Vec<GPUFraction>,
+    reserved: Vec<VecDeque<(GPUFraction, oneshot::Sender<()>)>>,
 }
 
 impl GPUPool {
     pub fn new(num_gpus: NonZeroUsize) -> Self {
         let num_gpus = num_gpus.get();
         let state = GPUPoolState {
-            capacity: vec![1.0; num_gpus],
+            capacity: vec![GPUFraction::ONE; num_gpus],
             reserved: std::iter::repeat_with(VecDeque::new)
                 .take(num_gpus)
                 .collect(),
@@ -41,11 +42,11 @@ impl GPUPool {
         self.num_gpus
     }
 
-    pub async fn acquire(&self, fraction: f32) -> Result<usize> {
-        if fraction <= 0.0 || fraction > 1.0 {
-            return Err(anyhow::format_err!(
-                "Acquired fraction must be between 0.0 and 1.0, got {fraction}"
-            ));
+    pub async fn acquire(&self, fraction: GPUFraction) -> Result<usize> {
+        if fraction == GPUFraction::ZERO {
+            return Err(anyhow::Error::from(anyhow::anyhow!(
+                "Acquired fraction must be between 0.0 and 1.0, got 0"
+            )));
         }
         let mut state = self.state.lock().await;
         if let Some(gpu) = Self::find_available(&state.capacity, fraction, &state.reserved) {
@@ -60,9 +61,9 @@ impl GPUPool {
         }
     }
 
-    fn find_available<T>(
-        capacity: &[f32],
-        fraction: f32,
+    fn find_available<T, N: PartialOrd>(
+        capacity: &[N],
+        fraction: N,
         exclude: &[VecDeque<T>],
     ) -> Option<usize> {
         capacity
@@ -73,12 +74,15 @@ impl GPUPool {
             .map(|(gpu_id, _)| gpu_id)
     }
 
-    fn reserve_gpu(fraction: f32, state: &mut GPUPoolState) -> (usize, oneshot::Receiver<()>) {
+    fn reserve_gpu(
+        fraction: GPUFraction,
+        state: &mut GPUPoolState,
+    ) -> (usize, oneshot::Receiver<()>) {
         Self::reserve_gpu_with_exclusion(fraction, state, &HashSet::new())
     }
 
     fn reserve_gpu_with_exclusion(
-        fraction: f32,
+        fraction: GPUFraction,
         state: &mut GPUPoolState,
         exclude_gpus: &HashSet<usize>,
     ) -> (usize, oneshot::Receiver<()>) {
@@ -120,7 +124,7 @@ impl GPUPool {
         let gpu_ids = Self::find_fully_available(&state.capacity, gpu_count, &state.reserved);
         let acquired_gpu_count = gpu_ids.len();
         for gpu_id in &gpu_ids {
-            state.capacity[*gpu_id] = 0_f32;
+            state.capacity[*gpu_id] = GPUFraction::ZERO;
         }
         if acquired_gpu_count == gpu_count {
             return Ok(gpu_ids);
@@ -131,7 +135,8 @@ impl GPUPool {
         let mut pending_gpus = Vec::with_capacity(reserved_gpu_count);
         let mut pending_tasks = Vec::with_capacity(reserved_gpu_count);
         for _ in 0..reserved_gpu_count {
-            let (gpu_id, task) = Self::reserve_gpu_with_exclusion(1.0, &mut state, &exclude_gpus);
+            let (gpu_id, task) =
+                Self::reserve_gpu_with_exclusion(GPUFraction::ONE, &mut state, &exclude_gpus);
             pending_gpus.push(gpu_id);
             pending_tasks.push(task);
         }
@@ -142,7 +147,7 @@ impl GPUPool {
     }
 
     fn find_fully_available<T>(
-        capacity: &[f32],
+        capacity: &[GPUFraction],
         count: usize,
         exclude: &[VecDeque<T>],
     ) -> Vec<usize> {
@@ -151,31 +156,24 @@ impl GPUPool {
             .iter()
             .enumerate()
             .filter(|(gpu_id, _)| exclude[*gpu_id].is_empty())
-            .filter(|(_, cap)| (*cap - 1.0).abs() <= f32::EPSILON)
+            .filter(|(_, cap)| **cap == GPUFraction::ONE)
             .map(|(gpu_id, _)| gpu_id)
             .take(count)
             .collect()
     }
 
-    pub async fn release(&self, gpu_id: usize, fraction: f32) -> Result<()> {
+    pub async fn release(&self, gpu_id: usize, fraction: GPUFraction) -> Result<()> {
         if gpu_id >= self.num_gpus() {
             return Err(anyhow::format_err!(
                 "Releasing to a gpu_id that does not exist: {}",
                 gpu_id
             ));
         }
-        if fraction <= 0.0 {
-            return Err(anyhow::format_err!(
-                "Cannot release a zero or negative fraction, got {fraction}"
-            ));
-        }
-        if fraction > 1.0 {
-            return Err(anyhow::format_err!(
-                "Cannot release a fraction that is greater than 1.0, got {fraction}"
-            ));
+        if fraction == GPUFraction::ZERO {
+            return Err(anyhow::format_err!("Cannot release a zero fraction"));
         }
         let mut state = self.state.lock().await;
-        if state.capacity[gpu_id] + fraction > 1.0 + f32::EPSILON {
+        if state.capacity[gpu_id] + fraction > GPUFraction::ONE {
             return Err(anyhow::format_err!(
                 "Capacity after releasing cannot be greater than 1.0, got {}",
                 state.capacity[gpu_id] + fraction
@@ -184,14 +182,14 @@ impl GPUPool {
         state.capacity[gpu_id] += fraction;
         while state.reserved[gpu_id]
             .front()
-            .map(|(fraction, _)| f32::EPSILON >= state.capacity[gpu_id] - *fraction)
+            .map(|(requested, _)| state.capacity[gpu_id] >= *requested)
             .unwrap_or(false)
         {
-            let Some((fraction, sender)) = state.reserved[gpu_id].pop_front() else {
+            let Some((requested, sender)) = state.reserved[gpu_id].pop_front() else {
                 break;
             };
             if sender.send(()).is_ok() {
-                state.capacity[gpu_id] -= fraction;
+                state.capacity[gpu_id] -= requested;
                 break;
             }
         }
@@ -274,6 +272,73 @@ impl Default for GPUPool {
     }
 }
 
+pub mod gpu_fraction {
+    use anyhow::{Error, Result};
+    use std::ops::{Add, AddAssign, Sub, SubAssign};
+
+    #[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
+    pub struct GPUFraction(u32);
+
+    impl GPUFraction {
+        pub const SCALE: f32 = 1_000_000.0;
+        pub const ZERO: Self = Self(0);
+        pub const ONE: Self = Self(Self::SCALE as u32);
+
+        #[cfg(test)]
+        pub(crate) fn unchecked(value: f32) -> Self {
+            GPUFraction::try_from(value).expect("Unchecked value initialization should not fail")
+        }
+    }
+
+    impl TryFrom<f32> for GPUFraction {
+        type Error = Error;
+
+        fn try_from(value: f32) -> Result<Self, Self::Error> {
+            if value < 0.0 || value > 1.0 {
+                return Err(anyhow::format_err!(
+                    "Fraction must be between 0.0 and 1.0, got {}",
+                    value
+                ));
+            }
+            Ok(Self((value * Self::SCALE).round() as u32))
+        }
+    }
+
+    impl Add for GPUFraction {
+        type Output = Self;
+
+        fn add(self, other: Self) -> Self {
+            Self(self.0 + other.0)
+        }
+    }
+
+    impl AddAssign for GPUFraction {
+        fn add_assign(&mut self, other: Self) {
+            self.0 += other.0;
+        }
+    }
+
+    impl Sub for GPUFraction {
+        type Output = Self;
+
+        fn sub(self, other: Self) -> Self {
+            Self(self.0 - other.0)
+        }
+    }
+
+    impl SubAssign for GPUFraction {
+        fn sub_assign(&mut self, other: Self) {
+            self.0 -= other.0;
+        }
+    }
+
+    impl std::fmt::Display for GPUFraction {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0 as f32 / Self::SCALE)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,61 +347,62 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_returns_gpu_id() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(2).unwrap());
-        let gpu = pool.acquire(1.0).await?;
+        let gpu = pool.acquire(GPUFraction::ONE).await?;
         assert!(gpu < 2);
-        pool.release(gpu, 1.0).await?;
+        pool.release(gpu, GPUFraction::ONE).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_acquire_different_gpus() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(2).unwrap());
-        let gpu0 = pool.acquire(1.0).await?;
-        let gpu1 = pool.acquire(1.0).await?;
+        let gpu0 = pool.acquire(GPUFraction::ONE).await?;
+        let gpu1 = pool.acquire(GPUFraction::ONE).await?;
         assert_ne!(gpu0, gpu1);
-        pool.release(gpu0, 1.0).await?;
-        pool.release(gpu1, 1.0).await?;
+        pool.release(gpu0, GPUFraction::ONE).await?;
+        pool.release(gpu1, GPUFraction::ONE).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_acquire_blocks_when_capacity_full() -> Result<()> {
         let pool = Arc::new(GPUPool::new(NonZeroUsize::new(1).unwrap()));
-        let gpu = pool.acquire(1.0).await?;
+        let gpu = pool.acquire(GPUFraction::ONE).await?;
 
         let cloned_pool = pool.clone();
-        let task = tokio::spawn(async move { cloned_pool.acquire(1.0).await });
+        let task = tokio::spawn(async move { cloned_pool.acquire(GPUFraction::ONE).await });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
 
-        pool.release(gpu, 1.0).await?;
+        pool.release(gpu, GPUFraction::ONE).await?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")?;
         assert!(matches!(result, Ok(0)));
-        pool.release(result.unwrap(), 1.0).await?;
+        pool.release(result.unwrap(), GPUFraction::ONE).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_fractional_shares_same_gpu() -> Result<()> {
         let pool = Arc::new(GPUPool::new(NonZeroUsize::new(1).unwrap()));
-        let gpu0 = pool.acquire(0.5).await?;
-        let gpu1 = pool.acquire(0.5).await?;
+        let half_fraction = GPUFraction::try_from(0.5).expect("0.5 is a valid fraction");
+        let gpu0 = pool.acquire(half_fraction).await?;
+        let gpu1 = pool.acquire(half_fraction).await?;
         assert_eq!(gpu0, gpu1);
 
         let cloned_pool = pool.clone();
-        let task = tokio::spawn(async move { cloned_pool.acquire(0.5).await });
+        let task = tokio::spawn(async move { cloned_pool.acquire(half_fraction).await });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
 
-        pool.release(gpu0, 0.5).await?;
+        pool.release(gpu0, half_fraction).await?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")?;
         assert!(matches!(result, Ok(0)));
-        pool.release(gpu1, 0.5).await?;
-        pool.release(result.unwrap(), 0.5).await?;
+        pool.release(gpu1, half_fraction).await?;
+        pool.release(result.unwrap(), half_fraction).await?;
         Ok(())
     }
 
@@ -346,47 +412,27 @@ mod tests {
         let mut tasks = Vec::with_capacity(3);
         for _ in 0..3 {
             let pool = pool.clone();
-            tasks.push(tokio::spawn(async move { pool.acquire(1.0).await }));
+            tasks.push(tokio::spawn(
+                async move { pool.acquire(GPUFraction::ONE).await },
+            ));
         }
         let results = futures::future::try_join_all(tasks).await?;
         let gpus = results.into_iter().collect::<Result<Vec<usize>, _>>()?;
         assert_eq!(gpus.len(), 3);
         for g in gpus {
-            pool.release(g, 1.0).await?;
+            pool.release(g, GPUFraction::ONE).await?;
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_acquire_more_fractions_than_one() {
-        let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let result = pool.acquire(1.1).await;
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Acquired fraction must be between 0.0 and 1.0, got 1.1"
-        );
-    }
-
-    #[tokio::test]
     async fn test_acuiqre_fractions_equals_to_zero() {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let result = pool.acquire(0.0).await;
+        let result = pool.acquire(GPUFraction::ZERO).await;
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
             "Acquired fraction must be between 0.0 and 1.0, got 0"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_acuiqre_negative_fractions() {
-        let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let result = pool.acquire(-1.1).await;
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Acquired fraction must be between 0.0 and 1.0, got -1.1"
         );
     }
 
@@ -398,7 +444,7 @@ mod tests {
             .await?;
         assert_eq!(gpus, vec![0, 1]);
         for g in gpus {
-            pool.release(g, 1.0).await?;
+            pool.release(g, GPUFraction::ONE).await?;
         }
         Ok(())
     }
@@ -406,8 +452,8 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_full_gpus_not_enough() -> Result<()> {
         let pool = Arc::new(GPUPool::new(NonZeroUsize::new(3).unwrap()));
-        let partially_used_gpu = pool.acquire(0.6).await?;
-        assert_eq!(partially_used_gpu, 2);
+        let partially_used_gpu = pool.acquire(GPUFraction::unchecked(0.6)).await?;
+        assert_eq!(partially_used_gpu, 0);
         let cloned_pool = pool.clone();
         let task = tokio::spawn(async move {
             cloned_pool
@@ -416,23 +462,24 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
-        pool.release(partially_used_gpu, 0.6).await?;
+        pool.release(partially_used_gpu, GPUFraction::unchecked(0.6))
+            .await?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")
             .expect("no timeout")?;
-        assert_eq!(&result, &[0, 1, 2]);
+        assert_eq!(&result, &[1, 2, 0]);
         for gpu in result {
-            pool.release(gpu, 1.0).await?;
+            pool.release(gpu, GPUFraction::ONE).await?;
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_acquire_full_gpus_no_partial_acquiring() -> Result<()> {
+    async fn test_acquire_full_gpus_with_partial_acquiring() -> Result<()> {
         let pool = Arc::new(GPUPool::new(NonZeroUsize::new(3).unwrap()));
-        let partially_used_gpu = pool.acquire(0.6).await?;
-        assert_eq!(partially_used_gpu, 2);
+        let partially_used_gpu = pool.acquire(GPUFraction::unchecked(0.6)).await?;
+        assert_eq!(partially_used_gpu, 0);
         let cloned_pool = pool.clone();
         let task = tokio::spawn(async move {
             cloned_pool
@@ -440,18 +487,21 @@ mod tests {
                 .await
         });
         let cloned_pool = pool.clone();
-        let second_acquired_gpu = tokio::spawn(async move { cloned_pool.acquire(0.2).await });
+        let second_acquired_gpu =
+            tokio::spawn(async move { cloned_pool.acquire(GPUFraction::unchecked(0.2)).await });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
         assert!(!second_acquired_gpu.is_finished());
-        pool.release(partially_used_gpu, 0.6).await?;
+        pool.release(partially_used_gpu, GPUFraction::unchecked(0.6))
+            .await?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")
             .expect("no timeout")?;
-        assert_eq!(&result, &[0, 1, 2]);
+        // initial 0.6 occupied index 0, then GPU 1 and 2 are reserved, until 0 is added.
+        assert_eq!(&result, &[1, 2, 0]);
         for gpu in result {
-            pool.release(gpu, 1.0).await?;
+            pool.release(gpu, GPUFraction::ONE).await?;
         }
         Ok(())
     }
@@ -472,82 +522,21 @@ mod tests {
     #[tokio::test]
     async fn test_reserve_gpus_then_release() -> Result<()> {
         let pool = Arc::new(GPUPool::new(NonZeroUsize::new(2).unwrap()));
-        let gpu_0 = pool.acquire(0.5).await?;
-        assert_eq!(gpu_0, 1);
-        let gpu_1 = pool.acquire(0.6).await?;
-        assert_eq!(gpu_1, 0);
-        let cloned_pool = pool.clone();
-        let reserving_task_1 = tokio::spawn(async move { cloned_pool.acquire(0.6).await });
-        let cloned_pool = pool.clone();
-        let reserving_task_2 = tokio::spawn(async move { cloned_pool.acquire(0.7).await });
-        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
-        assert!(!reserving_task_1.is_finished());
-        assert!(!reserving_task_2.is_finished());
-
-        pool.release(gpu_1, 0.2).await?;
-        let reserving_task_1_acquired_gpu =
-            tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_1)
-                .await
-                .expect("task finished")
-                .expect("no timeout")?;
-        assert_eq!(reserving_task_1_acquired_gpu, gpu_1);
-        assert!(!reserving_task_2.is_finished());
-
-        pool.release(gpu_0, 0.2).await?;
-        let reserving_task_2_acquired_gpu =
-            tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_2)
-                .await
-                .expect("task finished")
-                .expect("no timeout")?;
-        assert_eq!(reserving_task_2_acquired_gpu, gpu_0);
-
-        pool.release(gpu_0, 1.0).await?;
-        pool.release(gpu_1, 1.0).await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_reserve_gpus_without_affecting_unreserved() -> Result<()> {
-        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(2).unwrap()));
-        let gpu_0 = pool.acquire(0.5).await?;
-        assert_eq!(gpu_0, 1);
-        let gpu_1 = pool.acquire(0.6).await?;
-        assert_eq!(gpu_1, 0);
-        let cloned_pool = pool.clone();
-        let reserving_task = tokio::spawn(async move { cloned_pool.acquire(0.6).await });
-        let cloned_pool = pool.clone();
-        let task_not_blocked = tokio::spawn(async move { cloned_pool.acquire(0.2).await });
-        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
-        assert!(!reserving_task.is_finished());
-        assert!(task_not_blocked.is_finished());
-        pool.release(gpu_0, 0.7).await?;
-
-        pool.release(gpu_1, 0.2).await?;
-        let reserving_task_acquired_gpu =
-            tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task)
-                .await
-                .expect("task finished")
-                .expect("no timeout")?;
-        assert_eq!(reserving_task_acquired_gpu, gpu_1);
-
-        pool.release(gpu_1, 1.0).await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_reserve_the_same_gpu_in_a_queue() -> Result<()> {
-        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(1).unwrap()));
-        let gpu_0 = pool.acquire(0.5).await?;
+        let gpu_0 = pool.acquire(GPUFraction::unchecked(0.5)).await?;
         assert_eq!(gpu_0, 0);
+        let gpu_1 = pool.acquire(GPUFraction::unchecked(0.6)).await?;
+        assert_eq!(gpu_1, 1);
         let cloned_pool = pool.clone();
-        let reserving_task_1 = tokio::spawn(async move { cloned_pool.acquire(0.6).await });
+        let reserving_task_1 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUFraction::unchecked(0.6)).await });
         let cloned_pool = pool.clone();
-        let reserving_task_2 = tokio::spawn(async move { cloned_pool.acquire(0.7).await });
+        let reserving_task_2 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUFraction::unchecked(0.7)).await });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!reserving_task_1.is_finished());
         assert!(!reserving_task_2.is_finished());
 
-        pool.release(gpu_0, 0.1).await?;
+        pool.release(gpu_0, GPUFraction::unchecked(0.1)).await?;
         let reserving_task_1_acquired_gpu =
             tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_1)
                 .await
@@ -556,7 +545,74 @@ mod tests {
         assert_eq!(reserving_task_1_acquired_gpu, gpu_0);
         assert!(!reserving_task_2.is_finished());
 
-        pool.release(gpu_0, 0.7).await?;
+        pool.release(gpu_1, GPUFraction::unchecked(0.3)).await?;
+        let reserving_task_2_acquired_gpu =
+            tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_2)
+                .await
+                .expect("task finished")
+                .expect("no timeout")?;
+        assert_eq!(reserving_task_2_acquired_gpu, gpu_1);
+
+        pool.release(gpu_0, GPUFraction::ONE).await?;
+        pool.release(gpu_1, GPUFraction::ONE).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reserve_gpus_without_affecting_unreserved() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(2).unwrap()));
+        let gpu_0 = pool.acquire(GPUFraction::unchecked(0.5)).await?;
+        assert_eq!(gpu_0, 0);
+        let gpu_1 = pool.acquire(GPUFraction::unchecked(0.6)).await?;
+        assert_eq!(gpu_1, 1);
+        let cloned_pool = pool.clone();
+        let reserving_task =
+            tokio::spawn(async move { cloned_pool.acquire(GPUFraction::unchecked(0.6)).await });
+        let cloned_pool = pool.clone();
+        let task_not_blocked =
+            tokio::spawn(async move { cloned_pool.acquire(GPUFraction::unchecked(0.2)).await });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!reserving_task.is_finished());
+        assert!(task_not_blocked.is_finished());
+        pool.release(gpu_0, GPUFraction::unchecked(0.1)).await?;
+
+        pool.release(gpu_1, GPUFraction::unchecked(0.8)).await?;
+        let reserving_task_acquired_gpu =
+            tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task)
+                .await
+                .expect("task finished")
+                .expect("no timeout")?;
+        assert_eq!(reserving_task_acquired_gpu, gpu_0);
+
+        pool.release(gpu_0, GPUFraction::ONE).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reserve_the_same_gpu_in_a_queue() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(1).unwrap()));
+        let gpu_0 = pool.acquire(GPUFraction::unchecked(0.5)).await?;
+        assert_eq!(gpu_0, 0);
+        let cloned_pool = pool.clone();
+        let reserving_task_1 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUFraction::unchecked(0.6)).await });
+        let cloned_pool = pool.clone();
+        let reserving_task_2 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUFraction::unchecked(0.7)).await });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!reserving_task_1.is_finished());
+        assert!(!reserving_task_2.is_finished());
+
+        pool.release(gpu_0, GPUFraction::unchecked(0.1)).await?;
+        let reserving_task_1_acquired_gpu =
+            tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_1)
+                .await
+                .expect("task finished")
+                .expect("no timeout")?;
+        assert_eq!(reserving_task_1_acquired_gpu, gpu_0);
+        assert!(!reserving_task_2.is_finished());
+
+        pool.release(gpu_0, GPUFraction::unchecked(0.7)).await?;
         let reserving_task_2_acquired_gpu =
             tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_2)
                 .await
@@ -564,23 +620,23 @@ mod tests {
                 .expect("no timeout")?;
         assert_eq!(reserving_task_2_acquired_gpu, gpu_0);
 
-        pool.release(gpu_0, 1.0).await?;
+        pool.release(gpu_0, GPUFraction::ONE).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_release_gpus() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let gpu_0 = pool.acquire(0.5).await?;
+        let gpu_0 = pool.acquire(GPUFraction::unchecked(0.5)).await?;
         assert_eq!(gpu_0, 0);
-        pool.release(gpu_0, 0.5).await?;
+        pool.release(gpu_0, GPUFraction::unchecked(0.5)).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_release_to_wrong_gpu_id() {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let release_result = pool.release(1, 0.5).await;
+        let release_result = pool.release(1, GPUFraction::unchecked(0.5)).await;
         assert!(release_result.is_err());
         assert_eq!(
             release_result.unwrap_err().to_string(),
@@ -589,49 +645,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_release_negative_fraction() {
-        let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let release_result = pool.release(0, -0.1).await;
-        assert!(release_result.is_err());
-        assert_eq!(
-            release_result.unwrap_err().to_string(),
-            "Cannot release a zero or negative fraction, got -0.1"
-        );
-    }
-
-    #[tokio::test]
     async fn test_release_zero_fraction() {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let release_result = pool.release(0, 0.0).await;
+        let release_result = pool.release(0, GPUFraction::ZERO).await;
         assert!(release_result.is_err());
         assert_eq!(
             release_result.unwrap_err().to_string(),
-            "Cannot release a zero or negative fraction, got 0"
+            "Cannot release a zero fraction"
         );
     }
 
     #[tokio::test]
-    async fn test_release_fraction_too_large() {
+    async fn test_release_overflown_gpus() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let release_result = pool.release(0, 1.5).await;
-        assert!(release_result.is_err());
-        assert_eq!(
-            release_result.unwrap_err().to_string(),
-            "Cannot release a fraction that is greater than 1.0, got 1.5"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_release_overflown_gpus() {
-        let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let gpu_0 = pool.acquire(0.5).await.expect("Acquire should succeed");
+        let gpu_0 = pool.acquire(GPUFraction::unchecked(0.5)).await?;
         assert_eq!(gpu_0, 0);
-        let release_result = pool.release(gpu_0, 0.6).await;
+        let release_result = pool.release(gpu_0, GPUFraction::unchecked(0.6)).await;
         assert!(release_result.is_err());
         assert_eq!(
             release_result.unwrap_err().to_string(),
             "Capacity after releasing cannot be greater than 1.0, got 1.1"
         );
+        Ok(())
     }
 
     #[test]
@@ -801,5 +836,33 @@ mod tests {
                 assert_eq!(pool.num_gpus(), 1);
             },
         );
+    }
+
+    #[test]
+    fn test_gpu_fraction_larger_than_one() {
+        let result = GPUFraction::try_from(1.1);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Fraction must be between 0.0 and 1.0, got 1.1"
+        );
+    }
+
+    #[test]
+    fn test_gpu_fraction_less_than_zero() {
+        let result = GPUFraction::try_from(-1.1);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Fraction must be between 0.0 and 1.0, got -1.1"
+        );
+    }
+
+    #[test]
+    fn test_gpu_fraction_zero() -> Result<()> {
+        let half = GPUFraction::try_from(0.5)?;
+        let result = GPUFraction::ONE - half + half - GPUFraction::ZERO;
+        assert_eq!(result, GPUFraction::ONE);
+        Ok(())
     }
 }
