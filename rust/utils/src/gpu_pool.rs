@@ -277,11 +277,11 @@ pub mod gpu_fraction {
     use anyhow::{Error, Result};
     use std::ops::{Add, AddAssign, Sub, SubAssign};
 
-    #[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct GPUFraction(u32);
 
     impl GPUFraction {
-        pub const SCALE: f32 = 1_000_000.0;
+        const SCALE: f32 = 1_000_000.0;
         pub const ZERO: Self = Self(0);
         pub const ONE: Self = Self(Self::SCALE as u32);
 
