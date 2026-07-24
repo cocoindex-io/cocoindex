@@ -213,110 +213,6 @@ def in_subprocess() -> bool:
 # ============================================================================
 
 
-def _detect_num_gpus() -> int:
-    """Detect the number of GPUs available for the default pool.
-
-    Detection order:
-
-    1. ``COCOINDEX_NUM_GPUS`` environment variable (explicit override).
-    2. ``CUDA_VISIBLE_DEVICES`` environment variable (count of entries).
-    3. ``nvidia-smi`` command output (if available).
-    4. Default to ``1``.
-    """
-    env_num = os.environ.get("COCOINDEX_NUM_GPUS")
-    if env_num is not None:
-        return max(1, int(env_num))
-
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible is not None:
-        devices = [d.strip() for d in cuda_visible.split(",") if d.strip()]
-        if devices:
-            return len(devices)
-        # Empty CUDA_VISIBLE_DEVICES disables CUDA devices; keep a logical
-        # pool size of 1 so GPU runners still behave predictably.
-        return 1
-
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=count", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode == 0:
-            output = result.stdout.strip().splitlines()
-            if output:
-                count = int(output[0].strip())
-                if count > 0:
-                    return count
-    except Exception:
-        pass
-
-    return 1
-
-
-class GPUPool:
-    """Tracks fractional GPU capacity across multiple GPUs.
-
-    Each GPU starts with capacity 1.0. ``acquire(fraction)`` blocks until a
-    GPU with enough remaining capacity is available, then returns its id.
-    ``release(gpu_id, fraction)`` restores capacity and wakes waiters.
-
-    The default pool size is auto-detected from ``COCOINDEX_NUM_GPUS``,
-    ``CUDA_VISIBLE_DEVICES``, or ``nvidia-smi`` (falling back to 1).
-    Call ``configure_gpu_pool(N)`` to override programmatically.
-    """
-
-    _num_gpus: int
-    _capacity: list[float]
-    _cond: asyncio.Condition | None
-    _bound_loop: asyncio.AbstractEventLoop | None
-
-    def __init__(self, num_gpus: int) -> None:
-        if num_gpus < 1:
-            raise ValueError(f"num_gpus must be >= 1, got {num_gpus}")
-        self._num_gpus = num_gpus
-        self._capacity = [1.0] * num_gpus
-        self._cond = None
-        self._bound_loop = None
-
-    @property
-    def num_gpus(self) -> int:
-        return self._num_gpus
-
-    def _get_cond(self) -> asyncio.Condition:
-        loop = asyncio.get_running_loop()
-        if self._cond is None or self._bound_loop is not loop:
-            self._cond = asyncio.Condition()
-            self._bound_loop = loop
-        return self._cond
-
-    def _find_available(self, fraction: float) -> int | None:
-        best_gpu = None
-        best_cap = -1.0
-        for i, cap in enumerate(self._capacity):
-            if cap >= fraction and cap > best_cap:
-                best_gpu = i
-                best_cap = cap
-        return best_gpu
-
-    async def acquire(self, fraction: float) -> int:
-        async with self._get_cond():
-            while True:
-                gpu_id = self._find_available(fraction)
-                if gpu_id is not None:
-                    self._capacity[gpu_id] -= fraction
-                    return gpu_id
-                await self._get_cond().wait()
-
-    async def release(self, gpu_id: int, fraction: float) -> None:
-        cond = self._get_cond()
-        async with cond:
-            self._capacity[gpu_id] += fraction
-            cond.notify_all()
-
-
 # ============================================================================
 # GPU identity propagation
 # ============================================================================
@@ -359,15 +255,15 @@ def _run_with_gpu_context(
 # Default GPU pool
 # ============================================================================
 
-_default_gpu_pool: GPUPool | None = None
+_default_gpu_pool: core.GPUPool | None = None
 _default_gpu_pool_lock = threading.Lock()
 
 
-def _get_default_gpu_pool() -> GPUPool:
+def _get_default_gpu_pool() -> core.GPUPool:
     global _default_gpu_pool
     with _default_gpu_pool_lock:
         if _default_gpu_pool is None:
-            _default_gpu_pool = GPUPool(num_gpus=_detect_num_gpus())
+            _default_gpu_pool = core.GPUPool.default()
         return _default_gpu_pool
 
 
@@ -375,7 +271,7 @@ def configure_gpu_pool(num_gpus: int) -> None:
     """Override the default GPU pool. Must be called before any GPU function runs."""
     global _default_gpu_pool
     with _default_gpu_pool_lock:
-        _default_gpu_pool = GPUPool(num_gpus=num_gpus)
+        _default_gpu_pool = core.GPUPool(num_gpus=num_gpus)
 
 
 # ============================================================================

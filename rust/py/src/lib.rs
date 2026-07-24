@@ -7,6 +7,7 @@ mod deadline;
 mod environment;
 mod fingerprint;
 mod function;
+mod gpu_pool;
 mod inspect;
 pub mod live_component;
 mod logic_registry;
@@ -176,6 +177,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     // Rate limiting
     m.add_class::<ratelimit::PyRateLimiter>()?;
+
+    // GPU Pool
+    m.add_class::<gpu_pool::PyGPUPool>()?;
 
     Ok(())
 }
