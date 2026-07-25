@@ -313,13 +313,8 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
         def strip(self, chars: str | None = None) -> str:
             raise AssertionError("subclass strip should not be called")
 
-    normalized_marker = cast(
-        Any,
-        coco.prev_type_id(HostileString("old.package"), HostileString("Outer.Entry")),
-    )
-    assert (normalized_marker.module, normalized_marker.qualname) == (
-        "old.package",
-        "Outer.Entry",
+    normalized_marker = coco.prev_type_id(
+        HostileString("old.package"), HostileString("Outer.Entry")
     )
     assert normalized_marker == coco.prev_type_id("old.package", "Outer.Entry")
     with pytest.raises(ValueError, match="non-empty"):
@@ -327,13 +322,21 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
 
     module = "old:package.models"
     qualname = "Outer.Source.Entry"
-    marker = cast(Any, coco.prev_type_id(module, qualname))
+    marker = coco.prev_type_id(module, qualname)
+    assert isinstance(marker, _memo_fingerprint._PreviousTypeId)
 
-    for attribute in ("module", "qualname"):
-        with pytest.raises(AttributeError):
+    class IdentitySourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = marker
+
+    assert (
+        _memo_fingerprint._type_identity_parts(IdentitySourceEntry, None)
+        is marker._identity_parts
+    )
+    for attribute in ("_identity_parts", "extra"):
+        with pytest.raises(AttributeError, match="immutable"):
             setattr(marker, attribute, "mutated")
 
-    variants: list[Any] = [
+    variants = [
         marker,
         copy.copy(marker),
         copy.deepcopy(marker),
@@ -344,12 +347,11 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
     ]
     for variant in variants:
         assert type(variant) is type(marker)
-        assert (variant.module, variant.qualname) == (module, qualname)
 
         class MovedSourceEntry:
             __coco_memo_type_id__: ClassVar[str] = variant
 
-        assert _memo_fingerprint._type_identity_parts(MovedSourceEntry) == (
+        assert _memo_fingerprint._type_identity_parts(MovedSourceEntry, None) == (
             module,
             qualname,
         )
@@ -359,18 +361,23 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
 
     try:
         register_memo_key_function(RegisteredSourceEntry, stable_type_id=variants[-1])
-        assert _memo_fingerprint._type_identity_parts(RegisteredSourceEntry) == (
-            module,
-            qualname,
+        registry = _memo_fingerprint._registered_memo_type_registry(
+            RegisteredSourceEntry
         )
+        assert registry is not None
+        assert _memo_fingerprint._type_identity_parts(
+            RegisteredSourceEntry, registry
+        ) == (module, qualname)
     finally:
         unregister_memo_key_function(RegisteredSourceEntry)
 
-    class OrdinaryStringSourceEntry:
-        __coco_memo_type_id__: ClassVar[str] = str(marker)
+    ordinary_marker = str(marker)
 
-    assert _memo_fingerprint._type_identity_parts(OrdinaryStringSourceEntry) == (
-        ("__coco_memo_type_id__", str(marker)),
+    class OrdinaryStringSourceEntry:
+        __coco_memo_type_id__: ClassVar[str] = ordinary_marker
+
+    assert _memo_fingerprint._type_identity_parts(OrdinaryStringSourceEntry, None) == (
+        ("__coco_memo_type_id__", ordinary_marker),
         None,
     )
 
@@ -485,7 +492,7 @@ def test_hook_memo_key_fragment_preserves_parent_cycle() -> None:
 
     assert canonical == (
         "seq",
-        (("hook", *_memo_fingerprint._type_identity_parts(Entry), ("ref", 0)),),
+        (("hook", *_memo_fingerprint._type_identity_parts(Entry, None), ("ref", 0)),),
     )
     assert _memo_fingerprint.memo_fingerprint(
         graph
@@ -509,7 +516,13 @@ def test_registered_memo_key_fragment_preserves_parent_cycle() -> None:
 
         assert canonical == (
             "seq",
-            (("hook", *_memo_fingerprint._type_identity_parts(Entry), ("ref", 0)),),
+            (
+                (
+                    "hook",
+                    *_memo_fingerprint._type_identity_parts(Entry, None),
+                    ("ref", 0),
+                ),
+            ),
         )
         assert _memo_fingerprint.memo_fingerprint(
             graph
@@ -544,12 +557,12 @@ def test_hook_memo_key_fragments_remain_alive_for_root_traversal() -> None:
         (
             (
                 "hook",
-                *_memo_fingerprint._type_identity_parts(FirstEntry),
+                *_memo_fingerprint._type_identity_parts(FirstEntry, None),
                 ("seq", ("first",)),
             ),
             (
                 "hook",
-                *_memo_fingerprint._type_identity_parts(SecondEntry),
+                *_memo_fingerprint._type_identity_parts(SecondEntry, None),
                 ("seq", ("second",)),
             ),
         ),
@@ -569,7 +582,7 @@ def test_memo_key_fragment_preserves_shared_reference_ordinals() -> None:
 
     assert top_level == (
         "hook",
-        *_memo_fingerprint._type_identity_parts(Entry),
+        *_memo_fingerprint._type_identity_parts(Entry, None),
         ("seq", (("seq", ("shared",)), ("ref", 1))),
     )
     assert parent_wrapped == (
@@ -577,7 +590,7 @@ def test_memo_key_fragment_preserves_shared_reference_ordinals() -> None:
         (
             (
                 "hook",
-                *_memo_fingerprint._type_identity_parts(Entry),
+                *_memo_fingerprint._type_identity_parts(Entry, None),
                 ("seq", (("seq", ("shared",)), ("ref", 2))),
             ),
         ),
@@ -1067,56 +1080,173 @@ def test_key_only_registration_replaces_stable_type_id() -> None:
         unregister_memo_key_function(SameStableTypeId)
 
 
-def test_key_only_registration_falls_back_to_class_declared_stable_type_id() -> None:
+def test_intrinsic_hooks_and_declared_stable_id_beat_registration() -> None:
+    declared_type_id = "test.DeclaredIntrinsic/v1"
+
     class Entry:
-        __coco_memo_type_id__ = "test.DeclaredFallback/v1"
-
-        def __init__(self, value: object) -> None:
-            self.value = value
+        __coco_memo_type_id__ = declared_type_id
 
         def __coco_memo_key__(self) -> object:
-            return ("entry", self.value)
+            return "intrinsic-key"
 
-    class DeclaredPeer:
-        __coco_memo_type_id__ = "test.DeclaredFallback/v1"
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state=prev_state, memo_valid=True)
 
-        def __init__(self, value: object) -> None:
-            self.value = value
+    def registered_key(_entry: Entry) -> object:
+        raise AssertionError("intrinsic key must beat the registered key")
 
-        def __coco_memo_key__(self) -> object:
-            return ("entry", self.value)
-
-    class RegisteredPeer:
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def __coco_memo_key__(self) -> object:
-            return ("entry", self.value)
-
-    assert fingerprint_call(_dummy_fn, (Entry(1),), {}, []) == fingerprint_call(
-        _dummy_fn, (DeclaredPeer(1),), {}, []
-    )
+    def registered_state(_entry: Entry, _prev_state: object) -> MemoStateOutcome:
+        raise AssertionError("intrinsic state must beat the registered state")
 
     try:
-        register_memo_key_function(Entry, stable_type_id="test.RegisteredOverride/v1")
         register_memo_key_function(
-            RegisteredPeer, stable_type_id="test.RegisteredOverride/v1"
+            Entry,
+            registered_key,
+            state_fn=registered_state,
+            stable_type_id="test.RegisteredIntrinsic/v1",
         )
-
-        assert fingerprint_call(_dummy_fn, (Entry(1),), {}, []) == fingerprint_call(
-            _dummy_fn, (RegisteredPeer(1),), {}, []
+        state_methods: list[Any] = []
+        canonical = _memo_fingerprint._canonicalize(Entry(), None, state_methods)
+        assert isinstance(canonical, tuple)
+        assert canonical[:3] == (
+            "shook",
+            ("__coco_memo_type_id__", declared_type_id),
+            None,
         )
-        assert fingerprint_call(_dummy_fn, (Entry(1),), {}, []) != fingerprint_call(
-            _dummy_fn, (DeclaredPeer(1),), {}, []
-        )
-
-        register_memo_key_function(Entry, lambda entry: ("entry", entry.value))
-        assert fingerprint_call(_dummy_fn, (Entry(1),), {}, []) == fingerprint_call(
-            _dummy_fn, (DeclaredPeer(1),), {}, []
+        assert len(state_methods) == 1
+        assert state_methods[0].call("previous") == MemoStateOutcome(
+            state="previous", memo_valid=True
         )
     finally:
         unregister_memo_key_function(Entry)
-        unregister_memo_key_function(RegisteredPeer)
+
+
+def test_declared_stable_id_beats_registration_for_selected_key_owner() -> None:
+    declared_type_id = "test.DeclaredBaseOwner/v1"
+
+    class BaseEntry:
+        __coco_memo_type_id__ = declared_type_id
+
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+    class ChildEntry(BaseEntry):
+        pass
+
+    try:
+        register_memo_key_function(
+            BaseEntry,
+            lambda entry: ("registered", entry.value),
+            stable_type_id="test.RegisteredBaseOwner/v1",
+        )
+        assert _memo_fingerprint._canonicalize(ChildEntry(1), None, []) == (
+            "hook",
+            ("__coco_memo_type_id__", declared_type_id),
+            None,
+            ("seq", ("registered", 1)),
+        )
+    finally:
+        unregister_memo_key_function(BaseEntry)
+
+
+def test_identity_dispatch_looks_up_each_candidate_registry_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExactEntry:
+        pass
+
+    class RegisteredBase:
+        pass
+
+    class InheritedEntry(RegisteredBase):
+        pass
+
+    @dataclasses.dataclass
+    class DataclassEntry:
+        value: int
+
+    class MemoMeta(type):
+        pass
+
+    class MetaEntry(metaclass=MemoMeta):
+        pass
+
+    original_lookup = _memo_fingerprint._registered_memo_type_registry
+    lookups: list[type] = []
+
+    def tracked_lookup(typ: type) -> Any:
+        lookups.append(typ)
+        return original_lookup(typ)
+
+    def assert_lookups(*expected: type) -> None:
+        assert lookups == list(expected)
+        lookups.clear()
+
+    try:
+        register_memo_key_function(ExactEntry, lambda _entry: "exact")
+        register_memo_key_function(RegisteredBase, lambda _entry: "inherited")
+        register_memo_key_function(
+            DataclassEntry, stable_type_id="test.LookupDataclass/v1"
+        )
+        register_memo_key_function(MemoMeta, lambda _cls: "metaclass")
+        monkeypatch.setattr(
+            _memo_fingerprint, "_registered_memo_type_registry", tracked_lookup
+        )
+
+        _memo_fingerprint._canonicalize(ExactEntry(), None, [])
+        assert_lookups(ExactEntry)
+
+        _memo_fingerprint._canonicalize(InheritedEntry(), None, [])
+        assert_lookups(InheritedEntry, RegisteredBase)
+
+        _memo_fingerprint._canonicalize(DataclassEntry(1), None, [])
+        assert_lookups(DataclassEntry, object)
+
+        _memo_fingerprint._canonicalize(MetaEntry, None, [])
+        assert_lookups(MemoMeta)
+    finally:
+        unregister_memo_key_function(ExactEntry)
+        unregister_memo_key_function(RegisteredBase)
+        unregister_memo_key_function(DataclassEntry)
+        unregister_memo_key_function(MemoMeta)
+
+
+def test_pydantic_identity_registry_lookup_is_not_repeated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    try:
+        from pydantic import BaseModel
+    except ImportError:
+        pytest.skip("pydantic not installed")
+        return
+
+    class Model(BaseModel):
+        value: int
+
+    original_lookup = _memo_fingerprint._registered_memo_type_registry
+    lookups: list[type] = []
+
+    def tracked_lookup(typ: type) -> Any:
+        lookups.append(typ)
+        return original_lookup(typ)
+
+    try:
+        register_memo_key_function(Model, stable_type_id="test.LookupPydantic/v1")
+        monkeypatch.setattr(
+            _memo_fingerprint, "_registered_memo_type_registry", tracked_lookup
+        )
+        canonical = _memo_fingerprint._canonicalize(Model(value=1), None, [])
+        assert isinstance(canonical, tuple)
+
+        assert canonical[:3] == (
+            "pydantic",
+            ("__coco_memo_type_id__", "test.LookupPydantic/v1"),
+            None,
+        )
+        assert sum(owner is Model for owner in lookups) == 1
+        assert len({id(owner) for owner in lookups}) == len(lookups)
+    finally:
+        unregister_memo_key_function(Model)
 
 
 def test_combined_registration_uses_stable_type_id_and_collects_state_fn() -> None:
@@ -1520,8 +1650,26 @@ def test_stable_type_id_exact_type_and_validation() -> None:
     )
     with pytest.raises(TypeError, match="must be a str"):
         fingerprint_call(_dummy_fn, (BadObjectId(),), {}, [])
-    with pytest.raises(TypeError, match="must be a str"):
-        fingerprint_call(_dummy_fn, (NoneId(),), {}, [])
+    none_id_canonical = _memo_fingerprint._canonicalize(NoneId(), None, [])
+    assert isinstance(none_id_canonical, tuple)
+    assert none_id_canonical[:3] == (
+        "hook",
+        _memo_fingerprint.canonical_module_name(NoneId),
+        NoneId.__qualname__,
+    )
+
+    stable_type_id = "test.NoneDeclarationFallback/v1"
+    try:
+        register_memo_key_function(NoneId, stable_type_id=stable_type_id)
+        registered_canonical = _memo_fingerprint._canonicalize(NoneId(), None, [])
+        assert isinstance(registered_canonical, tuple)
+        assert registered_canonical[:3] == (
+            "hook",
+            ("__coco_memo_type_id__", stable_type_id),
+            None,
+        )
+    finally:
+        unregister_memo_key_function(NoneId)
     with pytest.raises(ValueError, match="non-empty"):
         fingerprint_call(_dummy_fn, (EmptyId(),), {}, [])
 

@@ -242,7 +242,7 @@ Registration is replacement-based, not additive. Each call replaces the full reg
 | `register_memo_key_function(T, key_fn)` | `key_fn` is installed and any previous `state_fn` is cleared unless a new `state_fn` is supplied. | Any previous registered stable type ID is cleared. |
 | `register_memo_key_function(T, stable_type_id="...")` | Any previous key/state functions are cleared. | The provided stable type ID is installed. |
 
-A `__coco_memo_type_id__` defined on the class is separate from the process-global registration table. If both are set for the same exact type, the registered stable type ID takes precedence. Provide `stable_type_id=` in a registration only when you intentionally want that override; otherwise, register only the key/state function and use the class-defined ID.
+A `__coco_memo_type_id__` defined on the class is separate from the process-global registration table. If both are set for the same exact type, the class-defined stable type ID takes precedence. The registration's `stable_type_id=` is used only when the selected owner has no non-`None` class-defined ID.
 
 For a registry-owned stable type ID, if a type needs a key function, state function, and stable type ID, register all of them in the same call. Avoid splitting registration across helper modules where import order can determine which registration wins.
 
@@ -277,7 +277,7 @@ coco.register_memo_key_function(Parent, stable_type_id="com.example.Parent/v1")
 
 #### Stable type ID with a key function: owner selected by MRO
 
-When `register_memo_key_function(Parent, key_fn, stable_type_id=...)` handles a `Child(Parent)` value through MRO lookup, the selected registered owner (`Parent`) supplies the type namespace. That owner namespace can come from the registration's `stable_type_id=...` argument or from `Parent.__coco_memo_type_id__`. For example:
+When `register_memo_key_function(Parent, key_fn, stable_type_id=...)` handles a `Child(Parent)` value through MRO lookup, the selected registered owner (`Parent`) supplies the type namespace. `Parent.__coco_memo_type_id__` supplies that namespace when it is non-`None`; otherwise, the registration's `stable_type_id=...` is used. For example:
 
 ```python
 class Parent:
