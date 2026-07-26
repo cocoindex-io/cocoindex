@@ -40,6 +40,9 @@ def test_ownership_transfer_basic() -> None:
     _source_data["C1"] = {"x": 1}
     app.update_blocking()
     assert GlobalDictTarget.store.data["x"].data == 1
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C1",
+    }
     GlobalDictTarget.store.metrics.collect()
 
     # Run 2: Ownership transfers from C1 to C2
@@ -47,6 +50,9 @@ def test_ownership_transfer_basic() -> None:
     _source_data["C2"] = {"x": 2}
     app.update_blocking()
     assert GlobalDictTarget.store.data["x"].data == 2
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C2",
+    }
 
 
 def test_ownership_transfer_same_value() -> None:
@@ -71,6 +77,9 @@ def test_ownership_transfer_same_value() -> None:
     app.update_blocking()
     # Final state must still be 1, regardless of whether preempt or delete+insert happened.
     assert GlobalDictTarget.store.data["x"].data == 1
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C2",
+    }
 
 
 def test_ownership_transfer_then_delete() -> None:
@@ -102,6 +111,7 @@ def test_ownership_transfer_then_delete() -> None:
     app.update_blocking()
     assert GlobalDictTarget.store.data == {}
     assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "delete": 1}
+    assert common.list_target_state_owners_sync(app) == {}
 
 
 def test_ownership_transfer_ordering_independence() -> None:
@@ -127,6 +137,9 @@ def test_ownership_transfer_ordering_independence() -> None:
     # The target state must exist (this is the bug fix)
     assert "x" in GlobalDictTarget.store.data
     assert GlobalDictTarget.store.data["x"].data == 2
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C2",
+    }
 
 
 def test_ownership_transfer_multiple_keys() -> None:
@@ -155,6 +168,10 @@ def test_ownership_transfer_multiple_keys() -> None:
     # prev_may_be_missing) are nondeterministic due to concurrent processing order.
     assert GlobalDictTarget.store.data["a"].data == 3
     assert GlobalDictTarget.store.data["b"].data == 2
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"a"': coco.ROOT_PATH / "C2",
+        '/@test_target_state/global_dict/"b"': coco.ROOT_PATH / "C1",
+    }
 
 
 def test_ownership_transfer_chain() -> None:
@@ -171,18 +188,27 @@ def test_ownership_transfer_chain() -> None:
     _source_data["C1"] = {"x": 1}
     app.update_blocking()
     assert GlobalDictTarget.store.data["x"].data == 1
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C1",
+    }
 
     # Run 2: C1 gone, C2 takes over
     _source_data.clear()
     _source_data["C2"] = {"x": 2}
     app.update_blocking()
     assert GlobalDictTarget.store.data["x"].data == 2
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C2",
+    }
 
     # Run 3: C2 gone, C3 takes over
     _source_data.clear()
     _source_data["C3"] = {"x": 3}
     app.update_blocking()
     assert GlobalDictTarget.store.data["x"].data == 3
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C3",
+    }
 
 
 @coco.fn
@@ -227,6 +253,9 @@ def test_ownership_transfer_preempt_strict() -> None:
     }
     # Should be 1 upsert (update), NOT a delete + insert
     assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C2",
+    }
 
     # Run 3: Same value transfer — no action needed
     _source_data.clear()
@@ -236,6 +265,9 @@ def test_ownership_transfer_preempt_strict() -> None:
         "x": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=False),
     }
     assert GlobalDictTarget.store.metrics.collect() == {}
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C3",
+    }
 
 
 def test_component_delete_cleans_inverted_tracking() -> None:
@@ -253,12 +285,17 @@ def test_component_delete_cleans_inverted_tracking() -> None:
     # Run 1: C1 owns "x"
     _source_data["C1"] = {"x": 1}
     app.update_blocking()
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C1",
+    }
     GlobalDictTarget.store.metrics.collect()
 
-    # Run 2: C1 is gone entirely
+    # Run 2: C1 is gone entirely — its owner row must go with it, not linger
+    # as a dangling entry pointing at a component with no tracking info.
     _source_data.clear()
     app.update_blocking()
     assert GlobalDictTarget.store.data == {}
+    assert common.list_target_state_owners_sync(app) == {}
     GlobalDictTarget.store.metrics.collect()
 
     # Run 3: C2 declares "x" fresh (no previous owner)
@@ -266,4 +303,7 @@ def test_component_delete_cleans_inverted_tracking() -> None:
     app.update_blocking()
     assert GlobalDictTarget.store.data == {
         "x": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C2",
     }
