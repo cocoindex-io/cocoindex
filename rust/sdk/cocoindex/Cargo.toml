@@ -120,7 +120,7 @@ arrow-array = { version = "57", optional = true }
 arrow-schema = { version = "57", optional = true }
 # Qdrant vector-store target (gRPC client; build needs `protoc`).
 qdrant-client = { version = "1.18", optional = true }
-surrealdb = { version = "3", default-features = false, optional = true, features = [
+surrealdb = { version = "3.2.3", default-features = false, optional = true, features = [
     "protocol-ws",
     "rustls",
 ] }
