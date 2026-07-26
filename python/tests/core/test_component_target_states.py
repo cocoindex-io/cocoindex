@@ -164,6 +164,39 @@ def test_dicts_data_together_delete_dict() -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_delete_dict_clears_target_owner_index() -> None:
+    """Deleting a component drops its rows from the inverted owner index.
+
+    The `__track` row goes away with the component, so any `__target` owner
+    row it left behind is dangling and never reclaimed.
+    """
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_delete_dict_clears_target_owner_index", environment=coco_env
+        ),
+        _declare_dicts_data_together,
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    _source_data["D2"] = {"c": 3}
+    await app.update()
+
+    owners_before = [entry async for entry in coco_inspect.iter_target_states(app)]
+    assert any("D1" in entry.readable_path for entry in owners_before), owners_before
+    assert not any(entry.dangling for entry in owners_before)
+
+    del _source_data["D1"]
+    await app.update()
+
+    owners_after = [entry async for entry in coco_inspect.iter_target_states(app)]
+    assert not any("D1" in entry.readable_path for entry in owners_after), owners_after
+    assert not any(entry.dangling for entry in owners_after)
+
+
 def test_dicts_data_together_delete_entry() -> None:
     DictsTarget.store.clear()
     _source_data.clear()
