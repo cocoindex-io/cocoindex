@@ -498,9 +498,19 @@ impl AppStore {
                             .await?;
                     }
                     for target_path in &plan.target_owners_to_delete {
-                        app_store
-                            .delete_target_state_owner(wtxn, target_path)
-                            .await?;
+                        // Only drop the owner row if it still points at us. A
+                        // component that preempted this path between our last
+                        // run and this delete has already upserted itself as
+                        // owner; deleting unconditionally would orphan it.
+                        let still_ours = app_store
+                            .read_target_state_owner_in_txn(wtxn, target_path)
+                            .await?
+                            .is_some_and(|info| info.component_path == component_path);
+                        if still_ours {
+                            app_store
+                                .delete_target_state_owner(wtxn, target_path)
+                                .await?;
+                        }
                     }
                     if plan.fn_memo_clear_all_first {
                         app_store.delete_all_fn_memos(wtxn, &component_path).await?;

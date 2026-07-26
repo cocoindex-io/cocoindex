@@ -458,14 +458,37 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     /// Engine-side reconcile that produces the `(new_tracking_info,
     /// target_owners_to_delete)` portion of [`CommitPlan`]. Delete
-    /// mode short-circuits to `(None, vec![])`, signalling the
-    /// session to delete the `__track` row.
+    /// mode short-circuits to `(None, owned_target_paths)`, signalling
+    /// the session to delete the `__track` row and every `__target`
+    /// owner row this component still holds.
     async fn build_commit_writes(
         &self,
         curr_version: Option<u64>,
     ) -> Result<(Option<Vec<u8>>, Vec<TargetStatePath>)> {
         if self.component_ctx.mode() == ComponentProcessingMode::Delete {
-            return Ok((None, Vec::new()));
+            // Whole-component deletion also drops the inverted `__target`
+            // owner index for every path this component still owns. Without
+            // this the `__track` row is removed but the owner rows leak,
+            // growing LMDB unboundedly for permanently-abandoned paths.
+            let owners_to_delete = match self
+                .app_store
+                .read_tracking_info(&self.component_path)
+                .await?
+            {
+                Some(bytes) => {
+                    let tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
+                        from_msgpack_slice(&bytes)?;
+                    tracking_info
+                        .target_state_items
+                        .keys()
+                        .map(|path_with_pid| path_with_pid.target_state_path.clone())
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+            return Ok((None, owners_to_delete));
         }
         let curr_version = curr_version
             .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
