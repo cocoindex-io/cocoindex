@@ -112,6 +112,12 @@ def test_dicts_data_together_delete_dict() -> None:
         coco.ROOT_PATH / "dict" / "D1",
         coco.ROOT_PATH / "dict" / "D2",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "dict" / "D2",
+    }
 
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
@@ -137,6 +143,12 @@ def test_dicts_data_together_delete_dict() -> None:
         coco.ROOT_PATH / "dict" / "D2",
         coco.ROOT_PATH / "dict" / "D3",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "dict" / "D2",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / "dict" / "D3",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH,
+    }
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
@@ -162,39 +174,15 @@ def test_dicts_data_together_delete_dict() -> None:
         coco.ROOT_PATH / "dict" / "D2",
         coco.ROOT_PATH / "dict" / "D3",
     ]
-
-
-@pytest.mark.asyncio
-async def test_delete_dict_clears_target_owner_index() -> None:
-    """Deleting a component drops its rows from the inverted owner index.
-
-    The `__track` row goes away with the component, so any `__target` owner
-    row it left behind is dangling and never reclaimed.
-    """
-    DictsTarget.store.clear()
-    _source_data.clear()
-
-    app = coco.App(
-        coco.AppConfig(
-            name="test_delete_dict_clears_target_owner_index", environment=coco_env
-        ),
-        _declare_dicts_data_together,
-    )
-
-    _source_data["D1"] = {"a": 1, "b": 2}
-    _source_data["D2"] = {"c": 3}
-    await app.update()
-
-    owners_before = [entry async for entry in coco_inspect.iter_target_states(app)]
-    assert any("D1" in entry.readable_path for entry in owners_before), owners_before
-    assert not any(entry.dangling for entry in owners_before)
-
-    del _source_data["D1"]
-    await app.update()
-
-    owners_after = [entry async for entry in coco_inspect.iter_target_states(app)]
-    assert not any("D1" in entry.readable_path for entry in owners_after), owners_after
-    assert not any(entry.dangling for entry in owners_after)
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "dict" / "D2",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / "dict" / "D3",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH,
+    }
 
 
 def test_dicts_data_together_delete_entry() -> None:
@@ -228,6 +216,10 @@ def test_dicts_data_together_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
     assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "delete": 1}
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+    }
 
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
@@ -247,6 +239,12 @@ def test_dicts_data_together_delete_entry() -> None:
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH,
+    }
 
 
 ##################################################################################
@@ -347,6 +345,12 @@ def test_dicts_in_sub_components_delete_dict() -> None:
         coco.ROOT_PATH / "D2",
         coco.ROOT_PATH / "D2" / "setup",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "D1" / "setup",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "D2" / "setup",
+    }
 
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
@@ -373,6 +377,12 @@ def test_dicts_in_sub_components_delete_dict() -> None:
         coco.ROOT_PATH / "D3",
         coco.ROOT_PATH / "D3" / "setup",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "D2" / "setup",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH / "D2",
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / "D3" / "setup",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH / "D3",
+    }
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
@@ -400,6 +410,15 @@ def test_dicts_in_sub_components_delete_dict() -> None:
         coco.ROOT_PATH / "D3",
         coco.ROOT_PATH / "D3" / "setup",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "D1" / "setup",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "D2" / "setup",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH / "D2",
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / "D3" / "setup",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH / "D3",
+    }
 
 
 def test_dicts_in_sub_components_delete_entry() -> None:
@@ -433,6 +452,10 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
     assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "delete": 1}
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "D1" / "setup",
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH / "D1",
+    }
 
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
@@ -452,6 +475,12 @@ def test_dicts_in_sub_components_delete_entry() -> None:
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D1" / "setup",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "D1" / "setup",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH / "D1",
+    }
 
 
 ##################################################################################
@@ -560,6 +589,12 @@ async def test_dicts_containers_together_delete_dict() -> None:
         coco.ROOT_PATH / "D2",
         coco.ROOT_PATH / "setup",
     ]
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "setup",
+    }
 
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
@@ -585,6 +620,12 @@ async def test_dicts_containers_together_delete_dict() -> None:
         coco.ROOT_PATH / "D3",
         coco.ROOT_PATH / "setup",
     ]
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH / "D2",
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH / "D3",
+    }
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
@@ -610,6 +651,15 @@ async def test_dicts_containers_together_delete_dict() -> None:
         coco.ROOT_PATH / "D3",
         coco.ROOT_PATH / "setup",
     ]
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH / "D2",
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH / "D3",
+    }
 
 
 @pytest.mark.asyncio
@@ -645,6 +695,10 @@ async def test_dicts_containers_together_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1)}
     assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "delete": 1}
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH / "D1",
+    }
 
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
@@ -664,6 +718,12 @@ async def test_dicts_containers_together_delete_entry() -> None:
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "setup",
     ]
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "setup",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH / "D1",
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH / "D1",
+    }
 
 
 ##################################################################################
@@ -699,6 +759,10 @@ def test_proceed_with_failed_creation() -> None:
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+    }
 
 
 ##################################################################################
@@ -796,11 +860,15 @@ def test_cleanup_partially_built_components() -> None:
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D1" / "setup",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "D1" / "setup",
+    }
 
     del _source_data["D1"]
     app.update_blocking()
     assert DictsTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
+    assert common.list_target_state_owners_sync(app) == {}
 
 
 ##################################################################################
@@ -826,6 +894,9 @@ def test_retry_from_gc_failed_components() -> None:
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+    }
 
     # Inject an exception for GC
     del _source_data["D1"]
@@ -839,6 +910,11 @@ def test_retry_from_gc_failed_components() -> None:
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict" / "D1",
     ]
+    # The owner row must survive the failed GC along with the tracking record,
+    # so the retry can still find and clean up the target state.
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+    }
 
     # After retry, it should proceed with GC
     app.update_blocking()
@@ -846,6 +922,7 @@ def test_retry_from_gc_failed_components() -> None:
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
     ]
+    assert common.list_target_state_owners_sync(app) == {}
 
 
 def test_restore_from_gc_failed_components() -> None:
@@ -867,6 +944,9 @@ def test_restore_from_gc_failed_components() -> None:
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+    }
 
     # Inject an exception for GC
     del _source_data["D1"]
@@ -880,6 +960,9 @@ def test_restore_from_gc_failed_components() -> None:
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict" / "D1",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+    }
 
     # The entry reappears, and the previous failed GC shouldn't affect it
     _source_data["D1"] = {"a": 1}
@@ -892,6 +975,10 @@ def test_restore_from_gc_failed_components() -> None:
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
     ]
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+    }
 
 
 ##################################################################################
@@ -996,6 +1083,12 @@ async def test_mount_each_delete() -> None:
         coco.ROOT_PATH / _me / "D3",
         coco.ROOT_PATH / _me / "D3" / "setup",
     ]
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / _me / "D2" / "setup",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH / _me / "D2",
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / _me / "D3" / "setup",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH / _me / "D3",
+    }
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
@@ -1023,6 +1116,15 @@ async def test_mount_each_delete() -> None:
         coco.ROOT_PATH / _me / "D3",
         coco.ROOT_PATH / _me / "D3" / "setup",
     ]
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / _me / "D1" / "setup",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH / _me / "D1",
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH / _me / "D1",
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / _me / "D2" / "setup",
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH / _me / "D2",
+        '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / _me / "D3" / "setup",
+        '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH / _me / "D3",
+    }
 
 
 ##################################################################################
@@ -1218,6 +1320,16 @@ def test_mount_target_delete() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "insert": 2}
     assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(2), "upsert": 3}
+    _mt = coco.ROOT_PATH / "dict" / coco.Symbol("cocoindex/mount_target")
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': _mt
+        / (coco.Symbol("test_target_state/dicts"), "D1"),
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D2"': _mt
+        / (coco.Symbol("test_target_state/dicts"), "D2"),
+        '/@test_target_state/dicts/"D2"/"c"': coco.ROOT_PATH,
+    }
 
     # Delete D2, modify D1
     del _mount_target_source_data["D2"]
@@ -1232,6 +1344,13 @@ def test_mount_target_delete() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": AtMost(2), "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': _mt
+        / (coco.Symbol("test_target_state/dicts"), "D1"),
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"c"': coco.ROOT_PATH,
+    }
 
 
 ##################################################################################
@@ -1300,6 +1419,13 @@ def test_directory_to_component_transition() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
+    _mt = coco.ROOT_PATH / "transition_test" / coco.Symbol("cocoindex/mount_target")
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': _mt
+        / (coco.Symbol("test_target_state/dicts"), "D1"),
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+    }
 
     # Transition from Directory target to Component mount
     _transition_to_component_mode = True
@@ -1307,6 +1433,7 @@ def test_directory_to_component_transition() -> None:
 
     # The old children should be deleted from the target state
     assert DictsTarget.store.data == {}
+    assert common.list_target_state_owners_sync(app) == {}
 
     # Verify stable paths reflect the component is still there, but children are gone
     paths = coco_inspect.list_stable_paths_sync(app)

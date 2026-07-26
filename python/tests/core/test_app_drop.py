@@ -47,6 +47,11 @@ def test_drop_blocking() -> None:
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
         },
     }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+    }
 
     # Drop the app
     app.drop_blocking()
@@ -54,6 +59,7 @@ def test_drop_blocking() -> None:
     # Verify target states were reverted and database is cleared
     assert DictsTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == []
+    assert common.list_target_state_owners_sync(app) == {}
 
 
 @pytest.mark.asyncio
@@ -91,6 +97,7 @@ async def test_drop_reverts_target_states() -> None:
 
     # Verify database is cleared
     assert await coco_inspect.list_stable_paths(app) == []
+    assert await common.list_target_state_owners(app) == {}
 
 
 @pytest.mark.asyncio
@@ -111,6 +118,8 @@ async def test_drop_clears_database() -> None:
     # Verify app has state
     paths_before = await coco_inspect.list_stable_paths(app)
     assert len(paths_before) > 0
+    owners_before = await common.list_target_state_owners(app)
+    assert len(owners_before) > 0
 
     # Drop the app
     await app.drop()
@@ -118,6 +127,7 @@ async def test_drop_clears_database() -> None:
     # Verify database is cleared
     paths_after = await coco_inspect.list_stable_paths(app)
     assert paths_after == []
+    assert await common.list_target_state_owners(app) == {}
 
 
 @pytest.mark.asyncio
@@ -149,6 +159,10 @@ async def test_drop_allows_rerun() -> None:
     assert DictsTarget.store.data == {
         "D2": {"b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True)},
     }
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "dict" / "D2",
+        '/@test_target_state/dicts/"D2"/"b"': coco.ROOT_PATH,
+    }
 
 
 @pytest.mark.asyncio
@@ -167,6 +181,7 @@ async def test_drop_empty_app() -> None:
 
     # Verify no paths exist
     assert await coco_inspect.list_stable_paths(app) == []
+    assert await common.list_target_state_owners(app) == {}
 
 
 # ============================================================================
@@ -216,6 +231,7 @@ def test_drop_with_live_component_in_registry() -> None:
     # Verify state is fully cleaned up after drop.
     assert DictsTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == []
+    assert common.list_target_state_owners_sync(app) == {}
 
 
 def test_drop_failure_preserves_tracking_for_retry() -> None:
@@ -250,6 +266,10 @@ def test_drop_failure_preserves_tracking_for_retry() -> None:
     assert paths_before_failed_drop, (
         "tracking records should exist after the initial update"
     )
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+    }
 
     # First drop attempt with a failing sink. Whether or not it raises,
     # the tracking record for the failed delete MUST survive.
@@ -269,8 +289,16 @@ def test_drop_failure_preserves_tracking_for_retry() -> None:
         "tracking records must survive a failed drop so retry can find them; "
         f"got empty list — target state would leak"
     )
+    # The owner row for the failed delete must survive alongside the tracking
+    # record. Only the container's sink failed (`sink_exception` is on the
+    # parent store); the leaf entry's delete succeeded, so its owner row is
+    # legitimately gone.
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+    }
 
     # Healthy retry cleans up properly.
     app.drop_blocking()
     assert DictsTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == []
+    assert common.list_target_state_owners_sync(app) == {}
