@@ -130,7 +130,7 @@ mod tests {
     use super::*;
     use crate::{App, Environment};
 
-    crate::context_key!(static GRAPH: Graph = "falkordb_graph");
+    crate::context_key!(static GRAPH: Graph, key = "falkordb_graph");
 
     #[derive(Serialize)]
     struct Person {

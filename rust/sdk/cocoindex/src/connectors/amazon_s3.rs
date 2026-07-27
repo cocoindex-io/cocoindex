@@ -213,6 +213,8 @@ impl FileLike for S3File {
 
 impl FileSourceItem for S3File {}
 
+crate::memo::impl_file_memo_input!(S3File);
+
 fn default_file_cache() -> Arc<FileContentCache> {
     Arc::new(FileContentCache::new())
 }

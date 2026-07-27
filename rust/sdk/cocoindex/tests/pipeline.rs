@@ -675,90 +675,126 @@ async fn no_detect_change_context_key_does_not_invalidate_memo() {
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
 }
 
-/// `ContextKey::new_with_state` drives memo invalidation from a derived state,
-/// not the whole value. Here the resource is non-serializable and only its
-/// `version` is tracked:
-///   - changing a non-state field (`_tag`) must NOT invalidate the memo,
-///   - changing the state field (`version`) MUST invalidate it.
+/// A tracked context uses the value type's `MemoInput` implementation for both
+/// stable identity and external-state validation.
 #[tokio::test]
-async fn state_fn_context_key_invalidates_on_state_change_only() {
+async fn type_owned_context_memo_state_invalidates_cached_function() {
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Deliberately NOT `Serialize` — proves new_with_state works for resources
-    // that cannot be fingerprinted directly.
     struct Resource {
+        id: &'static str,
         version: u64,
-        _tag: &'static str,
+    }
+
+    #[cocoindex::async_trait]
+    impl cocoindex::MemoInput for Resource {
+        fn write_memo_key(
+            &self,
+            writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+        ) -> cocoindex::Result<()> {
+            writer.write(&self.id)
+        }
+
+        async fn memo_state(
+            &self,
+            previous: Option<&cocoindex::memo::MemoStateValue>,
+        ) -> cocoindex::Result<Option<cocoindex::memo::MemoStateDecision>> {
+            let previous_version = previous.and_then(|state| state.deserialize::<u64>().ok());
+            Ok(Some(cocoindex::memo::MemoStateDecision::new(
+                &self.version,
+                previous_version == Some(self.version),
+            )?))
+        }
     }
 
     static KEY: OnceLock<ContextKey<Resource>> = OnceLock::new();
-    let key = KEY
-        .get_or_init(|| ContextKey::new_with_state("pipeline/state_fn", |r: &Resource| r.version));
-
+    let key = KEY.get_or_init(|| ContextKey::new_detect_change("pipeline/type_owned_state"));
     let dir = tempfile::tempdir().unwrap();
-    let call_count = std::sync::Arc::new(AtomicUsize::new(0));
+    let function_calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let component_calls = std::sync::Arc::new(AtomicUsize::new(0));
 
     async fn run(
         path: std::path::PathBuf,
         key: ContextKey<Resource>,
         version: u64,
-        tag: &'static str,
-        call_count: std::sync::Arc<AtomicUsize>,
-    ) -> u64 {
+        function_calls: std::sync::Arc<AtomicUsize>,
+        component_calls: std::sync::Arc<AtomicUsize>,
+    ) {
         let app = Environment::builder()
             .db_path(path)
-            .provide_key(&key, Resource { version, _tag: tag })
+            .provide_key(
+                &key,
+                Resource {
+                    id: "resource",
+                    version,
+                },
+            )
             .build()
             .await
             .unwrap()
-            .app("state_fn_context_key")
+            .app("type_owned_context_state")
             .await
             .unwrap();
-        let count = call_count.clone();
         app.update(move |ctx| async move {
-            let v: u64 = ctx
-                .memo(&"stable", move |ctx| {
-                    let count = count.clone();
-                    async move {
-                        count.fetch_add(1, Ordering::SeqCst);
-                        Ok(ctx.get_key(&key)?.version)
-                    }
-                })
-                .await?;
-            Ok::<_, cocoindex::Error>(v)
+            let function_key = key.clone();
+            ctx.memo(&"stable", move |ctx| {
+                let function_calls = function_calls.clone();
+                async move {
+                    function_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(ctx.get_key(&function_key)?.version)
+                }
+            })
+            .await?;
+
+            let memo_fp = cocoindex_utils::fingerprint::Fingerprint::from(
+                &"type_owned_context_state_component",
+            )
+            .unwrap();
+            ctx.__use_mount_fp(
+                "stateful_child".to_string(),
+                Some(memo_fp),
+                move |child_ctx| async move {
+                    component_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(child_ctx.get_key(&key)?.version)
+                },
+            )
+            .await?;
+            Ok(())
         })
         .await
-        .unwrap()
+        .unwrap();
     }
 
-    let path = dir.path().join("lmdb");
-
-    // Run 1: version=1, tag="a" -> miss (executes).
-    assert_eq!(
-        run(path.clone(), key.clone(), 1, "a", call_count.clone()).await,
-        1
-    );
-    assert_eq!(call_count.load(Ordering::SeqCst), 1);
-
-    // Run 2: version=1, tag="b" -> state (version) unchanged -> cache HIT.
-    assert_eq!(
-        run(path.clone(), key.clone(), 1, "b", call_count.clone()).await,
-        1
-    );
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
+    run(
+        dir.path().join("lmdb"),
+        key.clone(),
         1,
-        "changing a non-state field must not invalidate the memo"
-    );
+        function_calls.clone(),
+        component_calls.clone(),
+    )
+    .await;
+    run(
+        dir.path().join("lmdb"),
+        key.clone(),
+        1,
+        function_calls.clone(),
+        component_calls.clone(),
+    )
+    .await;
+    assert_eq!(function_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(component_calls.load(Ordering::SeqCst), 1);
 
-    // Run 3: version=2 -> state changed -> cache MISS (re-executes).
-    assert_eq!(run(path, key.clone(), 2, "b", call_count.clone()).await, 2);
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
+    run(
+        dir.path().join("lmdb"),
+        key.clone(),
         2,
-        "changing the tracked state must invalidate the memo"
-    );
+        function_calls.clone(),
+        component_calls.clone(),
+    )
+    .await;
+    assert_eq!(function_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(component_calls.load(Ordering::SeqCst), 2);
 }
 
 /// Regression test: two memo bodies running concurrently, each reading a
@@ -1822,7 +1858,7 @@ mod batched_test {
     static CONTEXT_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
     cocoindex::context_key!(
-        static BATCH_FACTOR: i64 = "pipeline/function_batching_context_factor",
+        static BATCH_FACTOR: i64, key = "pipeline/function_batching_context_factor",
         detect_change
     );
 
@@ -1992,6 +2028,128 @@ mod memo_test_borrowed_str {
     }
 }
 
+mod memo_test_nested_inputs {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    #[derive(Clone)]
+    struct TrackedResource {
+        id: &'static str,
+        version: u64,
+    }
+
+    #[cocoindex::async_trait]
+    impl cocoindex::MemoInput for TrackedResource {
+        fn write_memo_key(
+            &self,
+            writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+        ) -> cocoindex::Result<()> {
+            writer.write(&self.id)
+        }
+
+        async fn memo_state(
+            &self,
+            previous: Option<&cocoindex::memo::MemoStateValue>,
+        ) -> cocoindex::Result<Option<cocoindex::memo::MemoStateDecision>> {
+            let previous_version = previous.and_then(|state| state.deserialize::<u64>().ok());
+            Ok(Some(cocoindex::memo::MemoStateDecision::new(
+                &self.version,
+                previous_version == Some(self.version),
+            )?))
+        }
+    }
+
+    #[derive(Clone, cocoindex::MemoInput)]
+    struct NestedInput {
+        resources: Vec<Arc<TrackedResource>>,
+    }
+
+    static ARG_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static CONTEXT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo)]
+    async fn read_argument(_ctx: &cocoindex::Ctx, input: &NestedInput) -> cocoindex::Result<u64> {
+        ARG_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(input.resources.iter().map(|item| item.version).sum())
+    }
+
+    fn resources_key() -> &'static ContextKey<Vec<Arc<TrackedResource>>> {
+        static KEY: OnceLock<ContextKey<Vec<Arc<TrackedResource>>>> = OnceLock::new();
+        KEY.get_or_init(|| ContextKey::new_detect_change("pipeline/nested_memo_input_context"))
+    }
+
+    #[cocoindex::function(memo)]
+    async fn read_context(ctx: &cocoindex::Ctx) -> cocoindex::Result<u64> {
+        CONTEXT_CALLS.fetch_add(1, Ordering::SeqCst);
+        read_context_helper(&ctx).await
+    }
+
+    #[cocoindex::function]
+    async fn read_context_helper(ctx: &cocoindex::Ctx) -> cocoindex::Result<u64> {
+        Ok(ctx
+            .get_key(resources_key())?
+            .iter()
+            .map(|item| item.version)
+            .sum())
+    }
+
+    fn nested(version: u64) -> NestedInput {
+        NestedInput {
+            resources: vec![Arc::new(TrackedResource {
+                id: "resource",
+                version,
+            })],
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_argument_state_controls_real_function_memo_reuse() {
+        ARG_CALLS.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("nested_argument_memo_state").await;
+
+        for (version, expected_calls) in [(1, 1), (1, 1), (2, 2)] {
+            app.update(move |ctx| async move {
+                assert_eq!(read_argument(&ctx, &nested(version)).await?, version);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(ARG_CALLS.load(Ordering::SeqCst), expected_calls);
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_context_state_controls_real_function_memo_reuse() {
+        CONTEXT_CALLS.store(0, Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("lmdb");
+
+        async fn run(path: PathBuf, version: u64) -> u64 {
+            let app = Environment::builder()
+                .db_path(path)
+                .provide_key(resources_key(), nested(version).resources)
+                .build()
+                .await
+                .unwrap()
+                .app("nested_context_memo_state")
+                .await
+                .unwrap();
+            app.update(|ctx| async move { read_context(&ctx).await })
+                .await
+                .unwrap()
+        }
+
+        assert_eq!(run(db_path.clone(), 1).await, 1);
+        assert_eq!(CONTEXT_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(run(db_path.clone(), 1).await, 1);
+        assert_eq!(CONTEXT_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(run(db_path, 2).await, 2);
+        assert_eq!(CONTEXT_CALLS.load(Ordering::SeqCst), 2);
+    }
+}
+
 mod memo_test_file_state {
     use super::*;
     use std::path::{Path, PathBuf};
@@ -2022,10 +2180,48 @@ mod memo_test_file_state {
         .unwrap()
     }
 
+    fn read_source_files(root: &Path) -> Vec<FileEntry> {
+        let mut files = walk_dir(FilePath::with_base_dir(
+            "docs",
+            root.to_path_buf(),
+            PathBuf::new(),
+        ))
+        .recursive(true)
+        .walk()
+        .unwrap();
+        files.sort_by_key(FileEntry::key);
+        files
+    }
+
     #[cocoindex::function(memo)]
     async fn read_file(ctx: &Ctx, file: &FileEntry) -> Result<String> {
         ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
         file.read_text().await
+    }
+
+    #[cocoindex::function(memo)]
+    async fn read_files(ctx: &Ctx, files: &Vec<FileEntry>) -> Result<Vec<String>> {
+        ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
+        let mut result = Vec::with_capacity(files.len());
+        for file in files {
+            result.push(format!("{}={}", file.key(), file.read_text().await?));
+        }
+        Ok(result)
+    }
+
+    async fn assert_file_list(app: &cocoindex::App, root: &Path, reverse: bool, expected: &[&str]) {
+        let root = root.to_path_buf();
+        let actual = app
+            .update(move |ctx| async move {
+                let mut files = read_source_files(&root);
+                if reverse {
+                    files.reverse();
+                }
+                read_files(&ctx, &files).await
+            })
+            .await
+            .unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
@@ -2094,6 +2290,60 @@ mod memo_test_file_state {
             2,
             "changed content must invalidate the memoized result"
         );
+    }
+
+    #[tokio::test]
+    async fn file_container_tracks_unchanged_content_add_remove_and_reorder() {
+        let source = tempfile::tempdir().unwrap();
+        let root = source.path();
+        std::fs::write(root.join("a.txt"), "A").unwrap();
+        std::fs::write(root.join("b.txt"), "B").unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap()
+            .app("file_container_memo_state")
+            .await
+            .unwrap();
+
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B"]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B"]).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "unchanged input should hit"
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(root.join("b.txt"), "B2").unwrap();
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B2"]).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "changed content should miss"
+        );
+
+        std::fs::write(root.join("c.txt"), "C").unwrap();
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B2", "c.txt=C"]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "added file should miss");
+
+        assert_file_list(&app, root, true, &["c.txt=C", "b.txt=B2", "a.txt=A"]).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "reordered files should miss"
+        );
+
+        std::fs::remove_file(root.join("c.txt")).unwrap();
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B2"]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 5, "removed file should miss");
     }
 }
 
@@ -2907,7 +3157,7 @@ mod mock_memo {
     /// Whole-function memoization should use the attribute. Its body receives
     /// the owned memo-scoped `Ctx`, so non-serializable resources remain
     /// available through normal context lookup. A skipped argument needs only
-    /// `Any + Clone`; `MockApi` intentionally does not implement `Serialize`.
+    /// `Clone`; `MockApi` intentionally does not implement `Serialize`.
     #[cocoindex::function(memo, memo_key(_client = skip))]
     async fn analyze(
         ctx: &cocoindex::Ctx,

@@ -45,25 +45,48 @@ let app = Environment::builder()
 ## Declare typed context resources
 
 `context_key!` gives a resource a stable name and type without requiring users
-to write their own `LazyLock<ContextKey<_>>`. The name is persistent identity;
-do not derive it from the Rust module path.
+to write their own `LazyLock<ContextKey<_>>`. The Rust identifier is the key
+name by default. Use `key = "..."` when the persistent identity should differ
+from the identifier or survive an identifier rename.
 
 ```rust
 use cocoindex::connectors::postgres;
 
+#[derive(cocoindex::MemoInput)]
+struct AppConfig {
+    model: String,
+    debug: bool,
+}
+
+cocoindex::context_key!(static DB: postgres::Database);
+cocoindex::context_key!(static CONFIG: AppConfig, detect_change);
+cocoindex::context_key!(static CLIENT: ApiClient);
+
+// Use an explicit key only when its persisted identity should differ from
+// the Rust identifier or remain stable across an identifier rename.
 cocoindex::context_key!(
-    static DB: postgres::Database = "app_database",
-    state = postgres::Database::state_id
+    static LEGACY_DB: postgres::Database,
+    key = "app_database"
 );
-cocoindex::context_key!(static CONFIG: AppConfig = "app_config", detect_change);
-cocoindex::context_key!(static CLIENT: ApiClient = "api_client");
 ```
 
 - The plain form provides a typed resource without change tracking.
-- `detect_change` fingerprints the complete serializable value.
-- `state = expression` fingerprints only a stable derived state, which is
-  useful for connections and model clients whose runtime handles are not
-  serializable.
+- `detect_change` uses the value type's `MemoInput` implementation. Derive
+  `MemoInput` for ordinary structs and enums; each field is handled
+  recursively, so the containing type does not need `Serialize`. Resource
+  types can define a stable identity and external-state validation themselves.
+- `MemoInput` composes through `Option`, sequences, tuples, maps, sets, `Box`,
+  and `Arc`. UUID support is always available; enable the standalone
+  `serde_json`, `chrono`, or `rust_decimal` feature for those leaf types.
+  Connector features enable the corresponding leaf feature automatically.
+  Wrap other third-party leaf types in a newtype when they appear inside
+  derived data.
+- When both optional arguments are present, write `key = "..."` before
+  `detect_change`.
+
+`Vec<u8>` follows normal element-by-element `Vec<T>` semantics. Use
+`bytes::Bytes` when a large byte buffer should be hashed in bulk, or pass a
+precomputed `Fingerprint` when one is already available.
 
 Provide resources with `EnvironmentBuilder::provide_key` and read them with
 `ctx.get_key(&KEY)`. Reads inside memoized functions are tracked as
@@ -72,7 +95,7 @@ dependencies when the key uses a change-detecting form.
 ## Define functions
 
 `#[cocoindex::function]` tracks the function's logic. Adding `memo` caches the
-result by the function logic, serializable arguments, and context dependencies:
+result by the function logic, `MemoInput` arguments, and context dependencies:
 
 ```rust
 #[cocoindex::function(memo)]
@@ -81,9 +104,10 @@ async fn parse_file(_ctx: &Ctx, file: FileEntry) -> Result<Vec<Section>> {
 }
 ```
 
-Use `memo_key(...)` when the default representation of an argument is either
-too broad or not serializable. A transform replaces that argument's memo key;
-`skip` (also spelled `None`) excludes it:
+Use `memo_key(...)` when an argument's default `MemoInput` identity is too
+broad or the type does not implement `MemoInput`. A transform replaces that
+argument's memo key and external-state validation; `skip` (also spelled
+`None`) excludes it:
 
 ```rust
 fn entry_identity(entry: &Entry) -> (String, u64) {
@@ -134,7 +158,10 @@ let embeddings = ctx
 
 The body receives only the items in the current batch. With `memo`, cache hits
 are returned per item and only misses enter the batch. Without `memo`, every
-call is processed. `max_batch_size` caps each physical request.
+call is processed. `max_batch_size` caps each physical request. Additional
+parameters must implement `Serialize` because they identify compatible calls
+for batching; with `memo`, they must also implement `MemoInput` unless their
+memo identity is transformed or skipped.
 
 A physical batch does not inherit any individual caller's deadline. A batch
 error currently fails every item in that physical batch; the Rust SDK does not
@@ -170,8 +197,8 @@ closures; they still provide stable child ownership and reconciliation.
 ## Read files and declare output files
 
 `walk_items` produces stable `(relative_path, FileEntry)` pairs ready for
-`mount_each!`. `FileEntry` is serializable, so a mounted or memoized function
-can use it directly as an input.
+`mount_each!`. `FileEntry` implements `MemoInput`, including content freshness
+validation, so a memoized function can use it directly or inside a container.
 
 ```rust
 #[cocoindex::function]

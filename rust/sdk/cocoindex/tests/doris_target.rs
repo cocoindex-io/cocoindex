@@ -26,7 +26,7 @@ use cocoindex::{Environment, Result};
 use serde::Serialize;
 use sqlx::Row;
 
-cocoindex::context_key!(static DORIS_DB: DorisConnection = "doris_target_test_db");
+cocoindex::context_key!(static DORIS_DB: DorisConnection, key = "doris_target_test_db");
 
 #[derive(Serialize, Clone)]
 struct Item {

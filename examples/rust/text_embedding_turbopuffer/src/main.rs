@@ -31,13 +31,10 @@ const TOP_K: usize = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
+cocoindex::context_key!(static DB: TurbopufferConnection);
 cocoindex::context_key!(
-    static DB: TurbopufferConnection = "text_embedding_turbopuffer_db",
-    state = TurbopufferConnection::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
@@ -149,8 +146,8 @@ async fn query_once(
     query: &str,
 ) -> Result<()> {
     let query_vec = Embedder::embed(embedder, query).await?;
-    let hits = turbopuffer::vector_search_by_field(conn, namespace, "vector", query_vec, TOP_K)
-        .await?;
+    let hits =
+        turbopuffer::vector_search_by_field(conn, namespace, "vector", query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit
             .attributes

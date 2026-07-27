@@ -4,12 +4,252 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, LitStr, Pat, PatType, Path, Stmt, Token,
-    Type, TypeReference, parenthesized,
+    DeriveInput, Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, LitStr, Pat, PatType, Path,
+    Stmt, Token, Type, TypeReference, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
 };
+
+/// Derive structural, recursively compositional memoization behavior.
+///
+/// Every field must implement `cocoindex::MemoInput`; the containing struct or
+/// enum does not need to implement `serde::Serialize`. The generated identity
+/// includes the type's module path and name, so moving the type to another
+/// module causes a one-time cache miss. Renaming the type or a named field also
+/// changes its identity. These invalidations affect cached values only and do
+/// not change persisted context-key names.
+#[proc_macro_derive(MemoInput)]
+pub fn derive_memo_input(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match derive_memo_input_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.into_compile_error().into(),
+    }
+}
+
+fn derive_memo_input_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
+    let name = input.ident;
+    let mut generics = input.generics;
+    for ty in memo_input_field_types(&input.data) {
+        generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(#ty: ::cocoindex::memo::MemoInput));
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let (write_body, state_body) = memo_input_derive_bodies(&name, &input.data)?;
+
+    Ok(quote! {
+        #[::cocoindex::async_trait]
+        impl #impl_generics ::cocoindex::memo::MemoInput for #name #ty_generics #where_clause {
+            fn write_memo_key(
+                &self,
+                writer: &mut ::cocoindex::memo::MemoKeyWriter<'_>,
+            ) -> ::cocoindex::Result<()> {
+                #write_body
+            }
+
+            async fn memo_state(
+                &self,
+                previous: ::core::option::Option<&::cocoindex::memo::MemoStateValue>,
+            ) -> ::cocoindex::Result<
+                ::core::option::Option<::cocoindex::memo::MemoStateDecision>
+            > {
+                #state_body
+            }
+        }
+    })
+}
+
+fn memo_input_field_types(data: &syn::Data) -> Vec<&Type> {
+    match data {
+        syn::Data::Struct(data) => data.fields.iter().map(|field| &field.ty).collect(),
+        syn::Data::Enum(data) => data
+            .variants
+            .iter()
+            .flat_map(|variant| variant.fields.iter().map(|field| &field.ty))
+            .collect(),
+        syn::Data::Union(_) => Vec::new(),
+    }
+}
+
+fn memo_input_derive_bodies(
+    name: &Ident,
+    data: &syn::Data,
+) -> syn::Result<(TokenStream2, TokenStream2)> {
+    match data {
+        syn::Data::Struct(data) => Ok(memo_input_struct_bodies(name, &data.fields)),
+        syn::Data::Enum(data) => Ok(memo_input_enum_bodies(name, data)),
+        syn::Data::Union(data) => Err(SynError::new_spanned(
+            data.union_token,
+            "MemoInput cannot be derived for unions",
+        )),
+    }
+}
+
+fn memo_input_struct_bodies(name: &Ident, fields: &syn::Fields) -> (TokenStream2, TokenStream2) {
+    let len = fields.len();
+    let (key_writes, children): (Vec<_>, Vec<_>) = match fields {
+        syn::Fields::Named(fields) => fields
+            .named
+            .iter()
+            .map(|field| {
+                let ident = field.ident.as_ref().expect("named field has an identifier");
+                let field_name = ident.to_string();
+                (
+                    quote! {
+                        writer.write(&#field_name)?;
+                        writer.write_input(&self.#ident)?;
+                    },
+                    quote! { &self.#ident as &dyn ::cocoindex::memo::MemoInput },
+                )
+            })
+            .unzip(),
+        syn::Fields::Unnamed(fields) => fields
+            .unnamed
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let index = syn::Index::from(index);
+                (
+                    quote! { writer.write_input(&self.#index)?; },
+                    quote! { &self.#index as &dyn ::cocoindex::memo::MemoInput },
+                )
+            })
+            .unzip(),
+        syn::Fields::Unit => (Vec::new(), Vec::new()),
+    };
+    let write_body = quote! {
+        writer.write(&("struct", ::core::module_path!(), ::core::stringify!(#name), #len))?;
+        #(#key_writes)*
+        Ok(())
+    };
+    let state_body = quote! {
+        let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] = &[#(#children),*];
+        ::cocoindex::memo::memo_state_group(__coco_children, previous, false).await
+    };
+    (write_body, state_body)
+}
+
+fn memo_input_enum_bodies(name: &Ident, data: &syn::DataEnum) -> (TokenStream2, TokenStream2) {
+    let mut write_arms = Vec::with_capacity(data.variants.len());
+    let mut state_arms = Vec::with_capacity(data.variants.len());
+
+    for variant in &data.variants {
+        let variant_ident = &variant.ident;
+        let variant_name = variant_ident.to_string();
+        let len = variant.fields.len();
+        match &variant.fields {
+            syn::Fields::Named(fields) => {
+                let fields_and_bindings = fields
+                    .named
+                    .iter()
+                    .map(|field| {
+                        let field = field.ident.as_ref().expect("named field has an identifier");
+                        let binding = format_ident!("__coco_field_{}", field);
+                        (field, binding)
+                    })
+                    .collect::<Vec<_>>();
+                let key_writes = fields_and_bindings.iter().map(|(field, binding)| {
+                    let field_name = field.to_string();
+                    quote! {
+                        writer.write(&#field_name)?;
+                        writer.write_input(#binding)?;
+                    }
+                });
+                let children = fields_and_bindings
+                    .iter()
+                    .map(|(_, binding)| quote! { #binding as &dyn ::cocoindex::memo::MemoInput });
+                let patterns = fields_and_bindings
+                    .iter()
+                    .map(|(field, binding)| quote! { #field: #binding });
+                write_arms.push(quote! {
+                    Self::#variant_ident { #(#patterns),* } => {
+                        writer.write(&(
+                            "enum",
+                            ::core::module_path!(),
+                            ::core::stringify!(#name),
+                            #variant_name,
+                            #len,
+                        ))?;
+                        #(#key_writes)*
+                        Ok(())
+                    }
+                });
+                let patterns = fields_and_bindings
+                    .iter()
+                    .map(|(field, binding)| quote! { #field: #binding });
+                state_arms.push(quote! {
+                    Self::#variant_ident { #(#patterns),* } => {
+                        let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] =
+                            &[#(#children),*];
+                        ::cocoindex::memo::memo_state_group(
+                            __coco_children,
+                            previous,
+                            false,
+                        ).await
+                    }
+                });
+            }
+            syn::Fields::Unnamed(fields) => {
+                let bindings = (0..fields.unnamed.len())
+                    .map(|index| format_ident!("__coco_field_{index}"))
+                    .collect::<Vec<_>>();
+                let key_writes = bindings
+                    .iter()
+                    .map(|binding| quote! { writer.write_input(#binding)?; });
+                let children = bindings
+                    .iter()
+                    .map(|binding| quote! { #binding as &dyn ::cocoindex::memo::MemoInput });
+                write_arms.push(quote! {
+                    Self::#variant_ident(#(#bindings),*) => {
+                        writer.write(&(
+                            "enum",
+                            ::core::module_path!(),
+                            ::core::stringify!(#name),
+                            #variant_name,
+                            #len,
+                        ))?;
+                        #(#key_writes)*
+                        Ok(())
+                    }
+                });
+                state_arms.push(quote! {
+                    Self::#variant_ident(#(#bindings),*) => {
+                        let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] =
+                            &[#(#children),*];
+                        ::cocoindex::memo::memo_state_group(
+                            __coco_children,
+                            previous,
+                            false,
+                        ).await
+                    }
+                });
+            }
+            syn::Fields::Unit => {
+                write_arms.push(quote! {
+                    Self::#variant_ident => {
+                        writer.write(&(
+                            "enum",
+                            ::core::module_path!(),
+                            ::core::stringify!(#name),
+                            #variant_name,
+                            0usize,
+                        ))?;
+                        Ok(())
+                    }
+                });
+                state_arms.push(quote! { Self::#variant_ident => Ok(None) });
+            }
+        }
+    }
+
+    (
+        quote! { match self { #(#write_arms),* } },
+        quote! { match self { #(#state_arms),* } },
+    )
+}
 
 /// Information about a non-ctx parameter.
 #[derive(Clone, Debug)]
@@ -360,8 +600,9 @@ fn gen_state_collect_for_param(
     states_ident: &Ident,
     prev_states_ident: &Ident,
     param: &ParamInfo,
+    overrides: &[MemoKeyOverride],
 ) -> TokenStream2 {
-    if param.is_str_ref {
+    if param.is_str_ref || memo_key_override(overrides, &param.ident).is_some() {
         return quote! {};
     }
     let ident = &param.ident;
@@ -416,9 +657,17 @@ fn gen_memo_wrapper_block(
         .collect::<Vec<_>>();
     let state_collects = params
         .iter()
-        .map(|param| gen_state_collect_for_param(&states_ident, &prev_states_ident, param))
+        .map(|param| {
+            gen_state_collect_for_param(&states_ident, &prev_states_ident, param, overrides)
+        })
         .collect::<Vec<_>>();
-    let clone_stmts = gen_clones(params);
+    let state_params = params
+        .iter()
+        .filter(|param| !param.is_str_ref && memo_key_override(overrides, &param.ident).is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    let state_clone_stmts = gen_clones(&state_params);
+    let body_clone_stmts = gen_clones(params);
     let memo_key = gen_function_memo_key(fn_name, hash_const_name, &key_writes);
 
     Ok(quote! {{
@@ -429,7 +678,7 @@ fn gen_memo_wrapper_block(
             __coco_key,
             #propagate_children_fn_logic,
             {
-                #(#clone_stmts)*
+                #(#state_clone_stmts)*
                 move |__coco_prev_states| async move {
                     let mut __coco_states = Vec::new();
                     #(#state_collects)*
@@ -437,7 +686,7 @@ fn gen_memo_wrapper_block(
                 }
             },
             {
-                #(#clone_stmts)*
+                #(#body_clone_stmts)*
                 #body_closure
             },
         )
@@ -773,9 +1022,10 @@ fn expand_batching_function(
 /// in the key automatically.
 ///
 /// Customize individual argument keys with `memo_key(...)`. A transform
-/// function replaces the argument's default representation; `skip` (or `None`)
-/// excludes it entirely. A skipped parameter needs only `Any + Clone`, not
-/// `Serialize`:
+/// function replaces the argument's default `cocoindex::MemoInput` identity
+/// and suppresses its type-owned external-state validation. `skip` (or `None`)
+/// excludes the argument entirely. A skipped parameter needs only `Clone`, not
+/// `MemoInput` or `Serialize`:
 /// ```ignore
 /// #[cocoindex::function(memo, memo_key(client = skip))]
 /// async fn fetch(ctx: &Ctx, url: &str, client: &ApiClient) -> Result<String> {
@@ -796,6 +1046,10 @@ fn expand_batching_function(
 ///
 /// let embedding: Vec<f32> = embed(ctx, text).await?;
 /// ```
+/// Additional parameters must implement `Serialize` because their serialized
+/// values group compatible calls into a physical batch. With `memo`, they must
+/// also implement `MemoInput` because they form part of each item's memo key,
+/// unless `memo_key(...)` transforms or skips their memo identity.
 ///
 /// Optional `version` parameter forces cache invalidation:
 /// ```ignore

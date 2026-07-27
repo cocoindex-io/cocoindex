@@ -30,19 +30,13 @@ const TABLE: &str = "output";
 const TOP_K: i64 = 5;
 
 // Target database.
-cocoindex::context_key!(
-    static DB: postgres::Database = "postgres_source_db",
-    state = postgres::Database::state_id
-);
+cocoindex::context_key!(static DB: postgres::Database);
 // Source database. Defaults to the target URL, but can point elsewhere via
 // `SOURCE_DATABASE_URL`, matching the Python example.
+cocoindex::context_key!(static SOURCE_DB: postgres::Database);
 cocoindex::context_key!(
-    static SOURCE_DB: postgres::Database = "source_pool",
-    state = postgres::Database::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 // ---------------------------------------------------------------------------
@@ -50,7 +44,7 @@ cocoindex::context_key!(
 // ---------------------------------------------------------------------------
 
 /// One row of the `source_products` source table (extra columns are ignored).
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, MemoInput)]
 struct SourceProduct {
     product_category: String,
     product_name: String,
@@ -78,7 +72,7 @@ struct OutputProduct {
 
 /// Compute the derived fields + embedding for one source row. Memoized by the
 /// row content, so unchanged rows skip the embedding work on re-runs.
-#[cocoindex::function]
+#[cocoindex::function(memo)]
 async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProduct> {
     let full_description = format!(
         "Category: {}\nName: {}\n\n{}",
@@ -87,7 +81,7 @@ async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProd
     let total_value = product.price * product.amount as f64;
     let embedding = ctx
         .get_key(&EMBEDDER)?
-        .embed(ctx, &full_description)
+        .embed(&ctx, &full_description)
         .await?;
     Ok(OutputProduct {
         product_category: product.product_category.clone(),

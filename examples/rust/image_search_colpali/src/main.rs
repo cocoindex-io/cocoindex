@@ -44,13 +44,10 @@ const IMAGE_GLOBS: &[&str] = &[
     "**/*.bmp",
 ];
 
+cocoindex::context_key!(static DB: QdrantConnection);
 cocoindex::context_key!(
-    static DB: QdrantConnection = "image_search_colpali_db",
-    state = QdrantConnection::state_id
-);
-cocoindex::context_key!(
-    static COLPALI: ColpaliClient = "colpali",
-    state = ColpaliClient::state_id
+    static COLPALI: ColpaliClient,
+    detect_change
 );
 
 /// HTTP client for an external ColPali inference service (see module docs).
@@ -67,10 +64,6 @@ struct EmbeddingResponse {
 }
 
 impl ColpaliClient {
-    fn state_id(&self) -> &str {
-        &self.url
-    }
-
     fn new(url: String) -> Self {
         Self {
             http: reqwest::Client::new(),
@@ -112,6 +105,12 @@ impl ColpaliClient {
     }
 }
 
+impl MemoInput for ColpaliClient {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.url)
+    }
+}
+
 /// A computed point: stable id + multi-vector embedding + source filename.
 #[derive(Clone, Serialize, Deserialize)]
 struct PointData {
@@ -135,7 +134,6 @@ async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let conn = ctx.get_key(&DB)?;
     let target = qdrant::mount_collection_target(
         &ctx,
         &DB,

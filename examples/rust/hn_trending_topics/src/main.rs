@@ -32,14 +32,11 @@ const MAX_TEXT: usize = 4000;
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 // Shared Postgres target database.
+cocoindex::context_key!(static PG: postgres::Database);
+// LLM client; its MemoInput implementation tracks the model name.
 cocoindex::context_key!(
-    static PG: postgres::Database = "hn_db",
-    state = postgres::Database::state_id
-);
-// LLM client; state-tracked on the model so changing it invalidates memos.
-cocoindex::context_key!(
-    static LLM: LlmClient = "llm_model",
-    state = LlmClient::model_name
+    static LLM: LlmClient,
+    detect_change
 );
 
 // ---------------------------------------------------------------------------
@@ -78,10 +75,6 @@ const TOPICS_PROMPT: &str = "Extract topics from the user's text. Return a JSON 
     Example: \"John Kennedy\", \"JFK\".";
 
 impl LlmClient {
-    fn model_name(&self) -> &str {
-        &self.model
-    }
-
     fn new(model: String) -> Result<Self> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| std::env::var("LLM_API_KEY"))
@@ -134,6 +127,12 @@ impl LlmClient {
         let parsed: TopicsResponse = serde_json::from_str(content)
             .map_err(|e| Error::engine(format!("LLM topics not JSON: {e}: {content}")))?;
         Ok(parsed.topics)
+    }
+}
+
+impl MemoInput for LlmClient {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.model)
     }
 }
 

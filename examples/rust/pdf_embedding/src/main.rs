@@ -30,13 +30,10 @@ const TOP_K: i64 = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
+cocoindex::context_key!(static DB: postgres::Database);
 cocoindex::context_key!(
-    static DB: postgres::Database = "pdf_embedding_db",
-    state = postgres::Database::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]

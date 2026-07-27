@@ -67,13 +67,10 @@ const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "doc_embeddings";
 
+cocoindex::context_key!(static DB: postgres::Database);
 cocoindex::context_key!(
-    static DB: postgres::Database = "text_embedding_db",
-    state = postgres::Database::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
@@ -88,10 +85,11 @@ struct DocEmbedding {
 }
 ```
 
-`context_key!` gives each provided resource a stable name and type. The
-`state =` expressions say which durable property should invalidate dependent
-memoized work when it changes. Runtime handles such as connection pools do not
-need to be serializable.
+`context_key!` gives each provided resource a stable name and type, using the
+Rust identifier as the key name. Change detection is disabled for the database
+connection. It is enabled for the embedder, whose type defines the model
+identity that invalidates dependent memoized work. Runtime handles such as
+connection pools do not need to be serializable.
 
 `SchemaFields` derives the database columns from `DocEmbedding`. The vector
 dimension is intentionally absent because it will come from the loaded model.

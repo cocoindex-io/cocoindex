@@ -24,13 +24,10 @@ const TOP_K: usize = 5;
 
 const INCLUDE_PATTERNS: &[&str] = &["**/*.py", "**/*.rs", "**/*.toml", "**/*.md", "**/*.mdx"];
 
+cocoindex::context_key!(static DB: LanceDatabase);
 cocoindex::context_key!(
-    static DB: LanceDatabase = "code_embedding_db",
-    state = LanceDatabase::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]

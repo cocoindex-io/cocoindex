@@ -43,13 +43,10 @@ const IMAGE_GLOBS: &[&str] = &[
     "**/*.bmp",
 ];
 
+cocoindex::context_key!(static DB: QdrantConnection);
 cocoindex::context_key!(
-    static DB: QdrantConnection = "image_search_db",
-    state = QdrantConnection::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: ImageEmbedder = "image_embedder",
-    state = ImageEmbedder::model_name
+    static EMBEDDER: ImageEmbedder,
+    detect_change
 );
 
 /// A computed point: stable id + image vector + source filename.
@@ -75,7 +72,6 @@ async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let conn = ctx.get_key(&DB)?;
     let target = qdrant::mount_collection_target(
         &ctx,
         &DB,

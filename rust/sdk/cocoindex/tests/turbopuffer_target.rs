@@ -17,8 +17,7 @@ use cocoindex::{Environment, Result};
 use serde_json::json;
 
 cocoindex::context_key!(
-    static DB: TurbopufferConnection = "turbopuffer_test",
-    state = TurbopufferConnection::state_id
+    static DB: TurbopufferConnection, key = "turbopuffer_test"
 );
 
 type RowSpec = (&'static str, Vec<f32>, &'static str);

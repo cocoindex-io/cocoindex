@@ -13,12 +13,11 @@ use cocoindex::{Ctx, Environment, Result};
 use serde::{Deserialize, Serialize};
 
 cocoindex::context_key!(
-    static DB: postgres::Database = "postgres_source_test_db",
-    state = postgres::Database::state_id
+    static DB: postgres::Database, key = "postgres_source_test_db"
 );
 static CALLS: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, cocoindex::MemoInput)]
 struct SourceRow {
     category: String,
     name: String,

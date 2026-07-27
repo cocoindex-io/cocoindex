@@ -770,6 +770,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "chrono",
  "cocoindex_core",
  "cocoindex_macros",
  "cocoindex_utils",
@@ -778,6 +779,7 @@ dependencies = [
  "globset",
  "linkme",
  "rmp-serde",
+ "rust_decimal",
  "rustc-hash",
  "serde",
  "serde_json",

@@ -21,17 +21,11 @@ const PG_SCHEMA: &str = "coco_examples_v1";
 const TABLE: &str = "doc_embeddings";
 const TOP_K: i64 = 5;
 
+cocoindex::context_key!(static DB: postgres::Database);
+cocoindex::context_key!(static GDRIVE: GoogleDriveClient);
 cocoindex::context_key!(
-    static DB: postgres::Database = "gdrive_text_embedding_db",
-    state = postgres::Database::state_id
-);
-cocoindex::context_key!(
-    static GDRIVE: GoogleDriveClient = "gdrive_client",
-    state = GoogleDriveClient::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]

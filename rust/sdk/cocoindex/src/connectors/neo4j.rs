@@ -142,7 +142,7 @@ mod tests {
     use super::*;
     use crate::{App, Environment};
 
-    crate::context_key!(static GRAPH: Graph = "neo4j_graph");
+    crate::context_key!(static GRAPH: Graph, key = "neo4j_graph");
 
     #[derive(Serialize)]
     struct Person {

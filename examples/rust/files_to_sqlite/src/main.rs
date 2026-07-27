@@ -19,10 +19,7 @@ use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
-cocoindex::context_key!(
-    static DB: sqlite::Database = "files_sqlite_db",
-    state = sqlite::Database::state_id
-);
+cocoindex::context_key!(static DB: sqlite::Database);
 
 const TABLE: &str = "files";
 

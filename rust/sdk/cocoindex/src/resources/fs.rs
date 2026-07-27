@@ -269,6 +269,8 @@ impl FileLike for FileEntry {
 
 impl FileSourceItem for FileEntry {}
 
+crate::memo::impl_file_memo_input!(FileEntry);
+
 /// Walk a directory matching multiple glob patterns. Returns all matching files
 /// sorted by relative path.
 ///

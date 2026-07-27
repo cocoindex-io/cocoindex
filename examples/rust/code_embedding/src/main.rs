@@ -33,17 +33,14 @@ const TOP_K: i64 = 5;
 const INCLUDE_PATTERNS: &[&str] = &["**/*.py", "**/*.rs", "**/*.toml", "**/*.md", "**/*.mdx"];
 
 // Shared Postgres target database.
-cocoindex::context_key!(
-    static DB: postgres::Database = "code_embedding_db",
-    state = postgres::Database::state_id
-);
+cocoindex::context_key!(static DB: postgres::Database);
 
 // Shared embedder. The context key tracks the model name, so changing the model
 // invalidates memoized files — the parity for Python's
 // `ContextKey(..., detect_change=True)` + `Annotated[NDArray, EMBEDDER]`.
 cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]

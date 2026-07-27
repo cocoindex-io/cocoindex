@@ -27,7 +27,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
     use cocoindex::connectors::neo4j::{self, ColumnDef, TableSchema, VectorMetric};
     use cocoindex::{Environment, Result};
 
-    cocoindex::context_key!(static G: neo4j::Graph = "neo4j_vidx_graph");
+    cocoindex::context_key!(static G: neo4j::Graph, key = "neo4j_vidx_graph");
 
     let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
@@ -111,7 +111,7 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
     use cocoindex::{Environment, Result};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    cocoindex::context_key!(static G: falkordb::Graph = "falkordb_vidx_graph");
+    cocoindex::context_key!(static G: falkordb::Graph, key = "falkordb_vidx_graph");
 
     let uri =
         std::env::var("FALKORDB_URI").unwrap_or_else(|_| "falkor://localhost:6379".to_string());

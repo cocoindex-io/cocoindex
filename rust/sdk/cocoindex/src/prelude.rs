@@ -44,8 +44,9 @@ pub use crate::target_state::{
 };
 pub use crate::user_state::{IntoStateKey, StateHandle};
 pub use crate::{
-    App, ContextKey, DropHandle, Environment, EnvironmentBuilder, PreviewAction, PreviewValue,
-    Progress, SchemaFields, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
+    App, ContextKey, DropHandle, Environment, EnvironmentBuilder, MemoInput, PreviewAction,
+    PreviewValue, Progress, SchemaFields, StatsGroupHandle, StatsGroupOptions, UpdateHandle,
+    UpdateOptions,
 };
 
 pub use crate::{function, mount_each, use_mount};

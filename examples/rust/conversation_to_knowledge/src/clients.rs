@@ -17,32 +17,28 @@ use serde::de::DeserializeOwned;
 // Context keys
 // ---------------------------------------------------------------------------
 
-// LLM used for metadata/statement extraction. State-tracked on the model name,
+// LLM used for metadata/statement extraction. Its MemoInput tracks the model,
 // so changing the model invalidates memoized extraction (parity with Python's
 // `LLM_MODEL = ContextKey(..., detect_change=True)`).
 cocoindex::context_key!(
-    pub static LLM: LlmClient = "llm_model",
-    state = LlmClient::model_name
+    pub static LLM: LlmClient,
+    detect_change
 );
 
 // LLM used to confirm entity-resolution pairs.
 cocoindex::context_key!(
-    pub static RESOLVER_LLM: LlmClient = "resolution_llm_model",
-    state = LlmClient::model_name
+    pub static RESOLVER_LLM: LlmClient,
+    detect_change
 );
 
 // Local embedder for entity-resolution similarity.
 cocoindex::context_key!(
-    pub static EMBEDDER: Embedder = "embedder",
-    state = Embedder::model_name
+    pub static EMBEDDER: Embedder,
+    detect_change
 );
 
-// SurrealDB connection. State-tracked on the target endpoint so changing the
-// external graph database invalidates local target-state reconciliation.
-cocoindex::context_key!(
-    pub static GRAPH: Graph = "surreal_db",
-    state = Graph::state_id
-);
+// SurrealDB connection. Connection resources are not memo dependencies.
+cocoindex::context_key!(pub static GRAPH: Graph);
 
 // ---------------------------------------------------------------------------
 // LLM client (OpenAI-compatible, JSON mode)
@@ -57,10 +53,6 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
-    fn model_name(&self) -> &str {
-        &self.model
-    }
-
     pub fn new(model: String) -> Result<Self> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .or_else(|_| std::env::var("LLM_API_KEY"))
@@ -113,6 +105,12 @@ impl LlmClient {
     }
 }
 
+impl MemoInput for LlmClient {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.model)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Embedder (local fastembed model)
 // ---------------------------------------------------------------------------
@@ -124,10 +122,6 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    fn model_name(&self) -> &str {
-        &self.model_name
-    }
-
     pub fn load(model_name: &str) -> Result<Self> {
         let model = match model_name {
             "Snowflake/snowflake-arctic-embed-xs" => load_snowflake_arctic_embed_xs()?,
@@ -157,6 +151,12 @@ impl Embedder {
             .await
             .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
             .map_err(|e| Error::engine(format!("embedding failed: {e}")))
+    }
+}
+
+impl MemoInput for Embedder {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.model_name)
     }
 }
 

@@ -227,8 +227,7 @@ async fn s3_source_mount_each_pipeline_when_available() -> Result<()> {
     .await;
 
     cocoindex::context_key!(
-        static S3: S3Client = "s3_test_client",
-        state = S3Client::state_id
+        static S3: S3Client, key = "s3_test_client"
     );
 
     #[cocoindex::function(memo)]

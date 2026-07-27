@@ -12,7 +12,7 @@ use cocoindex::connectors::valkey::{
 };
 use cocoindex::resources::schema::VectorSchema;
 
-cocoindex::context_key!(static VK: valkey::Valkey = "valkey_target_conn");
+cocoindex::context_key!(static VK: valkey::Valkey, key = "valkey_target_conn");
 
 fn nonce() -> u128 {
     SystemTime::now()

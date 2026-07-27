@@ -220,6 +220,8 @@ impl FileSourceItem for DriveFile {
     }
 }
 
+crate::memo::impl_file_memo_input!(DriveFile);
+
 fn default_file_cache() -> Arc<FileContentCache> {
     Arc::new(FileContentCache::new())
 }

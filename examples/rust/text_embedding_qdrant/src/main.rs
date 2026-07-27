@@ -29,13 +29,10 @@ const TOP_K: u64 = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
 
+cocoindex::context_key!(static DB: QdrantConnection);
 cocoindex::context_key!(
-    static DB: QdrantConnection = "text_embedding_qdrant_db",
-    state = QdrantConnection::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 /// A computed point: id + vector + payload fields.

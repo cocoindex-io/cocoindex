@@ -36,7 +36,7 @@ impl EmbeddingModel for TextEmbedding {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, crate::MemoInput)]
 struct ScheduledEmbedder(SentenceTransformerEmbedder);
 
 impl serde::Serialize for ScheduledEmbedder {
@@ -130,6 +130,13 @@ impl SentenceTransformerEmbedder {
         tokio::task::spawn_blocking(move || model.embed(texts))
             .await
             .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
+    }
+}
+
+#[async_trait]
+impl crate::memo::MemoInput for SentenceTransformerEmbedder {
+    fn write_memo_key(&self, writer: &mut crate::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&(self.model_name(), self.dimension()))
     }
 }
 

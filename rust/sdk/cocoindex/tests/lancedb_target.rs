@@ -13,8 +13,7 @@ use cocoindex::{Environment, ManagedTargetOptions, Result, SchemaFields};
 use serde::Serialize;
 
 cocoindex::context_key!(
-    static DB: LanceDatabase = "lancedb_test",
-    state = LanceDatabase::state_id
+    static DB: LanceDatabase, key = "lancedb_test"
 );
 
 const TABLE: &str = "docs";

@@ -16,8 +16,7 @@ use cocoindex::{Environment, Result};
 use serde_json::json;
 
 cocoindex::context_key!(
-    static DB: QdrantConnection = "qdrant_test",
-    state = QdrantConnection::state_id
+    static DB: QdrantConnection, key = "qdrant_test"
 );
 
 type Point = (u64, Vec<f32>, &'static str, &'static str);

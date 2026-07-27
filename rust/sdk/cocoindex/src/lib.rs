@@ -50,6 +50,7 @@ pub use entity_resolution::{
     resolve_entities_with_events,
 };
 pub use error::{Error, Result};
+pub use memo::MemoInput;
 pub use resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
     MatchAllFilePathMatcher, PatternFilePathMatcher,
@@ -94,7 +95,7 @@ pub use target_state::{
 pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
-pub use cocoindex_macros::{SchemaFields, function, mount_each, use_mount};
+pub use cocoindex_macros::{MemoInput, SchemaFields, function, mount_each, use_mount};
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 
 // Re-exported so users can implement the async `LiveComponent` / `LiveMapFeed`

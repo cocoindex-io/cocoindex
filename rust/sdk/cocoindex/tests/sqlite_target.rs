@@ -13,8 +13,7 @@ use serde_json::json;
 use sqlx::Row as _;
 
 cocoindex::context_key!(
-    static DB: sqlite::Database = "sqlite_target_test_db",
-    state = sqlite::Database::state_id
+    static DB: sqlite::Database, key = "sqlite_target_test_db"
 );
 
 #[derive(Clone, Serialize)]

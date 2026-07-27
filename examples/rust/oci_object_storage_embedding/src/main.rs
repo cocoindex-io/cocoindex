@@ -30,17 +30,11 @@ const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "oci_doc_embeddings";
 const TOP_K: i64 = 5;
 
+cocoindex::context_key!(static DB: postgres::Database);
+cocoindex::context_key!(static OCI: OciClient);
 cocoindex::context_key!(
-    static DB: postgres::Database = "oci_embedding_db",
-    state = postgres::Database::state_id
-);
-cocoindex::context_key!(
-    static OCI: OciClient = "oci_client",
-    state = OciClient::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]

@@ -29,17 +29,11 @@ const PG_SCHEMA: &str = "coco_examples";
 const TABLE: &str = "amazon_s3_doc_embeddings";
 const TOP_K: i64 = 5;
 
+cocoindex::context_key!(static DB: postgres::Database);
+cocoindex::context_key!(static S3: S3Client);
 cocoindex::context_key!(
-    static DB: postgres::Database = "s3_embedding_db",
-    state = postgres::Database::state_id
-);
-cocoindex::context_key!(
-    static S3: S3Client = "s3_client",
-    state = S3Client::state_id
-);
-cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
@@ -51,7 +45,7 @@ struct DocEmbeddingRow {
     embedding: Vec<f32>,
 }
 
-#[cocoindex::function]
+#[cocoindex::function(memo)]
 async fn process_file(ctx: &Ctx, file: S3File) -> Result<Vec<DocEmbeddingRow>> {
     let text = ctx.get_key(&S3)?.read_text(&file).await?;
     let splitter = RecursiveSplitter::new()?;

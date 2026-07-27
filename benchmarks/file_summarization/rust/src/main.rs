@@ -146,7 +146,7 @@ struct OutputSyncStats {
     output_hash: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 struct SectionInput {
     stable_id: String,
     file_path: String,
@@ -155,7 +155,7 @@ struct SectionInput {
     text: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 struct SectionAnalysis {
     stable_id: String,
     file_path: String,

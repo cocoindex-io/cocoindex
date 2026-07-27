@@ -50,17 +50,14 @@ const ABSTRACT_MIN_CHUNK_SIZE: usize = 200;
 const ABSTRACT_CHUNK_OVERLAP: usize = 150;
 const LLM_INPUT_CHARS: usize = 4000;
 
+cocoindex::context_key!(static DB: postgres::Database);
 cocoindex::context_key!(
-    static DB: postgres::Database = "paper_metadata_db",
-    state = postgres::Database::state_id
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
 );
 cocoindex::context_key!(
-    static EMBEDDER: SentenceTransformerEmbedder = "embedder",
-    state = SentenceTransformerEmbedder::model_name
-);
-cocoindex::context_key!(
-    static LLM: LlmClient = "llm_model",
-    state = LlmClient::model_name
+    static LLM: LlmClient,
+    detect_change
 );
 
 // ---------------------------------------------------------------------------
@@ -76,10 +73,6 @@ struct LlmClient {
 }
 
 impl LlmClient {
-    fn model_name(&self) -> &str {
-        &self.model
-    }
-
     fn new(model: String) -> Result<Self> {
         let api_key =
             std::env::var("OPENAI_API_KEY").map_err(|_| Error::engine("set OPENAI_API_KEY"))?;
@@ -129,6 +122,12 @@ impl LlmClient {
         serde_json::from_str::<T>(content).map_err(|e| {
             Error::engine(format!("LLM content not the expected JSON: {e}: {content}"))
         })
+    }
+}
+
+impl MemoInput for LlmClient {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.model)
     }
 }
 
@@ -236,7 +235,7 @@ async fn extract_metadata(llm: &LlmClient, first_page_text: &str) -> Result<Pape
     llm.json(system, &user).await
 }
 
-#[cocoindex::function]
+#[cocoindex::function(memo)]
 async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     let filename = file.key();
     let content = file.content()?;
@@ -267,7 +266,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     let mut embeddings = Vec::new();
 
     // Title embedding (one row).
-    let title_vec = embedder.embed(ctx, &metadata.title).await?;
+    let title_vec = embedder.embed(&ctx, &metadata.title).await?;
     let title_id = uuid_gen
         .next_uuid(&ctx, &("title", &metadata.title))
         .await?

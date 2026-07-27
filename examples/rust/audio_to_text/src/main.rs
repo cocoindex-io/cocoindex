@@ -36,10 +36,7 @@ const AUDIO_PATTERNS: &[&str] = &[
     "**/*.webm",
 ];
 
-cocoindex::context_key!(
-    static DB: postgres::Database = "audio_to_text_db",
-    state = postgres::Database::state_id
-);
+cocoindex::context_key!(static DB: postgres::Database);
 
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct AudioTranscription {
@@ -54,7 +51,7 @@ fn transcription_schema() -> Result<postgres::TableSchema> {
 /// Transcribe one audio file with OpenAI Whisper via the SDK's
 /// `ApiTranscriber`. Memoized so the expensive API call only runs when the
 /// file's content changes (or is first seen).
-#[cocoindex::function]
+#[cocoindex::function(memo)]
 async fn transcribe(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
     let bytes = file.content()?;
     // Whisper sniffs the container from the upload filename's extension, so

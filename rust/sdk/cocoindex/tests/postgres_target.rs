@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
 cocoindex::context_key!(
-    static PG: postgres::Database = "postgres_target_test_db",
-    state = postgres::Database::state_id
+    static PG: postgres::Database, key = "postgres_target_test_db"
 );
 
 #[derive(Clone, Serialize)]

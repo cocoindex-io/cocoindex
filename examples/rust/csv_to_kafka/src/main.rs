@@ -38,7 +38,7 @@ fn topic_name() -> String {
 
 /// Parse one CSV file into `(message_key, json_value)` pairs. Memoized: a file
 /// whose content is unchanged since the last run is not re-parsed.
-#[cocoindex::function]
+#[cocoindex::function(memo)]
 async fn process_csv(_ctx: &Ctx, file: FileEntry) -> Result<Vec<(String, String)>> {
     let text = file.content_str()?;
     let mut reader = csv::Reader::from_reader(text.as_bytes());

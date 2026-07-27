@@ -21,56 +21,86 @@ code_match = [
 ]
 # Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
 fastembed = ["dep:fastembed"]
+# MemoInput leaves for ecosystem data types. Connector features below depend on
+# these public features rather than duplicating implementation cfg lists.
+serde_json = ["dep:serde_json"]
+chrono = ["dep:chrono"]
+rust_decimal = ["dep:rust_decimal"]
 # Remote embeddings / transcription over an OpenAI-compatible HTTP API (`ops::api`).
-embed_api = ["dep:serde_json", "dep:reqwest", "reqwest/multipart"]
-postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
-sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
+embed_api = ["serde_json", "dep:reqwest", "reqwest/multipart"]
+postgres = ["serde_json", "dep:sqlx", "chrono", "rust_decimal"]
+sqlite = [
+    "serde_json",
+    "dep:sqlx",
+    "sqlx/sqlite",
+    "chrono",
+    "rust_decimal",
+]
 # Apache Doris target: MySQL protocol (DDL/DELETE) via sqlx + Stream Load (row
 # ingestion) over HTTP via reqwest.
 doris = [
-    "dep:serde_json",
+    "serde_json",
     "dep:sqlx",
     "sqlx/mysql",
     "dep:reqwest",
     "dep:base64",
+    "chrono",
+    "rust_decimal",
 ]
-surrealdb = ["dep:serde_json", "dep:surrealdb"]
-kafka = ["dep:rskafka", "dep:chrono"]
+surrealdb = [
+    "serde_json",
+    "dep:surrealdb",
+    "chrono",
+    "rust_decimal",
+]
+kafka = ["dep:rskafka", "chrono"]
 iggy = ["dep:iggy"]
 amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 google_drive = [
-    "dep:serde_json",
+    "serde_json",
     "dep:reqwest",
     "dep:rsa",
     "dep:sha2",
     "dep:base64",
-    "dep:chrono",
+    "chrono",
 ]
 # OCI Object Storage source: REST API + RSA-SHA256 HTTP Signature request
 # signing (no official Oracle Rust SDK). Reuses the google_drive crypto/HTTP
 # crates; `chrono/clock` provides the request `date` header + timestamp parsing.
 oci_object_storage = [
-    "dep:serde_json",
+    "serde_json",
     "dep:reqwest",
     "dep:rsa",
     "dep:sha2",
     "dep:base64",
-    "dep:chrono",
+    "chrono",
     "chrono/clock",
 ]
 lancedb = [
-    "dep:serde_json",
+    "serde_json",
     "dep:lancedb",
     "dep:arrow-array",
     "dep:arrow-schema",
     "dep:half",
+    "chrono",
+    "rust_decimal",
 ]
-qdrant = ["dep:serde_json", "dep:qdrant-client"]
-turbopuffer = ["dep:serde_json", "dep:reqwest"]
-neo4j = ["dep:serde_json", "dep:neo4rs"]
-falkordb = ["dep:serde_json", "dep:redis"]
+qdrant = [
+    "serde_json",
+    "dep:qdrant-client",
+    "chrono",
+    "rust_decimal",
+]
+turbopuffer = [
+    "serde_json",
+    "dep:reqwest",
+    "chrono",
+    "rust_decimal",
+]
+neo4j = ["serde_json", "dep:neo4rs", "chrono"]
+falkordb = ["serde_json", "dep:redis", "chrono"]
 # Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
-valkey = ["dep:redis", "dep:serde_json"]
+valkey = ["dep:redis", "serde_json"]
 
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }
@@ -86,7 +116,7 @@ cocoindex_code_match = { path = "../../code_match", optional = true }
 # the ONNX runtime, so it is gated behind the `fastembed` feature.
 fastembed = { version = "4", optional = true }
 thiserror = "2"
-bytes = "1"
+bytes = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 tokio = { version = "1", features = ["fs", "sync"] }
@@ -110,7 +140,8 @@ sqlx = { version = "0.8", default-features = false, optional = true, features = 
     "postgres",
     "chrono",
 ] }
-chrono = { version = "0.4", default-features = false, optional = true }
+chrono = { version = "0.4", default-features = false, optional = true, features = ["serde"] }
+rust_decimal = { version = "1", default-features = false, optional = true, features = ["serde"] }
 rskafka = { version = "0.6", default-features = false, optional = true }
 # Apache Iggy message-streaming target (pure-Rust client; TCP/QUIC/HTTP).
 iggy = { version = "0.10", optional = true }
@@ -152,7 +183,6 @@ rskafka = { version = "0.6", default-features = false }
 wiremock = "0.6"
 # Generate an ephemeral RSA key for the OCI signing unit test.
 rand = "0.8"
-rust_decimal = "1"
 
 [[bench]]
 name = "sdk_microbench"
