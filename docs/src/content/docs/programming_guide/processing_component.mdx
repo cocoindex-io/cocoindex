@@ -136,6 +136,15 @@ Each item in the iterable is a `(key, value)` tuple. The value is passed as the 
 
 In the static case this is just the keyed-loop form of [`mount()`](#mount) — the same per-file fan-out shown in [Core Concepts](./core_concepts#processing-component). The snippet above is equivalent to looping over the items and calling `mount(coco.component_subpath(coco.Symbol("process_file"), key), process_file, value, target)` for each one. The per-item `key` is what keeps each component's path stable across runs, so the engine matches, updates, and cleans up each item individually.
 
+Like `mount()`, `mount_each()` does not carry return values from the mounted functions. It returns a single handle covering all mounted components, which you can capture if you need to wait for readiness:
+
+```python
+handle = await coco.mount_each(process_file, files.items(), target)
+await handle.ready()  # waits until every per-item component is ready
+```
+
+If you want per-item results without creating components, use [`map()`](#map).
+
 You can provide an explicit subpath as the first argument:
 
 ```python
