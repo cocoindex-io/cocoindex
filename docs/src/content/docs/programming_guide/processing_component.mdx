@@ -57,7 +57,7 @@ And two sugar APIs that simplify common patterns:
 - **`mount_each()`** — mounts one component per item in a keyed iterable
 - **`mount_target()`** — mounts a target without an explicit subpath
 
-See also [`map()`](#map) for a utility API that operates within a component without creating new ones.
+See also [`map()`](#Using CocoIndex map to apply transformations) for a utility API that operates within a component without creating new ones.
 
 ### Automatic subpath derivation
 `mount()`, `use_mount()`, and `mount_each()` all accept an optional `ComponentSubpath` as their first argument. When omitted, the subpath is **auto-derived** from the function name using `Symbol(fn.__name__)`.
@@ -288,8 +288,8 @@ This pattern ensures that CocoIndex can track component relationships and target
 
 ## Processing helpers
 
-### `map()`
-`map()` applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount_each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
+### Using CocoIndex `map()` to apply transformations
+The `map()` handler (also known as `coco.map()`) applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount_each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
 
 ```python
 @coco.fn(memo=True)
@@ -299,9 +299,35 @@ async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]
     await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 ```
 
-The first argument to the function receives each item; additional arguments are passed through to every call. `map()` returns a `list` of the results, in the same order as the input items.
+The first argument to the function receives each item; additional arguments are passed through to every call. The `coco.map()` handler returns a `list` of the results, in the same order as the input items.
 
-#### When to use `map()` vs `mount_each()`
+#### When to use the `map()` processor vs `mount_each()`
 
 - Use **`mount_each()`** when each item should be its own processing component — with its own component path, target state ownership, and target states sync boundary.
-- Use **`map()`** when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file — the same within-component chunk work the [chunk-embedding pipeline in Core Concepts](./core_concepts#processing-component) walks through.
+- Use the **`map()`** handler when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file — the same within-component chunk work the [chunk-embedding pipeline in Core Concepts](./core_concepts#processing-component) walks through.
+
+#### Error handling with the `map()` processor
+
+The `coco.map()` handler allows for two patterns of error handling. The async function called by the `map()` handler can raise an exception. This applies when a single error is sufficient for the error case.
+
+```python
+@coco.fn
+async def disallow_word(item: str) -> str:
+    if item == "bad_word":
+        raise ValueError(f"Found bad word item={item!r}")
+    result = item
+    return result
+
+try:
+    await coco.map(disallow_word, TEXT)
+except Exception as e:
+    error_found = e
+```
+
+To handle multiple errors, any code must use the `list[ReturnT]` return value from the `coco.map()` handler.
+
+```python
+check = await coco.map(disallow_word, TEXT)
+failures = [c for c in check if not c.ok]
+```
+
