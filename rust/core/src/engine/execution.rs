@@ -458,14 +458,37 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     /// Engine-side reconcile that produces the `(new_tracking_info,
     /// target_owners_to_delete)` portion of [`CommitPlan`]. Delete
-    /// mode short-circuits to `(None, vec![])`, signalling the
-    /// session to delete the `__track` row.
+    /// mode short-circuits to `(None, owned_target_paths)`, signalling
+    /// the session to delete the `__track` row and every `__target`
+    /// owner row this component still holds.
     async fn build_commit_writes(
         &self,
         curr_version: Option<u64>,
     ) -> Result<(Option<Vec<u8>>, Vec<TargetStatePath>)> {
         if self.component_ctx.mode() == ComponentProcessingMode::Delete {
-            return Ok((None, Vec::new()));
+            // Whole-component deletion also drops the inverted `__target`
+            // owner index for every path this component still owns. Without
+            // this the `__track` row is removed but the owner rows leak,
+            // growing LMDB unboundedly for permanently-abandoned paths.
+            let owners_to_delete = match self
+                .app_store
+                .read_tracking_info(&self.component_path)
+                .await?
+            {
+                Some(bytes) => {
+                    let tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
+                        from_msgpack_slice(&bytes)?;
+                    tracking_info
+                        .target_state_items
+                        .keys()
+                        .map(|path_with_pid| path_with_pid.target_state_path.clone())
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+            return Ok((None, owners_to_delete));
         }
         let curr_version = curr_version
             .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
@@ -781,6 +804,27 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     if pending_retry {
         return Ok(PreCommitOutcome::PendingRetry);
     }
+
+    // Readable names for the provider-only segments (root providers,
+    // attachments) reachable from every declared target-state path. Such
+    // segments have no owner-index/tracking record, so these write-once name
+    // entries are the only persisted source inspection can resolve them from
+    // (see `DbEntryKey::TargetSegmentName`). Each chain walk stops at the
+    // first target-state-backed ancestor — its declaring component covers
+    // itself and everything above — so N sibling declarations under the same
+    // backed provider contribute no entries here (and no existence-check
+    // reads at apply time). Deduped by fingerprint; the apply step skips
+    // already-persisted entries.
+    let segment_names: HashMap<Fingerprint, StableKey> = {
+        let guard = declared_target_states.lock().await;
+        let mut names = HashMap::new();
+        for decl in guard.values() {
+            decl.provider
+                .collect_provider_only_segment_names(&mut names);
+        }
+        names
+    };
+
     let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
@@ -1174,6 +1218,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             self_path: stable_path.clone(),
             new_tracking_info: new_tracking_info_bytes,
             preempted_owner_updates,
+            segment_names,
         },
     })
 }

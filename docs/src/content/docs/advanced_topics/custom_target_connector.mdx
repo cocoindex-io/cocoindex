@@ -592,6 +592,8 @@ pool = context_provider.get(key.db_key, asyncpg.Pool)
 
 This way, changing a password, switching replicas, or rotating credentials won't invalidate tracked states or break reconciliation.
 
+**Resolve connections at action time, never at declare time.** Target states outlive the code that declared them: when a declaration disappears or an app is dropped, CocoIndex generates delete actions in a run where your mount/declare code never executes. At that point the only inputs available are the persisted target state key and the current environment — which is why the sink receives a `ContextProvider` and why the key must carry `ContextKey.key`. Don't capture a live connection when the target is declared; a connection captured at declare time won't exist for cleanup, and resolving in the sink keeps create, update, and delete on one code path. Once resolved in the root sink, pass the typed connection down to child handlers directly (e.g., store `_pool: asyncpg.Pool`, not the key string).
+
 See `_TableKey` in [`cocoindex/connectors/postgres/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/postgres/_target.py) and [`cocoindex/connectors/surrealdb/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/surrealdb/_target.py) for reference implementations.
 
 ### Idempotent actions

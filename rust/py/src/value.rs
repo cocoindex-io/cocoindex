@@ -10,7 +10,7 @@ struct PyStoredValueData {
 
 // Invariant: at least one of bytes/object is Some.
 
-#[pyclass(frozen, name = "StoredValue")]
+#[pyclass(frozen, name = "StoredValue", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStoredValue {
     inner: Arc<std::sync::Mutex<PyStoredValueData>>,

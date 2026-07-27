@@ -908,6 +908,31 @@ export default {
     }
 
     #[test]
+    fn test_split_with_dart_language() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = r#"
+void main() {
+  print('Hello');
+}
+
+class Point {
+  final int x;
+  final int y;
+  Point(this.x, this.y);
+
+  int sum() => x + y;
+}
+"#;
+        let config = RecursiveChunkConfig {
+            chunk_size: 60,
+            min_chunk_size: Some(20),
+            chunk_overlap: Some(0),
+        };
+        let chunks = chunker.split(&CodeSource::with_language(text, "dart"), config);
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
     fn test_split_positions() {
         let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
         let text = "Chunk1\n\nChunk2";

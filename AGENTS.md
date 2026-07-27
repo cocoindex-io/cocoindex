@@ -27,6 +27,19 @@ uv run pytest python/    # Run Python tests (use after both Rust and Python chan
 uv run ruff format .           # Format Python code
 uv run ruff format --check .   # Check formatting without making changes (same as CI)
 uv run ruff check .            # Lint Python code
+cargo fmt                      # Format Rust code
+```
+
+### Pre-submission Checks
+
+CI enforces the full pre-commit hook suite from `.pre-commit-config.yaml`, which
+covers more than the commands above — notably regenerating the CLI docs
+(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. Run it locally
+before pushing:
+
+```bash
+uv tool install prek     # one-time; some hooks also need `protoc` (brew install protobuf)
+prek run --all-files
 ```
 
 ### Workflow Summary
@@ -37,6 +50,7 @@ uv run ruff check .            # Lint Python code
 | Python code only | `uv run mypy && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
 | Python formatting | `uv run ruff format .` |
+| Before pushing | `prek run --all-files` |
 
 ## Code Structure
 

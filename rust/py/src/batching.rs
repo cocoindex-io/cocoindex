@@ -14,7 +14,7 @@ use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use pyo3_async_runtimes::tokio::future_into_py;
 
 /// Options for batching behavior.
-#[pyclass(name = "BatchingOptions")]
+#[pyclass(name = "BatchingOptions", from_py_object)]
 #[derive(Clone)]
 pub struct PyBatchingOptions {
     #[pyo3(get, set)]

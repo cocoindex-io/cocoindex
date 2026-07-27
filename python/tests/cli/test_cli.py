@@ -861,3 +861,159 @@ class TestShowTree:
         assert file1_indent > files_indent, (
             "file1.txt should be indented as child of files"
         )
+
+
+# =============================================================================
+# Test: Show command reading directly from a database (--db/--app-name)
+# =============================================================================
+
+
+class TestShowFromDatabase:
+    """Tests for show --db/--app-name: opening a database from a fresh process
+    without loading the app module.
+
+    Regression tests: these flows used to fail with EINVAL (os error 22)
+    because the sub-database handle was opened in a read txn that was dropped
+    without commit, which leaves the handle invalid in any process other than
+    the one that created the sub-database.
+    """
+
+    def test_show_db_long_lists_details(self) -> None:
+        """show --db/--app-name -l should render details without the module."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show", "--db", "./cocoindex.db", "--app-name", "FlatPreviewApp", "-l"
+        )
+
+        assert "Stable paths:" in result.stdout
+        assert "- path:" in result.stdout
+        # All segments resolve without the app module loaded: the leaf key
+        # from tracking info, the root provider from the segment-name entries
+        # persisted at update time.
+        assert '@test_cli/flat_preview/"x"' in result.stdout
+        assert "states:1:Existing" in result.stdout
+
+    def test_show_db_tree_displays_components(self) -> None:
+        """show --db/--app-name --tree should render the tree without the module."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show", "--db", "./cocoindex.db", "--app-name", "FlatPreviewApp", "--tree"
+        )
+
+        assert "Stable paths" in result.stdout
+        assert "[component]" in result.stdout
+
+
+class TestShowLong:
+    """Tests for target-state rendering in show -l."""
+
+    def test_show_long_renders_readable_target_state_path(self) -> None:
+        """show -l should render target state paths with readable keys."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "-l")
+
+        path_line = next(
+            (
+                line
+                for line in result.stdout.split("\n")
+                if line.strip().startswith("- path:")
+            ),
+            None,
+        )
+        assert path_line is not None, (
+            f"Should have a target state path line:\n{result.stdout}"
+        )
+        # The leaf key "x" is resolved from tracking info; the root provider
+        # segment is resolved from the live provider registry (the app module
+        # is loaded), so no fingerprint remains.
+        assert '/"x"' in path_line
+        assert "@test_cli/flat_preview" in path_line
+        assert "#" not in path_line
+
+    def test_show_long_fingerprints_flag_shows_raw_paths(self) -> None:
+        """show -l --fingerprints should render raw fingerprint paths."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "-l", "--fingerprints")
+
+        path_line = next(
+            (
+                line
+                for line in result.stdout.split("\n")
+                if line.strip().startswith("- path:")
+            ),
+            None,
+        )
+        assert path_line is not None
+        assert "/#" in path_line
+        assert "@test_cli/flat_preview" not in path_line
+
+
+class TestShowTargetStates:
+    """Tests for the --target-states flag on show."""
+
+    def test_show_target_states_lists_entries(self) -> None:
+        """show --target-states should list target states with owner components."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "--target-states")
+
+        assert "Target states:" in result.stdout
+        assert '@test_cli/flat_preview/"x"' in result.stdout
+        assert "owner:/" in result.stdout
+        assert "/#" not in result.stdout
+        assert "[dangling]" not in result.stdout
+
+    def test_show_target_states_fingerprints_flag_shows_raw_paths(self) -> None:
+        """show --target-states --fingerprints should print raw stored paths."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show", "./flat_target_app.py", "--target-states", "--fingerprints"
+        )
+
+        assert "/#" in result.stdout
+        assert "@test_cli/flat_preview" not in result.stdout
+
+    def test_show_target_states_from_database(self) -> None:
+        """show --db/--app-name --target-states should work without the module."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show",
+            "--db",
+            "./cocoindex.db",
+            "--app-name",
+            "FlatPreviewApp",
+            "--target-states",
+        )
+
+        # Fully readable without the app module: the root provider segment
+        # resolves from the persisted segment-name entries.
+        assert '@test_cli/flat_preview/"x"' in result.stdout
+        assert "owner:/" in result.stdout
+        assert "/#" not in result.stdout
+
+    def test_show_target_states_tree(self) -> None:
+        """show --target-states --tree should nest entries under their parents."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli("show", "./flat_target_app.py", "--target-states", "--tree")
+
+        assert "Target states:" in result.stdout
+        # The root provider has no entry of its own but still gets a parent
+        # node line; the entry nests beneath it with its owner inline.
+        assert "- @test_cli/flat_preview\n" in result.stdout
+        assert '  - "x" owner:/' in result.stdout
+
+    def test_show_target_states_rejects_incompatible_flags(self) -> None:
+        """--target-states cannot be combined with the per-component views."""
+        for extra in ("-l", '/"x"'):
+            result = run_cli(
+                "show", "./flat_target_app.py", "--target-states", extra, check=False
+            )
+            assert result.returncode != 0
+            assert "cannot be combined" in result.stderr.lower()

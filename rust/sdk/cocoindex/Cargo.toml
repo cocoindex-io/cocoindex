@@ -101,6 +101,9 @@ neo4j = ["serde_json", "dep:neo4rs", "chrono"]
 falkordb = ["serde_json", "dep:redis", "chrono"]
 # Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
 valkey = ["dep:redis", "serde_json"]
+# Extra core store hooks for the `state_store_read` bench (its
+# `required-features`). Never enabled by production dependents.
+bench-support = ["cocoindex_core/bench-support"]
 
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }
@@ -161,7 +164,7 @@ arrow-schema = { version = "57", optional = true }
 half = { version = "2", optional = true }
 # Qdrant vector-store target (gRPC client; build needs `protoc`).
 qdrant-client = { version = "1.18", optional = true }
-surrealdb = { version = "3", default-features = false, optional = true, features = [
+surrealdb = { version = "3.2.3", default-features = false, optional = true, features = [
     "protocol-ws",
     "rustls",
 ] }
@@ -175,7 +178,7 @@ redis = { version = "0.32.7", default-features = false, optional = true, feature
 tempfile = "3"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-criterion = "0.5"
+criterion = { version = "0.5", features = ["async_tokio"] }
 glob = "0.3"
 # Used by the live Kafka integration test to consume produced records back.
 rskafka = { version = "0.6", default-features = false }
@@ -187,3 +190,9 @@ rand = "0.8"
 [[bench]]
 name = "sdk_microbench"
 harness = false
+
+[[bench]]
+name = "state_store_read"
+harness = false
+# Run with: cargo bench -p cocoindex --features bench-support
+required-features = ["bench-support"]

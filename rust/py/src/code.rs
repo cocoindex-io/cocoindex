@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 use crate::ops::PyChunk;
 
 /// A structural-match result: the matched node and its captured metavariables.
-#[pyclass(name = "CodeMatch")]
+#[pyclass(name = "CodeMatch", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyCodeMatch {
     /// tree-sitter node kind of the matched node (e.g. `function_definition`).

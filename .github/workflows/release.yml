@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
@@ -116,7 +116,7 @@ jobs:
       - name: Remove .python-version if exists
         shell: bash
         run: rm -f .python-version
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.platform.python-version }}
           freethreaded: ${{ matrix.platform.free-threaded }}
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: wheels-linux-x86_64
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.py }}
       - run: python -V
@@ -163,7 +163,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: wheels-linux-x86_64-freethreaded
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
           freethreaded: true
@@ -182,7 +182,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
@@ -217,7 +217,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py

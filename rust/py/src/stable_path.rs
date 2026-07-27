@@ -77,7 +77,7 @@ impl FromPyObject<'_, '_> for PyStableKey {
     }
 }
 
-#[pyclass(name = "Symbol", frozen)]
+#[pyclass(name = "Symbol", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PySymbol(pub Arc<str>);
 
@@ -109,7 +109,7 @@ impl PySymbol {
     }
 }
 
-#[pyclass(name = "StablePath")]
+#[pyclass(name = "StablePath", from_py_object)]
 #[derive(Clone)]
 pub struct PyStablePath(pub StablePath);
 

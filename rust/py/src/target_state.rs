@@ -15,7 +15,7 @@ use crate::stable_path::PyStableKey;
 use crate::runtime::{PyAsyncContext, PyCallback, python_objects, wrap_target_handler};
 use crate::value::PyStoredValue;
 
-#[pyclass(name = "TargetActionSink")]
+#[pyclass(name = "TargetActionSink", from_py_object)]
 #[derive(Clone)]
 pub struct PyTargetActionSink {
     keeper: TargetActionSinkKeeper<PyEngineProfile>,

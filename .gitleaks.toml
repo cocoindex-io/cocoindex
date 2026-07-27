@@ -1,0 +1,13 @@
+# Gitleaks config for the pre-commit hook (and ad-hoc `gitleaks git` scans).
+
+[extend]
+# Keep all default detection rules; entries below only add allowlisting.
+useDefault = true
+
+[allowlist]
+description = "Known non-secrets"
+paths = [
+  # Throwaway RS256 test-only key for JWT-signing unit tests — same rationale
+  # as the detect-private-key exclude in .pre-commit-config.yaml.
+  '''rust/sdk/cocoindex/src/gdrive\.rs''',
+]

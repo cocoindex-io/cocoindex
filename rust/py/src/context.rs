@@ -12,7 +12,7 @@ use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-#[pyclass(name = "ComponentProcessorContext")]
+#[pyclass(name = "ComponentProcessorContext", from_py_object)]
 #[derive(Clone)]
 pub struct PyComponentProcessorContext(pub ComponentProcessorContext<PyEngineProfile>);
 

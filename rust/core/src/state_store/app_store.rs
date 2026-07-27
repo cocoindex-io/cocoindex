@@ -33,7 +33,7 @@ use crate::state::db_schema::{
     ChildExistenceInfo, DbEntryKey, FunctionMemoizationEntry, IdSequencerInfo, StablePathEntryKey,
     StablePathNodeType, StateKind, TargetStateOwnerInfo,
 };
-use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
+use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
 use crate::state_store::txn::{ReadTxn, WriteTxn};
 
@@ -209,6 +209,10 @@ fn key_tombstone_prefix(parent: &StablePath) -> Result<Vec<u8>> {
 
 fn key_target_state_owner(path: &TargetStatePath) -> Result<Vec<u8>> {
     DbEntryKey::TargetState(path.clone()).encode()
+}
+
+fn key_target_segment_name(fp: Fingerprint) -> Result<Vec<u8>> {
+    DbEntryKey::TargetSegmentName(fp).encode()
 }
 
 fn key_id_sequencer(key: &StableKey) -> Result<Vec<u8>> {
@@ -698,6 +702,42 @@ impl AppStore {
         self.db().delete(&mut **txn, &key)?;
         Ok(())
     }
+
+    /// Persist the readable name for one target-state path segment, keyed by
+    /// the lone segment fingerprint. Write-once: an existing entry is left
+    /// untouched (the fingerprint is a pure function of the key, so any
+    /// existing value is already correct).
+    pub async fn write_target_segment_name_if_missing(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        fp: Fingerprint,
+        segment_key: &StableKey,
+    ) -> Result<()> {
+        let key = key_target_segment_name(fp)?;
+        if self.db().get(&**txn, &key)?.is_some() {
+            return Ok(());
+        }
+        let value = rmp_serde::to_vec_named(segment_key)?;
+        self.db().put(&mut **txn, &key, &value)?;
+        Ok(())
+    }
+
+    /// Delete every persisted target-segment-name entry. Benchmark support
+    /// only: lets the read-path benches measure resolution against stores
+    /// written before segment names existed (the fallback-miss shape).
+    #[cfg(feature = "bench-support")]
+    pub async fn delete_all_target_segment_names(&self, txn: &mut WriteTxn<'_>) -> Result<()> {
+        let prefix = DbEntryKey::TargetSegmentNamePrefix.encode()?;
+        let db = self.db();
+        let mut iter = db.prefix_iter_mut(&mut **txn, &prefix)?;
+        while iter.next().transpose()?.is_some() {
+            // Safety: we drop the borrowed key/value before the next `next()`.
+            unsafe {
+                iter.del_current()?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // --- ID sequencer --------------------------------------------------------
@@ -969,32 +1009,10 @@ mod tests {
     use super::AppStore;
     use crate::state::db_schema::StateKind;
     use crate::state::stable_path::{StableKey, StablePath};
+    use crate::state_store::test_support::make_test_store;
     use crate::state_store::txn::WriteTxn;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tempfile::TempDir;
-
-    /// Open a fresh in-process LMDB environment and return an `AppStore`
-    /// backed by it. The caller must keep `TempDir` alive for the duration
-    /// of the test; dropping it removes the directory.
-    async fn make_test_store() -> (AppStore, TempDir) {
-        let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("mdb");
-        std::fs::create_dir_all(&db_path).unwrap();
-        let env = unsafe {
-            heed::EnvOpenOptions::new()
-                .read_txn_without_tls()
-                .max_dbs(4)
-                .map_size(1 << 22) // 4 MiB
-                .open(&db_path)
-        }
-        .unwrap();
-        let mut wtxn = env.write_txn().unwrap();
-        let db = env.create_database(&mut wtxn, Some("test_app")).unwrap();
-        wtxn.commit().unwrap();
-        let storage = crate::state_store::Storage::from_env(env.clone());
-        (AppStore::new(db, env, storage), dir)
-    }
 
     fn comp_path(name: &str) -> StablePath {
         StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
@@ -1342,39 +1360,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-    }
-}
-
-// --- Inspection (cross-component scans within one app) -------------------
-
-impl AppStore {
-    /// Scan all stable-path entries in this app and return one path per
-    /// component / directory, from a fresh snapshot.
-    pub async fn list_all_stable_paths(&self) -> Result<Vec<StablePath>> {
-        let rtxn = self.read_txn().await?;
-        let encoded_key_prefix =
-            DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-        let db = self.db();
-        let mut out = Vec::new();
-        let mut last_prefix: Option<Vec<u8>> = None;
-        for entry in db.prefix_iter(&*rtxn, &encoded_key_prefix)? {
-            let (raw_key, _) = entry?;
-            if let Some(last_prefix) = &last_prefix
-                && raw_key.starts_with(last_prefix)
-            {
-                continue;
-            }
-            let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
-            let path = match key {
-                DbEntryKey::StablePath(path, _) => path,
-                other => {
-                    return Err(internal_error!("Expected StablePath, got {other:?}"));
-                }
-            };
-            last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
-            out.push(path);
-        }
-        Ok(out)
     }
 }
 

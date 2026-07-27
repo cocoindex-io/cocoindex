@@ -36,6 +36,11 @@ async-trait = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
 
+[features]
+# Extra store hooks for the state-store read benchmarks (see the SDK crate's
+# `state_store_read` bench). Never enabled by production dependents.
+bench-support = []
+
 [dev-dependencies]
 serde_json = { workspace = true }
 axum = { workspace = true }

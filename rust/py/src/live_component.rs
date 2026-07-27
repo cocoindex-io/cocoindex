@@ -10,7 +10,7 @@ use cocoindex_core::engine::live_component::LiveComponentController;
 use cocoindex_py_utils::from_py_future;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-#[pyclass(name = "LiveComponentController")]
+#[pyclass(name = "LiveComponentController", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyLiveComponentController(pub Arc<LiveComponentController<PyEngineProfile>>);
 
