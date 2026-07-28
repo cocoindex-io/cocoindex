@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
     import asyncpg
@@ -21,7 +21,7 @@ import pytest_asyncio
 from numpy.typing import NDArray
 
 import cocoindex as coco
-from cocoindex.resources.schema import VectorSchema
+from cocoindex.resources.schema import SparseVector, SparseVectorSchema, VectorSchema
 
 from tests import common
 
@@ -195,6 +195,16 @@ class HalfVectorRow:
 
 
 @dataclass
+class SparseVectorRow:
+    id: str
+    content: str
+    embedding: Annotated[
+        SparseVector,
+        SparseVectorSchema(size=100),
+    ]
+
+
+@dataclass
 class TextRow:
     id: str
     content: str
@@ -221,6 +231,86 @@ class _NulInStr:
 # =============================================================================
 # Tests
 # =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_postgres_sparse_vector_round_trip_and_index(pg_env: _PgEnv) -> None:
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_sparsevec")
+    logical_name = "sparse_ip"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
+    source_rows: list[SparseVectorRow] = [
+        SparseVectorRow(
+            id="1",
+            content="canonical",
+            embedding=SparseVector(indices=(1, 7), values=(0.5, 0.9)),
+        ),
+        SparseVectorRow(
+            id="2",
+            content="mapping",
+            embedding=cast(SparseVector, {4: 0.25, 2: 0.0}),
+        ),
+    ]
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(
+                    SparseVectorRow, primary_key=["id"]
+                ),
+            )
+            for row in source_rows:
+                table.declare_row(row=row)
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="ip",
+                method="hnsw",
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_sparsevec_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT "id", "embedding"::text AS embedding '
+                f'FROM "{table_name}" ORDER BY "id"'
+            )
+        assert [(row["id"], row["embedding"]) for row in rows] == [
+            ("1", "{2:0.5,8:0.9}/100"),
+            ("2", "{5:0.25}/100"),
+        ]
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None and info["amname"] == "hnsw"
+        assert await _index_opclass_names(pool, pg_index_name) == ["sparsevec_ip_ops"]
+
+        source_rows[:] = [
+            SparseVectorRow(
+                id="1",
+                content="updated",
+                embedding=SparseVector(indices=(0, 99), values=(1.0, 0.75)),
+            )
+        ]
+        await app.update()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT "id", "content", "embedding"::text AS embedding '
+                f'FROM "{table_name}" ORDER BY "id"'
+            )
+        assert [tuple(row) for row in rows] == [("1", "updated", "{1:1,100:0.75}/100")]
+
+    finally:
+        await _drop_table(pool, table_name)
 
 
 @pytest.mark.asyncio

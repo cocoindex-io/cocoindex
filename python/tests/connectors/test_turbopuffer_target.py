@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 
 import cocoindex as coco
-from cocoindex.resources.schema import VectorSchema
+from cocoindex.resources.schema import SparseVector, SparseVectorSchema, VectorSchema
 
 from tests import common
 
@@ -134,6 +134,14 @@ class TestRowToUpsert:
         with pytest.raises(ValueError, match="single unnamed vector"):
             _row_to_upsert(row, single_schema)
 
+    def test_sparse_vector_rejected(self, single_schema: Any) -> None:
+        row = turbopuffer.Row(
+            id="a",
+            vector=SparseVector(indices=(1,), values=(0.5,)),  # type: ignore[arg-type]
+        )
+        with pytest.raises(ValueError, match="does not support sparse vector"):
+            _row_to_upsert(row, single_schema)
+
     def test_named_vectors(self, named_schema: Any) -> None:
         row = turbopuffer.Row(
             id="a",
@@ -147,6 +155,17 @@ class TestRowToUpsert:
             "image": [0.5, 0.5],
             "title": "T",
         }
+
+    def test_named_sparse_mapping_rejected(self, named_schema: Any) -> None:
+        row = turbopuffer.Row(
+            id="a",
+            vector={
+                "text": {1: 0.5, 7: 0.9},  # type: ignore[dict-item]
+                "image": [0.5, 0.5],
+            },
+        )
+        with pytest.raises(ValueError, match="does not support sparse vector"):
+            _row_to_upsert(row, named_schema)
 
     def test_named_vectors_missing_field(self, named_schema: Any) -> None:
         row = turbopuffer.Row(id="a", vector={"text": [1.0, 2.0, 3.0]})
@@ -186,6 +205,15 @@ class TestRowToUpsert:
 
 @requires_turbopuffer
 class TestNamespaceSchemaCreate:
+    @pytest.mark.asyncio
+    async def test_sparse_schema_rejected(self) -> None:
+        with pytest.raises(ValueError, match="does not support sparse vector"):
+            await turbopuffer.NamespaceSchema.create(
+                vectors=turbopuffer.VectorDef(
+                    schema=SparseVectorSchema(size=100)  # type: ignore[arg-type]
+                )
+            )
+
     @pytest.mark.asyncio
     async def test_named_vector_id_rejected(self) -> None:
         # "id" as a named vector field name would silently overwrite row.id

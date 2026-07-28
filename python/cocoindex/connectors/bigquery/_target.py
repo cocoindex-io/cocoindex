@@ -41,7 +41,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import reject_sparse_vectors, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
 _RowKey = tuple[Any, ...]
@@ -169,6 +169,12 @@ class TableSchema(Generic[RowT]):
             if override is not None:
                 all_annotations.append(override)
             all_annotations.extend(type_info.annotations)
+
+            reject_sparse_vectors(
+                type_info.base_type,
+                all_annotations,
+                connector_name="BigQuery",
+            )
 
             bigquery_type_annotation = next(
                 (t for t in all_annotations if isinstance(t, BigQueryType)), None

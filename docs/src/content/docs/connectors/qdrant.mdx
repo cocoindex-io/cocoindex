@@ -231,7 +231,6 @@ point = qdrant.PointStruct(
 For hybrid retrieval, declare a named dense vector and a named sparse vector in the same collection:
 
 ```python
-from qdrant_client.http import models as qdrant_models
 from cocoindex.resources.schema import VectorSchema
 import numpy as np
 
@@ -246,22 +245,21 @@ schema = await qdrant.CollectionSchema.create(
 )
 ```
 
-Points put both vector types in `PointStruct.vector`. The sparse vector is a native Qdrant `SparseVector`, not payload:
+Points put both vector types in `PointStruct.vector`. Use `qdrant.sparse_vector()` to convert the shared canonical `SparseVector` (or an integer-to-float mapping) to Qdrant's native model:
 
 ```python
 point = qdrant.PointStruct(
-    id=123,
+    id=doc_id,
     vector={
         "dense": dense_embedding.tolist(),
-        "sparse": qdrant_models.SparseVector(
-            indices=sparse_indices,
-            values=sparse_values,
-        ),
+        "sparse": qdrant.sparse_vector({7: 0.9, 1: 0.5}),
     },
     payload={"text": text},
 )
 target.declare_point(point)
 ```
+
+Qdrant does not require sparse dimensionality, so `SparseVectorSchema` is not needed here; a shared [`SparseVector`](../common_resources/vector_schema#sparsevector--sparsevectorschema) annotation on your row type remains useful when the same rows also target Postgres or zvec. Sparse scoring configuration, including `modifier="idf"`, stays on `QdrantSparseVectorDef`.
 
 #### VectorSchemaProvider
 
@@ -391,8 +389,7 @@ async def app_main() -> None:
 ### Example: dense + sparse hybrid vectors
 
 ```python
-from qdrant_client.http import models as qdrant_models
-from cocoindex.resources.schema import VectorSchema
+from cocoindex.resources.schema import SparseVector, VectorSchema
 import numpy as np
 
 @coco.fn
@@ -416,9 +413,11 @@ async def app_main() -> None:
             id=chunk.id,
             vector={
                 "dense": chunk.dense_embedding.tolist(),
-                "sparse": qdrant_models.SparseVector(
-                    indices=chunk.sparse_indices,
-                    values=chunk.sparse_values,
+                "sparse": qdrant.sparse_vector(
+                    SparseVector.from_arrays(
+                        chunk.sparse_indices,
+                        chunk.sparse_values,
+                    )
                 ),
             },
             payload={"text": chunk.text},
@@ -508,9 +507,8 @@ results = client.query_points(
             limit=100,
         ),
         qdrant_models.Prefetch(
-            query=qdrant_models.SparseVector(
-                indices=query_sparse_indices,
-                values=query_sparse_values,
+            query=qdrant.sparse_vector(
+                dict(zip(query_sparse_indices, query_sparse_values, strict=True))
             ),
             using="sparse",
             limit=100,

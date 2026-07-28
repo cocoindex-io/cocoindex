@@ -47,7 +47,11 @@ if HAS_QDRANT:
         _validate_point_id,
         _vector_params_from_def,
     )
-    from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
+    from cocoindex.resources.schema import (
+        MultiVectorSchema,
+        SparseVector,
+        VectorSchema,
+    )
     from tests import common
 
 requires_qdrant_url = pytest.mark.skipif(
@@ -178,6 +182,19 @@ class TestVectorParamsFromDef:
 
 @requires_qdrant
 class TestSparseVectorSupport:
+    def test_sparse_vector_converter_normalizes_canonical_and_mapping_values(
+        self,
+    ) -> None:
+        canonical = SparseVector(indices=(1, 7), values=(0.5, 0.9))
+
+        converted = qdrant.sparse_vector(canonical)
+        assert converted.indices == [1, 7]
+        assert converted.values == [0.5, 0.9]
+
+        converted_mapping = qdrant.sparse_vector({7: 0.9, 1: 0.5})
+        assert converted_mapping.indices == [1, 7]
+        assert converted_mapping.values == [0.5, 0.9]
+
     @pytest.mark.asyncio
     async def test_collection_schema_create_resolves_sparse_vector_params(self) -> None:
         schema = await qdrant.CollectionSchema.create(
@@ -426,8 +443,11 @@ def test_live_dense_sparse_vectors_and_hybrid_query() -> None:
                 id=1,
                 vector={
                     "dense": [0.1, 0.2, 0.3, 0.4],
-                    "sparse": qdrant_models.SparseVector(
-                        indices=[1, 7], values=[0.5, 0.9]
+                    "sparse": qdrant.sparse_vector(
+                        SparseVector.from_arrays(
+                            indices=[7, 1],
+                            values=[0.9, 0.5],
+                        )
                     ),
                 },
                 payload={"text": "hybrid sparse dense"},

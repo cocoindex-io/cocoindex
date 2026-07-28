@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 import logging
 import re
 import struct
@@ -18,6 +19,13 @@ from typing import (
 
 import msgspec
 import numpy as np
+
+import cocoindex as coco
+from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits.fingerprint import fingerprint_object
+from cocoindex.resources import schema as res_schema
+from cocoindex._internal.context_keys import ContextKey, ContextProvider
+from cocoindex._internal.datatype import TypeChecker
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +55,6 @@ except ImportError as e:
         "valkey-glide>=2.4.0 is required to use the Valkey connector. "
         "Please install cocoindex[valkey]."
     ) from e
-
-import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
-from cocoindex.connectorkits.fingerprint import fingerprint_object
-from cocoindex.resources import schema as res_schema
-from cocoindex._internal.context_keys import ContextKey, ContextProvider
-from cocoindex._internal.datatype import TypeChecker
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +258,8 @@ def _validate_name(value: str, label: str) -> str:
 
 def _vector_to_bytes(vector: list[float] | np.ndarray) -> bytes:  # type: ignore[type-arg]
     """Pack a vector into little-endian float32 bytes for Valkey HASH storage."""
+    if isinstance(vector, (collections.abc.Mapping, res_schema.SparseVector)):
+        raise ValueError("Valkey does not support sparse vector values.")
     if isinstance(vector, np.ndarray):
         return vector.astype(np.float32).tobytes()
     return struct.pack(f"<{len(vector)}f", *vector)

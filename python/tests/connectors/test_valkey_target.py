@@ -14,14 +14,14 @@ import os
 import struct
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 import pytest
 import pytest_asyncio
 
 import cocoindex as coco
-from cocoindex.resources.schema import VectorSchema
+from cocoindex.resources.schema import SparseVector, VectorSchema
 
 from tests import common
 
@@ -39,6 +39,7 @@ except ImportError:
 
 if HAS_GLIDE:
     from cocoindex.connectors import valkey
+    from cocoindex.connectors.valkey._target import _vector_to_bytes
 
 requires_glide = pytest.mark.skipif(not HAS_GLIDE, reason="valkey-glide not installed")
 
@@ -59,6 +60,21 @@ _VALKEY_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_valkey_target_db")
 
 _DIM = 4
 _VECTOR_SCHEMA = VectorSchema(dtype=np.dtype(np.float32), size=_DIM)
+
+
+@requires_glide
+@pytest.mark.parametrize(
+    "vector",
+    [
+        {1: 0.5, 7: 0.9},
+        SparseVector(indices=(1, 7), values=(0.5, 0.9)),
+    ],
+)
+def test_vector_to_bytes_rejects_sparse_shapes(vector: object) -> None:
+    with pytest.raises(
+        ValueError, match="Valkey does not support sparse vector values"
+    ):
+        _vector_to_bytes(cast(Any, vector))
 
 
 def _unique_name(prefix: str) -> str:

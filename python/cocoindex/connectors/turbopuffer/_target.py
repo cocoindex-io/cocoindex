@@ -12,6 +12,7 @@ Turbopuffer creates namespaces implicitly on first write, so there is no explici
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -80,6 +81,8 @@ class _ResolvedNamedVectorsDef(msgspec.Struct, frozen=True, tag=True):
 async def _resolve_vector_def(vector_def: VectorDef) -> _ResolvedVectorDef:
     vs = await res_schema.get_vector_schema(vector_def.schema)
     if vs is None:
+        if await res_schema.get_sparse_vector_schema(vector_def.schema) is not None:
+            raise ValueError("Turbopuffer does not support sparse vector schemas.")
         raise ValueError(f"Invalid vector definition: {vector_def}")
     # Validate dtype upfront so bad schemas fail at construction time, not on
     # the first write. Discards the return — used for its raise side effect.
@@ -189,6 +192,8 @@ class Row:
 
 
 def _vector_to_list(v: Sequence[float] | np.ndarray) -> list[float]:
+    if isinstance(v, (res_schema.SparseVector, Mapping)):
+        raise ValueError("Turbopuffer does not support sparse vector values.")
     if isinstance(v, np.ndarray):
         return v.tolist()  # type: ignore[no-any-return]
     return list(v)

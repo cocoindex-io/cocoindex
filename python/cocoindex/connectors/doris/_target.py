@@ -46,7 +46,7 @@ import numpy as np
 from typing_extensions import TypeVar
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import resolve_vector_schemas, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -394,14 +394,12 @@ class TableSchema(Generic[RowT]):
             doris_type_annotation = next(
                 (t for t in all_annotations if isinstance(t, DorisType)), None
             )
-            vector_schema = await anext(
-                (
-                    s
-                    for annot in all_annotations
-                    if (s := await res_schema.get_vector_schema(annot)) is not None
-                ),
-                None,
+            vector_schemas = await resolve_vector_schemas(
+                type_info.base_type,
+                all_annotations,
+                reject_sparse_vectors_for="Doris",
             )
+            vector_schema = vector_schemas.vector
 
             if doris_type_annotation is not None:
                 mapping = _TypeMapping(

@@ -41,7 +41,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import resolve_vector_schemas, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -173,7 +173,27 @@ def _vector_encoder(value: Any) -> str:
     return "[" + ",".join(str(float(x)) for x in value) + "]"
 
 
-_PGVECTOR_TYPE_BASES: frozenset[str] = frozenset({"vector", "halfvec"})
+def _make_sparsevec_encoder(dim: int) -> ValueEncoder:
+    """Build an encoder for pgvector's 1-based sparsevec text format."""
+
+    def encode(value: Any) -> str:
+        sparse_vector = res_schema.as_sparse_vector(value)
+        if sparse_vector.indices and sparse_vector.indices[-1] >= dim:
+            raise ValueError(
+                f"sparse vector index {sparse_vector.indices[-1]} out of range "
+                f"for sparsevec({dim})"
+            )
+        elems = ",".join(
+            f"{index + 1}:{float(vector_value)}"
+            for index, vector_value in zip(sparse_vector.indices, sparse_vector.values)
+            if vector_value != 0.0
+        )
+        return "{" + elems + "}/" + str(dim)
+
+    return encode
+
+
+_PGVECTOR_TYPE_BASES: frozenset[str] = frozenset({"vector", "halfvec", "sparsevec"})
 
 
 def _pgvector_type_base(pg_type: str) -> str | None:
@@ -254,10 +274,16 @@ _LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
 
 # Default mapping for complex types that need JSON encoding
 _JSONB_MAPPING = _TypeMapping("jsonb", _json_encoder)
+_SPARSEVEC_DIMENSION_ERROR = (
+    "pgvector sparsevec requires a dimension; provide SparseVectorSchema(size=...)"
+)
 
 
 async def _get_type_mapping(
-    python_type: Any, *, vector_schema: res_schema.VectorSchema | None = None
+    python_type: Any,
+    *,
+    vector_schema: res_schema.VectorSchema | None = None,
+    sparse_vector_schema: res_schema.SparseVectorSchema | None = None,
 ) -> _TypeMapping:
     """
     Get the PostgreSQL type mapping for a Python type.
@@ -266,16 +292,20 @@ async def _get_type_mapping(
     https://magicstack.github.io/asyncpg/current/usage.html#type-conversion
 
     For types that map to multiple PostgreSQL types, uses the broader one.
-    Use `PgType` annotation with `typing.Annotated` to override the default.
     """
     type_info = analyze_type_info(python_type)
-
-    # Check for PgType annotation override
-    for annotation in type_info.annotations:
-        if isinstance(annotation, PgType):
-            return _TypeMapping(annotation.pg_type, annotation.encoder)
-
     base_type = type_info.base_type
+
+    if sparse_vector_schema is not None:
+        if sparse_vector_schema.size is None:
+            raise ValueError(_SPARSEVEC_DIMENSION_ERROR)
+        return _TypeMapping(
+            f"sparsevec({sparse_vector_schema.size})",
+            _make_sparsevec_encoder(sparse_vector_schema.size),
+        )
+
+    if base_type is res_schema.SparseVector:
+        raise ValueError(_SPARSEVEC_DIMENSION_ERROR)
 
     # Check direct leaf type mappings
     if base_type in _LEAF_TYPE_MAPPINGS:
@@ -366,7 +396,12 @@ class TableSchema(Generic[RowT]):
         record_type: type[RowT],
         primary_key: list[str],
         *,
-        column_overrides: dict[str, PgType | res_schema.VectorSchemaProvider]
+        column_overrides: dict[
+            str,
+            PgType
+            | res_schema.VectorSchemaProvider
+            | res_schema.SparseVectorSchemaProvider,
+        ]
         | None = None,
     ) -> "TableSchema[RowT]":
         """
@@ -379,7 +414,7 @@ class TableSchema(Generic[RowT]):
             record_type: A record type (dataclass, NamedTuple, or Pydantic model).
             primary_key: List of column names that form the primary key.
             column_overrides: Optional dict mapping column names to PgType or
-                              VectorSchemaProvider to override the default type mapping.
+                vector schema provider to override the default type mapping.
         """
         if not is_record_type(record_type):
             raise TypeError(
@@ -392,7 +427,13 @@ class TableSchema(Generic[RowT]):
     @staticmethod
     async def _columns_from_record_type(
         record_type: type,
-        column_overrides: dict[str, PgType | res_schema.VectorSchemaProvider] | None,
+        column_overrides: dict[
+            str,
+            PgType
+            | res_schema.VectorSchemaProvider
+            | res_schema.SparseVectorSchemaProvider,
+        ]
+        | None,
     ) -> dict[str, ColumnDef]:
         """Convert a record type to a dict of column name -> ColumnDef."""
         record_info = RecordType(record_type)
@@ -412,23 +453,31 @@ class TableSchema(Generic[RowT]):
             pg_type_annotation = next(
                 (t for t in all_annotations if isinstance(t, PgType)), None
             )
-            vector_schema = await anext(
-                (
-                    s
-                    for annot in all_annotations
-                    if (s := await res_schema.get_vector_schema(annot)) is not None
-                ),
-                None,
+            vector_schemas = await resolve_vector_schemas(
+                type_info.base_type,
+                all_annotations,
             )
+            vector_schema = vector_schemas.vector
+            sparse_vector_schema = vector_schemas.sparse
 
             # Determine type mapping
             if pg_type_annotation is not None:
+                if (
+                    sparse_vector_schema is not None
+                    or type_info.base_type is res_schema.SparseVector
+                ):
+                    raise ValueError(
+                        f"Column {field.name!r} cannot combine PgType with "
+                        "sparse vector metadata."
+                    )
                 type_mapping = _TypeMapping(
                     pg_type_annotation.pg_type, pg_type_annotation.encoder
                 )
             else:
                 type_mapping = await _get_type_mapping(
-                    field.type_hint, vector_schema=vector_schema
+                    field.type_hint,
+                    vector_schema=vector_schema,
+                    sparse_vector_schema=sparse_vector_schema,
                 )
 
             columns[field.name] = ColumnDef(
@@ -459,6 +508,11 @@ _PGVECTOR_OP_CLASS: dict[str, dict[str, str]] = {
         "cosine": "halfvec_cosine_ops",
         "l2": "halfvec_l2_ops",
         "ip": "halfvec_ip_ops",
+    },
+    "sparsevec": {
+        "cosine": "sparsevec_cosine_ops",
+        "l2": "sparsevec_l2_ops",
+        "ip": "sparsevec_ip_ops",
     },
 }
 
@@ -1332,6 +1386,9 @@ class TableTarget(
             lists: Number of lists (ivfflat only).
             m: Maximum number of connections per layer (hnsw only).
             ef_construction: Size of the dynamic candidate list (hnsw only).
+
+        Sparse-vector columns only support HNSW indexes. pgvector limits
+        HNSW-indexed sparse vectors to 1,000 non-zero elements.
         """
         if name is None:
             name = column
@@ -1339,6 +1396,10 @@ class TableTarget(
         if col_def is None:
             raise ValueError(
                 f"Column '{column}' not found in table schema: {list(self._table_schema.columns.keys())}"
+            )
+        if _pgvector_type_base(col_def.type) == "sparsevec" and method != "hnsw":
+            raise ValueError(
+                'pgvector only supports HNSW indexes on sparsevec columns; pass method="hnsw"'
             )
         spec = _VectorIndexSpec(
             column=column,

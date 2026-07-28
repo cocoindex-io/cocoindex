@@ -9,7 +9,9 @@ import os
 import uuid
 from typing import Annotated, Any, cast
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex.connectorkits import target
@@ -17,6 +19,9 @@ from cocoindex.connectors import snowflake
 from cocoindex.connectors.snowflake import _target
 
 SNOWFLAKE_DB = coco.ContextKey[snowflake.ConnectionConfig]("snowflake_test_db")
+_UNPROVIDED_VECTOR_SCHEMA = coco.ContextKey[object](
+    "snowflake_test_unprovided_vector_schema"
+)
 
 
 @dataclasses.dataclass
@@ -41,6 +46,12 @@ class TypedRow:
 class OverrideRow:
     id: Annotated[int, snowflake.SnowflakeType("NUMBER(38, 0)")]
     vector: Annotated[list[float], snowflake.SnowflakeType("ARRAY")]
+
+
+@dataclasses.dataclass
+class ContextAnnotatedVectorRow:
+    id: int
+    embedding: Annotated[NDArray[np.float32], _UNPROVIDED_VECTOR_SCHEMA]
 
 
 class FakeCursor:
@@ -124,6 +135,15 @@ async def test_table_target_rejects_invalid_table_identifier() -> None:
             table_name="bad-table",
             table_schema=schema,
         )
+
+
+@pytest.mark.asyncio
+async def test_table_schema_does_not_resolve_vector_context_annotations() -> None:
+    schema = await snowflake.TableSchema.from_class(
+        ContextAnnotatedVectorRow, primary_key=["id"]
+    )
+
+    assert schema.columns["embedding"].type == "VARIANT"
 
 
 @pytest.mark.asyncio

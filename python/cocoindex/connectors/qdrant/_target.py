@@ -18,6 +18,7 @@ from typing import (
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -41,6 +42,17 @@ from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 # Public alias for Qdrant point model
 PointStruct = qdrant_models.PointStruct
+
+
+def sparse_vector(
+    value: res_schema.SparseVector | Mapping[int, float],
+) -> qdrant_models.SparseVector:
+    """Convert a canonical sparse vector value to Qdrant's model."""
+    canonical = res_schema.as_sparse_vector(value)
+    return qdrant_models.SparseVector(
+        indices=list(canonical.indices), values=list(canonical.values)
+    )
+
 
 # Type aliases
 _PointId = str | int
@@ -775,4 +787,5 @@ __all__ = [
     "create_client",
     "declare_collection_target",
     "mount_collection_target",
+    "sparse_vector",
 ]

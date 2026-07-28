@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["SingleWatcherGuard", "default_subpath_name"]
+from .vector_schema import (
+    VectorSchemas,
+    reject_sparse_vectors,
+    resolve_vector_schemas,
+)
+
+__all__ = [
+    "SingleWatcherGuard",
+    "VectorSchemas",
+    "default_subpath_name",
+    "reject_sparse_vectors",
+    "resolve_vector_schemas",
+]
 
 
 class SingleWatcherGuard:

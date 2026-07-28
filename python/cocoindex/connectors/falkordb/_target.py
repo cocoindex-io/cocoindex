@@ -17,7 +17,6 @@ import base64
 import datetime
 import decimal
 import logging
-import re
 import uuid as uuid_mod
 from dataclasses import dataclass
 from typing import (
@@ -34,7 +33,6 @@ from typing import (
 from typing_extensions import TypeVar
 
 try:
-    import falkordb as _falkordb  # type: ignore[import-untyped]
     import falkordb.asyncio as _falkordb_asyncio  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
@@ -53,7 +51,7 @@ import numpy as np
 import msgspec
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import resolve_vector_schemas, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -393,12 +391,12 @@ class TableSchema(Generic[RowT]):
             falkor_type_annotation = next(
                 (t for t in all_annotations if isinstance(t, FalkorType)), None
             )
-            vector_schema = None
-            for annot in all_annotations:
-                vs = await res_schema.get_vector_schema(annot)
-                if vs is not None:
-                    vector_schema = vs
-                    break
+            vector_schemas = await resolve_vector_schemas(
+                type_info.base_type,
+                all_annotations,
+                reject_sparse_vectors_for="FalkorDB",
+            )
+            vector_schema = vector_schemas.vector
 
             if falkor_type_annotation is not None:
                 type_mapping = _TypeMapping(
