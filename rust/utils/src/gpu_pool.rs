@@ -60,24 +60,21 @@ impl GPUPool {
         }
         let receiver = {
             let mut task_queue = self.task_queue.lock().await;
+            let mut receiver: Option<oneshot::Receiver<usize>> = None;
             if task_queue.is_empty() {
                 let mut gpus = self.gpus.lock().await;
                 if let Some(gpu) = Self::find_available(Self::capacities(gpus.iter()), fraction) {
                     gpus[gpu].capacity -= fraction;
                     return Ok(gpu);
                 } else if let Some(gpu) = Self::find_reservable_gpu(gpus.iter()) {
-                    Self::reserve_gpu(&mut gpus, gpu, fraction)
-                } else {
-                    Self::send_task_to_queue(&mut task_queue, fraction)
+                    receiver = Some(Self::reserve_gpu(&mut gpus, gpu, fraction));
                 }
-            } else {
-                Self::send_task_to_queue(&mut task_queue, fraction)
             }
+            receiver.unwrap_or_else(|| Self::send_task_to_queue(&mut task_queue, fraction))
         };
-        match receiver.await {
-            Ok(gpu_label) => Ok(gpu_label),
-            Err(err) => panic!("GPUPool dropped while waiting: {err}"),
-        }
+        receiver
+            .await
+            .map_err(|err| anyhow::anyhow!("GPUPool dropped while waiting: {err}"))
     }
 
     fn capacities<'a>(
@@ -105,7 +102,7 @@ impl GPUPool {
     }
 
     fn reserve_gpu(
-        gpus: &mut Vec<GPUState>,
+        gpus: &mut [GPUState],
         gpu_id: usize,
         fraction: GPUCapacity,
     ) -> oneshot::Receiver<usize> {
@@ -121,6 +118,15 @@ impl GPUPool {
         let (notifier, receiver) = oneshot::channel();
         task_queue.push_back((desired_capacity, notifier));
         receiver
+    }
+
+    fn send_repeated_tasks_to_queue(
+        task_queue: &mut VecDeque<PendingTask>,
+        desired_capacity: GPUCapacity,
+        repeat: usize,
+    ) -> impl Iterator<Item = oneshot::Receiver<usize>> {
+        std::iter::repeat_with(move || Self::send_task_to_queue(task_queue, desired_capacity))
+            .take(repeat)
     }
 
     /// Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.
@@ -145,52 +151,23 @@ impl GPUPool {
             let mut task_queue = self.task_queue.lock().await;
             let (acquired_gpus, mut receivers) = if task_queue.is_empty() {
                 let mut gpus = self.gpus.lock().await;
-                let acquired_gpus = Self::find_fully_available(
-                    gpus.iter()
-                        .filter(|gpu| gpu.is_reservable())
-                        .map(|gpu| gpu.capacity),
-                    GPUCapacity::ONE,
-                    gpu_count,
-                );
-                let acquired_gpu_count = acquired_gpus.len();
-                for gpu_id in &acquired_gpus {
-                    gpus[*gpu_id].capacity = GPUCapacity::ZERO;
-                }
-                if acquired_gpu_count == gpu_count {
-                    return Ok(acquired_gpus);
-                }
-                let reserved_gpus_count = gpu_count - acquired_gpu_count;
-                let mut receivers = Vec::with_capacity(reserved_gpus_count);
-                for _ in 0..reserved_gpus_count {
-                    if let Some(gpu_id) = Self::find_reservable_gpu(gpus.iter()) {
-                        receivers.push(Self::reserve_gpu(&mut gpus, gpu_id, GPUCapacity::ONE));
-                    } else {
-                        break;
-                    }
-                }
-                (acquired_gpus, receivers)
+                Self::try_immediate_acquisition(&mut gpus, gpu_count)
             } else {
                 (vec![], vec![])
             };
+            if gpu_count == acquired_gpus.len() {
+                return Ok(acquired_gpus);
+            }
             let reserved_gpus_count = gpu_count - acquired_gpus.len() - receivers.len();
-            receivers.extend(
-                std::iter::repeat_with(|| {
-                    Self::send_task_to_queue(&mut task_queue, GPUCapacity::ONE)
-                })
-                .take(reserved_gpus_count),
-            );
+            receivers.extend(Self::send_repeated_tasks_to_queue(
+                &mut task_queue,
+                GPUCapacity::ONE,
+                reserved_gpus_count,
+            ));
             (acquired_gpus, receivers)
         };
-        let reserved_gpu_count = receivers.len();
         let reserve_gpu_tasks = receivers.into_iter().map(async |receiver| receiver.await);
         let gpu_labels = futures::future::try_join_all(reserve_gpu_tasks).await?;
-        debug_assert_eq!(
-            gpu_labels.len(),
-            reserved_gpu_count,
-            "reserved {} GPUs but received {} GPUs. May be a bug in `release` function",
-            reserved_gpu_count,
-            gpu_labels.len()
-        );
         let mut acquired_gpus = acquired_gpus;
         acquired_gpus.extend(gpu_labels);
         Ok(acquired_gpus)
@@ -209,6 +186,36 @@ impl GPUPool {
             .map(|(gpu_id, _)| gpu_id)
             .take(count)
             .collect()
+    }
+
+    fn try_immediate_acquisition(
+        gpus: &mut [GPUState],
+        gpu_count: usize,
+    ) -> (Vec<usize>, Vec<oneshot::Receiver<usize>>) {
+        let acquired_gpus = Self::find_fully_available(
+            gpus.iter()
+                .filter(|gpu| gpu.is_reservable())
+                .map(|gpu| gpu.capacity),
+            GPUCapacity::ONE,
+            gpu_count,
+        );
+        let acquired_gpu_count = acquired_gpus.len();
+        for gpu_id in &acquired_gpus {
+            gpus[*gpu_id].capacity = GPUCapacity::ZERO;
+        }
+        if acquired_gpu_count == gpu_count {
+            return (acquired_gpus, vec![]);
+        }
+        let reserved_gpus_count = gpu_count - acquired_gpu_count;
+        let mut receivers = Vec::with_capacity(reserved_gpus_count);
+        for _ in 0..reserved_gpus_count {
+            if let Some(gpu_id) = Self::find_reservable_gpu(gpus.iter()) {
+                receivers.push(Self::reserve_gpu(gpus, gpu_id, GPUCapacity::ONE));
+            } else {
+                break;
+            }
+        }
+        (acquired_gpus, receivers)
     }
 
     pub async fn release(&self, gpu_id: usize, fraction: GPUCapacity) -> Result<()> {
@@ -239,8 +246,7 @@ impl GPUPool {
         if gpu
             .reservation
             .as_ref()
-            .map(|(desired_capacity, _)| desired_capacity <= &gpu.capacity)
-            .unwrap_or_default()
+            .is_some_and(|(desired_capacity, _)| desired_capacity <= &gpu.capacity)
         {
             let (desired_capacity, notifier) = gpu.reservation.take().unwrap();
             // if the task is no longer waiting, so we can ignore the error.
@@ -304,9 +310,9 @@ impl GPUPool {
     /// 4. Default to ``1``.
     ///
     fn detect_num_gpus() -> Result<usize> {
-        if let Ok(env_num) = std::env::var("COCOINDEX_NUM_GPUS")
-            .map_err(Error::from)
-            .and_then(|s| s.parse::<usize>().map_err(Error::from))
+        if let Some(env_num) = std::env::var("COCOINDEX_NUM_GPUS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
         {
             return Ok(std::cmp::max(1, env_num));
         }
