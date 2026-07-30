@@ -372,9 +372,11 @@ class TableSchema(Generic[RowT]):
         record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
 
-        for field in record_info.fields:
-            override = column_overrides.get(field.name) if column_overrides else None
-            type_info = analyze_type_info(field.type_hint)
+        for rec_field in record_info.fields:
+            override = (
+                column_overrides.get(rec_field.name) if column_overrides else None
+            )
+            type_info = analyze_type_info(rec_field.type_hint)
 
             all_annotations = []
             if override is not None:
@@ -401,10 +403,10 @@ class TableSchema(Generic[RowT]):
                 )
             else:
                 type_mapping = await _get_type_mapping(
-                    field.type_hint, vector_schema=vector_schema
+                    rec_field.type_hint, vector_schema=vector_schema
                 )
 
-            columns[field.name] = ColumnDef(
+            columns[rec_field.name] = ColumnDef(
                 type=type_mapping.sqlite_type.strip(),
                 nullable=type_info.nullable,
                 encoder=type_mapping.encoder,
@@ -838,25 +840,37 @@ def _apply_column_actions(
                     f"ALTER TABLE {qualified_name} "
                     f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
                 )
-            except sqlite3.OperationalError:
-                # Column might already exist (upsert case)
-                pass
+            except sqlite3.OperationalError as e:
+                # Only ignore if column already exists (e.g. upsert / idempotent re-run)
+                if "duplicate column name" in str(e).lower():
+                    pass
+                else:
+                    raise RuntimeError(
+                        f"Failed to add column {col_name!r} to SQLite table {table_name!r}: {e}"
+                    ) from e
             continue
 
         if action == "replace":
             # SQLite doesn't support ALTER COLUMN TYPE directly.
-            # For type changes, we'd need to recreate the table.
-            # For now, we'll drop and re-add if possible.
+            # For type changes, attempt to drop and re-add column.
             try:
                 conn.execute(f'ALTER TABLE {qualified_name} DROP COLUMN "{col_name}"')
-                nullable = "" if desired_col.nullable else " NOT NULL"
+            except sqlite3.OperationalError:
+                pass
+            nullable = "" if desired_col.nullable else " NOT NULL"
+            try:
                 conn.execute(
                     f"ALTER TABLE {qualified_name} "
                     f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
                 )
-            except sqlite3.OperationalError:
-                # Can't modify column - skip
-                pass
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e).lower():
+                    pass
+                else:
+                    raise RuntimeError(
+                        f"Failed to replace column {col_name!r} in SQLite table {table_name!r}: {e}"
+                    ) from e
+            continue
 
 
 def _apply_table_actions(

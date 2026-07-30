@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextProvider
-from cocoindex.connectorkits import target
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectors import sqlite
 from cocoindex.resources.schema import VectorSchema
 
@@ -29,7 +29,7 @@ SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("sqlite_test_db")
 # =============================================================================
 
 try:
-    import sqlite_vec  # type: ignore[import-not-found]
+    import sqlite_vec  # type: ignore[import-not-found]  # noqa: F401
 
     HAS_SQLITE_VEC = True
 except ImportError:
@@ -1430,3 +1430,96 @@ def test_regular_table_vs_vec0_switch(
     data = read_table_data(managed_conn, "switchable")
     assert len(data) == 1
     assert data[0]["id"] == 1
+
+
+def test_unsupported_sqlite_migration_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that attempting an invalid SQLite migration (adding NOT NULL column without DEFAULT to a populated table) raises RuntimeError loudly instead of silently swallowing the failure."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
+        _row_type = SimpleRow
+        _table_name = "test_alter_non_nullable_raises"
+
+        test_env = make_test_env(
+            managed_conn, "test_unsupported_sqlite_migration_raises_error"
+        )
+
+        async def declare_dynamic_schema() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                sqlite.declare_table_target,
+                SQLITE_DB,
+                _table_name,
+                await sqlite.TableSchema.from_class(_row_type, primary_key=["id"]),
+            )
+            for row in _source_rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(
+                name="test_unsupported_sqlite_migration_raises_error",
+                environment=test_env,
+            ),
+            declare_dynamic_schema,
+        )
+
+        # Initial update creates table with SimpleRow and inserts data
+        app.update_blocking()
+        assert table_exists(managed_conn, _table_name)
+        assert "extra" not in get_table_columns(managed_conn, _table_name)
+
+        # Update schema to ExtendedRow (adds 'extra' column which is NOT NULL)
+        _row_type = ExtendedRow
+        _source_rows = [
+            ExtendedRow(id="1", name="Alice", value=100, extra="new_field"),
+        ]
+
+        # SQLite rejects adding NOT NULL column without DEFAULT to a populated table.
+        # This MUST fail loudly with RuntimeError instead of silently proceeding.
+        with pytest.raises(RuntimeError, match="Failed to add column 'extra'"):
+            app.update_blocking()
+
+        # Database schema must remain consistent (unaltered)
+        cols = get_table_columns(managed_conn, _table_name)
+        assert "extra" not in cols
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_duplicate_column_error_is_ignored_on_idempotent_rerun(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that duplicate column errors are safely ignored during idempotent ADD COLUMN execution."""
+    managed_conn, _ = sqlite_db
+    table_name = "test_duplicate_col"
+
+    schema = sqlite.TableSchema(
+        columns={
+            "id": sqlite.ColumnDef(type="TEXT", nullable=False),
+            "col1": sqlite.ColumnDef(type="TEXT", nullable=True),
+        },
+        primary_key=["id"],
+    )
+
+    with managed_conn.transaction() as conn:
+        sqlite._target._create_table(
+            conn, table_name, schema, if_not_exists=True, has_vec_extension=False
+        )
+
+    # Manually call _apply_column_actions with action 'insert' for col1 (which already exists)
+    column_actions: dict[str, statediff.DiffAction] = {"col:col1": "insert"}
+    with managed_conn.transaction() as conn:
+        # Should not raise an exception because 'duplicate column name' is caught and ignored
+        sqlite._target._apply_column_actions(conn, table_name, schema, column_actions)
+
+    cols = get_table_columns(managed_conn, table_name)
+    assert "col1" in cols
