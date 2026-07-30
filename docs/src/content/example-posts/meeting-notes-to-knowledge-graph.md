@@ -48,7 +48,7 @@ Extraction is [instructor](https://github.com/instructor-ai/instructor) over [Li
 
 ## Pipeline overview
 
-![CocoIndex flow: Google Drive meeting notes through three phases — per-note extraction declaring Meeting and Task nodes, person entity resolution, and a final person-relations pass — landing in a Neo4j property graph](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/flow-v1.png)
+![CocoIndex flow: Google Drive meeting notes through three phases — per-note extraction declaring Meeting and Task nodes, person entity resolution, and a final person-relations pass — landing in a Neo4j property graph](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/flow-v1.svg)
 
 The pipeline runs in three phases:
 
@@ -186,7 +186,7 @@ async def extract_meeting(section_text: str) -> ExtractedMeeting:
 
 ## Phase 1: per-file extraction
 
-![Phase 1 — one process_file component per note: split into meetings, memoized LLM extraction, declare Meeting and Task nodes into Neo4j, and carry MeetingExtraction forward to phases 2 and 3](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase1.png)
+![Phase 1 — one process_file component per note: split into meetings, memoized LLM extraction, declare Meeting and Task nodes into Neo4j, and carry MeetingExtraction forward to phases 2 and 3](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase1.svg)
 
 `process_file` runs once per note. For each meeting section it extracts the structured meeting, declares the `Meeting` node, declares a `Task` node + `DECIDED` edge per task, and returns the raw (un-resolved) person names for phase 2:
 
@@ -245,7 +245,7 @@ Why a component per file? **Ownership.** The component at `("file", path_key)` o
 
 ## Phase 2: resolve people
 
-![Phase 2 — a single resolve_persons pass: the set of raw person names from every note is deduplicated by embedding similarity plus LLM confirmation into a canonical-name map](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase2.png)
+![Phase 2 — a single resolve_persons pass: the set of raw person names from every note is deduplicated by embedding similarity plus LLM confirmation into a canonical-name map](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase2.svg)
 
 This is the step that separates a useful graph from a messy one. We have a pile of raw names from every note — "Alice", "Alice Chen", "alice c." — and we want one `Person` node per actual person. CocoIndex's [`entity_resolution`](https://cocoindex.io/docs/ops/entity_resolution/) op embeds each name, finds near-matches by vector similarity, and asks an LLM to confirm *only* the close pairs — cheap embeddings filter the field, the expensive model runs only where it's genuinely ambiguous:
 
@@ -278,7 +278,7 @@ Because it's a memoized component keyed by the name set, resolution only re-runs
 
 ## Phase 3: people, attendance, and assignments
 
-![Phase 3 — a single create_person_relations pass: MeetingExtraction from phase 1 and the resolved names from phase 2 are combined to declare Person nodes plus ATTENDED and ASSIGNED_TO edges into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase3.png)
+![Phase 3 — a single create_person_relations pass: MeetingExtraction from phase 1 and the resolved names from phase 2 are combined to declare Person nodes plus ATTENDED and ASSIGNED_TO edges into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase3.svg)
 
 With the canonical mapping in hand, one component declares the `Person` nodes and the two person-touching edge types — the cross-file part of the graph that no single note could own:
 
