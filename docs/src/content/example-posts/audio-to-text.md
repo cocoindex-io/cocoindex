@@ -16,7 +16,7 @@ The whole thing is ordinary `async` Python and your own types. The heavy lifting
 
 ## Flow overview
 
-![CocoIndex audio-to-text flow: read audio files from a local directory, transcribe each with LiteLLM, and store one transcript row per file in Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/flow-v1.png)
+![CocoIndex audio-to-text flow: read audio files from a local directory, transcribe each with LiteLLM, and store one transcript row per file in Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -91,7 +91,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process a file
 
-![One processing component per file: each audio file is transcribed with LiteLLM, producing one AudioTranscription row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/stage-file-process.png)
+![One processing component per file: each audio file is transcribed with LiteLLM, producing one AudioTranscription row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/stage-file-process.svg)
 
 `process_file` runs once per file. It reads the audio, [transcribes it](https://cocoindex.io/docs/ops/litellm/), and declares a single target row — no chunking, one row per file.
 

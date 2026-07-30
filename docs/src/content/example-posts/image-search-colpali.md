@@ -16,7 +16,7 @@ The store does the heavy lifting on the query side. We give [Qdrant](https://qdr
 
 ## Flow overview
 
-![CocoIndex ColPali image search indexing flow: walk a folder of images, embed each into a multi-vector bag of patch vectors with ColPali, and declare a point into a Qdrant MaxSim multivector collection](https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/flow-v1.png)
+![CocoIndex ColPali image search indexing flow: walk a folder of images, embed each into a multi-vector bag of patch vectors with ColPali, and declare a point into a Qdrant MaxSim multivector collection](https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/flow-v1.svg)
 
 The indexing path is short — there's no text to chunk, just one multi-vector embedding per image:
 
@@ -94,7 +94,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process an image
 
-![One process_file component per image, fanned out with mount_each: each image is ColPali-embedded into a bag of patch vectors and declared as a Qdrant multivector point](https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/stage-file-process.png)
+![One process_file component per image, fanned out with mount_each: each image is ColPali-embedded into a bag of patch vectors and declared as a Qdrant multivector point](https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/stage-file-process.svg)
 
 `process_file` runs once per image: read the bytes, embed with ColPali into a multi-vector, and declare a Qdrant point keyed by a stable id derived from the path, with the filename in the payload. The only difference from the CLIP version is the shape of `embedding` — a list of patch vectors rather than one vector.
 

@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex patient intake flow: walk a folder of PDF intake forms, render each page to an image, extract a typed Patient with a DSPy ChainOfThought vision module on Gemini, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/flow-v1.png)
+![CocoIndex patient intake flow: walk a folder of PDF intake forms, render each page to an image, extract a typed Patient with a DSPy ChainOfThought vision module on Gemini, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -138,7 +138,7 @@ def extract_patient(pdf_content: bytes) -> Patient:
 
 ## Process a file
 
-![One processing component per PDF: render to images, extract a Patient with DSPy, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/stage-file-process.png)
+![One processing component per PDF: render to images, extract a Patient with DSPy, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/stage-file-process.svg)
 
 `process_patient_form` runs once per PDF. It reads the file's bytes, extracts the `Patient`, serializes it to pretty-printed JSON, and declares one output file named after the source form.
 

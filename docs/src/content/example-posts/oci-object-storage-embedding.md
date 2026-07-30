@@ -14,7 +14,7 @@ This is the [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedd
 
 ## Flow overview
 
-![CocoIndex OCI Object Storage flow: list Markdown objects from a bucket, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/oci-object-storage-embedding/flow-v1.png)
+![CocoIndex OCI Object Storage flow: list Markdown objects from a bucket, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/oci-object-storage-embedding/flow-v1.svg)
 
 From a high level, these are the steps:
 

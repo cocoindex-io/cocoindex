@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python. Embedding runs on a [GPU runner](
 
 ## Flow overview
 
-![CocoIndex flow: walk text filings and JSON facts, scrub PII, chunk, embed, tag topics, and load one row per chunk into Apache Doris with a vector index and a full-text index](https://cocoindex.io/blobs/docs-v1/img/examples/sec-edgar-analytics/flow-v1.png)
+![CocoIndex flow: walk text filings and JSON facts, scrub PII, chunk, embed, tag topics, and load one row per chunk into Apache Doris with a vector index and a full-text index](https://cocoindex.io/blobs/docs-v1/img/examples/sec-edgar-analytics/flow-v1.svg)
 
 Two source formats fan into one chunk table:
 

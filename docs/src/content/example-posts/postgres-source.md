@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex Postgres source flow: read product rows from a Postgres table, derive fields and embed each row, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/flow-v1.png)
+![CocoIndex Postgres source flow: read product rows from a Postgres table, derive fields and embed each row, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -101,7 +101,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process a row
 
-![One processing component per row: each source row is derived and embedded, producing an OutputProduct row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/stage-file-process.png)
+![One processing component per row: each source row is derived and embedded, producing an OutputProduct row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/stage-file-process.svg)
 
 `process_product` runs once per source row. It builds a `full_description` from the category, name, and body, computes `total_value`, embeds the description, and declares the target row.
 

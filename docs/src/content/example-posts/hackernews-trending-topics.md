@@ -16,7 +16,7 @@ The data source here isn't a folder of files — it's a public HTTP API. We fetc
 
 ## Flow overview
 
-![Flow](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/flow-v1.png)
+![Flow](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/flow-v1.svg)
 
 1. Fetch a list of recent thread IDs from the Algolia HackerNews API
 2. For each thread, fetch the story and all of its comments
@@ -190,7 +190,7 @@ These are ordinary `async def` functions — no special CocoIndex decorators. An
 
 Each thread is processed by its own component. `process_thread` fetches the thread, extracts topics for the story and every comment, and declares the resulting rows.
 
-![Process thread](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/stage-file-process.png)
+![Process thread](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/stage-file-process.svg)
 
 ```python title="main.py"
 @coco.fn

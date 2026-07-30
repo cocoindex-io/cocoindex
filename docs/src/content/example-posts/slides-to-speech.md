@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python. The vision and TTS steps run on a
 
 ## Flow overview
 
-![CocoIndex flow: render each slide to an image, a vision LLM writes speaker notes, Pocket TTS narrates them, the notes are embedded, and everything is stored per-slide in LanceDB](https://cocoindex.io/blobs/docs-v1/img/examples/slides-to-speech/flow-v1.png)
+![CocoIndex flow: render each slide to an image, a vision LLM writes speaker notes, Pocket TTS narrates them, the notes are embedded, and everything is stored per-slide in LanceDB](https://cocoindex.io/blobs/docs-v1/img/examples/slides-to-speech/flow-v1.svg)
 
 A deck fans out to **slides**, and each slide produces text, audio, and a vector:
 

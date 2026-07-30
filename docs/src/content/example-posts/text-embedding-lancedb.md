@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex text embedding flow with LanceDB: read Markdown, split into chunks, embed each chunk, and store the vectors in an embedded LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-lancedb/flow-v1.png)
+![CocoIndex text embedding flow with LanceDB: read Markdown, split into chunks, embed each chunk, and store the vectors in an embedded LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-lancedb/flow-v1.svg)
 
 From a high level, these are the steps:
 
