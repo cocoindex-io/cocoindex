@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python. You write a [BAML schema](https:/
 
 ## Flow overview
 
-![CocoIndex patient intake extraction flow: walk a folder of PDF intake forms, run one BAML Gemini-vision extraction per form into a typed Patient model, dump it to JSON, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/flow-v1.png)
+![CocoIndex patient intake extraction flow: walk a folder of PDF intake forms, run one BAML Gemini-vision extraction per form into a typed Patient model, dump it to JSON, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -100,7 +100,7 @@ The return type is `Patient` — the actual Pydantic class BAML generated, not a
 
 ## Process a file
 
-![One processing component per intake form: read the PDF, extract a typed Patient with BAML, serialize to JSON, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/stage-file-process.png)
+![One processing component per intake form: read the PDF, extract a typed Patient with BAML, serialize to JSON, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/stage-file-process.svg)
 
 `process_patient_form` runs once per PDF. It reads the file, runs the BAML extraction, dumps the typed `Patient` to JSON, and declares one output file named after the source form.
 
