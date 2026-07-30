@@ -22,4 +22,3 @@ Action items:
 
 - Alice C. to review the Q3 roadmap draft.
 - David Kim to schedule the onboarding design review.
-
