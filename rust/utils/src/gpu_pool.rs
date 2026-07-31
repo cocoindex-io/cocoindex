@@ -1,4 +1,4 @@
-use anyhow::{Error, Result};
+use anyhow::Result;
 use container::SortedVec;
 use gpu_fraction::GPUCapacity;
 use std::collections::VecDeque;
@@ -25,7 +25,7 @@ type PendingTask = (GPUCapacity, oneshot::Sender<usize>);
 impl GPUPool {
     pub fn new(num_gpus: NonZeroUsize) -> Self {
         let num_gpus = num_gpus.get();
-        let gpus = SortedVec::new(std::iter::repeat_n(GPUCapacity::ONE, num_gpus));
+        let gpus = SortedVec::new(std::iter::repeat_n(GPUCapacity::MAX, num_gpus));
         GPUPool {
             num_gpus,
             capacities: Mutex::new(gpus),
@@ -37,6 +37,21 @@ impl GPUPool {
         self.num_gpus
     }
 
+    /// acquire a fraction of a GPU for a task, if not available the task is thrown into the queue.
+    ///
+    /// The function would first attempt to find a GPU with just enough capacity for the demanded
+    /// fraction, and the GPU cannot be the top n, in the following rules:
+    ///
+    /// 1. The `n` is the size of the queue.
+    /// 2. The top n are defined by capacities.
+    /// 3. The top n are reserved for tasks already in the queue.
+    ///
+    /// Reservation is for an abstract concept,
+    /// e.g. "the GPU with the most available capacity" is reserved for the head task in the queue.
+    ///
+    /// The function would try to host the task using the remaining GPUs,
+    /// or it will send it to the queue which will reserve a GPU now or later.
+    ///
     pub async fn acquire(&self, fraction: GPUCapacity) -> Result<usize> {
         if fraction == GPUCapacity::ZERO {
             return Err(anyhow::anyhow!(
@@ -94,27 +109,51 @@ impl GPUPool {
             let mut capacities = self.capacities.lock().await;
             while acquired_gpus.len() < gpu_count
                 && let Some(gpu_id) =
-                    capacities.find_excluding_top_n(&GPUCapacity::ONE, task_queue.len())
+                    capacities.find_excluding_top_n(&GPUCapacity::MAX, task_queue.len())
             {
                 acquired_gpus.push(gpu_id);
                 capacities.update(gpu_id, GPUCapacity::ZERO);
             }
         }
-        if acquired_gpus.len() == gpu_count {
-            return Ok(acquired_gpus);
-        }
-        let mut receivers = Vec::with_capacity(gpu_count - acquired_gpus.len());
-        for _ in 0..(gpu_count - acquired_gpus.len()) {
-            receivers.push(Self::send_task_to_queue(&mut task_queue, GPUCapacity::ONE));
-        }
-        drop(task_queue);
+        if acquired_gpus.len() != gpu_count {
+            let gpus_to_be_acquired = gpu_count - acquired_gpus.len();
+            let receivers = std::iter::repeat_with(|| {
+                Self::send_task_to_queue(&mut task_queue, GPUCapacity::MAX)
+            })
+            .take(gpus_to_be_acquired)
+            .collect::<Vec<_>>();
+            drop(task_queue);
 
-        let reserve_gpu_tasks = receivers.into_iter().map(async |receiver| receiver.await);
-        let gpu_ids = futures::future::try_join_all(reserve_gpu_tasks).await?;
-        acquired_gpus.extend(gpu_ids);
+            let reserve_gpu_tasks = receivers.into_iter().map(async |receiver| receiver.await);
+            let gpu_ids = futures::future::try_join_all(reserve_gpu_tasks).await?;
+            acquired_gpus.extend(gpu_ids);
+        }
         Ok(acquired_gpus)
     }
 
+    /// release adds back capacities to GPUs, and processes pending tasks afterwards.
+    ///
+    /// # Example
+    /// Initially:
+    /// ```text
+    /// GPUs: G1(capacity=0), G2(capacity=0), G3(capacity=0)
+    /// Queue: T1(req=0.7, reserved=[G1]) T2(req=0.5, reserved=[G2])
+    /// ```
+    /// After releasing 0.5 capacity to G1:
+    /// ```text
+    /// GPUs: G1(capacity=0.5), G2(capacity=0), G3(capacity=0)
+    /// Queue: T1(req=0.7, reserved=[G1]), T2(req=0.5, reserved=[G2])
+    /// ```
+    /// After releasing 0.6 capacity to G2:
+    /// ```text
+    /// GPUs: G1(capacity=0.5), G2(capacity=0.6), G3(capacity=0)
+    /// Queue: T1(req=0.7, reserved=[G2]), T2(req=0.5, reserved=[G1])
+    /// ```
+    /// After releasing 0.1 capacity to G2, T1 will be hosted by G2, then get popped:
+    /// ```text
+    /// GPUs: G1(capacity=0.5), G2(capacity=0), G3(capacity=0)
+    /// Queue: T2(req=0.5, reserved=[G1])
+    /// ```
     pub async fn release(&self, gpu_id: usize, fraction: GPUCapacity) -> Result<()> {
         if gpu_id >= self.num_gpus() {
             return Err(anyhow::format_err!(
@@ -125,19 +164,20 @@ impl GPUPool {
         if fraction == GPUCapacity::ZERO {
             return Err(anyhow::format_err!("Cannot release a zero fraction"));
         }
-        let mut capacities = self.capacities.lock().await;
-        let updated_capacity = capacities[gpu_id] + fraction;
-        if updated_capacity > GPUCapacity::ONE {
-            return Err(anyhow::format_err!(
-                "Capacity after releasing cannot be greater than 1.0, got {updated_capacity}",
-            ));
-        }
-        capacities.update(gpu_id, updated_capacity);
+        // Lock orders matter. Keep in sync with other functions.
         let mut task_queue = self.task_queue.lock().await;
+        let mut capacities = self.capacities.lock().await;
+        let updated_capacity = capacities[gpu_id].checked_add(&fraction)?;
+        capacities.update(gpu_id, updated_capacity);
         Self::process_task_queue(&mut task_queue, &mut capacities);
         Ok(())
     }
 
+    /// processes pending task queue following the rules:
+    ///
+    /// 1. strict FIFO - when task A comes in earlier than task B, task A always gets processed earlier.
+    /// 2. only pop if available - the task remains in the queue until a GPU has enough availability to process it.
+    ///
     fn process_task_queue(
         task_queue: &mut VecDeque<PendingTask>,
         capacities: &mut SortedVec<GPUCapacity>,
@@ -194,7 +234,7 @@ impl GPUPool {
         #[cfg(test)]
         let output = {
             if std::env::var("MOCK_NVIDIA_SMI_NOT_FOUND").is_ok() {
-                return Err(Error::from(std::io::Error::new(
+                return Err(anyhow::Error::from(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "nvidia-smi not found",
                 )));
@@ -239,11 +279,22 @@ pub mod gpu_fraction {
     impl GPUCapacity {
         const SCALE: f32 = 1_000_000.0;
         pub const ZERO: Self = Self(0);
-        pub const ONE: Self = Self(Self::SCALE as u32);
+        pub const MAX: Self = Self(Self::SCALE as u32);
 
         #[cfg(test)]
         pub(crate) fn unchecked(value: f32) -> Self {
             GPUCapacity::try_from(value).expect("Unchecked value initialization should not fail")
+        }
+
+        pub fn checked_add(&self, other: &Self) -> Result<Self> {
+            if self.0 + other.0 > GPUCapacity::MAX.0 {
+                Err(anyhow::anyhow!(
+                    "The sum of {self} and {other} is greater than the max value {}",
+                    Self::MAX
+                ))
+            } else {
+                Ok(GPUCapacity(self.0 + other.0))
+            }
         }
     }
 
@@ -308,12 +359,7 @@ mod container {
     impl<T: Clone + Ord> SortedVec<T> {
         pub fn new(values: impl IntoIterator<Item = T>) -> Self {
             let values = values.into_iter().collect::<Vec<_>>();
-            let sorted = values
-                .clone()
-                .into_iter()
-                .enumerate()
-                .map(|(index, value)| (value, index))
-                .collect::<BTreeSet<_>>();
+            let sorted = BTreeSet::from_iter(values.clone().into_iter().zip(0..));
             Self { values, sorted }
         }
 
@@ -332,6 +378,8 @@ mod container {
         pub fn find_excluding_top_n(&self, target: &T, top_n: usize) -> Option<usize> {
             if top_n == 0 {
                 return self.find(target);
+            } else if top_n >= self.values.len() {
+                return None;
             }
             let ceiling_tuple = self.sorted.iter().rev().nth(top_n)?;
             if target > &ceiling_tuple.0 {
@@ -372,39 +420,39 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_returns_gpu_id() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(2).unwrap());
-        let gpu = pool.acquire(GPUCapacity::ONE).await?;
+        let gpu = pool.acquire(GPUCapacity::MAX).await?;
         assert!(gpu < 2);
-        pool.release(gpu, GPUCapacity::ONE).await?;
+        pool.release(gpu, GPUCapacity::MAX).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_acquire_different_gpus() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(2).unwrap());
-        let gpu0 = pool.acquire(GPUCapacity::ONE).await?;
-        let gpu1 = pool.acquire(GPUCapacity::ONE).await?;
+        let gpu0 = pool.acquire(GPUCapacity::MAX).await?;
+        let gpu1 = pool.acquire(GPUCapacity::MAX).await?;
         assert_ne!(gpu0, gpu1);
-        pool.release(gpu0, GPUCapacity::ONE).await?;
-        pool.release(gpu1, GPUCapacity::ONE).await?;
+        pool.release(gpu0, GPUCapacity::MAX).await?;
+        pool.release(gpu1, GPUCapacity::MAX).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_acquire_blocks_when_capacity_full() -> Result<()> {
         let pool = Arc::new(GPUPool::new(NonZeroUsize::new(1).unwrap()));
-        let gpu = pool.acquire(GPUCapacity::ONE).await?;
+        let gpu = pool.acquire(GPUCapacity::MAX).await?;
 
         let cloned_pool = pool.clone();
-        let task = tokio::spawn(async move { cloned_pool.acquire(GPUCapacity::ONE).await });
+        let task = tokio::spawn(async move { cloned_pool.acquire(GPUCapacity::MAX).await });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
 
-        pool.release(gpu, GPUCapacity::ONE).await?;
+        pool.release(gpu, GPUCapacity::MAX).await?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")?;
         assert!(matches!(result, Ok(0)));
-        pool.release(result.unwrap(), GPUCapacity::ONE).await?;
+        pool.release(result.unwrap(), GPUCapacity::MAX).await?;
         Ok(())
     }
 
@@ -438,14 +486,14 @@ mod tests {
         for _ in 0..3 {
             let pool = pool.clone();
             tasks.push(tokio::spawn(
-                async move { pool.acquire(GPUCapacity::ONE).await },
+                async move { pool.acquire(GPUCapacity::MAX).await },
             ));
         }
         let results = futures::future::try_join_all(tasks).await?;
         let gpus = results.into_iter().collect::<Result<Vec<usize>, _>>()?;
         assert_eq!(gpus.len(), 3);
         for g in gpus {
-            pool.release(g, GPUCapacity::ONE).await?;
+            pool.release(g, GPUCapacity::MAX).await?;
         }
         Ok(())
     }
@@ -492,7 +540,7 @@ mod tests {
             .expect("no timeout")?;
         assert_eq!(gpus.len(), 3);
         for gpu in gpus {
-            pool.release(gpu, GPUCapacity::ONE).await?;
+            pool.release(gpu, GPUCapacity::MAX).await?;
         }
         Ok(())
     }
@@ -505,7 +553,7 @@ mod tests {
             .await?;
         assert_eq!(gpus, vec![0, 1]);
         for g in gpus {
-            pool.release(g, GPUCapacity::ONE).await?;
+            pool.release(g, GPUCapacity::MAX).await?;
         }
         Ok(())
     }
@@ -531,7 +579,7 @@ mod tests {
             .expect("no timeout")?;
         assert_eq!(&result, &[1, 2, 0]);
         for gpu in result {
-            pool.release(gpu, GPUCapacity::ONE).await?;
+            pool.release(gpu, GPUCapacity::MAX).await?;
         }
         Ok(())
     }
@@ -562,7 +610,7 @@ mod tests {
         // initial 0.6 occupied index 0, then GPU 1 and 2 are reserved, until 0 is added.
         assert_eq!(&result, &[1, 2, 0]);
         for gpu in result {
-            pool.release(gpu, GPUCapacity::ONE).await?;
+            pool.release(gpu, GPUCapacity::MAX).await?;
         }
         Ok(())
     }
@@ -614,8 +662,8 @@ mod tests {
                 .expect("no timeout")?;
         assert_eq!(reserving_task_2_acquired_gpu, gpu_1);
 
-        pool.release(gpu_0, GPUCapacity::ONE).await?;
-        pool.release(gpu_1, GPUCapacity::ONE).await?;
+        pool.release(gpu_0, GPUCapacity::MAX).await?;
+        pool.release(gpu_1, GPUCapacity::MAX).await?;
         Ok(())
     }
 
@@ -645,7 +693,7 @@ mod tests {
                 .expect("no timeout")?;
         assert_eq!(reserving_task_acquired_gpu, gpu_0);
 
-        pool.release(gpu_0, GPUCapacity::ONE).await?;
+        pool.release(gpu_0, GPUCapacity::MAX).await?;
         Ok(())
     }
 
@@ -681,7 +729,7 @@ mod tests {
                 .expect("no timeout")?;
         assert_eq!(reserving_task_2_acquired_gpu, gpu_0);
 
-        pool.release(gpu_0, GPUCapacity::ONE).await?;
+        pool.release(gpu_0, GPUCapacity::MAX).await?;
         Ok(())
     }
 
@@ -725,7 +773,7 @@ mod tests {
         assert!(release_result.is_err());
         assert_eq!(
             release_result.unwrap_err().to_string(),
-            "Capacity after releasing cannot be greater than 1.0, got 1.1"
+            "The sum of 0.5 and 0.6 is greater than the max value 1"
         );
         Ok(())
     }
@@ -922,27 +970,27 @@ mod tests {
     #[test]
     fn test_gpu_capacity_zero() -> Result<()> {
         let half = GPUCapacity::try_from(0.5)?;
-        let result = GPUCapacity::ONE - half + half - GPUCapacity::ZERO;
-        assert_eq!(result, GPUCapacity::ONE);
+        let result = GPUCapacity::MAX - half + half - GPUCapacity::ZERO;
+        assert_eq!(result, GPUCapacity::MAX);
         Ok(())
     }
 
     #[test]
     fn test_gpu_capacity_repeat_acquire_then_release() -> Result<()> {
-        let mut full = GPUCapacity::ONE;
+        let mut full = GPUCapacity::MAX;
         let mut rng = rand::rng();
         for _ in 0..100_000 {
             let random_portion: f32 = rng.random_range(0.0..=1.0);
             full -= GPUCapacity::try_from(random_portion)?;
             full += GPUCapacity::try_from(random_portion)?;
         }
-        assert_eq!(full, GPUCapacity::ONE);
+        assert_eq!(full, GPUCapacity::MAX);
         Ok(())
     }
 
     #[test]
     fn test_gpu_capacity_repeat_acquire_then_release_later() -> Result<()> {
-        let mut full = GPUCapacity::ONE;
+        let mut full = GPUCapacity::MAX;
         let mut rng = rand::rng();
         let mut random_capacities = vec![];
         for _ in 0..100_000 {
@@ -954,7 +1002,7 @@ mod tests {
                 }
                 assert_eq!(
                     full,
-                    GPUCapacity::ONE,
+                    GPUCapacity::MAX,
                     "full ({full}) + sum({random_capacities:?}) != 1.0 (should be 1.0)",
                 );
                 random_capacities.clear();
@@ -967,7 +1015,7 @@ mod tests {
         }
         assert_eq!(
             full,
-            GPUCapacity::ONE,
+            GPUCapacity::MAX,
             "full ({full}) + sum({random_capacities:?}) != 1.0 (should be 1.0) (final)"
         );
         Ok(())
