@@ -1,4 +1,5 @@
 use anyhow::{Error, Result};
+use container::SortedVec;
 use gpu_fraction::GPUCapacity;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -15,35 +16,19 @@ use tokio::sync::{oneshot, Mutex};
 /// Call ``configure_gpu_pool(N)`` to override programmatically.
 pub struct GPUPool {
     num_gpus: usize,
-    gpus: Mutex<Vec<GPUState>>,
+    capacities: Mutex<SortedVec<GPUCapacity>>,
     task_queue: Mutex<VecDeque<PendingTask>>,
 }
 
 type PendingTask = (GPUCapacity, oneshot::Sender<usize>);
 
-struct GPUState {
-    capacity: GPUCapacity,
-    reservation: Option<(GPUCapacity, oneshot::Sender<usize>)>,
-}
-
-impl GPUState {
-    fn is_reservable(&self) -> bool {
-        self.reservation.is_none()
-    }
-}
-
 impl GPUPool {
     pub fn new(num_gpus: NonZeroUsize) -> Self {
         let num_gpus = num_gpus.get();
-        let gpus = std::iter::repeat_with(|| GPUState {
-            capacity: GPUCapacity::ONE,
-            reservation: None,
-        })
-        .take(num_gpus)
-        .collect();
+        let gpus = SortedVec::new(std::iter::repeat_n(GPUCapacity::ONE, num_gpus));
         GPUPool {
             num_gpus,
-            gpus: Mutex::new(gpus),
+            capacities: Mutex::new(gpus),
             task_queue: Mutex::new(VecDeque::new()),
         }
     }
@@ -60,55 +45,20 @@ impl GPUPool {
         }
         let receiver = {
             let mut task_queue = self.task_queue.lock().await;
-            let mut receiver: Option<oneshot::Receiver<usize>> = None;
-            if task_queue.is_empty() {
-                let mut gpus = self.gpus.lock().await;
-                if let Some(gpu) = Self::find_available(Self::capacities(gpus.iter()), fraction) {
-                    gpus[gpu].capacity -= fraction;
-                    return Ok(gpu);
-                } else if let Some(gpu) = Self::find_reservable_gpu(gpus.iter()) {
-                    receiver = Some(Self::reserve_gpu(&mut gpus, gpu, fraction));
+            if task_queue.len() < self.num_gpus {
+                let mut capacities = self.capacities.lock().await;
+                // excluding top_n, because the tasks in the queue have already reserved the top n GPUs.
+                if let Some(gpu_id) = capacities.find_excluding_top_n(&fraction, task_queue.len()) {
+                    let updated_capacity = capacities[gpu_id] - fraction;
+                    capacities.update(gpu_id, updated_capacity);
+                    return Ok(gpu_id);
                 }
             }
-            receiver.unwrap_or_else(|| Self::send_task_to_queue(&mut task_queue, fraction))
+            Self::send_task_to_queue(&mut task_queue, fraction)
         };
         receiver
             .await
             .map_err(|err| anyhow::anyhow!("GPUPool dropped while waiting: {err}"))
-    }
-
-    fn capacities<'a>(
-        gpus: impl IntoIterator<Item = &'a GPUState>,
-    ) -> impl Iterator<Item = GPUCapacity> {
-        gpus.into_iter().map(|gpu| {
-            if gpu.is_reservable() {
-                gpu.capacity
-            } else {
-                GPUCapacity::ZERO
-            }
-        })
-    }
-
-    fn find_available<N: Ord + Copy>(
-        capacity: impl IntoIterator<Item = N>,
-        fraction: N,
-    ) -> Option<usize> {
-        capacity
-            .into_iter()
-            .enumerate()
-            .filter(|(_, cap)| *cap >= fraction)
-            .min_by_key(|(_, cap)| *cap)
-            .map(|(gpu_label, _)| gpu_label)
-    }
-
-    fn reserve_gpu(
-        gpus: &mut [GPUState],
-        gpu_id: usize,
-        fraction: GPUCapacity,
-    ) -> oneshot::Receiver<usize> {
-        let (notifier, receiver) = oneshot::channel();
-        gpus[gpu_id].reservation = Some((fraction, notifier));
-        receiver
     }
 
     fn send_task_to_queue(
@@ -120,24 +70,15 @@ impl GPUPool {
         receiver
     }
 
-    fn send_repeated_tasks_to_queue(
-        task_queue: &mut VecDeque<PendingTask>,
-        desired_capacity: GPUCapacity,
-        repeat: usize,
-    ) -> impl Iterator<Item = oneshot::Receiver<usize>> {
-        std::iter::repeat_with(move || Self::send_task_to_queue(task_queue, desired_capacity))
-            .take(repeat)
-    }
-
     /// Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.
     ///
     /// # Error:
     /// * When the given gpu_count is larger than the total gpus, it returns an error.
     ///
     /// # Warning
-    /// * All GPUs will be acquired at simultaneously.
+    /// * When unable to acquire all GPUs, the system will be acquired the ones that can be acquired first.
     ///   For instance, if user attempts to acquire 5 GPUs,
-    ///   the function will not partially acquire 4 and waiting for the last GPU.
+    ///   the function will partially acquire 4 and wait for the last GPU.
     pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Result<Vec<usize>> {
         let gpu_count = gpu_count.get();
         if gpu_count > self.num_gpus() {
@@ -147,75 +88,31 @@ impl GPUPool {
                 self.num_gpus
             ));
         }
-        let (acquired_gpus, receivers) = {
-            let mut task_queue = self.task_queue.lock().await;
-            let (acquired_gpus, mut receivers) = if task_queue.is_empty() {
-                let mut gpus = self.gpus.lock().await;
-                Self::try_immediate_acquisition(&mut gpus, gpu_count)
-            } else {
-                (vec![], vec![])
-            };
-            if gpu_count == acquired_gpus.len() {
-                return Ok(acquired_gpus);
+        let mut task_queue = self.task_queue.lock().await;
+        let mut acquired_gpus = Vec::with_capacity(gpu_count);
+        if task_queue.len() < self.num_gpus {
+            let mut capacities = self.capacities.lock().await;
+            while acquired_gpus.len() < gpu_count
+                && let Some(gpu_id) =
+                    capacities.find_excluding_top_n(&GPUCapacity::ONE, task_queue.len())
+            {
+                acquired_gpus.push(gpu_id);
+                capacities.update(gpu_id, GPUCapacity::ZERO);
             }
-            let reserved_gpus_count = gpu_count - acquired_gpus.len() - receivers.len();
-            receivers.extend(Self::send_repeated_tasks_to_queue(
-                &mut task_queue,
-                GPUCapacity::ONE,
-                reserved_gpus_count,
-            ));
-            (acquired_gpus, receivers)
-        };
+        }
+        if acquired_gpus.len() == gpu_count {
+            return Ok(acquired_gpus);
+        }
+        let mut receivers = Vec::with_capacity(gpu_count - acquired_gpus.len());
+        for _ in 0..(gpu_count - acquired_gpus.len()) {
+            receivers.push(Self::send_task_to_queue(&mut task_queue, GPUCapacity::ONE));
+        }
+        drop(task_queue);
+
         let reserve_gpu_tasks = receivers.into_iter().map(async |receiver| receiver.await);
-        let gpu_labels = futures::future::try_join_all(reserve_gpu_tasks).await?;
-        let mut acquired_gpus = acquired_gpus;
-        acquired_gpus.extend(gpu_labels);
+        let gpu_ids = futures::future::try_join_all(reserve_gpu_tasks).await?;
+        acquired_gpus.extend(gpu_ids);
         Ok(acquired_gpus)
-    }
-
-    fn find_fully_available<N: PartialEq>(
-        capacity: impl IntoIterator<Item = N>,
-        target: N,
-        count: usize,
-    ) -> Vec<usize> {
-        debug_assert!(count >= 1, "count must be >= 1, got {count}");
-        capacity
-            .into_iter()
-            .enumerate()
-            .filter(|(_, cap)| cap == &target)
-            .map(|(gpu_id, _)| gpu_id)
-            .take(count)
-            .collect()
-    }
-
-    fn try_immediate_acquisition(
-        gpus: &mut [GPUState],
-        gpu_count: usize,
-    ) -> (Vec<usize>, Vec<oneshot::Receiver<usize>>) {
-        let acquired_gpus = Self::find_fully_available(
-            gpus.iter()
-                .filter(|gpu| gpu.is_reservable())
-                .map(|gpu| gpu.capacity),
-            GPUCapacity::ONE,
-            gpu_count,
-        );
-        let acquired_gpu_count = acquired_gpus.len();
-        for gpu_id in &acquired_gpus {
-            gpus[*gpu_id].capacity = GPUCapacity::ZERO;
-        }
-        if acquired_gpu_count == gpu_count {
-            return (acquired_gpus, vec![]);
-        }
-        let reserved_gpus_count = gpu_count - acquired_gpu_count;
-        let mut receivers = Vec::with_capacity(reserved_gpus_count);
-        for _ in 0..reserved_gpus_count {
-            if let Some(gpu_id) = Self::find_reservable_gpu(gpus.iter()) {
-                receivers.push(Self::reserve_gpu(gpus, gpu_id, GPUCapacity::ONE));
-            } else {
-                break;
-            }
-        }
-        (acquired_gpus, receivers)
     }
 
     pub async fn release(&self, gpu_id: usize, fraction: GPUCapacity) -> Result<()> {
@@ -228,67 +125,32 @@ impl GPUPool {
         if fraction == GPUCapacity::ZERO {
             return Err(anyhow::format_err!("Cannot release a zero fraction"));
         }
-        let mut gpus = self.gpus.lock().await;
-        if gpus[gpu_id].capacity + fraction > GPUCapacity::ONE {
+        let mut capacities = self.capacities.lock().await;
+        let updated_capacity = capacities[gpu_id] + fraction;
+        if updated_capacity > GPUCapacity::ONE {
             return Err(anyhow::format_err!(
-                "Capacity after releasing cannot be greater than 1.0, got {}",
-                gpus[gpu_id].capacity + fraction
+                "Capacity after releasing cannot be greater than 1.0, got {updated_capacity}",
             ));
         }
-        gpus[gpu_id].capacity += fraction;
-        Self::fulfill_reserved_task(gpu_id, &mut gpus[gpu_id]);
+        capacities.update(gpu_id, updated_capacity);
         let mut task_queue = self.task_queue.lock().await;
-        Self::process_task_queue(&mut task_queue, &mut gpus);
+        Self::process_task_queue(&mut task_queue, &mut capacities);
         Ok(())
     }
 
-    fn fulfill_reserved_task(gpu_id: usize, gpu: &mut GPUState) {
-        if gpu
-            .reservation
-            .as_ref()
-            .is_some_and(|(desired_capacity, _)| desired_capacity <= &gpu.capacity)
+    fn process_task_queue(
+        task_queue: &mut VecDeque<PendingTask>,
+        capacities: &mut SortedVec<GPUCapacity>,
+    ) {
+        while let Some((desired_capacity, _)) = task_queue.front()
+            && let Some(gpu_id) = capacities.find(desired_capacity)
         {
-            let (desired_capacity, notifier) = gpu.reservation.take().unwrap();
-            // if the task is no longer waiting, so we can ignore the error.
+            let (desired_capacity, notifier) = task_queue.pop_front().unwrap();
             if notifier.send(gpu_id).is_ok() {
-                gpu.capacity -= desired_capacity;
+                let updated_capacity = capacities[gpu_id] - desired_capacity;
+                capacities.update(gpu_id, updated_capacity);
             }
         }
-    }
-
-    /// Process a queue of pending tasks.
-    ///
-    /// 1. if we can schedule a task, then go ahead and schedule it
-    /// 2. if not capable for scheduling,
-    ///    and this task is not the last task for a batch (explained later),
-    ///    then we try to find a GPU and reserve the GPU.
-    ///
-    /// The reason why we want to check if it's the last task of a batch is to do a small optimization.
-    /// We want to wait for a GPU with enough capacity to host it, instead of scheduling it for a GPU,
-    /// while another GPU may be freed up very quickly.
-    fn process_task_queue(task_queue: &mut VecDeque<PendingTask>, gpus: &mut [GPUState]) {
-        while let Some((desired_capacity, _)) = task_queue.front() {
-            if let Some(gpu_id) =
-                Self::find_available(Self::capacities(gpus.iter()), *desired_capacity)
-            {
-                let (desired_capacity, notifier) = task_queue.pop_front().unwrap();
-                if notifier.send(gpu_id).is_ok() {
-                    gpus[gpu_id].capacity -= desired_capacity;
-                }
-            } else if let Some(gpu_id) = Self::find_reservable_gpu(gpus.iter()) {
-                let (desired_capacity, notifier) = task_queue.pop_front().unwrap();
-                gpus[gpu_id].reservation = Some((desired_capacity, notifier));
-            } else {
-                break;
-            }
-        }
-    }
-    fn find_reservable_gpu<'a>(gpus: impl IntoIterator<Item = &'a GPUState>) -> Option<usize> {
-        gpus.into_iter()
-            .enumerate()
-            .filter(|(_, gpu)| gpu.is_reservable())
-            .max_by_key(|(_, gpu)| gpu.capacity)
-            .map(|(gpu_id, _)| gpu_id)
     }
 
     /// detect the number of GPUs available for the default pool.
@@ -434,9 +296,76 @@ pub mod gpu_fraction {
     }
 }
 
+mod container {
+    use std::collections::BTreeSet;
+
+    #[derive(Debug, Default, Clone)]
+    pub struct SortedVec<T> {
+        values: Vec<T>,
+        sorted: BTreeSet<(T, usize)>,
+    }
+
+    impl<T: Clone + Ord> SortedVec<T> {
+        pub fn new(values: impl IntoIterator<Item = T>) -> Self {
+            let values = values.into_iter().collect::<Vec<_>>();
+            let sorted = values
+                .clone()
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| (value, index))
+                .collect::<BTreeSet<_>>();
+            Self { values, sorted }
+        }
+
+        /// find should return the index where the index points to minimal value that
+        /// is greater or equal to `target`.
+        ///
+        /// When the target value is greater than all values, return None.
+        pub fn find(&self, target: &T) -> Option<usize> {
+            self.sorted
+                .range(&(target.clone(), 0)..)
+                .next()
+                .map(|(_, index)| *index)
+        }
+
+        /// find a specific value, while not considering the top n values.
+        pub fn find_excluding_top_n(&self, target: &T, top_n: usize) -> Option<usize> {
+            if top_n == 0 {
+                return self.find(target);
+            }
+            let ceiling_tuple = self.sorted.iter().rev().nth(top_n)?;
+            if target > &ceiling_tuple.0 {
+                return None;
+            }
+            self.sorted
+                .range(&(target.clone(), 0)..=ceiling_tuple)
+                .next()
+                .map(|(_, index)| *index)
+        }
+
+        pub fn update(&mut self, index: usize, value: T) {
+            let Some(old_value) = self.values.get_mut(index) else {
+                return;
+            };
+            self.sorted.remove(&(old_value.clone(), index));
+            *old_value = value.clone();
+            self.sorted.insert((value, index));
+        }
+    }
+
+    impl<T> std::ops::Index<usize> for SortedVec<T> {
+        type Output = T;
+
+        fn index(&self, index: usize) -> &Self::Output {
+            &self.values[index]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu_pool::container::SortedVec;
     use rand::Rng;
     use std::sync::Arc;
 
@@ -1042,5 +971,84 @@ mod tests {
             "full ({full}) + sum({random_capacities:?}) != 1.0 (should be 1.0) (final)"
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_sorted_vec_find_lowest_index() {
+        let original = [1; 10];
+        let capacity = SortedVec::new(original);
+        let index = capacity.find(&1);
+        assert_eq!(index, Some(0));
+    }
+
+    #[test]
+    fn test_sorted_vec_find_missing() {
+        let original = [4, 3, 0];
+        let capacity = SortedVec::new(original); // [0, 3, 4]
+        let index = capacity.find(&1);
+        let expected = original.iter().position(|x| *x == 3);
+        assert_eq!(index, expected);
+    }
+
+    #[test]
+    fn test_sorted_vec_find_exact() {
+        let original = [4, 3, 0];
+        let capacity = SortedVec::new(original);
+        let index = capacity.find(&3);
+        let expected = original.iter().position(|x| *x == 3);
+        assert_eq!(index, expected);
+    }
+
+    #[test]
+    fn test_sorted_vec_find_over_max() {
+        let capacity = SortedVec::new([0, 3, 4].into_iter().rev());
+        let index = capacity.find(&i32::MAX);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn test_sorted_vec_find_empty() {
+        let capacity = SortedVec::<usize>::new([]);
+        let index = capacity.find(&3);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn test_sorted_vec_find_excluding_top_n_found() {
+        let original = (0..10).rev().collect::<Vec<_>>();
+        let capacity = SortedVec::new(original.clone());
+        let index = capacity.find_excluding_top_n(&5, 3);
+        let expected = original.iter().position(|x| *x == 5);
+        assert_eq!(index, expected);
+    }
+
+    #[test]
+    fn test_sorted_vec_find_excluding_top_n_found_repeated() {
+        let capacity = SortedVec::new([1; 10]);
+        let index = capacity.find_excluding_top_n(&1, 3);
+        assert_eq!(index, Some(0));
+    }
+
+    #[test]
+    fn test_sorted_vec_find_excluding_top_n_excluded() {
+        let capacity = SortedVec::new((0..10).rev());
+        let index = capacity.find_excluding_top_n(&5, 6);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn test_sorted_vec_find_excluding_top_n_missing_excluded() {
+        let capacity = SortedVec::new([0, 4, 3, 5]); // [0, 3, 4, 5]
+        let index = capacity.find_excluding_top_n(&2, 3);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn test_sorted_vec_find_excluding_top_n_missing_found() {
+        let original = [0, 19, 15, 9, 20];
+        let capacity = SortedVec::new(original); // [0, 9, 15, 19, 20]
+        let index = capacity.find_excluding_top_n(&4, 2);
+        let expected = original.iter().position(|x| *x == 9);
+        assert_eq!(index, expected);
     }
 }
