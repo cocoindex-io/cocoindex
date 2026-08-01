@@ -7,7 +7,7 @@
 //! that batch carries the batcher's runner function.
 
 use crate::prelude::*;
-use cocoindex_utils::gpu_pool::{gpu_fraction::GPUCapacity, GPUPool};
+use cocoindex_utils::gpu_pool::{gpu_capacity::GPUCapacity, GPUPool};
 use pyo3::exceptions::PyValueError;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::num::NonZeroUsize;

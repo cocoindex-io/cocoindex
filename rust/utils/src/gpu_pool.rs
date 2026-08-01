@@ -1,9 +1,11 @@
-use anyhow::Result;
+use crate::error::Result;
+use crate::{client_bail, internal_error};
 use container::SortedVec;
-use gpu_fraction::GPUCapacity;
+use gpu_capacity::GPUCapacity;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
-use tokio::sync::{oneshot, Mutex};
+use std::sync::Mutex;
+use tokio::sync::oneshot;
 
 /// Tracks fractional GPU capacity across multiple GPUs.
 ///
@@ -16,20 +18,30 @@ use tokio::sync::{oneshot, Mutex};
 /// Call ``configure_gpu_pool(N)`` to override programmatically.
 pub struct GPUPool {
     num_gpus: usize,
-    capacities: Mutex<SortedVec<GPUCapacity>>,
-    task_queue: Mutex<VecDeque<PendingTask>>,
+    state: Mutex<PoolState>,
 }
 
-type PendingTask = (GPUCapacity, oneshot::Sender<usize>);
+struct PoolState {
+    capacities: SortedVec<GPUCapacity>,
+    task_queue: VecDeque<PendingTask>,
+}
+
+struct PendingTask {
+    demand: GPUCapacity,
+    notifier: oneshot::Sender<usize>,
+}
 
 impl GPUPool {
     pub fn new(num_gpus: NonZeroUsize) -> Self {
         let num_gpus = num_gpus.get();
-        let gpus = SortedVec::new(std::iter::repeat_n(GPUCapacity::MAX, num_gpus));
+        let capacities = std::iter::repeat_n(GPUCapacity::MAX, num_gpus).collect();
+        let state = PoolState {
+            capacities,
+            task_queue: VecDeque::new(),
+        };
         GPUPool {
             num_gpus,
-            capacities: Mutex::new(gpus),
-            task_queue: Mutex::new(VecDeque::new()),
+            state: Mutex::new(state),
         }
     }
 
@@ -54,34 +66,34 @@ impl GPUPool {
     ///
     pub async fn acquire(&self, fraction: GPUCapacity) -> Result<usize> {
         if fraction == GPUCapacity::ZERO {
-            return Err(anyhow::anyhow!(
-                "Acquired fraction must be between 0.0 and 1.0, got 0"
-            ));
+            client_bail!("Acquired fraction must be between 0.0 and 1.0, got 0");
         }
         let receiver = {
-            let mut task_queue = self.task_queue.lock().await;
-            if task_queue.len() < self.num_gpus {
-                let mut capacities = self.capacities.lock().await;
+            let mut pool = self.state.lock().expect("lock poisoned");
+            if pool.task_queue.len() < self.num_gpus {
                 // excluding top_n, because the tasks in the queue have already reserved the top n GPUs.
-                if let Some(gpu_id) = capacities.find_excluding_top_n(&fraction, task_queue.len()) {
-                    let updated_capacity = capacities[gpu_id] - fraction;
-                    capacities.update(gpu_id, updated_capacity);
+                if let Some(gpu_id) = pool
+                    .capacities
+                    .find_excluding_top_n(&fraction, pool.task_queue.len())
+                {
+                    let updated_capacity = pool.capacities[gpu_id] - fraction;
+                    pool.capacities.update(gpu_id, updated_capacity);
                     return Ok(gpu_id);
                 }
             }
-            Self::send_task_to_queue(&mut task_queue, fraction)
+            Self::send_task_to_queue(&mut pool.task_queue, fraction)
         };
         receiver
             .await
-            .map_err(|err| anyhow::anyhow!("GPUPool dropped while waiting: {err}"))
+            .map_err(|err| internal_error!("GPUPool dropped while waiting: {err}"))
     }
 
     fn send_task_to_queue(
         task_queue: &mut VecDeque<PendingTask>,
-        desired_capacity: GPUCapacity,
+        demand: GPUCapacity,
     ) -> oneshot::Receiver<usize> {
         let (notifier, receiver) = oneshot::channel();
-        task_queue.push_back((desired_capacity, notifier));
+        task_queue.push_back(PendingTask { demand, notifier });
         receiver
     }
 
@@ -97,41 +109,43 @@ impl GPUPool {
     pub async fn acquire_full(&self, gpu_count: NonZeroUsize) -> Result<Vec<usize>> {
         let gpu_count = gpu_count.get();
         if gpu_count > self.num_gpus() {
-            return Err(anyhow::format_err!(
+            client_bail!(
                 "Attempted to acquire {} GPUs but only has {}.",
                 gpu_count,
                 self.num_gpus
-            ));
+            );
         }
-        let mut task_queue = self.task_queue.lock().await;
-        let mut acquired_gpus = Vec::with_capacity(gpu_count);
-        if task_queue.len() < self.num_gpus {
-            let mut capacities = self.capacities.lock().await;
-            while acquired_gpus.len() < gpu_count
-                && let Some(gpu_id) =
-                    capacities.find_excluding_top_n(&GPUCapacity::MAX, task_queue.len())
-            {
-                acquired_gpus.push(gpu_id);
-                capacities.update(gpu_id, GPUCapacity::ZERO);
+        let (mut acquired_gpus, receivers) = {
+            let mut pool = self.state.lock().expect("lock poisoned");
+            let mut acquired_gpus = Vec::with_capacity(gpu_count);
+            if pool.task_queue.len() < self.num_gpus {
+                while acquired_gpus.len() < gpu_count
+                    && let Some(gpu_id) = pool
+                        .capacities
+                        .find_excluding_top_n(&GPUCapacity::MAX, pool.task_queue.len())
+                {
+                    acquired_gpus.push(gpu_id);
+                    pool.capacities.update(gpu_id, GPUCapacity::ZERO);
+                }
             }
-        }
-        if acquired_gpus.len() != gpu_count {
+            if acquired_gpus.len() == gpu_count {
+                return Ok(acquired_gpus);
+            }
             let gpus_to_be_acquired = gpu_count - acquired_gpus.len();
             let receivers = std::iter::repeat_with(|| {
-                Self::send_task_to_queue(&mut task_queue, GPUCapacity::MAX)
+                Self::send_task_to_queue(&mut pool.task_queue, GPUCapacity::MAX)
             })
             .take(gpus_to_be_acquired)
             .collect::<Vec<_>>();
-            drop(task_queue);
-
-            let reserve_gpu_tasks = receivers.into_iter().map(async |receiver| receiver.await);
-            let gpu_ids = futures::future::try_join_all(reserve_gpu_tasks).await?;
-            acquired_gpus.extend(gpu_ids);
-        }
+            (acquired_gpus, receivers)
+        };
+        let reserve_gpu_tasks = receivers.into_iter().map(async |receiver| receiver.await);
+        let gpu_ids = futures::future::try_join_all(reserve_gpu_tasks).await?;
+        acquired_gpus.extend(gpu_ids);
         Ok(acquired_gpus)
     }
 
-    /// release adds back capacities to GPUs, and processes pending tasks afterwards.
+    /// release adds back capacities to GPUs, and processes pending tasks afterward.
     ///
     /// # Example
     /// Initially:
@@ -156,20 +170,15 @@ impl GPUPool {
     /// ```
     pub async fn release(&self, gpu_id: usize, fraction: GPUCapacity) -> Result<()> {
         if gpu_id >= self.num_gpus() {
-            return Err(anyhow::format_err!(
-                "Releasing to a gpu_id that does not exist: {}",
-                gpu_id
-            ));
+            client_bail!("Releasing to a gpu_id that does not exist: {gpu_id}",);
         }
         if fraction == GPUCapacity::ZERO {
-            return Err(anyhow::format_err!("Cannot release a zero fraction"));
+            client_bail!("Cannot release a zero fraction");
         }
-        // Lock orders matter. Keep in sync with other functions.
-        let mut task_queue = self.task_queue.lock().await;
-        let mut capacities = self.capacities.lock().await;
-        let updated_capacity = capacities[gpu_id].checked_add(&fraction)?;
-        capacities.update(gpu_id, updated_capacity);
-        Self::process_task_queue(&mut task_queue, &mut capacities);
+        let mut state = self.state.lock().expect("lock poisoned");
+        let updated_capacity = state.capacities[gpu_id].checked_add(&fraction)?;
+        state.capacities.update(gpu_id, updated_capacity);
+        Self::process_task_queue(&mut state);
         Ok(())
     }
 
@@ -178,17 +187,14 @@ impl GPUPool {
     /// 1. strict FIFO - when task A comes in earlier than task B, task A always gets processed earlier.
     /// 2. only pop if available - the task remains in the queue until a GPU has enough availability to process it.
     ///
-    fn process_task_queue(
-        task_queue: &mut VecDeque<PendingTask>,
-        capacities: &mut SortedVec<GPUCapacity>,
-    ) {
-        while let Some((desired_capacity, _)) = task_queue.front()
-            && let Some(gpu_id) = capacities.find(desired_capacity)
+    fn process_task_queue(pool: &mut PoolState) {
+        while let Some(pending_task) = pool.task_queue.front()
+            && let Some(gpu_id) = pool.capacities.find(&pending_task.demand)
         {
-            let (desired_capacity, notifier) = task_queue.pop_front().unwrap();
-            if notifier.send(gpu_id).is_ok() {
-                let updated_capacity = capacities[gpu_id] - desired_capacity;
-                capacities.update(gpu_id, updated_capacity);
+            let pending_task = pool.task_queue.pop_front().unwrap();
+            if pending_task.notifier.send(gpu_id).is_ok() {
+                let updated_capacity = pool.capacities[gpu_id] - pending_task.demand;
+                pool.capacities.update(gpu_id, updated_capacity);
             }
         }
     }
@@ -234,7 +240,7 @@ impl GPUPool {
         #[cfg(test)]
         let output = {
             if std::env::var("MOCK_NVIDIA_SMI_NOT_FOUND").is_ok() {
-                return Err(anyhow::Error::from(std::io::Error::new(
+                return Err(crate::error::Error::internal(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "nvidia-smi not found",
                 )));
@@ -269,8 +275,9 @@ impl Default for GPUPool {
     }
 }
 
-pub mod gpu_fraction {
-    use anyhow::{Error, Result};
+pub mod gpu_capacity {
+    use crate::client_bail;
+    use crate::error::{Error, Result};
     use std::ops::{Add, AddAssign, Sub, SubAssign};
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -288,10 +295,10 @@ pub mod gpu_fraction {
 
         pub fn checked_add(&self, other: &Self) -> Result<Self> {
             if self.0 + other.0 > GPUCapacity::MAX.0 {
-                Err(anyhow::anyhow!(
+                client_bail!(
                     "The sum of {self} and {other} is greater than the max value {}",
                     Self::MAX
-                ))
+                );
             } else {
                 Ok(GPUCapacity(self.0 + other.0))
             }
@@ -303,10 +310,7 @@ pub mod gpu_fraction {
 
         fn try_from(value: f32) -> Result<Self, Self::Error> {
             if !(0.0..=1.0).contains(&value) {
-                return Err(anyhow::format_err!(
-                    "Fraction must be between 0.0 and 1.0, got {}",
-                    value
-                ));
+                client_bail!("Fraction must be between 0.0 and 1.0, got {value}",);
             }
             Ok(Self((value * Self::SCALE) as u32))
         }
@@ -356,13 +360,15 @@ mod container {
         sorted: BTreeSet<(T, usize)>,
     }
 
-    impl<T: Clone + Ord> SortedVec<T> {
-        pub fn new(values: impl IntoIterator<Item = T>) -> Self {
-            let values = values.into_iter().collect::<Vec<_>>();
-            let sorted = BTreeSet::from_iter(values.clone().into_iter().zip(0..));
+    impl<T: Clone + Ord> FromIterator<T> for SortedVec<T> {
+        fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+            let values = iter.into_iter().collect::<Vec<_>>();
+            let sorted = BTreeSet::from_iter(values.iter().cloned().zip(0..));
             Self { values, sorted }
         }
+    }
 
+    impl<T: Clone + Ord> SortedVec<T> {
         /// find should return the index where the index points to minimal value that
         /// is greater or equal to `target`.
         ///
@@ -503,9 +509,11 @@ mod tests {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
         let result = pool.acquire(GPUCapacity::ZERO).await;
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Acquired fraction must be between 0.0 and 1.0, got 0"
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Acquired fraction must be between 0.0 and 1.0, got 0")
         );
     }
 
@@ -622,9 +630,11 @@ mod tests {
             .acquire_full(NonZeroUsize::new(3).expect("3 is not zero"))
             .await;
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Attempted to acquire 3 GPUs but only has 2."
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Attempted to acquire 3 GPUs but only has 2.")
         );
     }
 
@@ -747,9 +757,11 @@ mod tests {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
         let release_result = pool.release(1, GPUCapacity::unchecked(0.5)).await;
         assert!(release_result.is_err());
-        assert_eq!(
-            release_result.unwrap_err().to_string(),
-            "Releasing to a gpu_id that does not exist: 1"
+        assert!(
+            release_result
+                .unwrap_err()
+                .to_string()
+                .contains("Releasing to a gpu_id that does not exist: 1")
         );
     }
 
@@ -758,9 +770,11 @@ mod tests {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
         let release_result = pool.release(0, GPUCapacity::ZERO).await;
         assert!(release_result.is_err());
-        assert_eq!(
-            release_result.unwrap_err().to_string(),
-            "Cannot release a zero fraction"
+        assert!(
+            release_result
+                .unwrap_err()
+                .to_string()
+                .contains("Cannot release a zero fraction")
         );
     }
 
@@ -771,9 +785,11 @@ mod tests {
         assert_eq!(gpu_0, 0);
         let release_result = pool.release(gpu_0, GPUCapacity::unchecked(0.6)).await;
         assert!(release_result.is_err());
-        assert_eq!(
-            release_result.unwrap_err().to_string(),
-            "The sum of 0.5 and 0.6 is greater than the max value 1"
+        assert!(
+            release_result
+                .unwrap_err()
+                .to_string()
+                .contains("The sum of 0.5 and 0.6 is greater than the max value 1")
         );
         Ok(())
     }
@@ -951,9 +967,11 @@ mod tests {
     fn test_gpu_capacity_larger_than_one() {
         let result = GPUCapacity::try_from(1.1);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Fraction must be between 0.0 and 1.0, got 1.1"
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Fraction must be between 0.0 and 1.0, got 1.1")
         );
     }
 
@@ -961,9 +979,11 @@ mod tests {
     fn test_gpu_capacity_less_than_zero() {
         let result = GPUCapacity::try_from(-1.1);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Fraction must be between 0.0 and 1.0, got -1.1"
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Fraction must be between 0.0 and 1.0, got -1.1")
         );
     }
 
@@ -1024,7 +1044,7 @@ mod tests {
     #[test]
     fn test_sorted_vec_find_lowest_index() {
         let original = [1; 10];
-        let capacity = SortedVec::new(original);
+        let capacity = SortedVec::from_iter(original);
         let index = capacity.find(&1);
         assert_eq!(index, Some(0));
     }
@@ -1032,7 +1052,7 @@ mod tests {
     #[test]
     fn test_sorted_vec_find_missing() {
         let original = [4, 3, 0];
-        let capacity = SortedVec::new(original); // [0, 3, 4]
+        let capacity = SortedVec::from_iter(original); // [0, 3, 4]
         let index = capacity.find(&1);
         let expected = original.iter().position(|x| *x == 3);
         assert_eq!(index, expected);
@@ -1041,7 +1061,7 @@ mod tests {
     #[test]
     fn test_sorted_vec_find_exact() {
         let original = [4, 3, 0];
-        let capacity = SortedVec::new(original);
+        let capacity = SortedVec::from_iter(original);
         let index = capacity.find(&3);
         let expected = original.iter().position(|x| *x == 3);
         assert_eq!(index, expected);
@@ -1049,14 +1069,14 @@ mod tests {
 
     #[test]
     fn test_sorted_vec_find_over_max() {
-        let capacity = SortedVec::new([0, 3, 4].into_iter().rev());
+        let capacity = SortedVec::from_iter([0, 3, 4].into_iter().rev());
         let index = capacity.find(&i32::MAX);
         assert_eq!(index, None);
     }
 
     #[test]
     fn test_sorted_vec_find_empty() {
-        let capacity = SortedVec::<usize>::new([]);
+        let capacity = SortedVec::<usize>::from_iter([]);
         let index = capacity.find(&3);
         assert_eq!(index, None);
     }
@@ -1064,7 +1084,7 @@ mod tests {
     #[test]
     fn test_sorted_vec_find_excluding_top_n_found() {
         let original = (0..10).rev().collect::<Vec<_>>();
-        let capacity = SortedVec::new(original.clone());
+        let capacity = SortedVec::from_iter(original.clone());
         let index = capacity.find_excluding_top_n(&5, 3);
         let expected = original.iter().position(|x| *x == 5);
         assert_eq!(index, expected);
@@ -1072,21 +1092,21 @@ mod tests {
 
     #[test]
     fn test_sorted_vec_find_excluding_top_n_found_repeated() {
-        let capacity = SortedVec::new([1; 10]);
+        let capacity = SortedVec::from_iter([1; 10]);
         let index = capacity.find_excluding_top_n(&1, 3);
         assert_eq!(index, Some(0));
     }
 
     #[test]
     fn test_sorted_vec_find_excluding_top_n_excluded() {
-        let capacity = SortedVec::new((0..10).rev());
+        let capacity = SortedVec::from_iter((0..10).rev());
         let index = capacity.find_excluding_top_n(&5, 6);
         assert_eq!(index, None);
     }
 
     #[test]
     fn test_sorted_vec_find_excluding_top_n_missing_excluded() {
-        let capacity = SortedVec::new([0, 4, 3, 5]); // [0, 3, 4, 5]
+        let capacity = SortedVec::from_iter([0, 4, 3, 5]); // [0, 3, 4, 5]
         let index = capacity.find_excluding_top_n(&2, 3);
         assert_eq!(index, None);
     }
@@ -1094,7 +1114,7 @@ mod tests {
     #[test]
     fn test_sorted_vec_find_excluding_top_n_missing_found() {
         let original = [0, 19, 15, 9, 20];
-        let capacity = SortedVec::new(original); // [0, 9, 15, 19, 20]
+        let capacity = SortedVec::from_iter(original); // [0, 9, 15, 19, 20]
         let index = capacity.find_excluding_top_n(&4, 2);
         let expected = original.iter().position(|x| *x == 9);
         assert_eq!(index, expected);
