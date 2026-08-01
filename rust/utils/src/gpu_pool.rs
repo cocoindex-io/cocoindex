@@ -168,7 +168,7 @@ impl GPUPool {
     /// GPUs: G1(capacity=0.5), G2(capacity=0), G3(capacity=0)
     /// Queue: T2(req=0.5, reserved=[G1])
     /// ```
-    pub async fn release(&self, gpu_id: usize, fraction: GPUCapacity) -> Result<()> {
+    pub fn release(&self, gpu_id: usize, fraction: GPUCapacity) -> Result<()> {
         if gpu_id >= self.num_gpus() {
             client_bail!("Releasing to a gpu_id that does not exist: {gpu_id}",);
         }
@@ -428,7 +428,7 @@ mod tests {
         let pool = GPUPool::new(NonZeroUsize::new(2).unwrap());
         let gpu = pool.acquire(GPUCapacity::MAX).await?;
         assert!(gpu < 2);
-        pool.release(gpu, GPUCapacity::MAX).await?;
+        pool.release(gpu, GPUCapacity::MAX)?;
         Ok(())
     }
 
@@ -438,8 +438,8 @@ mod tests {
         let gpu0 = pool.acquire(GPUCapacity::MAX).await?;
         let gpu1 = pool.acquire(GPUCapacity::MAX).await?;
         assert_ne!(gpu0, gpu1);
-        pool.release(gpu0, GPUCapacity::MAX).await?;
-        pool.release(gpu1, GPUCapacity::MAX).await?;
+        pool.release(gpu0, GPUCapacity::MAX)?;
+        pool.release(gpu1, GPUCapacity::MAX)?;
         Ok(())
     }
 
@@ -453,12 +453,12 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
 
-        pool.release(gpu, GPUCapacity::MAX).await?;
+        pool.release(gpu, GPUCapacity::MAX)?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")?;
         assert!(matches!(result, Ok(0)));
-        pool.release(result.unwrap(), GPUCapacity::MAX).await?;
+        pool.release(result.unwrap(), GPUCapacity::MAX)?;
         Ok(())
     }
 
@@ -475,13 +475,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
 
-        pool.release(gpu0, half_fraction).await?;
+        pool.release(gpu0, half_fraction)?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")?;
         assert!(matches!(result, Ok(0)));
-        pool.release(gpu1, half_fraction).await?;
-        pool.release(result.unwrap(), half_fraction).await?;
+        pool.release(gpu1, half_fraction)?;
+        pool.release(result.unwrap(), half_fraction)?;
         Ok(())
     }
 
@@ -499,7 +499,7 @@ mod tests {
         let gpus = results.into_iter().collect::<Result<Vec<usize>, _>>()?;
         assert_eq!(gpus.len(), 3);
         for g in gpus {
-            pool.release(g, GPUCapacity::MAX).await?;
+            pool.release(g, GPUCapacity::MAX)?;
         }
         Ok(())
     }
@@ -532,14 +532,11 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!not_enough_task.is_finished());
-        pool.release(occupied_gpu_2, GPUCapacity::unchecked(0.2))
-            .await?;
+        pool.release(occupied_gpu_2, GPUCapacity::unchecked(0.2))?;
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!not_enough_task.is_finished());
-        pool.release(occupied_gpu_2, GPUCapacity::unchecked(0.4))
-            .await?;
-        pool.release(occupied_gpu_1, GPUCapacity::unchecked(0.6))
-            .await?;
+        pool.release(occupied_gpu_2, GPUCapacity::unchecked(0.4))?;
+        pool.release(occupied_gpu_1, GPUCapacity::unchecked(0.6))?;
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(not_enough_task.is_finished());
         let gpus = tokio::time::timeout(std::time::Duration::from_secs(1), not_enough_task)
@@ -548,7 +545,7 @@ mod tests {
             .expect("no timeout")?;
         assert_eq!(gpus.len(), 3);
         for gpu in gpus {
-            pool.release(gpu, GPUCapacity::MAX).await?;
+            pool.release(gpu, GPUCapacity::MAX)?;
         }
         Ok(())
     }
@@ -561,7 +558,7 @@ mod tests {
             .await?;
         assert_eq!(gpus, vec![0, 1]);
         for g in gpus {
-            pool.release(g, GPUCapacity::MAX).await?;
+            pool.release(g, GPUCapacity::MAX)?;
         }
         Ok(())
     }
@@ -579,15 +576,14 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
-        pool.release(partially_used_gpu, GPUCapacity::unchecked(0.6))
-            .await?;
+        pool.release(partially_used_gpu, GPUCapacity::unchecked(0.6))?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")
             .expect("no timeout")?;
         assert_eq!(&result, &[1, 2, 0]);
         for gpu in result {
-            pool.release(gpu, GPUCapacity::MAX).await?;
+            pool.release(gpu, GPUCapacity::MAX)?;
         }
         Ok(())
     }
@@ -609,8 +605,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!task.is_finished());
         assert!(!second_acquired_gpu.is_finished());
-        pool.release(partially_used_gpu, GPUCapacity::unchecked(0.6))
-            .await?;
+        pool.release(partially_used_gpu, GPUCapacity::unchecked(0.6))?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await
             .expect("task finished")
@@ -618,7 +613,7 @@ mod tests {
         // initial 0.6 occupied index 0, then GPU 1 and 2 are reserved, until 0 is added.
         assert_eq!(&result, &[1, 2, 0]);
         for gpu in result {
-            pool.release(gpu, GPUCapacity::MAX).await?;
+            pool.release(gpu, GPUCapacity::MAX)?;
         }
         Ok(())
     }
@@ -655,7 +650,7 @@ mod tests {
         assert!(!reserving_task_1.is_finished());
         assert!(!reserving_task_2.is_finished());
 
-        pool.release(gpu_0, GPUCapacity::unchecked(0.1)).await?;
+        pool.release(gpu_0, GPUCapacity::unchecked(0.1))?;
         let reserving_task_1_acquired_gpu =
             tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_1)
                 .await
@@ -664,7 +659,7 @@ mod tests {
         assert_eq!(reserving_task_1_acquired_gpu, gpu_0);
         assert!(!reserving_task_2.is_finished());
 
-        pool.release(gpu_1, GPUCapacity::unchecked(0.3)).await?;
+        pool.release(gpu_1, GPUCapacity::unchecked(0.3))?;
         let reserving_task_2_acquired_gpu =
             tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_2)
                 .await
@@ -672,8 +667,8 @@ mod tests {
                 .expect("no timeout")?;
         assert_eq!(reserving_task_2_acquired_gpu, gpu_1);
 
-        pool.release(gpu_0, GPUCapacity::MAX).await?;
-        pool.release(gpu_1, GPUCapacity::MAX).await?;
+        pool.release(gpu_0, GPUCapacity::MAX)?;
+        pool.release(gpu_1, GPUCapacity::MAX)?;
         Ok(())
     }
 
@@ -693,9 +688,9 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
         assert!(!reserving_task.is_finished());
         assert!(task_not_blocked.is_finished());
-        pool.release(gpu_0, GPUCapacity::unchecked(0.1)).await?;
+        pool.release(gpu_0, GPUCapacity::unchecked(0.1))?;
 
-        pool.release(gpu_1, GPUCapacity::unchecked(0.8)).await?;
+        pool.release(gpu_1, GPUCapacity::unchecked(0.8))?;
         let reserving_task_acquired_gpu =
             tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task)
                 .await
@@ -703,7 +698,7 @@ mod tests {
                 .expect("no timeout")?;
         assert_eq!(reserving_task_acquired_gpu, gpu_0);
 
-        pool.release(gpu_0, GPUCapacity::MAX).await?;
+        pool.release(gpu_0, GPUCapacity::MAX)?;
         Ok(())
     }
 
@@ -722,7 +717,7 @@ mod tests {
         assert!(!reserving_task_1.is_finished());
         assert!(!reserving_task_2.is_finished());
 
-        pool.release(gpu_0, GPUCapacity::unchecked(0.1)).await?;
+        pool.release(gpu_0, GPUCapacity::unchecked(0.1))?;
         let reserving_task_1_acquired_gpu =
             tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_1)
                 .await
@@ -731,7 +726,7 @@ mod tests {
         assert_eq!(reserving_task_1_acquired_gpu, gpu_0);
         assert!(!reserving_task_2.is_finished());
 
-        pool.release(gpu_0, GPUCapacity::unchecked(0.7)).await?;
+        pool.release(gpu_0, GPUCapacity::unchecked(0.7))?;
         let reserving_task_2_acquired_gpu =
             tokio::time::timeout(std::time::Duration::from_secs(1), reserving_task_2)
                 .await
@@ -739,7 +734,7 @@ mod tests {
                 .expect("no timeout")?;
         assert_eq!(reserving_task_2_acquired_gpu, gpu_0);
 
-        pool.release(gpu_0, GPUCapacity::MAX).await?;
+        pool.release(gpu_0, GPUCapacity::MAX)?;
         Ok(())
     }
 
@@ -748,14 +743,14 @@ mod tests {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
         let gpu_0 = pool.acquire(GPUCapacity::unchecked(0.5)).await?;
         assert_eq!(gpu_0, 0);
-        pool.release(gpu_0, GPUCapacity::unchecked(0.5)).await?;
+        pool.release(gpu_0, GPUCapacity::unchecked(0.5))?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_release_to_wrong_gpu_id() {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let release_result = pool.release(1, GPUCapacity::unchecked(0.5)).await;
+        let release_result = pool.release(1, GPUCapacity::unchecked(0.5));
         assert!(release_result.is_err());
         assert!(
             release_result
@@ -768,7 +763,7 @@ mod tests {
     #[tokio::test]
     async fn test_release_zero_fraction() {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
-        let release_result = pool.release(0, GPUCapacity::ZERO).await;
+        let release_result = pool.release(0, GPUCapacity::ZERO);
         assert!(release_result.is_err());
         assert!(
             release_result
@@ -783,7 +778,7 @@ mod tests {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
         let gpu_0 = pool.acquire(GPUCapacity::unchecked(0.5)).await?;
         assert_eq!(gpu_0, 0);
-        let release_result = pool.release(gpu_0, GPUCapacity::unchecked(0.6)).await;
+        let release_result = pool.release(gpu_0, GPUCapacity::unchecked(0.6));
         assert!(release_result.is_err());
         assert!(
             release_result

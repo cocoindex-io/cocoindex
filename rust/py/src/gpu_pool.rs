@@ -72,20 +72,11 @@ impl PyGPUPool {
         })
     }
 
-    pub fn release<'py>(
-        &self,
-        py: Python<'py>,
-        gpu_id: usize,
-        fraction: f32,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    pub fn release<'py>(&self, gpu_id: usize, fraction: f32) -> PyResult<()> {
         let fraction =
             GPUCapacity::try_from(fraction).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let gpu_pool = self.inner.clone();
-        future_into_py(py, async move {
-            gpu_pool
-                .release(gpu_id, fraction)
-                .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))
-        })
+        self.inner
+            .release(gpu_id, fraction)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
