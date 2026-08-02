@@ -256,7 +256,7 @@ def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
         return (3, struct.pack("!d", v))
     if isinstance(v, str):
         return (4, v)
-    if isinstance(v, (bytes, bytearray, memoryview)):
+    if isinstance(v, (bytes, bytearray, memoryview, core.Fingerprint)):
         return (5, bytes(v))
     if isinstance(v, typing.Sequence):
         return (6, tuple(_stable_sort_key(e) for e in v))
