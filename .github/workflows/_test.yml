@@ -46,7 +46,7 @@ jobs:
             fetch-depth: 1
 
         - name: Setup sccache
-          uses: mozilla-actions/sccache-action@v0.0.10
+          uses: mozilla-actions/sccache-action@v0.0.11
           with:
             # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
             version: "v0.12.0"
