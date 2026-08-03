@@ -382,7 +382,7 @@ mod container {
                 .map(|(_, index)| *index)
         }
 
-        pub fn excluding_top_n<'a>(&'a self, top_n: usize) -> SplitSortedVec<'a, T> {
+        pub fn excluding_top_n(&self, top_n: usize) -> SplitSortedVec<'_, T> {
             let upper_bound = if top_n >= self.sorted.len() {
                 None
             } else if top_n > self.sorted.len() / 2 {
@@ -392,7 +392,7 @@ mod container {
             };
             SplitSortedVec {
                 source: &self.sorted,
-                upper_bound: upper_bound,
+                upper_bound,
             }
         }
 
