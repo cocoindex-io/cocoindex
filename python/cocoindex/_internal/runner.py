@@ -10,6 +10,7 @@ Configure the GPU pool size via the COCOINDEX_NUM_GPUS environment variable
 
 from __future__ import annotations
 
+import atexit
 import asyncio
 import functools
 import os
@@ -23,9 +24,11 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextvars import ContextVar
+from datetime import timedelta
 from typing import Any, Callable, Coroutine, TypeVar, ParamSpec
 
-from . import core
+from . import core, deadline as _deadline
+from .process_supervisor import _SingleProcessSupervisor, _WorkerCrashedError
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -96,8 +99,15 @@ class Runner(ABC):
 _WATCHDOG_INTERVAL_SECONDS = 10.0
 _MPS_LOW_WATERMARK_RATIO = "0.4"
 _MPS_HIGH_WATERMARK_RATIO = "0.5"
+# This private wall covers queueing inside the supervisor, worker startup,
+# lazy model loading, and the optional crash replay. Keep it conservative: a
+# cold SentenceTransformer worker may download model artifacts on first use.
+_MPS_FALLBACK_TIMEOUT = timedelta(seconds=300)
+_MPS_MAX_PROCESS_ATTEMPTS = 2
 _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
+_mps_process_supervisor_lock = threading.Lock()
+_mps_process_supervisor: _SingleProcessSupervisor | None = None
 
 
 def _configure_mps_allocator_defaults() -> None:
@@ -197,6 +207,34 @@ def _execute_in_subprocess(payload_bytes: bytes) -> bytes:
     if asyncio.iscoroutine(result):
         result = asyncio.run(result)
     return pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _get_mps_process_supervisor() -> _SingleProcessSupervisor:
+    """Get the MPS-only worker whose lifecycle CocoIndex owns directly."""
+    global _mps_process_supervisor
+    with _mps_process_supervisor_lock:
+        if _mps_process_supervisor is None:
+            _mps_process_supervisor = _SingleProcessSupervisor(
+                _execute_in_subprocess,
+                initializer=_subprocess_init,
+                process_name="cocoindex-mps-worker",
+            )
+        return _mps_process_supervisor
+
+
+def _shutdown_mps_process_supervisor() -> None:
+    """Stop the MPS worker without coupling it to any one Environment."""
+    global _mps_process_supervisor
+    with _mps_process_supervisor_lock:
+        supervisor = _mps_process_supervisor
+    if supervisor is not None:
+        supervisor.close()
+        with _mps_process_supervisor_lock:
+            if _mps_process_supervisor is supervisor:
+                _mps_process_supervisor = None
+
+
+atexit.register(_shutdown_mps_process_supervisor)
 
 
 async def _submit_to_pool_async(fn: Callable[..., Any], *args: Any) -> Any:
@@ -449,6 +487,12 @@ class GPURunner(Runner):
     async def _release_gpu(self, gpu_id: int) -> None:
         await _get_default_gpu_pool().release(gpu_id, self._fraction)
 
+    async def _execute_subprocess(
+        self, fn: Callable[..., R], *args: Any, **kwargs: Any
+    ) -> R:
+        """Dispatch through the existing generic ProcessPoolExecutor path."""
+        return await execute_in_subprocess(fn, *args, **kwargs)
+
     async def run(
         self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
     ) -> R:
@@ -466,7 +510,7 @@ class GPURunner(Runner):
             if self._should_use_subprocess():
                 _warn_subprocess_multi_gpu()
                 # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
-                return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
+                return await self._execute_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
             return await fn(*args, **kwargs)
         finally:
             _current_gpus.reset(tok_gpus)
@@ -487,7 +531,7 @@ class GPURunner(Runner):
         try:
             if self._should_use_subprocess():
                 _warn_subprocess_multi_gpu()
-                return await execute_in_subprocess(fn, *args, **kwargs)
+                return await self._execute_subprocess(fn, *args, **kwargs)
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 self._get_gpu_executor(),
@@ -513,6 +557,23 @@ class _MPSGPURunner(GPURunner):
             configured = os.environ.get("COCOINDEX_RUN_GPU_IN_SUBPROCESS")
             self._use_subprocess = configured == "1" if configured is not None else True
         return self._use_subprocess
+
+    async def _execute_subprocess(
+        self, fn: Callable[..., R], *args: Any, **kwargs: Any
+    ) -> R:
+        """Run built-in MPS work with a bounded, destructive failure policy."""
+        payload = pickle.dumps((fn, args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
+        supervisor = _get_mps_process_supervisor()
+        result_bytes = await _deadline.retry_transient(
+            lambda: supervisor.execute(payload),
+            retry_on=(_WorkerCrashedError,),
+            max_attempts=_MPS_MAX_PROCESS_ATTEMPTS,
+            timeout=_MPS_FALLBACK_TIMEOUT,
+            backoff=lambda _attempt: 0.0,
+            bound_attempt=True,
+            operation_name="MPS subprocess execution",
+        )
+        return pickle.loads(result_bytes)  # type: ignore[no-any-return]
 
 
 GPU = GPURunner(fraction=1.0)

@@ -11,6 +11,7 @@ from cocoindex._internal.runner import (
     Runner,
     _configure_mps_allocator_defaults,
     _MPS_GPU,
+    _shutdown_mps_process_supervisor,
 )
 import pytest
 
@@ -685,6 +686,7 @@ async def test_memo_with_runner() -> None:
 @pytest.fixture()
 def _reset_gpu_runner(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Reset GPURunner's cached subprocess mode between tests."""
+    _shutdown_mps_process_supervisor()
     # Record absent variables with monkeypatch before runner setdefault calls so
     # tests cannot leak allocator policy into the rest of the pytest process.
     for env_var in (
@@ -697,6 +699,7 @@ def _reset_gpu_runner(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     coco.GPU._use_subprocess = None
     _MPS_GPU._use_subprocess = None
     yield
+    _shutdown_mps_process_supervisor()
     coco.GPU._use_subprocess = None
     _MPS_GPU._use_subprocess = None
 

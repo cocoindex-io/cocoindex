@@ -357,16 +357,20 @@ class _SubprocessFakeMPSEmbedder(SentenceTransformerEmbedder):
 async def test_sentence_transformer_mps_subprocess_keeps_model_warm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    runner_module._shutdown_mps_process_supervisor()
     monkeypatch.delenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", raising=False)
     monkeypatch.setenv("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.4")
     monkeypatch.setenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.5")
     monkeypatch.setattr(runner_module._MPS_GPU, "_use_subprocess", None)
     embedder = _SubprocessFakeMPSEmbedder("fake-model", device="mps")
 
-    dimension = await embedder.dimension()
-    first = await embedder.embed("a")
-    second = await embedder.embed("bb")
+    try:
+        dimension = await embedder.dimension()
+        first = await embedder.embed("a")
+        second = await embedder.embed("bb")
 
-    assert dimension == 2
-    assert first.tolist() == [1.0, 1.0]
-    assert second.tolist() == [2.0, 1.0]
+        assert dimension == 2
+        assert first.tolist() == [1.0, 1.0]
+        assert second.tolist() == [2.0, 1.0]
+    finally:
+        runner_module._shutdown_mps_process_supervisor()

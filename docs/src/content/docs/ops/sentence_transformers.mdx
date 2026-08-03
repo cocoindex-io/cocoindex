@@ -202,6 +202,8 @@ PyTorch's MPS allocator on Apple Silicon uses unified system memory and can reta
 
 When allocator memory usage exceeds the low watermark ratio, CocoIndex automatically synchronizes the device and purges unused PyTorch and Python heap caches. If an out-of-memory (OOM) error occurs, the MPS cache is immediately flushed before splitting and retrying the batch.
 
+The persistent worker is also supervised. If it exits unexpectedly, CocoIndex fully reaps it and replays the interrupted embedding call once in a fresh worker. An internal five-minute deadline covers supervisor queueing, worker startup, lazy model loading, execution, and the optional crash replay. Exceeding that deadline terminates and reaps the worker without replaying the timed-out call. Replacing a worker discards its warm model cache, so the next attempt or call includes process startup and model-loading latency.
+
 By default, worker processes configure conservative PyTorch allocator thresholds:
 
 - `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.4`
