@@ -73,8 +73,7 @@ impl GPUPool {
             if pool.acquisition_queue.len() < self.num_gpus
                 && let Some(gpu_id) = pool
                     .capacities
-                    .excluding_top_n(pool.acquisition_queue.len())
-                    .find(&fraction)
+                    .first_excluding_top_n(&fraction, pool.acquisition_queue.len())
             {
                 // excluding top_n, because the acquisitions in the queue have already reserved the top n GPUs.
                 let updated_capacity = pool.capacities[gpu_id] - fraction;
@@ -119,11 +118,12 @@ impl GPUPool {
             let mut pool = self.state.lock().expect("lock poisoned");
             let mut acquired_gpus = Vec::with_capacity(gpu_count);
             if pool.acquisition_queue.len() < self.num_gpus {
-                let found_gpus = pool
-                    .capacities
-                    .excluding_top_n(pool.acquisition_queue.len())
-                    .find_n(&GPUCapacity::MAX, gpu_count);
-                for gpu_id in found_gpus {
+                let taken_gpus = pool.capacities.take_excluding_top_n(
+                    &GPUCapacity::MAX,
+                    gpu_count,
+                    pool.acquisition_queue.len(),
+                );
+                for gpu_id in taken_gpus {
                     acquired_gpus.push(gpu_id);
                     pool.capacities.update(gpu_id, GPUCapacity::ZERO);
                 }
@@ -139,10 +139,7 @@ impl GPUPool {
             .collect::<Vec<_>>();
             (acquired_gpus, receivers)
         };
-        let reserve_gpus = receivers
-            .into_iter()
-            .map(|receiver| async move { receiver.await });
-        let gpu_ids = futures::future::try_join_all(reserve_gpus).await?;
+        let gpu_ids = futures::future::try_join_all(receivers).await?;
         acquired_gpus.extend(gpu_ids);
         Ok(acquired_gpus)
     }
@@ -382,7 +379,21 @@ mod container {
                 .map(|(_, index)| *index)
         }
 
-        pub fn excluding_top_n(&self, top_n: usize) -> SplitSortedVec<'_, T> {
+        pub fn first_excluding_top_n(&self, target: &T, top_n: usize) -> Option<usize> {
+            self.find_excluding_top_n_iter(target, top_n).next()
+        }
+
+        pub fn take_excluding_top_n(&self, target: &T, count: usize, top_n: usize) -> Vec<usize> {
+            self.find_excluding_top_n_iter(target, top_n)
+                .take(count)
+                .collect()
+        }
+
+        fn find_excluding_top_n_iter(
+            &self,
+            target: &T,
+            top_n: usize,
+        ) -> impl Iterator<Item = usize> {
             let upper_bound = if top_n >= self.sorted.len() {
                 None
             } else if top_n > self.sorted.len() / 2 {
@@ -390,10 +401,11 @@ mod container {
             } else {
                 self.sorted.iter().rev().nth(top_n)
             };
-            SplitSortedVec {
-                source: &self.sorted,
-                upper_bound,
-            }
+            upper_bound
+                .into_iter()
+                .filter(move |(upper_bound_value, _)| target <= upper_bound_value)
+                .flat_map(|upper_bound| self.sorted.range(&(target.clone(), 0)..=upper_bound))
+                .map(|(_, index)| *index)
         }
 
         pub fn update(&mut self, index: usize, value: T) {
@@ -411,33 +423,6 @@ mod container {
 
         fn index(&self, index: usize) -> &Self::Output {
             &self.values[index]
-        }
-    }
-
-    pub(crate) struct SplitSortedVec<'a, T> {
-        source: &'a BTreeSet<(T, usize)>,
-        upper_bound: Option<&'a (T, usize)>,
-    }
-
-    impl<'a, T: Ord + Clone> SplitSortedVec<'a, T> {
-        pub fn find(&self, target: &T) -> Option<usize> {
-            self.find_n_iter(target, 1).next()
-        }
-
-        pub fn find_n(&self, target: &T, count: usize) -> Vec<usize> {
-            self.find_n_iter(target, count).collect()
-        }
-
-        fn find_n_iter(&self, target: &T, count: usize) -> impl Iterator<Item = usize> {
-            (self.upper_bound.is_some() && target <= &self.upper_bound.unwrap().0)
-                .then(|| {
-                    self.source
-                        .range(&(target.clone(), 0_usize)..=self.upper_bound.unwrap())
-                })
-                .into_iter()
-                .flatten()
-                .take(count)
-                .map(|(_, index)| *index)
         }
     }
 }
@@ -1106,7 +1091,7 @@ mod tests {
     fn test_sorted_vec_find_excluding_top_n_found() {
         let original = (0..10).rev().collect::<Vec<_>>();
         let capacity = SortedVec::from_iter(original.clone());
-        let index = capacity.excluding_top_n(3).find(&5);
+        let index = capacity.first_excluding_top_n(&5, 3);
         let expected = original.iter().position(|x| *x == 5);
         assert_eq!(index, expected);
     }
@@ -1114,21 +1099,21 @@ mod tests {
     #[test]
     fn test_sorted_vec_find_excluding_top_n_found_repeated() {
         let capacity = SortedVec::from_iter([1; 10]);
-        let index = capacity.excluding_top_n(3).find(&1);
+        let index = capacity.first_excluding_top_n(&1, 3);
         assert_eq!(index, Some(0));
     }
 
     #[test]
     fn test_sorted_vec_find_excluding_top_n_excluded() {
         let capacity = SortedVec::from_iter((0..10).rev());
-        let index = capacity.excluding_top_n(6).find(&5);
+        let index = capacity.first_excluding_top_n(&5, 6);
         assert_eq!(index, None);
     }
 
     #[test]
     fn test_sorted_vec_find_excluding_top_n_missing_excluded() {
         let capacity = SortedVec::from_iter([0, 4, 3, 5]); // [0, 3, 4, 5]
-        let index = capacity.excluding_top_n(3).find(&2);
+        let index = capacity.first_excluding_top_n(&2, 3);
         assert_eq!(index, None);
     }
 
@@ -1136,7 +1121,7 @@ mod tests {
     fn test_sorted_vec_find_excluding_top_n_missing_found() {
         let original = [0, 19, 15, 9, 20];
         let capacity = SortedVec::from_iter(original); // [0, 9, 15, 19, 20]
-        let index = capacity.excluding_top_n(2).find(&9);
+        let index = capacity.first_excluding_top_n(&9, 2);
         let expected = original.iter().position(|x| *x == 9);
         assert_eq!(index, expected);
     }
