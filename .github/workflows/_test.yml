@@ -36,6 +36,29 @@ jobs:
           RUSTC_WRAPPER: "sccache"
 
         steps:
+        # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
+        # release branch runs `prek --all-files` -- every hook, including the
+        # `cargo check` over the external example/benchmark workspaces -- so the
+        # combined `target/` trees crowd the root volume. `CARGO_INCREMENTAL=0`
+        # and `-C debuginfo=0` below already keep `target/` as small as it gets,
+        # so the remaining headroom has to come from the runner image itself.
+        # Reclaiming the preinstalled runtimes we never use buys ~20 GB.
+        #
+        # `large-packages` is the apt-get path: it dominates this action's
+        # runtime for a comparatively small win, so it stays off. `tool-cache`
+        # (default false) must stay off too -- it deletes $AGENT_TOOLSDIRECTORY,
+        # which is where the sccache/protoc/Python/prek steps below live.
+        - name: Free disk space
+          if: runner.os == 'Linux'
+          uses: jlumbroso/free-disk-space@v1.3.1
+          with:
+            android: true
+            dotnet: true
+            haskell: true
+            docker-images: true
+            large-packages: false
+            tool-cache: false
+
         - name: Disable Git autocrlf on Windows
           if: runner.os == 'Windows'
           shell: bash
