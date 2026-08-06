@@ -8,11 +8,11 @@ This module provides a two-level target state system for PostgreSQL:
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import decimal
 import ipaddress
 import json
+
 import logging
 import re
 import uuid
@@ -25,6 +25,7 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
+    cast,
 )
 
 
@@ -445,6 +446,7 @@ class _RowAction(NamedTuple):
 
     key: _RowKey
     value: _RowValue | None  # None means delete
+    handler: "_RowHandler"  # Owning table's handler, so the shared sink can dispatch
 
 
 # --- Vector Index Attachment ---
@@ -685,10 +687,10 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
     _pool: asyncpg.Pool
+    _db_key: str
     _table_name: str
     _schema_name: str | None
     _table_schema: TableSchema
-    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -696,18 +698,25 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         pg_schema_name: str | None,
         table_schema: TableSchema,
+        db_key: str,
     ) -> None:
         self._pool = pool
+        self._db_key = db_key
         self._table_name = table_name
         self._schema_name = pg_schema_name
         self._table_schema = table_schema
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Sequence[_RowAction]
+    async def _execute_actions(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        actions: Sequence[_RowAction],
     ) -> None:
-        """Apply row actions (upserts and deletes) to the database."""
+        """Apply this table's row actions (upserts and deletes) using `conn`.
 
+        Runs sequentially because `conn` may be a single connection shared
+        (via the shared per-database sink) with other tables' actions in the
+        same batch/transaction — a connection cannot run overlapping queries.
+        """
         if not actions:
             return
 
@@ -720,16 +729,15 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             else:
                 upserts.append(action)
 
-        async with asyncio.TaskGroup() as tg:
-            self._schedule_upserts(tg, upserts)
-            self._schedule_deletes(tg, deletes)
+        await self._execute_upserts(conn, upserts)
+        await self._execute_deletes(conn, deletes)
 
-    def _schedule_upserts(
+    async def _execute_upserts(
         self,
-        tg: asyncio.TaskGroup,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         upserts: list[_RowAction],
     ) -> None:
-        """Schedule upsert chunks as parallel tasks."""
+        """Execute upsert chunks sequentially on `conn`."""
         if not upserts:
             return
 
@@ -755,19 +763,19 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         chunk_size = max(1, _BIND_LIMIT // num_parameters)
         for i in range(0, len(upserts), chunk_size):
             chunk = upserts[i : i + chunk_size]
-            tg.create_task(
-                self._execute_upsert_chunk(
-                    table_name,
-                    col_list,
-                    conflict_clause,
-                    all_col_names,
-                    num_parameters,
-                    chunk,
-                )
+            await self._execute_upsert_chunk(
+                conn,
+                table_name,
+                col_list,
+                conflict_clause,
+                all_col_names,
+                num_parameters,
+                chunk,
             )
 
     async def _execute_upsert_chunk(
         self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         table_name: str,
         col_list: str,
         conflict_clause: str,
@@ -787,15 +795,14 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
 
         values_sql = ", ".join(values_sql_parts)
         sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
-        async with self._pool.acquire() as conn:
-            await conn.execute(sql, *params)
+        await conn.execute(sql, *params)
 
-    def _schedule_deletes(
+    async def _execute_deletes(
         self,
-        tg: asyncio.TaskGroup,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         deletes: list[_RowAction],
     ) -> None:
-        """Schedule delete chunks as parallel tasks."""
+        """Execute delete chunks sequentially on `conn`."""
         if not deletes:
             return
 
@@ -806,12 +813,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         chunk_size = max(1, _BIND_LIMIT // num_pk)
         for i in range(0, len(deletes), chunk_size):
             chunk = deletes[i : i + chunk_size]
-            tg.create_task(
-                self._execute_delete_chunk(table_name, pk_cols, num_pk, chunk)
-            )
+            await self._execute_delete_chunk(conn, table_name, pk_cols, num_pk, chunk)
 
     async def _execute_delete_chunk(
         self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         table_name: str,
         pk_cols: list[str],
         num_pk: int,
@@ -832,8 +838,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 params.extend(action.key)
             sql = f"DELETE FROM {table_name} WHERE {' OR '.join(or_parts)}"
 
-        async with self._pool.acquire() as conn:
-            await conn.execute(sql, *params)
+        await conn.execute(sql, *params)
 
     def attachments(
         self,
@@ -861,8 +866,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
-                action=_RowAction(key=key, value=None),
-                sink=self._sink,
+                action=_RowAction(key=key, value=None, handler=self),
+                sink=cast(
+                    "coco.TargetActionSink[_RowAction, None]",
+                    _get_db_sink(self._db_key),
+                ),
                 tracking_record=coco.NON_EXISTENCE,
             )
 
@@ -875,8 +883,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, value=desired_state),
-            sink=self._sink,
+            action=_RowAction(key=key, value=desired_state, handler=self),
+            sink=cast(
+                "coco.TargetActionSink[_RowAction, None]",
+                _get_db_sink(self._db_key),
+            ),
             tracking_record=target_fp,
         )
 
@@ -971,69 +982,53 @@ class _TableAction(NamedTuple):
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
-    _sink: coco.TargetActionSink[_TableAction, _RowHandler]
+    async def _apply_table_action(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        pool: asyncpg.Pool,
+        action: _TableAction,
+    ) -> coco.ChildTargetDef[_RowHandler] | None:
+        """Apply a single table action (DDL) and return its child row handler.
 
-    def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        Called by the per-database sink (see `_get_db_sink`), which owns the
+        connection and transaction so a table's DDL and other tables' row DML
+        of the same database can share one transaction when applied together.
+        """
+        key = action.key
 
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_TableAction]
-    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-        """Apply table actions (DDL) and return child row handlers."""
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
-            actions_list
+        if action.main_action in ("replace", "delete"):
+            await self._drop_table(conn, key.table_name, key.pg_schema_name)
+
+        if coco.is_non_existence(action.spec):
+            return None
+
+        spec = action.spec
+        child = coco.ChildTargetDef(
+            handler=_RowHandler(
+                pool=pool,
+                table_name=key.table_name,
+                pg_schema_name=key.pg_schema_name,
+                table_schema=spec.table_schema,
+                db_key=key.db_key,
+            )
         )
 
-        # Group actions by table key so we can apply all DDL for the same table
-        # within a single transaction/connection.
-        by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
-            by_key.setdefault(action.key, []).append(i)
+        if action.main_action in ("insert", "upsert", "replace"):
+            await self._create_table(
+                conn,
+                key,
+                spec.table_schema,
+                if_not_exists=(action.main_action == "upsert"),
+            )
+            return child
 
-        for key, idxs in by_key.items():
-            pool = context_provider.get(key.db_key, asyncpg.Pool)
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    for i in idxs:
-                        action = actions_list[i]
-                        assert action.key == key
+        # No main change: reconcile non-PK columns incrementally.
+        if action.column_actions:
+            await self._apply_column_actions(
+                conn, key, spec.table_schema, action.column_actions
+            )
 
-                        if action.main_action in ("replace", "delete"):
-                            await self._drop_table(
-                                conn, key.table_name, key.pg_schema_name
-                            )
-
-                        if coco.is_non_existence(action.spec):
-                            outputs[i] = None
-                            continue
-
-                        spec = action.spec
-                        outputs[i] = coco.ChildTargetDef(
-                            handler=_RowHandler(
-                                pool=pool,
-                                table_name=key.table_name,
-                                pg_schema_name=key.pg_schema_name,
-                                table_schema=spec.table_schema,
-                            )
-                        )
-
-                        if action.main_action in ("insert", "upsert", "replace"):
-                            await self._create_table(
-                                conn,
-                                key,
-                                spec.table_schema,
-                                if_not_exists=(action.main_action == "upsert"),
-                            )
-                            continue
-
-                        # No main change: reconcile non-PK columns incrementally.
-                        if action.column_actions:
-                            await self._apply_column_actions(
-                                conn, key, spec.table_schema, action.column_actions
-                            )
-
-        return outputs
+        return child
 
     async def _drop_table(
         self,
@@ -1239,16 +1234,91 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 main_action=main_action,
                 column_actions=column_actions,
             ),
-            sink=self._sink,
+            sink=_get_db_sink(key.db_key),
             tracking_record=tracking_record,
             child_invalidation=child_invalidation,
         )
 
 
 # Register the root target states provider
+_table_handler = _TableHandler()
 _table_provider = coco.register_root_target_states_provider(
-    "cocoindex/postgres/table", _TableHandler()
+    "cocoindex/postgres/table", _table_handler
 )
+
+
+# One sink per database, keyed by db_key. Both table (DDL) and row (DML) target
+# states of the same database route through this single sink, so the engine
+# batches them into one connection/transaction when they are applied in the same
+# pass — giving cross-table, and mixed DDL+DML, atomicity within one database.
+_DbAction = _TableAction | _RowAction
+
+_db_sinks: dict[str, coco.TargetActionSink[_DbAction, _RowHandler]] = {}
+
+
+def _get_db_sink(
+    db_key: str,
+) -> coco.TargetActionSink[_DbAction, _RowHandler]:
+    """Return the shared per-database sink for *db_key*, creating it on first call.
+
+    Table actions apply DDL (and yield a child row handler); row actions apply
+    DML. Both branch on the action type inside a single connection and
+    transaction, so any actions batched together for one database are atomic.
+    Within the transaction, actions run in three phases — create/alter tables,
+    then row DML, then drop tables — so the ordering is correct by construction
+    even if creates, deletes, and row changes are batched together.
+    """
+    sink = _db_sinks.get(db_key)
+    if sink is None:
+
+        async def _apply(
+            context_provider: ContextProvider,
+            actions: Sequence[_DbAction],
+        ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
+            pool = context_provider.get(db_key, asyncpg.Pool)
+            outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
+                actions
+            )
+
+            # Partition actions into three ordered phases so the transaction is
+            # correct by construction, independent of the order the engine
+            # batches actions in:
+            #   1. table DDL that leaves the table existing (create / alter /
+            #      replace) — must run before any row DML targeting it;
+            #   2. row DML (upserts + deletes);
+            #   3. table drops — must run after row DML, since deleting rows
+            #      from an already-dropped table would fail.
+            # `replace` drops-then-recreates internally, so it ends with the
+            # table existing and belongs to phase 1.
+            ensure_table_actions: list[tuple[int, _TableAction]] = []
+            drop_table_actions: list[tuple[int, _TableAction]] = []
+            rows_by_handler: dict[_RowHandler, list[_RowAction]] = {}
+            for i, action in enumerate(actions):
+                if isinstance(action, _TableAction):
+                    if coco.is_non_existence(action.spec):
+                        drop_table_actions.append((i, action))
+                    else:
+                        ensure_table_actions.append((i, action))
+                else:
+                    rows_by_handler.setdefault(action.handler, []).append(action)
+
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    for i, action in ensure_table_actions:
+                        outputs[i] = await _table_handler._apply_table_action(
+                            conn, pool, action
+                        )
+                    for handler, handler_actions in rows_by_handler.items():
+                        await handler._execute_actions(conn, handler_actions)
+                    for i, action in drop_table_actions:
+                        outputs[i] = await _table_handler._apply_table_action(
+                            conn, pool, action
+                        )
+            return outputs
+
+        sink = coco.TargetActionSink.from_async_fn(_apply)
+        _db_sinks[db_key] = sink
+    return sink
 
 
 class TableTarget(
