@@ -1119,6 +1119,14 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             }
 
             // Delete: target state is no longer declared.
+            let is_preempted = item.states.iter().any(|(v, s)| *v == 0 && s.is_deleted())
+                || bulk_target_owners
+                    .get(&target_state_path_with_pid.target_state_path)
+                    .is_some_and(|owner| owner != stable_path);
+            if is_preempted {
+                continue;
+            }
+
             let Some(target_states_provider) = target_states_providers
                 .get(target_state_path_with_pid.target_state_path.provider_path())
             else {
