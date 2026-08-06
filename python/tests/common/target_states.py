@@ -81,6 +81,10 @@ class DictTargetStateStore:
         tuple[str, DictDataWithPrev | coco.NonExistenceType]
     ]
     sink_exception: bool = False
+    # Simulates a partial failure: the actions reach the target, but the sink
+    # call still fails before the component lifecycle finalizes (e.g. the ack
+    # is lost after the write landed).
+    sink_exception_after_apply: bool = False
 
     def __init__(self, use_async: bool = False) -> None:
         self.data = {}
@@ -109,6 +113,8 @@ class DictTargetStateStore:
                     self.data[key] = value
                     self.metrics.increment("upsert")
             self.metrics.increment("sink")
+        if self.sink_exception_after_apply:
+            raise ValueError("injected sink exception after apply")
 
     async def _async_sink(
         self,
