@@ -73,7 +73,7 @@ impl GPUPool {
             if pool.acquisition_queue.len() < self.num_gpus
                 && let Some(gpu_id) = pool
                     .capacities
-                    .first_excluding_top_n(&fraction, pool.acquisition_queue.len())
+                    .find_excluding_top_n(&fraction, pool.acquisition_queue.len())
             {
                 // excluding top_n, because the acquisitions in the queue have already reserved the top n GPUs.
                 let updated_capacity = pool.capacities[gpu_id] - fraction;
@@ -118,7 +118,7 @@ impl GPUPool {
             let mut pool = self.state.lock().expect("lock poisoned");
             let mut acquired_gpus = Vec::with_capacity(gpu_count);
             if pool.acquisition_queue.len() < self.num_gpus {
-                let taken_gpus = pool.capacities.take_excluding_top_n(
+                let taken_gpus = pool.capacities.find_many_excluding_top_n(
                     &GPUCapacity::MAX,
                     gpu_count,
                     pool.acquisition_queue.len(),
@@ -379,11 +379,16 @@ mod container {
                 .map(|(_, index)| *index)
         }
 
-        pub fn first_excluding_top_n(&self, target: &T, top_n: usize) -> Option<usize> {
+        pub fn find_excluding_top_n(&self, target: &T, top_n: usize) -> Option<usize> {
             self.find_excluding_top_n_iter(target, top_n).next()
         }
 
-        pub fn take_excluding_top_n(&self, target: &T, count: usize, top_n: usize) -> Vec<usize> {
+        pub fn find_many_excluding_top_n(
+            &self,
+            target: &T,
+            count: usize,
+            top_n: usize,
+        ) -> Vec<usize> {
             self.find_excluding_top_n_iter(target, top_n)
                 .take(count)
                 .collect()
@@ -1092,7 +1097,7 @@ mod tests {
     fn test_sorted_vec_first_excluding_top_n_found() {
         let original = (0..10).rev().collect::<Vec<_>>();
         let capacity = SortedVec::from_iter(original.clone());
-        let index = capacity.first_excluding_top_n(&5, 3);
+        let index = capacity.find_excluding_top_n(&5, 3);
         let expected = original.iter().position(|x| *x == 5);
         assert_eq!(index, expected);
     }
@@ -1100,21 +1105,21 @@ mod tests {
     #[test]
     fn test_sorted_vec_first_excluding_top_n_found_repeated() {
         let capacity = SortedVec::from_iter([1; 10]);
-        let index = capacity.first_excluding_top_n(&1, 3);
+        let index = capacity.find_excluding_top_n(&1, 3);
         assert_eq!(index, Some(0));
     }
 
     #[test]
     fn test_sorted_vec_first_excluding_top_n_excluded() {
         let capacity = SortedVec::from_iter((0..10).rev());
-        let index = capacity.first_excluding_top_n(&5, 6);
+        let index = capacity.find_excluding_top_n(&5, 6);
         assert_eq!(index, None);
     }
 
     #[test]
     fn test_sorted_vec_first_excluding_top_n_missing_excluded() {
         let capacity = SortedVec::from_iter([0, 4, 3, 5]); // [0, 3, 4, 5]
-        let index = capacity.first_excluding_top_n(&2, 3);
+        let index = capacity.find_excluding_top_n(&2, 3);
         assert_eq!(index, None);
     }
 
@@ -1122,7 +1127,7 @@ mod tests {
     fn test_sorted_vec_first_excluding_top_n_missing_found() {
         let original = [0, 19, 15, 9, 20];
         let capacity = SortedVec::from_iter(original); // [0, 9, 15, 19, 20]
-        let index = capacity.first_excluding_top_n(&9, 2);
+        let index = capacity.find_excluding_top_n(&9, 2);
         let expected = original.iter().position(|x| *x == 9);
         assert_eq!(index, expected);
     }
@@ -1131,7 +1136,7 @@ mod tests {
     fn test_sorted_vec_take_excluding_top_n_success() {
         let original = [20, 19, 15, 9, 20, 20, 11, 20];
         let capacity = SortedVec::from_iter(original);
-        let indices = capacity.take_excluding_top_n(&20, usize::MAX, 0);
+        let indices = capacity.find_many_excluding_top_n(&20, usize::MAX, 0);
         let expected = original.iter().positions(|x| *x == 20).collect::<Vec<_>>();
         assert_eq!(indices, expected);
     }
@@ -1140,7 +1145,7 @@ mod tests {
     fn test_sorted_vec_take_excluding_top_n_excluded() {
         let original = [20, 19, 15, 9, 20, 20, 11, 20];
         let capacity = SortedVec::from_iter(original);
-        let indices = capacity.take_excluding_top_n(&20, usize::MAX, 1);
+        let indices = capacity.find_many_excluding_top_n(&20, usize::MAX, 1);
         let mut expected = original.iter().positions(|x| *x == 20).collect::<Vec<_>>();
         expected.pop();
         assert_eq!(indices, expected);
@@ -1150,7 +1155,7 @@ mod tests {
     fn test_sorted_vec_take_excluding_top_n_take_few() {
         let original = [20, 19, 15, 9, 20, 20, 11, 20];
         let capacity = SortedVec::from_iter(original);
-        let indices = capacity.take_excluding_top_n(&20, 2, 0);
+        let indices = capacity.find_many_excluding_top_n(&20, 2, 0);
         let expected = original.iter().positions(|x| *x == 20).collect::<Vec<_>>();
         assert_eq!(indices, expected[..2]);
     }
@@ -1159,7 +1164,7 @@ mod tests {
     fn test_sorted_vec_take_excluding_top_n_take_close_values() {
         let original = [20, 19, 15, 9, 20, 20, 11, 20];
         let capacity = SortedVec::from_iter(original);
-        let indices = capacity.take_excluding_top_n(&19, usize::MAX, 0);
+        let indices = capacity.find_many_excluding_top_n(&19, usize::MAX, 0);
         let expected = original
             .iter()
             .positions(|x| *x == 19)
