@@ -436,6 +436,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_FN_LOGIC)]
             #[linkme(crate = ::cocoindex::linkme)]
+            #[used]
             #[doc(hidden)]
             static #logic_slice_name: ::cocoindex::FnLogicEntry = ::cocoindex::FnLogicEntry {
                 module: ::core::module_path!(),
