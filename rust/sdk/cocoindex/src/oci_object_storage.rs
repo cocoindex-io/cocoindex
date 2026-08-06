@@ -1025,11 +1025,12 @@ pub struct OciLiveWalker {
     /// `eventTime` cutoff (Unix seconds), set at `scan` time.
     cutoff: tokio::sync::Mutex<i64>,
     watch_guard: SingleWatcherGuard,
-    /// Opt-in version for skipping the startup scan on reruns (see
-    /// [`OciLiveWalker::logic_version`]). `None` always scans.
-    logic_version: Option<String>,
+    /// Opt-in: skip the startup scan on reruns when the framework reports the
+    /// processing logic unchanged (see [`OciLiveWalker::durable_stream`]).
+    /// `false` always scans.
+    durable_stream: bool,
     /// Decision recorded by `skip_initial_scan`, read by `watch` to know whether
-    /// the scan ran (so the event cutoff and version write can branch on it).
+    /// the scan ran (so the event cutoff can branch on it).
     skip_scan: tokio::sync::Mutex<bool>,
 }
 
@@ -1054,28 +1055,24 @@ pub fn list_objects_live(
         events: tokio::sync::Mutex::new(Some(Box::pin(events))),
         cutoff: tokio::sync::Mutex::new(0),
         watch_guard: SingleWatcherGuard::new("OciLiveWalker"),
-        logic_version: None,
+        durable_stream: false,
         skip_scan: tokio::sync::Mutex::new(false),
     }
 }
 
-/// Committed-state key under which the live view records `logic_version` after a
-/// successful full scan, read back on a later run to decide whether the startup
-/// scan can be skipped.
-const OCI_SCAN_VERSION_KEY: &str = "__coco_oci_scan_version__";
-
 impl OciLiveWalker {
-    /// Opt into skipping the startup full scan on reruns. When set, the live view
-    /// records this version after a successful scan and, on a later run, skips the
-    /// scan if the recorded version matches — relying on the durable event stream
-    /// to replay the downtime backlog from its committed cursor.
+    /// Opt into skipping the startup full scan on reruns. When `true`, the scan is
+    /// skipped on a later run if the framework reports the processing logic
+    /// unchanged since the last committed scan — relying on the durable event
+    /// stream to replay the downtime backlog from its committed cursor.
     ///
-    /// You MUST bump this whenever your processing logic changes (otherwise stale
-    /// state is silently kept), and the stream MUST be durable (e.g. a Kafka
-    /// consumer with a stable group and committed offsets). Leave unset to always
-    /// scan on startup.
-    pub fn logic_version(mut self, version: impl Into<String>) -> Self {
-        self.logic_version = Some(version.into());
+    /// The logic-change check is automatic (no manual version to bump). You are
+    /// responsible for the durability guarantee: the stream MUST resume from a
+    /// committed cursor (e.g. a Kafka consumer with a stable group and committed
+    /// offsets); otherwise the downtime backlog is lost. Leave `false` (the
+    /// default) to always scan on startup.
+    pub fn durable_stream(mut self, durable_stream: bool) -> Self {
+        self.durable_stream = durable_stream;
         self
     }
 
@@ -1187,11 +1184,9 @@ impl LiveMapView<String, OciFile> for OciLiveWalker {
 #[crate::async_trait]
 impl LiveMapFeed<String, OciFile> for OciLiveWalker {
     async fn skip_initial_scan(&self, operator: &LiveComponentOperator) -> Result<bool> {
-        let Some(version) = &self.logic_version else {
-            return Ok(false);
-        };
-        let stored: Option<String> = operator.read_committed_state(OCI_SCAN_VERSION_KEY).await?;
-        let skip = stored.as_deref() == Some(version.as_str());
+        // Skip only when the user asserts a durable stream AND the framework
+        // reports the processing logic unchanged since the last committed scan.
+        let skip = self.durable_stream && operator.processing_unchanged().await?;
         *self.skip_scan.lock().await = skip;
         Ok(skip)
     }
@@ -1206,16 +1201,6 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
             .take()
             .ok_or_else(|| Error::engine("oci live event stream already consumed"))?;
         let skip_scan = *self.skip_scan.lock().await;
-        // Record the version only after a real scan (which has already committed
-        // — `mark_ready` ran before `watch`), so a later run skips only when the
-        // bootstrap durably landed.
-        if !skip_scan {
-            if let Some(version) = &self.logic_version {
-                subscriber
-                    .write_committed_state(OCI_SCAN_VERSION_KEY, version)
-                    .await?;
-            }
-        }
         // In skip-scan mode there is no scan to dedupe against, so the wall-clock
         // cutoff must not fire — the durable stream replays the downtime backlog
         // and every replayed event must be processed. `i64::MIN` drops nothing.
