@@ -183,18 +183,29 @@ impl GPUPool {
 
     /// processes pending acquisition queue following the rules:
     ///
-    /// 1. strict FIFO - when acquisition A comes in earlier than acquisition B, acquisition A always gets processed earlier.
-    /// 2. only pop if available - the acquisition remains in the queue until a GPU has enough availability to process it.
+    /// 1. The first task always reserves the GPU with the most availability at this moment
+    /// 2. Processing does not change the order of pending acquisitions
     ///
     fn process_acquisition_queue(pool: &mut PoolState) {
-        while let Some(pending_acquisition) = pool.acquisition_queue.front()
-            && let Some(gpu_id) = pool.capacities.find(&pending_acquisition.demand)
+        let length = pool.acquisition_queue.len();
+        let mut pending_acquisitions = Vec::with_capacity(length.min(pool.capacities.len()));
+        while pending_acquisitions.len() < length
+            && let Some(acquisition) = pool.acquisition_queue.pop_front()
         {
-            let pending_acquisition = pool.acquisition_queue.pop_front().unwrap();
-            if pending_acquisition.notifier.send(gpu_id).is_ok() {
-                let updated_capacity = pool.capacities[gpu_id] - pending_acquisition.demand;
-                pool.capacities.update(gpu_id, updated_capacity);
+            if let Some(gpu_id) = pool
+                .capacities
+                .find_excluding_top_n(&acquisition.demand, pending_acquisitions.len())
+            {
+                if acquisition.notifier.send(gpu_id).is_ok() {
+                    let updated_capacity = pool.capacities[gpu_id] - acquisition.demand;
+                    pool.capacities.update(gpu_id, updated_capacity);
+                }
+            } else {
+                pending_acquisitions.push(acquisition);
             }
+        }
+        while let Some(acquisition) = pending_acquisitions.pop() {
+            pool.acquisition_queue.push_front(acquisition);
         }
     }
 
@@ -359,6 +370,12 @@ mod container {
         sorted: BTreeSet<(T, usize)>,
     }
 
+    impl<T> SortedVec<T> {
+        pub fn len(&self) -> usize {
+            self.values.len()
+        }
+    }
+
     impl<T: Clone + Ord> FromIterator<T> for SortedVec<T> {
         fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
             let values = iter.into_iter().collect::<Vec<_>>();
@@ -368,21 +385,18 @@ mod container {
     }
 
     impl<T: Clone + Ord> SortedVec<T> {
-        /// find should return the index where the index points to minimal value that
+        /// find_excluding_top_n should return the first index which points to minimal value that
         /// is greater or equal to `target`.
         ///
         /// When the target value is greater than all values, return None.
-        pub fn find(&self, target: &T) -> Option<usize> {
-            self.sorted
-                .range(&(target.clone(), 0)..)
-                .next()
-                .map(|(_, index)| *index)
-        }
-
         pub fn find_excluding_top_n(&self, target: &T, top_n: usize) -> Option<usize> {
             self.find_excluding_top_n_iter(target, top_n).next()
         }
 
+        /// find_many_excluding_top_n should return the `count` number of indices
+        /// which points to minimal value that is greater or equal to `target`.
+        ///
+        /// When the target value is greater than all values, return empty vec.
         pub fn find_many_excluding_top_n(
             &self,
             target: &T,
@@ -756,6 +770,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reserve_front_queue_not_block_later_items() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(2).unwrap()));
+        let gpu_1 = pool.acquire(GPUCapacity::unchecked(0.5)).await?;
+        let gpu_2 = pool.acquire(GPUCapacity::unchecked(0.8)).await?;
+        let cloned_pool = pool.clone();
+        let task_1 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUCapacity::unchecked(0.6)).await });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task_1.is_finished());
+        let cloned_pool = pool.clone();
+        let task_2 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUCapacity::unchecked(0.4)).await });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task_2.is_finished());
+
+        pool.release(gpu_2, GPUCapacity::unchecked(0.2))?;
+        let task_2_acquired_gpu = tokio::time::timeout(std::time::Duration::from_secs(1), task_2)
+            .await
+            .expect("task finished")
+            .expect("no timeout")?;
+        assert_eq!(task_2_acquired_gpu, gpu_2);
+        assert!(!task_1.is_finished());
+
+        pool.release(gpu_1, GPUCapacity::unchecked(0.5))?;
+        let task_1_acquired_gpu = tokio::time::timeout(std::time::Duration::from_secs(1), task_1)
+            .await
+            .expect("task finished")
+            .expect("no timeout")?;
+        assert_eq!(task_1_acquired_gpu, gpu_1);
+
+        pool.release(gpu_2, GPUCapacity::MAX)
+    }
+
+    #[tokio::test]
+    async fn test_reserve_queue_assigned_task_not_blocking() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(2).unwrap()));
+        let gpu_1 = pool.acquire(GPUCapacity::unchecked(0.3)).await?;
+        let gpu_2 = pool.acquire(GPUCapacity::unchecked(0.8)).await?;
+        let cloned_pool = pool.clone();
+        let task_1 = tokio::spawn(async move { cloned_pool.acquire(GPUCapacity::MAX).await });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task_1.is_finished());
+        let cloned_pool = pool.clone();
+        let task_2 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUCapacity::unchecked(0.4)).await });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task_2.is_finished());
+        let cloned_pool = pool.clone();
+        let task_3 =
+            tokio::spawn(async move { cloned_pool.acquire(GPUCapacity::unchecked(0.2)).await });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task_3.is_finished());
+
+        pool.release(gpu_2, GPUCapacity::unchecked(0.4))?;
+        assert!(!task_1.is_finished());
+        let task_2_acquired_gpu = tokio::time::timeout(std::time::Duration::from_secs(1), task_2)
+            .await
+            .expect("task finished")
+            .expect("no timeout")?;
+        assert_eq!(task_2_acquired_gpu, gpu_2);
+        let task_3_acquired_gpu = tokio::time::timeout(std::time::Duration::from_secs(1), task_3)
+            .await
+            .expect("task finished")
+            .expect("no timeout")?;
+        assert_eq!(task_3_acquired_gpu, gpu_2);
+
+        pool.release(gpu_1, GPUCapacity::unchecked(0.3))?;
+        let task_1_acquired_gpu = tokio::time::timeout(std::time::Duration::from_secs(1), task_1)
+            .await
+            .expect("task finished")
+            .expect("no timeout")?;
+        assert_eq!(task_1_acquired_gpu, gpu_1);
+
+        pool.release(gpu_2, GPUCapacity::MAX)
+    }
+
+    #[tokio::test]
     async fn test_release_gpus() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(1).unwrap());
         let gpu_0 = pool.acquire(GPUCapacity::unchecked(0.5)).await?;
@@ -1057,7 +1148,7 @@ mod tests {
     fn test_sorted_vec_find_lowest_index() {
         let original = [1; 10];
         let capacity = SortedVec::from_iter(original);
-        let index = capacity.find(&1);
+        let index = capacity.find_excluding_top_n(&1, 0);
         assert_eq!(index, Some(0));
     }
 
@@ -1065,7 +1156,7 @@ mod tests {
     fn test_sorted_vec_find_missing() {
         let original = [4, 3, 0];
         let capacity = SortedVec::from_iter(original); // [0, 3, 4]
-        let index = capacity.find(&1);
+        let index = capacity.find_excluding_top_n(&1, 0);
         let expected = original.iter().position(|x| *x == 3);
         assert_eq!(index, expected);
     }
@@ -1074,7 +1165,7 @@ mod tests {
     fn test_sorted_vec_find_exact() {
         let original = [4, 3, 0];
         let capacity = SortedVec::from_iter(original);
-        let index = capacity.find(&3);
+        let index = capacity.find_excluding_top_n(&3, 0);
         let expected = original.iter().position(|x| *x == 3);
         assert_eq!(index, expected);
     }
@@ -1082,14 +1173,14 @@ mod tests {
     #[test]
     fn test_sorted_vec_find_over_max() {
         let capacity = SortedVec::from_iter([0, 3, 4].into_iter().rev());
-        let index = capacity.find(&i32::MAX);
+        let index = capacity.find_excluding_top_n(&i32::MAX, 0);
         assert_eq!(index, None);
     }
 
     #[test]
     fn test_sorted_vec_find_empty() {
         let capacity = SortedVec::<usize>::from_iter([]);
-        let index = capacity.find(&3);
+        let index = capacity.find_excluding_top_n(&3, 0);
         assert_eq!(index, None);
     }
 
