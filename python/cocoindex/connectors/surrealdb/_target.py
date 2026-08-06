@@ -658,10 +658,8 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._conn = conn
         self._sink = sink
 
-    def attachment(self, att_type: str) -> _VectorIndexHandler | None:
-        if att_type == "vector_index":
-            return _VectorIndexHandler(self._conn, self._table_name)
-        return None
+    def attachments(self) -> dict[str, _VectorIndexHandler]:
+        return {"vector_index": _VectorIndexHandler(self._conn, self._table_name)}
 
     def _encode_row(self, row_dict: dict[str, Any]) -> dict[str, Any]:
         """Apply column encoders from schema if present."""
