@@ -1042,6 +1042,14 @@ impl FnCallContext {
     }
 
     pub fn join_child(&self, child_fn_ctx: &FnCallContext) {
+        self.join_child_suppressing_context_deps(child_fn_ctx, None);
+    }
+
+    pub fn join_child_suppressing_context_deps(
+        &self,
+        child_fn_ctx: &FnCallContext,
+        suppressed_context_deps: Option<&HashSet<Fingerprint>>,
+    ) {
         // Take the child's inner first to keep lock scope small (and avoid deadlock).
         let child_inner = child_fn_ctx.update(std::mem::take);
         self.update(|inner| {
@@ -1052,10 +1060,23 @@ impl FnCallContext {
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
             inner.has_child_components |= child_inner.has_child_components;
-            // Context change deps always propagate.
-            inner
-                .context_change_deps
-                .extend(child_inner.context_change_deps);
+            // Context change deps normally propagate, except for scoped provider
+            // values that should invalidate the child consumer but not the provider.
+            match suppressed_context_deps {
+                Some(suppressed) => {
+                    inner.context_change_deps.extend(
+                        child_inner
+                            .context_change_deps
+                            .into_iter()
+                            .filter(|fp| !suppressed.contains(fp)),
+                    );
+                }
+                None => {
+                    inner
+                        .context_change_deps
+                        .extend(child_inner.context_change_deps);
+                }
+            }
             // Function logic deps conditionally propagate.
             if self.propagate_children_fn_logic {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);

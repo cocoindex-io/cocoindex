@@ -7,6 +7,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import (
+    Any,
     AsyncIterator,
     Awaitable,
     Callable,
@@ -15,6 +16,7 @@ from typing import (
     NamedTuple,
     TypeAlias,
     TypeVar,
+    cast,
 )
 
 from cocoindex._internal.context_keys import ContextKey
@@ -61,6 +63,12 @@ class ExceptionContext:
 
 
 @dataclass(frozen=True, slots=True)
+class _ContextOverride:
+    value: Any
+    fp: core.Fingerprint | None
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentContext:
     """
     Internal context object for component execution.
@@ -78,6 +86,7 @@ class ComponentContext:
     _core_fn_call_ctx: core.FnCallContext
     _exception_handler_chain: ExceptionHandlerChain | None
     _in_memo_fn: bool = False
+    _context_overrides: dict[str, _ContextOverride] | None = None
 
     def _with_fn_call_ctx(
         self, fn_call_ctx: core.FnCallContext, *, in_memo_fn: bool = False
@@ -89,6 +98,7 @@ class ComponentContext:
             fn_call_ctx,
             self._exception_handler_chain,
             in_memo_fn,
+            self._context_overrides,
         )
 
     def _with_extended_path(self, *parts: StableKey) -> ComponentContext:
@@ -102,6 +112,8 @@ class ComponentContext:
             self._core_processor_ctx,
             self._core_fn_call_ctx,
             self._exception_handler_chain,
+            self._in_memo_fn,
+            self._context_overrides,
         )
 
     def _with_core_processor_ctx(
@@ -115,6 +127,8 @@ class ComponentContext:
             core_processor_ctx,
             self._core_fn_call_ctx,
             self._exception_handler_chain,
+            self._in_memo_fn,
+            self._context_overrides,
         )
 
     def _with_exception_handler(self, handler: ExceptionHandler) -> ComponentContext:
@@ -124,6 +138,26 @@ class ComponentContext:
             self._core_processor_ctx,
             self._core_fn_call_ctx,
             ExceptionHandlerChain(handler=handler, base=self._exception_handler_chain),
+            self._in_memo_fn,
+            self._context_overrides,
+        )
+
+    def _with_context_override(
+        self,
+        key_name: str,
+        override: _ContextOverride,
+        fn_call_ctx: core.FnCallContext,
+    ) -> ComponentContext:
+        new_overrides = dict(self._context_overrides or {})
+        new_overrides[key_name] = override
+        return ComponentContext(
+            self._env,
+            self._core_path,
+            self._core_processor_ctx,
+            fn_call_ctx,
+            self._exception_handler_chain,
+            self._in_memo_fn,
+            new_overrides,
         )
 
     def resolve_exception_handler(
@@ -369,6 +403,56 @@ def build_child_path(
     return child_path
 
 
+@contextlib.contextmanager
+def provide_context(key: ContextKey[T], value: T) -> Generator[T, None, None]:
+    """
+    Temporarily override a context value within the current dynamic scope.
+
+    Nested ``coco.use_context(key)`` calls in the dynamic scope (plain/`@coco.fn`
+    calls and ``coco.map`` — but not across ``mount`` boundaries) resolve to
+    *value*. This is a scoped binding; the environment-level value is unchanged
+    after the block exits.
+
+    For ``detect_change=True`` keys, consumers inside the scope record a
+    dependency on this scoped value's fingerprint (so they re-execute when the
+    scoped value changes), while the providing function itself does **not** gain
+    that dependency — the fp is absorbed at the scope boundary (see below).
+
+    Raises:
+        RuntimeError: if *value* carries a state function (``__coco_memo_state__``);
+            such values must be provided at the environment level via
+            ``builder.provide()`` (see ``acquire_scoped_fingerprint``).
+    """
+    current = get_context_from_ctx()
+    provider = current._env.context_provider
+
+    # detect_change=True: register the scoped fingerprint (rejects state-hook
+    # values). detect_change=False: nothing to track — fp stays None.
+    fp = provider.acquire_scoped_fingerprint(key, value) if key.detect_change else None
+
+    # Only interpose a scope-level FnCallContext when there is an fp to absorb.
+    # With no fp, no context-change dep is ever produced for this key, so the
+    # current fn-call ctx can be reused directly.
+    scope_ctx = core.FnCallContext() if fp is not None else None
+    fn_ctx = scope_ctx if scope_ctx is not None else current._core_fn_call_ctx
+
+    token = _context_var.set(
+        current._with_context_override(key._key, _ContextOverride(value, fp), fn_ctx)
+    )
+    try:
+        yield value
+    finally:
+        _context_var.reset(token)
+        # Absorb the scoped fp: merge the scope's collected deps back into the
+        # provider's fn-call ctx but drop this scope's own fp, so the provider
+        # is not invalidated by the value it provided. Other deps propagate.
+        if scope_ctx is not None:
+            assert fp is not None
+            current._core_fn_call_ctx.join_child(scope_ctx, {fp})
+        if fp is not None:
+            provider.release_scoped_fingerprint(fp)
+
+
 def use_context(key: ContextKey[T]) -> T:
     """
     Retrieve a value from the context.
@@ -394,6 +478,13 @@ def use_context(key: ContextKey[T]) -> T:
             ...
     """
     ctx = get_context_from_ctx()
+    overrides = ctx._context_overrides
+    override = overrides.get(key._key) if overrides else None
+    if override is not None:
+        if key.detect_change and override.fp is not None:
+            ctx._core_fn_call_ctx.add_context_change_dep(override.fp)
+        return cast(T, override.value)
+
     value = ctx._env.context_provider.get(key)
     if key.detect_change:
         fp = ctx._env.context_provider.get_fingerprint(key)

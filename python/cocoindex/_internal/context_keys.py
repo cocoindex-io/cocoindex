@@ -96,6 +96,25 @@ def _compute_initial_context_states(
     return [outcome.state for outcome in outcomes]
 
 
+def _fingerprint_context_value(
+    key: ContextKey[Any], value: Any
+) -> tuple[core.Fingerprint, list[StateFnEntry]]:
+    """Canonicalize ``(key, value)`` into its memo fingerprint + collected state fns.
+
+    The returned ``state_fns`` is non-empty iff the value (or something nested
+    in it) exposes ``__coco_memo_state__`` / a registered ``state_fn`` — i.e.
+    the canonicalizer tagged it ``"shook"``.
+    """
+    state_fns: list[StateFnEntry] = []
+    canonical = _canonicalize(
+        ("context_key", key._key, value),
+        _seen=None,
+        state_methods=state_fns,
+    )
+    fp = core.fingerprint_simple_object(canonical)
+    return fp, state_fns
+
+
 class ContextKey(Generic[T_co]):
     __slots__ = ("_key", "_detect_change")
     _key: str
@@ -122,10 +141,32 @@ class ContextKey(Generic[T_co]):
 
 
 class ContextProvider:
+    """Holds context values and manages change-detection fingerprint lifetimes.
+
+    Fingerprint registration uses a single **reference count per fingerprint**
+    (``_fp_refcounts``), shared by environment-level ``provide()`` and scoped
+    ``provide_context()``. A fingerprint is registered into the Rust logic set
+    on the 0→1 edge and unregistered on the 1→0 edge, so:
+
+    - an environment-level value holds a permanent count (released only on
+      re-provide to a different fp, or provider teardown);
+    - a scoped value holds a temporary count for the duration of its ``with``;
+    - the same fp arriving from multiple sources (env + scope, or concurrent
+      sibling scopes) is naturally safe — no special-casing.
+
+    State functions (``__coco_memo_state__``) are only handled on the
+    environment-level ``provide()`` path; ``provide_context()`` rejects values
+    carrying a state function (see ``acquire_scoped_fingerprint``), which keeps
+    every scoped fp free of per-state baselines and makes the plain refcount
+    correct (a fp with a state hook never collides with a scoped fp, since the
+    canonicalizer tags it ``"shook"`` rather than ``"hook"``).
+    """
+
     __slots__ = (
         "_values",
         "_exit_stack",
         "_fingerprints",
+        "_fp_refcounts",
         "_context_state_fns",
         "_pending_initial_states",
         "_core_env",
@@ -134,18 +175,20 @@ class ContextProvider:
     _values: dict[str, Any]
     _exit_stack: AsyncExitStack
     _fingerprints: dict[ContextKey[Any], core.Fingerprint]
+    # logic_set membership refcount, shared by env-level and scoped provides.
+    _fp_refcounts: dict[core.Fingerprint, int]
     # State functions per context fingerprint, used at cache-hit
     # validation time. Python-only (state functions are closures that can't
     # cross into Rust). The list is in canonicalization order and has 1:1
     # correspondence with the stored `context_memo_states` Vec on each memo
     # entry.
     _context_state_fns: dict[core.Fingerprint, list[StateFnEntry]]
-    # Initial state values computed eagerly at `provide()` time, held only
-    # until `set_core_env` can push them into the Rust env registry (the
-    # permanent home). After `set_core_env`, new `provide()` calls write
-    # directly to Rust and this dict stays empty. Keeping it as a separate
-    # (explicitly short-lived) buffer makes it obvious that Python is not
-    # the source of truth for initial states once the env is attached.
+    # Initial state values held until ``set_core_env`` can push them into the
+    # Rust env registry (the permanent home). After ``set_core_env``, new
+    # ``provide()`` calls write directly to Rust and this dict stays empty.
+    # Keeping it as a separate (explicitly short-lived) buffer makes it obvious
+    # that Python is not the source of truth for initial states once the env is
+    # attached.
     _pending_initial_states: dict[core.Fingerprint, list[Any]]
     _core_env: core.Environment | None
 
@@ -153,6 +196,7 @@ class ContextProvider:
         self._values = {}
         self._exit_stack = AsyncExitStack()
         self._fingerprints = {}
+        self._fp_refcounts = {}
         self._context_state_fns = {}
         self._pending_initial_states = {}
         self._core_env = None
@@ -168,35 +212,73 @@ class ContextProvider:
         Rust is the single source of truth from here on.
         """
         self._core_env = core_env
-        for fp in self._fingerprints.values():
+        for fp in self._fp_refcounts:
             core_env.register_logic(fp)
         for fp, initial_states in self._pending_initial_states.items():
             core_env.register_context_initial_states(fp, initial_states)
         self._pending_initial_states.clear()
 
+    # --- fingerprint refcount (0↔1 edges drive Rust logic_set) ---
+
+    def _acquire_fp(self, fp: core.Fingerprint) -> None:
+        cnt = self._fp_refcounts.get(fp, 0)
+        self._fp_refcounts[fp] = cnt + 1
+        if cnt == 0 and self._core_env is not None:
+            self._core_env.register_logic(fp)
+
+    def _release_fp(self, fp: core.Fingerprint) -> None:
+        cnt = self._fp_refcounts[fp]
+        if cnt <= 1:
+            del self._fp_refcounts[fp]
+            if self._core_env is not None:
+                self._core_env.unregister_logic(fp)
+                self._core_env.unregister_context_initial_states(fp)
+            self._context_state_fns.pop(fp, None)
+            self._pending_initial_states.pop(fp, None)
+        else:
+            self._fp_refcounts[fp] = cnt - 1
+
+    # --- scoped provide_context entry points ---
+
+    def acquire_scoped_fingerprint(
+        self, key: ContextKey[Any], value: Any
+    ) -> core.Fingerprint:
+        """Register a scoped change-detection fingerprint and return it.
+
+        Raises if *value* carries a state function (``__coco_memo_state__``):
+        scoped change-detection does not support per-state baselines (v1). Such
+        values must be provided at the environment level via ``builder.provide()``.
+        """
+        fp, state_fns = _fingerprint_context_value(key, value)
+        if state_fns:
+            raise RuntimeError(
+                f"provide_context(key={key._key!r}) does not support a value that "
+                "carries a state function (__coco_memo_state__): scoped "
+                "change-detection cannot track per-state baselines. Provide such "
+                "a value at the environment level via builder.provide(), or remove "
+                "its state function."
+            )
+        self._acquire_fp(fp)
+        return fp
+
+    def release_scoped_fingerprint(self, fp: core.Fingerprint) -> None:
+        self._release_fp(fp)
+
+    # --- environment-level provide ---
+
     def provide(self, key: ContextKey[T], value: T) -> T:
         self._values[key._key] = value
         if key.detect_change:
-            state_fns: list[StateFnEntry] = []
-            canonical = _canonicalize(
-                ("context_key", key._key, value),
-                _seen=None,
-                state_methods=state_fns,
-            )
-            fp = core.fingerprint_simple_object(canonical)
-            # If this key was previously provided with a different value,
-            # unregister the old fp from both sides. Closes a pre-existing
-            # re-provide leak.
+            fp, state_fns = _fingerprint_context_value(key, value)
             old_fp = self._fingerprints.get(key)
-            if old_fp is not None and old_fp != fp:
-                if self._core_env is not None:
-                    self._core_env.unregister_logic(old_fp)
-                    self._core_env.unregister_context_initial_states(old_fp)
-                self._context_state_fns.pop(old_fp, None)
-                self._pending_initial_states.pop(old_fp, None)
-            self._fingerprints[key] = fp
-            if self._core_env is not None:
-                self._core_env.register_logic(fp)
+            if old_fp != fp:
+                # If this key was previously provided with a different value,
+                # unregister the old fp from both sides. Closes a pre-existing
+                # re-provide leak.
+                if old_fp is not None:
+                    self._release_fp(old_fp)
+                self._acquire_fp(fp)
+                self._fingerprints[key] = fp
             if state_fns:
                 self._context_state_fns[fp] = state_fns
                 # Eagerly compute initial states. Context values are
@@ -211,6 +293,12 @@ class ContextProvider:
                 else:
                     # Buffer until set_core_env drains into Rust.
                     self._pending_initial_states[fp] = initial_states
+            else:
+                self._context_state_fns.pop(fp, None)
+                if self._core_env is not None:
+                    self._core_env.unregister_context_initial_states(fp)
+                else:
+                    self._pending_initial_states.pop(fp, None)
         return value
 
     def get_fingerprint(self, key: ContextKey[Any]) -> core.Fingerprint:
