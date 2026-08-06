@@ -1,11 +1,18 @@
 """Tests for function batching and runner support."""
 
 import asyncio
+import os
+import sys
 from collections.abc import Iterator
 from typing import Any
 
 import cocoindex as coco
-from cocoindex._internal.runner import Runner
+from cocoindex._internal.runner import (
+    Runner,
+    _configure_mps_allocator_defaults,
+    _MPS_GPU,
+    _shutdown_mps_process_supervisor,
+)
 import pytest
 
 
@@ -677,10 +684,24 @@ async def test_memo_with_runner() -> None:
 
 
 @pytest.fixture()
-def _reset_gpu_runner() -> Iterator[None]:
+def _reset_gpu_runner(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Reset GPURunner's cached subprocess mode between tests."""
-    yield
+    _shutdown_mps_process_supervisor()
+    # Record absent variables with monkeypatch before runner setdefault calls so
+    # tests cannot leak allocator policy into the rest of the pytest process.
+    for env_var in (
+        "PYTORCH_MPS_LOW_WATERMARK_RATIO",
+        "PYTORCH_MPS_HIGH_WATERMARK_RATIO",
+    ):
+        if env_var not in os.environ:
+            monkeypatch.setenv(env_var, "")
+        monkeypatch.delenv(env_var)
     coco.GPU._use_subprocess = None
+    _MPS_GPU._use_subprocess = None
+    yield
+    _shutdown_mps_process_supervisor()
+    coco.GPU._use_subprocess = None
+    _MPS_GPU._use_subprocess = None
 
 
 # --- In-process mode (default) tests ---
@@ -896,6 +917,76 @@ async def test_gpu_runner_lazy_env_var(
     # Cached — changing env var without reset doesn't affect it
     monkeypatch.delenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS")
     assert coco.GPU._should_use_subprocess() is True  # still cached
+
+
+def test_mps_gpu_runner_default_is_independent_from_generic_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    _reset_gpu_runner: None,
+) -> None:
+    monkeypatch.delenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", raising=False)
+
+    assert coco.GPU._should_use_subprocess() is False
+    assert _MPS_GPU._should_use_subprocess() is True
+    assert coco.GPU._should_use_subprocess() is False
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"), [(None, True), ("0", False), ("1", True)]
+)
+def test_mps_gpu_runner_subprocess_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    _reset_gpu_runner: None,
+    configured: str | None,
+    expected: bool,
+) -> None:
+    """Built-in MPS work is isolated by default and honors explicit overrides."""
+    if configured is None:
+        monkeypatch.delenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", raising=False)
+    else:
+        monkeypatch.setenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", configured)
+    _MPS_GPU._use_subprocess = None
+
+    assert _MPS_GPU._should_use_subprocess() is expected
+
+
+def test_mps_allocator_defaults_preserve_explicit_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.25")
+    monkeypatch.setenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.3")
+
+    _configure_mps_allocator_defaults()
+
+    assert os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] == "0.25"
+    assert os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] == "0.3"
+
+
+@coco.fn.as_async(runner=_MPS_GPU)
+def _mps_worker_environment() -> tuple[int, str | None, str | None]:
+    return (
+        os.getpid(),
+        os.environ.get("PYTORCH_MPS_LOW_WATERMARK_RATIO"),
+        os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="MPS is only available on macOS")
+async def test_mps_worker_starts_with_allocator_defaults(
+    monkeypatch: pytest.MonkeyPatch, _reset_gpu_runner: None
+) -> None:
+    monkeypatch.delenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", raising=False)
+    monkeypatch.delenv("PYTORCH_MPS_LOW_WATERMARK_RATIO", raising=False)
+    monkeypatch.delenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", raising=False)
+    _MPS_GPU._use_subprocess = None
+
+    first_worker_pid, low, high = await _mps_worker_environment()
+    second_worker_pid, _, _ = await _mps_worker_environment()
+
+    assert first_worker_pid != os.getpid()
+    assert second_worker_pid == first_worker_pid
+    assert low == "0.4"
+    assert high == "0.5"
 
 
 @coco.fn.as_async(batching=True)  # type: ignore[arg-type]
