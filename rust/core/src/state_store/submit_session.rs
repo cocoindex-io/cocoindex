@@ -399,7 +399,7 @@ impl AppStore {
     /// `Arc::clone`s).
     pub async fn precommit<T, F>(
         &self,
-        component_path: &StablePath,
+        _component_path: &StablePath,
         callback: F,
     ) -> Result<Option<T>>
     where
@@ -413,28 +413,19 @@ impl AppStore {
             + 'static,
     {
         let app_store = self.clone();
-        let component_path_outer = component_path.clone();
         let callback = Arc::new(callback);
 
         self.storage
             .run_txn(move |wtxn: &mut WriteTxn<'_>| {
                 let app_store = app_store.clone();
-                let component_path = component_path_outer.clone();
                 let callback = Arc::clone(&callback);
                 Box::pin(async move {
                     let mut session = PrecommitSession::new(app_store.clone());
                     let cb_result = callback(wtxn, &mut session).await?;
                     match cb_result {
                         Some((plan, output)) => {
-                            // Apply __target claims (the work deferred from
-                            // `precommit_claim_targets`).
-                            if let Some(paths) = session.paths_to_claim.take() {
-                                for path in paths {
-                                    app_store
-                                        .upsert_target_state_owner(wtxn, &path, &component_path)
-                                        .await?;
-                                }
-                            }
+                            // Target state ownership (__target) is no longer claimed
+                            // during precommit. Defer ownership transfer to Phase 4 commit.
                             if let Some(bytes) = plan.new_tracking_info.as_ref() {
                                 app_store
                                     .write_tracking_info_raw(wtxn, &plan.self_path, bytes)

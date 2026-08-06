@@ -312,7 +312,7 @@ pub struct FunctionMemoizationEntry<'a> {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum TargetStateInfoItemState<'a> {
     #[serde(rename = "D")]
     Deleted,
@@ -351,7 +351,7 @@ fn u64_is_zero(v: &u64) -> bool {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TargetStateInfoItem<'a> {
     #[serde_as(as = "Bytes")]
     #[serde(rename = "P", borrow)]

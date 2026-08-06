@@ -395,7 +395,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // converge — produce final bytes the AppStore will write. Per-
         // component exclusivity means no concurrent writer can change
         // `__track` between this standalone read and `app_store.commit`.
-        let (new_tracking_info, target_owners_to_delete) =
+        let (new_tracking_info, target_owners_to_upsert, target_owners_to_delete) =
             self.build_commit_writes(curr_version).await?;
 
         let child_path_set = if self.demote_component_only {
@@ -415,7 +415,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
         let plan = CommitPlan {
             new_tracking_info,
-            target_owners_to_upsert: Vec::new(),
+            target_owners_to_upsert,
             target_owners_to_delete,
             fn_memo_clear_all_first: fn_memo_plan.clear_all_first,
             fn_memo_writes: fn_memo_plan.writes,
@@ -464,7 +464,11 @@ impl<Prof: EngineProfile> Committer<Prof> {
     async fn build_commit_writes(
         &self,
         curr_version: Option<u64>,
-    ) -> Result<(Option<Vec<u8>>, Vec<TargetStatePath>)> {
+    ) -> Result<(
+        Option<Vec<u8>>,
+        Vec<(TargetStatePath, StablePath)>,
+        Vec<TargetStatePath>,
+    )> {
         if self.component_ctx.mode() == ComponentProcessingMode::Delete {
             // Whole-component deletion also drops the inverted `__target`
             // owner index for every path this component still owns. Without
@@ -488,7 +492,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 }
                 None => Vec::new(),
             };
-            return Ok((None, owners_to_delete));
+            return Ok((None, Vec::new(), owners_to_delete));
         }
         let curr_version = curr_version
             .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
@@ -554,9 +558,19 @@ impl<Prof: EngineProfile> Committer<Prof> {
             }
         }
 
+        let owners_to_upsert: Vec<(TargetStatePath, StablePath)> = tracking_info
+            .target_state_items
+            .keys()
+            .map(|path_with_pid| {
+                (
+                    path_with_pid.target_state_path.clone(),
+                    self.component_path.clone(),
+                )
+            })
+            .collect();
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         let owners_to_delete: Vec<TargetStatePath> = pruned_paths.into_iter().collect();
-        Ok((Some(data_bytes), owners_to_delete))
+        Ok((Some(data_bytes), owners_to_upsert, owners_to_delete))
     }
 
     async fn launch_child_component_gc(&self) -> Result<()> {
@@ -901,15 +915,14 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                         if let Some(cached_bytes) = old_tracking_cache.get(&old_owner_path) {
                             let mut old_tracking: db_schema::StablePathEntryTrackingInfo<'_> =
                                 from_msgpack_slice(cached_bytes)?;
-                            let len_before = old_tracking.target_state_items.len();
                             // Look up the entry matching current provider_id.
                             // `into_owned()` releases the borrow on the cached
                             // bytes so `prev_item` outlives this scope.
                             let prev_item = old_tracking
                                 .target_state_items
-                                .remove(&lookup_key)
+                                .get_mut(&lookup_key)
                                 .map(|item| {
-                                    let mut item = item.into_owned();
+                                    let mut item = item.clone().into_owned();
                                     // Reset version numbers so the new component's commit
                                     // retention prunes them. The old owner's versions are from
                                     // a different version space and may collide with
@@ -919,12 +932,12 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                                     }
                                     item
                                 });
-                            // Also remove any stale entries (different provider_ids)
-                            // to prevent them from clobbering inverted tracking on prune.
-                            old_tracking
-                                .target_state_items
-                                .retain(|k, _| k.target_state_path != target_state_path);
-                            if old_tracking.target_state_items.len() < len_before {
+                            if let Some(item) = old_tracking.target_state_items.get_mut(&lookup_key)
+                            {
+                                if !item.states.iter().any(|(_, s)| s.is_deleted()) {
+                                    item.states
+                                        .push((0, db_schema::TargetStateInfoItemState::Deleted));
+                                }
                                 let new_bytes = rmp_serde::to_vec_named(&old_tracking)?;
                                 drop(old_tracking);
                                 old_tracking_cache.insert(old_owner_path.clone(), new_bytes);
