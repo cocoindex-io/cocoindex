@@ -275,6 +275,12 @@ pub struct ComponentMemoizationInfo<'a> {
     pub return_value: MemoizedValue<'a>,
     #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
     pub logic_deps: Vec<Fingerprint>,
+    /// Generations of the target-state providers this component declared
+    /// against, sorted by path. Re-checked on the next probe so a lossy or
+    /// destructive schema change invalidates the memo even when the target
+    /// isn't part of the memo key. See `TargetProviderDeps`.
+    #[serde(rename = "TP", default, skip_serializing_if = "Vec::is_empty")]
+    pub target_provider_deps: Vec<(TargetStatePath, TargetStateProviderGeneration)>,
     #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub memo_states: Vec<MemoizedValue<'a>>,
     /// Context-borne memo states, keyed by the tracked-context value's fingerprint.
@@ -299,6 +305,10 @@ pub struct FunctionMemoizationEntry<'a> {
     /// Target states that are declared by the function.
     #[serde(rename = "E", default, skip_serializing_if = "Vec::is_empty")]
     pub target_state_paths: Vec<TargetStatePath>,
+    /// Generations of the providers those target states were declared against,
+    /// sorted by path. See `ComponentMemoizationInfo::target_provider_deps`.
+    #[serde(rename = "TP", default, skip_serializing_if = "Vec::is_empty")]
+    pub target_provider_deps: Vec<(TargetStatePath, TargetStateProviderGeneration)>,
     /// Dependency entries that are declared by the function.
     /// Only needs to keep dependencies with side effects other than return value (child components / target states / dependency entries with side effects).
     #[serde(rename = "D", default, skip_serializing_if = "Vec::is_empty")]

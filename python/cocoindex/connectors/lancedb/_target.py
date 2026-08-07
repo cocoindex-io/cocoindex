@@ -1185,8 +1185,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         )
         main_action, sub_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: `create_table` with
+        # `if_not_exists` can land on a table carrying the previous column set, so
+        # its columns still need checking. "insert" / "replace" build the table from
+        # the desired schema, so there is nothing left to check.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in sub_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -1199,7 +1203,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             child_invalidation = "destructive"
 
         if (
-            main_action is None
+            main_action in (None, "upsert")
             and column_actions
             and any(a not in ("insert", "upsert") for a in column_actions.values())
         ):

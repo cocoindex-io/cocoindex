@@ -15,7 +15,9 @@ use crate::state::stable_path::StableKey;
 pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
     LazyLock::new(|| StableKey::Symbol("cocoindex/_internal/target_id".into()));
 use crate::state::stable_path_set::ChildStablePathSet;
-use crate::state::target_state_path::TargetStatePath;
+use crate::state::target_state_path::{
+    TargetProviderDeps, TargetStatePath, TargetStateProviderGeneration,
+};
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
@@ -183,6 +185,7 @@ pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
+    pub(crate) target_provider_deps: TargetProviderDeps,
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
     pub(crate) logic_deps: HashSet<Fingerprint>,
     pub memo_states: Vec<Prof::FunctionData>,
@@ -359,6 +362,8 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                         )),
                         child_components: vec![],
                         target_state_paths: memo.target_state_paths,
+                        // Already sorted — `TargetProviderDeps` is a `BTreeMap`.
+                        target_provider_deps: memo.target_provider_deps.into_iter().collect(),
                         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
                         logic_deps: memo.logic_deps.into_iter().collect(),
                         memo_states: memo_states_serialized,
@@ -411,6 +416,12 @@ impl<Prof: EngineProfile> Default for FnMemoCache<Prof> {
 /// legacy form with `child_components`, the result is `Ready(None)` so
 /// the entry is treated as a deletion at flush time.
 ///
+/// Target-provider generation deps are deliberately NOT checked here — the
+/// finalize dep walk also decodes entries to collect their contained target
+/// state paths, and invalidating on a generation mismatch there would drop
+/// live paths from the contained set. That check lives in
+/// `reserve_memoization`, the probe path proper.
+///
 /// This helper is shared between `reserve_memoization` (probe path) and
 /// the finalize dep walk; both call it under the per-entry write lock.
 ///
@@ -444,6 +455,7 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
     *entry = FnCallMemoEntry::Ready(Some(FnCallMemo {
         ret,
         target_state_paths: decoded.target_state_paths,
+        target_provider_deps: decoded.target_provider_deps.into_iter().collect(),
         dependency_memo_entries: decoded.dependency_memo_entries.into_iter().collect(),
         logic_deps: decoded.logic_deps.into_iter().collect(),
         memo_states,
@@ -679,6 +691,11 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
 
+    /// Target-state provider generations this component declared against,
+    /// accumulated from its own declarations and from child components. Stored
+    /// with this component's memo entry and re-checked on the next probe.
+    target_provider_deps: Mutex<TargetProviderDeps>,
+
     /// Opaque per-operation context (e.g. ContextProvider on the Python side).
     host_ctx: Arc<Prof::HostCtx>,
 }
@@ -716,6 +733,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_action,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
+                target_provider_deps: Mutex::new(TargetProviderDeps::new()),
                 host_ctx,
             }),
             processing_stats,
@@ -833,6 +851,21 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.parent_context.as_ref()
     }
 
+    /// The target-state providers visible to this component: everything
+    /// inherited from ancestors at mount time plus anything its own subtree has
+    /// built so far. Cloning is O(1) — the map is structurally shared.
+    pub(crate) fn target_states_providers(
+        &self,
+    ) -> Result<rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>> {
+        self.update_building_state(|building_state| {
+            Ok(building_state
+                .target_states
+                .provider_registry
+                .providers
+                .clone())
+        })
+    }
+
     /// Access the building state under a single lock acquisition.
     /// Callers should access all needed fields within `f` rather than wrapping
     /// this in convenience methods — the caller decides the lock granularity.
@@ -916,15 +949,37 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let (fn_logic_deps, context_change_deps) = fn_ctx.update(|inner| {
+        let (fn_logic_deps, context_change_deps, target_provider_deps) = fn_ctx.update(|inner| {
             (
                 inner.fn_logic_deps.clone(),
                 inner.context_change_deps.clone(),
+                inner.target_provider_deps.clone(),
             )
         });
         let mut deps = self.inner.logic_deps.lock().unwrap();
         deps.extend(fn_logic_deps);
         deps.extend(context_change_deps);
+        drop(deps);
+        self.merge_target_provider_deps(target_provider_deps);
+    }
+
+    /// Merge target-provider generation deps (from this component's own
+    /// declarations, or propagated up from a mounted child) into this
+    /// component's set.
+    pub(crate) fn merge_target_provider_deps(
+        &self,
+        deps: impl IntoIterator<Item = (TargetStatePath, TargetStateProviderGeneration)>,
+    ) {
+        self.inner.target_provider_deps.lock().unwrap().extend(deps);
+    }
+
+    /// Take the accumulated target-provider deps out of this context. Like
+    /// [`take_logic_deps`](Self::take_logic_deps), the single set serves both
+    /// this component's own memo entry and the `ComponentRunOutcome` reported
+    /// to the parent — a parent that memo-hits never mounts its children, so it
+    /// must carry their provider deps to catch an invalidation on their behalf.
+    pub(crate) fn take_target_provider_deps(&self) -> TargetProviderDeps {
+        std::mem::take(&mut *self.inner.target_provider_deps.lock().unwrap())
     }
 
     /// Merge additional logic deps (e.g. from child components) into this component's set.
@@ -1004,6 +1059,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 pub struct FnCallContextInner {
     /// Target states that are declared by the function.
     pub target_state_paths: Vec<TargetStatePath>,
+    /// Generations of the providers those target states were declared against.
+    /// Re-checked when this call's memo entry is probed — see
+    /// [`TargetProviderDeps`].
+    pub target_provider_deps: TargetProviderDeps,
     /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (target states / dependency entries with side effects).
     pub dependency_memo_entries: HashSet<Fingerprint>,
 
@@ -1048,6 +1107,9 @@ impl FnCallContext {
             inner
                 .target_state_paths
                 .extend(child_inner.target_state_paths);
+            inner
+                .target_provider_deps
+                .extend(child_inner.target_provider_deps);
             inner
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);

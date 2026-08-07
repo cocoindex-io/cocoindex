@@ -692,7 +692,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                                 spec.table_schema,
                                 if_not_exists=(action.main_action == "upsert"),
                             )
-                            continue
+                            # "insert" / "replace" just built the table from the
+                            # desired schema, so its columns already match.
+                            # "upsert" may have found a pre-existing table with an
+                            # older column set — fall through and reconcile it.
+                            if action.main_action != "upsert":
+                                continue
 
                         if action.column_actions:
                             _apply_column_actions(
@@ -741,8 +746,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: `CREATE TABLE IF
+        # NOT EXISTS` can land on a table carrying the previous column set, so its
+        # columns still need reconciling. "insert" / "replace" build the table from
+        # the desired schema, so there is nothing left to reconcile.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in column_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -751,9 +760,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if main_action == "replace":
             child_invalidation = "destructive"
-        elif main_action is None and any(
-            a != "insert" for a in column_actions.values()
-        ):
+        elif any(a != "insert" for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
