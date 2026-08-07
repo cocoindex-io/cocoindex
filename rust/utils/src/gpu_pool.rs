@@ -187,8 +187,8 @@ impl GPUPool {
     /// 2. Processing does not change the order of pending acquisitions
     ///
     fn process_acquisition_queue(pool: &mut PoolState) {
-        let length = pool.acquisition_queue.len();
-        let mut pending_acquisitions = Vec::with_capacity(length.min(pool.capacities.len()));
+        let length = pool.capacities.len();
+        let mut pending_acquisitions = Vec::with_capacity(length);
         while pending_acquisitions.len() < length
             && let Some(acquisition) = pool.acquisition_queue.pop_front()
         {
