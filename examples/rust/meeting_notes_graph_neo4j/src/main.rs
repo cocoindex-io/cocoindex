@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
-use cocoindex::fs;
-use cocoindex::neo4j::{self, ColumnDef, TableSchema};
+use cocoindex::resources::fs;
+use cocoindex::connectors::neo4j::{self, ColumnDef, TableSchema};
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 

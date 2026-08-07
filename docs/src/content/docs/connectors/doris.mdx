@@ -199,6 +199,8 @@ Python types are automatically mapped to Doris types:
 | `list`, `dict`, nested structs | `JSON` |
 | `NDArray` (with vector schema) | `ARRAY<FLOAT>` |
 
+`bytes` values are intentionally base64-encoded before writing to `STRING` so arbitrary binary data survives Doris's JSON Stream Load path.
+
 #### DorisType
 
 Use `DorisType` to specify a custom Doris type:

@@ -260,6 +260,94 @@ impl NamespaceSchema {
         })
     }
 
+    /// Derive named vector definitions from a `#[derive(SchemaFields)]` row.
+    /// Non-vector fields remain schemaless attributes inferred by Turbopuffer,
+    /// matching the Python connector. Bare `#[coco(vector)]` fields are
+    /// resolved later with [`NamespaceSchema::with_vector_dim`].
+    pub fn from_row<T: crate::row_schema::SchemaFields>(distance: DistanceMetric) -> Result<Self> {
+        use crate::row_schema::LogicalType;
+
+        let mut vectors = BTreeMap::new();
+        for field in T::schema_fields() {
+            let LogicalType::Vector { dim, half } = field.logical_type else {
+                continue;
+            };
+            validate_vector_field_name(&field.name)?;
+            let schema = if half {
+                VectorSchema::f16(dim as usize)
+            } else {
+                VectorSchema::f32(dim as usize)
+            };
+            if schema.size > 0 {
+                vector_type_str(&schema).map_err(|err| {
+                    Error::engine(format!(
+                        "Turbopuffer vector field {:?} is invalid: {err}",
+                        field.name
+                    ))
+                })?;
+            }
+            vectors.insert(field.name, VectorDef { schema });
+        }
+        if vectors.is_empty() {
+            return Err(Error::engine(
+                "Turbopuffer row schema does not contain a vector field",
+            ));
+        }
+        let vector_size = vectors.values().next().expect("non-empty").schema.size;
+        Ok(Self {
+            vectors: Some(VectorFields::Named(vectors)),
+            vector_size,
+            distance,
+        })
+    }
+
+    /// Resolve or override one named vector field's runtime dimension.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        if dim == 0 {
+            return Err(crate::row_schema::zero_vector_dimension_error(
+                "Turbopuffer",
+                field_name,
+            ));
+        }
+        let mut fields = self.vector_fields();
+        let def = match &mut fields {
+            VectorFields::Named(vectors) => vectors.get_mut(field_name),
+            VectorFields::Single(def) if field_name == DEFAULT_VECTOR_FIELD => Some(def),
+            VectorFields::Single(_) => None,
+        }
+        .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Turbopuffer", field_name))?;
+        def.schema.size = dim;
+        vector_type_str(&def.schema)?;
+        self.vectors = Some(fields);
+        self.vector_size = match self.vectors.as_ref().expect("set above") {
+            VectorFields::Single(def) => def.schema.size,
+            VectorFields::Named(vectors) => vectors.values().next().expect("non-empty").schema.size,
+        };
+        Ok(self)
+    }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        match self.vector_fields() {
+            VectorFields::Single(def) => {
+                if def.schema.size == 0 {
+                    crate::row_schema::require_resolved_vector_dimension(
+                        "Turbopuffer",
+                        DEFAULT_VECTOR_FIELD,
+                    )?;
+                }
+                Ok(())
+            }
+            VectorFields::Named(vectors) => {
+                for (name, def) in vectors {
+                    if def.schema.size == 0 {
+                        crate::row_schema::require_resolved_vector_dimension("Turbopuffer", &name)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// The `schema` payload Turbopuffer's write API expects.
     fn write_schema(&self) -> Result<JsonValue> {
         let mut fields = Map::new();
@@ -510,6 +598,7 @@ pub fn namespace_target_with_options(
 ) -> Result<TargetState<NamespaceSpec>> {
     let namespace = namespace.into();
     validate_namespace(&namespace)?;
+    schema.validate_vector_dimensions()?;
     let provider = register_root_target_states_provider(
         ctx,
         format!(

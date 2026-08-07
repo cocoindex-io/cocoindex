@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::error::{Error, Result};
-use crate::file::{
+use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FileSourceItem, decode_bytes,
 };
 
@@ -219,6 +219,8 @@ impl FileSourceItem for DriveFile {
         DriveFile::key(self)
     }
 }
+
+crate::memo::impl_file_memo_input!(DriveFile);
 
 fn default_file_cache() -> Arc<FileContentCache> {
     Arc::new(FileContentCache::new())

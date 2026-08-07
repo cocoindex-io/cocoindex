@@ -10,7 +10,7 @@ everything across three Postgres tables — then serves similarity search.
 
 | Concern          | Python                                       | Rust (this example)                                       |
 | ---------------- | -------------------------------------------- | --------------------------------------------------------- |
-| Source           | `localfs.walk_dir` (`**/*.pdf`, live)        | `cocoindex::fs::walk` (`**/*.pdf`)                        |
+| Source           | `localfs.walk_dir` (`**/*.pdf`, live)        | `cocoindex::resources::fs::walk` (`**/*.pdf`)                        |
 | Per-file compute | `@coco.fn(memo=True) process_file`           | `#[cocoindex::function(memo)] process_file`               |
 | PDF parsing      | `pypdf` (first-page text + page count)       | `lopdf` (first-page text + page count)                    |
 | LLM extraction   | `openai` chat completions (`gpt-4o`, JSON)   | OpenAI chat completions REST (`gpt-4o`, JSON mode)        |

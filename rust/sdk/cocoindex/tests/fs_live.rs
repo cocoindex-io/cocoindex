@@ -66,14 +66,14 @@ async fn localfs_live_watch_reacts_to_create_and_delete() {
                     let seen = seen.clone();
                     let src = src.clone();
                     async move {
-                        let feed = cocoindex::fs::walk_dir(src)
+                        let feed = cocoindex::resources::fs::walk_dir(src)
                             .recursive(true)
                             .live()
                             .poll_interval(Duration::from_millis(200));
                         ctx.mount_each_live(
                             &"files",
                             feed,
-                            move |_ctx, file: cocoindex::fs::FileEntry| {
+                            move |_ctx, file: cocoindex::resources::fs::FileEntry| {
                                 let seen = seen.clone();
                                 async move {
                                     seen.lock().unwrap().insert(file.key());

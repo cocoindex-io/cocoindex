@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorInfo};
-use cocoindex_core::engine::context::ComponentProcessorContext;
+use cocoindex_core::engine::context::{ComponentProcessorContext, MemoStatesPayload};
 use cocoindex_core::engine::profile::{EngineProfile, Persist};
 use cocoindex_core::engine::target_state::{
     ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
@@ -17,7 +17,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::ContextStore;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // RustProfile — the sealed EngineProfile implementation
@@ -98,6 +98,7 @@ type ProcessFn = Box<
 pub(crate) struct BoxedProcessor {
     process_fn: std::sync::Mutex<Option<ProcessFn>>,
     memo_fp: Option<Fingerprint>,
+    has_memo_state_handler: bool,
     info: Arc<ComponentProcessorInfo>,
 }
 
@@ -115,8 +116,14 @@ impl BoxedProcessor {
         Self {
             process_fn: std::sync::Mutex::new(Some(Box::new(process_fn))),
             memo_fp,
+            has_memo_state_handler: false,
             info: Arc::new(ComponentProcessorInfo::new(name)),
         }
+    }
+
+    pub(crate) fn with_memo_state_handler(mut self, enabled: bool) -> Self {
+        self.has_memo_state_handler = enabled;
+        self
     }
 }
 
@@ -142,6 +149,52 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
 
     fn memo_key_fingerprint(&self) -> Option<Fingerprint> {
         self.memo_fp
+    }
+
+    fn has_memo_state_handler(&self) -> bool {
+        self.has_memo_state_handler
+    }
+
+    fn handle_memo_states(
+        &self,
+        _host_runtime_ctx: &(),
+        comp_ctx: &ComponentProcessorContext<RustProfile>,
+        stored_states: Option<MemoStatesPayload<RustProfile>>,
+    ) -> cocoindex_utils::error::Result<
+        impl Future<
+            Output = cocoindex_utils::error::Result<(MemoStatesPayload<RustProfile>, bool, bool)>,
+        > + Send
+        + 'static,
+    > {
+        let context = Arc::clone(comp_ctx.host_ctx());
+        let initial_context_states = stored_states
+            .is_none()
+            .then(|| comp_ctx.collect_context_initial_states());
+        let stored_states = stored_states.unwrap_or_default();
+        Ok(async move {
+            let Some(initial_context_states) = initial_context_states else {
+                let validation = context
+                    .validate_memo_states(&stored_states.by_context_fp)
+                    .await
+                    .map_err(Error::into_core)?;
+                return Ok((
+                    MemoStatesPayload {
+                        positional: stored_states.positional,
+                        by_context_fp: validation.states,
+                    },
+                    validation.memo_valid,
+                    validation.states_changed,
+                ));
+            };
+            Ok((
+                MemoStatesPayload {
+                    positional: stored_states.positional,
+                    by_context_fp: initial_context_states,
+                },
+                true,
+                false,
+            ))
+        })
     }
 
     fn processor_info(&self) -> &ComponentProcessorInfo {

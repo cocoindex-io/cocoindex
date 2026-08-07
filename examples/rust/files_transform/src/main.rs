@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
                 // `(key, file)` pairs for `mount_each!`. (Output names join the
                 // relative-path components with `__`, so nested files don't
                 // collide — see `output_name_for`.)
-                let files = cocoindex::fs::walk_items(&source_dir, &["**/*.md"])?;
+                let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md"])?;
 
                 // One processing component per file. `ctx` is the parent; the
                 // macro substitutes each child scope's `&Ctx`, and fingerprints

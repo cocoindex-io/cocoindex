@@ -12,7 +12,7 @@ It builds the same graph shape in Neo4j:
 
 For local end-to-end testing this Rust example uses deterministic Markdown
 parsing over `input/*.md` instead of Google Drive + LLM extraction. The target
-side is native CocoIndex Rust: `cocoindex::neo4j` table and relation targets
+side is native CocoIndex Rust: `cocoindex::connectors::neo4j` table and relation targets
 with target-state reconciliation.
 
 ## Run

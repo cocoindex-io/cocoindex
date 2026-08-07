@@ -7,16 +7,19 @@ and stores them in Postgres/pgvector — then serves similarity search.
 
 ## Parallel to the Python example
 
-| Concern          | Python                                   | Rust (this example)                                |
-| ---------------- | ---------------------------------------- | -------------------------------------------------- |
-| Source           | `localfs.walk_dir`                       | `cocoindex::fs::walk`                              |
-| Per-file compute | `@coco.fn(memo=True) process_file`       | `#[cocoindex::function(memo)] process_file`         |
-| Chunking         | `RecursiveSplitter` (markdown)           | `cocoindex_ops_text` `RecursiveChunker` (markdown)  |
-| Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `fastembed` `AllMiniLML6V2` (same model, 384-dim)   |
-| Target           | `postgres.TableTarget` + pgvector index  | `postgres::TableTarget` + `declare_vector_index`    |
+| Concern          | Python                                   | Rust (this example)                                      |
+| ---------------- | ---------------------------------------- | -------------------------------------------------------- |
+| Source           | `localfs.walk_dir`                       | `resources::fs::walk_items`                              |
+| Per-file compute | `coco.mount_each(process_file, ...)`     | `mount_each!(files, \|file\| process_file(ctx, file))`   |
+| Chunking         | `RecursiveSplitter` (Markdown)           | `ops::text::RecursiveSplitter` (Markdown)                |
+| Embeddings       | `SentenceTransformerEmbedder.embed`      | `SentenceTransformerEmbedder::embed(&ctx, text)`         |
+| Target           | `postgres.TableTarget` + pgvector index  | `postgres::TableTarget` + `declare_vector_index`          |
+| Row schema       | Dataclass annotations                    | `#[derive(SchemaFields)]` + runtime model dimension       |
 
-Incrementality: unchanged files are memo-skipped; chunks of a removed/edited file
-are reconciled away (the managed `TableTarget` deletes orphaned rows).
+Incrementality: `mount_each!` skips unchanged file components before their
+function runs. The embedder memoizes individual texts and automatically groups
+concurrent cache misses into batches of up to 64. Chunks from a removed or
+edited file are reconciled away by the managed `TableTarget`.
 
 ## Run
 

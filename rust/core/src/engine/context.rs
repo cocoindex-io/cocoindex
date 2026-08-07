@@ -1000,7 +1000,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FnCallContextInner {
     /// Target states that are declared by the function.
     pub target_state_paths: Vec<TargetStatePath>,
@@ -1044,6 +1044,10 @@ impl FnCallContext {
     pub fn join_child(&self, child_fn_ctx: &FnCallContext) {
         // Take the child's inner first to keep lock scope small (and avoid deadlock).
         let child_inner = child_fn_ctx.update(std::mem::take);
+        self.merge_child_inner(child_inner);
+    }
+
+    fn merge_child_inner(&self, child_inner: FnCallContextInner) {
         self.update(|inner| {
             inner
                 .target_state_paths
@@ -1061,6 +1065,16 @@ impl FnCallContext {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
             }
         });
+    }
+
+    /// Merge a snapshot of `child_fn_ctx` without consuming it.
+    ///
+    /// Batched SDK functions execute one shared body for several per-item
+    /// function-call contexts. Each item must inherit the same dependencies,
+    /// so the shared context needs to be joined more than once.
+    pub fn join_child_shared(&self, child_fn_ctx: &FnCallContext) {
+        let child_inner = child_fn_ctx.update(|inner| inner.clone());
+        self.merge_child_inner(child_inner);
     }
 
     pub fn add_fn_logic_dep(&self, fp: Fingerprint) {

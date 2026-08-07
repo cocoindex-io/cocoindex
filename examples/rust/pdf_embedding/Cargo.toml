@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 # PDF text extraction (Rust-native stand-in for Python's docling converter).
 lopdf = "0.40"
-# Query path (pgvector similarity); target writes go through cocoindex::postgres.
+# Query path (pgvector similarity); target writes go through cocoindex::connectors::postgres.
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",

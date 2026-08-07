@@ -105,6 +105,13 @@ impl ImageEmbedder {
 }
 
 #[async_trait]
+impl crate::memo::MemoInput for ImageEmbedder {
+    fn write_memo_key(&self, writer: &mut crate::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&(self.model_name(), self.dimension()))
+    }
+}
+
+#[async_trait]
 impl VectorSchemaProvider for ImageEmbedder {
     async fn vector_schema(&self) -> Result<VectorSchema> {
         Ok(VectorSchema {

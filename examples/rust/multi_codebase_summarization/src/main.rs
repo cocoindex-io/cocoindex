@@ -377,7 +377,7 @@ async fn main() -> Result<()> {
                 let project_dir = entry.path();
 
                 // Match both root-level and nested Python files.
-                let files = cocoindex::fs::walk(&project_dir, &["*.py", "**/*.py"])?;
+                let files = cocoindex::resources::fs::walk(&project_dir, &["*.py", "**/*.py"])?;
 
                 let files: Vec<_> = files
                     .into_iter()
