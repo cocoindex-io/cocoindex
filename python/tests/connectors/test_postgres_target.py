@@ -1117,3 +1117,78 @@ def test_sanitize_nul_preserves_dict() -> None:
     assert result == {"ab": "cd", "e": {"fg": "h"}}
     assert isinstance(result, dict)
     assert isinstance(result["e"], dict)
+
+
+@pytest.mark.asyncio
+async def test_schema_evolution_under_full_reprocess(pg_env: _PgEnv) -> None:
+    """A column type change must still be applied when the same update runs with
+    `full_reprocess=True`.
+
+    `full_reprocess` marks the table's previous state as maybe-missing, which
+    turns the table's own action into an "upsert" (`CREATE TABLE IF NOT EXISTS`).
+    That must not swallow the column reconcile: the new tracking record is
+    committed either way, so a skipped `ALTER` leaves the table permanently on
+    the old column type — later plain updates see prev == desired and never
+    catch up.
+    """
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("schema_reproc")
+
+    use_v2 = False
+
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        return postgres.TableSchema(
+            columns={
+                "id": postgres.ColumnDef("text", nullable=False),
+                "val": postgres.ColumnDef(
+                    "text" if use_v2 else "varchar(50)", nullable=True
+                ),
+            },
+            primary_key=["id"],
+        )
+
+    async def _val_data_type() -> str | None:
+        async with pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = $1 AND column_name = $2",
+                table_name,
+                "val",
+            )
+            return str(val) if val is not None else None
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+            table.declare_row(row={"id": "row1", "val": "data1"})
+
+        app = coco.App(
+            coco.AppConfig(
+                name=f"test_schema_reproc_{table_name}", environment=coco_env
+            ),
+            declare_fn,
+        )
+
+        await app.update()
+        assert await _val_data_type() == "character varying"
+
+        use_v2 = True
+        await app.update(full_reprocess=True)
+        assert await _val_data_type() == "text"
+
+        # The row survives the in-place type change.
+        async with pool.acquire() as conn:
+            val = await conn.fetchval(
+                f'SELECT "val" FROM "{table_name}" WHERE "id" = $1', "row1"
+            )
+        assert val == "data1"
+    finally:
+        await _drop_table(pool, table_name)

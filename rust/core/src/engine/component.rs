@@ -19,7 +19,7 @@ use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
-use crate::state::target_state_path::TargetStatePath;
+use crate::state::target_state_path::{TargetProviderDeps, TargetStatePath};
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -198,6 +198,7 @@ impl ComponentBgChildReadinessState {
 pub(crate) struct ComponentRunOutcome {
     has_exception: bool,
     logic_deps: HashSet<Fingerprint>,
+    target_provider_deps: TargetProviderDeps,
 }
 
 impl ComponentRunOutcome {
@@ -210,17 +211,21 @@ impl ComponentRunOutcome {
 
     /// Outcome for a component that hit its memo cache: no exception, but it
     /// still reports the stored logic dependency set so a mounting parent's
-    /// memo depends on this subtree.
-    fn reused(logic_deps: Vec<Fingerprint>) -> Self {
+    /// memo depends on this subtree — and likewise its target-provider deps, so
+    /// a parent that later memo-hits (and therefore never mounts this child)
+    /// still re-checks the provider generations this child declared against.
+    fn reused(logic_deps: Vec<Fingerprint>, target_provider_deps: TargetProviderDeps) -> Self {
         Self {
             has_exception: false,
             logic_deps: logic_deps.into_iter().collect(),
+            target_provider_deps,
         }
     }
 
     fn merge(&mut self, other: Self) {
         self.has_exception |= other.has_exception;
         self.logic_deps.extend(other.logic_deps);
+        self.target_provider_deps.extend(other.target_provider_deps);
     }
 }
 
@@ -912,7 +917,7 @@ impl<Prof: EngineProfile> Component<Prof> {
 
             match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store).await
             {
-                Ok(Some((ret, memo_states, stored_logic_deps))) => {
+                Ok(Some((ret, memo_states, stored_logic_deps, stored_provider_deps))) => {
                     // If processor has state handler and there are stored states, validate them.
                     if processor.has_memo_state_handler() && !memo_states.is_empty() {
                         let fut = processor.handle_memo_states(
@@ -935,7 +940,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                             // memo hit, so a mounting parent's memo depends on
                             // this whole subtree (see `merge_logic_deps` below).
                             return Ok((
-                                ComponentRunOutcome::reused(stored_logic_deps),
+                                ComponentRunOutcome::reused(
+                                    stored_logic_deps,
+                                    stored_provider_deps,
+                                ),
                                 Some(ComponentBuildOutput {
                                     ret,
                                     built_target_states_providers: Default::default(),
@@ -951,7 +959,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             stats.num_unchanged += 1;
                         });
                         return Ok((
-                            ComponentRunOutcome::reused(stored_logic_deps),
+                            ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps),
                             Some(ComponentBuildOutput {
                                 ret,
                                 built_target_states_providers: Default::default(),
@@ -1041,6 +1049,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // own memo and the outcome reported to its parent.
                     processor_context
                         .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
+                    processor_context.merge_target_provider_deps(std::mem::take(
+                        &mut children_outcome.target_provider_deps,
+                    ));
 
                     let ret = ret?;
                     deadline.check()?;
@@ -1102,9 +1113,17 @@ impl<Prof: EngineProfile> Component<Prof> {
                             // boundary — so the parent's memo depends on this whole
                             // subtree's logic.
                             let logic_deps = processor_context.take_logic_deps();
-                            post_submit_for_build(processor_context, comp_memo, &logic_deps)
-                                .await?;
+                            let target_provider_deps =
+                                processor_context.take_target_provider_deps();
+                            post_submit_for_build(
+                                processor_context,
+                                comp_memo,
+                                &logic_deps,
+                                &target_provider_deps,
+                            )
+                            .await?;
                             children_outcome.logic_deps = logic_deps;
+                            children_outcome.target_provider_deps = target_provider_deps;
                         }
                         Some(ComponentBuildOutput {
                             ret,

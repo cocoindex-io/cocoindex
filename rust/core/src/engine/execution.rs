@@ -20,7 +20,8 @@ use crate::engine::target_state::{
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::ChildStablePathSet;
 use crate::state::target_state_path::{
-    TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
+    TargetProviderDeps, TargetStatePath, TargetStatePathWithProviderId,
+    TargetStateProviderGeneration,
 };
 use crate::state_store::{
     AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
@@ -87,6 +88,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         Prof::FunctionData,
         MemoStatesPayload<Prof>,
         Vec<Fingerprint>,
+        TargetProviderDeps,
     )>,
 > {
     // Short-circuit to miss under full_reprocess
@@ -107,6 +109,10 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                     &memo_info.logic_deps,
                     comp_ctx.app_ctx().env(),
                 )
+                && target_provider_deps_still_valid(
+                    memo_info.target_provider_deps.iter().map(|(p, g)| (p, g)),
+                    &comp_ctx.target_states_providers()?,
+                )
             {
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
@@ -122,7 +128,8 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                         // can still report this subtree's dependency set to the
                         // parent — otherwise a parent that mounts this component
                         // would not depend on it (or its descendants) and would
-                        // wrongly stay a memo hit when their code changes.
+                        // wrongly stay a memo hit when their code changes. The
+                        // target-provider deps ride along for the same reason.
                         return Ok(Some((
                             ret,
                             MemoStatesPayload {
@@ -130,6 +137,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                                 by_context_fp: context_memo_states,
                             },
                             memo_info.logic_deps.to_vec(),
+                            memo_info.target_provider_deps.into_iter().collect(),
                         )));
                     }
                     Err(e) => {
@@ -166,7 +174,8 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 /// Used when memo state validation indicates `can_reuse=true` but states have changed
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
 /// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
-/// preserving `processor_fp`, `return_value`, and `logic_deps`.
+/// preserving `processor_fp`, `return_value`, `logic_deps`, and
+/// `target_provider_deps`.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
@@ -209,6 +218,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
                         processor_fp: existing.processor_fp,
                         return_value: existing.return_value,
                         logic_deps: existing.logic_deps,
+                        target_provider_deps: existing.target_provider_deps,
                         memo_states: memo_states_borrowed,
                         context_memo_states: context_memo_states_borrowed,
                     };
@@ -259,6 +269,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     value: Prof::TargetStateValue,
 ) -> Result<()> {
     let target_state_path = provider.target_state_path().concat(&key);
+    let provider_dep = target_provider_dep(&provider);
     let declared_target_state = DeclaredTargetState {
         provider,
         item_key: key,
@@ -283,8 +294,47 @@ pub fn declare_target_state<Prof: EngineProfile>(
         }
         Ok(())
     })?;
-    fn_ctx.update(|inner| inner.target_state_paths.push(target_state_path));
+    fn_ctx.update(|inner| {
+        inner.target_state_paths.push(target_state_path);
+        if let Some((path, generation)) = provider_dep {
+            inner.target_provider_deps.insert(path, generation);
+        }
+    });
     Ok(())
+}
+
+/// Whether every recorded target-provider dependency still matches the live
+/// provider generation, i.e. whether a memo entry carrying `deps` may be reused.
+///
+/// A provider missing from `providers` is deliberately *not* a mismatch. Either
+/// it is built inside the memoized subtree itself — in which case reusing the
+/// memo means nothing in there ran, so nothing bumped its generation — or the
+/// target is gone entirely, and its leftover target states are the delete pass's
+/// business, not a reason to re-run this code. Treating "absent" as a mismatch
+/// would instead make every component that mounts its own target permanently
+/// unmemoizable.
+pub(crate) fn target_provider_deps_still_valid<'a, Prof: EngineProfile>(
+    deps: impl IntoIterator<Item = (&'a TargetStatePath, &'a TargetStateProviderGeneration)>,
+    providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+) -> bool {
+    deps.into_iter().all(|(path, recorded)| {
+        match providers.get(path).and_then(|p| p.provider_generation()) {
+            Some(current) => current == recorded,
+            None => true,
+        }
+    })
+}
+
+/// The `(provider path, generation)` pair to record as a memo dependency for a
+/// declaration made against `provider`, or `None` when the provider has no
+/// generation yet (it only gets one once it has been through a pre-commit, and
+/// a provider that never had one cannot have been invalidated).
+fn target_provider_dep<Prof: EngineProfile>(
+    provider: &TargetStateProvider<Prof>,
+) -> Option<(TargetStatePath, TargetStateProviderGeneration)> {
+    provider
+        .provider_generation()
+        .map(|generation| (provider.target_state_path().clone(), generation.clone()))
 }
 
 pub fn register_root_target_state_provider<Prof: EngineProfile>(
@@ -307,6 +357,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
+    let provider_dep = target_provider_dep(&provider);
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
             .target_states
@@ -339,6 +390,9 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
         inner
             .target_state_paths
             .push(child_provider.target_state_path().clone());
+        if let Some((path, generation)) = provider_dep {
+            inner.target_provider_deps.insert(path, generation);
+        }
     });
     Ok(child_provider)
 }
@@ -1789,6 +1843,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         &'_ MemoStatesPayload<Prof>,
     )>,
     logic_deps: &HashSet<Fingerprint>,
+    target_provider_deps: &TargetProviderDeps,
 ) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(());
@@ -1806,6 +1861,11 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         processor_fp: fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
         logic_deps: logic_deps_sorted,
+        // Already sorted — `TargetProviderDeps` is a `BTreeMap`.
+        target_provider_deps: target_provider_deps
+            .iter()
+            .map(|(path, generation)| (path.clone(), generation.clone()))
+            .collect(),
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
     };

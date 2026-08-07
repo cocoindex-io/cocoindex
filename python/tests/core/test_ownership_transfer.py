@@ -2,18 +2,69 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
+from collections.abc import Collection
 
 import cocoindex as coco
+import pytest
 
 from tests import common
-from tests.common.target_states import GlobalDictTarget, DictDataWithPrev, AtMost
+from tests.common.target_states import (
+    AtMost,
+    DictDataWithPrev,
+    DictTargetStateStore,
+    GlobalDictTarget,
+)
 
 coco_env = common.create_test_env(__file__)
 
 # Controls which component paths declare which target state keys+values.
 # Outer key = component name (becomes component subpath), inner key = target state key.
 _source_data: dict[str, dict[str, object]] = {}
+
+
+class _BlockingSinkStore(DictTargetStateStore):
+    def __init__(self) -> None:
+        self._block_next_apply = False
+        self._apply_started: asyncio.Event | None = None
+        self._release_apply: asyncio.Event | None = None
+        super().__init__(use_async=True)
+
+    def block_next_apply(self) -> None:
+        self._block_next_apply = True
+        self._apply_started = asyncio.Event()
+        self._release_apply = asyncio.Event()
+
+    async def wait_for_blocked_apply(self) -> None:
+        assert self._apply_started is not None
+        await self._apply_started.wait()
+
+    def release_blocked_apply(self) -> None:
+        assert self._release_apply is not None
+        self._release_apply.set()
+
+    async def _async_sink(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[tuple[str, DictDataWithPrev | coco.NonExistenceType]],
+        /,
+    ) -> None:
+        if self._block_next_apply:
+            self._block_next_apply = False
+            assert self._apply_started is not None
+            assert self._release_apply is not None
+            self._apply_started.set()
+            await self._release_apply.wait()
+        self._sink(context_provider, actions)
+
+
+_concurrent_claim_store = _BlockingSinkStore()
+_concurrent_claim_provider = coco.register_root_target_states_provider(
+    "test_target_state/concurrent_claim", _concurrent_claim_store
+)
+_concurrent_claim_values: dict[str, int] = {}
+_allow_c3_mount: asyncio.Event | None = None
+_c3_declared: asyncio.Event | None = None
 
 
 @coco.fn
@@ -26,6 +77,27 @@ async def _process_component(name: str) -> None:
 async def _app_main() -> None:
     for name in sorted(_source_data):
         await coco.mount(coco.component_subpath(name), _process_component, name)
+
+
+@coco.fn
+async def _process_concurrent_claimant(name: str) -> None:
+    coco.declare_target_state(
+        _concurrent_claim_provider.target_state("x", _concurrent_claim_values[name])
+    )
+    if name == "C3":
+        assert _c3_declared is not None
+        _c3_declared.set()
+
+
+@coco.fn
+async def _app_main_concurrent_claimants() -> None:
+    for name in sorted(_concurrent_claim_values):
+        if name == "C3":
+            assert _allow_c3_mount is not None
+            await _allow_c3_mount.wait()
+        await coco.mount(
+            coco.component_subpath(name), _process_concurrent_claimant, name
+        )
 
 
 def test_ownership_transfer_basic() -> None:
@@ -141,6 +213,63 @@ def test_ownership_transfer_ordering_independence() -> None:
     assert GlobalDictTarget.store.data["x"].data == 2
     assert common.list_target_state_owners_sync(app) == {
         '/@test_target_state/global_dict/"x"': coco.ROOT_PATH / "C2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claimant_sees_owner_during_sink_apply() -> None:
+    """A later claimant must see the owner whose sink action is in flight."""
+    global _allow_c3_mount, _c3_declared
+
+    _concurrent_claim_store.clear()
+    _concurrent_claim_values.clear()
+    test_env = common.create_test_env(
+        __file__, suffix="concurrent_claimant_sees_owner_during_sink_apply"
+    )
+    app = coco.App(
+        coco.AppConfig(
+            name="test_concurrent_claimant_sees_owner_during_sink_apply",
+            environment=test_env,
+        ),
+        _app_main_concurrent_claimants,
+    )
+
+    # Establish C1 as the committed owner.
+    _concurrent_claim_values["C1"] = 1
+    await app.update()
+    _concurrent_claim_store.metrics.collect()
+
+    # C2 claims x in precommit, then pauses inside sink.apply. C3 is mounted
+    # only after we have observed that in-flight claim.
+    _concurrent_claim_values.clear()
+    _concurrent_claim_values.update(C2=2, C3=3)
+    _allow_c3_mount = asyncio.Event()
+    _c3_declared = asyncio.Event()
+    _concurrent_claim_store.block_next_apply()
+    update_task = asyncio.ensure_future(app.update())
+    try:
+        await asyncio.wait_for(
+            _concurrent_claim_store.wait_for_blocked_apply(), timeout=5.0
+        )
+        assert await common.list_target_state_owners(app) == {
+            '/@test_target_state/concurrent_claim/"x"': coco.ROOT_PATH / "C2",
+        }
+
+        # Let C3 enter submission while C2 is still in sink.apply. The current
+        # protocol makes C3 observe C2's live claim and retry behind it.
+        _allow_c3_mount.set()
+        await asyncio.wait_for(_c3_declared.wait(), timeout=5.0)
+        await asyncio.sleep(0)
+    finally:
+        _allow_c3_mount.set()
+        _concurrent_claim_store.release_blocked_apply()
+        await update_task
+        _allow_c3_mount = None
+        _c3_declared = None
+
+    assert _concurrent_claim_store.data["x"].data == 3
+    assert await common.list_target_state_owners(app) == {
+        '/@test_target_state/concurrent_claim/"x"': coco.ROOT_PATH / "C3",
     }
 
 

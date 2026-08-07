@@ -149,6 +149,9 @@ class FnCallMemoGuard:
         memo_states: list[Any] | None = None,
         context_memo_states: dict[Fingerprint, list[Any]] | None = None,
     ) -> None: ...
+    def join_cached_target_provider_deps(
+        self, parent_fn_ctx: FnCallContext
+    ) -> None: ...
     def resolve(
         self,
         fn_ctx: FnCallContext,
