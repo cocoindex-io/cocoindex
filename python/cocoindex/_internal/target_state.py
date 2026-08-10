@@ -279,6 +279,32 @@ def declare_target_state(target_state: TargetState[None]) -> None:
     )
 
 
+async def declare_target_state_optimistic(target_state: TargetState[None]) -> bool:
+    """
+    Declare a target state and apply it to the target system immediately,
+    instead of at commit time.
+
+    The local AppStore atomically claims logical absence before the eager
+    write. Exactly one concurrent caller can declare/write a given target
+    key; losers return `False` without side effects.
+
+    Returns once the eager write succeeds. If it raises, the declaration
+    stays registered — catch the error and the row is still written when the
+    component submits. Leaf targets only.
+
+    Args:
+        target_state: The target state to declare.
+    """
+    ctx = get_context_from_ctx()
+    return await core.declare_target_state_optimistic(
+        ctx._core_processor_ctx,
+        ctx._core_fn_call_ctx,
+        target_state._provider._core,
+        target_state._key,
+        target_state._value,
+    )
+
+
 def declare_target_state_with_child(
     target_state: TargetState[TargetHandler[ValueT, Any, OptChildHandlerT]],
 ) -> PendingTargetStateProvider[ValueT, OptChildHandlerT]:

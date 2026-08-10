@@ -1289,10 +1289,41 @@ class TableTarget(
             row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
                  Must include all primary key columns.
         """
+        target_state = self._row_target_state(row)
+        coco.declare_target_state(target_state)
+
+    async def optimistic_declare_row(self: "TableTarget[RowT]", *, row: RowT) -> bool:
+        """
+        Declare a row and write it to Postgres immediately, instead of at
+        commit time, so other components can read it while this one is still
+        processing.
+
+        CocoIndex atomically claims logical absence in its local AppStore.
+        The winner records an ordinary declaration, writes eagerly, and is
+        re-applied at submit; a loser returns `False` without side effects.
+
+        Raises if the immediate write fails. The declaration survives the
+        failure, so catching the error still leaves the row to be written at
+        commit time.
+
+        Returns:
+            `True` if this caller won the absence claim and completed the
+            eager write; `False` if another pending/confirmed writer owns the
+            same primary key. A loser must re-read the table.
+
+        Args:
+            row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
+                 Must include all primary key columns.
+        """
+        return await coco.declare_target_state_optimistic(self._row_target_state(row))
+
+    def _row_target_state(
+        self: "TableTarget[RowT]", row: RowT
+    ) -> coco.TargetState[None]:
+        """Convert `row` into the target state keyed by its primary key."""
         row_dict = self._row_to_dict(row)
-        # Extract primary key values
         pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_target_state(self._provider.target_state(pk_values, row_dict))
+        return self._provider.target_state(pk_values, row_dict)
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         """
