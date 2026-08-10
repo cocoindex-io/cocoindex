@@ -922,6 +922,9 @@ impl AppStore {
         let op = op.clone();
         let item_key = item_key.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let op = op.clone();
+            let item_key = item_key.clone();
             Box::pin(async move {
                 app_store
                     .write_optimistic_marker_in_txn(
@@ -951,6 +954,8 @@ impl AppStore {
         let app_store = self.clone();
         let op = op.clone();
         self.run_in_batcher_typed(move |wtxn| {
+            let app_store = app_store.clone();
+            let op = op.clone();
             Box::pin(async move {
                 let Some(mut marker) = app_store.read_optimistic_marker_in_txn(wtxn, &op).await?
                 else {
@@ -980,6 +985,8 @@ impl AppStore {
         let app_store = self.clone();
         let op = op.clone();
         self.run_in_batcher_typed(move |wtxn| {
+            let app_store = app_store.clone();
+            let op = op.clone();
             Box::pin(async move {
                 let Some(mut marker) = app_store.read_optimistic_marker_in_txn(wtxn, &op).await?
                 else {
@@ -1008,6 +1015,8 @@ impl AppStore {
         let app_store = self.clone();
         let op = op.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let op = op.clone();
             Box::pin(async move {
                 let Some(marker) = app_store.read_optimistic_marker_in_txn(wtxn, &op).await? else {
                     return Ok(());
@@ -1032,6 +1041,8 @@ impl AppStore {
         let app_store = self.clone();
         let op = op.clone();
         self.run_in_batcher(move |wtxn| {
+            let app_store = app_store.clone();
+            let op = op.clone();
             Box::pin(async move {
                 app_store
                     .delete_own_optimistic_cas_claim_in_txn(wtxn, &op)
@@ -1153,6 +1164,9 @@ impl AppStore {
         let op = op.clone();
         let item_key = item_key.clone();
         self.run_in_batcher_typed(move |wtxn| {
+            let app_store = app_store.clone();
+            let op = op.clone();
+            let item_key = item_key.clone();
             Box::pin(async move {
                 if app_store
                     .read_target_state_owner_in_txn(wtxn, &op.target_state_path)
@@ -1814,6 +1828,8 @@ mod tests {
         let app_store = store.clone();
         store
             .run_in_batcher(move |wtxn| {
+                let app_store = app_store.clone();
+                let operations = operations.clone();
                 Box::pin(async move {
                     app_store
                         .validate_and_clear_optimistic_operations_in_txn(wtxn, &operations)
@@ -1833,6 +1849,9 @@ mod tests {
         let owner = owner.clone();
         store
             .run_in_batcher(move |wtxn| {
+                let app_store = app_store.clone();
+                let path = path.clone();
+                let owner = owner.clone();
                 Box::pin(async move {
                     app_store
                         .upsert_target_state_owner(wtxn, &path, &owner)

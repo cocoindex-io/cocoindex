@@ -11,8 +11,8 @@ use crate::engine::context::{
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
-    cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
-    update_component_memo_states, use_or_invalidate_component_memoization,
+    cleanup_optimistic_writes, cleanup_tombstone, eager_existence_upsert, post_submit_for_build,
+    submit, update_component_memo_states, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -907,13 +907,22 @@ impl<Prof: EngineProfile> Component<Prof> {
         let mut memo_states_for_store: Option<MemoStatesPayload<Prof>> = None;
         let processing_stats = processor_context.processing_stats();
 
+        // Serialize every lifecycle for this component, including the lazy
+        // recovery preflight. Recovery must precede memo lookup and user code:
+        // otherwise a memo hit or a raw sink read could observe a row left by
+        // this component's interrupted optimistic write.
+        let _permit = self.inner.build_semaphore.acquire().await?;
+        crate::engine::execution::recover_component_optimistic_writes(processor_context).await?;
+
         if let Some(processor) = processor {
             let processor_name = processor.processor_info().name.as_str();
             memo_fp_to_store = processor.memo_key_fingerprint();
             deadline.check()?;
 
-            // Fast-path: component memoization check does not require acquiring the build permit.
-            // If it hits, we can immediately return without processing/submitting/waiting.
+            // Fast-path after the recovery preflight: if memoization hits, we
+            // can return without processing/submitting/waiting. The build
+            // permit is already held so another lifecycle for this component
+            // cannot race recovery or memo reuse.
 
             match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store).await
             {
@@ -987,8 +996,6 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // Acquire the semaphore to ensure `process()` and `submit()` cannot overlap
                 // with another execution of the same component.
                 let (ret, submit_output, mut children_outcome) = {
-                    let _permit = self.inner.build_semaphore.acquire().await?;
-
                     // Build mode only: write the component's own existence bit
                     // (and ancestor chain) into the parent in its own txn,
                     // before the user processor runs. Maintains the invariant
@@ -1189,6 +1196,13 @@ impl<Prof: EngineProfile> Component<Prof> {
                 Ok((children_outcome, build_output))
             }
             Err(err) => {
+                // Engine-owned cleanup boundary. The `result` block above
+                // spans processor execution, child readiness and submit, so
+                // every failure mode that could have left an eagerly-written
+                // row behind lands here — and it runs before the error
+                // reaches any user-facing `on_error` handler, which is a
+                // user callback, not an engine cleanup hook.
+                cleanup_optimistic_writes(processor_context).await;
                 processing_stats.update(final_processor_name, |stats| {
                     if reported_processor_name.is_none() {
                         stats.num_execution_starts += 1;
