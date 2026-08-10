@@ -6,6 +6,7 @@ use cocoindex_core::engine::target_state::{
     TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
 };
 use pyo3::types::{PyList, PySequence, PyTuple};
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::prelude::*;
@@ -235,6 +236,31 @@ pub fn declare_target_state<'py>(
     )
     .into_py_result()?;
     Ok(())
+}
+
+/// Async bridge for the CAS-backed optimistic write. Resolves to `True`
+/// for the winner and `False` for a conflict.
+#[pyfunction]
+pub fn declare_target_state_optimistic<'py>(
+    py: Python<'py>,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: PyFnCallContext,
+    provider: &PyTargetStateProvider,
+    key: PyStableKey,
+    value: Py<PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let provider = provider.0.clone();
+    future_into_py(py, async move {
+        cocoindex_core::engine::execution::declare_target_state_optimistic(
+            &comp_ctx.0,
+            &fn_ctx.0,
+            provider,
+            key.0,
+            value,
+        )
+        .await
+        .into_py_result()
+    })
 }
 
 #[pyfunction]

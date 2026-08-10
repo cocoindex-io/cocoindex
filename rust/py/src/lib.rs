@@ -70,6 +70,10 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<target_state::PyTargetStateProvider>()?;
     m.add_function(wrap_pyfunction!(target_state::declare_target_state, m)?)?;
     m.add_function(wrap_pyfunction!(
+        target_state::declare_target_state_optimistic,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         target_state::declare_target_state_with_child,
         m
     )?)?;

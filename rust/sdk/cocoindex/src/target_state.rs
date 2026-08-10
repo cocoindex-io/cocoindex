@@ -432,6 +432,28 @@ where
     )
 }
 
+/// Declare a target state and apply it to the sink immediately, instead of
+/// at commit time.
+///
+/// CocoIndex atomically claims logical absence in its local AppStore. The
+/// winner writes eagerly and is confirmed through normal submit; a loser
+/// returns `false` without declaring or writing anything.
+///
+/// Returns only after the eager sink call succeeds. A sink error is
+/// returned, but the declaration stays registered: catch the error and the
+/// row will still be written when the component submits. Leaf targets only.
+pub async fn declare_target_state_optimistic<V>(
+    ctx: &Ctx,
+    target_state: TargetState<V>,
+) -> Result<bool>
+where
+    V: Serialize + Send + 'static,
+{
+    let value = Value::from_serializable(&target_state.value)?;
+    ctx.declare_target_state_optimistic(target_state.provider.inner, target_state.key, value)
+        .await
+}
+
 pub fn declare_target_state_with_child<V, ChildV>(
     ctx: &Ctx,
     target_state: TargetState<V>,
