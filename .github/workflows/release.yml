@@ -27,7 +27,7 @@ jobs:
       - run: python ./.github/scripts/update_version.py
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@v2.85.10
         with:
           tool: cargo-binstall
       - name: Install cargo-about
