@@ -15,7 +15,7 @@ mod submit_session;
 pub(crate) mod test_support;
 mod txn;
 
-pub use app_store::AppStore;
+pub use app_store::{AppStore, OptimisticClaimResult};
 pub use storage::{Storage, StorageSettings};
 pub use submit_session::{
     CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,

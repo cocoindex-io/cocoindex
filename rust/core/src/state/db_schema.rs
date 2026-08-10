@@ -179,6 +179,30 @@ pub enum DbEntryKey<'a> {
 
     /// Value type: IdSequencerInfo
     IdSequencer(StableKey),
+
+    /// Test-only diagnostic prefix over every recovery marker. Runtime
+    /// recovery is writer-scoped through `OptimisticWriteWriterPrefix`.
+    #[cfg(test)]
+    OptimisticWritePrefix,
+    /// Scan prefix over recovery markers owned by one component. Recovery
+    /// uses this scoped prefix when that component is next executed; it never
+    /// scans the app-wide marker keyspace at update startup.
+    OptimisticWriteWriterPrefix(StablePath),
+    /// Layout: `0x40` + writer `StablePath` + `TargetStatePath` + the
+    /// operation UUID (as a tagged [`StableKey::Uuid`], so the trailing
+    /// 16 bytes stay unambiguous against `storekey`'s escaping). One entry
+    /// per optimistic *operation* — the UUID makes a retry by the same
+    /// writer on the same path a distinct record, so a stale cleanup or
+    /// commit can never clear a later operation's marker (ABA protection).
+    /// Value type: [`OptimisticWriteMarker`]
+    OptimisticWrite(StablePath, TargetStatePath, uuid::Uuid),
+
+    /// Layout: `0x50` + the encoded `TargetStatePath`. At most one entry
+    /// per target-state path — the CAS slot elected by
+    /// `try_claim_optimistic`. The claim is the per-target CAS slot; its
+    /// matching `0x40` marker is indexed by writer for lazy recovery.
+    /// Value type: [`OptimisticCasClaim`]
+    OptimisticCas(TargetStatePath),
 }
 
 impl<'a> storekey::Encode for DbEntryKey<'a> {
@@ -220,6 +244,26 @@ impl<'a> storekey::Encode for DbEntryKey<'a> {
                 e.write_u8(0x30)?;
                 key.encode(e)?;
             }
+
+            #[cfg(test)]
+            DbEntryKey::OptimisticWritePrefix => {
+                e.write_u8(0x40)?;
+            }
+            DbEntryKey::OptimisticWriteWriterPrefix(writer) => {
+                e.write_u8(0x40)?;
+                writer.encode(e)?;
+            }
+            DbEntryKey::OptimisticWrite(writer, path, operation_id) => {
+                e.write_u8(0x40)?;
+                writer.encode(e)?;
+                path.encode(e)?;
+                StableKey::Uuid(*operation_id).encode(e)?;
+            }
+
+            DbEntryKey::OptimisticCas(path) => {
+                e.write_u8(0x50)?;
+                path.encode(e)?;
+            }
         }
         Ok(())
     }
@@ -242,6 +286,18 @@ impl<'a> storekey::Decode for DbEntryKey<'a> {
             0x28 => {
                 let fp: Fingerprint = storekey::Decode::decode(d)?;
                 DbEntryKey::TargetSegmentName(fp)
+            }
+            0x40 => {
+                let writer: StablePath = storekey::Decode::decode(d)?;
+                let path: TargetStatePath = storekey::Decode::decode(d)?;
+                let StableKey::Uuid(operation_id) = storekey::Decode::decode(d)? else {
+                    return Err(storekey::DecodeError::InvalidFormat);
+                };
+                DbEntryKey::OptimisticWrite(writer, path, operation_id)
+            }
+            0x50 => {
+                let path: TargetStatePath = storekey::Decode::decode(d)?;
+                DbEntryKey::OptimisticCas(path)
             }
             _ => return Err(storekey::DecodeError::InvalidFormat),
         };
@@ -486,9 +542,95 @@ pub struct IdSequencerInfo {
     pub next_id: u64,
 }
 
+/// Lifecycle stage of one optimistic write, stored in its recovery marker.
+///
+/// The phase is what makes the marker safe to hand between the writing
+/// task, normal submit, same-run cleanup, and a later process's recovery
+/// sweep: every transition is a compare-and-set on the exact marker key,
+/// so only one of them can own the operation at a time.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimisticWritePhase {
+    /// The eager sink call may be in flight. Set before any external I/O.
+    #[serde(rename = "W")]
+    Writing,
+    /// The eager attempt finished (successfully or not); normal submit is
+    /// now the authoritative writer. A caught eager error leaves the
+    /// operation here so submit can still heal it.
+    #[serde(rename = "P")]
+    PendingSubmit,
+    /// Normal submit's sink apply may be in flight. Only an operation in
+    /// this phase can be confirmed by `commit`.
+    #[serde(rename = "S")]
+    Submitting,
+    /// Cleanup owns the right to delete this operation's external row.
+    /// Durable so a crash mid-cleanup resumes rather than restarts.
+    #[serde(rename = "C")]
+    Cleaning,
+}
+
+/// Per-operation crash bookkeeping for one optimistic write, stored under
+/// [`DbEntryKey::OptimisticWrite`].
+///
+/// Target-state path, writer path and operation ID all live in the key, so
+/// the value only carries what the key can't express.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct OptimisticWriteMarker {
+    /// Liveness token of the process that created the marker. Recovery
+    /// skips markers belonging to the current process — those are owned by
+    /// an in-flight task, not stranded.
+    #[serde(rename = "T")]
+    pub process_token: u128,
+    /// Item key within the provider, needed to derive the delete action
+    /// during cleanup without reversing the path fingerprints.
+    #[serde(rename = "K")]
+    pub item_key: StableKey,
+    #[serde(rename = "P")]
+    pub phase: OptimisticWritePhase,
+}
+
+/// Identity of one optimistic write operation — exactly the parts that
+/// make up its [`DbEntryKey::OptimisticWrite`] key.
+///
+/// Every AppStore mutation of a marker or claim is guarded on the full
+/// identity, so an operation can only ever advance or clear *its own*
+/// records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptimisticOperationId {
+    pub target_state_path: TargetStatePath,
+    /// Stable path of the component that issued the write.
+    pub writer: StablePath,
+    pub operation_id: uuid::Uuid,
+}
+
+impl std::fmt::Display for OptimisticOperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}@{}#{}",
+            self.target_state_path, self.writer, self.operation_id
+        )
+    }
+}
+
+/// The conditional-write CAS slot for one target-state path, stored under
+/// [`DbEntryKey::OptimisticCas`].
+///
+/// Repeats the winner's exact operation identity so a stale cleanup or
+/// commit can never clear a *replacement* claim taken by a later winner.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct OptimisticCasClaim {
+    #[serde(rename = "O")]
+    pub operation_id: uuid::Uuid,
+    #[serde(rename = "T")]
+    pub process_token: u128,
+    #[serde(rename = "W")]
+    pub writer: StablePath,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cocoindex_utils::deser::from_msgpack_slice;
     use std::io::Cursor;
 
     fn roundtrip_entry_key(key: &StablePathEntryKey) -> StablePathEntryKey {
@@ -741,5 +883,166 @@ mod tests {
             !state_b.starts_with(&prefix_a),
             "path_b UserState key incorrectly starts with path_a's prefix"
         );
+    }
+
+    // --- Optimistic write markers / CAS claims -----------------------------
+
+    fn tsp(seed: u8) -> TargetStatePath {
+        TargetStatePath::new(utils::fingerprint::Fingerprint([seed; 16]), None)
+    }
+
+    fn writer(name: &str) -> StablePath {
+        StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
+    }
+
+    const ALL_PHASES: [OptimisticWritePhase; 4] = [
+        OptimisticWritePhase::Writing,
+        OptimisticWritePhase::PendingSubmit,
+        OptimisticWritePhase::Submitting,
+        OptimisticWritePhase::Cleaning,
+    ];
+
+    /// `OptimisticWrite` keys roundtrip with every component intact, and
+    /// the three identity parts are all discriminating.
+    #[test]
+    fn optimistic_write_key_roundtrip() {
+        let path = tsp(0x11);
+        let w = writer("comp/a");
+        let op = uuid::Uuid::from_bytes([0x7; 16]);
+
+        let bytes = DbEntryKey::OptimisticWrite(w.clone(), path.clone(), op)
+            .encode()
+            .expect("encode");
+        match DbEntryKey::decode(&bytes).expect("decode") {
+            DbEntryKey::OptimisticWrite(wr, p, id) => {
+                assert_eq!(p, path);
+                assert_eq!(wr, w);
+                assert_eq!(id, op);
+            }
+            other => panic!("expected OptimisticWrite, got {other:?}"),
+        }
+
+        // Each identity part changes the key.
+        let other_op =
+            DbEntryKey::OptimisticWrite(w.clone(), path.clone(), uuid::Uuid::from_bytes([0x8; 16]))
+                .encode()
+                .unwrap();
+        let other_writer = DbEntryKey::OptimisticWrite(writer("comp/b"), path.clone(), op)
+            .encode()
+            .unwrap();
+        let other_path = DbEntryKey::OptimisticWrite(w, tsp(0x12), op)
+            .encode()
+            .unwrap();
+        assert_ne!(bytes, other_op);
+        assert_ne!(bytes, other_writer);
+        assert_ne!(bytes, other_path);
+    }
+
+    #[test]
+    fn optimistic_cas_key_roundtrip() {
+        let path = tsp(0x21);
+        let bytes = DbEntryKey::OptimisticCas(path.clone())
+            .encode()
+            .expect("encode");
+        match DbEntryKey::decode(&bytes).expect("decode") {
+            DbEntryKey::OptimisticCas(p) => assert_eq!(p, path),
+            other => panic!("expected OptimisticCas, got {other:?}"),
+        }
+    }
+
+    /// The app-wide prefix is the bare `0x40` tag and the writer-scoped
+    /// prefix is `0x40` + component path. Runtime recovery uses only the
+    /// latter.
+    #[test]
+    fn optimistic_write_prefix_scans() {
+        let all = DbEntryKey::OptimisticWritePrefix.encode().unwrap();
+        assert_eq!(all, vec![0x40u8]);
+
+        let writer_a = writer("w1");
+        let writer_b = writer("w2");
+        let prefix_a = DbEntryKey::OptimisticWriteWriterPrefix(writer_a.clone())
+            .encode()
+            .unwrap();
+
+        for (i, path) in [tsp(0x31), tsp(0x32)].into_iter().enumerate() {
+            let key_a = DbEntryKey::OptimisticWrite(
+                writer_a.clone(),
+                path.clone(),
+                uuid::Uuid::from_bytes([i as u8; 16]),
+            )
+            .encode()
+            .unwrap();
+            assert!(key_a.starts_with(&all));
+            assert!(key_a.starts_with(&prefix_a));
+            assert!(key_a.len() > prefix_a.len());
+
+            let key_b = DbEntryKey::OptimisticWrite(
+                writer_b.clone(),
+                path,
+                uuid::Uuid::from_bytes([i as u8; 16]),
+            )
+            .encode()
+            .unwrap();
+            assert!(key_b.starts_with(&all));
+            assert!(
+                !key_b.starts_with(&prefix_a),
+                "writer-scoped prefix must not match another component's marker"
+            );
+        }
+    }
+
+    /// The recovery-marker keyspace (`0x40`) and the CAS keyspace (`0x50`)
+    /// never alias, in either direction, even for the same path.
+    #[test]
+    fn optimistic_keyspaces_are_isolated() {
+        let path = tsp(0x41);
+        let marker_prefix = DbEntryKey::OptimisticWritePrefix.encode().unwrap();
+        let marker =
+            DbEntryKey::OptimisticWrite(writer("w"), path.clone(), uuid::Uuid::from_bytes([1; 16]))
+                .encode()
+                .unwrap();
+        let cas = DbEntryKey::OptimisticCas(path.clone()).encode().unwrap();
+
+        assert!(!cas.starts_with(&marker_prefix));
+        assert_ne!(marker, cas);
+
+        // Neither collides with the pre-existing top-level keyspaces.
+        let target_state = DbEntryKey::TargetState(path).encode().unwrap();
+        let id_seq = DbEntryKey::IdSequencer(StableKey::Int(1)).encode().unwrap();
+        for existing in [&target_state, &id_seq] {
+            assert!(!existing.starts_with(&marker_prefix));
+            assert!(!existing.starts_with(&[0x50u8][..]));
+        }
+    }
+
+    /// Marker values roundtrip through msgpack for every phase.
+    #[test]
+    fn optimistic_marker_value_roundtrip() {
+        for phase in ALL_PHASES {
+            let marker = OptimisticWriteMarker {
+                process_token: 0xdead_beef_u128,
+                item_key: StableKey::Str(Arc::from("Albert Einstein")),
+                phase,
+            };
+            let bytes = rmp_serde::to_vec_named(&marker).unwrap();
+            let decoded: OptimisticWriteMarker = from_msgpack_slice(&bytes).unwrap();
+            assert_eq!(decoded.process_token, marker.process_token);
+            assert_eq!(decoded.item_key, marker.item_key);
+            assert_eq!(decoded.phase, phase);
+        }
+    }
+
+    #[test]
+    fn optimistic_cas_claim_value_roundtrip() {
+        let claim = OptimisticCasClaim {
+            operation_id: uuid::Uuid::from_bytes([9; 16]),
+            process_token: 7,
+            writer: writer("comp/x"),
+        };
+        let bytes = rmp_serde::to_vec_named(&claim).unwrap();
+        let decoded: OptimisticCasClaim = from_msgpack_slice(&bytes).unwrap();
+        assert_eq!(decoded.operation_id, claim.operation_id);
+        assert_eq!(decoded.process_token, claim.process_token);
+        assert_eq!(decoded.writer, claim.writer);
     }
 }

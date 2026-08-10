@@ -30,7 +30,8 @@ use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::prelude::*;
 use crate::state::db_schema::{
-    ChildExistenceInfo, DbEntryKey, FunctionMemoizationEntry, IdSequencerInfo, StablePathEntryKey,
+    ChildExistenceInfo, DbEntryKey, FunctionMemoizationEntry, IdSequencerInfo, OptimisticCasClaim,
+    OptimisticOperationId, OptimisticWriteMarker, OptimisticWritePhase, StablePathEntryKey,
     StablePathNodeType, StateKind, TargetStateOwnerInfo,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
@@ -229,6 +230,28 @@ fn key_user_state(path: &StablePath, kind: StateKind, user_key: &StableKey) -> R
 
 fn key_user_state_prefix(path: &StablePath, kind: StateKind) -> Result<Vec<u8>> {
     DbEntryKey::StablePath(path.clone(), StablePathEntryKey::UserStatePrefix(kind)).encode()
+}
+
+fn key_optimistic_write(op: &OptimisticOperationId) -> Result<Vec<u8>> {
+    DbEntryKey::OptimisticWrite(
+        op.writer.clone(),
+        op.target_state_path.clone(),
+        op.operation_id,
+    )
+    .encode()
+}
+
+#[cfg(test)]
+fn key_optimistic_write_prefix() -> Result<Vec<u8>> {
+    DbEntryKey::OptimisticWritePrefix.encode()
+}
+
+fn key_optimistic_write_writer_prefix(writer: &StablePath) -> Result<Vec<u8>> {
+    DbEntryKey::OptimisticWriteWriterPrefix(writer.clone()).encode()
+}
+
+fn key_optimistic_cas(path: &TargetStatePath) -> Result<Vec<u8>> {
+    DbEntryKey::OptimisticCas(path.clone()).encode()
 }
 
 // --- Tracking info -------------------------------------------------------
@@ -791,6 +814,385 @@ impl AppStore {
     }
 }
 
+// --- Optimistic write markers + CAS claims -------------------------------
+//
+// One optimistic operation has two indexes, written atomically:
+//
+// * a writer-indexed recovery marker (`0x40`) drives lazy cleanup;
+// * a target-indexed CAS claim (`0x50`) elects at most one winner per path.
+//
+// Every winner owns both records. Every mutation
+// below is guarded on the full [`OptimisticOperationId`], so a stale
+// cleanup or commit can never touch a replacement operation's records.
+//
+// All writes route through `run_in_batcher`; none of these methods opens
+// `env.write_txn()` directly.
+
+/// Outcome of [`AppStore::try_claim_optimistic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimisticClaimResult {
+    /// The caller won: its CAS claim and `Writing` recovery marker were
+    /// written atomically.
+    Claimed,
+    /// Logical absence was already false at the linearization point (a
+    /// confirmed owner, another CAS claim, or an active optimistic write
+    /// on the same path). Nothing was written.
+    Conflict,
+}
+
+impl AppStore {
+    async fn read_optimistic_marker_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        op: &OptimisticOperationId,
+    ) -> Result<Option<OptimisticWriteMarker>> {
+        let key = key_optimistic_write(op)?;
+        self.db()
+            .get(&**txn, &key)?
+            .map(from_msgpack_slice)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    async fn write_optimistic_marker_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        op: &OptimisticOperationId,
+        marker: &OptimisticWriteMarker,
+    ) -> Result<()> {
+        let key = key_optimistic_write(op)?;
+        let value = rmp_serde::to_vec_named(marker)?;
+        self.db().put(&mut **txn, &key, &value)?;
+        Ok(())
+    }
+
+    async fn delete_optimistic_marker_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        op: &OptimisticOperationId,
+    ) -> Result<()> {
+        let key = key_optimistic_write(op)?;
+        self.db().delete(&mut **txn, &key)?;
+        Ok(())
+    }
+
+    async fn read_optimistic_cas_claim_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &TargetStatePath,
+    ) -> Result<Option<OptimisticCasClaim>> {
+        let key = key_optimistic_cas(path)?;
+        self.db()
+            .get(&**txn, &key)?
+            .map(from_msgpack_slice)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    /// Delete the CAS claim at `op.target_state_path` **only** if it still
+    /// names `op`. A claim taken by a later winner is left untouched.
+    async fn delete_own_optimistic_cas_claim_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        op: &OptimisticOperationId,
+    ) -> Result<bool> {
+        let Some(claim) = self
+            .read_optimistic_cas_claim_in_txn(txn, &op.target_state_path)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if claim.operation_id != op.operation_id || claim.writer != op.writer {
+            return Ok(false);
+        }
+        let key = key_optimistic_cas(&op.target_state_path)?;
+        self.db().delete(&mut **txn, &key)?;
+        Ok(true)
+    }
+
+    /// Test helper for exercising marker phases independently of claims.
+    #[cfg(test)]
+    async fn write_test_optimistic_marker(
+        &self,
+        op: &OptimisticOperationId,
+        process_token: u128,
+        item_key: &StableKey,
+    ) -> Result<()> {
+        let app_store = self.clone();
+        let op = op.clone();
+        let item_key = item_key.clone();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move {
+                app_store
+                    .write_optimistic_marker_in_txn(
+                        wtxn,
+                        &op,
+                        &OptimisticWriteMarker {
+                            process_token,
+                            item_key,
+                            phase: OptimisticWritePhase::Writing,
+                        },
+                    )
+                    .await
+            })
+        })
+        .await
+    }
+
+    /// Compare-and-set the phase of the *exact* marker for `op`. Returns
+    /// `false` without writing when the marker is missing or is not in
+    /// `from` — i.e. when this caller has lost ownership of the operation.
+    pub async fn transition_optimistic_marker(
+        &self,
+        op: &OptimisticOperationId,
+        from: OptimisticWritePhase,
+        to: OptimisticWritePhase,
+    ) -> Result<bool> {
+        let app_store = self.clone();
+        let op = op.clone();
+        self.run_in_batcher_typed(move |wtxn| {
+            Box::pin(async move {
+                let Some(mut marker) = app_store.read_optimistic_marker_in_txn(wtxn, &op).await?
+                else {
+                    return Ok(false);
+                };
+                if marker.phase != from {
+                    return Ok(false);
+                }
+                marker.phase = to;
+                app_store
+                    .write_optimistic_marker_in_txn(wtxn, &op, &marker)
+                    .await?;
+                Ok(true)
+            })
+        })
+        .await
+    }
+
+    /// Acquire the right to delete this operation's external row by
+    /// CAS-ing its marker into [`OptimisticWritePhase::Cleaning`].
+    ///
+    /// Returns `true` when cleanup owns the operation. A marker already in
+    /// `Cleaning` counts as owned (resumable — a crash mid-cleanup must be
+    /// finished, not abandoned). Returns `false` when the marker is gone,
+    /// i.e. the operation was already confirmed or cleaned.
+    pub async fn begin_optimistic_cleanup(&self, op: &OptimisticOperationId) -> Result<bool> {
+        let app_store = self.clone();
+        let op = op.clone();
+        self.run_in_batcher_typed(move |wtxn| {
+            Box::pin(async move {
+                let Some(mut marker) = app_store.read_optimistic_marker_in_txn(wtxn, &op).await?
+                else {
+                    return Ok(false);
+                };
+                if marker.phase == OptimisticWritePhase::Cleaning {
+                    return Ok(true);
+                }
+                marker.phase = OptimisticWritePhase::Cleaning;
+                app_store
+                    .write_optimistic_marker_in_txn(wtxn, &op, &marker)
+                    .await?;
+                Ok(true)
+            })
+        })
+        .await
+    }
+
+    /// Unmark a cleaned-up operation: delete its `Cleaning` marker and,
+    /// when the operation owns one, its exact CAS claim — in one txn.
+    ///
+    /// Only ever called *after* the sink delete succeeded, so the record
+    /// outlives the external row it protects (delete-before-unmark). A
+    /// marker in any other phase is left alone: someone else owns it.
+    pub async fn finish_optimistic_cleanup(&self, op: &OptimisticOperationId) -> Result<()> {
+        let app_store = self.clone();
+        let op = op.clone();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move {
+                let Some(marker) = app_store.read_optimistic_marker_in_txn(wtxn, &op).await? else {
+                    return Ok(());
+                };
+                if marker.phase != OptimisticWritePhase::Cleaning {
+                    return Ok(());
+                }
+                app_store
+                    .delete_own_optimistic_cas_claim_in_txn(wtxn, &op)
+                    .await?;
+                app_store.delete_optimistic_marker_in_txn(wtxn, &op).await
+            })
+        })
+        .await
+    }
+
+    /// Remove an operation's records without touching any sink. Used only
+    /// on the pre-I/O rollback path, where the marker and claim were written
+    /// but the in-memory
+    /// declaration could not be recorded — so nothing external exists yet.
+    pub async fn clear_optimistic_operation(&self, op: &OptimisticOperationId) -> Result<()> {
+        let app_store = self.clone();
+        let op = op.clone();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move {
+                app_store
+                    .delete_own_optimistic_cas_claim_in_txn(wtxn, &op)
+                    .await?;
+                app_store.delete_optimistic_marker_in_txn(wtxn, &op).await
+            })
+        })
+        .await
+    }
+
+    /// Confirm optimistic operations inside the ordinary commit txn:
+    /// every operation must still hold its exact marker in
+    /// [`OptimisticWritePhase::Submitting`] and its exact CAS claim. Both
+    /// records are cleared here,
+    /// atomically with the confirmed tracking/ownership writes.
+    ///
+    /// A mismatch aborts the commit rather than silently confirming: it
+    /// means cleanup or another writer took the operation away, so the
+    /// tracking record would no longer describe the sink.
+    pub(super) async fn validate_and_clear_optimistic_operations_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        operations: &[OptimisticOperationId],
+    ) -> Result<()> {
+        for op in operations {
+            let Some(marker) = self.read_optimistic_marker_in_txn(txn, op).await? else {
+                internal_bail!("optimistic write marker vanished before commit: {op}");
+            };
+            if marker.phase != OptimisticWritePhase::Submitting {
+                internal_bail!(
+                    "optimistic write {op} is in phase {:?}, expected Submitting at commit",
+                    marker.phase
+                );
+            }
+            if !self.delete_own_optimistic_cas_claim_in_txn(txn, op).await? {
+                internal_bail!("CAS claim for optimistic write {op} vanished before commit");
+            }
+            self.delete_optimistic_marker_in_txn(txn, op).await?;
+        }
+        Ok(())
+    }
+
+    /// Recovery markers owned by one component, from a fresh snapshot.
+    /// This is the lazy-recovery read path: it scans only the writer prefix,
+    /// never the whole app at update startup.
+    pub async fn list_optimistic_markers_for_writer(
+        &self,
+        writer_path: &StablePath,
+    ) -> Result<Vec<(OptimisticOperationId, OptimisticWriteMarker)>> {
+        let rtxn = self.read_txn().await?;
+        let prefix = key_optimistic_write_writer_prefix(writer_path)?;
+        let mut out = Vec::new();
+        for entry in self.db().prefix_iter(&rtxn, &prefix)? {
+            let (raw_key, raw_value) = entry?;
+            let DbEntryKey::OptimisticWrite(writer, target_state_path, operation_id) =
+                DbEntryKey::decode(raw_key)?
+            else {
+                return Err(internal_error!(
+                    "unexpected key in the optimistic-write keyspace"
+                ));
+            };
+            let marker: OptimisticWriteMarker = from_msgpack_slice(raw_value)?;
+            out.push((
+                OptimisticOperationId {
+                    target_state_path,
+                    writer,
+                    operation_id,
+                },
+                marker,
+            ));
+        }
+        Ok(out)
+    }
+
+    #[cfg(test)]
+    async fn list_optimistic_markers(
+        &self,
+    ) -> Result<Vec<(OptimisticOperationId, OptimisticWriteMarker)>> {
+        let rtxn = self.read_txn().await?;
+        let prefix = key_optimistic_write_prefix()?;
+        let mut out = Vec::new();
+        for entry in self.db().prefix_iter(&rtxn, &prefix)? {
+            let (raw_key, raw_value) = entry?;
+            let DbEntryKey::OptimisticWrite(writer, target_state_path, operation_id) =
+                DbEntryKey::decode(raw_key)?
+            else {
+                return Err(internal_error!(
+                    "unexpected key in the optimistic-write keyspace"
+                ));
+            };
+            out.push((
+                OptimisticOperationId {
+                    target_state_path,
+                    writer,
+                    operation_id,
+                },
+                from_msgpack_slice(raw_value)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// The CAS linearization point for `optimistic_declare_row`.
+    ///
+    /// One write txn checks that the target state is logically absent —
+    /// no confirmed owner and no existing CAS claim — and, if so, writes
+    /// the claim and the
+    /// operation's `Writing` recovery marker atomically.
+    ///
+    /// Performs no external I/O and never holds the txn across a sink
+    /// call: it elects a winner, nothing more.
+    pub async fn try_claim_optimistic(
+        &self,
+        op: &OptimisticOperationId,
+        process_token: u128,
+        item_key: &StableKey,
+    ) -> Result<OptimisticClaimResult> {
+        let app_store = self.clone();
+        let op = op.clone();
+        let item_key = item_key.clone();
+        self.run_in_batcher_typed(move |wtxn| {
+            Box::pin(async move {
+                if app_store
+                    .read_target_state_owner_in_txn(wtxn, &op.target_state_path)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(OptimisticClaimResult::Conflict);
+                }
+                if app_store
+                    .read_optimistic_cas_claim_in_txn(wtxn, &op.target_state_path)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(OptimisticClaimResult::Conflict);
+                }
+                let claim_key = key_optimistic_cas(&op.target_state_path)?;
+                let claim_value = rmp_serde::to_vec_named(&OptimisticCasClaim {
+                    operation_id: op.operation_id,
+                    process_token,
+                    writer: op.writer.clone(),
+                })?;
+                app_store.db().put(&mut **wtxn, &claim_key, &claim_value)?;
+                app_store
+                    .write_optimistic_marker_in_txn(
+                        wtxn,
+                        &op,
+                        &OptimisticWriteMarker {
+                            process_token,
+                            item_key,
+                            phase: OptimisticWritePhase::Writing,
+                        },
+                    )
+                    .await?;
+                Ok(OptimisticClaimResult::Claimed)
+            })
+        })
+        .await
+    }
+}
+
 // --- App-level -----------------------------------------------------------
 
 impl AppStore {
@@ -1006,13 +1408,15 @@ impl AppStore {
 
 #[cfg(test)]
 mod tests {
-    use super::AppStore;
+    use super::{AppStore, key_optimistic_cas};
+    use crate::prelude::Result;
     use crate::state::db_schema::StateKind;
     use crate::state::stable_path::{StableKey, StablePath};
-    use crate::state_store::test_support::make_test_store;
+    use crate::state_store::test_support::{make_test_store, open_test_store};
     use crate::state_store::txn::WriteTxn;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tempfile::TempDir;
 
     fn comp_path(name: &str) -> StablePath {
         StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
@@ -1360,6 +1764,642 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    // --- optimistic write markers ------------------------------------------
+
+    use super::OptimisticClaimResult;
+    use crate::state::db_schema::{
+        OptimisticOperationId, OptimisticWriteMarker, OptimisticWritePhase,
+    };
+    use crate::state::target_state_path::TargetStatePath;
+
+    const TOKEN: u128 = 0x1234;
+
+    fn target_path(seed: u8) -> TargetStatePath {
+        TargetStatePath::new(cocoindex_utils::fingerprint::Fingerprint([seed; 16]), None)
+    }
+
+    fn op(path: &TargetStatePath, writer_name: &str, id: u8) -> OptimisticOperationId {
+        OptimisticOperationId {
+            target_state_path: path.clone(),
+            writer: comp_path(writer_name),
+            operation_id: uuid::Uuid::from_bytes([id; 16]),
+        }
+    }
+
+    /// The item key stored in the marker; distinct per operation so tests
+    /// can tell whose marker they read back.
+    fn item(name: &str) -> StableKey {
+        StableKey::Str(Arc::from(name))
+    }
+
+    async fn find_marker(
+        store: &AppStore,
+        operation: &OptimisticOperationId,
+    ) -> Option<OptimisticWriteMarker> {
+        store
+            .list_optimistic_markers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(o, _)| o == operation)
+            .map(|(_, m)| m)
+    }
+
+    async fn validate_and_clear_for_test(
+        store: &AppStore,
+        operations: Vec<OptimisticOperationId>,
+    ) -> Result<()> {
+        let app_store = store.clone();
+        store
+            .run_in_batcher(move |wtxn| {
+                Box::pin(async move {
+                    app_store
+                        .validate_and_clear_optimistic_operations_in_txn(wtxn, &operations)
+                        .await
+                })
+            })
+            .await
+    }
+
+    async fn upsert_owner_for_test(
+        store: &AppStore,
+        path: &TargetStatePath,
+        owner: &StablePath,
+    ) -> Result<()> {
+        let app_store = store.clone();
+        let path = path.clone();
+        let owner = owner.clone();
+        store
+            .run_in_batcher(move |wtxn| {
+                Box::pin(async move {
+                    app_store
+                        .upsert_target_state_owner(wtxn, &path, &owner)
+                        .await
+                })
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn optimistic_marker_write_list_roundtrip() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(1);
+        let o = op(&path, "comp", 1);
+
+        assert!(store.list_optimistic_markers().await.unwrap().is_empty());
+        store
+            .write_test_optimistic_marker(&o, TOKEN, &item("einstein"))
+            .await
+            .unwrap();
+
+        let listed = store.list_optimistic_markers().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            store
+                .list_optimistic_markers_for_writer(&comp_path("comp"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .list_optimistic_markers_for_writer(&comp_path("other"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let (listed_op, marker) = &listed[0];
+        assert_eq!(listed_op, &o);
+        assert_eq!(marker.process_token, TOKEN);
+        assert_eq!(marker.item_key, item("einstein"));
+        assert_eq!(marker.phase, OptimisticWritePhase::Writing);
+    }
+
+    /// Two writers on one target path, plus a retry by the same writer:
+    /// three independent markers, each addressable on its own.
+    #[tokio::test]
+    async fn optimistic_markers_are_per_operation() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(2);
+        let a = op(&path, "comp_a", 1);
+        let b = op(&path, "comp_b", 2);
+        let a_retry = op(&path, "comp_a", 3);
+
+        for (o, key) in [(&a, "a"), (&b, "b"), (&a_retry, "a2")] {
+            store
+                .write_test_optimistic_marker(o, TOKEN, &item(key))
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.list_optimistic_markers().await.unwrap().len(), 3);
+
+        // Transitioning one leaves the others alone.
+        assert!(
+            store
+                .transition_optimistic_marker(
+                    &a,
+                    OptimisticWritePhase::Writing,
+                    OptimisticWritePhase::PendingSubmit,
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            find_marker(&store, &a).await.unwrap().phase,
+            OptimisticWritePhase::PendingSubmit
+        );
+        assert_eq!(
+            find_marker(&store, &b).await.unwrap().phase,
+            OptimisticWritePhase::Writing
+        );
+        assert_eq!(
+            find_marker(&store, &a_retry).await.unwrap().phase,
+            OptimisticWritePhase::Writing
+        );
+    }
+
+    /// Transitions are exact: wrong source phase, unknown operation id, or
+    /// a different writer all fail without writing (ABA protection).
+    #[tokio::test]
+    async fn optimistic_transitions_are_exact() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(3);
+        let o = op(&path, "comp", 1);
+        store
+            .write_test_optimistic_marker(&o, TOKEN, &item("k"))
+            .await
+            .unwrap();
+
+        // Wrong source phase.
+        assert!(
+            !store
+                .transition_optimistic_marker(
+                    &o,
+                    OptimisticWritePhase::Submitting,
+                    OptimisticWritePhase::Cleaning,
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            find_marker(&store, &o).await.unwrap().phase,
+            OptimisticWritePhase::Writing
+        );
+
+        // Same path + writer, different operation id.
+        assert!(
+            !store
+                .transition_optimistic_marker(
+                    &op(&path, "comp", 9),
+                    OptimisticWritePhase::Writing,
+                    OptimisticWritePhase::PendingSubmit,
+                )
+                .await
+                .unwrap()
+        );
+        // Same path + operation id, different writer.
+        assert!(
+            !store
+                .transition_optimistic_marker(
+                    &op(&path, "other", 1),
+                    OptimisticWritePhase::Writing,
+                    OptimisticWritePhase::PendingSubmit,
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            find_marker(&store, &o).await.unwrap().phase,
+            OptimisticWritePhase::Writing
+        );
+    }
+
+    /// Cleanup acquires from any live phase, is resumable once acquired,
+    /// and only unmarks a marker it owns.
+    #[tokio::test]
+    async fn optimistic_cleanup_acquire_and_finish() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(4);
+
+        for (idx, from) in [
+            OptimisticWritePhase::Writing,
+            OptimisticWritePhase::PendingSubmit,
+            OptimisticWritePhase::Submitting,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let o = op(&path, "comp", idx as u8);
+            store
+                .write_test_optimistic_marker(&o, TOKEN, &item("k"))
+                .await
+                .unwrap();
+            if from != OptimisticWritePhase::Writing {
+                assert!(
+                    store
+                        .transition_optimistic_marker(&o, OptimisticWritePhase::Writing, from)
+                        .await
+                        .unwrap()
+                );
+            }
+            assert!(store.begin_optimistic_cleanup(&o).await.unwrap());
+            assert_eq!(
+                find_marker(&store, &o).await.unwrap().phase,
+                OptimisticWritePhase::Cleaning
+            );
+            // Resumable: re-acquiring an already-Cleaning marker succeeds.
+            assert!(store.begin_optimistic_cleanup(&o).await.unwrap());
+
+            store.finish_optimistic_cleanup(&o).await.unwrap();
+            assert!(find_marker(&store, &o).await.is_none());
+            // Both are idempotent once the marker is gone.
+            assert!(!store.begin_optimistic_cleanup(&o).await.unwrap());
+            store.finish_optimistic_cleanup(&o).await.unwrap();
+        }
+    }
+
+    /// `finish_optimistic_cleanup` must not unmark an operation cleanup
+    /// doesn't own — that would drop the record while the row still exists.
+    #[tokio::test]
+    async fn optimistic_finish_requires_cleaning_phase() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(5);
+        let o = op(&path, "comp", 1);
+        store
+            .write_test_optimistic_marker(&o, TOKEN, &item("k"))
+            .await
+            .unwrap();
+
+        store.finish_optimistic_cleanup(&o).await.unwrap();
+        assert_eq!(
+            find_marker(&store, &o).await.unwrap().phase,
+            OptimisticWritePhase::Writing
+        );
+    }
+
+    /// Commit confirmation requires the exact marker in `Submitting`, and
+    /// clears it. Any other phase (or a stale operation id) aborts.
+    #[tokio::test]
+    async fn optimistic_commit_validation_is_exact() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(6);
+        let o = op(&path, "comp", 1);
+        store
+            .try_claim_optimistic(&o, TOKEN, &item("k"))
+            .await
+            .unwrap();
+
+        // Still `Writing` → refuse.
+        let err = validate_and_clear_for_test(&store, vec![o.clone()]).await;
+        assert!(err.is_err());
+
+        assert!(
+            store
+                .transition_optimistic_marker(
+                    &o,
+                    OptimisticWritePhase::Writing,
+                    OptimisticWritePhase::PendingSubmit,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .transition_optimistic_marker(
+                    &o,
+                    OptimisticWritePhase::PendingSubmit,
+                    OptimisticWritePhase::Submitting,
+                )
+                .await
+                .unwrap()
+        );
+
+        // A stale operation id is not confirmable even though the path is.
+        let err = validate_and_clear_for_test(&store, vec![op(&path, "comp", 9)]).await;
+        assert!(err.is_err());
+
+        validate_and_clear_for_test(&store, vec![o.clone()])
+            .await
+            .unwrap();
+        assert!(find_marker(&store, &o).await.is_none());
+    }
+
+    /// Markers of every phase survive a process restart against the same
+    /// LMDB directory — that's what makes cross-run recovery possible.
+    #[tokio::test]
+    async fn optimistic_markers_survive_reopen() {
+        let dir = TempDir::new().unwrap();
+        let path = target_path(7);
+        let phases = [
+            OptimisticWritePhase::Writing,
+            OptimisticWritePhase::PendingSubmit,
+            OptimisticWritePhase::Submitting,
+            OptimisticWritePhase::Cleaning,
+        ];
+        {
+            let store = open_test_store(dir.path()).await;
+            for (idx, phase) in phases.into_iter().enumerate() {
+                let o = op(&path, "comp", idx as u8);
+                store
+                    .write_test_optimistic_marker(&o, TOKEN, &item("k"))
+                    .await
+                    .unwrap();
+                if phase != OptimisticWritePhase::Writing {
+                    assert!(
+                        store
+                            .transition_optimistic_marker(&o, OptimisticWritePhase::Writing, phase)
+                            .await
+                            .unwrap()
+                    );
+                }
+            }
+        }
+
+        let reopened = open_test_store(dir.path()).await;
+        let listed = reopened.list_optimistic_markers().await.unwrap();
+        assert_eq!(listed.len(), phases.len());
+        for (idx, phase) in phases.into_iter().enumerate() {
+            let o = op(&path, "comp", idx as u8);
+            let marker = find_marker(&reopened, &o).await.unwrap();
+            assert_eq!(marker.phase, phase);
+            assert_eq!(marker.process_token, TOKEN);
+            // Every stranded phase is still cleanable after the restart.
+            assert!(reopened.begin_optimistic_cleanup(&o).await.unwrap());
+            reopened.finish_optimistic_cleanup(&o).await.unwrap();
+        }
+        assert!(reopened.list_optimistic_markers().await.unwrap().is_empty());
+    }
+
+    // --- CAS claims --------------------------------------------------------
+
+    async fn has_cas_claim(store: &AppStore, path: &TargetStatePath) -> bool {
+        let rtxn = store.read_txn().await.unwrap();
+        let key = key_optimistic_cas(path).unwrap();
+        store.db().get(&rtxn, &key).unwrap().is_some()
+    }
+
+    /// Two conditional claimers on one path: exactly one wins, and the
+    /// loser writes nothing.
+    #[tokio::test]
+    async fn cas_elects_exactly_one_winner() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(11);
+        let a = op(&path, "comp_a", 1);
+        let b = op(&path, "comp_b", 2);
+
+        assert_eq!(
+            store
+                .try_claim_optimistic(&a, TOKEN, &item("k"))
+                .await
+                .unwrap(),
+            OptimisticClaimResult::Claimed
+        );
+        assert_eq!(
+            store
+                .try_claim_optimistic(&b, TOKEN, &item("k"))
+                .await
+                .unwrap(),
+            OptimisticClaimResult::Conflict
+        );
+
+        let listed = store.list_optimistic_markers().await.unwrap();
+        assert_eq!(listed.len(), 1, "loser must not create a marker");
+        assert_eq!(listed[0].0, a);
+        assert!(has_cas_claim(&store, &path).await);
+    }
+
+    /// A confirmed owner in `__target` makes logical absence false.
+    #[tokio::test]
+    async fn cas_conflicts_with_confirmed_owner() {
+        let (store, _dir) = make_test_store().await;
+
+        let owned = target_path(12);
+        upsert_owner_for_test(&store, &owned, &comp_path("owner"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .try_claim_optimistic(&op(&owned, "comp", 1), TOKEN, &item("k"))
+                .await
+                .unwrap(),
+            OptimisticClaimResult::Conflict
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_independent_paths_both_win() {
+        let (store, _dir) = make_test_store().await;
+        for seed in [20u8, 21] {
+            let path = target_path(seed);
+            assert_eq!(
+                store
+                    .try_claim_optimistic(&op(&path, "comp", 1), TOKEN, &item("k"))
+                    .await
+                    .unwrap(),
+                OptimisticClaimResult::Claimed
+            );
+        }
+        assert_eq!(store.list_optimistic_markers().await.unwrap().len(), 2);
+    }
+
+    /// A winner's failure cleanup releases both records, so a loser that
+    /// retries afterwards can win the same path.
+    #[tokio::test]
+    async fn cas_cleanup_releases_claim_for_retry() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(22);
+        let winner = op(&path, "comp_a", 1);
+        let retry = op(&path, "comp_b", 2);
+
+        store
+            .try_claim_optimistic(&winner, TOKEN, &item("k"))
+            .await
+            .unwrap();
+        assert!(store.begin_optimistic_cleanup(&winner).await.unwrap());
+        store.finish_optimistic_cleanup(&winner).await.unwrap();
+
+        assert!(store.list_optimistic_markers().await.unwrap().is_empty());
+        assert!(!has_cas_claim(&store, &path).await);
+        assert_eq!(
+            store
+                .try_claim_optimistic(&retry, TOKEN, &item("k"))
+                .await
+                .unwrap(),
+            OptimisticClaimResult::Claimed
+        );
+    }
+
+    /// A stale operation may not clear the replacement winner's claim,
+    /// through either cleanup or commit confirmation.
+    #[tokio::test]
+    async fn stale_operation_cannot_clear_replacement_claim() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(23);
+        let stale = op(&path, "comp_a", 1);
+        let replacement = op(&path, "comp_b", 2);
+
+        store
+            .try_claim_optimistic(&stale, TOKEN, &item("k"))
+            .await
+            .unwrap();
+        // The stale operation goes away entirely (crash before cleanup
+        // finished, then a later winner takes the slot).
+        assert!(store.begin_optimistic_cleanup(&stale).await.unwrap());
+        store.finish_optimistic_cleanup(&stale).await.unwrap();
+        store
+            .try_claim_optimistic(&replacement, TOKEN, &item("k"))
+            .await
+            .unwrap();
+
+        // Cleanup of the stale operation is a no-op — no marker to acquire.
+        assert!(!store.begin_optimistic_cleanup(&stale).await.unwrap());
+        store.finish_optimistic_cleanup(&stale).await.unwrap();
+        assert!(has_cas_claim(&store, &path).await);
+
+        // And commit confirmation of the stale operation is refused.
+        let err = validate_and_clear_for_test(&store, vec![stale.clone()]).await;
+        assert!(err.is_err());
+        assert!(has_cas_claim(&store, &path).await);
+        assert_eq!(store.list_optimistic_markers().await.unwrap().len(), 1);
+    }
+
+    /// A successful operation confirmed at commit clears both its marker
+    /// and its exact CAS claim, in one transaction.
+    #[tokio::test]
+    async fn cas_commit_clears_marker_and_claim() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(24);
+        let o = op(&path, "comp", 1);
+        store
+            .try_claim_optimistic(&o, TOKEN, &item("k"))
+            .await
+            .unwrap();
+        for (from, to) in [
+            (
+                OptimisticWritePhase::Writing,
+                OptimisticWritePhase::PendingSubmit,
+            ),
+            (
+                OptimisticWritePhase::PendingSubmit,
+                OptimisticWritePhase::Submitting,
+            ),
+        ] {
+            assert!(
+                store
+                    .transition_optimistic_marker(&o, from, to)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        validate_and_clear_for_test(&store, vec![o.clone()])
+            .await
+            .unwrap();
+
+        assert!(store.list_optimistic_markers().await.unwrap().is_empty());
+        assert!(!has_cas_claim(&store, &path).await);
+    }
+
+    /// The pre-I/O rollback path removes both records for an operation
+    /// whose declaration could not be recorded.
+    #[tokio::test]
+    async fn clear_optimistic_operation_removes_marker_and_claim() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(25);
+        let o = op(&path, "comp", 1);
+        store
+            .try_claim_optimistic(&o, TOKEN, &item("k"))
+            .await
+            .unwrap();
+        store.clear_optimistic_operation(&o).await.unwrap();
+        assert!(store.list_optimistic_markers().await.unwrap().is_empty());
+        assert!(!has_cas_claim(&store, &path).await);
+    }
+
+    /// Scenario 9A: cleanup acquires the exact operation first. Submit can no
+    /// longer enter `Submitting`; after delete-before-unmark, a later writer
+    /// can claim and reinsert the row.
+    #[tokio::test]
+    async fn optimistic_race_cleanup_wins_before_submit() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(26);
+        let first = op(&path, "comp_a", 1);
+        let retry = op(&path, "comp_b", 2);
+        assert_eq!(
+            store
+                .try_claim_optimistic(&first, TOKEN, &item("k"))
+                .await
+                .unwrap(),
+            OptimisticClaimResult::Claimed
+        );
+        assert!(
+            store
+                .transition_optimistic_marker(
+                    &first,
+                    OptimisticWritePhase::Writing,
+                    OptimisticWritePhase::PendingSubmit,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(store.begin_optimistic_cleanup(&first).await.unwrap());
+        assert!(
+            !store
+                .transition_optimistic_marker(
+                    &first,
+                    OptimisticWritePhase::PendingSubmit,
+                    OptimisticWritePhase::Submitting,
+                )
+                .await
+                .unwrap()
+        );
+        store.finish_optimistic_cleanup(&first).await.unwrap();
+        assert_eq!(
+            store
+                .try_claim_optimistic(&retry, TOKEN, &item("k"))
+                .await
+                .unwrap(),
+            OptimisticClaimResult::Claimed
+        );
+    }
+
+    /// Scenario 9B: submit reaches `Submitting` and commits first. Exact
+    /// commit clearing removes both records, so stale cleanup is a no-op.
+    #[tokio::test]
+    async fn optimistic_race_submit_wins_before_cleanup() {
+        let (store, _dir) = make_test_store().await;
+        let path = target_path(27);
+        let operation = op(&path, "comp", 1);
+        store
+            .try_claim_optimistic(&operation, TOKEN, &item("k"))
+            .await
+            .unwrap();
+        for (from, to) in [
+            (
+                OptimisticWritePhase::Writing,
+                OptimisticWritePhase::PendingSubmit,
+            ),
+            (
+                OptimisticWritePhase::PendingSubmit,
+                OptimisticWritePhase::Submitting,
+            ),
+        ] {
+            assert!(
+                store
+                    .transition_optimistic_marker(&operation, from, to)
+                    .await
+                    .unwrap()
+            );
+        }
+        validate_and_clear_for_test(&store, vec![operation.clone()])
+            .await
+            .unwrap();
+
+        assert!(!store.begin_optimistic_cleanup(&operation).await.unwrap());
+        assert!(!has_cas_claim(&store, &path).await);
     }
 }
 
