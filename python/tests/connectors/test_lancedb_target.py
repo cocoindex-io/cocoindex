@@ -186,7 +186,7 @@ if HAS_LANCEDB:
         conn: lancedb.LanceAsyncConnection, table_name: str
     ) -> int:
         table = await conn.open_table(table_name)
-        return cast(int, await table.version())
+        return await table.version()
 
     def _make_env(
         conn: lancedb.LanceAsyncConnection, env_name: str

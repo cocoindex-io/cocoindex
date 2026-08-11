@@ -1023,8 +1023,10 @@ async def test_batching_shares_batcher_while_in_flight() -> None:
 
     # All three in-flight calls share one batcher slot, refcounted to 3.
     await wait_for_condition(
-        lambda: len(tracked_double._batchers) == 1
-        and next(iter(tracked_double._batchers.values())).in_flight == 3
+        lambda: (
+            len(tracked_double._batchers) == 1
+            and next(iter(tracked_double._batchers.values())).in_flight == 3
+        )
     )
 
     tracker.input_events[1].set()
