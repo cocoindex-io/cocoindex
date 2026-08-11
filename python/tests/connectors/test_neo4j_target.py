@@ -377,7 +377,7 @@ def neo4j_uri_auth() -> Iterator[tuple[str, tuple[str, str]]]:
     if not (HAS_NEO4J and _HAS_NEO4J_SERVER):
         pytest.skip("NEO4J_TEST_SERVER is not set")
 
-    from testcontainers.neo4j import Neo4jContainer  # type: ignore[import-untyped]
+    from testcontainers.community.neo4j import Neo4jContainer  # type: ignore[import-untyped]
 
     container = Neo4jContainer(
         "neo4j:5.26-community", username="neo4j", password="cocoindex"

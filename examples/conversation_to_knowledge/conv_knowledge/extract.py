@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 
 import cocoindex as coco
 import instructor
@@ -74,7 +75,10 @@ async def extract_metadata(
     reformatted_transcript: str, transcript: SessionTranscript
 ) -> SessionMetadata:
     """Give LLM the reformatted transcript + all YouTube metadata to identify speakers."""
-    client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
+    client = cast(
+        instructor.AsyncInstructor,
+        instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON),
+    )
     result = await client.chat.completions.create(
         model=coco.use_context(LLM_MODEL),
         response_model=SessionMetadata,
@@ -154,7 +158,10 @@ async def extract_statements(
     reformatted_transcript: str,
 ) -> StatementExtraction:
     """Extract statements and involved entities from the reformatted transcript."""
-    client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
+    client = cast(
+        instructor.AsyncInstructor,
+        instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON),
+    )
     result = await client.chat.completions.create(
         model=coco.use_context(LLM_MODEL),
         response_model=StatementExtraction,

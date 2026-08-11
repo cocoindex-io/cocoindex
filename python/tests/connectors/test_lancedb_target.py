@@ -186,7 +186,10 @@ if HAS_LANCEDB:
         conn: lancedb.LanceAsyncConnection, table_name: str
     ) -> int:
         table = await conn.open_table(table_name)
-        return cast(int, await table.version())
+        # Annotate rather than `cast`: lancedb types this as `int`, but the type
+        # check also runs without lancedb installed, where it is `Any`.
+        version: int = await table.version()
+        return version
 
     def _make_env(
         conn: lancedb.LanceAsyncConnection, env_name: str
