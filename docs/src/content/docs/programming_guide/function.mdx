@@ -385,5 +385,7 @@ embeddings = await asyncio.gather(
 ```
 
 :::note
-By default, `coco.GPU` runs functions in-process, so no pickling is required. When using subprocess mode (`COCOINDEX_RUN_GPU_IN_SUBPROCESS=1`), the function and all its arguments must be picklable since they are serialized for subprocess execution.
+By default, `coco.GPU` executes functions in-process without argument serialization. When subprocess mode is enabled (`COCOINDEX_RUN_GPU_IN_SUBPROCESS=1`), function arguments and return values must be picklable.
+
+On Apple Silicon (macOS), `SentenceTransformerEmbedder` overrides this default to run MPS workloads in a supervised persistent worker process, mitigating PyTorch Metal allocator memory growth. CocoIndex enforces an internal five-minute execution deadline and replaces an unexpectedly crashed worker with at most one replay of the interrupted embedding call. You can opt out by setting `COCOINDEX_RUN_GPU_IN_SUBPROCESS=0`; opting out also disables these worker-lifecycle guarantees. Custom functions using `runner=coco.GPU` directly remain in-process by default and do not use the MPS supervisor.
 :::
