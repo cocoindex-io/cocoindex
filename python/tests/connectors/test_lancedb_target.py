@@ -366,6 +366,67 @@ async def test_add_column_keeps_old_rows_before_backfill(lancedb_dir: Path) -> N
     assert "extra" in await _read_column_names(conn, table_name)
 
 
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_schema_evolution_under_full_reprocess(lancedb_dir: Path) -> None:
+    """A schema change must still be applied when the same update runs with
+    `full_reprocess=True`.
+
+    `full_reprocess` marks the table's previous state as maybe-missing, which
+    turns the table's own action into an "upsert" (`create_table` with
+    `if_not_exists`). That must not swallow the column reconcile: the new
+    tracking record is committed either way, so a skipped `add_columns` leaves
+    the table permanently on the old column set — later plain updates see
+    prev == desired and never catch up.
+    """
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_full_reprocess_add_column"
+    source_rows: list[Any] = []
+    row_type: type[Any] = SimpleRow
+
+    async def declare_table_and_rows() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            lancedb.declare_table_target,
+            LANCEDB_DB,
+            table_name,
+            await lancedb.TableSchema.from_class(row_type, primary_key=["id"]),
+        )
+        for row in source_rows:
+            table.declare_row(row=row)
+
+    env = _make_env(conn, "test_schema_evolution_under_full_reprocess")
+    app = coco.App(
+        coco.AppConfig(name="test_lancedb_full_reprocess", environment=env),
+        declare_table_and_rows,
+    )
+
+    source_rows = [
+        SimpleRow(id="1", name="Alice"),
+        SimpleRow(id="2", name="Bob"),
+    ]
+    await app.update()
+    assert await _read_column_names(conn, table_name) == ["id", "name"]
+
+    row_type = ExtendedRow
+    source_rows = [
+        ExtendedRow(id="1", name="Alice", extra="vip"),
+        ExtendedRow(id="2", name="Bob", extra="std"),
+    ]
+    await app.update(full_reprocess=True)
+
+    assert await _read_column_names(conn, table_name) == ["id", "name", "extra"]
+    assert sorted(await _read_rows(conn, table_name), key=lambda row: row["id"]) == [
+        {"id": "1", "name": "Alice", "extra": "vip"},
+        {"id": "2", "name": "Bob", "extra": "std"},
+    ]
+
+    # The drift is gone: a follow-up plain update is a no-op.
+    version = await _read_table_version(conn, table_name)
+    await app.update()
+    assert await _read_table_version(conn, table_name) == version
+
+
 @requires_lancedb
 def test_row_reconcile_tracks_only_nulls_from_new_nullable_columns() -> None:
     table_schema = lancedb.TableSchema(

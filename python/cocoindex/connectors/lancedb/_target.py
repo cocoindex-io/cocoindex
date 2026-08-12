@@ -1020,8 +1020,22 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     continue
 
                 spec = action.spec
+
+                if action.main_action in ("insert", "upsert", "replace"):
+                    await self._create_table(
+                        conn,
+                        key.table_name,
+                        spec.table_schema,
+                        if_not_exists=(action.main_action == "upsert"),
+                    )
+
+                # "insert" / "replace" just built the table from the desired
+                # schema, so its columns already match. "upsert" may have
+                # landed on a pre-existing table carrying an older column set
+                # (created above with `if_not_exists`), so fall through and
+                # reconcile non-PK columns in place.
                 null_backfilled_columns: frozenset[str] = frozenset()
-                if action.main_action is None and action.column_actions:
+                if action.main_action in (None, "upsert") and action.column_actions:
                     null_backfilled_columns = await self._apply_column_actions(
                         conn,
                         key.table_name,
@@ -1036,14 +1050,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     null_backfilled_columns=null_backfilled_columns,
                 )
                 outputs[i] = coco.ChildTargetDef(handler=handler)
-
-                if action.main_action in ("insert", "upsert", "replace"):
-                    await self._create_table(
-                        conn,
-                        key.table_name,
-                        spec.table_schema,
-                        if_not_exists=(action.main_action == "upsert"),
-                    )
         return outputs
 
     async def _drop_table(
