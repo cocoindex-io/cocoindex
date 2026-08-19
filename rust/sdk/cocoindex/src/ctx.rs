@@ -536,6 +536,26 @@ impl Ctx {
             .map_err(Error::from)
     }
 
+    pub(crate) async fn declare_target_state_optimistic(
+        &self,
+        provider: TargetStateProvider<RustProfile>,
+        key: StableKey,
+        value: Value,
+    ) -> Result<bool> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "target states require an active pipeline context",
+            ));
+        };
+        let fn_ctx = self
+            .fn_ctx
+            .clone()
+            .unwrap_or_else(|| Arc::new(FnCallContext::default()));
+        execution::declare_target_state_optimistic(comp_ctx, &fn_ctx, provider, key, value)
+            .await
+            .map_err(Error::from)
+    }
+
     pub(crate) fn declare_target_state_with_child(
         &self,
         provider: TargetStateProvider<RustProfile>,

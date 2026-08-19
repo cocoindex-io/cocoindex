@@ -74,7 +74,8 @@ use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::prelude::*;
 use crate::state::db_schema::{
-    ChildExistenceInfo, StablePathEntryTrackingInfo, StablePathNodeType, StateKind,
+    ChildExistenceInfo, OptimisticOperationId, StablePathEntryTrackingInfo, StablePathNodeType,
+    StateKind,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
@@ -354,6 +355,13 @@ pub struct CommitPlan {
     /// happen atomically with the other commit writes. `None` skips
     /// existence reconciliation (e.g. `demote_component_only`).
     pub child_path_set: Option<Arc<ChildStablePathSet>>,
+    /// Optimistic-write operations this component is confirming. Each
+    /// must still hold its exact recovery marker in
+    /// [`OptimisticWritePhase::Submitting`](crate::state::db_schema::OptimisticWritePhase::Submitting)
+    /// and its exact CAS claim; both records
+    /// are cleared inside the same commit txn that writes the confirmed
+    /// tracking/ownership, so confirmation and unmarking are atomic.
+    pub optimistic_operations: Vec<OptimisticOperationId>,
 }
 
 /// Callback the AppStore invokes inside its commit txn to run the
@@ -543,6 +551,15 @@ impl AppStore {
                             .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
                             .await?;
                     }
+                    // Confirm optimistic writes last, so the whole commit
+                    // (tracking, ownership, existence) either lands with
+                    // their markers cleared or not at all.
+                    app_store
+                        .validate_and_clear_optimistic_operations_in_txn(
+                            wtxn,
+                            &plan.optimistic_operations,
+                        )
+                        .await?;
                     existence_reconciler(wtxn).await?;
                     Ok(())
                 })

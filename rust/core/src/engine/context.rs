@@ -182,6 +182,21 @@ pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
     pub provider_registry: TargetStateProviderRegistry<Prof>,
 }
 
+/// One optimistic write this component has acquired but not yet confirmed.
+///
+/// Carries only what the lifecycle needs after the eager write: the exact
+/// operation identity (for every marker/claim CAS), and enough to derive an
+/// unconditional delete through the provider's handler during cleanup. The
+/// desired value is *not* duplicated here — the ordinary
+/// [`DeclaredTargetState`] remains its single source of truth, and ordinary
+/// precommit remains the authoritative writer. Whether the operation also
+/// owns a CAS claim lives in its persisted marker, not here.
+pub(crate) struct PendingOptimisticWrite<Prof: EngineProfile> {
+    pub operation: db_schema::OptimisticOperationId,
+    pub item_key: StableKey,
+    pub provider: TargetStateProvider<Prof>,
+}
+
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
@@ -695,6 +710,14 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// accumulated from its own declarations and from child components. Stored
     /// with this component's memo entry and re-checked on the next probe.
     target_provider_deps: Mutex<TargetProviderDeps>,
+    /// Optimistic writes acquired by this component and not yet confirmed.
+    ///
+    /// Deliberately *not* part of `ComponentBuildingState`: `submit()` takes
+    /// the building state by value, while the engine-owned error boundary in
+    /// `Component::execute_once` must still be able to clean these up after a
+    /// submit failure. Cleared by `submit()` once `AppStore::commit` has
+    /// confirmed them.
+    pending_optimistic_writes: Mutex<Vec<PendingOptimisticWrite<Prof>>>,
 
     /// Opaque per-operation context (e.g. ContextProvider on the Python side).
     host_ctx: Arc<Prof::HostCtx>,
@@ -734,6 +757,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
+                pending_optimistic_writes: Mutex::new(Vec::new()),
                 host_ctx,
             }),
             processing_stats,
@@ -864,6 +888,55 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 .providers
                 .clone())
         })
+    }
+
+    /// Record an optimistic write this component has acquired. Called
+    /// before any external I/O, so a failure anywhere afterwards can find
+    /// the operation and clean it up.
+    pub(crate) fn push_pending_optimistic_write(&self, pending: PendingOptimisticWrite<Prof>) {
+        self.inner
+            .pending_optimistic_writes
+            .lock()
+            .unwrap()
+            .push(pending);
+    }
+
+    /// Exact operation identities of every unconfirmed optimistic write,
+    /// for the submit-side phase transitions and the commit plan.
+    pub(crate) fn pending_optimistic_operations(&self) -> Vec<db_schema::OptimisticOperationId> {
+        self.inner
+            .pending_optimistic_writes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|p| p.operation.clone())
+            .collect()
+    }
+
+    /// Take every unconfirmed optimistic write out of the context. Called
+    /// by the cleanup path (which owns them from then on) and by `submit`
+    /// once commit has confirmed them.
+    pub(crate) fn take_pending_optimistic_writes(&self) -> Vec<PendingOptimisticWrite<Prof>> {
+        std::mem::take(&mut *self.inner.pending_optimistic_writes.lock().unwrap())
+    }
+
+    /// Providers currently available to this component. Cross-run optimistic
+    /// recovery is deliberately component-scoped: `execute_once` reads only
+    /// this component's markers and resolves them through this registry before
+    /// memoization or user code runs.
+    pub(crate) fn target_state_providers(
+        &self,
+    ) -> rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>> {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx
+                .state
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|state| state.target_states.provider_registry.providers.clone())
+                .unwrap_or_default(),
+            ComponentProcessingAction::Delete(delete_ctx) => delete_ctx.providers.clone(),
+        }
     }
 
     /// Access the building state under a single lock acquisition.
@@ -1310,6 +1383,7 @@ mod tests {
             user_state_deletes: plan_data.deletes,
             user_state_clear_live: false,
             child_path_set: None,
+            optimistic_operations: Vec::new(),
         };
         let reconciler: ExistenceReconciler =
             Box::new(|_wtxn| -> BoxFuture<'_, crate::prelude::Result<()>> {

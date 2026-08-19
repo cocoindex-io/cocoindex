@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
+    DeclaredTargetState, MemoStatesPayload, PendingOptimisticWrite, TARGET_ID_KEY,
 };
 use crate::engine::context::{
     FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
@@ -14,8 +14,8 @@ use crate::engine::context::{
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
-    ChildInvalidation, TargetActionSinkKeeper, TargetHandler, TargetStateProvider,
-    TargetStateProviderRegistry,
+    ChildInvalidation, TargetActionSinkKeeper, TargetHandler, TargetReconcileOutput,
+    TargetStateProvider, TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::ChildStablePathSet;
@@ -24,8 +24,9 @@ use crate::state::target_state_path::{
     TargetStateProviderGeneration,
 };
 use crate::state_store::{
-    AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
-    PrecommitReadPlan, PrecommitWritePlan, WriteTxn, reconcile_child_existence,
+    AppStore, CommitPlan, ExistenceReconciler, OptimisticClaimResult, OwnerStateForPreempt,
+    PrecommitClaimTargetsPlan, PrecommitReadPlan, PrecommitWritePlan, WriteTxn,
+    reconcile_child_existence,
 };
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -337,6 +338,188 @@ fn target_provider_dep<Prof: EngineProfile>(
         .map(|generation| (provider.target_state_path().clone(), generation.clone()))
 }
 
+/// Everything computed before an optimistic write acquires its durable
+/// records: the full target-state path and the eager sink action derived
+/// from the provider's own handler. Producing the action here (rather than
+/// inside connector code) keeps the eager write on exactly the same
+/// reconcile → sink path that normal submit uses.
+struct OptimisticPreparation<Prof: EngineProfile> {
+    target_state_path: TargetStatePath,
+    eager: Option<TargetReconcileOutput<Prof>>,
+}
+
+/// Prepare the CAS-backed optimistic declaration before anything is
+/// persisted: reject contexts where an optimistic write has no meaning,
+/// then reconcile the desired value against "nothing tracked yet" to obtain
+/// the normal upsert action.
+fn prepare_optimistic_declaration<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    provider: &TargetStateProvider<Prof>,
+    key: &StableKey,
+    value: &Prof::TargetStateValue,
+) -> Result<OptimisticPreparation<Prof>> {
+    if comp_ctx.preview() {
+        client_bail!("optimistic target state declaration is not supported in preview mode");
+    }
+    if comp_ctx.mode() == ComponentProcessingMode::Delete {
+        client_bail!("optimistic target state declaration is not supported while deleting");
+    }
+    let handler = provider.handler().ok_or_else(|| {
+        client_error!("cannot declare an optimistic target state on an unfulfilled provider")
+    })?;
+    // `prev_may_be_missing = true` with no prior records: the sink has
+    // never been told about this item, so the handler produces its
+    // unconditional upsert.
+    let eager = handler.reconcile(key.clone(), Some(value), &[], true)?;
+    Ok(OptimisticPreparation {
+        target_state_path: provider.target_state_path().concat(key),
+        eager,
+    })
+}
+
+/// Post-acquisition half of the optimistic declaration, entered once the
+/// operation's durable claim and recovery marker exist.
+///
+/// Ordering is the contract:
+///
+/// 1. the ordinary declaration and the pending operation are recorded
+///    **before** any external I/O, so a caught eager failure is still
+///    healed by normal submit;
+/// 2. only then does the eager sink action run;
+/// 3. the marker reaches `PendingSubmit` whether that succeeded or failed,
+///    which is what hands authority over to submit.
+///
+/// If the declaration can't be recorded at all, the operation's records are
+/// removed without ever touching the sink.
+async fn finish_optimistic_declaration<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    fn_ctx: &FnCallContext,
+    provider: TargetStateProvider<Prof>,
+    key: StableKey,
+    value: Prof::TargetStateValue,
+    prep: OptimisticPreparation<Prof>,
+    operation: db_schema::OptimisticOperationId,
+) -> Result<()> {
+    let app_store = comp_ctx.app_ctx().app_store();
+    let target_state_path = prep.target_state_path;
+
+    let declared_target_state = DeclaredTargetState {
+        provider: provider.clone(),
+        item_key: key.clone(),
+        value,
+        child_provider: None,
+    };
+    let declared = comp_ctx.update_building_state(|building_state| {
+        match building_state
+            .target_states
+            .declared_target_states
+            .entry(target_state_path.clone())
+        {
+            btree_map::Entry::Occupied(entry) => {
+                client_bail!(
+                    "Target state already declared with key: {:?}",
+                    entry.get().item_key
+                );
+            }
+            btree_map::Entry::Vacant(entry) => {
+                entry.insert(declared_target_state);
+            }
+        }
+        Ok(())
+    });
+    if let Err(e) = declared {
+        // Nothing external has happened yet — drop the records and
+        // surface the original error unchanged.
+        if let Err(cleanup_err) = app_store.clear_optimistic_operation(&operation).await {
+            error!("failed to roll back optimistic write {operation}: {cleanup_err:?}");
+        }
+        return Err(e);
+    }
+
+    comp_ctx.push_pending_optimistic_write(PendingOptimisticWrite {
+        operation: operation.clone(),
+        item_key: key,
+        provider,
+    });
+    fn_ctx.update(|inner| inner.target_state_paths.push(target_state_path));
+
+    let eager_result: Result<()> = match prep.eager {
+        Some(output) => {
+            async {
+                let handlers = output
+                    .sink
+                    .apply(
+                        comp_ctx.app_ctx().env().host_runtime_ctx(),
+                        Arc::clone(comp_ctx.host_ctx()),
+                        vec![output.action],
+                    )
+                    .await?;
+                if handlers.into_iter().flatten().any(|h| h.is_some()) {
+                    client_bail!(
+                        "optimistic target state declaration is leaf-only; this target's \
+                         sink returned a child target handler"
+                    );
+                }
+                Ok(())
+            }
+            .await
+        }
+        None => Ok(()),
+    };
+
+    // Hand authority to normal submit regardless of the eager outcome —
+    // this is what lets a caller catch the sink error and still have the
+    // declaration applied at submit time.
+    if !app_store
+        .transition_optimistic_marker(
+            &operation,
+            db_schema::OptimisticWritePhase::Writing,
+            db_schema::OptimisticWritePhase::PendingSubmit,
+        )
+        .await?
+    {
+        internal_bail!("lost ownership of optimistic write {operation} during its eager write");
+    }
+    eager_result
+}
+
+/// Atomically claim that the target state is logically absent, then
+/// optimistically declare `key`/`value`.
+///
+/// Returns `true` when this caller flipped the CocoIndex-managed logical
+/// state from absent to a pending optimistic write *and* completed the
+/// eager sink call. Returns `false` when a confirmed owner, another CAS
+/// claim, or an already-active optimistic write made absence false at the
+/// AppStore linearization point — in which case nothing at all is recorded:
+/// no marker, no declaration, no memo dependency, no sink action.
+pub async fn declare_target_state_optimistic<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    fn_ctx: &FnCallContext,
+    provider: TargetStateProvider<Prof>,
+    key: StableKey,
+    value: Prof::TargetStateValue,
+) -> Result<bool> {
+    let prep = prepare_optimistic_declaration(comp_ctx, &provider, &key, &value)?;
+    let operation = db_schema::OptimisticOperationId {
+        target_state_path: prep.target_state_path.clone(),
+        writer: comp_ctx.stable_path().clone(),
+        operation_id: uuid::Uuid::new_v4(),
+    };
+    // One LMDB txn is the CAS linearization point; it writes the claim and
+    // the `Writing` marker together, and never spans the sink call below.
+    match comp_ctx
+        .app_ctx()
+        .app_store()
+        .try_claim_optimistic(&operation, comp_ctx.app_ctx().env().process_token(), &key)
+        .await?
+    {
+        OptimisticClaimResult::Conflict => return Ok(false),
+        OptimisticClaimResult::Claimed => {}
+    }
+    finish_optimistic_declaration(comp_ctx, fn_ctx, provider, key, value, prep, operation).await?;
+    Ok(true)
+}
+
 pub fn register_root_target_state_provider<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     name: String,
@@ -437,6 +620,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
         curr_version: Option<u64>,
+        optimistic_operations: Vec<db_schema::OptimisticOperationId>,
     ) -> Result<()> {
         // Consume FnMemoCache once (drains each entry's RwLock to Pending).
         let fn_memo_plan = fn_memos.into_flush_plan()?;
@@ -479,6 +663,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
             user_state_deletes: user_state_plan.deletes,
             user_state_clear_live,
             child_path_set: child_path_set.clone(),
+            optimistic_operations,
         };
 
         // Reconciler closure: walks `child_path_set` against on-disk
@@ -737,6 +922,7 @@ struct PreCommitCaptures<Prof: EngineProfile> {
     stable_path: StablePath,
     processor_name: Option<Arc<str>>,
     contained_target_state_paths: Arc<HashSet<TargetStatePath>>,
+    optimistic_target_state_paths: Arc<HashSet<TargetStatePath>>,
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     declared_target_states:
         Arc<tokio::sync::Mutex<BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>>>,
@@ -762,6 +948,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     full_reprocess: bool,
     processor_name: Option<&str>,
     contained_target_state_paths: &HashSet<TargetStatePath>,
+    optimistic_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     declared_target_states: Arc<
         tokio::sync::Mutex<BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>>,
@@ -1007,6 +1194,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 };
                 let prev_may_be_missing = full_reprocess
                     || schema_version_mismatch
+                    || optimistic_target_state_paths.contains(&target_state_path)
                     || prev_item.states.iter().any(|(_, s)| s.is_deleted());
                 let prev_states = prev_item
                     .states
@@ -1359,6 +1547,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let app_store = comp_ctx.app_ctx().app_store().clone();
     let stable_path = comp_ctx.stable_path().clone();
     let processor_name_owned: Option<Arc<str>> = processor_name.map(Arc::from);
+    let optimistic_operations = comp_ctx.pending_optimistic_operations();
+    let optimistic_target_state_paths: Arc<HashSet<TargetStatePath>> = Arc::new(
+        optimistic_operations
+            .iter()
+            .map(|operation| operation.target_state_path.clone())
+            .collect(),
+    );
 
     if comp_ctx.preview() {
         // Mirror normal precommit Phase 2 planning, but always return
@@ -1384,6 +1579,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 stable_path: stable_path.clone(),
                 processor_name: processor_name_owned.clone(),
                 contained_target_state_paths: Arc::clone(&contained_target_state_paths),
+                optimistic_target_state_paths: Arc::clone(&optimistic_target_state_paths),
                 target_states_providers: target_states_providers.clone(),
                 declared_target_states: Arc::clone(&declared_target_states),
             });
@@ -1448,6 +1644,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             full_reprocess,
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
+                            &c.optimistic_target_state_paths,
                             &c.target_states_providers,
                             Arc::clone(&c.declared_target_states),
                             declared_paths_all,
@@ -1572,6 +1769,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 stable_path: stable_path.clone(),
                 processor_name: processor_name_owned.clone(),
                 contained_target_state_paths: Arc::clone(&contained_target_state_paths),
+                optimistic_target_state_paths: Arc::clone(&optimistic_target_state_paths),
                 target_states_providers: target_states_providers.clone(),
                 declared_target_states: Arc::clone(&declared_target_states),
             });
@@ -1644,6 +1842,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             full_reprocess,
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
+                            &c.optimistic_target_state_paths,
                             &c.target_states_providers,
                             Arc::clone(&c.declared_target_states),
                             declared_paths_all,
@@ -1697,6 +1896,33 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // most once per successful submit is the invariant we preserve.
     for (child_provider, new_gen) in pre_commit_out.deferred_provider_generations {
         child_provider.set_provider_generation(new_gen)?;
+    }
+
+    // Take ownership of this component's optimistic writes for the normal
+    // lifecycle: ordinary precommit above already produced the
+    // authoritative re-apply action for each of them, and the sink apply
+    // below will run it. Losing a marker here means cleanup (or another
+    // writer) took the operation away, so the tracking record precommit
+    // just wrote would no longer describe the sink — abort instead.
+    for operation in &optimistic_operations {
+        match app_store
+            .transition_optimistic_marker(
+                operation,
+                db_schema::OptimisticWritePhase::PendingSubmit,
+                db_schema::OptimisticWritePhase::Submitting,
+            )
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                cleanup_pending_token(comp_ctx, process_token).await;
+                internal_bail!("lost ownership of optimistic write {operation} before submit");
+            }
+            Err(e) => {
+                cleanup_pending_token(comp_ctx, process_token).await;
+                return Err(e);
+            }
+        }
     }
 
     // Sink apply. On failure we clear the stage marker so a
@@ -1765,7 +1991,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // session handoff needed.
     let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
     if let Err(e) = committer
-        .commit(child_path_set, fn_memos, user_states, curr_version)
+        .commit(
+            child_path_set,
+            fn_memos,
+            user_states,
+            curr_version,
+            optimistic_operations,
+        )
         .await
     {
         // The commit txn either committed or rolled back before
@@ -1774,6 +2006,11 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         cleanup_pending_token(comp_ctx, process_token).await;
         return Err(e);
     }
+
+    // Commit confirmed every optimistic operation and cleared its marker
+    // (and CAS claim) in the same txn, so they're no longer this
+    // component's to clean up.
+    comp_ctx.take_pending_optimistic_writes();
 
     // Fulfill child handlers and register their attachment providers.
     // Done after commit so the immutable borrow on providers is released.
@@ -1832,6 +2069,159 @@ async fn cleanup_pending_token<Prof: EngineProfile>(
             }
         }
     }
+}
+
+// --- Optimistic-write cleanup and recovery -------------------------------
+//
+// One implementation serves both the same-run error boundary and the
+// cross-run recovery sweep: acquire the operation by CAS-ing its marker to
+// `Cleaning`, delete the possibly-written row through the provider's own
+// handler, and only then unmark. Deleting before unmarking is what makes a
+// crash mid-cleanup safe — the marker outlives the row it protects.
+
+const OPTIMISTIC_CLEANUP_MAX_ATTEMPTS: u32 = 5;
+
+/// Delete-before-unmark for one operation. Returns `Ok(())` without
+/// touching the sink when cleanup does not own the operation (its marker
+/// is gone, i.e. it was already confirmed or cleaned).
+async fn clean_optimistic_write_once<Prof: EngineProfile>(
+    app_store: &AppStore,
+    host_runtime_ctx: &Prof::HostRuntimeCtx,
+    host_ctx: &Arc<Prof::HostCtx>,
+    operation: &db_schema::OptimisticOperationId,
+    item_key: &StableKey,
+    provider: &TargetStateProvider<Prof>,
+) -> Result<()> {
+    if !app_store.begin_optimistic_cleanup(operation).await? {
+        return Ok(());
+    }
+    let handler = provider.handler().ok_or_else(|| {
+        internal_error!("provider for optimistic write {operation} is not fulfilled")
+    })?;
+    if let Some(output) = handler.reconcile(item_key.clone(), None, &[], true)? {
+        output
+            .sink
+            .apply(host_runtime_ctx, Arc::clone(host_ctx), vec![output.action])
+            .await?;
+    }
+    app_store.finish_optimistic_cleanup(operation).await
+}
+
+/// [`clean_optimistic_write_once`] with bounded exponential backoff. If
+/// every attempt fails the marker stays durably in `Cleaning`, so the next
+/// update or drop resumes it.
+async fn clean_optimistic_write<Prof: EngineProfile>(
+    app_store: &AppStore,
+    host_runtime_ctx: &Prof::HostRuntimeCtx,
+    host_ctx: &Arc<Prof::HostCtx>,
+    operation: &db_schema::OptimisticOperationId,
+    item_key: &StableKey,
+    provider: &TargetStateProvider<Prof>,
+) -> Result<()> {
+    let mut backoff = std::time::Duration::from_millis(20);
+    for attempt in 1..=OPTIMISTIC_CLEANUP_MAX_ATTEMPTS {
+        match clean_optimistic_write_once(
+            app_store,
+            host_runtime_ctx,
+            host_ctx,
+            operation,
+            item_key,
+            provider,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt == OPTIMISTIC_CLEANUP_MAX_ATTEMPTS => return Err(e),
+            Err(e) => {
+                warn!("cleanup of optimistic write {operation} failed: {e:?}; will retry");
+                tokio::time::sleep(backoff).await;
+                backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(2));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Same-run cleanup of every optimistic write this component acquired but
+/// did not get confirmed. Invoked by the engine-owned error boundary in
+/// `Component::execute_once`, which covers processor errors, child-readiness
+/// errors and submit errors alike — and runs *before* the error reaches the
+/// user-facing `on_error` handler.
+///
+/// Failures are logged, not propagated: the caller is already returning an
+/// error, and any operation this can't finish stays durable for the
+/// cross-run sweep.
+pub(crate) async fn cleanup_optimistic_writes<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+) {
+    let pending = comp_ctx.take_pending_optimistic_writes();
+    if pending.is_empty() {
+        return;
+    }
+    let app_store = comp_ctx.app_ctx().app_store().clone();
+    let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx().clone();
+    let host_ctx = Arc::clone(comp_ctx.host_ctx());
+    for entry in pending {
+        if let Err(e) = clean_optimistic_write(
+            &app_store,
+            &host_runtime_ctx,
+            &host_ctx,
+            &entry.operation,
+            &entry.item_key,
+            &entry.provider,
+        )
+        .await
+        {
+            error!(
+                "giving up cleaning optimistic write {}: {e:?}; \
+                 its marker stays durable for the next update",
+                entry.operation
+            );
+        }
+    }
+}
+
+/// Lazily recover only the optimistic writes owned by the component that is
+/// about to run. This executes under the component build semaphore and before
+/// memo lookup, user processing, or delete reconciliation. It therefore
+/// reuses CocoIndex's component-local reconciliation model and never performs
+/// an app-wide startup scan.
+pub(crate) async fn recover_component_optimistic_writes<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+) -> Result<()> {
+    let app_store = comp_ctx.app_ctx().app_store();
+    let markers = app_store
+        .list_optimistic_markers_for_writer(comp_ctx.stable_path())
+        .await?;
+    if markers.is_empty() {
+        return Ok(());
+    }
+
+    let providers = comp_ctx.target_state_providers();
+    for (operation, marker) in markers {
+        let provider = providers
+            .get(operation.target_state_path.provider_path())
+            .filter(|provider| {
+                provider.handler().is_some()
+                    && provider.target_state_path().concat(&marker.item_key)
+                        == operation.target_state_path
+            })
+            .ok_or_else(|| {
+                internal_error!(
+                    "cannot recover optimistic write {operation}: its target provider is unavailable"
+                )
+            })?;
+        clean_optimistic_write(
+            app_store,
+            comp_ctx.app_ctx().env().host_runtime_ctx(),
+            comp_ctx.host_ctx(),
+            &operation,
+            &marker.item_key,
+            provider,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[instrument(name = "post_submit_after_ready", skip_all)]

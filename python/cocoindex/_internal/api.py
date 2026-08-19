@@ -84,6 +84,7 @@ from .target_state import (
     TargetActionSink,
     PendingTargetStateProvider,
     declare_target_state,
+    declare_target_state_optimistic,
     register_root_target_states_provider,
 )
 
@@ -922,6 +923,7 @@ __all__ = [
     "TargetActionSink",
     "PendingTargetStateProvider",
     "declare_target_state",
+    "declare_target_state_optimistic",
     "declare_target_state_with_child",
     "register_root_target_states_provider",
     # .environment

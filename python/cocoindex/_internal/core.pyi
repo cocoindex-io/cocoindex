@@ -438,6 +438,13 @@ def declare_target_state(
     key: Any,
     value: Any,
 ) -> None: ...
+async def declare_target_state_optimistic(
+    comp_ctx: ComponentProcessorContext,
+    fn_ctx: FnCallContext,
+    provider: TargetStateProvider,
+    key: Any,
+    value: Any,
+) -> bool: ...
 def declare_target_state_with_child(
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,

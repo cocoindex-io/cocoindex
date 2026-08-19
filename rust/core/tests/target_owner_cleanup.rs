@@ -94,6 +94,7 @@ async fn commit_owner_deletes(
         user_state_deletes: Vec::new(),
         user_state_clear_live: false,
         child_path_set: None,
+        optimistic_operations: Vec::new(),
     };
     let reconciler: ExistenceReconciler = Box::new(|_wtxn| Box::pin(async { Ok(()) }));
     store

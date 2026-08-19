@@ -148,15 +148,19 @@ impl PyComponentProcessorContext {
     }
 }
 
+/// `Arc`-wrapped so the async target-state bridges can move an owned
+/// handle into a `future_into_py` future; every call site passes
+/// `&fn_ctx.0`, which deref-coerces to `&FnCallContext` as before.
 #[pyclass(name = "FnCallContext")]
-pub struct PyFnCallContext(pub FnCallContext);
+#[derive(Clone)]
+pub struct PyFnCallContext(pub Arc<FnCallContext>);
 
 #[pymethods]
 impl PyFnCallContext {
     #[new]
     #[pyo3(signature = (*, propagate_children_fn_logic=true))]
     pub fn new(propagate_children_fn_logic: bool) -> Self {
-        Self(FnCallContext::new(propagate_children_fn_logic))
+        Self(Arc::new(FnCallContext::new(propagate_children_fn_logic)))
     }
 
     pub fn join_child(&self, child_fn_ctx: &PyFnCallContext) -> PyResult<()> {
