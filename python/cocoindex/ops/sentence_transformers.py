@@ -8,6 +8,9 @@ from __future__ import annotations
 
 __all__ = ["SentenceTransformerEmbedder"]
 
+import gc as _gc
+import os as _os
+import sys as _sys
 import threading as _threading
 import typing as _typing
 from typing import Any as _Any
@@ -16,6 +19,7 @@ import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
 import cocoindex as coco
+from cocoindex._internal import runner as _runner
 from cocoindex.resources import schema as _schema
 
 if _typing.TYPE_CHECKING:
@@ -32,12 +36,62 @@ def _is_oom_error(error: BaseException) -> bool:
     return isinstance(error, MemoryError) or "out of memory" in str(error).lower()
 
 
-def _empty_accelerator_cache() -> None:
-    """Best-effort release of cached accelerator memory after an OOM.
+def _is_mps_device(device: str | None) -> bool:
+    return device == "mps" or (device is None and _sys.platform == "darwin")
 
-    Without this, allocator fragmentation often makes the retried halves OOM
-    as well. Never raises — failure to release just means the retry is less
-    likely to succeed.
+
+def _clear_mps_allocator_cache() -> None:
+    """Reclaim unused PyTorch MPS memory when driver allocations reach low watermark.
+
+    Performs garbage collection and flushes the MPS cache only under memory pressure
+    to avoid per-batch synchronization overhead on Apple Silicon.
+    """
+
+    try:
+        import torch
+
+        if not torch.backends.mps.is_available():
+            return
+        try:
+            configured_ratios = (
+                float(
+                    _os.environ.get(
+                        "PYTORCH_MPS_LOW_WATERMARK_RATIO",
+                        _runner._MPS_LOW_WATERMARK_RATIO,
+                    )
+                ),
+                float(
+                    _os.environ.get(
+                        "PYTORCH_MPS_HIGH_WATERMARK_RATIO",
+                        _runner._MPS_HIGH_WATERMARK_RATIO,
+                    )
+                ),
+            )
+            positive_ratios = [ratio for ratio in configured_ratios if ratio > 0]
+            if not positive_ratios:
+                return
+            cleanup_ratio = min(positive_ratios)
+            if (
+                torch.mps.driver_allocated_memory()
+                < torch.mps.recommended_max_memory() * cleanup_ratio
+            ):
+                return
+        except Exception:
+            # Fall back to cleanup if the PyTorch version lacks memory telemetry APIs.
+            pass
+        torch.mps.synchronize()
+        _gc.collect()
+        torch.mps.empty_cache()
+        torch.mps.synchronize()
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
+def _empty_accelerator_cache() -> None:
+    """Flush GPU/MPS memory caches prior to retrying a failed batch after an OOM.
+
+    Releases cached allocations to reduce fragmentation before batch splitting.
+    Swallows exceptions defensively to preserve the original exception context.
     """
     try:
         import torch
@@ -45,6 +99,7 @@ def _empty_accelerator_cache() -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         elif torch.backends.mps.is_available():
+            # Clear MPS cache before splitting and retrying the batch.
             torch.mps.empty_cache()
     except Exception:  # pragma: no cover - defensive
         pass
@@ -59,7 +114,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
     Args:
         model_name_or_path: Name of a pre-trained model from HuggingFace or path
             to a local model directory.
-        device: Device to load the model on (e.g., ``"cuda"``, ``"cpu"``).
+        device: Device to load the model on (e.g., ``"cuda"``, ``"mps"``, ``"cpu"``).
             Defaults to ``None`` to let SentenceTransformer auto-detect.
         trust_remote_code: Whether to allow loading models with custom code
             from the HuggingFace Hub (e.g., Jina models with custom pooling).
@@ -90,6 +145,8 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         self._trust_remote_code = trust_remote_code
         self._model: SentenceTransformer | None = None
         self._lock = _threading.Lock()
+        if self._uses_mps():
+            _runner._configure_mps_allocator_defaults()
 
     def __getstate__(self) -> dict[str, _Any]:
         return {
@@ -110,6 +167,8 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         if self._model is None:
             with self._lock:
                 if self._model is None:
+                    if self._uses_mps():
+                        _runner._configure_mps_allocator_defaults()
                     from sentence_transformers import SentenceTransformer
 
                     self._model = SentenceTransformer(
@@ -119,28 +178,15 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                     )
         return self._model
 
-    @coco.fn.as_async(batching=True, runner=coco.GPU, max_batch_size=64)
-    def _embed(
+    def _uses_mps(self) -> bool:
+        return _is_mps_device(self._device)
+
+    def _encode(
         self,
         texts: list[str],
         prompt_name: str | None = None,
         normalize_embeddings: bool = True,
     ) -> list[_NDArray[_np.float32]]:
-        """Batched embedding. Concurrent single-text calls into :meth:`embed`
-        are grouped by the ``@coco.fn.as_async(batching=True)`` decorator;
-        this method is the per-batch body invoked by the decorator.
-
-        Args:
-            texts: Batch of text strings to embed (handled by the engine).
-            prompt_name: Prompt name for instruction following models that use
-                different prompts for queries vs documents.
-            normalize_embeddings: Whether to normalize embeddings to unit length.
-                Defaults to ``True`` for compatibility with cosine similarity.
-
-        Note:
-            Pass ``prompt_name`` and ``normalize_embeddings`` consistently across
-            calls — mixing explicit values with defaults creates separate batchers.
-        """
         model = self._get_model()
         try:
             embeddings: _NDArray[_np.float32] = model.encode(
@@ -151,18 +197,38 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                 show_progress_bar=False,
             )  # type: ignore[assignment]
         except Exception as e:
-            # Out-of-memory scales with batch size × padded sequence length,
-            # so smaller batches may fit where this one didn't: ask the
-            # engine to halve and retry. Unlike remote providers, local
-            # failures are transparent — OOM is the one composition-dependent
-            # class, so everything else (config/model errors) propagates
-            # as-is. A single item that doesn't fit fails on its own: at
-            # size 1 the engine unwraps the signal and raises the OOM error.
+            # Memory consumption scales with batch_size * padded_seq_len.
+            # Signal the engine to split the batch and retry on OOM errors.
             if _is_oom_error(e):
                 _empty_accelerator_cache()
                 raise coco.RetryWithSmallerBatch() from e
             raise
         return list(embeddings)
+
+    @coco.fn.as_async(batching=True, runner=coco.GPU, max_batch_size=64)
+    def _embed(
+        self,
+        texts: list[str],
+        prompt_name: str | None = None,
+        normalize_embeddings: bool = True,
+    ) -> list[_NDArray[_np.float32]]:
+        """Execute non-MPS embedding batches on the default GPU runner."""
+
+        return self._encode(texts, prompt_name, normalize_embeddings)
+
+    @coco.fn.as_async(batching=True, runner=_runner._MPS_GPU, max_batch_size=64)
+    def _embed_mps(
+        self,
+        texts: list[str],
+        prompt_name: str | None = None,
+        normalize_embeddings: bool = True,
+    ) -> list[_NDArray[_np.float32]]:
+        """Execute MPS embedding batches inside an isolated worker with memory pressure checks."""
+
+        try:
+            return self._encode(texts, prompt_name, normalize_embeddings)
+        finally:
+            _clear_mps_allocator_cache()
 
     @coco.fn(memo=True, version=1, logic_tracking="self")
     async def embed(
@@ -185,7 +251,8 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         Returns:
             Numpy array of shape ``(dim,)`` containing the embedding vector.
         """
-        result: _NDArray[_np.float32] = await self._embed(  # type: ignore[arg-type]
+        scheduled_embed = self._embed_mps if self._uses_mps() else self._embed
+        result: _NDArray[_np.float32] = await scheduled_embed(  # type: ignore[arg-type]
             text, prompt_name, normalize_embeddings
         )
         return result
@@ -202,8 +269,31 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         dim = await self.dimension()
         return _schema.VectorSchema(dtype=_np.dtype(_np.float32), size=dim)
 
-    @coco.fn.as_async(runner=coco.GPU, memo=True)
-    def dimension(self) -> int:
+    @coco.fn.as_async(runner=coco.GPU)
+    def _dimension(self) -> int:
+        model = self._get_model()
+        dim = model.get_sentence_embedding_dimension()
+        if dim is None:
+            raise RuntimeError(
+                f"Embedding dimension is unknown for model {self._model_name_or_path}."
+            )
+        return int(dim)
+
+    @coco.fn.as_async(runner=_runner._MPS_GPU)
+    def _dimension_mps(self) -> int:
+        try:
+            model = self._get_model()
+            dim = model.get_sentence_embedding_dimension()
+            if dim is None:
+                raise RuntimeError(
+                    f"Embedding dimension is unknown for model {self._model_name_or_path}."
+                )
+            return int(dim)
+        finally:
+            _clear_mps_allocator_cache()
+
+    @coco.fn(memo=True)
+    async def dimension(self) -> int:
         """Return the embedding dimension for this model.
 
         Returns:
@@ -212,13 +302,10 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         Raises:
             RuntimeError: If the model's embedding dimension cannot be determined.
         """
-        model = self._get_model()
-        dim = model.get_sentence_embedding_dimension()
-        if dim is None:
-            raise RuntimeError(
-                f"Embedding dimension is unknown for model {self._model_name_or_path}."
-            )
-        return int(dim)
+        scheduled_dimension = (
+            self._dimension_mps if self._uses_mps() else self._dimension
+        )
+        return _typing.cast(int, await scheduled_dimension())
 
     def __coco_memo_key__(self) -> object:
         return (self._model_name_or_path, self._device, self._trust_remote_code)

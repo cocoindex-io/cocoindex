@@ -196,6 +196,25 @@ embedder = SentenceTransformerEmbedder("sentence-transformers/paraphrase-multili
 embedder = SentenceTransformerEmbedder("/path/to/local/model")
 ```
 
+### Memory management on Apple Silicon (MPS)
+
+PyTorch's MPS allocator on Apple Silicon uses unified system memory and can retain allocated Metal buffers longer than expected across embedding runs. To prevent host memory growth during indexing jobs, `SentenceTransformerEmbedder` executes MPS workloads (`device="mps"` or default `device=None` on macOS) inside a persistent worker process by default. The model stays loaded in memory between batches, while Metal allocations remain isolated from the main process.
+
+When allocator memory usage exceeds the low watermark ratio, CocoIndex automatically synchronizes the device and purges unused PyTorch and Python heap caches. If an out-of-memory (OOM) error occurs, the MPS cache is immediately flushed before splitting and retrying the batch.
+
+By default, worker processes configure conservative PyTorch allocator thresholds:
+
+- `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.4`
+- `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.5`
+
+Pre-existing environment variables are respected. If your workload requires custom memory thresholds, set these variables before initializing GPU operations.
+
+To run MPS workloads in the main process instead of a worker process, set:
+
+```bash
+export COCOINDEX_RUN_GPU_IN_SUBPROCESS=0
+```
+
 ### Normalization
 
 By default, embeddings are normalized to unit length (suitable for cosine similarity):
