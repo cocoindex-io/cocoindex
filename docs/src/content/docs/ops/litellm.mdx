@@ -302,3 +302,26 @@ embedder = LiteLLMEmbedder("cohere/embed-english-v3.0", input_type="search_docum
 ```python
 embedder = LiteLLMEmbedder("nebius/BAAI/bge-en-icl")
 ```
+
+### Eden AI
+
+[Eden AI](https://www.edenai.co/) is an EU-based, GDPR-compliant unified API that exposes an OpenAI-compatible endpoint, giving access to embedding models from many providers (OpenAI, Mistral, Cohere, Google, and more) through a single key with EU data residency.
+
+| Model | Model string |
+|-------|-------------|
+| OpenAI Text Embedding 3 Small (via Eden AI) | `openai/openai/text-embedding-3-small` |
+
+**Environment variables:** `EDENAI_API_KEY`
+
+Eden AI is reached through LiteLLM's OpenAI-compatible path: the leading `openai/` selects the OpenAI protocol, and the remainder (`openai/text-embedding-3-small`) is Eden AI's own `provider/model` identifier. Set `api_base` to Eden AI's endpoint and pass your Eden AI key. Browse the full model list in the [Eden AI models catalog](https://www.edenai.co/models).
+
+```python
+import os
+from cocoindex.ops.litellm import LiteLLMEmbedder
+
+embedder = LiteLLMEmbedder(
+    "openai/openai/text-embedding-3-small",
+    api_base="https://api.edenai.run/v3",
+    api_key=os.environ["EDENAI_API_KEY"],
+)
+```
