@@ -89,9 +89,10 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
+from .core import GPUPool
+
 from .runner import (
     GPU,
-    GPUPool,
     GPURunner,
     Runner,
     configure_gpu_pool,

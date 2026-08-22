@@ -139,9 +139,18 @@ impl GPUPool {
             .collect::<Vec<_>>();
             (acquired_gpus, receivers)
         };
-        let gpu_ids = futures::future::try_join_all(receivers).await?;
-        acquired_gpus.extend(gpu_ids);
-        Ok(acquired_gpus)
+        match futures::future::try_join_all(receivers).await {
+            Ok(gpu_ids) => {
+                acquired_gpus.extend(gpu_ids);
+                Ok(acquired_gpus)
+            }
+            Err(err) => {
+                for gpu_id in acquired_gpus {
+                    let _ = self.release(gpu_id, GPUCapacity::MAX);
+                }
+                client_bail!("GPUPool reservation cancelled while waiting: {err}")
+            }
+        }
     }
 
     /// release adds back capacities to GPUs, and processes pending acquisitions afterward.
@@ -646,6 +655,56 @@ mod tests {
         for gpu in result {
             pool.release(gpu, GPUCapacity::MAX)?;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_cancelled_releases_acquired_gpus() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(3).unwrap()));
+        let partially_used_gpu = pool.acquire(GPUCapacity::unchecked(0.6)).await?;
+        assert_eq!(partially_used_gpu, 0);
+
+        let cloned_pool = pool.clone();
+        let task = tokio::spawn(async move {
+            cloned_pool
+                .acquire_full(NonZeroUsize::new(3).expect("3 is not zero"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_secs_f32(0.02)).await;
+        assert!(!task.is_finished());
+
+        // Verify GPU 1 and 2 were acquired and 1 request is waiting in queue.
+        // then cancel
+        {
+            let mut state = pool.state.lock().expect("lock poisoned");
+            assert_eq!(state.capacities[1], GPUCapacity::ZERO);
+            assert_eq!(state.capacities[2], GPUCapacity::ZERO);
+            assert_eq!(state.acquisition_queue.len(), 1);
+            // Cancel the acquisition by dropping the receiver.
+            state.acquisition_queue.clear();
+        }
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("task finished")
+            .expect("task did not panic");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("GPUPool reservation cancelled while waiting")
+        );
+
+        // Verify all partially acquired GPUs (1 and 2) are released back to full capacity.
+        {
+            let state = pool.state.lock().expect("lock poisoned");
+            assert_eq!(state.capacities[1], GPUCapacity::MAX);
+            assert_eq!(state.capacities[2], GPUCapacity::MAX);
+            assert_eq!(state.capacities[0], GPUCapacity::unchecked(0.4));
+        }
+
+        pool.release(partially_used_gpu, GPUCapacity::unchecked(0.6))?;
         Ok(())
     }
 

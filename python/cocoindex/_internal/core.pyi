@@ -710,7 +710,7 @@ class RateLimiter:
 ########################################################
 
 class GPUPool:
-    def __init__(self, num_gpus: int = 1) -> None: ...
+    def __init__(self, num_gpus: int) -> None: ...
     
     @property
     def num_gpus(self) -> int: ...
@@ -729,7 +729,7 @@ class GPUPool:
         """
         ...
 
-    async def release(self, gpu_id: int, fraction: float) -> None:
+    def release(self, gpu_id: int, fraction: float) -> None:
         """
         Releases a fraction of capacity back to the specified GPU ID.
         """
