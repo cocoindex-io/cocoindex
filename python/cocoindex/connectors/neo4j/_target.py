@@ -1015,8 +1015,12 @@ class _TableHandler(
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: the DDL can
+        # land on a table carrying the previous column set, so its columns still
+        # need reconciling. "insert" / "replace" define the table from the
+        # desired schema, so there is nothing left to reconcile.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in column_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -1043,9 +1047,7 @@ class _TableHandler(
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if main_action == "replace":
             child_invalidation = "destructive"
-        elif main_action is None and any(
-            a != "insert" for a in column_actions.values()
-        ):
+        elif any(a != "insert" for a in column_actions.values()):
             # No incremental property DDL emitted in v1; treat column
             # changes as lossy so dependents re-upsert defensively.
             child_invalidation = "lossy"

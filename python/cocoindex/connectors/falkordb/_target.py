@@ -17,7 +17,6 @@ import base64
 import datetime
 import decimal
 import logging
-import re
 import uuid as uuid_mod
 from dataclasses import dataclass
 from typing import (
@@ -34,7 +33,7 @@ from typing import (
 from typing_extensions import TypeVar
 
 try:
-    import falkordb as _falkordb  # type: ignore[import-untyped]
+    import falkordb as _falkordb  # noqa: F401  # type: ignore[import-untyped]
     import falkordb.asyncio as _falkordb_asyncio  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
@@ -965,8 +964,12 @@ class _TableHandler(
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: the DDL can
+        # land on a table carrying the previous column set, so its columns still
+        # need reconciling. "insert" / "replace" define the table from the
+        # desired schema, so there is nothing left to reconcile.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in column_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -994,9 +997,7 @@ class _TableHandler(
         if main_action == "replace":
             # Index is dropped and recreated — all rows lose their tracking.
             child_invalidation = "destructive"
-        elif main_action is None and any(
-            a != "insert" for a in column_actions.values()
-        ):
+        elif any(a != "insert" for a in column_actions.values()):
             # FalkorDB has no per-field DDL so column changes don't actually
             # destroy data, but mark lossy so dependents re-upsert to be safe.
             child_invalidation = "lossy"
