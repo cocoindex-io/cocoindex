@@ -213,7 +213,7 @@ When iterating over keyed items, prefer [`mount_each()`](#mount_each) — it han
 
 ## Memoized components
 
-`memo=True` on a function you **mount** memoizes the whole component. On a cache hit the body doesn't run, and everything the previous run produced is carried over as a unit: the component's declared [target states](./target_state) **and** its child mounts. Cleanup of no-longer-mounted children only applies when the body actually *runs* — a run that no longer mounts a child removes that child's subtree, while a cache hit retains it.
+`memo=True` on a function you **mount** memoizes the whole component — the *processing-component-level* memoization introduced in [Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations). On a cache hit the body doesn't run, and everything the previous run produced is carried over as a unit: the component's declared [target states](./target_state) **and** its child mounts. Cleanup of no-longer-mounted children only applies when the body actually *runs* — a run that no longer mounts a child removes that child's subtree, while a cache hit retains it.
 
 ```python
 @coco.fn(memo=True)
@@ -223,12 +223,12 @@ async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]
 await coco.mount_each(process_file, files.items(), table)
 ```
 
-Two properties make this the cheapest way to skip stable items:
+Skipping a stable item this way costs almost nothing in storage, provided you follow one principle:
 
-- **The cache entry is small.** A mounted component's declared target states live in the component's own tracking (needed for [sync](#how-target-states-sync) regardless), so its entry holds fingerprints plus the return value — `None` for a typical mounted declarer. An *inline* memoized call additionally records one path per declared target state, so a component declaring many states is much cheaper to memoize at the mount than inline — see the cost note in [When to memoize](./function#memoization).
-- **A memoized component may mount children.** The inline-call mount restriction ([`memo=True` constraints](./function#memoization)) is call-level only. A memoized parent that mounts children still invalidates when a child's logic changes — the child's fingerprint is part of the parent's recorded logic deps.
+- **Declare large values as target states; don't return them.** Every memo entry — whether for a memoized component or for a memoized function called directly inside one (the *transform-level* memoization from Core Concepts) — must store its return value in order to serve a cache hit. A component that outputs via [`declare_row(...)`](./target_state) and returns `None` keeps its entry tiny: the declared values live in the component's own tracking, which [sync](#how-target-states-sync) needs regardless. A memoized function that *returns* a large value (an embedding vector, a parsed document) stores that value in every entry. A secondary difference: a directly-called memoized function's entry also records a reference to each target state it declared, so a hit can keep those states alive — a per-state cost that mounting avoids. See the cost note in [When to memoize](./function#when-to-memoize).
+- **A memoized component may mount children.** A memoized function *called directly* cannot mount — mounting is a side effect its cache can't replay ([`memo=True` constraints](./function#memoization)) — but the restriction doesn't apply once the function is mounted as a component. A memoized parent that mounts children still invalidates when a child's logic changes — the child's fingerprint is part of the parent's recorded logic deps.
 
-Where to put `memo=True` follows the [placement rule in When to memoize](./function#memoization): the per-file pipeline above composes a file-level component memo with a chunk-level embedding memo, while a *memoized* component keyed by a content hash of its input makes any inner memo over the same content mostly redundant.
+Where to put `memo=True` follows the placement rule in [When to memoize](./function#when-to-memoize) — *memoize a boundary only if its key can hit while every enclosing memo boundary misses*: the per-file pipeline above composes a file-level component memo with a chunk-level embedding memo, while a *memoized* component whose path is keyed by a content hash of its input makes any inner memo over the same content mostly redundant.
 
 ## How target states sync
 

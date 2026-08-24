@@ -69,8 +69,8 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 :::caution[`memo=True` constraints]
 A memoized function:
 
-- **Must run inside a [processing component](./processing_component)** for memoization to take effect. Outside a component context (e.g., called directly from a script or test), the function still executes correctly but the cache is bypassed silently — every call runs the body.
-- **Cannot mount child components when called inline** (`coco.mount(...)` / `coco.use_mount(...)` inside the body of an inline memoized *call*). Mounting is a side effect an inline call's cache cannot replay; CocoIndex raises an error if an inline memoized call attempts it. The restriction is call-level, not function-level — the fix, which the error message itself suggests, is to **mount the memoized function as a component**: a [memoized component](./processing_component#memoized-components) may mount children freely (a cache hit carries its child mounts over along with its target states). Alternatively, drop `memo=True`, or restructure so the mount happens in a non-memoized caller.
+- **Must run inside a [processing component](./processing_component)** for memoization to take effect. Outside a component context (e.g., invoked from a script or a test), the function still executes correctly but the cache is bypassed silently — every call runs the body.
+- **Cannot mount child components when called directly** (`coco.mount(...)` / `coco.use_mount(...)` inside the body of a memoized function invoked as a plain call). Mounting is a side effect the call's cache cannot replay; CocoIndex raises an error if a directly-called memoized function attempts it. The restriction applies to the call, not the function — the fix, which the error message itself suggests, is to **mount the memoized function as a component**: a [memoized component](./processing_component#memoized-components) may mount children freely (a cache hit carries its child mounts over along with its target states). Alternatively, drop `memo=True`, or restructure so the mount happens in a non-memoized caller.
 :::
 
 #### Cache-hit semantics
@@ -102,9 +102,9 @@ Propagation (logic, `deps`, context) is recorded during the **previous** invocat
 If a memoized function raises, no cache entry is written for that call. The next invocation with the same inputs sees a cache miss and re-executes the body — exceptions never poison the cache, so you don't need to wrap calls defensively.
 :::
 
-:::tip[When to memoize]
+#### When to memoize
 
-**Cost:** A memoized call's cache entry must store everything needed to serve a hit — the return value, plus the *path* of every [target state](./target_state) it declared during the call (the state values themselves stay in the enclosing component's tracking; the recorded paths are what keep those states alive on a hit). Large return values, or a call that declares many target states, mean large entries. (A function *mounted* as a component avoids the per-state paths entirely: a [memoized component](./processing_component#memoized-components)'s entry holds fingerprints plus its return value — `None` for a typical mounted declarer.)
+**Cost:** A directly-called memoized function's cache entry must store everything needed to serve a hit — the return value, plus the *path* of every [target state](./target_state) it declared during the call (the state values themselves stay in the enclosing component's tracking; the recorded paths are what keep those states alive on a hit). Large return values, or a call that declares many target states, mean large entries. (A function *mounted* as a component avoids the per-state paths entirely: a [memoized component](./processing_component#memoized-components)'s entry holds fingerprints plus its return value — `None` for a typical mounted declarer.)
 
 **Benefit:** Memoization saves more when:
 
@@ -120,8 +120,6 @@ If a memoized function raises, no cache entry is written for that call. The next
 - ✅ **Processing component for files that are mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
 - 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
 - ❌ **Chunk embedding inside a *memoized* component keyed by the chunk's content hash** — usually redundant by the placement rule: the component memo already commits to the text, so the inner memo serves only reruns caused by the component's own code or `version` changes — at the cost of storing every vector twice.
-
-:::
 
 ### Controlling change detection scope
 
