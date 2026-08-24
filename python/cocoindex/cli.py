@@ -1012,7 +1012,12 @@ async def _stop_all_environments() -> None:
     is_flag=True,
     show_default=True,
     default=False,
-    help="Reprocess everything and invalidate existing caches.",
+    help=(
+        "Reprocess everything, bypassing all memoization caches: every "
+        "component and memoized function executes again (external calls such "
+        "as embeddings included). To force just one function's work to run "
+        "again, bump its version= instead."
+    ),
 )
 @click.option(
     "--live",

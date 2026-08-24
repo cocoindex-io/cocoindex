@@ -70,7 +70,7 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 A memoized function:
 
 - **Must run inside a [processing component](./processing_component)** for memoization to take effect. Outside a component context (e.g., called directly from a script or test), the function still executes correctly but the cache is bypassed silently — every call runs the body.
-- **Cannot mount child components** (`coco.mount(...)` / `coco.use_mount(...)` inside the body). Mounting is a side effect the cache cannot replay; CocoIndex raises an error if a memoized function attempts it. Either drop `memo=True`, or restructure so the mount happens in a non-memoized caller.
+- **Cannot mount child components when called inline** (`coco.mount(...)` / `coco.use_mount(...)` inside the body of an inline memoized *call*). Mounting is a side effect an inline call's cache cannot replay; CocoIndex raises an error if an inline memoized call attempts it. The restriction is call-level, not function-level — the fix, which the error message itself suggests, is to **mount the memoized function as a component**: a [memoized component](./processing_component#memoized-components) may mount children freely (a cache hit carries its child mounts over along with its target states). Alternatively, drop `memo=True`, or restructure so the mount happens in a non-memoized caller.
 :::
 
 #### Cache-hit semantics
@@ -104,19 +104,22 @@ If a memoized function raises, no cache entry is written for that call. The next
 
 :::tip[When to memoize]
 
-**Cost:** Function return values must be stored for memoization. Larger return values mean higher storage costs.
+**Cost:** A memoized call's cache entry must store everything needed to serve a hit — the return value, plus the *path* of every [target state](./target_state) it declared during the call (the state values themselves stay in the enclosing component's tracking; the recorded paths are what keep those states alive on a hit). Large return values, or a call that declares many target states, mean large entries. (A function *mounted* as a component avoids the per-state paths entirely: a [memoized component](./processing_component#memoized-components)'s entry holds fingerprints plus its return value — `None` for a typical mounted declarer.)
 
 **Benefit:** Memoization saves more when:
 
 - The computation is expensive
 - The function's caller is reprocessed frequently (due to logic or input changes)
 
+**Placement — one rule:** memoize at a boundary only if its key can hit while every *enclosing* memo boundary misses. Stacked levels pay off exactly when the outer boundary is keyed more coarsely than the inner one's inputs — a per-file component plus a per-chunk embedding memo composes well, because an edited file re-runs its component while its unchanged chunks still skip embedding. But if an enclosing *memoized* component's identity already commits to this function's inputs — say, the component path is keyed by a hash of the very content the function transforms — the inner memo can never hit on a *content-driven* rerun: the component memo shadows all of those. What remains is insurance against reruns of the enclosing component itself (its code edited, its `version` bumped): each entry permanently stores a value — often one your target also stores — that only such reruns can read. The arithmetic bites at scale: a 1536-dim float32 vector is ~6 KB, so an embedding memo under content-hash-keyed components costs ~600 MB per 100k chunks to insure against those rare reruns — usually a bad trade.
+
 **Examples:**
 
-- ✅ **Embedding functions** — good to memoize. Computation is heavy; return value is fixed-size and not too large.
+- ✅ **Embedding functions** — good to memoize when callers can re-run with the same text (e.g., per-file components re-running on edits). Computation is heavy; return value is fixed-size and not too large.
 - ❌ **Splitting text into fixed-size chunks** — usually not worth memoizing. Computation is light; return value can be large.
 - ✅ **Processing component for files that are mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
 - 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
+- ❌ **Chunk embedding inside a *memoized* component keyed by the chunk's content hash** — usually redundant by the placement rule: the component memo already commits to the text, so the inner memo serves only reruns caused by the component's own code or `version` changes — at the cost of storing every vector twice.
 
 :::
 

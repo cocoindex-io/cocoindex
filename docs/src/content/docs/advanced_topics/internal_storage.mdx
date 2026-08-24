@@ -53,6 +53,8 @@ When a write runs out of map space, CocoIndex doubles the map and retries, repea
 The enlarged size doesn't carry over. The next process opens at the configured `map_size`, raised to at least the space the data file already occupies — the file's high-water mark, not the live data, since LMDB reuses freed pages but never shrinks the file. So a database that outgrew its `map_size` still opens and reads fine, just with no headroom: the next write needing new space enlarges it again. A map that grew to 16 GiB over a 10 GiB file reopens at 10 GiB, not 16, then doubles to 20 GiB on the next write that needs space.
 :::
 
+**What grows the store.** Largest first: memoized calls' cache entries (each stores the return value — large returns like embedding vectors dominate quickly — and, for inline calls, one path per target state declared during the call), target-state tracking (proportional to the number of declared states), and per-component records. If internal state is growing faster than your targets, oversized or misplaced memo entries are a common cause — see the cost note and placement rule in [When to memoize](../programming_guide/function#memoization).
+
 ### Configuration
 
 Via environment variables:

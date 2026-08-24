@@ -188,7 +188,7 @@ cocoindex update [OPTIONS] APP_TARGET
 | `-f, --force` | Skip confirmation prompt. |
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
 | `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). |
-| `--full-reprocess` | Reprocess everything and invalidate existing caches. |
+| `--full-reprocess` | Reprocess everything, bypassing all memoization caches: every component and memoized function executes again (external calls such as embeddings included). To force just one function's work to run again, bump its version= instead. |
 | `-L, --live` | Run in live mode (live components continue processing after initial update). |
 | `--preview` | Compute target actions without applying them. Prints planned actions. |
 | `--help` | Show this message and exit. |

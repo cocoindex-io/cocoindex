@@ -62,7 +62,7 @@ result = app.update_blocking()
 
 - `live` option keeps the app running after the initial scan so live components can continue watching for changes. See [Live Mode](./live_mode).
 - `report_to_stdout` option prints periodic progress updates during execution. Pass `True` for the default refresh interval, or a `timedelta` to set it.
-- `full_reprocess` option reprocesses everything and invalidates existing caches. This forces all components to re-execute and all target states to be re-applied, even if they haven't changed.
+- `full_reprocess` option reprocesses everything, bypassing all memoization: every component **and** every memoized function re-executes, and all target states are re-applied even if unchanged. Mind the cost — this includes every paid external call (embedding and LLM APIs re-run for all content). To force re-running just one function's work, bump its [`version`](./function#version) instead.
 
 When you update an App, CocoIndex:
 

@@ -211,6 +211,25 @@ for f in files:
 When iterating over keyed items, prefer [`mount_each()`](#mount_each) — it handles the loop and subpath creation for you.
 :::
 
+## Memoized components
+
+`memo=True` on a function you **mount** memoizes the whole component. On a cache hit the body doesn't run, and everything the previous run produced is carried over as a unit: the component's declared [target states](./target_state) **and** its child mounts. Cleanup of no-longer-mounted children only applies when the body actually *runs* — a run that no longer mounts a child removes that child's subtree, while a cache hit retains it.
+
+```python
+@coco.fn(memo=True)
+async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]) -> None:
+    ...
+
+await coco.mount_each(process_file, files.items(), table)
+```
+
+Two properties make this the cheapest way to skip stable items:
+
+- **The cache entry is small.** A mounted component's declared target states live in the component's own tracking (needed for [sync](#how-target-states-sync) regardless), so its entry holds fingerprints plus the return value — `None` for a typical mounted declarer. An *inline* memoized call additionally records one path per declared target state, so a component declaring many states is much cheaper to memoize at the mount than inline — see the cost note in [When to memoize](./function#memoization).
+- **A memoized component may mount children.** The inline-call mount restriction ([`memo=True` constraints](./function#memoization)) is call-level only. A memoized parent that mounts children still invalidates when a child's logic changes — the child's fingerprint is part of the parent's recorded logic deps.
+
+Where to put `memo=True` follows the [placement rule in When to memoize](./function#memoization): the per-file pipeline above composes a file-level component memo with a chunk-level embedding memo, while a *memoized* component keyed by a content hash of its input makes any inner memo over the same content mostly redundant.
+
 ## How target states sync
 
 The component path tree determines ownership. When a component is no longer mounted at a path (e.g., a source file is deleted), CocoIndex automatically cleans up its target states — and recursively for all its sub-paths.
