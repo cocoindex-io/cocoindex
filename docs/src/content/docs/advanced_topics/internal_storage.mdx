@@ -1,9 +1,10 @@
 ---
 title: "*Internal storage* configuration"
 description: >
-  CocoIndex persists target states and memo results in LMDB. Tune map_size and
-  max_dbs via environment variables or programmatic settings, and understand
-  virtual address space considerations on 64-bit systems.
+  CocoIndex persists target states and memo results in LMDB. The database grows
+  automatically when a write runs out of space; tune the initial map_size and
+  max_dbs via environment variables or programmatic settings for large-scale
+  deployments.
 ---
 CocoIndex uses an [LMDB](http://www.lmdb.tech/doc/) database to persist its internal state. This database tracks target states and [memoization](../programming_guide/function) results from previous runs, enabling CocoIndex to detect what changed and apply only the necessary updates.
 
@@ -38,13 +39,19 @@ The LMDB database has two tunable settings, grouped under `coco.LmdbSettings` an
 
 | Setting | Default | Env Variable | Description |
 |---------|---------|-------------|-------------|
-| `max_dbs` | `1024` | `COCOINDEX_LMDB_MAX_DBS` | Maximum number of named LMDB databases. Must be &ge; 1. |
-| `map_size` | `4294967296` (4 GiB) | `COCOINDEX_LMDB_MAP_SIZE` | Maximum size of the LMDB memory map in bytes. Must be &gt; 0; rounded up to the nearest multiple of the system page size. |
+| `max_dbs` | `1024` | `COCOINDEX_LMDB_MAX_DBS` | Maximum number of apps (named LMDB sub-databases) sharing one `db_path`. Unlike `map_size`, this **is** a hard cap — creating one app beyond it fails. Applied at open time, so raising it takes effect on the next start. Must be &ge; 1. |
+| `map_size` | `4294967296` (4 GiB) | `COCOINDEX_LMDB_MAP_SIZE` | *Initial* size of the LMDB memory map in bytes. CocoIndex enlarges the map automatically as the state grows, so this is a starting point, not a cap. Must be &gt; 0; rounded up to the nearest multiple of the system page size. |
 
 ### When to adjust
 
-- **Increase `map_size`** if you encounter LMDB "map full" errors. This happens when the accumulated internal state (target states + memoization cache) exceeds 4 GiB. On 64-bit systems, `map_size` is a virtual address space reservation — setting it larger than needed is safe and does not consume physical memory.
-- **Increase `max_dbs`** if you have an unusually large number of apps sharing a single database directory.
+- **`map_size`** — most deployments never need to touch it. The map grows on its own and each step is cheap, so it is worth setting only when that growth actually costs you something: a large state re-climbing from 4 GiB on every restart, or resize pauses you can measure. If you do size it up, every enlargement logs `LMDB map full, auto-resizing to N bytes and retrying` — the largest `N` you see is the number to use. On 64-bit systems, `map_size` is a virtual address space reservation, so setting it larger than needed is safe and consumes neither physical memory nor disk.
+- **`max_dbs`** — raise it if you have an unusually large number of apps sharing a single database directory.
+
+:::note[How the map grows]
+When a write runs out of map space, CocoIndex doubles the map and retries, repeating until the write fits. The remap itself is cheap — no data copy, no file rewrite — but it needs exclusivity: it waits for every LMDB transaction open in the process to finish, and queues new ones behind it. That's imperceptible for ordinary reads and writes, but a long streaming read (`cocoindex show` over a large app) holds its transaction for the whole stream, and the resize waits that long.
+
+The enlarged size doesn't carry over. The next process opens at the configured `map_size`, raised to at least the space the data file already occupies — the file's high-water mark, not the live data, since LMDB reuses freed pages but never shrinks the file. So a database that outgrew its `map_size` still opens and reads fine, just with no headroom: the next write needing new space enlarges it again. A map that grew to 16 GiB over a 10 GiB file reopens at 10 GiB, not 16, then doubles to 20 GiB on the next write that needs space.
+:::
 
 ### Configuration
 

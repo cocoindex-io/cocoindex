@@ -45,7 +45,7 @@ A function's behavior is determined by its **logic** (source code, [`deps`](#dep
 
 CocoIndex detects three kinds of changes:
 
-**Logic changes** — the function's source code, [`deps`](#deps) values, and explicit [`version`](#version) bumps. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain — but only through `@coco.fn` boundaries. If `foo` (memoized) calls `bar` (also `@coco.fn`-decorated, with or without `memo=True`), and `bar`'s logic changes, `foo`'s memo is invalidated. A bare Python helper that isn't decorated is invisible to change detection: editing it will not invalidate `foo`. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones — see [Common patterns](#common-patterns).
+**Logic changes** — a function's *logic* is its own source code (or, when you set [`version`](#version), that integer **instead of** the source), plus any [`deps`](#deps) values. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain, following *runtime invocations* rather than the static call graph: every `@coco.fn` function reached during a memoized call — directly, or through plain undecorated helpers — contributes its logic to that call. So if `foo` (memoized) calls `bar` (also `@coco.fn`-decorated, with or without `memo=True`) and `bar`'s logic changes, `foo`'s memo is invalidated; undecorated helpers in between don't break the chain. What the decorator buys is having a function's *own* logic tracked: an undecorated helper is invisible to change detection, so editing it invalidates nothing. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones — see [Common patterns](#common-patterns) and the [FAQ](../faq#how-does-logic-change-propagation-work). To stop propagation deliberately, set [`logic_tracking`](#logic_tracking) to `"self"` or `None`.
 
 **Input changes** — the function's arguments. Tracked by `@coco.fn`. When you call a function with different arguments, the fingerprints change. Input fingerprints do not propagate transitively.
 
@@ -135,8 +135,10 @@ These parameters control logic fingerprinting. Data fingerprinting (for argument
 The `logic_tracking` parameter controls whether and how logic changes are detected:
 
 - **`"full"` (default):** Track this function's logic AND all transitively called `@coco.fn` functions' logic. A change anywhere in the call chain invalidates dependent memos.
-- **`"self"`:** Track only this function's own logic. Changes in called functions do not propagate through this function.
-- **`None`:** Don't track this function's logic at all. Logic changes to this function are invisible to the change detection system.
+- **`"self"`:** Track only this function's own logic — its fingerprint still propagates to its callers, but the logic of functions it calls does not propagate through it.
+- **`None`:** Don't track logic through this function at all — neither its own logic nor its callees' reaches its callers.
+
+These settings govern nested *function calls*. A [mounted child component](./processing_component) is tracked through the component tree instead, so its logic reaches the parent regardless of the parent's `logic_tracking`.
 
 #### `version`
 
@@ -148,6 +150,10 @@ def process_chunk(chunk: Chunk) -> list[float]:
     # Bumping version invalidates all memoized callers, even if code looks the same
     return embed(chunk.text)
 ```
+
+:::caution[`version` replaces source tracking]
+Setting `version` makes the integer the function's logic **instead of** its source code — the body is no longer fingerprinted. Edits to a versioned function take effect only when you bump the number.
+:::
 
 #### `deps`
 

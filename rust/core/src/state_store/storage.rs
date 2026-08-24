@@ -630,8 +630,7 @@ mod tests {
 
     /// Integration test for `MDB_MAP_FULL` auto-resize on the `Storage::run_txn`
     /// path: one batched write txn is filled past the map limit, the runner
-    /// doubles the map, retries the same body, and commits. Run via
-    /// `dev/test_lmdb_auto_resize.sh`.
+    /// doubles the map, retries the same body, and commits.
     #[tokio::test]
     async fn auto_resizes_on_map_full() {
         let dir = TempDir::new().unwrap();

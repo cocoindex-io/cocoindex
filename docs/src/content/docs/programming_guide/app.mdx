@@ -119,7 +119,7 @@ app = coco.App("MyPipeline", app_main)
 app.update_blocking()  # Uses COCOINDEX_DB for storage
 ```
 
-For details on what the internal database stores and how to tune its LMDB settings (e.g., increasing the maximum database size beyond 4 GiB), see [Internal Storage](../advanced_topics/internal_storage).
+For details on what the internal database stores and how to tune its LMDB settings (the database grows automatically; `map_size` only sets where it starts), see [Internal Storage](../advanced_topics/internal_storage).
 
 ## Lifespan (optional)
 

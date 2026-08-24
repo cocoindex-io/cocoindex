@@ -22,7 +22,11 @@ def get_default_db_path() -> pathlib.Path | None:
 
 @dataclass
 class LmdbSettings:
-    """Settings for the internal LMDB-backed state store."""
+    """Settings for the internal LMDB-backed state store.
+
+    `map_size` is the *initial* size of the LMDB memory map, not a cap: the
+    engine doubles the map and retries whenever a write runs out of space.
+    """
 
     max_dbs: int = 1024
     map_size: int = 0x1_0000_0000  # 4 GiB
