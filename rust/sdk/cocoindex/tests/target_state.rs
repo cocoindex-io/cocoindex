@@ -996,3 +996,140 @@ async fn memo_key_changes_on_lossy_invalidation() {
         memo_keys_across_generation_bump("memo_lossy", Some(TargetChildInvalidation::Lossy)).await;
     assert_ne!(first, second, "lossy invalidation must change memo_key");
 }
+
+// ---------------------------------------------------------------------------
+// Test 8: destructive replace two levels up — grandchild tracking is orphaned
+// ---------------------------------------------------------------------------
+
+/// Container sink whose children are themselves containers (`TableHandler`),
+/// modeling a partitioned table: root container → partitions → rows.
+fn partitioned_table_sink(
+    table_log: Log,
+    part_log: Log,
+    row_log: Log,
+) -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_children(move |actions: Vec<TargetAction<TableAction>>| {
+        let table_log = table_log.clone();
+        let part_log = part_log.clone();
+        let row_log = row_log.clone();
+        async move {
+            let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
+            for action in actions {
+                match action {
+                    TargetAction::Create(t) | TargetAction::Update(t) => {
+                        table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                        out.push(Some(ChildTargetDef::new::<TableSpec, _>(TableHandler {
+                            sink: table_sink(part_log.clone(), row_log.clone()),
+                            invalidation: Some(TargetChildInvalidation::Destructive),
+                        })));
+                    }
+                    TargetAction::Delete(t) => {
+                        table_log.lock().unwrap().push(format!("drop {}", t.name));
+                        out.push(None);
+                    }
+                }
+            }
+            Ok(out)
+        }
+    })
+}
+
+async fn run_partitioned_table(
+    app: &App,
+    table_log: Log,
+    part_log: Log,
+    row_log: Log,
+    generation: &'static str,
+    rows: Vec<(&'static str, &'static str)>,
+) {
+    app.update(move |ctx| {
+        let table_log = table_log.clone();
+        let part_log = part_log.clone();
+        let row_log = row_log.clone();
+        let rows = rows.clone();
+        async move {
+            let root = register_root_target_states_provider(
+                &ctx,
+                "test/partitioned-table",
+                TableHandler {
+                    sink: partitioned_table_sink(table_log, part_log, row_log),
+                    invalidation: Some(TargetChildInvalidation::Destructive),
+                },
+            )?;
+            let partitions: TargetStateProvider<TableSpec> = mount_target(
+                &ctx,
+                root.target_state(
+                    "tbl",
+                    TableSpec {
+                        generation: generation.to_string(),
+                    },
+                ),
+            )
+            .await?;
+            let rows_provider: TargetStateProvider<String> = mount_target(
+                &ctx,
+                partitions.target_state(
+                    "p0",
+                    TableSpec {
+                        generation: generation.to_string(),
+                    },
+                ),
+            )
+            .await?;
+            for (k, v) in rows {
+                declare_target_state(&ctx, rows_provider.target_state(k, v.to_string()))?;
+            }
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn destructive_replace_orphans_grandchild_tracking() {
+    // Models a partitioned table whose key schema changes: the root container
+    // replaces destructively (think: primary-key change → drop + recreate),
+    // the partition under it is recreated fresh, and the rows re-emit under
+    // NEW keys. The old rows' tracking belongs to a container that no longer
+    // exists; it must be orphaned — never replayed as deletes. (Regression:
+    // the recreated partition's child generation used to fall back to the
+    // default and collide with the stale rows' generation, replaying deletes
+    // whose old-schema keys a real sink cannot even bind.)
+    let (app, _dir) = temp_app("grandchild_orphan").await;
+    let table_log = new_log();
+    let part_log = new_log();
+    let row_log = new_log();
+
+    run_partitioned_table(
+        &app,
+        table_log.clone(),
+        part_log.clone(),
+        row_log.clone(),
+        "pk-v1",
+        vec![("a", "v1")],
+    )
+    .await;
+    assert_eq!(drain_sorted(&table_log), vec!["ensure tbl"]);
+    assert_eq!(drain_sorted(&part_log), vec!["ensure p0"]);
+    assert_eq!(drain_sorted(&row_log), vec!["create a=v1"]);
+
+    // Schema change: the root replaces destructively; the partition is
+    // recreated fresh under the new partition-provider generation; the row
+    // re-emits under its new key shape ("b" instead of "a").
+    run_partitioned_table(
+        &app,
+        table_log.clone(),
+        part_log.clone(),
+        row_log.clone(),
+        "pk-v2",
+        vec![("b", "v1")],
+    )
+    .await;
+    assert_eq!(drain_sorted(&part_log), vec!["ensure p0"]);
+    assert_eq!(
+        drain_sorted(&row_log),
+        vec!["create b=v1"],
+        "stale grandchild tracking must be orphaned, not replayed as deletes"
+    );
+}

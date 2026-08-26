@@ -1059,25 +1059,39 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     .and_then(|item| item.provider_generation.clone());
 
                 if let Some(child_provider) = &child_provider {
-                    let existing_gen = provider_generation.clone().unwrap_or_default();
-                    let new_gen = match recon_output.child_invalidation {
-                        Some(ChildInvalidation::Destructive) => {
-                            // Inside the open precommit WTxn — use the
-                            // in-txn variant to avoid nesting another
-                            // batched WTxn on LMDB (would deadlock).
-                            let new_id = app_store
-                                .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
-                                .await?;
-                            TargetStateProviderGeneration {
-                                provider_id: new_id,
-                                provider_schema_version: 0,
-                            }
+                    // A state created this pass mints a fresh generation for
+                    // its children, not the shared default: tracking left
+                    // behind at the same path by a destructively-replaced
+                    // predecessor sits under that default (e.g. rows of a
+                    // partition recreated after its parent table's replace),
+                    // and inheriting it would replay those stale entries as
+                    // deletes against the recreated target — with keys from
+                    // the pre-replace schema.
+                    let needs_fresh_generation = prev_item.is_none()
+                        || matches!(
+                            recon_output.child_invalidation,
+                            Some(ChildInvalidation::Destructive)
+                        );
+                    let new_gen = if needs_fresh_generation {
+                        // Inside the open precommit WTxn — use the
+                        // in-txn variant to avoid nesting another
+                        // batched WTxn on LMDB (would deadlock).
+                        let new_id = app_store
+                            .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
+                            .await?;
+                        TargetStateProviderGeneration {
+                            provider_id: new_id,
+                            provider_schema_version: 0,
                         }
-                        Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
-                            provider_id: existing_gen.provider_id,
-                            provider_schema_version: existing_gen.provider_schema_version + 1,
-                        },
-                        None => existing_gen,
+                    } else {
+                        let existing_gen = provider_generation.clone().unwrap_or_default();
+                        match recon_output.child_invalidation {
+                            Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
+                                provider_id: existing_gen.provider_id,
+                                provider_schema_version: existing_gen.provider_schema_version + 1,
+                            },
+                            _ => existing_gen,
+                        }
                     };
                     provider_generation = Some(new_gen.clone());
                     deferred_provider_generations.push((child_provider.clone(), new_gen));
