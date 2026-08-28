@@ -370,20 +370,20 @@ class TableSchema(Generic[RowT]):
         | None = None,
     ) -> "TableSchema[RowT]":
         """
-        Create a TableSchema from a record type (dataclass, NamedTuple, or Pydantic model).
+        Create a TableSchema from a record type (dataclass, NamedTuple, msgspec.Struct, or Pydantic model).
 
         Python types are automatically mapped to PostgreSQL types based on asyncpg's
         type conversion.
 
         Args:
-            record_type: A record type (dataclass, NamedTuple, or Pydantic model).
+            record_type: A record type (dataclass, NamedTuple, msgspec.Struct, or Pydantic model).
             primary_key: List of column names that form the primary key.
             column_overrides: Optional dict mapping column names to PgType or
                               VectorSchemaProvider to override the default type mapping.
         """
         if not is_record_type(record_type):
             raise TypeError(
-                f"record_type must be a record type (dataclass, NamedTuple, Pydantic model), "
+                f"record_type must be a record type (dataclass, NamedTuple, msgspec.Struct, Pydantic model), "
                 f"got {type(record_type)}"
             )
         columns = await cls._columns_from_record_type(record_type, column_overrides)
@@ -1267,7 +1267,7 @@ class TableTarget(
     The table is managed as a target state, with the scope used to scope the target state.
 
     Type Parameters:
-        RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
+        RowT: The type of row objects (dict, dataclass, NamedTuple, msgspec.Struct, or Pydantic model).
     """
 
     _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
@@ -1286,7 +1286,7 @@ class TableTarget(
         Declare a row to be upserted to this table.
 
         Args:
-            row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
+            row: A row object (dict, dataclass, NamedTuple, msgspec.Struct, or Pydantic model).
                  Must include all primary key columns.
         """
         row_dict = self._row_to_dict(row)

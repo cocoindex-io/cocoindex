@@ -94,7 +94,7 @@ def TableTarget.declare_record(
 
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include an `id` field.
+- `row` — A row object (dict, dataclass, NamedTuple, msgspec.Struct, or Pydantic model). Must include an `id` field.
 
 `declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
 
@@ -176,7 +176,7 @@ def TableTarget.declare_vector_index(
 
 ### Table schema: from Python class
 
-Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+Define the table structure using a Python class (dataclass, NamedTuple, msgspec.Struct, or Pydantic model):
 
 ```python
 @classmethod

@@ -14,9 +14,18 @@ from typing import (
     get_type_hints,
 )
 
+import msgspec
+import msgspec.structs
 import numpy as np
 
 # Optional Pydantic support
+
+
+
+
+
+
+
 try:
     import pydantic
 
@@ -57,9 +66,17 @@ def is_pydantic_model(t: Any) -> bool:
         return False
 
 
+def is_msgspec_struct_type(t: Any) -> bool:
+    """Check if a type is a ``msgspec.Struct``."""
+    return isinstance(t, type) and issubclass(t, msgspec.Struct)
+
+
 def is_record_type(t: Any) -> bool:
     return isinstance(t, type) and (
-        dataclasses.is_dataclass(t) or is_namedtuple_type(t) or is_pydantic_model(t)
+        dataclasses.is_dataclass(t)
+        or is_namedtuple_type(t)
+        or is_pydantic_model(t)
+        or is_msgspec_struct_type(t)
     )
 
 
@@ -120,7 +137,7 @@ class RecordFieldInfo(NamedTuple):
 
 class RecordType(NamedTuple):
     """
-    Any record type, e.g. dataclass, NamedTuple, etc.
+    Any record type, e.g. dataclass, NamedTuple, msgspec.Struct, etc.
     """
 
     record_type: type
@@ -157,6 +174,19 @@ class RecordType(NamedTuple):
                     if field_info.default is not ...
                     else inspect.Parameter.empty,
                     description=field_info.description,
+                )
+        elif is_msgspec_struct_type(self.record_type):
+            for field in msgspec.structs.fields(self.record_type):
+                default = field.default
+                yield RecordFieldInfo(
+                    name=field.name,
+                    type_hint=type_hints.get(field.name, field.type),
+                    default_value=(
+                        inspect.Parameter.empty
+                        if default is msgspec.NODEFAULT
+                        else default
+                    ),
+                    description=None,
                 )
         else:
             raise ValueError(f"Unsupported record type: {self.record_type}")

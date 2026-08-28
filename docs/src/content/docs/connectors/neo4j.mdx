@@ -120,7 +120,7 @@ def TableTarget.declare_record(
 
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include the `primary_key` field declared above.
+- `row` — A row object (dict, dataclass, NamedTuple, msgspec.Struct, or Pydantic model). Must include the `primary_key` field declared above.
 
 `declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
 
@@ -227,7 +227,7 @@ async def TableSchema.from_class(
 
 **Parameters:**
 
-- `record_type` — A dataclass, NamedTuple, or Pydantic model.
+- `record_type` — A dataclass, NamedTuple, msgspec.Struct, or Pydantic model.
 - `primary_key` — Field name to use as the table's primary key. Defaults to `"id"`.
 - `column_overrides` — Optional dict mapping field names to `Neo4jType` or `VectorSchemaProvider` to override the default Python-to-Neo4j type mapping.
 

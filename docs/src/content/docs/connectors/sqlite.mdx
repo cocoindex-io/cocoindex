@@ -141,11 +141,11 @@ def TableTarget.declare_row(
 
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns with non-`None` values. Dict rows may omit nullable non-primary-key columns; omitted values are written as SQL `NULL`.
+- `row` — A row object (dict, dataclass, NamedTuple, msgspec.Struct, or Pydantic model). Must include all primary key columns with non-`None` values. Dict rows may omit nullable non-primary-key columns; omitted values are written as SQL `NULL`.
 
 ### Table schema: from Python class
 
-Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+Define the table structure using a Python class (dataclass, NamedTuple, msgspec.Struct, or Pydantic model):
 
 ```python
 @classmethod

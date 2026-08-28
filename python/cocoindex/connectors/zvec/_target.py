@@ -487,7 +487,7 @@ class CollectionSchema(Generic[RowT]):
         """Build a CollectionSchema from a record type.
 
         Args:
-            record_type: A dataclass, NamedTuple, or Pydantic model.
+            record_type: A dataclass, NamedTuple, msgspec.Struct, or Pydantic model.
             primary_key: Exactly one column name. Its value becomes the document
                 id (converted to ``str``).
             column_overrides: Optional per-column type/vector overrides.
@@ -495,7 +495,7 @@ class CollectionSchema(Generic[RowT]):
         if not is_record_type(record_type):
             raise TypeError(
                 "record_type must be a record type (dataclass, NamedTuple, "
-                f"Pydantic model), got {type(record_type)}"
+                f"msgspec.Struct, Pydantic model), got {type(record_type)}"
             )
         if len(primary_key) != 1:
             raise ValueError(

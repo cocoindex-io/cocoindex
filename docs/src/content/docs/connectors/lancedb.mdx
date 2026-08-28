@@ -148,7 +148,7 @@ def TableTarget.declare_row(
 
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
+- `row` — A row object (dict, dataclass, NamedTuple, msgspec.Struct, or Pydantic model). Must include all primary key columns.
 
 #### Vector indexes (attachment)
 
@@ -224,7 +224,7 @@ Indexes are reconciled as part of the table's target state: changing a declarati
 
 ### Table schema: from Python class
 
-Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+Define the table structure using a Python class (dataclass, NamedTuple, msgspec.Struct, or Pydantic model):
 
 ```python
 @classmethod

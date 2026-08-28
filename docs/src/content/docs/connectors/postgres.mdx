@@ -61,7 +61,7 @@ class PgTableSource(Generic[RowT]):
 - `table_name` — Name of the table to read from.
 - `columns` — List of column names to select. If omitted with `row_type`, uses the record's field names. If omitted without `row_type`, uses `SELECT *`.
 - `pg_schema_name` — Optional PostgreSQL schema name (defaults to `"public"`).
-- `row_type` — Optional record type (dataclass, NamedTuple, or Pydantic model) for automatic row conversion. When provided, `columns` (if specified) must be a subset of the record's fields.
+- `row_type` — Optional record type (dataclass, NamedTuple, msgspec.Struct, or Pydantic model) for automatic row conversion. When provided, `columns` (if specified) must be a subset of the record's fields.
 - `row_factory` — Optional callable to transform each row dict. Mutually exclusive with `row_type`.
 
 ### Row mapping
@@ -70,7 +70,7 @@ By default, rows are returned as `dict[str, Any]`, with PostgreSQL types convert
 
 #### Using `row_type`
 
-Pass a record type (dataclass, NamedTuple, or Pydantic model) to automatically convert rows. When `columns` is omitted, the record's field names are used:
+Pass a record type (dataclass, NamedTuple, msgspec.Struct, or Pydantic model) to automatically convert rows. When `columns` is omitted, the record's field names are used:
 
 ```python
 from dataclasses import dataclass
@@ -209,7 +209,7 @@ def TableTarget.declare_row(
 
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
+- `row` — A row object (dict, dataclass, NamedTuple, msgspec.Struct, or Pydantic model). Must include all primary key columns.
 
 #### Vector indexes (attachment)
 
@@ -286,7 +286,7 @@ table.declare_sql_command_attachment(
 
 ### Table schema: from Python class
 
-Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+Define the table structure using a Python class (dataclass, NamedTuple, msgspec.Struct, or Pydantic model):
 
 ```python
 @classmethod
