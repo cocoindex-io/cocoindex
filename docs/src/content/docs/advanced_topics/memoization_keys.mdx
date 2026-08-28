@@ -113,35 +113,24 @@ register_memo_key_function(Path, path_key)
 
 ### Use stable type IDs across refactors
 
-This is an advanced migration feature. If you are not preserving existing memo entries across a class move or rename, skip this section and continue with [`memo_key=`](#override-at-the-call-site-with-memo_key) or [memo state validation](#memo-state-validation).
-
-By default, CocoIndex includes a type namespace (module plus qualified name) for dataclass instances, Pydantic model instances, objects handled by `__coco_memo_key__` or a registered memo key function, and class objects passed as values. If a class moves or is renamed, that default type namespace changes and old memo entries are not reused.
-
-A stable type ID replaces that type-name portion when the type should keep the same memo namespace across refactors:
-
-```python
-from dataclasses import dataclass
-from typing import ClassVar
-
-@dataclass
-class SourceEntry:
-    __coco_memo_type_id__: ClassVar[str] = "com.example.SourceEntry/v1"
-
-    id: str
-    content: str
-```
-
-**Choose a durable string ID proactively.** For a new type, or before any memo entries for it matter, use a globally unique durable string `__coco_memo_type_id__` as shown above when memo stability is important and a future move or rename cannot be ruled out. Introducing or changing an ordinary string ID after entries exist creates a new memo namespace and causes one cold execution for affected memoized calls.
-
-**Retain an existing automatic identity.** If a type already has reusable entries under its automatic identity, assign that exact previous identity to the moved class:
+By default, CocoIndex identifies types in memo keys by their module and qualified name (`module.QualName`). If you move or rename a class, set `__coco_memo_type_id__` with an ordinary string (for new entries) or `coco.prev_type_id()` (for existing automatic entries):
 
 ```python
 from dataclasses import dataclass
 from typing import ClassVar
 import cocoindex as coco
 
+# Ordinary string for new entries:
 @dataclass
-class SourceEntry:
+class NewEntry:
+    __coco_memo_type_id__: ClassVar[str] = "com.example.NewEntry/v1"
+
+    id: str
+    content: str
+
+# Retain existing automatic entries:
+@dataclass
+class SourceEntry:  # Moved to new_package.models
     __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
         "old_package.models",
         "SourceEntry",
@@ -151,77 +140,7 @@ class SourceEntry:
     version: int
 ```
 
-The arguments to `prev_type_id` are the exact previous canonical module and qualified name. Nested classes retain their enclosing names in the qualified name, such as `"Container.SourceEntry"`. A file-backed class previously defined in `__main__` uses the entry script's basename without `.py`; for example, `main.py` becomes `"main"`.
-
-`prev_type_id` does not scan, copy, promote, or migrate records. For a type-aware canonical form that already included the type's automatic identity, it keeps emitting the same `(old_module, old_qualname)`, so those existing entries remain directly addressable. Entries created through pickle fallback did not include this identity. Adding `prev_type_id` alone has no effect on pickle-fallback canonicalization and cannot recover those entries. Adding a memo key function makes future entries type-aware, changes the canonical form, and therefore starts cold; it still cannot recover prior pickle-fallback entries. Keep `prev_type_id` on the moved class for as long as that historical identity is desired. Replacing it later with an ordinary string stable ID intentionally starts a new namespace. Normal decorated-function logic changes can still invalidate memoization.
-
-`prev_type_id` preserves only this input type's identity within the memo key. Reuse still requires every other call-key component and normal reuse check to remain compatible; moving or renaming the memoized function can therefore start cold independently of the input type.
-
-Treat that previous canonical `(module, qualname)` as reserved while any active type emits it, and afterward for as long as entries under the historical identity may still be addressed. If a semantically different type later uses the same module and qualified name, matching memo-key payloads can share cached results.
-
-Assign the value returned by `prev_type_id` directly, or pass it intact as `stable_type_id`. Converting or serializing it to a plain string removes the historical-identity marker. For text-only persistence, store the module and qualified name separately and call `prev_type_id` again after loading.
-
-If you control the class definition, set `__coco_memo_type_id__` on the class. If you cannot or do not want to edit the class definition, register the same stable type ID with `register_memo_key_function`.
-
-Use `stable_type_id` without a key function only when CocoIndex already fingerprints the exact runtime type: dataclass instances, Pydantic model instances, instances with `__coco_memo_key__()`, or the class object itself. Subclasses do not inherit this form; give the subclass its own stable type ID unless a registered key function handles it through MRO lookup.
-
-Rule of thumb: if CocoIndex would otherwise use pickle for your object, `stable_type_id` by itself is not enough; register a key function and stable type ID together.
-
-Either omit the key function argument or pass `None` when registering only a stable type ID; both forms are equivalent.
-
-```python
-from dataclasses import dataclass
-import cocoindex as coco
-
-@dataclass
-class ProductRow:
-    sku: str
-    updated_at: int
-
-PRODUCT_ROW_TYPE_ID = "com.example.ProductRow/v1"
-
-coco.register_memo_key_function(
-    ProductRow,
-    stable_type_id=PRODUCT_ROW_TYPE_ID,
-)
-```
-
-This registration is process-global. Register before the value is fingerprinted: for change-detected context values, before `builder.provide()`; for function arguments, before memoized calls that should use it; and for `deps`, before the `@coco.fn(..., deps=...)` or `@coco.fn.as_async(..., deps=...)` decorator executes. Later calls replace the previous registration for that exact type.
-
-This registration has two effects:
-
-- `ProductRow(...)` instances keep their normal dataclass field fingerprint, but the surrounding type namespace uses `PRODUCT_ROW_TYPE_ID`.
-- The class object `ProductRow` also uses `PRODUCT_ROW_TYPE_ID` when you pass the class itself (`ProductRow`), not an instance (`ProductRow(...)`).
-
-If the memoized function takes the class itself and reads class-level details, a stable type ID alone is not enough. Examples include field names, field types/defaults, validators, Pydantic config, class attributes, or version constants. Because `memo_key=` replaces the normal fingerprint for `row_type` in the example below, include both the stable type ID and the class-level details the function reads:
-
-```python
-# Continuing the ProductRow example above.
-from dataclasses import fields
-import cocoindex as coco
-
-@coco.fn(
-    memo=True,
-    memo_key={
-        "row_type": lambda row_type: (
-            PRODUCT_ROW_TYPE_ID,
-            tuple(field.name for field in fields(row_type)),
-        )
-    },
-)
-def product_row_fields(row_type: type[ProductRow]) -> tuple[str, ...]:
-    return tuple(field.name for field in fields(row_type))
-
-product_row_fields(ProductRow)
-```
-
-:::::caution[Class object schema is not fingerprinted automatically]
-A stable type ID says the class should keep the same memo namespace after a move or rename. It does not say the class schema is unchanged. If cached results depend on class-level details, include those details with `memo_key=` for that function. If a class change should invalidate every memo that uses this stable type ID, change the stable type ID, for example from `/v1` to `/v2`.
-:::::
-
-Use stable type IDs directly for class objects only when the memoized computation does not depend on class details such as module, qualified name, display name, schema, or state. Those details are intentionally excluded from the class object's fingerprint when a stable type ID is used.
-
-For a third-party type that would otherwise fall back to pickle, register both a custom key function and a stable type ID on the same owner type:
+For types you don't control, register the ID with `register_memo_key_function()`:
 
 ```python
 from some_library import ExternalRecord
@@ -234,82 +153,20 @@ coco.register_memo_key_function(
 )
 ```
 
-Registration is replacement-based, not additive. Each call replaces the full registration for that exact type:
+:::note[Pickle fallback]
+Types using pickle fallback fingerprint raw bytes without type namespacing. Setting or registering a stable type ID alone has no effect on them — register a memo key function together with the stable type ID.
+:::
 
-| Call shape | Registered key/state functions after the call | Registered stable type ID after the call |
-| --- | --- | --- |
-| `register_memo_key_function(T, key_fn, state_fn=..., stable_type_id="...")` — see [`state_fn` requirements](#register-a-state-function-when-you-dont-control-the-type) | `key_fn` and `state_fn` are installed. | The provided stable type ID is installed. |
-| `register_memo_key_function(T, key_fn)` | `key_fn` is installed and any previous `state_fn` is cleared unless a new `state_fn` is supplied. | Any previous registered stable type ID is cleared. |
-| `register_memo_key_function(T, stable_type_id="...")` | Any previous key/state functions are cleared. | The provided stable type ID is installed. |
+### Class objects as inputs
 
-A `__coco_memo_type_id__` defined on the class is separate from the process-global registration table. If both are set for the same exact type, the class-defined stable type ID takes precedence. The registration's `stable_type_id=` is used only when the selected owner has no non-`None` class-defined ID.
-
-For a registry-owned stable type ID, if a type needs a key function, state function, and stable type ID, register all of them in the same call. Avoid splitting registration across helper modules where import order can determine which registration wins.
-
-If a type already has a key or state function and you want to add a stable type ID, update the same call:
-
-```python
-coco.register_memo_key_function(
-    T,
-    key_fn,
-    state_fn=state_fn,
-    stable_type_id="com.example.T/v1",
-)
-```
-
-Do not add the stable type ID with a separate later call; that later call replaces the registration and clears the previous key/state functions.
-
-#### Stable type ID without a key function: exact type only
-
-`__coco_memo_type_id__` and `register_memo_key_function(SomeType, stable_type_id=...)` without a key function apply only to exactly `SomeType`, not subclasses. For example:
-
-```python
-class Parent:
-    ...
-
-class Child(Parent):
-    ...
-
-coco.register_memo_key_function(Parent, stable_type_id="com.example.Parent/v1")
-# Child(...) does not use Parent's stable type ID, because this registration
-# has no key function and applies only to exactly Parent.
-```
-
-#### Stable type ID with a key function: owner selected by MRO
-
-When `register_memo_key_function(Parent, key_fn, stable_type_id=...)` handles a `Child(Parent)` value through MRO lookup, the selected registered owner (`Parent`) supplies the type namespace. `Parent.__coco_memo_type_id__` supplies that namespace when it is non-`None`; otherwise, the registration's `stable_type_id=...` is used. For example:
-
-```python
-class Parent:
-    ...
-
-class Child(Parent):
-    ...
-
-coco.register_memo_key_function(
-    Parent,
-    lambda value: value.id,
-    stable_type_id="com.example.Parent/v1",
-)
-# Child(...) can use Parent's stable type ID when Parent's key function wins
-# MRO lookup and handles the Child value.
-```
-
-Adding a new ordinary string stable type ID does not retroactively migrate memo entries created under the automatic identity or a different string ID. Use `prev_type_id(...)` to retain a previous automatic identity; it keeps those entries directly addressable rather than migrating them.
-
-#### Class objects as inputs
-
-Class objects are the class values themselves, such as `ProductRow`, not instances such as `ProductRow(...)`.
+A class object is the class value itself (such as `ProductRow`), not an instance (such as `ProductRow(...)`).
 
 When CocoIndex fingerprints a class object:
 
-- It never calls `__coco_memo_key__` or `__coco_memo_state__` attributes on the class object itself.
-- It checks memo key functions explicitly registered on the class object's metaclass or its bases, including `type`. The most specific registered owner wins; a `state_fn` from the same registration participates in state validation, and that owner supplies the stable type ID or module-plus-qualified-name namespace.
-- If no metaclass or `type` key function is registered, it uses the class object's own stable type ID when present, otherwise its module plus qualified name.
-- A key/state registration on `ProductRow` customizes `ProductRow(...)` instances only. To customize the raw `ProductRow` class globally, register a key function on its metaclass. A stable-ID-only registration on a metaclass or on `type` does not customize all class objects.
-- It excludes class schema and class state. If a memoized result depends on fields, field types/defaults, validators, Pydantic config, class attributes, or any other class-level details, pass that data separately with `memo_key=` or change the stable type ID.
-
-Do not add a `@classmethod` or `@staticmethod` named `__coco_memo_key__` to customize class-object memoization. Class objects ignore it, but instances can still see it and accidentally give every instance the same memo key.
+* It uses the class's `__coco_memo_type_id__` when defined, or falls back to its module and qualified name (`module.QualName`).
+* It does not call `__coco_memo_key__` or `__coco_memo_state__` methods defined on the class or its metaclass.
+* It fingerprints only the class identity, not its schema or attributes. Include class details with `memo_key=` if the function depends on them.
+* To customize memoization for class objects globally, register a memo key function on the class's custom metaclass or on `type` (which takes precedence over `__coco_memo_type_id__`).
 
 ### Override at the call site with `memo_key=`
 
