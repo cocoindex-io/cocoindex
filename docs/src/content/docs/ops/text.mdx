@@ -130,27 +130,35 @@ defs = CodePattern(r"def \NAME(\(A*\)):", language="python").match_source(src)  
 
 **Supported languages:**
 
+`language=` accepts a language name, an alternate name, or a file extension — `"python"`, `"py"` and `".py"` all select Python. Matching is case-insensitive. Use [`detect_code_language()`](#detect_code_language) to infer the value from a filename.
+
 Languages with syntax-aware (tree-sitter) splitting — splits at logical boundaries like functions, classes, and blocks:
 
 | Language | `language=` value | Extensions |
 |---|---|---|
 | Astro | `"astro"` | `.astro` |
-| C | `"c"` | `.c`, `.h` |
-| C++ | `"cpp"` | `.cpp`, `.cc`, `.cxx`, `.c++` |
-| C# | `"c_sharp"` | `.cs` |
-| CSS | `"css"` | `.css` |
-| Fortran | `"fortran"` | `.f`, `.f90`, `.f95` |
+| Bash | `"bash"` | `.sh`, `.bash` |
+| C | `"c"` | `.c`, `.cats`, `.idc` |
+| C# | `"csharp"` | `.cs`, `.csx`, `.cake`, `.linq` |
+| C++ | `"cpp"` | `.cpp`, `.cc`, `.cxx`, `.c++`, `.h`, `.hpp`, `.hh`, `.hxx` |
+| CMake | `"cmake"` | `.cmake`, `.cmake.in` |
+| CSS | `"css"` | `.css`, `.scss` |
+| Dart | `"dart"` | `.dart` |
+| DTD | `"dtd"` | `.dtd` |
+| Elm | `"elm"` | `.elm` |
+| Fortran | `"fortran"` | `.f`, `.f90`, `.f95`, `.f03` |
 | Go | `"go"` | `.go` |
-| HTML | `"html"` | `.html`, `.htm` |
-| Java | `"java"` | `.java` |
+| HCL / Terraform | `"hcl"` | `.hcl`, `.tf` |
+| HTML | `"html"` | `.html`, `.htm`, `.xhtml` |
+| Java | `"java"` | `.java`, `.jav`, `.jsh` |
 | JavaScript | `"javascript"` | `.js`, `.mjs`, `.cjs`, `.jsx` |
-| JSON | `"json"` | `.json`, `.jsonc` |
+| JSON | `"json"` | `.json`, `.jsonl`, `.geojson` |
 | Julia | `"julia"` | `.jl` |
-| Kotlin | `"kotlin"` | `.kt`, `.kts` |
-| Markdown | `"markdown"` | `.md` |
-| Pascal | `"pascal"` | `.pas` |
+| Kotlin | `"kotlin"` | `.kt`, `.kts`, `.ktm` |
+| Markdown | `"markdown"` | `.md`, `.markdown`, `.mdx` |
+| Pascal / Delphi | `"pascal"` | `.pas`, `.dpr`, `.lpr`, `.dfm` |
 | PHP | `"php"` | `.php` |
-| Python | `"python"` | `.py` |
+| Python | `"python"` | `.py`, `.pyi`, `.pyw`, `.pyx`, `.pxd` |
 | R | `"r"` | `.r`, `.R` |
 | Ruby | `"ruby"` | `.rb` |
 | Rust | `"rust"` | `.rs` |
@@ -166,7 +174,9 @@ Languages with syntax-aware (tree-sitter) splitting — splits at logical bounda
 | XML | `"xml"` | `.xml` |
 | YAML | `"yaml"` | `.yaml`, `.yml` |
 
-Many additional languages use separator-based splitting (e.g. `"bash"`, `"dart"`, `"elixir"`, `"elm"`, `"go"`, `"haskell"`, `"lua"`, `"perl"`, `"swift"`, and more). Pass the language name string to `language=` — use [`detect_code_language()`](#detect_code_language) to infer it from a filename.
+Note that `.h` maps to C++, not C — the C++ grammar also parses C headers. Pass `language="c"` explicitly to force the C grammar.
+
+Over 110 additional languages use separator-based splitting (e.g. `"elixir"`, `"erlang"`, `"haskell"`, `"lua"`, `"nix"`, `"perl"`, `"powershell"`, `"proto"`, `"zig"`, and more). A `language=` value that matches no known language also falls back to separator-based splitting rather than raising.
 
 ### `CustomLanguageConfig`
 
