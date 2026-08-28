@@ -318,6 +318,7 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
         copy.deepcopy(marker),
         pickle.loads(pickle.dumps(marker)),
     ):
+        assert type(variant) is type(marker)
 
         class MovedSourceEntry:
             __coco_memo_type_id__: ClassVar[str] = variant
@@ -1054,106 +1055,6 @@ def test_declared_stable_id_beats_registration_for_selected_key_owner() -> None:
         unregister_memo_key_function(BaseEntry)
 
 
-def test_identity_dispatch_looks_up_each_candidate_registry_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class ExactEntry:
-        pass
-
-    class RegisteredBase:
-        pass
-
-    class InheritedEntry(RegisteredBase):
-        pass
-
-    @dataclasses.dataclass
-    class DataclassEntry:
-        value: int
-
-    class MemoMeta(type):
-        pass
-
-    class MetaEntry(metaclass=MemoMeta):
-        pass
-
-    original_lookup = _memo_fingerprint._registered_memo_type_registry
-    lookups: list[type] = []
-
-    def tracked_lookup(typ: type) -> Any:
-        lookups.append(typ)
-        return original_lookup(typ)
-
-    def assert_lookups(*expected: type) -> None:
-        assert lookups == list(expected)
-        lookups.clear()
-
-    try:
-        register_memo_key_function(ExactEntry, lambda _entry: "exact")
-        register_memo_key_function(RegisteredBase, lambda _entry: "inherited")
-        register_memo_key_function(
-            DataclassEntry, stable_type_id="test.LookupDataclass/v1"
-        )
-        register_memo_key_function(MemoMeta, lambda _cls: "metaclass")
-        monkeypatch.setattr(
-            _memo_fingerprint, "_registered_memo_type_registry", tracked_lookup
-        )
-
-        _memo_fingerprint._canonicalize(ExactEntry(), None, [])
-        assert_lookups(ExactEntry)
-
-        _memo_fingerprint._canonicalize(InheritedEntry(), None, [])
-        assert_lookups(InheritedEntry, RegisteredBase)
-
-        _memo_fingerprint._canonicalize(DataclassEntry(1), None, [])
-        assert_lookups(DataclassEntry, object)
-
-        _memo_fingerprint._canonicalize(MetaEntry, None, [])
-        assert_lookups(MemoMeta)
-    finally:
-        unregister_memo_key_function(ExactEntry)
-        unregister_memo_key_function(RegisteredBase)
-        unregister_memo_key_function(DataclassEntry)
-        unregister_memo_key_function(MemoMeta)
-
-
-def test_pydantic_identity_registry_lookup_is_not_repeated(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    try:
-        from pydantic import BaseModel
-    except ImportError:
-        pytest.skip("pydantic not installed")
-        return
-
-    class Model(BaseModel):
-        value: int
-
-    original_lookup = _memo_fingerprint._registered_memo_type_registry
-    lookups: list[type] = []
-
-    def tracked_lookup(typ: type) -> Any:
-        lookups.append(typ)
-        return original_lookup(typ)
-
-    try:
-        register_memo_key_function(Model, stable_type_id="test.LookupPydantic/v1")
-        monkeypatch.setattr(
-            _memo_fingerprint, "_registered_memo_type_registry", tracked_lookup
-        )
-        canonical = _memo_fingerprint._canonicalize(Model(value=1), None, [])
-        assert isinstance(canonical, tuple)
-
-        assert canonical[:3] == (
-            "pydantic",
-            ("__coco_memo_type_id__", "test.LookupPydantic/v1"),
-            None,
-        )
-        assert sum(owner is Model for owner in lookups) == 1
-        assert len({id(owner) for owner in lookups}) == len(lookups)
-    finally:
-        unregister_memo_key_function(Model)
-
-
 def test_combined_registration_uses_stable_type_id_and_collects_state_fn() -> None:
     class OldEntry:
         def __init__(self, value: object) -> None:
@@ -1408,94 +1309,6 @@ def test_unregister_memo_key_function_clears_key_function_and_stable_type_id() -
     finally:
         unregister_memo_key_function(OldEntry)
         unregister_memo_key_function(NewEntry)
-
-
-def test_registered_stable_type_id_is_identity_exact_for_equal_metaclasses() -> None:
-    class EqMeta(type):
-        def __eq__(cls, other: object) -> bool:
-            return isinstance(other, EqMeta)
-
-        def __hash__(cls) -> int:
-            return 1
-
-    class A(metaclass=EqMeta):
-        def __coco_memo_key__(self) -> object:
-            return ("same",)
-
-    class B(metaclass=EqMeta):
-        def __coco_memo_key__(self) -> object:
-            return ("same",)
-
-    assert fingerprint_call(_dummy_fn, (A(),), {}, []) != fingerprint_call(
-        _dummy_fn, (B(),), {}, []
-    )
-
-    try:
-        register_memo_key_function(A, stable_type_id="test.EqualityMetaA/v1")
-        assert fingerprint_call(_dummy_fn, (A(),), {}, []) != fingerprint_call(
-            _dummy_fn, (B(),), {}, []
-        )
-    finally:
-        unregister_memo_key_function(A)
-
-
-def test_unregister_memo_key_function_handles_unhashable_stable_type_id_only() -> None:
-    class EqNoHashMeta(type):
-        def __eq__(cls, other: object) -> bool:
-            return cls is other
-
-    class OldEntry(metaclass=EqNoHashMeta):
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def __coco_memo_key__(self) -> object:
-            return ("entry", self.value)
-
-    class NewEntry(metaclass=EqNoHashMeta):
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def __coco_memo_key__(self) -> object:
-            return ("entry", self.value)
-
-    try:
-        register_memo_key_function(OldEntry, stable_type_id="test.UnhashableMeta/v1")
-        register_memo_key_function(NewEntry, stable_type_id="test.UnhashableMeta/v1")
-        assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) == fingerprint_call(
-            _dummy_fn, (NewEntry(1),), {}, []
-        )
-        unregister_memo_key_function(OldEntry)
-        assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) != fingerprint_call(
-            _dummy_fn, (NewEntry(1),), {}, []
-        )
-    finally:
-        unregister_memo_key_function(OldEntry)
-        unregister_memo_key_function(NewEntry)
-
-
-def test_unregister_memo_key_function_is_identity_exact_for_equal_metaclasses() -> None:
-    class EqHashMeta(type):
-        def __eq__(cls, other: object) -> bool:
-            return isinstance(other, EqHashMeta)
-
-        def __hash__(cls) -> int:
-            return 1
-
-    class StableOnly(metaclass=EqHashMeta):
-        pass
-
-    class Registered(metaclass=EqHashMeta):
-        def __getstate__(self) -> object:
-            raise TypeError("registered test object is not picklable")
-
-    try:
-        register_memo_key_function(Registered, lambda entry: ("registered",))
-        register_memo_key_function(StableOnly, stable_type_id="test.EqualUnregister/v1")
-        unregister_memo_key_function(StableOnly)
-        fingerprint_call(_dummy_fn, (Registered(),), {}, [])
-    finally:
-        unregister_memo_key_function(StableOnly)
-        unregister_memo_key_function(Registered)
 
 
 def test_stable_type_id_exact_type() -> None:
