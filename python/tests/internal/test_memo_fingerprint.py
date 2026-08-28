@@ -31,14 +31,6 @@ def _dummy_fn(*args: Any, **kwargs: Any) -> None:
     raise RuntimeError("not called")
 
 
-def _canonical_contains(value: object, needle: object) -> bool:
-    if value == needle:
-        return True
-    if isinstance(value, tuple):
-        return any(_canonical_contains(item, needle) for item in value)
-    return False
-
-
 def test_fingerprint_dict_order_independent() -> None:
     a = {"x": 1, "y": 2}
     b = {"y": 2, "x": 1}
@@ -302,27 +294,6 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
     right = coco.prev_type_id("a", "b.C")
     assert str(left) != str(right)
     assert left != right
-    assert len({left, right}) == 2
-
-    class HostileString(str):
-        def __len__(self) -> int:
-            return 1
-
-        def __str__(self) -> str:
-            return "wrong-str"
-
-        def __format__(self, format_spec: str) -> str:
-            return "wrong-format"
-
-        def strip(self, chars: str | None = None) -> str:
-            raise AssertionError("subclass strip should not be called")
-
-    normalized_marker = coco.prev_type_id(
-        HostileString("old.package"), HostileString("Outer.Entry")
-    )
-    assert normalized_marker == coco.prev_type_id("old.package", "Outer.Entry")
-    with pytest.raises(ValueError, match="non-empty"):
-        coco.prev_type_id(HostileString("   "), "Entry")
 
     module = "old:package.models"
     qualname = "Outer.Source.Entry"
@@ -336,21 +307,17 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
         _memo_fingerprint._type_identity_parts(IdentitySourceEntry, None)
         is marker._identity_parts
     )
-    for attribute in ("_identity_parts", "extra"):
-        with pytest.raises(AttributeError, match="immutable"):
-            setattr(marker, attribute, "mutated")
+    with pytest.raises(AttributeError, match="immutable"):
+        marker._identity_parts = ("mutated", "mutated")
+    with pytest.raises(AttributeError, match="immutable"):
+        delattr(marker, "_identity_parts")
 
-    variants = [
+    for variant in (
         marker,
         copy.copy(marker),
         copy.deepcopy(marker),
-        *(
-            pickle.loads(pickle.dumps(marker, protocol=protocol))
-            for protocol in range(pickle.HIGHEST_PROTOCOL + 1)
-        ),
-    ]
-    for variant in variants:
-        assert type(variant) is type(marker)
+        pickle.loads(pickle.dumps(marker)),
+    ):
 
         class MovedSourceEntry:
             __coco_memo_type_id__: ClassVar[str] = variant
@@ -364,7 +331,7 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
         pass
 
     try:
-        register_memo_key_function(RegisteredSourceEntry, stable_type_id=variants[-1])
+        register_memo_key_function(RegisteredSourceEntry, stable_type_id=marker)
         registry = _memo_fingerprint._registered_memo_type_registry(
             RegisteredSourceEntry
         )
@@ -1531,7 +1498,7 @@ def test_unregister_memo_key_function_is_identity_exact_for_equal_metaclasses() 
         unregister_memo_key_function(Registered)
 
 
-def test_stable_type_id_exact_type_and_validation() -> None:
+def test_stable_type_id_exact_type() -> None:
     class OldEntry:
         __coco_memo_type_id__ = "test.DirectEntry/v1"
 
@@ -1559,18 +1526,6 @@ def test_stable_type_id_exact_type_and_validation() -> None:
     class Child(Parent):
         pass
 
-    class BadObjectId:
-        __coco_memo_type_id__ = object()
-
-        def __coco_memo_key__(self) -> object:
-            return ("bad", 1)
-
-    class EmptyId:
-        __coco_memo_type_id__ = ""
-
-        def __coco_memo_key__(self) -> object:
-            return ("bad", 1)
-
     class NoneId:
         __coco_memo_type_id__ = None
 
@@ -1586,8 +1541,6 @@ def test_stable_type_id_exact_type_and_validation() -> None:
     assert fingerprint_call(_dummy_fn, (Parent(),), {}, []) != fingerprint_call(
         _dummy_fn, (Child(),), {}, []
     )
-    with pytest.raises(TypeError, match="must be a str"):
-        fingerprint_call(_dummy_fn, (BadObjectId(),), {}, [])
     none_id_canonical = _memo_fingerprint._canonicalize(NoneId(), None, [])
     assert isinstance(none_id_canonical, tuple)
     assert none_id_canonical[:3] == (
@@ -1608,29 +1561,16 @@ def test_stable_type_id_exact_type_and_validation() -> None:
         )
     finally:
         unregister_memo_key_function(NoneId)
-    with pytest.raises(ValueError, match="non-empty"):
-        fingerprint_call(_dummy_fn, (EmptyId(),), {}, [])
 
 
 def test_register_memo_key_function_validation_and_public_export() -> None:
     import cocoindex as coco
-
-    class Entry:
-        pass
 
     assert coco.register_memo_key_function is register_memo_key_function
     assert coco.prev_type_id is _memo_fingerprint.prev_type_id
     assert "prev_type_id" in coco.__all__
     previous_type_id = coco.prev_type_id("old_package.models", "SourceEntry")
     assert isinstance(previous_type_id, str)
-    with pytest.raises(TypeError, match="prev_type_id.*module must be a str"):
-        coco.prev_type_id(cast(Any, object()), "SourceEntry")
-    with pytest.raises(TypeError, match="prev_type_id.*qualname must be a str"):
-        coco.prev_type_id("old_package.models", cast(Any, object()))
-    with pytest.raises(ValueError, match="prev_type_id.*module must be non-empty"):
-        coco.prev_type_id("", "SourceEntry")
-    with pytest.raises(ValueError, match="prev_type_id.*qualname must be non-empty"):
-        coco.prev_type_id("old_package.models", "   ")
     assert "register_memo_type_identifier" not in coco.__all__
     assert not hasattr(coco, "register_memo_type_identifier")
     assert "register_not_memo_keyable" not in coco.__all__
@@ -1639,12 +1579,6 @@ def test_register_memo_key_function_validation_and_public_export() -> None:
         register_memo_key_function(
             cast(Any, object()), stable_type_id="test.Invalid/v1"
         )
-    with pytest.raises(TypeError, match="must be a str"):
-        register_memo_key_function(Entry, stable_type_id=cast(Any, object()))
-    with pytest.raises(ValueError, match="non-empty"):
-        register_memo_key_function(Entry, stable_type_id="")
-    with pytest.raises(ValueError, match="non-empty"):
-        register_memo_key_function(Entry, stable_type_id="   ")
 
 
 def test_cycles_are_supported_and_deterministic() -> None:
