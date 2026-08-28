@@ -91,7 +91,9 @@ pub struct WeakTargetActionSinkKeeper<Prof: EngineProfile> {
 
 impl<Prof: EngineProfile> WeakTargetActionSinkKeeper<Prof> {
     pub fn upgrade(&self) -> Option<TargetActionSinkKeeper<Prof>> {
-        self.inner.upgrade().map(|inner| TargetActionSinkKeeper { inner })
+        self.inner
+            .upgrade()
+            .map(|inner| TargetActionSinkKeeper { inner })
     }
 }
 
