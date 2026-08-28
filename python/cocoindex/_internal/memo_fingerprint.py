@@ -28,7 +28,6 @@ from .serde import (
 )
 from .typing import Fingerprintable
 
-
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
 _StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
 
@@ -94,7 +93,7 @@ def _make_state_deserialize_fn(
             ann,
             source_label=f"prev_state param of {fn_label}()",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         return make_deserialize_fn(typing.Any)
 
 
@@ -141,18 +140,13 @@ def canonical_module_name(obj: typing.Any) -> str:
     return mod
 
 
-def _memo_type_label(typ: type) -> str:
-    """Return a user-facing label for stable type ID validation errors."""
-    return f"{canonical_module_name(typ)}.{getattr(typ, '__qualname__', '<unknown>')}"
-
-
 class _PreviousTypeId(str):
     """A prior automatic type identity carried through the stable-ID path."""
 
     __slots__ = ("_identity_parts",)
     _identity_parts: tuple[str, str]
 
-    def __new__(cls, module: str, qualname: str) -> _PreviousTypeId:
+    def __new__(cls, module: str, qualname: str) -> typing.Self:
         marker = super().__new__(cls, f"{len(module)}:{module}{qualname}")
         object.__setattr__(marker, "_identity_parts", (module, qualname))
         return marker
@@ -160,34 +154,15 @@ class _PreviousTypeId(str):
     def __setattr__(self, name: str, value: object) -> typing.NoReturn:
         raise AttributeError(f"{type(self).__name__} is immutable")
 
+    def __delattr__(self, name: str) -> typing.NoReturn:
+        raise AttributeError(f"{type(self).__name__} is immutable")
+
     def __reduce__(self) -> tuple[type[_PreviousTypeId], tuple[str, str]]:
         return type(self), self._identity_parts
 
 
-def _validate_stable_type_id(stable_type_id: object, *, source: str) -> str:
-    """Validate a non-empty stable type ID."""
-    if not isinstance(stable_type_id, str):
-        raise TypeError(f"{source} must be a str, got {type(stable_type_id).__name__}")
-    if stable_type_id.strip() == "":
-        raise ValueError(
-            f"{source} must be non-empty and contain non-whitespace characters"
-        )
-    return stable_type_id
-
-
-def _validate_previous_type_id_part(value: object, *, source: str) -> str:
-    """Validate and normalize one previous automatic identity part."""
-    if isinstance(value, str):
-        return _validate_stable_type_id(str.__str__(value), source=source)
-    return _validate_stable_type_id(value, source=source)
-
-
 def prev_type_id(module: str, qualname: str) -> str:
     """Return a marker that reuses a type's prior automatic identity."""
-    module = _validate_previous_type_id_part(module, source="prev_type_id() module")
-    qualname = _validate_previous_type_id_part(
-        qualname, source="prev_type_id() qualname"
-    )
     return _PreviousTypeId(module, qualname)
 
 
@@ -272,12 +247,7 @@ def _type_identity_parts(
     names; ``None`` fills the qualname slot.
     """
     stable_type_id = typ.__dict__.get("__coco_memo_type_id__")
-    if stable_type_id is not None:
-        stable_type_id = _validate_stable_type_id(
-            stable_type_id,
-            source=f"{_memo_type_label(typ)}.__coco_memo_type_id__",
-        )
-    elif registry is not None:
+    if stable_type_id is None and registry is not None:
         stable_type_id = registry.stable_type_id
 
     if isinstance(stable_type_id, _PreviousTypeId):
@@ -285,21 +255,6 @@ def _type_identity_parts(
     if stable_type_id is not None:
         return (("__coco_memo_type_id__", stable_type_id), None)
     return (canonical_module_name(typ), getattr(typ, "__qualname__", None))
-
-
-def _canonicalize_key_fragment(
-    obj: object,
-    state: _CanonicalizeState,
-    state_methods: list[StateFnEntry],
-) -> Fingerprintable:
-    """Canonicalize a memo-key fragment within the current root traversal.
-
-    Sharing traversal state preserves cycles through the parent object and keeps
-    temporary fragment objects alive so their IDs cannot be reused during this
-    traversal.
-    """
-
-    return _canonicalize(obj, state, state_methods)
 
 
 def _canonicalize_registered_memo_key(
@@ -320,7 +275,7 @@ def _canonicalize_registered_memo_key(
     return (
         tag,
         *_type_identity_parts(owner, registry),
-        _canonicalize_key_fragment(key, state, state_methods),
+        _canonicalize(key, state, state_methods),
     )
 
 
@@ -480,11 +435,6 @@ def register_memo_key_function(
             "register_memo_key_function() expects typ to be a type, "
             f"got {type(typ).__name__}"
         )
-    if stable_type_id is not None:
-        stable_type_id = _validate_stable_type_id(
-            stable_type_id,
-            source="register_memo_key_function(..., stable_type_id)",
-        )
     if key_fn is None:
         if state_fn is not None:
             raise TypeError(
@@ -615,7 +565,7 @@ def _canonicalize(
         return (
             tag,
             *_type_identity_parts(typ, registry),
-            _canonicalize_key_fragment(k, state, state_methods),
+            _canonicalize(k, state, state_methods),
         )
 
     for owner in typ.__mro__:
@@ -672,7 +622,7 @@ def _canonicalize(
             payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
             # Tag to avoid colliding with user-provided raw bytes.
             result = ("pickle", payload)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raise TypeError(
                 f"Unsupported type for memoization key: {type(obj)!r}. "
                 "Provide __coco_memo_key__() or register a memo key function."
@@ -761,10 +711,10 @@ def fingerprint_call(
 
 __all__ = [
     "NotMemoKeyable",
+    "fingerprint_call",
+    "memo_fingerprint",
     "prev_type_id",
     "register_memo_key_function",
     "register_not_memo_keyable",
     "unregister_memo_key_function",
-    "fingerprint_call",
-    "memo_fingerprint",
 ]
