@@ -353,6 +353,14 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
         None,
     )
 
+    class NonStringSourceEntry:
+        __coco_memo_type_id__ = 12345
+
+    assert _memo_fingerprint._type_identity_parts(NonStringSourceEntry, None) == (
+        _memo_fingerprint.canonical_module_name(NonStringSourceEntry),
+        NonStringSourceEntry.__qualname__,
+    )
+
 
 def test_pydantic_stable_type_id_allows_renamed_model_reuse() -> None:
     try:
@@ -1217,6 +1225,11 @@ def test_register_memo_key_function_accepts_explicit_none_key_function() -> None
             (lambda entry: entry,),
             {"state_fn": object()},
             "state_fn must be callable",
+        ),
+        (
+            (),
+            {"stable_type_id": 123},
+            "stable_type_id must be a str",
         ),
     ],
 )

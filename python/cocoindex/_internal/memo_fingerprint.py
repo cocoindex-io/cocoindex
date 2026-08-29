@@ -220,7 +220,7 @@ def _type_identity_parts(
 
     if isinstance(stable_type_id, _PreviousTypeId):
         return stable_type_id._identity_parts
-    if stable_type_id is not None:
+    if isinstance(stable_type_id, str):
         return (("__coco_memo_type_id__", stable_type_id), None)
     return (canonical_module_name(typ), getattr(typ, "__qualname__", None))
 
@@ -421,6 +421,11 @@ def register_memo_key_function(
         raise TypeError(
             "register_memo_key_function() state_fn must be callable, "
             f"got {type(state_fn).__name__}"
+        )
+    if stable_type_id is not None and not isinstance(stable_type_id, str):
+        raise TypeError(
+            "register_memo_key_function() stable_type_id must be a str, "
+            f"got {type(stable_type_id).__name__}"
         )
 
     _register_memo_type_registry(
