@@ -155,6 +155,7 @@ Languages with syntax-aware (tree-sitter) splitting — splits at logical bounda
 | JSON | `"json"` | `.json`, `.jsonl`, `.geojson` |
 | Julia | `"julia"` | `.jl` |
 | Kotlin | `"kotlin"` | `.kt`, `.kts`, `.ktm` |
+| Lua | `"lua"` | `.lua`, `.nse`, `.p8`, `.pd_lua`, `.rbxs`, `.rockspec`, `.wlua` |
 | Markdown | `"markdown"` | `.md`, `.markdown`, `.mdx` |
 | Pascal / Delphi | `"pascal"` | `.pas`, `.dpr`, `.lpr`, `.dfm` |
 | PHP | `"php"` | `.php` |
@@ -176,7 +177,7 @@ Languages with syntax-aware (tree-sitter) splitting — splits at logical bounda
 
 Note that `.h` maps to C++, not C — the C++ grammar also parses C headers. Pass `language="c"` explicitly to force the C grammar.
 
-Over 110 additional languages use separator-based splitting (e.g. `"elixir"`, `"erlang"`, `"haskell"`, `"lua"`, `"nix"`, `"perl"`, `"powershell"`, `"proto"`, `"zig"`, and more). A `language=` value that matches no known language also falls back to separator-based splitting rather than raising.
+110 additional languages use separator-based splitting (e.g. `"elixir"`, `"erlang"`, `"haskell"`, `"nix"`, `"perl"`, `"powershell"`, `"proto"`, `"zig"`, and more). A `language=` value that matches no known language also falls back to separator-based splitting rather than raising.
 
 ### `CustomLanguageConfig`
 
