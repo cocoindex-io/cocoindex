@@ -754,15 +754,21 @@ def test_raw_class_object_ignores_registered_type_stable_type_id() -> None:
         unregister_memo_key_function(type)
 
 
-def test_raw_class_object_stable_type_id_is_exact_type() -> None:
+def test_raw_class_object_stable_type_id_is_inherited_by_subclasses() -> None:
     class Parent:
         __coco_memo_type_id__ = "test.RawClassExact/v1"
 
     class Child(Parent):
         pass
 
-    assert fingerprint_call(_dummy_fn, (Parent,), {}, []) != fingerprint_call(
+    class OverridingChild(Parent):
+        __coco_memo_type_id__ = "test.RawClassExactChild/v1"
+
+    assert fingerprint_call(_dummy_fn, (Parent,), {}, []) == fingerprint_call(
         _dummy_fn, (Child,), {}, []
+    )
+    assert fingerprint_call(_dummy_fn, (Parent,), {}, []) != fingerprint_call(
+        _dummy_fn, (OverridingChild,), {}, []
     )
 
 
@@ -858,7 +864,7 @@ def test_register_memo_key_function_registers_stable_type_id_without_key_functio
 
     try:
         register_memo_key_function(OldEntry, stable_type_id="test.RegisteredEntry/v1")
-        register_memo_key_function(NewEntry, stable_type_id="test.RegisteredEntry/v1")
+        register_memo_key_function(NewEntry, None, stable_type_id="test.RegisteredEntry/v1")
         assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) == fingerprint_call(
             _dummy_fn, (NewEntry(1),), {}, []
         )
@@ -870,7 +876,7 @@ def test_register_memo_key_function_registers_stable_type_id_without_key_functio
         unregister_memo_key_function(NewEntry)
 
 
-def test_stable_type_id_only_registration_is_exact_for_subclasses() -> None:
+def test_stable_type_id_only_registration_propagates_to_subclasses_across_mro() -> None:
     class Parent:
         def __init__(self, value: object) -> None:
             self.value = value
@@ -879,6 +885,9 @@ def test_stable_type_id_only_registration_is_exact_for_subclasses() -> None:
             return ("entry", self.value)
 
     class Child(Parent):
+        pass
+
+    class OverridingChild(Parent):
         pass
 
     class SameStableTypeId:
@@ -890,26 +899,116 @@ def test_stable_type_id_only_registration_is_exact_for_subclasses() -> None:
 
     try:
         register_memo_key_function(
-            Parent, stable_type_id="test.RegisteredExactParent/v1"
+            Parent, stable_type_id="test.RegisteredParent/v1"
         )
         register_memo_key_function(
-            SameStableTypeId, stable_type_id="test.RegisteredExactParent/v1"
+            OverridingChild, stable_type_id="test.RegisteredOverridingChild/v1"
+        )
+        register_memo_key_function(
+            SameStableTypeId, stable_type_id="test.RegisteredParent/v1"
         )
 
+        # Child inherits Parent's registered stable type ID across MRO:
+        assert fingerprint_call(_dummy_fn, (Parent(1),), {}, []) == fingerprint_call(
+            _dummy_fn, (Child(1),), {}, []
+        )
         assert fingerprint_call(_dummy_fn, (Parent(1),), {}, []) == fingerprint_call(
             _dummy_fn, (SameStableTypeId(1),), {}, []
         )
-        assert fingerprint_call(_dummy_fn, (Parent(1),), {}, []) != fingerprint_call(
-            _dummy_fn, (Child(1),), {}, []
-        )
-        assert fingerprint_call(_dummy_fn, (Parent,), {}, []) != fingerprint_call(
+        assert fingerprint_call(_dummy_fn, (Parent,), {}, []) == fingerprint_call(
             _dummy_fn, (Child,), {}, []
+        )
+        # OverridingChild has its own more specific registration:
+        assert fingerprint_call(_dummy_fn, (Parent(1),), {}, []) != fingerprint_call(
+            _dummy_fn, (OverridingChild(1),), {}, []
         )
     finally:
         unregister_memo_key_function(Parent)
+        unregister_memo_key_function(OverridingChild)
         unregister_memo_key_function(SameStableTypeId)
 
 
+def test_declared_stable_type_id_is_inherited_and_takes_precedence_over_registered() -> None:
+    class Base:
+        __coco_memo_type_id__: ClassVar[str] = "test.DeclaredBase/v1"
+
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("entry", self.value)
+
+    class Sub(Base):
+        pass
+
+    class OverridingSub(Base):
+        __coco_memo_type_id__: ClassVar[str] = "test.DeclaredOverridingSub/v1"
+
+    try:
+        # Register an ID on Sub — declared (inherited from Base) must take precedence:
+        register_memo_key_function(Sub, stable_type_id="test.RegisteredSub/v1")
+
+        assert _memo_fingerprint._type_identity_parts(Base, None) == (
+            ("__coco_memo_type_id__", "test.DeclaredBase/v1"),
+            None,
+        )
+        # Sub inherits Base's declared ID, beating Sub's registered ID:
+        assert _memo_fingerprint._type_identity_parts(Sub, None) == (
+            ("__coco_memo_type_id__", "test.DeclaredBase/v1"),
+            None,
+        )
+        assert fingerprint_call(_dummy_fn, (Base(1),), {}, []) == fingerprint_call(
+            _dummy_fn, (Sub(1),), {}, []
+        )
+        # OverridingSub overrides Base's declared ID:
+        assert _memo_fingerprint._type_identity_parts(OverridingSub, None) == (
+            ("__coco_memo_type_id__", "test.DeclaredOverridingSub/v1"),
+            None,
+        )
+        assert fingerprint_call(_dummy_fn, (Base(1),), {}, []) != fingerprint_call(
+            _dummy_fn, (OverridingSub(1),), {}, []
+        )
+    finally:
+        unregister_memo_key_function(Sub)
+
+
+def test_prev_type_id_on_base_class_propagates_to_subclasses() -> None:
+    import cocoindex as coco
+
+    class OldBase:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("entry", self.value)
+
+    class MovedBase:
+        __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
+            "old_package.models", "OldBase"
+        )
+
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def __coco_memo_key__(self) -> object:
+            return ("entry", self.value)
+
+    class MovedSub(MovedBase):
+        pass
+
+    OldBase.__module__ = "old_package.models"
+    OldBase.__qualname__ = "OldBase"
+
+    # End-to-end black-box verification: MovedSub matches OldBase fingerprint:
+    assert fingerprint_call(_dummy_fn, (MovedSub(1),), {}, []) == fingerprint_call(
+        _dummy_fn, (OldBase(1),), {}, []
+    )
+    assert fingerprint_call(_dummy_fn, (MovedSub(1),), {}, []) != fingerprint_call(
+        _dummy_fn, (OldBase(2),), {}, []
+    )
+    assert fingerprint_call(_dummy_fn, (MovedBase(1),), {}, []) == fingerprint_call(
+        _dummy_fn, (MovedSub(1),), {}, []
+    )
 def test_stable_type_id_only_subclass_registration_does_not_hide_base_key() -> None:
     class Parent:
         def __init__(self, value: object, ignored: object) -> None:
@@ -932,6 +1031,78 @@ def test_stable_type_id_only_subclass_registration_does_not_hide_base_key() -> N
     finally:
         unregister_memo_key_function(Child)
         unregister_memo_key_function(Parent)
+
+
+def test_subclass_declared_stable_type_id_overrides_registered_base_identity() -> None:
+    class Base:
+        def __init__(self, value: object, ignored: object) -> None:
+            self.value = value
+            self.ignored = ignored
+
+    class Sub(Base):
+        __coco_memo_type_id__: ClassVar[str] = "test.SubDeclaredOverride/v1"
+
+    class TwinSub(Base):
+        __coco_memo_type_id__: ClassVar[str] = "test.SubDeclaredOverride/v1"
+
+    try:
+        register_memo_key_function(
+            Base,
+            lambda entry: ("base", entry.value),
+            stable_type_id="test.BaseRegisteredOverride/v1",
+        )
+
+        # Base's registered key function still drives Sub's key shape:
+        assert fingerprint_call(_dummy_fn, (Sub(1, "a"),), {}, []) == fingerprint_call(
+            _dummy_fn, (Sub(1, "b"),), {}, []
+        )
+        # Sub's declared ID overrides the identity inherited from Base's registration:
+        assert fingerprint_call(_dummy_fn, (Sub(1, "a"),), {}, []) != fingerprint_call(
+            _dummy_fn, (Base(1, "a"),), {}, []
+        )
+        assert fingerprint_call(_dummy_fn, (Sub(1, "a"),), {}, []) == fingerprint_call(
+            _dummy_fn, (TwinSub(1, "a"),), {}, []
+        )
+    finally:
+        unregister_memo_key_function(Base)
+
+
+def test_subclass_registered_stable_type_id_overrides_registered_base_identity() -> None:
+    class Base:
+        def __init__(self, value: object, ignored: object) -> None:
+            self.value = value
+            self.ignored = ignored
+
+    class Sub(Base):
+        pass
+
+    class TwinSub(Base):
+        pass
+
+    try:
+        register_memo_key_function(
+            Base,
+            lambda entry: ("base", entry.value),
+            stable_type_id="test.BaseRegisteredOverride/v2",
+        )
+        register_memo_key_function(Sub, stable_type_id="test.SubRegisteredOverride/v2")
+        register_memo_key_function(TwinSub, stable_type_id="test.SubRegisteredOverride/v2")
+
+        # Base's registered key function still drives Sub's key shape:
+        assert fingerprint_call(_dummy_fn, (Sub(1, "a"),), {}, []) == fingerprint_call(
+            _dummy_fn, (Sub(1, "b"),), {}, []
+        )
+        # Sub's registered ID overrides the identity inherited from Base's registration:
+        assert fingerprint_call(_dummy_fn, (Sub(1, "a"),), {}, []) != fingerprint_call(
+            _dummy_fn, (Base(1, "a"),), {}, []
+        )
+        assert fingerprint_call(_dummy_fn, (Sub(1, "a"),), {}, []) == fingerprint_call(
+            _dummy_fn, (TwinSub(1, "a"),), {}, []
+        )
+    finally:
+        unregister_memo_key_function(TwinSub)
+        unregister_memo_key_function(Sub)
+        unregister_memo_key_function(Base)
 
 
 def test_stable_type_id_only_registration_replaces_key_and_state_functions() -> None:
@@ -1194,27 +1365,6 @@ def test_register_not_memo_keyable_replaces_stable_type_id_for_class_objects() -
         unregister_memo_key_function(SameStableTypeId)
 
 
-def test_register_memo_key_function_accepts_explicit_none_key_function() -> None:
-    class Entry:
-        def __coco_memo_key__(self) -> object:
-            return ("entry",)
-
-    class SameStableTypeId:
-        def __coco_memo_key__(self) -> object:
-            return ("entry",)
-
-    try:
-        register_memo_key_function(Entry, None, stable_type_id="test.ExplicitNone/v1")
-        register_memo_key_function(
-            SameStableTypeId, stable_type_id="test.ExplicitNone/v1"
-        )
-        assert fingerprint_call(_dummy_fn, (Entry(),), {}, []) == fingerprint_call(
-            _dummy_fn, (SameStableTypeId(),), {}, []
-        )
-    finally:
-        unregister_memo_key_function(Entry)
-        unregister_memo_key_function(SameStableTypeId)
-
 
 @pytest.mark.parametrize(
     ("args", "kwargs", "match"),
@@ -1324,49 +1474,12 @@ def test_unregister_memo_key_function_clears_key_function_and_stable_type_id() -
         unregister_memo_key_function(NewEntry)
 
 
-def test_stable_type_id_exact_type() -> None:
-    class OldEntry:
-        __coco_memo_type_id__ = "test.DirectEntry/v1"
-
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def __coco_memo_key__(self) -> object:
-            return ("entry", self.value)
-
-    class NewEntry:
-        __coco_memo_type_id__ = "test.DirectEntry/v1"
-
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def __coco_memo_key__(self) -> object:
-            return ("entry", self.value)
-
-    class Parent:
-        __coco_memo_type_id__ = "test.Parent/v1"
-
-        def __coco_memo_key__(self) -> object:
-            return ("same", 1)
-
-    class Child(Parent):
-        pass
-
+def test_none_declared_stable_type_id_falls_back_to_registered_or_module_qualname() -> None:
     class NoneId:
         __coco_memo_type_id__ = None
 
         def __coco_memo_key__(self) -> object:
             return ("bad", 1)
-
-    assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) == fingerprint_call(
-        _dummy_fn, (NewEntry(1),), {}, []
-    )
-    assert fingerprint_call(_dummy_fn, (OldEntry(1),), {}, []) != fingerprint_call(
-        _dummy_fn, (NewEntry(2),), {}, []
-    )
-    assert fingerprint_call(_dummy_fn, (Parent(),), {}, []) != fingerprint_call(
-        _dummy_fn, (Child(),), {}, []
-    )
     none_id_canonical = _memo_fingerprint._canonicalize(NoneId(), None, [])
     assert isinstance(none_id_canonical, tuple)
     assert none_id_canonical[:3] == (

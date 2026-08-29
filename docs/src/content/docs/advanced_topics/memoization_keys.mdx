@@ -140,6 +140,8 @@ class SourceEntry:  # Moved to new_package.models
     version: int
 ```
 
+Declare `prev_type_id` on each moved class; like any class attribute, a base-class declaration propagates to subclasses.
+
 For types you don't control, register the ID with `register_memo_key_function()`:
 
 ```python
@@ -153,6 +155,12 @@ coco.register_memo_key_function(
 )
 ```
 
+Each call replaces the type's entire registration. If a type needs a key function, state function, and stable type ID, pass them together in one call.
+
+- **Inheritance**: Declaring `__coco_memo_type_id__` on a base class propagates to subclasses. A subclass can override the ID by declaring its own.
+- **Precedence**: A declared `__coco_memo_type_id__` (own or inherited) takes precedence over any registered stable type ID.
+- **MRO registration**: Registered stable type IDs also apply to subclasses across the MRO: the most specific registered type wins. A subclass can override an inherited registered ID by declaring or registering its own.
+
 :::note[Pickle fallback]
 Types using pickle fallback fingerprint raw bytes without type namespacing. Setting or registering a stable type ID alone has no effect on them — register a memo key function together with the stable type ID.
 :::
@@ -163,10 +171,10 @@ A class object is the class value itself (such as `ProductRow`), not an instance
 
 When CocoIndex fingerprints a class object:
 
-* It uses the class's `__coco_memo_type_id__` when defined, or falls back to its module and qualified name (`module.QualName`).
+* It uses the class's stable type ID (declared with `__coco_memo_type_id__` or registered with `register_memo_key_function()`) when defined, or falls back to its module and qualified name (`module.QualName`).
 * It does not call `__coco_memo_key__` or `__coco_memo_state__` methods defined on the class or its metaclass.
 * It fingerprints only the class identity, not its schema or attributes. Include class details with `memo_key=` if the function depends on them.
-* To customize memoization for class objects globally, register a memo key function on the class's custom metaclass or on `type` (which takes precedence over `__coco_memo_type_id__`).
+* To customize memoization for class objects globally, register a memo key function on the class's custom metaclass or on `type` (which takes precedence over stable type IDs).
 
 ### Override at the call site with `memo_key=`
 
