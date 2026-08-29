@@ -206,6 +206,7 @@ _CLASS_OBJECT_OWNER_IDENTITY: tuple[Fingerprintable, Fingerprintable] = (
 def _type_identity_parts(
     typ: type,
     registry: _MemoTypeRegistry | None,
+    fallback_owner: type | None = None,
 ) -> tuple[Fingerprintable, Fingerprintable]:
     """Return stable type ID or module+qualname type identity parts.
 
@@ -213,16 +214,34 @@ def _type_identity_parts(
     module/qualname identity shape used by type-aware canonical forms. The
     tagged first slot keeps stable type IDs disjoint from ordinary module
     names; ``None`` fills the qualname slot.
+    ``fallback_owner`` anchors the automatic module/qualname identity to the
+    type that owns a registered key function selected via MRO: the runtime
+    type's own declared or registered stable ID still wins, but when no stable
+    ID applies the identity stays with the key function's owner type.
     """
-    stable_type_id = typ.__dict__.get("__coco_memo_type_id__")
-    if stable_type_id is None and registry is not None:
-        stable_type_id = registry.stable_type_id
-
+    stable_type_id = getattr(typ, "__coco_memo_type_id__", None)
+    if not isinstance(stable_type_id, str):
+        if registry is not None and registry.stable_type_id is not None:
+            stable_type_id = registry.stable_type_id
+        else:
+            for owner in typ.__mro__:
+                reg = (
+                    registry
+                    if owner is typ
+                    else _registered_memo_type_registry(owner)
+                )
+                if reg is not None and reg.stable_type_id is not None:
+                    stable_type_id = reg.stable_type_id
+                    break
     if isinstance(stable_type_id, _PreviousTypeId):
         return stable_type_id._identity_parts
     if isinstance(stable_type_id, str):
         return (("__coco_memo_type_id__", stable_type_id), None)
-    return (canonical_module_name(typ), getattr(typ, "__qualname__", None))
+    fallback_owner = typ if fallback_owner is None else fallback_owner
+    return (
+        canonical_module_name(fallback_owner),
+        getattr(fallback_owner, "__qualname__", None),
+    )
 
 
 def _canonicalize_registered_memo_key(
@@ -240,9 +259,23 @@ def _canonicalize_registered_memo_key(
         tag = "shook"
         bound = functools.partial(registry.state_fn, obj)
         state_methods.append(_make_state_fn_entry(bound, registry.state_fn))
+    if isinstance(obj, type):
+        # Class objects keep the identity of the metaclass owner whose
+        # registration supplied the key function.
+        identity = _type_identity_parts(owner, registry)
+    else:
+        # Instances resolve identity on the runtime type, so a subclass can
+        # override an inherited registered stable ID by declaring or
+        # registering its own; the automatic identity falls back to the owner.
+        typ = type(obj)
+        identity = _type_identity_parts(
+            typ,
+            registry if typ is owner else _registered_memo_type_registry(typ),
+            fallback_owner=owner,
+        )
     return (
         tag,
-        *_type_identity_parts(owner, registry),
+        *identity,
         _canonicalize(key, state, state_methods),
     )
 
@@ -384,10 +417,8 @@ def register_memo_key_function(
 ) -> None:
     """Register a memo key function and/or stable type ID for a type.
 
-    Key-function resolution is MRO-aware: the most specific registered base
-    type wins. Stable type IDs registered without a key function apply to the
-    exact type only; stable type IDs registered with a key function identify
-    that selected owner type. Each call replaces the full registration for
+    Key-function and stable-type-ID resolutions are MRO-aware: the most specific
+    registered base type wins. Each call replaces the full registration for
     ``typ``: omitting ``stable_type_id`` clears any previous registered stable
     type ID, and omitting ``key_fn`` or passing ``None`` clears any previous
     key/state functions.
@@ -458,7 +489,7 @@ def register_not_memo_keyable(typ: type) -> None:
 
 
 def unregister_memo_key_function(typ: type) -> None:
-    """Remove registered memo key function and stable type ID (best-effort)."""
+    """Remove registered memo key function and stable type ID."""
 
     if isinstance(typ, type):
         _unregister_memo_type_registry(typ)
