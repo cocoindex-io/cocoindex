@@ -2263,7 +2263,7 @@ class _FunctionDecorator:
 
                 Stable type IDs used by ``deps`` must therefore exist before the
                 decorator is applied: define ``__coco_memo_type_id__`` on the class
-                or call ``register_memo_key_function(..., stable_type_id=...)``
+                or call ``register_memo_type(..., stable_type_id=...)``
                 before decorating. A later registration can affect future argument
                 fingerprints, but it cannot retroactively update this function's
                 already-computed logic fingerprint.
