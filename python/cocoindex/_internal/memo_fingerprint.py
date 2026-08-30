@@ -227,7 +227,7 @@ def _type_identity_parts(
             for owner in typ.__mro__:
                 reg = (
                     registry
-                    if owner is typ
+                    if (registry is not None and owner is typ)
                     else _registered_memo_type_registry(owner)
                 )
                 if reg is not None and reg.stable_type_id is not None:
@@ -390,7 +390,7 @@ class NotMemoKeyable:
 
 
 @typing.overload
-def register_memo_key_function(
+def register_memo_type(
     typ: type,
     key_fn: _KeyFn,
     *,
@@ -400,7 +400,7 @@ def register_memo_key_function(
 
 
 @typing.overload
-def register_memo_key_function(
+def register_memo_type(
     typ: type,
     key_fn: None = None,
     *,
@@ -408,14 +408,14 @@ def register_memo_key_function(
 ) -> None: ...
 
 
-def register_memo_key_function(
+def register_memo_type(
     typ: type,
     key_fn: _KeyFn | None = None,
     *,
     state_fn: _StateFn | None = None,
     stable_type_id: str | None = None,
 ) -> None:
-    """Register a memo key function and/or stable type ID for a type.
+    """Register a memo key function, state function, and/or stable type ID for a type.
 
     Key-function and stable-type-ID resolutions are MRO-aware: the most specific
     registered base type wins. Each call replaces the full registration for
@@ -431,31 +431,31 @@ def register_memo_key_function(
 
     if not isinstance(typ, type):
         raise TypeError(
-            "register_memo_key_function() expects typ to be a type, "
+            "register_memo_type() expects typ to be a type, "
             f"got {type(typ).__name__}"
         )
     if key_fn is None:
         if state_fn is not None:
             raise TypeError(
-                "register_memo_key_function() state_fn requires a memo key function"
+                "register_memo_type() state_fn requires a memo key function"
             )
         if stable_type_id is None:
             raise TypeError(
-                "register_memo_key_function() requires a key_fn or stable_type_id"
+                "register_memo_type() requires a key_fn or stable_type_id"
             )
     elif not callable(key_fn):
         raise TypeError(
-            "register_memo_key_function() key_fn must be callable, "
+            "register_memo_type() key_fn must be callable, "
             f"got {type(key_fn).__name__}"
         )
     if state_fn is not None and not callable(state_fn):
         raise TypeError(
-            "register_memo_key_function() state_fn must be callable, "
+            "register_memo_type() state_fn must be callable, "
             f"got {type(state_fn).__name__}"
         )
     if stable_type_id is not None and not isinstance(stable_type_id, str):
         raise TypeError(
-            "register_memo_key_function() stable_type_id must be a str, "
+            "register_memo_type() stable_type_id must be a str, "
             f"got {type(stable_type_id).__name__}"
         )
 
@@ -467,6 +467,18 @@ def register_memo_key_function(
             stable_type_id=stable_type_id,
         ),
     )
+
+
+def register_memo_key_function(
+    typ: type,
+    key_fn: _KeyFn,
+    *,
+    state_fn: _StateFn | None = None,
+) -> None:
+    """Register a memo key function for a type, preserving any registered stable type ID."""
+    existing = _registered_memo_type_registry(typ) if isinstance(typ, type) else None
+    stable_type_id = existing.stable_type_id if existing is not None else None
+    register_memo_type(typ, key_fn=key_fn, state_fn=state_fn, stable_type_id=stable_type_id)
 
 
 def register_not_memo_keyable(typ: type) -> None:
@@ -488,10 +500,24 @@ def register_not_memo_keyable(typ: type) -> None:
     _register_memo_type_registry(typ, _MemoTypeRegistry(key_fn=_raise_not_memo_keyable))
 
 
-def unregister_memo_key_function(typ: type) -> None:
-    """Remove registered memo key function and stable type ID."""
+def unregister_memo_type(typ: type) -> None:
+    """Remove registered memo configuration for a type."""
 
     if isinstance(typ, type):
+        _unregister_memo_type_registry(typ)
+
+
+def unregister_memo_key_function(typ: type) -> None:
+    """Remove a registered memo key function, preserving any registered stable type ID."""
+
+    if not isinstance(typ, type):
+        return
+    reg = _registered_memo_type_registry(typ)
+    if reg is None:
+        return
+    if reg.stable_type_id is not None:
+        register_memo_type(typ, stable_type_id=reg.stable_type_id)
+    else:
         _unregister_memo_type_registry(typ)
 
 
@@ -713,6 +739,8 @@ __all__ = [
     "memo_fingerprint",
     "prev_type_id",
     "register_memo_key_function",
+    "register_memo_type",
     "register_not_memo_keyable",
     "unregister_memo_key_function",
+    "unregister_memo_type",
 ]
