@@ -2,8 +2,8 @@ import dataclasses
 import math
 from typing import Any
 
+import msgspec
 import pytest
-
 from cocoindex._internal.function import _apply_memo_key, _normalize_memo_key
 from cocoindex._internal.memo_fingerprint import (
     fingerprint_call,
@@ -462,6 +462,96 @@ def test_dataclass_and_pydantic_different_types() -> None:
     # Different type kinds -> different fingerprints
     assert fingerprint_call(_dummy_fn, (d,), {}, []) != fingerprint_call(
         _dummy_fn, (p,), {}, []
+    )
+
+
+def test_msgspec_struct_memo_key() -> None:
+    """Test that ``msgspec.Struct`` instances are fingerprinted structurally."""
+
+    class Point(msgspec.Struct):
+        x: int
+        y: int
+
+    p1 = Point(x=1, y=2)
+    p2 = Point(x=1, y=2)
+    p3 = Point(x=2, y=1)
+
+    # Same values -> same fingerprint
+    assert fingerprint_call(_dummy_fn, (p1,), {}, []) == fingerprint_call(
+        _dummy_fn, (p2,), {}, []
+    )
+
+    # Different values -> different fingerprint
+    assert fingerprint_call(_dummy_fn, (p1,), {}, []) != fingerprint_call(
+        _dummy_fn, (p3,), {}, []
+    )
+
+
+def test_msgspec_struct_nested() -> None:
+    """Test nested ``msgspec.Struct`` fingerprinting."""
+
+    class Inner(msgspec.Struct):
+        value: int
+
+    class Outer(msgspec.Struct):
+        inner: Inner
+        name: str
+
+    o1 = Outer(inner=Inner(value=42), name="test")
+    o2 = Outer(inner=Inner(value=42), name="test")
+    o3 = Outer(inner=Inner(value=43), name="test")
+
+    # Same values -> same fingerprint
+    assert fingerprint_call(_dummy_fn, (o1,), {}, []) == fingerprint_call(
+        _dummy_fn, (o2,), {}, []
+    )
+
+    # Different nested values -> different fingerprint
+    assert fingerprint_call(_dummy_fn, (o1,), {}, []) != fingerprint_call(
+        _dummy_fn, (o3,), {}, []
+    )
+
+
+def test_msgspec_struct_different_types_same_fields() -> None:
+    """Test that different ``msgspec.Struct`` types with same fields produce different fingerprints."""
+
+    class TypeA(msgspec.Struct):
+        value: int
+
+    class TypeB(msgspec.Struct):
+        value: int
+
+    a = TypeA(value=1)
+    b = TypeB(value=1)
+
+    # Different types -> different fingerprints
+    assert fingerprint_call(_dummy_fn, (a,), {}, []) != fingerprint_call(
+        _dummy_fn, (b,), {}, []
+    )
+
+
+def test_msgspec_struct_override_with_coco_memo_key() -> None:
+    """Test that __coco_memo_key__ takes precedence over automatic msgspec.Struct handling."""
+
+    class WithOverride(msgspec.Struct):
+        value: int
+        ignored: str
+
+        def __coco_memo_key__(self) -> object:
+            return ("custom", self.value)
+
+    w1 = WithOverride(value=1, ignored="a")
+    w2 = WithOverride(value=1, ignored="b")
+    w3 = WithOverride(value=2, ignored="a")
+
+    # Same memo-key-relevant data -> same fingerprint
+    assert fingerprint_call(_dummy_fn, (w1,), {}, []) == fingerprint_call(
+        _dummy_fn, (w2,), {}, []
+    )
+
+    # Different memo-key-relevant data -> different fingerprint
+    assert fingerprint_call(_dummy_fn, (w1,), {}, []) != fingerprint_call(
+        _dummy_fn, (w3,), {}, []
     )
 
 
