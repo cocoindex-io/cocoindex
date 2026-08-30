@@ -3,12 +3,12 @@ import dataclasses
 import inspect
 import types
 import typing
+from collections.abc import Callable, Iterator
 from typing import (
     Annotated,
     Any,
-    Callable,
+    ClassVar,
     Generic,
-    Iterator,
     NamedTuple,
     TypeVar,
     get_type_hints,
@@ -19,13 +19,6 @@ import msgspec.structs
 import numpy as np
 
 # Optional Pydantic support
-
-
-
-
-
-
-
 try:
     import pydantic
 
@@ -86,7 +79,7 @@ class DtypeRegistry:
     Maps NumPy dtypes to their CocoIndex type kind.
     """
 
-    _DTYPE_TO_KIND: dict[Any, str] = {
+    _DTYPE_TO_KIND: ClassVar[dict[Any, str]] = {
         np.float32: "Float32",
         np.float64: "Float64",
         np.int64: "Int64",
@@ -442,7 +435,7 @@ class TypeChecker(Generic[T]):
         key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
     """
 
-    __slots__ = ("_expected_type", "_check_fn")
+    __slots__ = ("_check_fn", "_expected_type")
 
     def __init__(self, expected_type: type[T]) -> None:
         self._expected_type = expected_type
