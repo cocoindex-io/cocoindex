@@ -207,9 +207,10 @@ def _type_identity_parts(
     typ: type,
     registry: _MemoTypeRegistry | None,
     fallback_owner: type | None = None,
+    *,
+    is_class_object: bool = False,
 ) -> tuple[Fingerprintable, Fingerprintable]:
     """Return stable type ID or module+qualname type identity parts.
-
     The stable type ID case still returns two parts to preserve the existing
     module/qualname identity shape used by type-aware canonical forms. The
     tagged first slot keeps stable type IDs disjoint from ordinary module
@@ -225,6 +226,8 @@ def _type_identity_parts(
             stable_type_id = registry.stable_type_id
         else:
             for owner in typ.__mro__:
+                if is_class_object and owner is object and typ is not object:
+                    break
                 reg = (
                     registry
                     if (registry is not None and owner is typ)
@@ -262,7 +265,7 @@ def _canonicalize_registered_memo_key(
     if isinstance(obj, type):
         # Class objects keep the identity of the metaclass owner whose
         # registration supplied the key function.
-        identity = _type_identity_parts(owner, registry)
+        identity = _type_identity_parts(owner, registry, is_class_object=True)
     else:
         # Instances resolve identity on the runtime type, so a subclass can
         # override an inherited registered stable ID by declaring or
@@ -310,7 +313,7 @@ def _canonicalize_class_object(
         *_CLASS_OBJECT_OWNER_IDENTITY,
         # This synthesized identity is already canonical; do not re-enter memo-key
         # dispatch, where a registration on ``object`` could intercept it.
-        ("seq", _type_identity_parts(cls, cls_registry)),
+        ("seq", _type_identity_parts(cls, cls_registry, is_class_object=True)),
     )
 
 
@@ -404,6 +407,7 @@ def register_memo_type(
     typ: type,
     key_fn: None = None,
     *,
+    state_fn: None = None,
     stable_type_id: str,
 ) -> None: ...
 
@@ -431,8 +435,7 @@ def register_memo_type(
 
     if not isinstance(typ, type):
         raise TypeError(
-            "register_memo_type() expects typ to be a type, "
-            f"got {type(typ).__name__}"
+            f"register_memo_type() expects typ to be a type, got {type(typ).__name__}"
         )
     if key_fn is None:
         if state_fn is not None:
@@ -440,13 +443,10 @@ def register_memo_type(
                 "register_memo_type() state_fn requires a memo key function"
             )
         if stable_type_id is None:
-            raise TypeError(
-                "register_memo_type() requires a key_fn or stable_type_id"
-            )
+            raise TypeError("register_memo_type() requires a key_fn or stable_type_id")
     elif not callable(key_fn):
         raise TypeError(
-            "register_memo_type() key_fn must be callable, "
-            f"got {type(key_fn).__name__}"
+            f"register_memo_type() key_fn must be callable, got {type(key_fn).__name__}"
         )
     if state_fn is not None and not callable(state_fn):
         raise TypeError(
@@ -478,7 +478,9 @@ def register_memo_key_function(
     """Register a memo key function for a type, preserving any registered stable type ID."""
     existing = _registered_memo_type_registry(typ) if isinstance(typ, type) else None
     stable_type_id = existing.stable_type_id if existing is not None else None
-    register_memo_type(typ, key_fn=key_fn, state_fn=state_fn, stable_type_id=stable_type_id)
+    register_memo_type(
+        typ, key_fn=key_fn, state_fn=state_fn, stable_type_id=stable_type_id
+    )
 
 
 def register_not_memo_keyable(typ: type) -> None:

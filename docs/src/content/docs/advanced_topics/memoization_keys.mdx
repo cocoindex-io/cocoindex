@@ -98,14 +98,14 @@ If you can't add `__coco_memo_key__` (stdlib / third-party types), register a ke
 
 ```python
 from pathlib import Path
-from cocoindex import register_memo_key_function
+from cocoindex import register_memo_type
 
 def path_key(p: Path) -> object:
     p = p.resolve()
     st = p.stat()
     return (str(p), st.st_mtime_ns, st.st_size)
 
-register_memo_key_function(Path, path_key)
+register_memo_type(Path, path_key)
 ```
 
 - Registration is **MRO-aware**: if you register both a base class and a subclass, the **most specific** match wins.
@@ -142,13 +142,13 @@ class SourceEntry:  # Moved to new_package.models
 
 Declare `prev_type_id` on each moved class; like any class attribute, a base-class declaration propagates to subclasses.
 
-For types you don't control, register the ID with `register_memo_key_function()`:
+For types you don't control, register the ID with `register_memo_type()`:
 
 ```python
 from some_library import ExternalRecord
 import cocoindex as coco
 
-coco.register_memo_key_function(
+coco.register_memo_type(
     ExternalRecord,
     lambda record: (record.id, record.version),
     stable_type_id="com.example.ExternalRecord/v1",
@@ -157,9 +157,11 @@ coco.register_memo_key_function(
 
 Each call replaces the type's entire registration. If a type needs a key function, state function, and stable type ID, pass them together in one call.
 
-- **Inheritance**: Declaring `__coco_memo_type_id__` on a base class propagates to subclasses. A subclass can override the ID by declaring its own.
-- **Precedence**: A declared `__coco_memo_type_id__` (own or inherited) takes precedence over any registered stable type ID.
-- **MRO registration**: Registered stable type IDs also apply to subclasses across the MRO: the most specific registered type wins. A subclass can override an inherited registered ID by declaring or registering its own.
+- **Inheritance**: Declaring `__coco_memo_type_id__` on a base class is a deliberate statement that the family shares the same namespace, and propagates to subclasses. For dataclass and Pydantic instances, field tuples keep payloads distinct; a subclass can and should override the ID by declaring its own `__coco_memo_type_id__` when semantics diverge.
+- **Precedence**: Type identity resolution follows this precedence:
+  1. **Declared stable type ID** (`__coco_memo_type_id__`, own or inherited).
+  2. **Registered stable type ID** (most specific registration across the type's MRO via `register_memo_type()`).
+  3. **Automatic fallback** (the type's canonical module and qualified name, `module.QualName`).
 
 :::note[Pickle fallback]
 Types using pickle fallback fingerprint raw bytes without type namespacing. Setting or registering a stable type ID alone has no effect on them — register a memo key function together with the stable type ID.
@@ -167,14 +169,13 @@ Types using pickle fallback fingerprint raw bytes without type namespacing. Sett
 
 ### Class objects as inputs
 
-A class object is the class value itself (such as `ProductRow`), not an instance (such as `ProductRow(...)`).
+When passing a class object itself (such as `ProductRow` rather than an instance `ProductRow(...)`), CocoIndex fingerprints only the class identity (its declared/registered stable ID or module + qualname), without invoking `__coco_memo_key__` methods or hashing class attributes.
 
-When CocoIndex fingerprints a class object:
+To customize memoization for class objects globally, register a memo key function on the class's custom metaclass or on `type`.
 
-* It uses the class's stable type ID (declared with `__coco_memo_type_id__` or registered with `register_memo_key_function()`) when defined, or falls back to its module and qualified name (`module.QualName`).
-* It does not call `__coco_memo_key__` or `__coco_memo_state__` methods defined on the class or its metaclass.
-* It fingerprints only the class identity, not its schema or attributes. Include class details with `memo_key=` if the function depends on them.
-* To customize memoization for class objects globally, register a memo key function on the class's custom metaclass or on `type` (which takes precedence over stable type IDs).
+:::caution[Avoid colliding class objects]
+Unlike instances (where field tuples keep payloads distinct), raw class objects do not hash schema attributes or field tuples. Classes sharing an inherited or metaclass-level stable type ID will produce identical fingerprints. If a memoized function accepts class objects and must distinguish between them, declare a distinct `__coco_memo_type_id__` on each class or provide a custom `memo_key=` at the call site.
+:::
 
 ### Override at the call site with `memo_key=`
 
@@ -293,7 +294,7 @@ This works for simple cases. State validation becomes useful when you need multi
 
 ### Register a state function (when you don't control the type)
 
-Pass a `state_fn` keyword argument together with a callable `key_fn` to `register_memo_key_function`; `state_fn` cannot be registered by itself. The state function receives the object as its first argument and `prev_state` as its second. Annotate `prev_state` with the expected type:
+Pass a `state_fn` keyword argument together with a callable `key_fn` to `register_memo_type`; `state_fn` cannot be registered by itself. The state function receives the object as its first argument and `prev_state` as its second. Annotate `prev_state` with the expected type:
 
 ```python
 from pathlib import Path
@@ -310,7 +311,7 @@ def path_state(
     memo_valid = not coco.is_non_existence(prev_state) and new_state == prev_state
     return coco.MemoStateOutcome(state=new_state, memo_valid=memo_valid)
 
-coco.register_memo_key_function(
+coco.register_memo_type(
     Path,
     path_key,
     state_fn=path_state,
