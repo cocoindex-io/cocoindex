@@ -93,7 +93,8 @@ async def sync_to_async_iter(
                 q.get_nowait()
         except _queue.Empty:
             pass
-        thread.join(timeout=1.0)
+        # Joining directly would block the event loop while the producer exits.
+        await loop.run_in_executor(None, thread.join, 1.0)
 
 
 def async_to_sync_iter(
