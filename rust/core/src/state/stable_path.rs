@@ -789,17 +789,17 @@ mod tests {
         assert_eq!(decoded_empty, empty);
     }
 
-    /// Every key type must survive `Display` -> `parse`, so a path copied
-    /// out of `cocoindex show` can be pasted back in as an argument.
-    #[test]
-    fn stable_path_display_parse_roundtrip() {
+    /// One key of every `StableKey` variant, including cross-type twins whose
+    /// *values* look like another variant's rendering.
+    fn representative_keys() -> Vec<StableKey> {
         let uuid = uuid::Uuid::from_bytes([3u8; 16]);
         let fp = utils::fingerprint::Fingerprint([7u8; 16]);
-        let keys = vec![
+        vec![
             StableKey::Null,
             StableKey::Bool(true),
             StableKey::Bool(false),
             StableKey::Int(0),
+            StableKey::Int(13),
             StableKey::Int(-42),
             StableKey::Int(i64::MIN),
             StableKey::Int(i64::MAX),
@@ -810,18 +810,26 @@ mod tests {
             StableKey::Str(Arc::from("nul\0and\ttabs\n")),
             StableKey::Str(Arc::from("café ☕")),
             StableKey::Str(Arc::from("")),
-            // A string that looks exactly like every other rendered form.
+            // Strings whose text is exactly some other variant's rendering.
             StableKey::Str(Arc::from("null")),
             StableKey::Str(Arc::from("true")),
             StableKey::Str(Arc::from("13")),
             StableKey::Str(Arc::from("@process_files")),
+            StableKey::Str(Arc::from("[13,null]")),
+            StableKey::Str(Arc::from(fp.to_string())),
             StableKey::Str(Arc::from(uuid.to_string())),
             StableKey::Bytes(Arc::from(&b"bytes\x00with\x01escapes/and\"quote"[..])),
+            // Bytes whose text is a string key's rendering.
+            StableKey::Bytes(Arc::from(&b"13"[..])),
             StableKey::Bytes(Arc::from(&b""[..])),
             StableKey::Uuid(uuid),
             StableKey::Fingerprint(fp),
             StableKey::Symbol(Arc::from("process_files")),
-            // Symbols carrying '/' must round-trip too — several internal
+            // Symbols whose name is another variant's rendering.
+            StableKey::Symbol(Arc::from("null")),
+            StableKey::Symbol(Arc::from("true")),
+            StableKey::Symbol(Arc::from("13")),
+            // Symbols carrying '/' must stay one part — several internal
             // symbols (e.g. "cocoindex/mount_target") contain one.
             StableKey::Symbol(Arc::from("cocoindex/mount_target")),
             StableKey::Symbol(Arc::from("")),
@@ -835,7 +843,31 @@ mod tests {
                     StableKey::Bytes(Arc::from(&b"\0"[..])),
                 ])),
             ])),
-        ];
+            // An array whose rendering a naive parser could confuse with the
+            // single string key that spells the same text.
+            StableKey::Array(Arc::from([StableKey::Int(13), StableKey::Null])),
+        ]
+    }
+
+    /// No two distinct keys may render to the same string — otherwise a path
+    /// can't be read back unambiguously, whatever the parser does.
+    #[test]
+    fn stable_key_renderings_do_not_collide() {
+        let keys = representative_keys();
+        let mut seen: HashMap<String, StableKey> = HashMap::new();
+        for key in keys {
+            let rendered = key.to_string();
+            if let Some(other) = seen.insert(rendered.clone(), key.clone()) {
+                panic!("{other:?} and {key:?} both render as {rendered}");
+            }
+        }
+    }
+
+    /// Every key type must survive `Display` -> `parse`, so a path copied
+    /// out of `cocoindex show` can be pasted back in as an argument.
+    #[test]
+    fn stable_path_display_parse_roundtrip() {
+        let keys = representative_keys();
 
         for key in &keys {
             let path = StablePath(Arc::from(vec![key.clone()]));
