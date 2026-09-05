@@ -9,6 +9,7 @@ import contextvars as _contextvars
 import queue as _queue
 import threading as _threading
 from typing import (
+    AsyncGenerator,
     AsyncIterator,
     Callable,
     Iterator,
@@ -24,7 +25,7 @@ async def sync_to_async_iter(
     sync_iter_fn: Callable[[], Iterator[_T]],
     *,
     max_queue_size: int = DEFAULT_QUEUE_SIZE,
-) -> AsyncIterator[_T]:
+) -> AsyncGenerator[_T, None]:
     """
     Adapt a synchronous iterator function to an asynchronous iterator.
 
