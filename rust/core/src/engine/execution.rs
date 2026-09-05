@@ -427,9 +427,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// them through [`AppStore::commit`](crate::state_store::AppStore::commit).
     /// The AppStore opens its own write txn, applies the plan's writes
     /// (tracking-info, fn-memo flush, user-state flush, target-owner cleanup),
-    /// and invokes the `ExistenceReconciler` callback to walk the
-    /// child-existence tree atomically inside the same txn. Then
-    /// launches Phase 5 GC.
+    /// and — unless this is a `demote_component_only` delete — invokes the
+    /// `ExistenceReconciler` callback to walk the child-existence tree
+    /// atomically inside the same txn. Then launches Phase 5 GC.
 
     async fn commit(
         self,
@@ -452,12 +452,6 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let (new_tracking_info, target_owners_to_delete) =
             self.build_commit_writes(curr_version).await?;
 
-        let child_path_set = if self.demote_component_only {
-            None
-        } else {
-            child_path_set.map(Arc::new)
-        };
-
         // On whole-component deletion, also clear the `Live` user-state
         // keyspace. The regular flush (clear_all_first / writes / deletes)
         // only touches `Regular`, so without this the live-machinery
@@ -478,30 +472,50 @@ impl<Prof: EngineProfile> Committer<Prof> {
             user_state_writes: user_state_plan.writes,
             user_state_deletes: user_state_plan.deletes,
             user_state_clear_live,
-            child_path_set: child_path_set.clone(),
         };
 
-        // Reconciler closure: walks `child_path_set` against on-disk
-        // `__cex` rows, writes diffs and tombstones. Runs inside the
-        // AppStore's commit txn so the existence diff is atomic with
-        // the rest of the commit plan.
-        let app_store = self.app_store.clone();
-        let component_path = self.component_path.clone();
-        let cps = child_path_set;
-        // `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
-        // re-invoke it — clone the (cheap, `Arc`/owned) captures per call
-        // rather than moving them into the future.
-        let reconciler: ExistenceReconciler = Box::new(move |wtxn| {
-            let app_store = app_store.clone();
-            let component_path = component_path.clone();
-            let cps = cps.clone();
-            Box::pin(async move {
-                reconcile_child_existence(wtxn, &app_store, &component_path, cps.as_deref()).await
-            })
-        });
+        // Child-existence reconciliation runs inside the AppStore's commit
+        // txn so the `__cex` diff is atomic with the rest of the plan:
+        //
+        // * Build: diff the declared `child_path_set` against the on-disk
+        //   `__cex` rows.
+        // * Whole-component delete: `child_path_set` is `None` — nothing is
+        //   declared, so every on-disk child is removed and tombstoned. This
+        //   is the cascade `launch_child_component_gc` relies on.
+        // * `demote_component_only`: this path stays in the tree as a
+        //   Directory node whose `__cex` children were declared — and
+        //   already reconciled — by the parent's current build. They are
+        //   live, so skip reconciliation entirely: walking them against an
+        //   empty set would tombstone them, and the GC sweep would then
+        //   delete target states they wrote in this same update.
+        let existence_reconciler: Option<ExistenceReconciler> = if self.demote_component_only {
+            None
+        } else {
+            let app_store = self.app_store.clone();
+            let component_path = self.component_path.clone();
+            let child_path_set = child_path_set.map(Arc::new);
+            // `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
+            // re-invoke it — clone the (cheap, `Arc`/owned) captures per call
+            // rather than moving them into the future.
+            let reconciler: ExistenceReconciler = Box::new(move |wtxn| {
+                let app_store = app_store.clone();
+                let component_path = component_path.clone();
+                let child_path_set = child_path_set.clone();
+                Box::pin(async move {
+                    reconcile_child_existence(
+                        wtxn,
+                        &app_store,
+                        &component_path,
+                        child_path_set.as_deref(),
+                    )
+                    .await
+                })
+            });
+            Some(reconciler)
+        };
 
         self.app_store
-            .commit(&self.component_path, plan, reconciler)
+            .commit(&self.component_path, plan, existence_reconciler)
             .await?;
 
         // Phase 5 GC: snapshot-read tombstones and spawn child delete

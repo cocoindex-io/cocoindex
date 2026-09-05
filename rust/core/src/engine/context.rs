@@ -1294,8 +1294,7 @@ mod tests {
         path: &StablePath,
         cache: UserStateCache<TestData>,
     ) {
-        use crate::state_store::{CommitPlan, ExistenceReconciler};
-        use futures::future::BoxFuture;
+        use crate::state_store::CommitPlan;
 
         let plan_data = cache.into_flush_plan().unwrap();
         let plan = CommitPlan {
@@ -1309,13 +1308,8 @@ mod tests {
             user_state_writes: plan_data.writes,
             user_state_deletes: plan_data.deletes,
             user_state_clear_live: false,
-            child_path_set: None,
         };
-        let reconciler: ExistenceReconciler =
-            Box::new(|_wtxn| -> BoxFuture<'_, crate::prelude::Result<()>> {
-                Box::pin(async { Ok(()) })
-            });
-        store.commit(path, plan, reconciler).await.unwrap();
+        store.commit(path, plan, None).await.unwrap();
     }
 
     #[tokio::test]
