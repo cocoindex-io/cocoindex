@@ -733,6 +733,65 @@ class TestPreview:
         assert "cannot be used together" in result.stderr.lower()
 
 
+class TestShowStablePath:
+    """Tests for the `STABLE_PATH` argument of the show command."""
+
+    def test_show_accepts_its_own_output(self) -> None:
+        """Every path `show` prints must parse when passed back as an argument."""
+        run_cli("update", "./symbol_path_app.py")
+        listed = run_cli("show", "./symbol_path_app.py")
+
+        paths = [
+            line.strip()
+            for line in listed.stdout.splitlines()
+            if line.startswith("  /")
+        ]
+        # Symbol parts (from mount_each) and a string part holding a "/".
+        assert '/@process_files/"rfc8259.md"' in paths
+        assert '/@process_files/"with/slash.md"' in paths
+
+        for path in paths:
+            result = run_cli("show", "./symbol_path_app.py", path)
+            assert path in result.stdout, f"{path} not echoed back"
+
+    def test_show_distinguishes_symbols_from_strings(self) -> None:
+        """`@name` is a symbol; `"@name"` is a string that doesn't exist."""
+        run_cli("update", "./symbol_path_app.py")
+
+        found = run_cli("show", "./symbol_path_app.py", '/@process_files/"rfc8259.md"')
+        assert "processor:process_files" in found.stdout
+
+        missing = run_cli(
+            "show",
+            "./symbol_path_app.py",
+            '/"@process_files"/"rfc8259.md"',
+            check=False,
+        )
+        assert missing.returncode != 0
+        assert "not found" in missing.stderr.lower()
+
+    def test_show_reports_missing_path(self) -> None:
+        """An untracked path is an error, not an empty synthesized entry."""
+        run_cli("update", "./symbol_path_app.py")
+
+        for args in (
+            ['/@process_files/"nope.md"'],
+            ["-r", "-p", "/@nope"],
+        ):
+            result = run_cli("show", "./symbol_path_app.py", *args, check=False)
+            assert result.returncode != 0
+            assert "not found" in result.stderr.lower()
+            assert "type:directory" not in result.stdout
+
+    def test_show_rejects_untyped_path_part(self) -> None:
+        """A bare word is ambiguous, so it's rejected instead of guessed at."""
+        run_cli("update", "./symbol_path_app.py")
+
+        result = run_cli("show", "./symbol_path_app.py", "/process_files", check=False)
+        assert result.returncode != 0
+        assert "invalid stable path" in result.stderr.lower()
+
+
 class TestShowTree:
     """Tests for the show command with --tree flag."""
 
@@ -891,7 +950,7 @@ class TestShowFromDatabase:
         # All segments resolve without the app module loaded: the leaf key
         # from tracking info, the root provider from the segment-name entries
         # persisted at update time.
-        assert '@test_cli/flat_preview/"x"' in result.stdout
+        assert '@"test_cli/flat_preview"/"x"' in result.stdout
         assert "states:1:Existing" in result.stdout
 
     def test_show_db_tree_displays_components(self) -> None:
@@ -930,7 +989,7 @@ class TestShowLong:
         # segment is resolved from the live provider registry (the app module
         # is loaded), so no fingerprint remains.
         assert '/"x"' in path_line
-        assert "@test_cli/flat_preview" in path_line
+        assert '@"test_cli/flat_preview"' in path_line
         assert "#" not in path_line
 
     def test_show_long_fingerprints_flag_shows_raw_paths(self) -> None:
@@ -949,7 +1008,7 @@ class TestShowLong:
         )
         assert path_line is not None
         assert "/#" in path_line
-        assert "@test_cli/flat_preview" not in path_line
+        assert '@"test_cli/flat_preview"' not in path_line
 
 
 class TestShowTargetStates:
@@ -962,7 +1021,7 @@ class TestShowTargetStates:
         result = run_cli("show", "./flat_target_app.py", "--target-states")
 
         assert "Target states:" in result.stdout
-        assert '@test_cli/flat_preview/"x"' in result.stdout
+        assert '@"test_cli/flat_preview"/"x"' in result.stdout
         assert "owner:/" in result.stdout
         assert "/#" not in result.stdout
         assert "[dangling]" not in result.stdout
@@ -976,7 +1035,7 @@ class TestShowTargetStates:
         )
 
         assert "/#" in result.stdout
-        assert "@test_cli/flat_preview" not in result.stdout
+        assert '@"test_cli/flat_preview"' not in result.stdout
 
     def test_show_target_states_from_database(self) -> None:
         """show --db/--app-name --target-states should work without the module."""
@@ -993,7 +1052,7 @@ class TestShowTargetStates:
 
         # Fully readable without the app module: the root provider segment
         # resolves from the persisted segment-name entries.
-        assert '@test_cli/flat_preview/"x"' in result.stdout
+        assert '@"test_cli/flat_preview"/"x"' in result.stdout
         assert "owner:/" in result.stdout
         assert "/#" not in result.stdout
 
@@ -1006,7 +1065,7 @@ class TestShowTargetStates:
         assert "Target states:" in result.stdout
         # The root provider has no entry of its own but still gets a parent
         # node line; the entry nests beneath it with its owner inline.
-        assert "- @test_cli/flat_preview\n" in result.stdout
+        assert '- @"test_cli/flat_preview"\n' in result.stdout
         assert '  - "x" owner:/' in result.stdout
 
     def test_show_target_states_rejects_incompatible_flags(self) -> None:
