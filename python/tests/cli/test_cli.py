@@ -953,6 +953,24 @@ class TestShowFromDatabase:
         assert '@"test_cli/flat_preview"/"x"' in result.stdout
         assert "states:1:Existing" in result.stdout
 
+    def test_show_db_reports_unknown_app_name(self) -> None:
+        """A typo'd app name is named as such, not reported as a missing path."""
+        run_cli("update", "./flat_target_app.py")
+
+        for extra in ([], ["--target-states"], ["", '/"x"']):
+            result = run_cli(
+                "show",
+                "--db",
+                "./cocoindex.db",
+                "--app-name",
+                "NoSuchApp",
+                *extra,
+                check=False,
+            )
+            assert result.returncode != 0
+            assert "No app named 'NoSuchApp'" in result.stderr
+            assert "FlatPreviewApp" in result.stderr
+
     def test_show_db_tree_displays_components(self) -> None:
         """show --db/--app-name --tree should render the tree without the module."""
         run_cli("update", "./flat_target_app.py")

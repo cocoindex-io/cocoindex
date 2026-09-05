@@ -803,16 +803,12 @@ async def _show_from_app(
         await _stop_all_environments()
 
 
-async def _show_from_database(
-    db_path: str,
-    app_name: str,
-    tree: bool = False,
-    long_format: bool = False,
-    stable_path: str | None = None,
-    recursive: bool = False,
-    parents: bool = False,
-    fingerprints: bool = False,
-) -> None:
+def _open_db_env(db_path: str, app_name: str) -> Environment:
+    """Open an environment for `--db`/`--app-name`, checking both exist.
+
+    Without this, a typo'd app name reads as an app with nothing in it, and
+    every downstream lookup reports its own subject as missing.
+    """
     db_path_obj = pathlib.Path(db_path)
     if not db_path_obj.exists():
         raise click.ClickException(f"Database path does not exist: {db_path}")
@@ -823,6 +819,26 @@ async def _show_from_database(
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
+    persisted = _get_persisted_app_names(env)
+    if app_name not in persisted:
+        available = ", ".join(sorted(persisted)) if persisted else "(none)"
+        raise click.ClickException(
+            f"No app named '{app_name}' in {db_path}. Available: {available}"
+        )
+    return env
+
+
+async def _show_from_database(
+    db_path: str,
+    app_name: str,
+    tree: bool = False,
+    long_format: bool = False,
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+    fingerprints: bool = False,
+) -> None:
+    env = _open_db_env(db_path, app_name)
 
     if stable_path is not None:
         path_obj = _parse_stable_path(stable_path)
@@ -871,16 +887,7 @@ async def _show_target_states_from_database(
     tree: bool = False,
     fingerprints: bool = False,
 ) -> None:
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
-
-    from cocoindex._internal.setting import Settings
-
-    env = Environment(
-        Settings(db_path=db_path_obj),
-        event_loop=asyncio.get_running_loop(),
-    )
+    env = _open_db_env(db_path, app_name)
     await _print_target_states(
         iter_target_states_by_name(env, app_name), fingerprints, tree
     )
