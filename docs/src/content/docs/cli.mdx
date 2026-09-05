@@ -144,6 +144,12 @@ If `APP_TARGET` is provided, loads the app from the module.
 Otherwise, `--db` and `--app-name` can be used to inspect an app
 directly from its database without loading the module.
 
+`STABLE_PATH` is written the way this command prints paths, so a line of
+output can be pasted straight back in. Each part carries its key type:
+`@symbol`, `"string"`, `b"bytes"`, `123`, `true`, `false`, `null`, a UUID,
+`[a,b]` for arrays, and `#<hex>` for fingerprints. For example:
+`cocoindex show ./app.py '/@process_files/"rfc8259.md"'`.
+
 
 **Usage:**
 

@@ -120,6 +120,13 @@ impl PyStablePath {
         Self(StablePath::root())
     }
 
+    /// Parse a path from the textual form produced by `to_string()`,
+    /// e.g. `/@process_files/"rfc8259.md"`.
+    #[staticmethod]
+    pub fn parse(s: &str) -> PyResult<Self> {
+        Ok(Self(StablePath::parse(s).into_py_result()?))
+    }
+
     pub fn concat(&self, part: PyStableKey) -> Self {
         Self(self.0.concat_part(part.0))
     }
