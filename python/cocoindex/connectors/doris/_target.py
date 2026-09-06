@@ -1031,6 +1031,73 @@ class _TableAction(NamedTuple):
     column_actions: dict[str, statediff.DiffAction]
 
 
+def _is_benign_column_ddl_error(e: Exception, *, expect_exists: bool) -> bool:
+    """True if `e` reports the column DDL is already a no-op for the
+    direction being applied (e.g. ADD COLUMN on a column that is already
+    there, or DROP COLUMN on one that is already gone): a benign race or
+    an idempotent re-run. False for a genuine failure, which the caller
+    must re-raise rather than silently swallow.
+    """
+    msg = str(e).lower()
+    if expect_exists:
+        return "already exist" in msg or "duplicate column" in msg
+    return "not exist" in msg or "unknown column" in msg
+
+
+def _apply_column_actions(
+    config: DorisConnectionConfig,
+    table_name: str,
+    table_schema: TableSchema[Any],
+    column_actions: dict[str, statediff.DiffAction],
+) -> None:
+    """Apply non-PK column ALTER TABLE actions for one table.
+
+    A benign no-op (per `_is_benign_column_ddl_error`) is ignored. Any other
+    DDL failure is logged and re-raised, so the caller's reconcile() does
+    not commit a tracking record for a schema change that never actually
+    happened: mirrors the sqlite connector's own handling of the same bug
+    class.
+    """
+    for sub_key, col_action in column_actions.items():
+        if not sub_key.startswith(_COL_SUBKEY_PREFIX):
+            continue
+        col_name = sub_key[len(_COL_SUBKEY_PREFIX) :]
+        if col_name in table_schema.primary_key:
+            continue
+
+        col_def = table_schema.columns.get(col_name)
+        if col_action == "delete":
+            ddl = f"ALTER TABLE `{config.database}`.`{table_name}` DROP COLUMN `{col_name}`"
+            try:
+                _execute_ddl_sync(config, ddl)
+            except Exception as e:
+                if not _is_benign_column_ddl_error(e, expect_exists=False):
+                    _logger.warning(
+                        "Failed to drop column %s from table %s: %s",
+                        col_name,
+                        table_name,
+                        e,
+                    )
+                    raise
+        elif col_action in ("insert", "upsert") and col_def is not None:
+            nullable = "NULL" if col_def.nullable else "NOT NULL"
+            ddl = (
+                f"ALTER TABLE `{config.database}`.`{table_name}` "
+                f"ADD COLUMN `{col_name}` {col_def.type} {nullable}"
+            )
+            try:
+                _execute_ddl_sync(config, ddl)
+            except Exception as e:
+                if not _is_benign_column_ddl_error(e, expect_exists=True):
+                    _logger.warning(
+                        "Failed to add column %s to table %s: %s",
+                        col_name,
+                        table_name,
+                        e,
+                    )
+                    raise
+
+
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
@@ -1093,32 +1160,12 @@ def _apply_table_actions(
 
             # Reconcile non-PK columns incrementally
             if action.column_actions:
-                for sub_key, col_action in action.column_actions.items():
-                    if not sub_key.startswith(_COL_SUBKEY_PREFIX):
-                        continue
-                    col_name = sub_key[len(_COL_SUBKEY_PREFIX) :]
-                    if col_name in spec.table_schema.primary_key:
-                        continue
-
-                    col_def = spec.table_schema.columns.get(col_name)
-                    if col_action == "delete":
-                        try:
-                            _execute_ddl_sync(
-                                config,
-                                f"ALTER TABLE `{config.database}`.`{key.table_name}` DROP COLUMN `{col_name}`",
-                            )
-                        except Exception:
-                            pass
-                    elif col_action in ("insert", "upsert") and col_def is not None:
-                        nullable = "NULL" if col_def.nullable else "NOT NULL"
-                        try:
-                            _execute_ddl_sync(
-                                config,
-                                f"ALTER TABLE `{config.database}`.`{key.table_name}` "
-                                f"ADD COLUMN `{col_name}` {col_def.type} {nullable}",
-                            )
-                        except Exception:
-                            pass
+                _apply_column_actions(
+                    config,
+                    key.table_name,
+                    spec.table_schema,
+                    action.column_actions,
+                )
 
     return outputs
 

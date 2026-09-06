@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
     ChildInvalidation, ChildTargetDef, TargetActionSink, TargetActionSinkKeeper, TargetHandler,
     TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
+    WeakTargetActionSinkKeeper,
 };
 use pyo3::types::{PyList, PySequence, PyTuple};
 
@@ -25,26 +29,101 @@ pub struct PyTargetActionSinkInner {
     callback: PyCallback,
 }
 
+/// Interns sink keepers by callback object so that sinks constructed from the
+/// same callback share one batching identity (the keeper, whose pointer the
+/// engine groups actions by). The Python layer canonicalizes callbacks that
+/// compare equal to one representative object (`_ObjectDeduper` in
+/// `_internal/target_state.py`) before calling `new_sync`/`new_async`, so
+/// together the two layers give sinks value-based identity.
+///
+/// Entries hold the keeper only weakly, so an idle sink (no pending actions,
+/// no live Python reference) is freed together with its batcher. A live entry
+/// implies no pointer-reuse hazard: the keeper holds its callback strongly,
+/// so while the weak reference upgrades, the keyed address is still that same
+/// callback. Dead entries never match (upgrade fails) and are swept lazily
+/// once the map grows past a doubling threshold.
+struct SinkKeeperRegistry {
+    map: HashMap<usize, WeakTargetActionSinkKeeper<PyEngineProfile>>,
+    prune_at: usize,
+}
+
+const SINK_REGISTRY_MIN_PRUNE_AT: usize = 64;
+
+impl SinkKeeperRegistry {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            prune_at: SINK_REGISTRY_MIN_PRUNE_AT,
+        }
+    }
+
+    fn get_or_create(
+        &mut self,
+        callback_ptr: usize,
+        make: impl FnOnce() -> PyTargetActionSinkInner,
+    ) -> TargetActionSinkKeeper<PyEngineProfile> {
+        if let Some(weak) = self.map.get(&callback_ptr) {
+            if let Some(keeper) = weak.upgrade() {
+                return keeper;
+            }
+        }
+        let keeper = TargetActionSinkKeeper::new(make());
+        if self.map.len() >= self.prune_at {
+            self.map.retain(|_, weak| weak.upgrade().is_some());
+            self.prune_at = (self.map.len() * 2).max(SINK_REGISTRY_MIN_PRUNE_AT);
+        }
+        self.map.insert(callback_ptr, keeper.downgrade());
+        keeper
+    }
+}
+
+// Sync and async callbacks are interned separately: the same callback object
+// wrapped as sync vs async must not share a keeper, since the keeper fixes how
+// the callback is invoked.
+static SYNC_SINK_REGISTRY: LazyLock<Mutex<SinkKeeperRegistry>> =
+    LazyLock::new(|| Mutex::new(SinkKeeperRegistry::new()));
+static ASYNC_SINK_REGISTRY: LazyLock<Mutex<SinkKeeperRegistry>> =
+    LazyLock::new(|| Mutex::new(SinkKeeperRegistry::new()));
+
 #[pymethods]
 impl PyTargetActionSink {
     #[staticmethod]
     pub fn new_sync(callback: Py<PyAny>) -> Self {
-        let inner = PyTargetActionSinkInner {
-            callback: PyCallback::Sync(Arc::new(callback)),
-        };
-        Self {
-            keeper: TargetActionSinkKeeper::new(inner),
-        }
+        let callback_ptr = callback.as_ptr() as usize;
+        let keeper = SYNC_SINK_REGISTRY
+            .lock()
+            .unwrap()
+            .get_or_create(callback_ptr, || PyTargetActionSinkInner {
+                callback: PyCallback::Sync(Arc::new(callback)),
+            });
+        Self { keeper }
     }
 
     #[staticmethod]
     pub fn new_async(callback: Py<PyAny>) -> Self {
-        let inner = PyTargetActionSinkInner {
-            callback: PyCallback::Async(Arc::new(callback)),
-        };
-        Self {
-            keeper: TargetActionSinkKeeper::new(inner),
+        let callback_ptr = callback.as_ptr() as usize;
+        let keeper = ASYNC_SINK_REGISTRY
+            .lock()
+            .unwrap()
+            .get_or_create(callback_ptr, || PyTargetActionSinkInner {
+                callback: PyCallback::Async(Arc::new(callback)),
+            });
+        Self { keeper }
+    }
+
+    /// Two sinks are equal iff they share one batching identity: actions
+    /// reconciled to them are batched and applied together.
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        match other.cast::<Self>() {
+            Ok(other) => self.keeper == other.borrow().keeper,
+            Err(_) => false,
         }
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.keeper.hash(&mut hasher);
+        hasher.finish()
     }
 }
 

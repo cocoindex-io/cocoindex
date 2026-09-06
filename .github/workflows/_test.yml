@@ -29,6 +29,10 @@ jobs:
                   - { runner: macos-latest, python-version: "3.14", free-threaded: true, extra_rustflags: "-C split-debuginfo=off" }
                   - { runner: windows-latest, python-version: "3.14", free-threaded: true }
         runs-on: ${{ matrix.platform.runner }}
+        # Healthy legs finish in 4-17 min. Without a cap, a hook that hangs
+        # (nothing in the suite has an internal timeout) holds the runner until
+        # GitHub's 6-hour limit while reporting nothing.
+        timeout-minutes: 60
         env:
           SCCACHE_GHA_ENABLED: "true"
           RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
@@ -131,6 +135,22 @@ jobs:
           run: |
             set +e
 
+            # prek renders a project's hook results only once the whole run
+            # finishes when stdout is not a TTY, so a hook that hangs leaves
+            # this step's log empty with no hint of which hook is stuck. No
+            # flag changes that, but prek always writes a trace log; tail its
+            # hook start/finish events into the step log. RUNNER_TEMP is
+            # backslash-separated on Windows, which bash would mangle, and
+            # prek refuses to start at all if it cannot open the log, so
+            # make sure the directory exists before pointing prek at it.
+            prek_log_dir="${RUNNER_TEMP:-/tmp}"
+            prek_log="${prek_log_dir//\\//}/prek.log"
+            mkdir -p "${prek_log%/*}"
+            : > "$prek_log"
+            tail -n +1 -F "$prek_log" 2>/dev/null \
+              > >(grep --line-buffered -E 'Running priority group|run\{hook_id=[^}]*\}: close time') &
+            tail_pid=$!
+
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
               echo "Running prek on PR diff against target branch: ${{ github.base_ref }}"
               # Fetch both diff endpoints: origin/<base> and the to-ref commit.
@@ -142,16 +162,19 @@ jobs:
                 "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}" \
                 "${{ github.sha }}"
 
-              prek run \
+              prek --log-file "$prek_log" run \
                 --from-ref "origin/${{ github.base_ref }}" \
                 --to-ref "${{ github.sha }}" \
                 --show-diff-on-failure
               status=$?
             else
               echo "Running prek on all files (event: ${{ github.event_name }})"
-              prek run --all-files --show-diff-on-failure
+              prek --log-file "$prek_log" run --all-files --show-diff-on-failure
               status=$?
             fi
+
+            kill "$tail_pid" 2>/dev/null
+            wait "$tail_pid" 2>/dev/null
 
             if [ $status -ne 0 ]; then
               echo "::error::Build-test checks failed. Please run 'prek run --all-files' locally."

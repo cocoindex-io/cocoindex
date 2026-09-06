@@ -75,6 +75,26 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
             })
             .await
     }
+
+    pub fn downgrade(&self) -> WeakTargetActionSinkKeeper<Prof> {
+        WeakTargetActionSinkKeeper {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+}
+
+/// Weak counterpart of [`TargetActionSinkKeeper`], for registries that intern
+/// keepers without keeping an otherwise-idle sink (and its batcher) alive.
+pub struct WeakTargetActionSinkKeeper<Prof: EngineProfile> {
+    inner: std::sync::Weak<TargetActionSinkKeeperInner<Prof>>,
+}
+
+impl<Prof: EngineProfile> WeakTargetActionSinkKeeper<Prof> {
+    pub fn upgrade(&self) -> Option<TargetActionSinkKeeper<Prof>> {
+        self.inner
+            .upgrade()
+            .map(|inner| TargetActionSinkKeeper { inner })
+    }
 }
 
 impl<Prof: EngineProfile> PartialEq for TargetActionSinkKeeper<Prof> {

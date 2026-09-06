@@ -30,6 +30,7 @@ tree-sitter-json = "0.24.8"
 tree-sitter-julia = "0.23.1"
 # The other more popular crate tree-sitter-kotlin requires tree-sitter < 0.23 for now
 tree-sitter-kotlin-ng = "1.1.0"
+tree-sitter-lua = "0.5.0"
 tree-sitter-md = "0.5.3"
 tree-sitter-pascal = "0.10.2"
 tree-sitter-php = "0.23.11"
