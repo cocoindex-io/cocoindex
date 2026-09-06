@@ -167,6 +167,33 @@ async def _retry_litellm_call(
     )
 
 
+def _aligned_embeddings(data: list[_Any], n: int) -> list[_NDArray[_np.float32]]:
+    """Map embedding response items back to the ``n`` inputs they embed.
+
+    Items carrying an ``index`` are reordered by it. If no item carries one
+    (missing or ``None``), the response is taken positionally. Mixing the two,
+    or an index set that is not a permutation of ``0..n-1``, raises so a
+    misordered response fails loudly instead of silently misaligning
+    embeddings with their texts.
+    """
+    indices = [item.get("index") for item in data]
+    if all(i is None for i in indices):
+        ordered = data
+    elif any(i is None for i in indices):
+        raise RuntimeError(
+            "litellm embedding response mixes items with and without `index`: "
+            f"got {indices}"
+        )
+    elif any(type(i) is not int for i in indices) or sorted(indices) != list(range(n)):
+        raise RuntimeError(
+            "litellm embedding response indices are not a permutation of "
+            f"0..{n - 1}: got {indices}"
+        )
+    else:
+        ordered = sorted(data, key=lambda item: item["index"])
+    return [_np.array(item["embedding"], dtype=_np.float32) for item in ordered]
+
+
 class LiteLLMEmbedder(_schema.VectorSchemaProvider):
     """Wrapper for LiteLLM embedding models that implements VectorSchemaProvider.
 
@@ -282,9 +309,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             if not _is_global_litellm_error(e):
                 raise coco.RetryWithSmallerBatch() from e
             raise
-        return [
-            _np.array(item["embedding"], dtype=_np.float32) for item in response.data
-        ]
+        return _aligned_embeddings(response.data, len(texts))
 
     @coco.fn(memo=True, version=1, logic_tracking="self")
     async def embed(
