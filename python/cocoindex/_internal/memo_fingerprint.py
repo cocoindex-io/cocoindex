@@ -192,7 +192,7 @@ def _canonicalize_msgspec(
     Format: ("msgspec", module, qualname, ((field_name, value), ...))
     """
     typ = type(obj)
-    fields = msgspec.structs.fields(typ)
+    fields = msgspec.structs.fields(typing.cast(type[msgspec.Struct], typ))
     return (
         "msgspec",
         canonical_module_name(typ),
@@ -323,7 +323,7 @@ def _canonicalize(
         if state_hook is not None and callable(state_hook):
             tag = "shook"
             # raw function for type hint extraction (unbound method on class)
-            raw_fn = typ.__coco_memo_state__
+            raw_fn = typ.__coco_memo_state__  # type: ignore[attr-defined]
             state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
