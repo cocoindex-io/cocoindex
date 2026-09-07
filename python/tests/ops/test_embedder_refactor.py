@@ -21,7 +21,7 @@ pytest.importorskip("litellm", reason="litellm not installed")
 from litellm.exceptions import AuthenticationError  # noqa: E402
 
 import cocoindex as coco  # noqa: E402
-from cocoindex.ops.litellm import LiteLLMEmbedder  # noqa: E402
+from cocoindex.ops.litellm import LiteLLMEmbedder, _aligned_embeddings  # noqa: E402
 
 # Note on the sleep patch target below: retry sleeps now happen inside
 # cocoindex._internal.deadline via a late `asyncio.sleep` lookup. Patching
@@ -282,3 +282,71 @@ async def test_litellm_embedder_does_not_retry_missing_credentials_server_error(
 
     mocked_embedding.assert_awaited_once()
     sleep.assert_not_called()
+
+
+# ============================================================================
+# Response items are aligned to inputs by `index` when the provider sends one
+# ============================================================================
+
+
+def test_aligned_embeddings_positional_when_no_index() -> None:
+    # A missing key and an explicit None are both "no index".
+    data = [{"embedding": [1.0]}, {"index": None, "embedding": [2.0]}]
+    assert [v.tolist() for v in _aligned_embeddings(data, 2)] == [[1.0], [2.0]]
+
+
+def test_aligned_embeddings_reorders_by_index() -> None:
+    data = [
+        {"index": 2, "embedding": [2.0]},
+        {"index": 0, "embedding": [0.0]},
+        {"index": 1, "embedding": [1.0]},
+    ]
+    assert [v.tolist() for v in _aligned_embeddings(data, 3)] == [[0.0], [1.0], [2.0]]
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_aligns_batch_by_index() -> None:
+    """The batch body maps a provider response that arrives out of order
+    back onto the input texts by ``index``."""
+    texts = ["a", "bb", "ccc"]
+    response = SimpleNamespace(
+        data=[{"index": i, "embedding": [float(len(texts[i]))]} for i in (2, 0, 1)]
+    )
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ):
+        vecs = await embedder._embed._execute_orig_async_fn(texts)
+    assert [v.tolist() for v in vecs] == [[1.0], [2.0], [3.0]]
+
+
+@pytest.mark.parametrize(
+    ("indices", "n", "match"),
+    [
+        pytest.param([0, None], 2, "with and without", id="partial"),
+        pytest.param([0, 0], 2, "not a permutation", id="duplicate"),
+        pytest.param([0, 1], 3, "2 items for 3 inputs", id="missing"),
+        pytest.param([-1, 0], 2, "not a permutation", id="negative"),
+        pytest.param([0, 2], 2, "not a permutation", id="out-of-range"),
+        pytest.param([0, "1"], 2, "not a permutation", id="non-int"),
+    ],
+)
+def test_aligned_embeddings_rejects_bad_indices(
+    indices: list[Any], n: int, match: str
+) -> None:
+    data = [{"index": i, "embedding": [0.0]} for i in indices]
+    with pytest.raises(RuntimeError, match=match):
+        _aligned_embeddings(data, n)
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_bad_index_fails_whole_batch() -> None:
+    """A malformed index set is a provider bug: it surfaces as-is rather than
+    as RetryWithSmallerBatch, since splitting would only hide the misorder."""
+    response = SimpleNamespace(data=[{"index": 0, "embedding": [0.0]}] * 2)
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ):
+        with pytest.raises(RuntimeError, match="not a permutation"):
+            await embedder._embed._execute_orig_async_fn(["a", "b"])

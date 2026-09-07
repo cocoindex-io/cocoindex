@@ -21,6 +21,7 @@ from collections.abc import Awaitable as _Awaitable
 from collections.abc import Callable as _Callable
 from typing import Any as _Any
 from typing import TypeVar as _TypeVar
+from typing import cast as _cast
 
 import litellm as litellm
 
@@ -167,6 +168,38 @@ async def _retry_litellm_call(
     )
 
 
+def _aligned_embeddings(data: list[_Any], n: int) -> list[_NDArray[_np.float32]]:
+    """Map embedding response items back to the ``n`` inputs they embed.
+
+    Items carrying an ``index`` are placed by it; if no item carries one
+    (missing or ``None``), the response is taken positionally. Mixing the two,
+    or an index set that is not a permutation of ``0..n-1``, raises so a
+    misordered response fails loudly instead of silently misaligning
+    embeddings with their texts.
+    """
+    if len(data) != n:
+        raise RuntimeError(
+            f"litellm embedding response has {len(data)} items for {n} inputs"
+        )
+    out: list[_NDArray[_np.float32] | None] = [None] * n
+    indexed = n > 0 and data[0].get("index") is not None
+    for pos, item in enumerate(data):
+        index = item.get("index")
+        if (index is not None) != indexed:
+            raise RuntimeError(
+                "litellm embedding response mixes items with and without `index`"
+            )
+        if not indexed:
+            index = pos
+        elif type(index) is not int or not 0 <= index < n or out[index] is not None:
+            raise RuntimeError(
+                "litellm embedding response indices are not a permutation of "
+                f"0..{n - 1}: got {[item.get('index') for item in data]}"
+            )
+        out[index] = _np.array(item["embedding"], dtype=_np.float32)
+    return _cast(list[_NDArray[_np.float32]], out)
+
+
 class LiteLLMEmbedder(_schema.VectorSchemaProvider):
     """Wrapper for LiteLLM embedding models that implements VectorSchemaProvider.
 
@@ -282,9 +315,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             if not _is_global_litellm_error(e):
                 raise coco.RetryWithSmallerBatch() from e
             raise
-        return [
-            _np.array(item["embedding"], dtype=_np.float32) for item in response.data
-        ]
+        return _aligned_embeddings(response.data, len(texts))
 
     @coco.fn(memo=True, version=1, logic_tracking="self")
     async def embed(
