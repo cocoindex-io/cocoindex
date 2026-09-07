@@ -349,18 +349,18 @@ class LiveComponentController:
     def update_full_async(
         self,
         processor: ComponentProcessor[Any],
-        handler_callback: Callable[[str], Awaitable[None]] | None = None,
+        handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, None]: ...
     def update_async(
         self,
         stable_path: StablePath,
         processor: ComponentProcessor[Any],
-        handler_callback: Callable[[str], Awaitable[None]] | None = None,
+        handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
     def delete_async(
         self,
         stable_path: StablePath,
-        handler_callback: Callable[[str], Awaitable[None]] | None = None,
+        handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
     def mark_ready_async(self) -> Coroutine[Any, Any, None]: ...
     def read_committed_state_async(
@@ -424,7 +424,7 @@ async def mount_async(
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
-    handler_callback: Any | None = None,
+    handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
 ) -> ComponentMountHandle: ...
 async def use_mount_async(
     processor: ComponentProcessor[T_co],

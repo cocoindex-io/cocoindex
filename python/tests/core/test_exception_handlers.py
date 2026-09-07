@@ -1,3 +1,4 @@
+import traceback
 from typing import Iterator
 
 import cocoindex as coco
@@ -36,7 +37,7 @@ def test_global_exception_handler_invoked_for_background_mount() -> None:
     app = coco.App("test_exception_handlers_global", _root)
     app.update_blocking()
 
-    assert seen == [("RuntimeError", "mount")]
+    assert seen == [("ValueError", "mount")]
 
 
 def test_scoped_handler_overrides_global_and_fallback_on_handler_error() -> None:
@@ -74,7 +75,7 @@ def test_scoped_handler_overrides_global_and_fallback_on_handler_error() -> None
 
     # Inner sees component exception, then raises; global receives handler exception.
     assert calls == [
-        "inner:component:RuntimeError",
+        "inner:component:ValueError",
         "global:handler:RuntimeError",
     ]
 
@@ -154,16 +155,18 @@ def test_orphan_delete_failure_routes_through_parent_handler() -> None:
     # `coco.mount(..., parent_fn)` at the parent's mount time.
     assert len(seen) == 1, f"expected one handler call; got {seen}"
     exc_name, mount_kind = seen[0]
-    assert exc_name == "RuntimeError"
+    # The sink raises a Python ValueError; it reaches the handler as-is.
+    assert exc_name == "ValueError"
     assert mount_kind == "mount"
 
 
-def test_background_mount_failure_surfaces_python_traceback() -> None:
-    """The handler should see the full Python traceback for a background mount failure,
-    not just the exception message — the trace is what makes the error actionable."""
+def test_background_mount_failure_preserves_exception_and_traceback() -> None:
+    """The handler receives the component's original Python exception, so it
+    can route by type (``isinstance``) and still recover the full traceback via
+    ``traceback.format_exception`` / ``logging(..., exc_info=exc)``."""
     envmod.reset_default_env_for_tests()
 
-    seen_messages: list[str] = []
+    seen: list[BaseException] = []
 
     @coco.lifespan
     def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -172,7 +175,7 @@ def test_background_mount_failure_surfaces_python_traceback() -> None:
         )
 
         def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
-            seen_messages.append(str(exc))
+            seen.append(exc)
 
         builder.set_exception_handler(handler)
         yield
@@ -188,9 +191,135 @@ def test_background_mount_failure_surfaces_python_traceback() -> None:
     app = coco.App("test_exception_handlers_trace", _root)
     app.update_blocking()
 
-    assert len(seen_messages) == 1
-    msg = seen_messages[0]
-    assert "ValueError" in msg
-    assert "traceful boom" in msg
-    assert "Traceback (most recent call last)" in msg
-    assert "_raise_for_trace_test" in msg
+    assert len(seen) == 1
+    exc = seen[0]
+    assert isinstance(exc, ValueError)
+    assert str(exc) == "traceful boom"
+    assert exc.__traceback__ is not None
+    formatted = "".join(traceback.format_exception(exc))
+    assert "Traceback (most recent call last)" in formatted
+    assert "_raise_for_trace_test" in formatted
+
+
+def test_engine_native_failure_keeps_cerror_mapping() -> None:
+    """An engine-side client error (here: declaring the same target state key
+    twice) reaches the handler as the ``ValueError`` that ``cerror_to_pyerr``
+    maps it to, not as a flattened ``RuntimeError``."""
+    envmod.reset_default_env_for_tests()
+
+    seen: list[BaseException] = []
+
+    @coco.lifespan
+    def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+        builder.settings.db_path = common.get_env_db_path(
+            "test_exception_handlers_engine_native"
+        )
+
+        def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            seen.append(exc)
+
+        builder.set_exception_handler(handler)
+        yield
+
+    @coco.fn
+    async def _child() -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("dup", 1))
+        coco.declare_target_state(GlobalDictTarget.target_state("dup", 2))
+
+    @coco.fn
+    async def _root() -> None:
+        await coco.mount(coco.component_subpath("child"), _child)
+
+    app = coco.App("test_exception_handlers_engine_native", _root)
+    app.update_blocking()
+
+    assert len(seen) == 1
+    assert isinstance(seen[0], ValueError)
+    assert "Target state already declared" in str(seen[0])
+
+
+class _DeadLetterError(Exception):
+    pass
+
+
+def test_handler_raise_preserves_type_through_ready() -> None:
+    """An exception raised by a handler propagates through ``handle.ready()``
+    with its Python type (and ``__cause__``) intact, so callers can catch it
+    by type rather than string-matching a flattened RuntimeError."""
+    envmod.reset_default_env_for_tests()
+
+    caught: list[BaseException] = []
+
+    @coco.lifespan
+    def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+        builder.settings.db_path = common.get_env_db_path(
+            "test_exception_handlers_typed_raise"
+        )
+
+        def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            if isinstance(exc, ValueError):
+                raise _DeadLetterError("dead-letter") from exc
+            raise exc
+
+        builder.set_exception_handler(handler)
+        yield
+
+    @coco.fn
+    async def _child() -> None:
+        raise ValueError("boom")
+
+    @coco.fn
+    async def _root() -> None:
+        handle = await coco.mount(coco.component_subpath("child"), _child)
+        try:
+            await handle.ready()
+        except BaseException as exc:
+            caught.append(exc)
+
+    app = coco.App("test_exception_handlers_typed_raise", _root)
+    app.update_blocking()
+
+    assert len(caught) == 1
+    assert isinstance(caught[0], _DeadLetterError)
+    assert isinstance(caught[0].__cause__, ValueError)
+
+
+def test_handler_raised_deadline_exceeded_propagates_through_ready() -> None:
+    """A handler that raises ``coco.DeadlineExceededError`` surfaces it through
+    ``handle.ready()`` as that type (still a ``TimeoutError``), not as a
+    flattened ``RuntimeError``."""
+    envmod.reset_default_env_for_tests()
+
+    caught: list[BaseException] = []
+
+    @coco.lifespan
+    def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+        builder.settings.db_path = common.get_env_db_path(
+            "test_exception_handlers_deadline_raise"
+        )
+
+        def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            raise coco.DeadlineExceededError("handler deadline")
+
+        builder.set_exception_handler(handler)
+        yield
+
+    @coco.fn
+    async def _child() -> None:
+        raise ValueError("boom")
+
+    @coco.fn
+    async def _root() -> None:
+        handle = await coco.mount(coco.component_subpath("child"), _child)
+        try:
+            await handle.ready()
+        except BaseException as exc:
+            caught.append(exc)
+
+    app = coco.App("test_exception_handlers_deadline_raise", _root)
+    app.update_blocking()
+
+    assert len(caught) == 1
+    assert isinstance(caught[0], coco.DeadlineExceededError)
+    assert isinstance(caught[0], TimeoutError)
+    assert str(caught[0]) == "handler deadline"

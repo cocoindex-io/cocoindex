@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -744,8 +745,8 @@ def test_report_exception_routes_to_global_handler() -> None:
 
     assert len(seen) == 1
     exc_name, mount_kind, stable_path, parent_path, processor_name = seen[0]
-    # resolve_handler synthesizes a RuntimeError from the stringified error
-    assert exc_name == "RuntimeError"
+    # report_exception passes the original exception through unchanged
+    assert exc_name == "ValueError"
     assert mount_kind == "process_live"
     # The live component's path includes the "live" subpath component
     assert "live" in stable_path
@@ -755,13 +756,13 @@ def test_report_exception_routes_to_global_handler() -> None:
 
 
 def test_report_exception_surfaces_python_traceback() -> None:
-    """The handler should see the original Python traceback, not just the message."""
+    """The handler should see the original exception with its traceback intact."""
     GlobalDictTarget.store.clear()
 
-    seen_messages: list[str] = []
+    seen: list[BaseException] = []
 
     def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
-        seen_messages.append(str(exc))
+        seen.append(exc)
 
     env = common.create_test_env(
         __file__, suffix="report_exc_trace", exception_handler=handler
@@ -773,12 +774,14 @@ def test_report_exception_surfaces_python_traceback() -> None:
     app = coco.App(coco.AppConfig(name="test_report_exc_trace", environment=env), _root)
     app.update_blocking(live=True)
 
-    assert len(seen_messages) == 1
-    msg = seen_messages[0]
-    assert "ValueError" in msg
-    assert "traceful boom" in msg
-    assert "Traceback (most recent call last)" in msg
-    assert "_raise_for_trace_test" in msg
+    assert len(seen) == 1
+    exc = seen[0]
+    assert isinstance(exc, ValueError)
+    assert str(exc) == "traceful boom"
+    assert exc.__traceback__ is not None
+    formatted = "".join(traceback.format_exception(exc))
+    assert "Traceback (most recent call last)" in formatted
+    assert "_raise_for_trace_test" in formatted
 
 
 async def _failing_child(value: int) -> None:
@@ -840,7 +843,7 @@ def test_operator_delete_failure_routes_to_handler() -> None:
 
     assert len(seen) == 1
     exc_name, mount_kind, stable_path = seen[0]
-    assert exc_name == "RuntimeError"
+    assert exc_name == "ValueError"
     assert mount_kind == "process_live"
     assert "c" in stable_path
 
@@ -958,7 +961,7 @@ def test_operator_update_child_failure_routes_to_handler() -> None:
 
     assert len(seen) == 1
     exc_name, mount_kind, stable_path = seen[0]
-    assert exc_name == "RuntimeError"
+    assert exc_name == "ValueError"
     assert mount_kind == "process_live"
     assert "bad_child" in stable_path
     # Swallowing handler → no propagation
@@ -1012,7 +1015,13 @@ def test_report_exception_falls_back_to_log_when_no_handler(
     with caplog.at_level("ERROR"):
         app.update_blocking(live=True)
 
-    assert any("no handler boom" in record.getMessage() for record in caplog.records)
+    assert any(
+        record.levelname == "ERROR"
+        and "no handler boom" in record.getMessage()
+        and record.exc_info is not None
+        and "no handler boom" in str(record.exc_info[1])
+        for record in caplog.records
+    )
 
 
 # ============================================================================

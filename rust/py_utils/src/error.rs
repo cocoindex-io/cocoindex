@@ -85,7 +85,13 @@ impl cocoindex_utils::error::HostError for HostedPyErr {
     }
 }
 
-fn cerror_to_pyerr(err: CError) -> PyErr {
+/// Convert an engine error into the Python exception surfaced to callers.
+///
+/// Tunneled Python exceptions (`HostedPyErr`) pass through as the original
+/// object, including type, traceback and `__cause__`. Engine-native errors
+/// map to `asyncio.CancelledError` / `DeadlineExceededError` / `ValueError`
+/// (client) / `RuntimeError` (internal).
+pub fn cerror_to_pyerr(err: CError) -> PyErr {
     let inner = err.without_contexts();
     if let CError::HostLang(host_err) = inner {
         // Pass through tunneled Python errors as-is — preserves the
