@@ -12,7 +12,7 @@
 | 2026-09-06 | SDK is ModernRelay's official Python client; renamed the package from `omnigraph-sdk` to `omnigraph` (decisions 17, 18) | Roman Pronskiy |
 | 2026-09-06 | SDK repository starts at `pronskiy/omnigraph-python`, moving to the ModernRelay organisation in H1.5 (decisions 19, 20) | Roman Pronskiy |
 | 2026-09-06 | Added step C2.7: claim the PyPI name with a functional `0.10.0a1` (decisions 21-23) | Roman Pronskiy |
-| 2026-09-07 | **Rework.** The Python SDK is cut and the CLI transport is removed: HTTP is the connector's only transport (decisions 24-30). Old Epics C (SDK package), G (direct S3), and H (SDK polish) are cut; old Epic E (cluster control plane) is replaced by a spike-gated schema epic. Epics renumbered A-E | Roman Pronskiy |
+| 2026-09-07 | **Rework.** The Python SDK is cut and the CLI transport is removed: HTTP is the connector's only transport (decisions 24-30). Old Epics C (SDK package), G (direct S3), and H (SDK polish) are cut; old Epic E (cluster control plane) is replaced by a spike-gated schema epic. Epics renumbered A-E | Roman Pronskiy || 2026-09-07 | Probes P1, P2, P12 answered live: HTTP schema apply is refused on every server configuration, there is no graph-creation endpoint, and no server hot-reloads. `managed_by="system"` is kept — every other connector supports it — through a `cluster apply` control plane behind an `apply_schema()` seam. Epic D rewritten; decisions 31-33 | Roman Pronskiy |
 
 ### Status legend
 
@@ -20,7 +20,7 @@
 
 ### Current focus
 
-**Now on:** Epic A → Phase A1 → step A1.1 — stand up the rustfs + `omnigraph-server` fixture so the Epic A probes can run. Nothing else starts until A2 has answered probe P1 (does a config-free server accept schema apply over HTTP), because it decides Epic D's shape.
+**Now on:** Epic A → Phase A2 — probes P1, P2, and P12 are answered (see `server-spike.md`); P3 through P11 and the new P13 remain. Phase A1's fixture exists only as a manual setup and still needs to become the reusable pytest fixture described in A1.1-A1.3.
 
 ---
 
@@ -36,7 +36,7 @@ Three costs are accepted and tracked here rather than discovered later:
 
 1. There is no "point it at a directory" mode any more. `omnigraph-server` is cluster-only at boot, so every user needs a running server. cocoindex documents how to start one and ships no process management (decision 27).
 2. The existing live suite (~331 tests as of 2026-09-06) runs against a `file://` store through the CLI. All of it migrates to a server + rustfs fixture (Epic E1), and a representative slice migrates early, during Epic C, so server-side semantic differences surface while the client is still soft.
-3. `managed_by="system"` — automatic type creation and evolution, a large part of what makes this connector declarative — depends on one unanswered question: whether a server booted from a bare storage-root URI accepts `POST /graphs/{id}/schema/apply`, or returns the 409 already measured on a `cluster.yaml`-backed server. Epic A answers it before any client code is written, and Epic D branches on the answer.
+3. `managed_by="system"` — automatic type creation and evolution — cannot be done over HTTP at all. Probed live on 2026-09-07: `POST /schema/apply` returns 409 on **every** server configuration, because `--cluster` is the server's only boot source and the refusal is scoped to cluster-backed serving. Since all fourteen connectors that use `ManagedBy` default to `SYSTEM` and none refuses it, dropping the feature is not acceptable (decision 32). Epic D therefore keeps it through a control plane — edit the cluster config's `.pg`, `omnigraph cluster apply`, restart hook, poll until the served schema matches — behind an `apply_schema()` seam so a future server-side apply replaces it in one place. This is the one place the connector still needs the `omnigraph` binary, and only on the host that runs schema changes.
 
 Everything is open source; nothing here is commercial.
 
@@ -52,8 +52,8 @@ Everything is open source; nothing here is commercial.
 | Client lifecycle | `ConnectionFactory` lazily creates and caches one `aiohttp.ClientSession`; the environment lifespan closes it. | Matches the Neo4j convenience API; users provide connection details, not a session. |
 | Local development | Documented, not managed. cocoindex ships no server-bootstrap API; the docs give a copy-paste `omnigraph-server` command and the test suite has a private fixture. | Process management and binary discovery are exactly what removing the CLI deleted; re-adding them as public API would undo the change. |
 | Object store | rustfs is the S3-compatible backend for the test fixture and CI, in both server boot modes. | Standard for Omnigraph. It also means object-store use is verified by the default suite rather than by a deferred epic. |
-| Schema | Decided by probe P1. If a config-free server accepts HTTP schema apply, `managed_by="system"` works over pure HTTP with no control plane. Otherwise HTTP targets are `managed_by="user"` only and the connector fails with an actionable diff. | Verified live on 2026-09-06: HTTP `schema/apply` returns 409 on a `cluster.yaml`-backed server, `cluster apply` refuses `--server`, and a running server does not hot-reload. Whether a bare storage-root boot behaves the same is unknown. |
-| Graph provisioning | Follows probe P2. Today `_target.py` treats "Dataset at path … was not found" as an uninitialized store and runs `omnigraph init`; with no CLI, either an HTTP path exists or provisioning is permanently an operator task, detected and reported with the exact command. | The connector must not silently do nothing when the graph does not exist. |
+| Schema | `managed_by="system"` is supported through a control plane: edit the type's block in the cluster config's `.pg`, run `omnigraph cluster apply`, restart via a user hook, poll `GET /schema` until it matches. It sits behind an `apply_schema()` seam so a future server-side apply replaces it in one place. | Answered live 2026-09-07 (P1, P12): HTTP `schema/apply` returns 409 on **every** server configuration — `--cluster` is the server's only boot source — and no server reloads schema without a restart. Every other cocoindex connector supports `SYSTEM` and defaults to it, so user-managed-only is not an acceptable end state (decision 32). |
+| Graph provisioning | An unknown graph fails with a message naming the graph, the base URL, and the `cluster apply` procedure. Where a `ClusterConfig` is present the connector can create the graph itself, since `cluster apply` creates graphs (verified: `graph.probe create applied`). | P2: there is no graph-creation endpoint — `/graphs` is GET-only, unknown graph gives 404 `not_found`. |
 | Atomicity | No host-local locks. Scratch branches carry the worker's identity and a UTC timestamp; the reaper deletes only branches past a TTL and never one this process created. `exclusive_store()` is removed once probe P3 confirms the server serializes writes and merges per graph. | `flock` coordinates one host; workers are many hosts. Server-side serialization is the only ordering that generalises. |
 | Retries | Never auto-retry writes. Reads may retry with backoff behind an opt-in. Ambiguous write outcomes surface as errors; reconciliation re-reads on the next run. | A lost response after a durable commit must not duplicate work. |
 | Errors | Mapped from HTTP status plus the `code` field and structured sub-objects (`merge_conflicts`, `precondition_failure`, `resource_limit`, `key_conflict`). Non-JSON bodies are tolerated verbatim. | The server returns 422 plain text for body deserialization errors (verified live). |
@@ -72,17 +72,33 @@ Everything is open source; nothing here is commercial.
                             ▼
    _target.py   reconciliation · identity (coco_key) · ownership
                 scratch-branch atomicity · endpoint stubs
-                            │ typed calls, typed errors
-                            ▼
-   _client.py   ConnectionFactory(base_url, graph_id, branch, token)
-                _HttpClient — aiohttp session, JSON via msgspec
-                            │ POST /graphs/{id}/query · /mutate · /branches/*
-                            │ GET  /graphs/{id}/schema · /healthz
-                            ▼
-              omnigraph-server  ──  rustfs / S3 / local cluster dir
+                    │                               │ apply_schema() seam  (D1.1)
+                    │ typed calls, typed errors     ▼
+                    │                     _cluster.py   ClusterConfig(config_dir, restart)
+                    ▼                                   merge the type's block into <graph>.pg
+   _client.py   ConnectionFactory(base_url,             `omnigraph cluster apply --config`
+                  graph_id, branch, token)              restart hook → poll GET /schema
+                _HttpClient — aiohttp,                       │
+                  JSON via msgspec                           │ writes cluster state
+                    │ POST /query · /mutate                  │ (never contacts the server)
+                    │      /branches/*                       │
+                    │ GET  /schema · /healthz                │
+                    ▼                                        ▼
+              omnigraph-server  ────────────────────  rustfs / S3 / cluster dir
+                     ▲                                       │
+                     └───── restart, then serves the new schema (P12)
 ```
 
-`_gq.py` (GQ rendering and `.pg` schema editing) is transport-agnostic today and is untouched by this rework. A component's actions arrive at `_target.py`, which plans commits and asks the client resolved from the target's `ContextKey` to execute them.
+**The data plane is pure HTTP.** The only exception is schema: the server refuses `POST
+/schema/apply` on every configuration (P1), so `managed_by="system"` goes around it through the
+cluster config. `cluster apply` writes to the store and never contacts the server, so the control
+plane needs the config directory and store credentials but not colocation with the server — only
+the restart has to happen where the server runs, which is what the user-supplied hook is for.
+
+`_gq.py` (GQ rendering and `.pg` schema editing) is transport-agnostic today and is untouched by
+this rework — the control plane reuses `merge_type_into_schema` and `remove_type_from_schema`
+verbatim. A component's actions arrive at `_target.py`, which plans commits and asks the client
+resolved from the target's `ContextKey` to execute them.
 
 ---
 
@@ -93,10 +109,10 @@ Everything is open source; nothing here is commercial.
 | A | Server + rustfs fixture and probe spike | Yes | — |
 | B | HTTP client | Yes | A |
 | C | Connector adaptation | Yes | B |
-| D | Schema management (branches on A) | Yes | A |
+| D | Schema management (`managed_by="system"`) | Yes | A, B |
 | E | Suite migration, docs, CI | Yes | B, C, D |
 
-B and C do not depend on the schema answer, so they proceed in parallel with D's path selection.
+B and C do not touch schema, so they proceed in parallel with D.
 
 ---
 
@@ -134,8 +150,10 @@ Answers go to `dev/omnigraph-rework/server-spike.md`, each with the exact reques
 
 | Probe | Question | Decides | Status | Answer |
 |-------|----------|---------|--------|--------|
-| P1 | Does a server booted from a bare storage-root URI accept `POST /graphs/{id}/schema/apply`, or return 409 as the cluster-dir boot does? | **Epic D's path** | 🔲 | |
-| P2 | With no CLI, is there any HTTP path that creates a graph that does not yet exist? If not, what does the server answer for an unknown graph id? | **Graph provisioning; the uninitialized-store branch in `_target.py`** | 🔲 | |
+| P1 | Does a server booted from a bare storage-root URI accept `POST /graphs/{id}/schema/apply`, or return 409 as the cluster-dir boot does? | **Epic D's path** | ✅ | **No — 409 `conflict`, "server-side schema apply is disabled for cluster-backed serving". `--cluster` is the server's only boot source, so this holds for every server. Epic D keeps `managed_by="system"` through the control plane instead.** |
+| P2 | With no CLI, is there any HTTP path that creates a graph that does not yet exist? If not, what does the server answer for an unknown graph id? | **Graph provisioning; the uninitialized-store branch in `_target.py`** | ✅ | **No creation route — `/graphs` is GET-only (405 on POST). Unknown graph → 404 `{"error":"graph 'X' not found","code":"not_found"}`. Provisioning is permanently an operator task.** |
+| P12 | Does a running server pick up an applied revision without a restart? | **Whether the control plane needs a restart hook** | ✅ | **No — `cluster apply` succeeds, the served schema never changes; a restart picks it up. `cluster apply` never contacts the server, so the control plane needs the config dir and store credentials, not colocation.** |
+| P13 | Does `cluster apply` refuse while non-main branches exist, as direct-store `schema apply` does? | D2.6 — control plane vs. scratch branches | 🔲 | |
 | P3 | Does the server serialize concurrent writes and concurrent branch merges per graph? | **Whether `exclusive_store()` can be removed outright** | 🔲 | |
 | P4 | Merge conflict over HTTP: status, `code`, and the `merge_conflicts` shape | Error hierarchy, failure matrix | 🔲 | |
 | P5 | Endpoint-not-found wording over HTTP — is it the same engine message the CLI printed (`(src\|dst) '…' not found in \w+`)? | Endpoint-stub recovery | 🔲 | |
@@ -151,8 +169,8 @@ Answers go to `dev/omnigraph-rework/server-spike.md`, each with the exact reques
 | Guardrail | Criteria (pass/fail) | Status | Actual outcome |
 |-----------|----------------------|--------|----------------|
 | Probes answered | All eleven probes have a verified answer with command and response in `server-spike.md` | 🔲 | |
-| Path chosen | P1's answer is a decision row in §6 naming Epic D's path (D2a or D2b) | 🔲 | |
-| Provisioning settled | P2's answer is a decision row stating how a missing graph is created or reported | 🔲 | |
+| Path chosen | P1's answer is a decision row in §6 | ✅ | Decisions 31-33: HTTP apply impossible everywhere; SYSTEM supported via the control plane behind an `apply_schema()` seam |
+| Provisioning settled | P2's answer is a decision row stating how a missing graph is created or reported | ✅ | Decision 31: no creation endpoint; created via `cluster apply` when a `ClusterConfig` is present, else reported |
 | Locking settled | P3's answer is a decision row stating whether `exclusive_store()` is removed or replaced | 🔲 | |
 
 ---
@@ -195,7 +213,7 @@ Answers go to `dev/omnigraph-rework/server-spike.md`, each with the exact reques
 |------|-------------|--------|-------|
 | B2.1 | `read_schema()`, `query()`, `mutate()` with typed results | 🔲 | |
 | B2.2 | `branch_create/list/merge/delete` | 🔲 | |
-| B2.3 | `apply_schema(schema_pg)` — the raw `POST schema/apply` call only; the read-merge-write orchestration is D2a.1 | 🔲 | Blocked on P1 |
+| B2.3 | ~~`apply_schema()` on the HTTP client~~ | ❌ | Cut: P1 proved the endpoint is refused on every server. Schema writes live in `_cluster.py` (Epic D); revisit only if D3 lands |
 | B2.4 | `mutate_if_graph_commit()` — only if P11 says it is usable | 🔲 | Optional |
 
 **Steps (detail):**
@@ -295,43 +313,117 @@ Answers go to `dev/omnigraph-rework/server-spike.md`, each with the exact reques
 
 ---
 
-### Epic D — Schema management  ·  MVP  ·  branches on probe P1
+### Epic D — Schema management (`managed_by="system"`)  ·  MVP
 
-**Goal:** Declared types reach the served schema, or the connector says exactly what an operator must do instead.
-**Success metrics:** Path D2a — the type lifecycle tests (create, property add, encoder change, release to user, removal) pass over HTTP. Path D2b — a `managed_by="system"` target fails at reconcile time with a diff an operator can act on without reading connector source.
+**Context — every other connector supports `SYSTEM`, and so must this one.**
 
-#### Phase D1 — Path selection
+`ManagedBy` is a shared enum (`connectorkits/target.py`: `SYSTEM` / `USER`). Fourteen connectors
+use it, **every one defaults to `ManagedBy.SYSTEM`, and none refuses it** — including this
+connector today, in six public signatures.
+
+| Connector | Reaches store via | How it applies schema under `SYSTEM` |
+|---|---|---|
+| postgres | asyncpg wire | `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX` |
+| neo4j | bolt | `CREATE CONSTRAINT`, index creation |
+| bigquery | HTTP API | `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE` |
+| qdrant | HTTP/gRPC client | `_create_collection` |
+| snowflake | driver | `CREATE DATABASE`, `CREATE TABLE`, `ALTER TABLE` |
+| doris | aiohttp + MySQL wire | `CREATE TABLE`, `ALTER TABLE` |
+| surrealdb | client | `DEFINE TABLE` |
+| falkordb | redis protocol | `CREATE INDEX` |
+| turbopuffer | HTTP API | namespace implicit on first write; schema rides in the write payload |
+| valkey, zvec | protocol / client | schemaless — no DDL needed |
+| lancedb, sqlite | embedded / local | `create_table` |
+| **omnigraph over HTTP** | **omnigraph-server** | **refused: 409, unconditionally (P1)** |
+
+The structural pattern is that **schema travels the same channel as the data**. DDL is just another
+authorized operation on the wire, including for the three that are pure remote HTTP APIs
+(bigquery, qdrant, turbopuffer). `omnigraph-server` is the only store here that deliberately closes
+that channel: schema is cluster configuration, applied out of band and picked up on restart.
+
+Dropping the SDK did not cause this — dropping **direct store access** did. The published-SDK plan
+would have hit the identical 409, which is why the original spec invented a control plane. The
+real fork was always *server versus direct store*, and the CLI was silently carrying schema
+management. Shipping `managed_by="user"`-only would make omnigraph the single connector whose
+default value does not work, so it is rejected as an end state (decision 32).
+
+**Goal:** `managed_by="system"` works against a server-backed graph: the connector owns its type's
+block in the graph's `.pg` inside the cluster config, applies it with `omnigraph cluster apply`,
+triggers a restart through a user-supplied hook, and proceeds only once the served schema matches.
+The operation sits behind one seam so a future server-side apply (D3) is a drop-in replacement.
+**Success metrics:** the type lifecycle tests (create, property add, encoder change, release to
+user, removal) pass in HTTP mode using the fixture's restart hook; a factory without a restart hook
+fails with an actionable message and converges on re-run after a manual restart.
+
+What P1, P2, and P12 established, and what the design must therefore accept: HTTP schema apply is
+refused on every server configuration; there is no graph-creation endpoint; and a running server
+never reloads schema without a restart. But `cluster apply` needs only the CLI binary, the config
+directory, and object-store credentials — **not colocation with the server** — so the control plane
+can run from a cocoindex host.
+
+#### Phase D1 — The seam and the config model
 
 | Step | Description | Status | Notes |
 |------|-------------|--------|-------|
-| D1.1 | Record P1's answer as a decision row and mark D2a or D2b as the live path; mark the other ❌ | 🔲 | |
+| D1.1 | `apply_schema(schema_pg)` as the one schema-write operation `_target.py` calls, with a pluggable implementation | 🔲 | Makes D3 a drop-in |
+| D1.2 | `ClusterConfig` dataclass; validate `cluster.yaml`, including a `storage:` root | 🔲 | |
+| D1.3 | Locate or create the graph's `.pg` from `graphs.<graph_id>.schema` | 🔲 | The HTTP-mode equivalent of `init` |
+| D1.4 | Reconcile-time refusal of `managed_by="system"` without a `ClusterConfig`, naming the target | 🔲 | Fail early, not mid-sync |
 
-#### Phase D2a — HTTP schema apply  ·  *only if P1 succeeds*
+**Steps (detail):**
+
+- **D1.2 — Config.** Deliverable:
+  ```python
+  @dataclasses.dataclass(frozen=True)
+  class ClusterConfig:
+      config_dir: pathlib.Path                        # contains cluster.yaml
+      cli: str = "omnigraph"                          # runs `cluster apply`
+      restart: Callable[[], Awaitable[None]] | None = None
+      settle_timeout: float = 120.0                   # wait for GET /schema to match
+  ```
+  The CLI is required only on the host running the control plane, and object-store credentials only
+  when the cluster's `storage:` is an object-store root. Data-plane workers need neither.
+
+#### Phase D2 — Control plane
 
 | Step | Description | Status | Notes |
 |------|-------------|--------|-------|
-| D2a.1 | Orchestration in `_target.py`: `read_schema()` → `_gq.merge_type_into_schema` → `apply_schema()` (B2.3) | 🔲 | `_gq.py` unchanged |
-| D2a.2 | Removal path uses `remove_type_from_schema`; soft drops only, graph deletion never automated | 🔲 | |
-| D2a.3 | Interaction with scratch branches: if apply refuses while non-main branches exist, wait for and reap them as the CLI path did | 🔲 | |
-| D2a.4 | Ownership marker handling (`coco_managed_by_<app>`) unchanged across the transport swap | 🔲 | |
+| D2.1 | Read-merge-write of the type's block with `_gq.merge_type_into_schema` / `remove_type_from_schema`, under a lock keyed on the config directory | 🔲 | `_gq.py` unchanged |
+| D2.2 | Run `omnigraph cluster apply --config <dir> --json`; parse `ok`, `changes`, `errors` | 🔲 | Verified shape: `changes[].{resource, operation, disposition}` |
+| D2.3 | Invoke the restart hook; with none, raise `SchemaRestartRequired` naming the graph and config directory | 🔲 | |
+| D2.4 | Poll `GET /schema` until `schema_source` matches, else fail after `settle_timeout` | 🔲 | Exponential from 0.5 s |
+| D2.5 | Removal semantics: soft drops only; graph deletion never automated | 🔲 | |
+| D2.6 | Scratch-branch interaction: confirm whether `cluster apply` refuses while non-main branches exist | 🔲 | New probe P13 |
+| D2.7 | Ownership marker handling (`coco_managed_by_<app>`) unchanged across the transport swap | 🔲 | |
 
-#### Phase D2b — User-managed schema only  ·  *only if P1 returns 409*
+**Steps (detail):**
+
+- **D2.3 — Restart.** Deliverable: the hook is awaited once per apply; exceptions propagate and fail
+  the sync. `SchemaRestartRequired` is raised after a *successful* apply when no hook is configured,
+  so a re-run after the operator's restart finds the served schema already matching and continues.
+- **D2.4 — Converge.** Deliverable: on timeout, an error carrying the digest of the expected and the
+  served source. P12 confirmed the served schema never changes on its own, so this poll is strictly
+  waiting on the restart, not on eventual consistency.
+
+#### Phase D3 — Native server-side apply  ·  Post-MVP  ·  blocked on upstream
+
+The only path that removes both the CLI dependency and the restart, and the only one that puts
+omnigraph on equal footing with the other thirteen connectors.
 
 | Step | Description | Status | Notes |
 |------|-------------|--------|-------|
-| D2b.1 | Read the served schema and validate that every declared type and property exists and matches | 🔲 | |
-| D2b.2 | On mismatch, fail with a diff naming the type, the missing or differing properties, and the `.pg` block to add | 🔲 | |
-| D2b.3 | `managed_by="system"` refuses at reconcile time, naming the target and pointing at the runbook | 🔲 | |
-| D2b.4 | Operator runbook in the docs: cluster dir, `omnigraph cluster apply`, restart, re-run | 🔲 | Outside cocoindex; documentation only |
+| D3.1 | Upstream ask to ModernRelay: a per-graph opt-in that permits `POST /schema/apply` and reloads that graph in place | 🔲 | The 409 is a deliberate guard, not an oversight |
+| D3.2 | When it lands: a second implementation behind the D1.1 seam; `ClusterConfig` becomes optional | 🔲 | |
+| D3.3 | Retire the restart hook wherever the server supports in-place reload | 🔲 | |
 
 **Exit guardrails — Epic D → Epic E**
 
 | Guardrail | Criteria (pass/fail) | Status | Actual outcome |
 |-----------|----------------------|--------|----------------|
-| Path recorded | §6 names the chosen path and the evidence | 🔲 | |
-| D2a: lifecycle | Type create, property add, encoder change, release to user, and removal pass over HTTP | 🔲 | If D2a |
-| D2b: actionable | A test asserts the failure message contains the type name and the `.pg` block to add | 🔲 | If D2b |
-| Data isolation | No data-plane test performs a schema write | 🔲 | |
+| Lifecycle | Type create, property add, encoder change, release to user, and removal pass in HTTP mode with the fixture's restart hook | 🔲 | |
+| No hook | With `restart=None`, the first sync raises `SchemaRestartRequired`; after the fixture restarts the server, the second sync converges | 🔲 | |
+| Seam honoured | `_target.py` calls `apply_schema()` only; no `subprocess` or `cluster apply` string appears outside the control-plane module | 🔲 | |
+| Data isolation | No data-plane test invokes `cluster apply` | 🔲 | |
 
 ---
 
@@ -394,8 +486,10 @@ Answers go to `dev/omnigraph-rework/server-spike.md`, each with the exact reques
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| Probe P1 says no, so `managed_by="system"` is impossible in the only supported mode | Med | High | Path D2b's actionable diff plus an operator runbook. Stated plainly: automatic type creation is a large part of what makes this connector declarative, and losing it is a product regression, not a technicality |
-| No HTTP graph-creation path (P2), so an operator step must precede any cocoindex run | Med | Med | Detect and fail with the exact provisioning command; document it in the quickstart ahead of the connector code |
+| ~~Probe P1 says no~~ — **fired 2026-09-07.** HTTP schema apply is refused on every server configuration | — | High | Resolved by Epic D's control plane rather than by dropping the feature: every other connector supports `SYSTEM` and defaults to it (decision 32) |
+| The restart hook is operationally awkward — rolling deploys, managed hosting, multi-replica clusters | High | Med | `SchemaRestartRequired` converges on re-run after a manual restart; `managed_by="user"` documented as the zero-restart option; D3 removes it entirely if upstream lands |
+| D3 never lands upstream, so the CLI dependency for schema is permanent | Med | Med | The control plane is MVP and ships without D3. The binary is needed only on the host running schema changes, and P12 showed that host need not be the server's |
+| No HTTP graph-creation path (P2), so a pure-HTTP deployment cannot bootstrap its own graph | Med | Med | With a `ClusterConfig` the connector creates it via `cluster apply` (verified: `graph.probe create applied`). Without one, fail naming the graph, the base URL, and the procedure; document it in the quickstart ahead of the connector code |
 | Suite migration surfaces server semantics that differ from the direct store, forcing reconciliation rework late | Med | High | C1.4 migrates a representative slice during Epic C rather than at the end |
 | Host locks are gone and the server does not serialize branch merges as assumed → lost updates between workers | Med | High | Probe P3 before C2.3; the two-process concurrent-writer test in E2.9 |
 | The hand-rolled client drifts from the server contract, with no generated models and no drift check | Med | Med | The honest cost of dropping the SDK. Keep the surface at roughly nine calls; the live suite against a pinned server is the contract test |
@@ -443,6 +537,9 @@ Append-only. Rows 1-23 are kept for history; rows 24-30 supersede the ones they 
 | 28 | 2026-09-07 | rustfs is the S3-compatible backend for fixtures and CI, so object-store use is verified by the default suite. **Old Epic G is cut.** Supersedes 14 | rustfs is the standard local backend for Omnigraph, and with the CLI gone there is no direct-store mode left to verify separately | Roman Pronskiy |
 | 29 | 2026-09-07 | `managed_by="system"` support is decided by probe P1; the fallback is user-managed-only with an actionable diff. Supersedes 7, 8; replaces the old Epic E with Epic D | The 409 was measured on a `cluster.yaml`-backed server; a config-free storage-root boot is untested and may behave differently | Roman Pronskiy |
 | 30 | 2026-09-07 | Version coupling becomes a `/healthz` check at first use; an unexpected minor logs one warning and proceeds. Supersedes 13 | With no published package there is no version to lock. The server routes new capabilities on new paths, so it fails closed on its own | Roman Pronskiy |
+| 31 | 2026-09-07 | **P1, P2, and P12 answered live.** HTTP `POST /schema/apply` returns 409 on every server configuration; there is no graph-creation endpoint; a running server never reloads schema without a restart. Supersedes the branch in 29 | `--cluster` is the server's only boot source (RFC-011), and the 409 is scoped to "cluster-backed serving", so it applies to every served graph. Evidence in `server-spike.md` | Roman Pronskiy |
+| 32 | 2026-09-07 | **`managed_by="system"` must be supported.** User-managed-only is rejected as an end state | `ManagedBy` is a shared enum used by 14 connectors; every one defaults to `SYSTEM` and none refuses it. Shipping otherwise would make omnigraph the only connector whose default value does not work | Roman Pronskiy |
+| 33 | 2026-09-07 | Support it through a `cluster apply` control plane behind an `apply_schema()` seam, and pursue a server-side apply upstream as the eventual replacement (Epic D3) | The control plane works today with no upstream dependency, and P12 showed `cluster apply` needs the config directory and store credentials but not colocation with the server. The seam keeps the eventual native path a one-place change | Roman Pronskiy |
 
 ---
 
