@@ -325,7 +325,7 @@ async def test_litellm_embedder_aligns_batch_by_index() -> None:
     [
         pytest.param([0, None], 2, "with and without", id="partial"),
         pytest.param([0, 0], 2, "not a permutation", id="duplicate"),
-        pytest.param([0, 1], 3, "not a permutation", id="missing"),
+        pytest.param([0, 1], 3, "2 items for 3 inputs", id="missing"),
         pytest.param([-1, 0], 2, "not a permutation", id="negative"),
         pytest.param([0, 2], 2, "not a permutation", id="out-of-range"),
         pytest.param([0, "1"], 2, "not a permutation", id="non-int"),
