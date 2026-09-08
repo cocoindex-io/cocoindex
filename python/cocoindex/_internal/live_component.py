@@ -116,16 +116,13 @@ async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) 
     `set(prev)` always works because we're mutating whatever the
     current Context is.
 
-    The ``operator._detach()`` in the same finally is the framework's
-    fix for a subtle live-mode leak: if user code in ``process_live``
-    catches an exception and retains it (``self.last_err = e`` /
-    re-raises later), the exception's traceback holds the calling
-    frame's locals, which include ``operator`` — and ``operator`` owns a
-    Rust ``Arc`` to the live component's ``Component``. Without
-    detach, ``App.update``'s ``wait_until_inactive`` poll never observes
-    the live component as inactive. After detach, the Rust controller
-    drops on schedule; later operator method calls raise. See
-    ``specs/core/error_handling.md`` §4.1.
+    The ``operator._detach()`` in the same finally scopes the operator to
+    this invocation: an operator that user code retains past it (for
+    example through a stored exception's traceback, which holds the
+    calling frame's locals) fails loudly on later method calls instead of
+    acting on a live component that has finished. Termination does not
+    depend on it — the engine tracks activity explicitly, so a retained
+    operator cannot keep the live component active.
     """
     prev = _in_process_live.get()
     _in_process_live.set(True)

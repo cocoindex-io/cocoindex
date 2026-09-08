@@ -170,6 +170,16 @@ impl<Prof: EngineProfile> ActivityGuard<Prof> {
     }
 }
 
+/// What a processing task holds from its entry point until it ends
+/// (see [`Component::start_task`]).
+struct StartedTask<Prof: EngineProfile> {
+    /// Keeps the component and its ancestors active; the task drops it right
+    /// before resolving child readiness.
+    activity: ActivityGuard<Prof>,
+    /// Registration with the parent's readiness accumulator; `None` for the root.
+    child_readiness: Option<ComponentBgChildReadinessChildGuard>,
+}
+
 impl<Prof: EngineProfile> Drop for ActivityGuard<Prof> {
     fn drop(&mut self) {
         for inner in self.component.self_and_ancestors() {
@@ -373,7 +383,7 @@ impl ComponentBgChildReadiness {
 /// enclosing aggregate), register their initial readiness into `readiness`, and
 /// are tracked for liveness in `active_members`. Shared (`Arc`) between the
 /// substituted context view (which pushes members) and the spawned
-/// group-lifecycle task (which awaits readiness and polls liveness).
+/// group-lifecycle task (which awaits readiness, then the members' inactivity).
 pub(crate) struct StatsGroup<Prof: EngineProfile> {
     stats: ProcessingStats,
     readiness: ComponentBgChildReadiness,
@@ -586,18 +596,23 @@ impl<Prof: EngineProfile> Component<Prof> {
         })
     }
 
-    /// Register a starting processing task with the parent view: as a pending
-    /// child for readiness, and as a member of every enclosing stats group.
-    /// Both at the same point, so a group can never see a member become ready
-    /// without also tracking its activity. `None` for the root.
-    fn register_task_with_parent(
-        &self,
-        context: &ComponentProcessorContext<Prof>,
-    ) -> Option<ComponentBgChildReadinessChildGuard> {
-        context.parent_context().map(|parent_ctx| {
+    /// Begin a processing task on this component: count it as in flight, then
+    /// register it with the parent view — as a pending child for readiness and
+    /// as a member of every enclosing stats group. Activity is counted first,
+    /// so a member is never registered inactive (a concurrent group scan would
+    /// prune it before its task had started); readiness and membership are
+    /// registered together, so a group can never see a member become ready
+    /// without also tracking its activity.
+    fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> StartedTask<Prof> {
+        let activity = ActivityGuard::new(self.clone());
+        let child_readiness = context.parent_context().map(|parent_ctx| {
             parent_ctx.push_active_member(self);
             parent_ctx.components_readiness().clone().add_child()
-        })
+        });
+        StartedTask {
+            activity,
+            child_readiness,
+        }
     }
 
     pub fn mount_child(&self, fn_ctx: &FnCallContext, stable_path: StablePath) -> Result<Self> {
@@ -758,6 +773,11 @@ impl<Prof: EngineProfile> Component<Prof> {
         deadline: DeadlineContext,
         caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
+
         // Release parent's inflight permit (deadlock prevention).
         // On a component's first child mount, the parent gives up its slot
         // so children can make progress.
@@ -776,11 +796,8 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
 
         let relative_path = self.relative_path()?;
-        let child_readiness_guard = self.register_task_with_parent(&context);
         let span = info_span!("component.run", component_path = %relative_path);
         let cancel_token = self.app_ctx().cancellation_token();
-        // In flight from before the task is spawned until it ends.
-        let activity = ActivityGuard::new(self.clone());
         let join_handle = get_runtime().spawn(
             async move {
                 // Race the work against app-level cancellation. On cancel, the
@@ -821,6 +838,10 @@ impl<Prof: EngineProfile> Component<Prof> {
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
 
         // Release parent's inflight permit (deadlock prevention).
         if let Some(parent_ctx) = context.parent_context() {
@@ -837,10 +858,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             context.set_inflight_permit(permit);
         }
 
-        let child_readiness_guard = self.register_task_with_parent(&context);
         let cancel_token = self.app_ctx().cancellation_token();
-        // In flight from before the task is spawned until it ends.
-        let activity = ActivityGuard::new(self.clone());
         let join_handle = get_runtime().spawn(async move {
             // Check if this task has been superseded before executing.
             if let Some(check) = pre_execute_check {
@@ -918,13 +936,14 @@ impl<Prof: EngineProfile> Component<Prof> {
         context: ComponentProcessorContext<Prof>,
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
-        let child_readiness_guard = self.register_task_with_parent(&context);
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
         // Pull on_error out of the delete context so the spawned task
         // can invoke it. The context still carries the same handler for
         // descendant GC sweeps to read and cascade.
         let on_error = context.delete_action_on_error();
-        // In flight from before the task is spawned until it ends.
-        let activity = ActivityGuard::new(self.clone());
         let join_handle: tokio::task::JoinHandle<SharedResult<()>> =
             get_runtime().spawn(async move {
                 if let Some(check) = pre_execute_check {
