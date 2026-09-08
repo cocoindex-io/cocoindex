@@ -118,10 +118,11 @@ struct ComponentInner<Prof: EngineProfile> {
     build_semaphore: tokio::sync::Semaphore,
     last_memo_fp: Mutex<Option<Fingerprint>>,
 
-    /// Active child components, keyed by their full StablePath.
-    /// Uses Weak references — children are kept alive by their spawned tasks
-    /// and LiveComponentController references, not by this map. When a child's
-    /// last strong reference is dropped, its Drop impl removes the entry here.
+    /// Identity registry of child components, keyed by their full StablePath,
+    /// so a re-mount of a path whose component is still referenced shares the
+    /// same `ComponentInner` (and thus its `build_semaphore`). Weak: entries
+    /// are removed by the child's Drop impl. This map says nothing about
+    /// activity — see `active_ops`.
     ///
     /// `parking_lot::Mutex` (non-poisoning): the Drop impl below acquires this
     /// lock, and a poisoned `std::sync::Mutex` would cascade panics through
@@ -133,6 +134,64 @@ struct ComponentInner<Prof: EngineProfile> {
     /// since cancel/drain paths can lock this from `Drop` as well.
     live_state:
         parking_lot::Mutex<Option<Arc<crate::engine::live_component::LiveComponentState<Prof>>>>,
+
+    /// Number of processing tasks in flight in this component's subtree
+    /// (itself and every descendant), maintained by [`ActivityGuard`]. This —
+    /// not the reference count of `inner` — is what "active" means: anything
+    /// may hold a `Component` or a processor context for as long as it likes
+    /// (a host-language exception traceback, a stored handle) without keeping
+    /// the component active.
+    active_ops: std::sync::atomic::AtomicUsize,
+    /// Signaled when `active_ops` drops to zero (see `wait_until_inactive`).
+    inactive: tokio::sync::Notify,
+}
+
+/// Marks a processing task as in flight on a component for the guard's
+/// lifetime. A task's entry point creates it before spawning the task and drops
+/// it when the task ends — on every exit path, including cancellation and
+/// panics — so activity is accounted for deterministically, independent of who
+/// else holds the component.
+///
+/// Counts on the component and each of its ancestors, so a component is active
+/// while anything in its subtree runs (`wait_until_inactive`, [`StatsGroup`]
+/// member liveness).
+pub(crate) struct ActivityGuard<Prof: EngineProfile> {
+    component: Component<Prof>,
+}
+
+impl<Prof: EngineProfile> ActivityGuard<Prof> {
+    pub(crate) fn new(component: Component<Prof>) -> Self {
+        for inner in component.self_and_ancestors() {
+            inner
+                .active_ops
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Self { component }
+    }
+}
+
+/// What a processing task holds from its entry point until it ends
+/// (see [`Component::start_task`]).
+struct StartedTask<Prof: EngineProfile> {
+    /// Keeps the component and its ancestors active; the task drops it right
+    /// before resolving child readiness.
+    activity: ActivityGuard<Prof>,
+    /// Registration with the parent's readiness accumulator; `None` for the root.
+    child_readiness: Option<ComponentBgChildReadinessChildGuard>,
+}
+
+impl<Prof: EngineProfile> Drop for ActivityGuard<Prof> {
+    fn drop(&mut self) {
+        for inner in self.component.self_and_ancestors() {
+            if inner
+                .active_ops
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                inner.inactive.notify_waiters();
+            }
+        }
+    }
 }
 
 impl<Prof: EngineProfile> Drop for ComponentInner<Prof> {
@@ -319,27 +378,12 @@ impl ComponentBgChildReadiness {
     }
 }
 
-/// "Is any member still active?" — pops dead `Weak`s off the back until the
-/// first live one (or empty). Each entry is removed at most once over the
-/// collection's lifetime ⇒ amortized O(1) per inserted member, no full scan.
-/// Used by [`StatsGroup`] for live-mode termination (the group's unkeyed,
-/// drop-hookless analogue of `active_children`).
-fn any_active<T>(members: &mut Vec<Weak<T>>) -> bool {
-    while let Some(last) = members.last() {
-        if last.strong_count() > 0 {
-            return true;
-        }
-        members.pop();
-    }
-    false
-}
-
 /// A named, separate stats aggregation scope created by `coco.stats_group(...)`.
 /// Components mounted within the scope report into `stats` (split out of the
 /// enclosing aggregate), register their initial readiness into `readiness`, and
 /// are tracked for liveness in `active_members`. Shared (`Arc`) between the
 /// substituted context view (which pushes members) and the spawned
-/// group-lifecycle task (which awaits readiness and polls liveness).
+/// group-lifecycle task (which awaits readiness, then the members' inactivity).
 pub(crate) struct StatsGroup<Prof: EngineProfile> {
     stats: ProcessingStats,
     readiness: ComponentBgChildReadiness,
@@ -363,15 +407,36 @@ impl<Prof: EngineProfile> StatsGroup<Prof> {
         &self.readiness
     }
 
-    /// Register a direct member's `ComponentInner` for liveness tracking.
+    /// Register a direct member for liveness tracking.
     pub(crate) fn push_member(&self, child: &Component<Prof>) {
         self.active_members.lock().push(child.downgrade_inner());
     }
 
-    /// True while any member (or anything in its subtree, via the strong
-    /// parent-chain) is still alive. Prunes dead entries as it scans.
-    pub(crate) fn any_active(&self) -> bool {
-        any_active(&mut self.active_members.lock())
+    /// The most recently registered member that is still active, pruning
+    /// finished members (inactive, or dropped) off the back as it scans. A
+    /// member only becomes active again by being mounted again, which
+    /// registers it again, so pruning is safe; each entry is removed at most
+    /// once ⇒ amortized O(1) per registered member.
+    fn last_active_member(&self) -> Option<Component<Prof>> {
+        let mut members = self.active_members.lock();
+        while let Some(last) = members.last() {
+            if let Some(inner) = last.upgrade()
+                && inner.active_ops.load(std::sync::atomic::Ordering::SeqCst) > 0
+            {
+                return Some(Component { inner });
+            }
+            members.pop();
+        }
+        None
+    }
+
+    /// Wait until no member (nor anything in a member's subtree) has a
+    /// processing task in flight — the group's analogue of
+    /// `Component::wait_until_inactive`.
+    pub(crate) async fn wait_until_members_inactive(&self) {
+        while let Some(member) = self.last_active_member() {
+            member.wait_until_inactive().await;
+        }
     }
 }
 
@@ -410,16 +475,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             parent_guard.resolve_result(outcome);
 
             if live && !cancel_token.is_cancelled() {
-                // Cancel-aware inactivity poll, scoped to this group's members
-                // (the group's analogue of `wait_until_inactive`).
-                let mut delay = std::time::Duration::from_millis(1);
-                let max_delay = std::time::Duration::from_secs(10);
-                while lifecycle_group.any_active() {
-                    tokio::select! {
-                        () = tokio::time::sleep(delay) => {}
-                        () = cancel_token.cancelled() => break,
-                    }
-                    delay = (delay * 2).min(max_delay);
+                // Cancel-aware wait for the group's members to finish (the
+                // group's analogue of `wait_until_inactive`).
+                tokio::select! {
+                    () = lifecycle_group.wait_until_members_inactive() => {}
+                    () = cancel_token.cancelled() => {}
                 }
             }
             lifecycle_group.stats().notify_terminated();
@@ -524,7 +584,34 @@ impl<Prof: EngineProfile> Component<Prof> {
                 last_memo_fp: Mutex::new(None),
                 active_children: parking_lot::Mutex::new(HashMap::new()),
                 live_state: parking_lot::Mutex::new(None),
+                active_ops: std::sync::atomic::AtomicUsize::new(0),
+                inactive: tokio::sync::Notify::new(),
             }),
+        }
+    }
+
+    fn self_and_ancestors(&self) -> impl Iterator<Item = &ComponentInner<Prof>> {
+        std::iter::successors(Some(&*self.inner), |inner| {
+            inner.parent.as_ref().map(|parent| &*parent.inner)
+        })
+    }
+
+    /// Begin a processing task on this component: count it as in flight, then
+    /// register it with the parent view — as a pending child for readiness and
+    /// as a member of every enclosing stats group. Activity is counted first,
+    /// so a member is never registered inactive (a concurrent group scan would
+    /// prune it before its task had started); readiness and membership are
+    /// registered together, so a group can never see a member become ready
+    /// without also tracking its activity.
+    fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> StartedTask<Prof> {
+        let activity = ActivityGuard::new(self.clone());
+        let child_readiness = context.parent_context().map(|parent_ctx| {
+            parent_ctx.push_active_member(self);
+            parent_ctx.components_readiness().clone().add_child()
+        });
+        StartedTask {
+            activity,
+            child_readiness,
         }
     }
 
@@ -617,8 +704,8 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.stable_path
     }
 
-    /// A `Weak` to this component's inner, for liveness tracking by a
-    /// [`StatsGroup`] (alive iff this component or any descendant is alive).
+    /// A `Weak` to this component's inner, for membership tracking by a
+    /// [`StatsGroup`]; the member counts as active while `active_ops > 0`.
     fn downgrade_inner(&self) -> Weak<ComponentInner<Prof>> {
         Arc::downgrade(&self.inner)
     }
@@ -636,20 +723,28 @@ impl<Prof: EngineProfile> Component<Prof> {
         self.inner.live_state.lock().clone()
     }
 
-    /// Returns true if this component has no active children (all Weak refs are dead).
-    pub fn has_active_children(&self) -> bool {
-        let children = self.inner.active_children.lock();
-        children.values().any(|w| w.strong_count() > 0)
+    /// True while a processing task is in flight on this component or any
+    /// descendant (see [`ActivityGuard`]).
+    pub fn is_active(&self) -> bool {
+        self.inner
+            .active_ops
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
     }
 
-    /// Wait until all descendants are inactive (active_children is empty).
-    /// Uses exponential backoff polling: 1ms → 2ms → 4ms → ... → 10s cap.
+    /// Wait until no processing task is in flight in this component's
+    /// subtree. Event-driven: returns as soon as the last [`ActivityGuard`]
+    /// in the subtree drops.
     pub async fn wait_until_inactive(&self) {
-        let mut delay = std::time::Duration::from_millis(1);
-        let max_delay = std::time::Duration::from_secs(10);
-        while self.has_active_children() {
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(max_delay);
+        loop {
+            // Create the future before checking: a `Notified` receives
+            // `notify_waiters` from the moment it exists, so a guard dropped
+            // between the check and the await still wakes us.
+            let inactive = self.inner.inactive.notified();
+            if !self.is_active() {
+                return;
+            }
+            inactive.await;
         }
     }
 
@@ -678,6 +773,11 @@ impl<Prof: EngineProfile> Component<Prof> {
         deadline: DeadlineContext,
         caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
+
         // Release parent's inflight permit (deadlock prevention).
         // On a component's first child mount, the parent gives up its slot
         // so children can make progress.
@@ -696,9 +796,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
 
         let relative_path = self.relative_path()?;
-        let child_readiness_guard = context
-            .parent_context()
-            .map(|c| c.components_readiness().clone().add_child());
         let span = info_span!("component.run", component_path = %relative_path);
         let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(
@@ -718,6 +815,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                 drop(processor);
                 drop(context);
                 drop(self);
+                // Mark the task over before readiness resolves, so whoever
+                // observes readiness also observes the component as inactive.
+                drop(activity);
                 child_readiness_guard.map(|guard| guard.resolve(outcome));
                 output?
                     .ok_or_else(|| internal_error!("component deletion can only run in background"))
@@ -738,6 +838,10 @@ impl<Prof: EngineProfile> Component<Prof> {
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
 
         // Release parent's inflight permit (deadlock prevention).
         if let Some(parent_ctx) = context.parent_context() {
@@ -754,9 +858,6 @@ impl<Prof: EngineProfile> Component<Prof> {
             context.set_inflight_permit(permit);
         }
 
-        let child_readiness_guard = context
-            .parent_context()
-            .map(|c| c.components_readiness().clone().add_child());
         let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(async move {
             // Check if this task has been superseded before executing.
@@ -767,6 +868,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     drop(processor);
                     drop(context);
                     drop(self);
+                    drop(activity);
                     if let Some(guard) = child_readiness_guard {
                         guard.resolve(ComponentRunOutcome::default());
                     }
@@ -815,6 +917,8 @@ impl<Prof: EngineProfile> Component<Prof> {
             drop(processor);
             drop(context);
             drop(self);
+            // See `run` for why this precedes readiness resolution.
+            drop(activity);
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
             }
@@ -832,9 +936,10 @@ impl<Prof: EngineProfile> Component<Prof> {
         context: ComponentProcessorContext<Prof>,
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
-        let child_readiness_guard = context
-            .parent_context()
-            .map(|c| c.components_readiness().clone().add_child());
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
         // Pull on_error out of the delete context so the spawned task
         // can invoke it. The context still carries the same handler for
         // descendant GC sweeps to read and cascade.
@@ -845,6 +950,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     if !check() {
                         drop(context);
                         drop(self);
+                        drop(activity);
                         if let Some(guard) = child_readiness_guard {
                             guard.resolve(ComponentRunOutcome::default());
                         }
@@ -882,6 +988,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // See run_in_background for the rationale (PyGILState finalization fix).
                 drop(context);
                 drop(self);
+                // See `run` for why this precedes readiness resolution.
+                drop(activity);
                 if let Some(guard) = child_readiness_guard {
                     guard.resolve(outcome);
                 }
@@ -1272,9 +1380,9 @@ impl<Prof: EngineProfile> Component<Prof> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComponentProcessor, ComponentProcessorInfo, any_active};
+    use super::{ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, StatsGroup};
     use crate::engine::app::{App, AppUpdateOptions};
-    use crate::engine::context::{ComponentProcessorContext, MemoStatesPayload};
+    use crate::engine::context::{ComponentProcessorContext, FnCallContext, MemoStatesPayload};
     use crate::engine::deadline::{
         DeadlineContext, testing_advance_deadline_clock, testing_deadline_clock_lock,
         testing_disable_deadline_clock, testing_reset_deadline_clock,
@@ -1285,39 +1393,71 @@ mod tests {
         ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
         TargetStateProviderRegistry,
     };
-    use crate::state::stable_path::StableKey;
+    use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
     use async_trait::async_trait;
     use cocoindex_utils::fingerprint::Fingerprint;
     use std::hash::{Hash, Hasher};
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex, Weak};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    #[test]
-    fn test_any_active_pop_prune() {
-        // Empty → inactive.
-        let mut members: Vec<Weak<()>> = Vec::new();
-        assert!(!any_active(&mut members));
+    fn key_path(parent: &Component<TestProfile>, key: &str) -> StablePath {
+        parent
+            .stable_path()
+            .concat_part(StableKey::Str(Arc::from(key)))
+    }
 
-        // One live entry → active, not pruned.
-        let live = Arc::new(());
-        members.push(Arc::downgrade(&live));
-        assert!(any_active(&mut members));
-        assert_eq!(members.len(), 1);
+    /// Activity is explicit: a task's `ActivityGuard` counts on the component
+    /// and its ancestors, and dropping it wakes `wait_until_inactive`. Holding
+    /// `Component`s has no effect on either.
+    #[tokio::test]
+    async fn activity_propagates_up_the_parent_chain_and_wakes_waiters() {
+        let (app, _dir) = test_app("activity_guard").await;
+        let root = Component::new(app.app_ctx().clone(), StablePath::root(), None);
+        let child = root.get_child(key_path(&root, "child"));
+        let grandchild = child.get_child(key_path(&child, "grandchild"));
+        let chain = [&root, &child, &grandchild];
+        assert!(!chain.iter().any(|c| c.is_active()));
 
-        // Trailing dead entries are popped off the back until the first live
-        // one; the live entry at the front is preserved.
-        let dead = Arc::new(());
-        members.push(Arc::downgrade(&dead));
-        drop(dead);
-        assert!(any_active(&mut members)); // pops the dead tail, finds `live`
-        assert_eq!(members.len(), 1);
+        let activity = ActivityGuard::new(grandchild.clone());
+        assert!(chain.iter().all(|c| c.is_active()));
 
-        // All dead → inactive and emptied.
-        drop(live);
-        assert!(!any_active(&mut members));
-        assert!(members.is_empty());
+        let waiter = tokio::spawn({
+            let root = root.clone();
+            async move { root.wait_until_inactive().await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !waiter.is_finished(),
+            "must keep waiting while the grandchild's task is in flight"
+        );
+        drop(activity);
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("wait_until_inactive must wake when the last task ends")
+            .unwrap();
+        assert!(!chain.iter().any(|c| c.is_active()));
+    }
+
+    #[tokio::test]
+    async fn stats_group_prunes_finished_members_even_while_still_referenced() {
+        let (app, _dir) = test_app("stats_group_members").await;
+        let root = Component::new(app.app_ctx().clone(), StablePath::root(), None);
+        let member = root.get_child(key_path(&root, "member"));
+        let group = StatsGroup::<TestProfile>::new();
+
+        let activity = ActivityGuard::new(member.clone());
+        group.push_member(&member);
+        assert!(group.last_active_member().is_some());
+
+        drop(activity);
+        // `member` is still held (as a retained host-language context would
+        // hold it), yet it is finished: pruned, nothing left to wait for.
+        assert!(group.last_active_member().is_none());
+        assert!(group.active_members.lock().is_empty());
+        group.wait_until_members_inactive().await;
     }
 
     #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -1390,11 +1530,22 @@ mod tests {
         type TargetStateValue = ();
     }
 
+    /// Optional processor body, given the component's processor context.
+    type ProcessHook = Arc<
+        dyn Fn(
+                ComponentProcessorContext<TestProfile>,
+            )
+                -> Pin<Box<dyn Future<Output = crate::prelude::Result<TestData>> + Send>>
+            + Send
+            + Sync,
+    >;
+
     struct TestProcessor {
         info: ComponentProcessorInfo,
         memo_fp: Fingerprint,
         body_started: Arc<AtomicBool>,
         advance_clock_in_state_handler: bool,
+        on_process: Option<ProcessHook>,
     }
 
     impl TestProcessor {
@@ -1409,7 +1560,13 @@ mod tests {
                 memo_fp,
                 body_started,
                 advance_clock_in_state_handler,
+                on_process: None,
             }
+        }
+
+        fn with_on_process(mut self, hook: ProcessHook) -> Self {
+            self.on_process = Some(hook);
+            self
         }
     }
 
@@ -1417,14 +1574,21 @@ mod tests {
         fn process(
             &self,
             _host_runtime_ctx: &(),
-            _comp_ctx: &ComponentProcessorContext<TestProfile>,
+            comp_ctx: &ComponentProcessorContext<TestProfile>,
         ) -> crate::prelude::Result<
             impl Future<Output = crate::prelude::Result<TestData>> + Send + 'static,
         > {
             let body_started = self.body_started.clone();
+            let hook = self
+                .on_process
+                .as_ref()
+                .map(|hook| (hook.clone(), comp_ctx.clone()));
             Ok(async move {
                 body_started.store(true, Ordering::SeqCst);
-                Ok(TestData(b"ret".to_vec()))
+                match hook {
+                    Some((hook, comp_ctx)) => hook(comp_ctx).await,
+                    None => Ok(TestData(b"ret".to_vec())),
+                }
             })
         }
 
@@ -1551,5 +1715,89 @@ mod tests {
             !second_body_started.load(Ordering::SeqCst),
             "processor body must not start after memo-state validation expires the deadline"
         );
+    }
+
+    /// A processor context retained after its component's processing task
+    /// ends — in the host language, an exception traceback keeping a frame
+    /// that holds it, or a stored handle — keeps the component's identity
+    /// alive but not active, so live-mode termination is unaffected.
+    #[tokio::test]
+    async fn retained_context_does_not_keep_component_active() {
+        let (app, _dir) = test_app("retained_ctx").await;
+        let child_path = StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+
+        let retained_child_ctx: Arc<Mutex<Option<ComponentProcessorContext<TestProfile>>>> =
+            Default::default();
+        let root_component: Arc<Mutex<Option<Component<TestProfile>>>> = Default::default();
+
+        let child_processor = {
+            let retained = retained_child_ctx.clone();
+            TestProcessor::new(
+                "child",
+                Fingerprint::from(&"retained_ctx/child").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                *retained.lock().unwrap() = Some(ctx);
+                Box::pin(async { Ok(TestData(b"child".to_vec())) })
+            }))
+        };
+        let root_processor = {
+            let root_component = root_component.clone();
+            let child_path = child_path.clone();
+            let child_processor = Mutex::new(Some(child_processor));
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"retained_ctx/root").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                let root_component = root_component.clone();
+                let child_path = child_path.clone();
+                let child_processor = child_processor.lock().unwrap().take().unwrap();
+                Box::pin(async move {
+                    let component = ctx.component().clone();
+                    *root_component.lock().unwrap() = Some(component.clone());
+                    // Same steps as the host bindings' `use_mount`.
+                    let handle = component
+                        .mount_child(&FnCallContext::new(true), child_path)?
+                        .use_mount(&ctx, child_processor, DeadlineContext::NONE)
+                        .await?;
+                    handle.result(Some(&ctx)).await?;
+                    Ok(TestData(b"root".to_vec()))
+                })
+            }))
+        };
+
+        let (handle, _) = app
+            .update(
+                root_processor,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+
+        let root = root_component
+            .lock()
+            .unwrap()
+            .take()
+            .expect("root processor ran");
+        let child_ctx = retained_child_ctx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("child processor ran");
+        let child = child_ctx.component();
+        assert_eq!(child.stable_path(), &child_path);
+        // The retained context keeps the child's identity registered (a
+        // re-mount would share it)...
+        assert!(root.inner.active_children.lock().contains_key(&child_path));
+        // ...but nothing is active, immediately and without polling.
+        assert!(!child.is_active());
+        assert!(!root.is_active());
     }
 }
