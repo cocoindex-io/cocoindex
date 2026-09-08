@@ -1441,3 +1441,114 @@ def test_directory_to_component_transition() -> None:
     assert coco.ROOT_PATH / "transition_test" in paths
     assert coco.ROOT_PATH / "transition_test" / "D1" in paths
     assert coco.ROOT_PATH / "transition_test" / "D1" / "a" not in paths
+
+
+##################################################################################
+# Test: Component -> Directory transition child existence reconciliation
+##################################################################################
+
+_transition_to_directory_mode = False
+
+
+def _declare_dict_entries(
+    provider: coco.TargetStateProvider[Any], entries: dict[str, Any]
+) -> None:
+    for key, value in entries.items():
+        coco.declare_target_state(provider.target_state(key, value))
+
+
+async def _declare_transition_to_directory() -> None:
+    provider = await coco.mount_target(DictsTarget.dict_target("D1"))
+    with coco.component_subpath("transition_test"):
+        if not _transition_to_directory_mode:
+            await coco.mount(
+                coco.component_subpath("D1"),
+                _declare_dict_entries,
+                provider,
+                {"a": 1, "b": 2},
+            )
+        else:
+            await coco.mount(
+                coco.component_subpath("D1", "child"),
+                _declare_dict_entries,
+                provider,
+                {"c": 3},
+            )
+
+
+def test_component_to_directory_transition() -> None:
+    global _transition_to_directory_mode
+    DictsTarget.store.clear()
+    _transition_to_directory_mode = False
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_component_to_directory_transition", environment=coco_env
+        ),
+        _declare_transition_to_directory,
+    )
+
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    container_owner = (
+        coco.ROOT_PATH
+        / coco.Symbol("cocoindex/mount_target")
+        / (coco.Symbol("test_target_state/dicts"), "D1")
+    )
+    old_component = coco.ROOT_PATH / "transition_test" / "D1"
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': container_owner,
+        '/@test_target_state/dicts/"D1"/"a"': old_component,
+        '/@test_target_state/dicts/"D1"/"b"': old_component,
+    }
+
+    # Transition from Component to Directory: the component at
+    # transition_test/D1 is no longer mounted; instead a deeper component is
+    # mounted under it, so D1 stays in the child-existence tree as a
+    # Directory node whose only child is the new component.
+    _transition_to_directory_mode = True
+    app.update_blocking()
+
+    # D1's own target states are gone, while the deeper component's target
+    # states -- written in this same update -- must survive D1's demotion.
+    deeper_component = old_component / "child"
+    assert DictsTarget.store.data == {
+        "D1": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': container_owner,
+        '/@test_target_state/dicts/"D1"/"c"': deeper_component,
+    }
+
+    # D1 is still present (now as a Directory node) with the deeper component
+    # below it.
+    paths = coco_inspect.list_stable_paths_sync(app)
+    assert old_component in paths
+    assert deeper_component in paths
+
+    # Transition back from Directory to Component at the same path: D1 is a
+    # component again, so its former child -- and that child's target
+    # states -- are gone.
+    _transition_to_directory_mode = False
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': container_owner,
+        '/@test_target_state/dicts/"D1"/"a"': old_component,
+        '/@test_target_state/dicts/"D1"/"b"': old_component,
+    }
+    paths = coco_inspect.list_stable_paths_sync(app)
+    assert old_component in paths
+    assert deeper_component not in paths

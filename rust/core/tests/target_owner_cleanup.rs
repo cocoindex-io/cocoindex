@@ -7,9 +7,7 @@ use std::sync::Arc;
 
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
 use cocoindex_core::state::target_state_path::TargetStatePath;
-use cocoindex_core::state_store::{
-    AppStore, CommitPlan, ExistenceReconciler, Storage, StorageSettings,
-};
+use cocoindex_core::state_store::{AppStore, CommitPlan, Storage, StorageSettings};
 use cocoindex_utils::fingerprint::Fingerprint;
 use tempfile::TempDir;
 
@@ -93,13 +91,8 @@ async fn commit_owner_deletes(
         user_state_writes: Vec::new(),
         user_state_deletes: Vec::new(),
         user_state_clear_live: false,
-        child_path_set: None,
     };
-    let reconciler: ExistenceReconciler = Box::new(|_wtxn| Box::pin(async { Ok(()) }));
-    store
-        .commit(component_path, plan, reconciler)
-        .await
-        .unwrap();
+    store.commit(component_path, plan, None).await.unwrap();
 }
 
 #[tokio::test]

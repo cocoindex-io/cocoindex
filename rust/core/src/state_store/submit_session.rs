@@ -348,21 +348,17 @@ pub struct CommitPlan {
     /// removes the live-machinery committed state alongside the regular
     /// state (the regular flush above never clears `Live`).
     pub user_state_clear_live: bool,
-    /// In-memory child tree after this build. AppStore feeds it to
-    /// `existence_reconciler` (see [`AppStore::commit`]) inside its
-    /// commit txn, so the children-`__cex` read + tombstone writes
-    /// happen atomically with the other commit writes. `None` skips
-    /// existence reconciliation (e.g. `demote_component_only`).
-    pub child_path_set: Option<Arc<ChildStablePathSet>>,
 }
 
 /// Callback the AppStore invokes inside its commit txn to run the
 /// child-existence diff. Engine constructs this closure with all
 /// captures it needs (component path, child_path_set, an `AppStore`
-/// clone) and passes it to [`AppStore::commit`]. The closure receives
-/// the open `WriteTxn` and walks the in-memory tree, reads `__cex` per
-/// parent, writes deltas + tombstones — see
-/// [`reconcile_child_existence`].
+/// clone) and passes it to [`AppStore::commit`] — or passes `None`
+/// there to leave the `__cex` subtree untouched (a demote-only delete:
+/// the component became a Directory node whose children belong to the
+/// parent's current build). The closure receives the open `WriteTxn`
+/// and walks the in-memory tree, reads `__cex` per parent, writes
+/// deltas + tombstones — see [`reconcile_child_existence`].
 ///
 /// Lifetime: the closure runs strictly inside the commit txn, so the
 /// `&'a mut WriteTxn<'env>` borrow is bounded by the callback's await
@@ -460,14 +456,16 @@ impl AppStore {
     }
 
     /// Phase 4 success: open commit txn, apply finalized writes, invoke
-    /// `existence_reconciler` for the child-existence diff — all in one
-    /// write txn so the reconciler's per-parent `__cex` reads see the
-    /// same snapshot as the plan writes that just happened.
+    /// `existence_reconciler` (when given) for the child-existence diff —
+    /// all in one write txn so the reconciler's per-parent `__cex` reads
+    /// see the same snapshot as the plan writes that just happened.
+    /// `None` skips child-existence reconciliation entirely, leaving the
+    /// `__cex` subtree under `component_path` as it is.
     pub async fn commit(
         &self,
         component_path: &StablePath,
         plan: CommitPlan,
-        existence_reconciler: ExistenceReconciler,
+        existence_reconciler: Option<ExistenceReconciler>,
     ) -> Result<()> {
         let app_store = self.clone();
         let component_path = component_path.clone();
@@ -543,7 +541,9 @@ impl AppStore {
                             .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
                             .await?;
                     }
-                    existence_reconciler(wtxn).await?;
+                    if let Some(reconcile) = existence_reconciler.as_ref() {
+                        reconcile(wtxn).await?;
+                    }
                     Ok(())
                 })
             })
@@ -580,6 +580,10 @@ impl AppStore {
 ///
 /// Sibling-by-sibling sorted-merge per level so each `__cex` read is
 /// O(N children) per parent and the writes are bounded by changes.
+///
+/// `child_path_set == None` means the component declares no children
+/// at all (whole-component delete): every on-disk child is removed and
+/// every Component leaf below it tombstoned, cascading the delete.
 ///
 /// Used by [`AppStore::commit`]: the AppStore opens the commit txn,
 /// then invokes the engine-supplied [`ExistenceReconciler`] which in
