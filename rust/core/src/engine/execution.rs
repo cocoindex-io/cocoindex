@@ -397,21 +397,38 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     Ok(child_provider)
 }
 
+/// What a commit does to the child-existence (`__cex`) subtree under the
+/// component. Decided once in [`submit`], after the processing action and
+/// the delete-mode preflight are both known.
+enum ChildExistenceAction {
+    /// Build: diff the children this build declared against the on-disk
+    /// rows, tombstoning the Component leaves that disappeared.
+    Reconcile(ChildStablePathSet),
+    /// Whole-component delete: nothing is declared, so every on-disk child
+    /// is removed and tombstoned — the cascade `launch_child_component_gc`
+    /// relies on.
+    RemoveAll,
+    /// Demote-only delete: the path stays in the tree as a Directory node
+    /// whose children were declared — and already reconciled — by the
+    /// parent's current build. They are live, so the subtree is left as
+    /// is: walking it against an empty set would tombstone them, and the
+    /// GC sweep would then delete target states they wrote in this same
+    /// update.
+    Keep,
+}
+
 struct Committer<Prof: EngineProfile> {
     component_ctx: ComponentProcessorContext<Prof>,
     app_store: AppStore,
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
     component_path: StablePath,
-
-    demote_component_only: bool,
 }
 
 impl<Prof: EngineProfile> Committer<Prof> {
     fn new(
         component_ctx: &ComponentProcessorContext<Prof>,
         target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
-        demote_component_only: bool,
     ) -> Result<Self> {
         let component_path = component_ctx.stable_path().clone();
         Ok(Self {
@@ -419,7 +436,6 @@ impl<Prof: EngineProfile> Committer<Prof> {
             app_store: component_ctx.app_ctx().app_store().clone(),
             target_states_providers: target_states_providers.clone(),
             component_path,
-            demote_component_only,
         })
     }
 
@@ -427,13 +443,14 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// them through [`AppStore::commit`](crate::state_store::AppStore::commit).
     /// The AppStore opens its own write txn, applies the plan's writes
     /// (tracking-info, fn-memo flush, user-state flush, target-owner cleanup),
-    /// and invokes the `ExistenceReconciler` callback to walk the
-    /// child-existence tree atomically inside the same txn. Then
-    /// launches Phase 5 GC.
+    /// and — unless `child_existence` is [`ChildExistenceAction::Keep`] —
+    /// invokes the `ExistenceReconciler` callback to walk the
+    /// child-existence tree atomically inside the same txn. Then launches
+    /// Phase 5 GC.
 
     async fn commit(
         self,
-        child_path_set: Option<ChildStablePathSet>,
+        child_existence: ChildExistenceAction,
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
         curr_version: Option<u64>,
@@ -451,12 +468,6 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // `__track` between this standalone read and `app_store.commit`.
         let (new_tracking_info, target_owners_to_delete) =
             self.build_commit_writes(curr_version).await?;
-
-        let child_path_set = if self.demote_component_only {
-            None
-        } else {
-            child_path_set.map(Arc::new)
-        };
 
         // On whole-component deletion, also clear the `Live` user-state
         // keyspace. The regular flush (clear_all_first / writes / deletes)
@@ -478,36 +489,54 @@ impl<Prof: EngineProfile> Committer<Prof> {
             user_state_writes: user_state_plan.writes,
             user_state_deletes: user_state_plan.deletes,
             user_state_clear_live,
-            child_path_set: child_path_set.clone(),
         };
 
-        // Reconciler closure: walks `child_path_set` against on-disk
-        // `__cex` rows, writes diffs and tombstones. Runs inside the
-        // AppStore's commit txn so the existence diff is atomic with
-        // the rest of the commit plan.
-        let app_store = self.app_store.clone();
-        let component_path = self.component_path.clone();
-        let cps = child_path_set;
-        // `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
-        // re-invoke it — clone the (cheap, `Arc`/owned) captures per call
-        // rather than moving them into the future.
-        let reconciler: ExistenceReconciler = Box::new(move |wtxn| {
-            let app_store = app_store.clone();
-            let component_path = component_path.clone();
-            let cps = cps.clone();
-            Box::pin(async move {
-                reconcile_child_existence(wtxn, &app_store, &component_path, cps.as_deref()).await
-            })
-        });
+        // The reconciler runs inside the AppStore's commit txn so the
+        // `__cex` diff is atomic with the rest of the plan.
+        let existence_reconciler = match child_existence {
+            ChildExistenceAction::Reconcile(declared) => {
+                Some(self.existence_reconciler(Some(Arc::new(declared))))
+            }
+            ChildExistenceAction::RemoveAll => Some(self.existence_reconciler(None)),
+            ChildExistenceAction::Keep => None,
+        };
 
         self.app_store
-            .commit(&self.component_path, plan, reconciler)
+            .commit(&self.component_path, plan, existence_reconciler)
             .await?;
 
         // Phase 5 GC: snapshot-read tombstones and spawn child delete
         // operations. Outside the commit txn — tombstones are durable
         // and the GC sweep is idempotent.
         self.launch_child_component_gc().await
+    }
+
+    /// Closure that walks `declared_children` (`None`: nothing declared)
+    /// against the on-disk `__cex` rows under this component — see
+    /// [`reconcile_child_existence`]. `Fn` (not `FnOnce`) so a backend
+    /// that re-runs its commit txn can re-invoke it: the cheap
+    /// (`Arc`/owned) captures are cloned per call rather than moved into
+    /// the future.
+    fn existence_reconciler(
+        &self,
+        declared_children: Option<Arc<ChildStablePathSet>>,
+    ) -> ExistenceReconciler {
+        let app_store = self.app_store.clone();
+        let component_path = self.component_path.clone();
+        Box::new(move |wtxn| {
+            let app_store = app_store.clone();
+            let component_path = component_path.clone();
+            let declared_children = declared_children.clone();
+            Box::pin(async move {
+                reconcile_child_existence(
+                    wtxn,
+                    &app_store,
+                    &component_path,
+                    declared_children.as_deref(),
+                )
+                .await
+            })
+        })
     }
 
     /// Engine-side reconcile that produces the `(new_tracking_info,
@@ -752,7 +781,8 @@ struct PreCommitCaptures<Prof: EngineProfile> {
 ///
 /// Delete-mode preflight (`delete_component_memo` + node-type check)
 /// runs outside, in [`submit`], before the precommit txn is opened —
-/// the `demote_component_only` decision lives there too.
+/// the demote-only ([`ChildExistenceAction::Keep`]) decision lives
+/// there too.
 #[allow(clippy::too_many_arguments)]
 async fn pre_commit<'tracking, Prof: EngineProfile>(
     app_store: &AppStore,
@@ -1528,9 +1558,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     }
 
     // Delete-mode preflight (was in `pre_commit` body pre-Session).
-    // The early-return / `demote_component_only` decision needs to
-    // happen before opening the submit session so the early-return
-    // case doesn't write a stage marker.
+    // The early-return / demote-only decision needs to happen before
+    // opening the submit session so the early-return case doesn't
+    // write a stage marker.
     let mut demote_component_only = false;
     if comp_mode == ComponentProcessingMode::Delete {
         app_store.delete_component_memo(&stable_path).await?;
@@ -1549,6 +1579,14 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             }
         }
     }
+    let child_existence = if demote_component_only {
+        ChildExistenceAction::Keep
+    } else {
+        match child_path_set {
+            Some(declared) => ChildExistenceAction::Reconcile(declared),
+            None => ChildExistenceAction::RemoveAll,
+        }
+    };
 
     let contained_target_state_paths = Arc::new(contained_target_state_paths);
     // `declared_target_states` is shared across retries via
@@ -1777,9 +1815,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     // Commit. `AppStore::commit` is a normal trait method — no
     // session handoff needed.
-    let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
+    let committer = Committer::new(comp_ctx, &target_states_providers)?;
     if let Err(e) = committer
-        .commit(child_path_set, fn_memos, user_states, curr_version)
+        .commit(child_existence, fn_memos, user_states, curr_version)
         .await
     {
         // The commit txn either committed or rolled back before
