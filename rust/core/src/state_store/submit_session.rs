@@ -354,8 +354,8 @@ pub struct CommitPlan {
 /// child-existence diff. Engine constructs this closure with all
 /// captures it needs (component path, child_path_set, an `AppStore`
 /// clone) and passes it to [`AppStore::commit`] — or passes `None`
-/// there to leave the `__cex` subtree untouched (a
-/// `demote_component_only` delete, whose children belong to the
+/// there to leave the `__cex` subtree untouched (a demote-only delete:
+/// the component became a Directory node whose children belong to the
 /// parent's current build). The closure receives the open `WriteTxn`
 /// and walks the in-memory tree, reads `__cex` per parent, writes
 /// deltas + tombstones — see [`reconcile_child_existence`].

@@ -1532,3 +1532,23 @@ def test_component_to_directory_transition() -> None:
     paths = coco_inspect.list_stable_paths_sync(app)
     assert old_component in paths
     assert deeper_component in paths
+
+    # Transition back from Directory to Component at the same path: D1 is a
+    # component again, so its former child -- and that child's target
+    # states -- are gone.
+    _transition_to_directory_mode = False
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': container_owner,
+        '/@test_target_state/dicts/"D1"/"a"': old_component,
+        '/@test_target_state/dicts/"D1"/"b"': old_component,
+    }
+    paths = coco_inspect.list_stable_paths_sync(app)
+    assert old_component in paths
+    assert deeper_component not in paths
