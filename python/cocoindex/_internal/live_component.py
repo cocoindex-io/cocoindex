@@ -226,18 +226,15 @@ class LiveComponentOperator:
 
     Lifecycle: the operator is **scoped to one invocation of process_live**.
     After process_live returns (normally or via exception), the wrapper that
-    invoked it calls :meth:`_detach` to release the Rust controller. This
-    matters because the Rust ``LiveComponentController`` holds a strong
-    ``Arc`` to the live component's ``Component``, and the framework's
-    ``wait_until_inactive`` poll (used by ``App.update`` in live mode to
-    detect "all done, safe to terminate") tracks that strong count.
+    invoked it calls :meth:`_detach` to release the Rust controller, so a
+    stale operator (for example one captured by a stored exception's
+    traceback) fails loudly instead of acting on a live component that has
+    finished.
 
-    Without detach, user code in ``process_live`` that catches an
-    exception and stores it (e.g. ``self.last_err = e``) would
-    accidentally pin the live component forever — Python exception
-    objects retain their traceback, which retains the caller's frame
-    locals, which retains ``operator``. See
-    ``specs/core/error_handling.md`` §4.1.
+    Holding the controller does not keep the live component alive: the
+    engine tracks activity explicitly — a component is active while one of
+    its processing tasks is in flight — rather than by counting references,
+    so live-mode termination is unaffected by what Python retains.
     """
 
     __slots__ = ("_controller", "_instance", "_env", "_path")
