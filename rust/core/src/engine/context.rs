@@ -759,10 +759,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    /// Register a freshly-mounted child as an active member of every enclosing
-    /// stats group, so each group's liveness tracking sees it (and, via the
-    /// strong parent-chain, its whole subtree). No-op when not in a group.
-    pub fn push_active_member(&self, child: &Component<Prof>) {
+    /// Register a child whose processing task is starting as a member of every
+    /// enclosing stats group, so each group's liveness tracking sees it (and,
+    /// since activity propagates up the parent chain, its whole subtree).
+    /// No-op when not in a group.
+    pub(crate) fn push_active_member(&self, child: &Component<Prof>) {
         for group in self.stats_groups.iter() {
             group.push_member(child);
         }

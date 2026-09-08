@@ -116,16 +116,13 @@ async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) 
     `set(prev)` always works because we're mutating whatever the
     current Context is.
 
-    The ``operator._detach()`` in the same finally is the framework's
-    fix for a subtle live-mode leak: if user code in ``process_live``
-    catches an exception and retains it (``self.last_err = e`` /
-    re-raises later), the exception's traceback holds the calling
-    frame's locals, which include ``operator`` — and ``operator`` owns a
-    Rust ``Arc`` to the live component's ``Component``. Without
-    detach, ``App.update``'s ``wait_until_inactive`` poll never observes
-    the live component as inactive. After detach, the Rust controller
-    drops on schedule; later operator method calls raise. See
-    ``specs/core/error_handling.md`` §4.1.
+    The ``operator._detach()`` in the same finally scopes the operator to
+    this invocation: an operator that user code retains past it (for
+    example through a stored exception's traceback, which holds the
+    calling frame's locals) fails loudly on later method calls instead of
+    acting on a live component that has finished. Termination does not
+    depend on it — the engine tracks activity explicitly, so a retained
+    operator cannot keep the live component active.
     """
     prev = _in_process_live.get()
     _in_process_live.set(True)
@@ -226,18 +223,15 @@ class LiveComponentOperator:
 
     Lifecycle: the operator is **scoped to one invocation of process_live**.
     After process_live returns (normally or via exception), the wrapper that
-    invoked it calls :meth:`_detach` to release the Rust controller. This
-    matters because the Rust ``LiveComponentController`` holds a strong
-    ``Arc`` to the live component's ``Component``, and the framework's
-    ``wait_until_inactive`` poll (used by ``App.update`` in live mode to
-    detect "all done, safe to terminate") tracks that strong count.
+    invoked it calls :meth:`_detach` to release the Rust controller, so a
+    stale operator (for example one captured by a stored exception's
+    traceback) fails loudly instead of acting on a live component that has
+    finished.
 
-    Without detach, user code in ``process_live`` that catches an
-    exception and stores it (e.g. ``self.last_err = e``) would
-    accidentally pin the live component forever — Python exception
-    objects retain their traceback, which retains the caller's frame
-    locals, which retains ``operator``. See
-    ``specs/core/error_handling.md`` §4.1.
+    Holding the controller does not keep the live component alive: the
+    engine tracks activity explicitly — a component is active while one of
+    its processing tasks is in flight — rather than by counting references,
+    so live-mode termination is unaffected by what Python retains.
     """
 
     __slots__ = ("_controller", "_instance", "_env", "_path")
