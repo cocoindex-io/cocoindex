@@ -55,7 +55,7 @@ A timeout follows work the caller is directly waiting for. It does not follow ba
 | `await coco.use_mount(child, ...)` | The child inherits the timeout because the parent needs the child's result. |
 | `await coco.mount(child, ...)` / `await coco.mount_each(...)` | The child does not inherit the parent's timeout. The caller's own waiting remains subject to the caller's timeout. |
 | `await coco.map(fn, items)` | Item tasks inherit the timeout. Already-started items are allowed to finish. |
-| Batched function body | Does not inherit any one caller's timeout because a batch can contain work from multiple callers. |
+| Batched function body | Does not inherit any one caller's timeout because a batch can contain work from multiple callers. A batched body that needs a bound carries its own — `LiteLLMEmbedder`, for example, bounds each request with its own [`timeout`](../ops/litellm#timeout). |
 | Target writes and connector sink calls | Do not inherit the processor timeout. Once processing has succeeded, CocoIndex lets target synchronization finish consistently. |
 | Long loop inside a processor | Add `coco.check_cancellation()` where you want the loop to stop promptly. |
 

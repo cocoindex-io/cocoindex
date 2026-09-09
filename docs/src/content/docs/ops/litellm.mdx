@@ -34,9 +34,11 @@ The `LiteLLMEmbedder` class is a wrapper around LiteLLM's embedding API that:
 
 ### Creating an embedder
 
-All extra keyword arguments are passed through to every `litellm.aembedding` call. See [Supported providers](#supported-providers) for provider-specific model strings and configuration.
+All extra keyword arguments are passed through to every `litellm.aembedding` call (`api_key`, `api_base`, `dimensions`, …). See [Supported providers](#supported-providers) for provider-specific model strings and configuration.
 
 ```python
+from datetime import timedelta
+
 from cocoindex.ops.litellm import LiteLLMEmbedder
 
 embedder = LiteLLMEmbedder("text-embedding-3-small")
@@ -47,11 +49,11 @@ embedder = LiteLLMEmbedder("text-embedding-3-small", api_key="sk-...", api_base=
 # With custom dimensions (OpenAI text-embedding-3 models)
 embedder = LiteLLMEmbedder("text-embedding-3-small", dimensions=512)
 
-# With a timeout (seconds)
-embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=30)
-
 # With a cap on concurrent requests to the backend
 embedder = LiteLLMEmbedder("text-embedding-3-small", max_inflight_requests=8)
+
+# With a longer timeout, for a slow self-hosted endpoint
+embedder = LiteLLMEmbedder("openai/bge-m3", api_base="http://localhost:7997", timeout=timedelta(minutes=30))
 ```
 
 ### Embedding text
@@ -89,6 +91,14 @@ embedder = LiteLLMEmbedder(
 The default is `None` (no cap). The cap is per embedder instance: two
 embedders pointed at the same endpoint have independent limits, so share one
 instance when you want one limit.
+
+### Timeout
+
+`timeout` bounds each embedding request end to end; the default is 10 minutes. Transient failures (HTTP 429, 5xx, a dropped connection) are retried with backoff inside that window; a request that times out fails with `DeadlineExceededError` and is not retried. Requests carry up to 64 texts, so raise `timeout` for an endpoint that needs longer than the default to embed a full batch:
+
+```python
+embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=timedelta(minutes=30))
+```
 
 ### Using as a type annotation
 
