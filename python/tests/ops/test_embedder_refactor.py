@@ -17,8 +17,15 @@ import numpy as np
 import pytest
 
 pytest.importorskip("litellm", reason="litellm not installed")
+# Arrives with litellm; imported through importorskip so this module skips
+# rather than failing collection where neither is installed.
+httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-from litellm.exceptions import AuthenticationError  # noqa: E402
+from litellm.exceptions import (  # noqa: E402
+    APIConnectionError,
+    AuthenticationError,
+    Timeout,
+)
 
 import cocoindex as coco  # noqa: E402
 from cocoindex.ops.litellm import LiteLLMEmbedder, _aligned_embeddings  # noqa: E402
@@ -221,23 +228,67 @@ async def test_litellm_embedder_single_text_error_surfaces_original() -> None:
             await embedder.embed("only")
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_calls"),
+    [
+        # litellm.Timeout is terminal even though it reports HTTP 408 and
+        # descends from openai's APIConnectionError — both of which the
+        # classification would otherwise treat as retryable.
+        pytest.param(
+            Timeout(message="too slow", model="fake-model", llm_provider="openai"),
+            1,
+            id="litellm-timeout",
+        ),
+        # A refused/reset connection is a fast failure: still retried.
+        pytest.param(
+            APIConnectionError(
+                message="connection refused", model="fake-model", llm_provider="openai"
+            ),
+            3,
+            id="litellm-connection-error",
+        ),
+        # httpx timeouts subclass neither TimeoutError nor litellm.Timeout;
+        # they are matched by name.
+        pytest.param(httpx.ReadTimeout("stalled"), 1, id="httpx-read-timeout"),
+        pytest.param(httpx.PoolTimeout("no free slot"), 1, id="httpx-pool-timeout"),
+        pytest.param(httpx.ConnectError("refused"), 3, id="httpx-connect-error"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_litellm_embedder_splits_after_transient_retries_exhausted(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_litellm_embedder_retries_fast_failures_but_not_timeouts(
+    error: Exception, expected_calls: int
 ) -> None:
-    """A transient error that survives the same-size retry budget is still
-    splittable — a smaller request may pass where the large one timed out."""
-    # Near-zero retry budget: the retry wrapper exhausts its deadline almost
-    # immediately (DeadlineExceededError, a TimeoutError subclass).
-    monkeypatch.setattr("cocoindex.ops.litellm._EMBEDDING_RETRY_TIMEOUT_SECONDS", 0.05)
+    fake_response = type("R", (), {"data": [{"embedding": [0.1]}]})()
     embedder = LiteLLMEmbedder("fake-model")
+    mocked_embedding = AsyncMock(side_effect=[error, error, fake_response])
+
+    with (
+        patch("cocoindex.ops.litellm.litellm.aembedding", new=mocked_embedding),
+        patch("cocoindex.ops.litellm._asyncio.sleep", new=AsyncMock()),
+    ):
+        if expected_calls == 1:
+            with pytest.raises(type(error)):
+                await embedder.embed("hello")
+        else:
+            await embedder.embed("hello")
+
+    assert mocked_embedding.await_count == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_does_not_split_timeouts() -> None:
+    """A multi-text batch that times out propagates the timeout; splitting
+    would only re-spend a budget the backend already failed to meet."""
+    embedder = LiteLLMEmbedder("fake-model")
+    timeout_error = Timeout(
+        message="too slow", model="fake-model", llm_provider="openai"
+    )
     with patch(
         "cocoindex.ops.litellm.litellm.aembedding",
-        new=AsyncMock(side_effect=_FakeHTTPError(429)),
+        new=AsyncMock(side_effect=timeout_error),
     ):
-        with pytest.raises(coco.RetryWithSmallerBatch) as exc_info:
+        with pytest.raises(Timeout):
             await embedder._embed._execute_orig_async_fn(["a", "b"])
-    assert isinstance(exc_info.value.__cause__, TimeoutError)
 
 
 @pytest.mark.asyncio
