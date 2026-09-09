@@ -401,6 +401,14 @@ def use_context(key: ContextKey[T]) -> T:
     return value
 
 
+def current_app_name() -> str:
+    """Name of the app whose component is running, as given to `AppConfig`.
+
+    Raises `RuntimeError` outside a component context.
+    """
+    return get_context_from_ctx()._core_processor_ctx.app_name
+
+
 def get_component_context() -> ComponentContext:
     """
     Get the current ComponentContext explicitly.
