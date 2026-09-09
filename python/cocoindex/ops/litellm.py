@@ -14,8 +14,10 @@ __all__ = [
 ]
 
 import asyncio as _asyncio
+import contextlib as _contextlib
 import io as _io
 import logging as _logging
+from contextlib import AbstractAsyncContextManager as _AbstractAsyncContextManager
 from datetime import timedelta as _timedelta
 from collections.abc import Awaitable as _Awaitable
 from collections.abc import Callable as _Callable
@@ -209,6 +211,10 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
     Args:
         model: LiteLLM model name (e.g., ``"text-embedding-ada-002"``,
             ``"vertex_ai/textembedding-gecko"``).
+        max_inflight_requests: Cap on how many requests this embedder keeps
+            open against the backend at once, or ``None`` (the default) for
+            no cap. Useful for self-hosted endpoints that reject bursts with
+            429s. The cap is per instance.
         **kwargs: Additional keyword arguments passed through to every
             ``litellm.aembedding`` call (e.g., ``api_key``, ``api_base``,
             ``dimensions``).
@@ -226,18 +232,57 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         >>> print(f"Shape: {embedding.shape}, dtype: {embedding.dtype}")
     """
 
-    def __init__(self, model: str, **kwargs: _Any) -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        max_inflight_requests: int | None = None,
+        **kwargs: _Any,
+    ) -> None:
         """Initialize the LiteLLM embedder."""
+        if max_inflight_requests is not None and max_inflight_requests < 1:
+            raise ValueError(
+                "max_inflight_requests must be a positive int or None, got "
+                f"{max_inflight_requests!r}"
+            )
         self._model = model
         self._kwargs = kwargs
+        self._max_inflight_requests = max_inflight_requests
         self._dim: int | None = None
         self._lock: _asyncio.Lock | None = None
+        self._inflight_semaphore: _asyncio.Semaphore | None = None
+        self._inflight_loop: _asyncio.AbstractEventLoop | None = None
 
     def _get_lock(self) -> _asyncio.Lock:
         """Get or create the asyncio lock (must be called from async context)."""
         if self._lock is None:
             self._lock = _asyncio.Lock()
         return self._lock
+
+    def _inflight_permit(self) -> _AbstractAsyncContextManager[None]:
+        """A permit to hold for one in-flight request to the backend.
+
+        The semaphore is built on first use, and rebuilt whenever the running
+        loop changes. An ``asyncio.Semaphore`` binds to the loop that first
+        blocks on it and raises ``RuntimeError`` if it is then awaited from
+        another — and an embedder routinely outlives a loop: the documented
+        usage constructs one at module scope, while each ``Environment`` gets
+        a fresh loop (and, under pytest-asyncio, each test does).
+
+        Rebinding makes the cap per loop rather than per instance. That is
+        exact for the sequential case this guards (one loop replaced by the
+        next, nothing left in flight on the old one). Two loops running
+        *concurrently* against one embedder would get a budget each, which is
+        the same way the instance-scoped cap already behaves for two
+        embedders sharing a backend.
+        """
+        if self._max_inflight_requests is None:
+            return _contextlib.nullcontext()
+        loop = _asyncio.get_running_loop()
+        if self._inflight_semaphore is None or self._inflight_loop is not loop:
+            self._inflight_semaphore = _asyncio.Semaphore(self._max_inflight_requests)
+            self._inflight_loop = loop
+        return self._inflight_semaphore
 
     def _build_call_kwargs(self, **extra: _Any) -> dict[str, _Any]:
         # voyage/ and bedrock/ reject `encoding_format="float"` (voyage requires
@@ -253,11 +298,27 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
 
     async def _aembedding_with_retry(self, texts: list[str], **extra: _Any) -> _Any:
         async def _call() -> _Any:
-            return await litellm.aembedding(
-                model=self._model,
-                input=texts,
-                **self._build_call_kwargs(**extra),
-            )
+            # The permit is scoped to one backend request, deliberately as
+            # tight as possible around it:
+            #
+            # * Inside the retry loop, not around it — an attempt sleeping
+            #   out a 30s backoff would otherwise hold a slot it isn't using.
+            # * Inside the batch body, not at the batcher — the whole
+            #   `RetryWithSmallerBatch` split tree runs within one batch
+            #   dispatch (the split wrapper is applied before the runner
+            #   reaches the batcher), so a batcher-level bound would cap
+            #   top-level batches while their sub-batches fanned out freely.
+            # * Never held across a split. `_run_split_async` only gathers
+            #   the two halves after `await fn(inputs)` has already raised,
+            #   so the parent's permit is released before the halves ask for
+            #   theirs. Holding it across the split would deadlock outright
+            #   at a limit of 1.
+            async with self._inflight_permit():
+                return await litellm.aembedding(
+                    model=self._model,
+                    input=texts,
+                    **self._build_call_kwargs(**extra),
+                )
 
         return await _retry_litellm_call(_call, "litellm.aembedding")
 
@@ -350,6 +411,9 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         return _schema.VectorSchema(dtype=_np.dtype(_np.float32), size=dim)
 
     def __coco_memo_key__(self) -> object:
+        # `max_inflight_requests` is deliberately absent: it paces requests
+        # but cannot change an embedding, so tuning it must not invalidate
+        # every cached vector.
         return (self._model, self._kwargs)
 
 

@@ -1,13 +1,10 @@
 """Prove _retry_litellm_call delegates to the shared retry helper with the
-policy that preserves its historical behavior. Loads litellm.py with a fake
-`litellm` module so the test runs without the optional dependency."""
+policy that preserves its historical behavior. Runs against the stub
+``litellm`` module from the ``litellm_module`` fixture, so it needs neither
+the optional dependency nor a live backend."""
 
 from __future__ import annotations
 
-import importlib.util
-import pathlib
-import sys
-import types
 from datetime import timedelta
 from typing import Any
 
@@ -16,27 +13,12 @@ import pytest
 pytest.importorskip("numpy")
 
 
-def _load_litellm_module(monkeypatch: pytest.MonkeyPatch) -> Any:
-    fake_litellm: Any = types.ModuleType("litellm")
-    fake_litellm.aembedding = object()
-    fake_litellm.atranscription = object()
-    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
-
-    module_path = pathlib.Path(__file__).parents[2] / "cocoindex" / "ops" / "litellm.py"
-    module_name = f"_test_litellm_delegation_{id(monkeypatch)}"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, module_name, module)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.mark.asyncio
 async def test_retry_litellm_call_delegates_with_historical_policy(
+    litellm_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_litellm_module(monkeypatch)
+    module = litellm_module
     captured: dict[str, Any] = {}
 
     async def fake_retry_transient(fn: Any, **kwargs: Any) -> str:

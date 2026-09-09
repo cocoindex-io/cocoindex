@@ -49,6 +49,9 @@ embedder = LiteLLMEmbedder("text-embedding-3-small", dimensions=512)
 
 # With a timeout (seconds)
 embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=30)
+
+# With a cap on concurrent requests to the backend
+embedder = LiteLLMEmbedder("text-embedding-3-small", max_inflight_requests=8)
 ```
 
 ### Embedding text
@@ -66,6 +69,26 @@ table.declare_row(row=DocEmbedding(text="Hello, world!", embedding=embedding))
 :::note[Built-in memoization]
 `embed()` is memoized (`memo=True`): inside a processing component, each distinct text's vector is cached across that component's runs, so a caller that re-executes doesn't re-pay the API call for unchanged text — this is what makes the common per-file-component pattern incremental. The memo stores one full vector per distinct text, so mind the [memoization placement rule](../programming_guide/function#when-to-memoize) if your components are already keyed by the embedded content. Callsite control over an op's memoization is tracked in [#2275](https://github.com/cocoindex-io/cocoindex/issues/2275).
 :::
+
+### Limiting concurrent requests
+
+Concurrent `embed()` calls are batched: CocoIndex groups them into requests of
+up to 64 texts each, and sends as many such requests in parallel as there is
+work queued. `max_inflight_requests` caps how many requests this embedder keeps
+open against the backend at once — useful for a self-hosted endpoint (Infinity,
+TEI, Ollama, vLLM, …) that rejects bursts with 429s:
+
+```python
+embedder = LiteLLMEmbedder(
+    "openai/bge-m3",
+    api_base="http://localhost:7997",
+    max_inflight_requests=8,
+)
+```
+
+The default is `None` (no cap). The cap is per embedder instance: two
+embedders pointed at the same endpoint have independent limits, so share one
+instance when you want one limit.
 
 ### Using as a type annotation
 
