@@ -38,21 +38,33 @@ from cocoindex.resources import schema as _schema
 _logger = _logging.getLogger(__name__)
 
 _T = _TypeVar("_T")
-_EMBEDDING_RETRY_TIMEOUT_SECONDS = 10 * 60
+_DEFAULT_EMBEDDING_TIMEOUT = _timedelta(minutes=10)
 _EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS = 1.0
 _EMBEDDING_RETRY_MAX_BACKOFF_SECONDS = 30.0
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+# HTTP client packages whose exception classes the two name sets below refer to.
+_TRANSPORT_ERROR_PACKAGES = frozenset({"aiohttp", "httpcore", "httpx"})
+# Fast transport failures — a refused or reset connection, a broken read or
+# write — worth another try. Timeouts are deliberately absent from this set;
+# they live in `_TIMEOUT_TRANSPORT_ERROR_CLASS_NAMES` and are terminal.
 _RETRYABLE_TRANSPORT_ERROR_CLASS_NAMES = frozenset(
     {
         "ClientConnectorError",
         "ConnectError",
-        "ConnectTimeout",
-        "PoolTimeout",
         "ReadError",
-        "ReadTimeout",
         "RemoteProtocolError",
         "ServerDisconnectedError",
         "WriteError",
+    }
+)
+# httpx/httpcore timeout classes, matched by name because they subclass
+# neither builtin `TimeoutError` nor anything else we can key on. (aiohttp's
+# timeout classes need no entry here: they subclass `TimeoutError` already.)
+_TIMEOUT_TRANSPORT_ERROR_CLASS_NAMES = frozenset(
+    {
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ReadTimeout",
         "WriteTimeout",
     }
 )
@@ -93,8 +105,9 @@ _RETRYABLE_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes(
     "InternalServerError",
     "RateLimitError",
     "ServiceUnavailableError",
-    "Timeout",
 )
+
+_TIMEOUT_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes("Timeout")
 
 # Errors about who we are or what we asked for (credentials, permissions,
 # unknown model, exhausted budget) — batch composition can't affect them, so
@@ -125,18 +138,52 @@ def _http_status_code(error: BaseException) -> int | None:
     return None
 
 
-def _is_transport_error(error: BaseException) -> bool:
-    if isinstance(error, (TimeoutError, ConnectionError)):
-        return True
+def _is_transport_error_named(error: BaseException, names: frozenset[str]) -> bool:
+    # Matched on the root package because these libraries are inconsistent
+    # about where their exceptions claim to live: httpx and httpcore rewrite
+    # `__module__` to the bare package name, aiohttp leaves it on the
+    # defining submodule.
     error_type = type(error)
-    module = error_type.__module__
     return (
-        module.startswith(("aiohttp.", "httpcore.", "httpx."))
-        and error_type.__name__ in _RETRYABLE_TRANSPORT_ERROR_CLASS_NAMES
+        error_type.__module__.partition(".")[0] in _TRANSPORT_ERROR_PACKAGES
+        and error_type.__name__ in names
+    )
+
+
+def _is_timeout_error(error: BaseException) -> bool:
+    """Every timeout this module can recognize, in one place.
+
+    Timeouts are terminal for embedding — never retried, never a reason to
+    split the batch. A timeout has by definition already spent its duration,
+    so retrying it inside a time budget mostly re-spends what is left, and
+    against an overloaded backend it amplifies the very load that caused it.
+    The remedy for a genuine timeout is a longer ``LiteLLMEmbedder(timeout=...)``,
+    not more requests.
+
+    Covers CocoIndex's own deadline expiry (``DeadlineExceededError``), raw
+    asyncio timeouts and aiohttp's timeouts through builtin ``TimeoutError``,
+    litellm's ``Timeout``, and the httpx/httpcore timeout classes that
+    subclass neither.
+    """
+    return (
+        isinstance(error, TimeoutError)
+        or isinstance(error, _TIMEOUT_LITELLM_EXCEPTION_CLASSES)
+        or _is_transport_error_named(error, _TIMEOUT_TRANSPORT_ERROR_CLASS_NAMES)
+    )
+
+
+def _is_transport_error(error: BaseException) -> bool:
+    return isinstance(error, ConnectionError) or _is_transport_error_named(
+        error, _RETRYABLE_TRANSPORT_ERROR_CLASS_NAMES
     )
 
 
 def _is_retryable_litellm_error(error: BaseException) -> bool:
+    # Timeouts first, ahead of every other rule: each one below would
+    # otherwise let a timeout back in — `litellm.Timeout` reports HTTP 408,
+    # and both it and the httpx timeouts descend from retryable parents.
+    if _is_timeout_error(error):
+        return False
     if _message_indicates_non_retryable_credentials_error(str(error)):
         return False
     status_code = _http_status_code(error)
@@ -150,16 +197,18 @@ def _is_retryable_litellm_error(error: BaseException) -> bool:
 async def _retry_litellm_call(
     operation: _Callable[[], _Awaitable[_T]],
     operation_name: str,
+    timeout: _timedelta,
 ) -> _T:
-    # Time is the brake here (no attempt cap): retry transient failures
-    # inside a 10-minute deadline scope, with each in-flight attempt
-    # bounded to the remaining time. An ambient coco.timeout() merges by
-    # min-nesting and can only stop retries sooner. Exhaustion raises
+    # Time is the brake here (no attempt cap): retry fast transient failures
+    # inside a `timeout` deadline scope, with each in-flight attempt bounded
+    # to the remaining time. Timeouts are not among them — see
+    # `_is_timeout_error`. An ambient coco.timeout() merges by min-nesting
+    # and can only stop retries sooner. Exhaustion raises
     # DeadlineExceededError (one time concept: the deadline system).
     return await _deadline.retry_transient(
         operation,
         retry_on=_is_retryable_litellm_error,
-        timeout=_timedelta(seconds=_EMBEDDING_RETRY_TIMEOUT_SECONDS),
+        timeout=timeout,
         backoff=_deadline.exponential_backoff(
             initial=_EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS,
             multiplier=2.0,
@@ -215,6 +264,14 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             open against the backend at once, or ``None`` (the default) for
             no cap. Useful for self-hosted endpoints that reject bursts with
             429s. The cap is per instance.
+        timeout: Bound on each embedding request, end to end: fast failures
+            (429, 5xx, a refused or reset connection) are retried with
+            backoff inside it, a request that times out is not retried, and
+            expiry raises ``DeadlineExceededError``. A ``timedelta``, or
+            seconds as a number. Defaults to 10 minutes; raise it for a slow
+            endpoint, since one request carries up to 64 texts. This is the
+            only clock on the request — litellm's own per-request ``timeout``
+            is not forwarded.
         **kwargs: Additional keyword arguments passed through to every
             ``litellm.aembedding`` call (e.g., ``api_key``, ``api_base``,
             ``dimensions``).
@@ -237,6 +294,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         model: str,
         *,
         max_inflight_requests: int | None = None,
+        timeout: _timedelta | float | None = None,
         **kwargs: _Any,
     ) -> None:
         """Initialize the LiteLLM embedder."""
@@ -245,7 +303,16 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
                 "max_inflight_requests must be a positive int or None, got "
                 f"{max_inflight_requests!r}"
             )
+        if timeout is None:
+            timeout = _DEFAULT_EMBEDDING_TIMEOUT
+        elif not isinstance(timeout, _timedelta):
+            # Seconds — the form litellm's own `timeout` kwarg took while it
+            # was the one passing through here.
+            timeout = _timedelta(seconds=timeout)
+        if timeout <= _timedelta(0):
+            raise ValueError(f"timeout must be positive, got {timeout!r}")
         self._model = model
+        self._timeout = timeout
         self._kwargs = kwargs
         self._max_inflight_requests = max_inflight_requests
         self._dim: int | None = None
@@ -320,7 +387,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
                     **self._build_call_kwargs(**extra),
                 )
 
-        return await _retry_litellm_call(_call, "litellm.aembedding")
+        return await _retry_litellm_call(_call, "litellm.aembedding", self._timeout)
 
     async def _get_dim(self) -> int:
         """Get embedding dimension, caching the result.
@@ -363,19 +430,22 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         try:
             response = await self._aembedding_with_retry(texts, **extra)
         except Exception as e:
-            # Anything reaching here is either global (credentials/model —
-            # splitting can't help) or has already exhausted its same-size
-            # retry budget above. For the latter, ask the engine to halve the
-            # batch and retry: smaller requests may pass where the big one
-            # couldn't (a provider's token/payload cap, one rejected input,
-            # or a timeout on an oversized payload). If the error is actually
-            # global after all, splitting still terminates: every item fails
-            # with it at size 1, at the cost of the sub-batches' retries.
-            # (No batch-size check needed — at size 1 the engine unwraps the
-            # signal and raises the original error.)
-            if not _is_global_litellm_error(e):
-                raise coco.RetryWithSmallerBatch() from e
-            raise
+            # Two kinds of error propagate untouched. Global ones
+            # (credentials/model) can't be fixed by batch composition. And a
+            # timeout — including this batch exhausting its own `timeout` —
+            # must not fan out: every sub-batch would take a fresh full
+            # timeout, turning one expired request into a tree of them
+            # against a backend that is already too slow. A longer `timeout`
+            # (or lower concurrency) is the remedy.
+            #
+            # Anything else gets halved and retried: a smaller request may
+            # pass where the big one couldn't (a provider's token/payload cap
+            # or one rejected input). Splitting terminates either way — at
+            # size 1 the engine unwraps the signal and raises the original
+            # error, so no batch-size check is needed here.
+            if _is_timeout_error(e) or _is_global_litellm_error(e):
+                raise
+            raise coco.RetryWithSmallerBatch() from e
         return _aligned_embeddings(response.data, len(texts))
 
     @coco.fn(memo=True, version=1, logic_tracking="self")
@@ -411,9 +481,9 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         return _schema.VectorSchema(dtype=_np.dtype(_np.float32), size=dim)
 
     def __coco_memo_key__(self) -> object:
-        # `max_inflight_requests` is deliberately absent: it paces requests
-        # but cannot change an embedding, so tuning it must not invalidate
-        # every cached vector.
+        # `max_inflight_requests` and `timeout` are deliberately absent: they
+        # pace and bound requests but cannot change an embedding, so tuning
+        # either must not invalidate every cached vector.
         return (self._model, self._kwargs)
 
 

@@ -30,10 +30,12 @@ async def test_retry_litellm_call_delegates_with_historical_policy(
     async def op() -> str:
         return "unused"
 
-    result = await module._retry_litellm_call(op, "embedding call")
+    result = await module._retry_litellm_call(
+        op, "embedding call", timedelta(seconds=600)
+    )
     assert result == "result"
 
-    # Time is the brake (no attempt cap), a 10-minute deadline scope,
+    # Time is the brake (no attempt cap), the caller's deadline scope,
     # bounded attempts, the transient-classification predicate, and the
     # historical backoff schedule (1s doubling, capped at 30s).
     assert "max_attempts" not in captured  # default None: no attempt cap
@@ -43,3 +45,34 @@ async def test_retry_litellm_call_delegates_with_historical_policy(
     assert captured["operation_name"] == "embedding call"
     backoff = captured["backoff"]  # stateful: successive calls advance it
     assert [backoff(n) for n in range(7)] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+
+
+@pytest.mark.asyncio
+async def test_embedder_timeout_reaches_retry_transient(
+    litellm_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-instance timeout is what bounds the embedder's retry loop;
+    omitting it falls back to the 10-minute default."""
+    module = litellm_module
+    captured: list[timedelta | None] = []
+
+    async def fake_retry_transient(fn: Any, **kwargs: Any) -> str:
+        captured.append(kwargs["timeout"])
+        return "result"
+
+    monkeypatch.setattr(module._deadline, "retry_transient", fake_retry_transient)
+
+    await module.LiteLLMEmbedder(
+        "fake-model", timeout=timedelta(seconds=42)
+    )._aembedding_with_retry(["hello"])
+    await module.LiteLLMEmbedder("fake-model", timeout=42)._aembedding_with_retry(
+        ["hello"]
+    )
+    await module.LiteLLMEmbedder("fake-model")._aembedding_with_retry(["hello"])
+
+    assert captured == [
+        timedelta(seconds=42),
+        timedelta(seconds=42),  # seconds as a number, converted
+        timedelta(minutes=10),
+    ]
