@@ -368,9 +368,19 @@ result = await gpu_inference(data)
 
 The `coco.GPU` runner:
 
-- By default, runs in-process with all functions sharing a queue for serial execution
+- Runs in-process by default. With one GPU and no fraction, calls share a queue and execute one at a time; multiple GPUs, or a fraction below `1.0`, run as many at once as the pool admits
 - Sync functions run on a dedicated GPU thread to avoid blocking the event loop
 - Set the environment variable `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run in a subprocess for GPU memory isolation
+
+:::caution[Subprocess mode and GPU memory]
+`coco.current_gpu()` reports the same assignment inside the subprocess as it does in-process, and calls run in parallel rather than queueing behind a single worker.
+
+The subprocess pool grows a worker per concurrent call, up to a cap, and workers stay resident for the life of the process. Each one is a separate interpreter holding its own CUDA context, costing hundreds of MB of device memory before your model allocates anything. So a fractional runner like `coco.GPU(0.25)`, which lets four calls share a card, can hold four such contexts.
+
+Workers are not pinned to a device: `CUDA_VISIBLE_DEVICES` is not set per worker, so a worker can serve different GPUs across calls, and a function that ignores `coco.current_gpu()` can reach a GPU it was not assigned.
+
+A dying worker takes the whole pool with it: `ProcessPoolExecutor` terminates every worker when one fails, so **other calls running at the same time can fail too**, not just the one that crashed. Whether a given call is caught depends on timing; one that finishes first returns normally. Failures surface as `BrokenProcessPool` and are not retried: the component fails, nothing is written or memoized for it, and the next `app.update()` retries it cleanly.
+:::
 
 You can combine batching with a runner:
 
