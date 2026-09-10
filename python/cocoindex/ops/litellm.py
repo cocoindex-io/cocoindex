@@ -38,9 +38,9 @@ from cocoindex.resources import schema as _schema
 _logger = _logging.getLogger(__name__)
 
 _T = _TypeVar("_T")
-_DEFAULT_EMBEDDING_TIMEOUT = _timedelta(minutes=10)
-_EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS = 1.0
-_EMBEDDING_RETRY_MAX_BACKOFF_SECONDS = 30.0
+_DEFAULT_TIMEOUT = _timedelta(minutes=10)
+_RETRY_INITIAL_BACKOFF_SECONDS = 1.0
+_RETRY_MAX_BACKOFF_SECONDS = 30.0
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 # HTTP client packages whose exception classes the two name sets below refer to.
 _TRANSPORT_ERROR_PACKAGES = frozenset({"aiohttp", "httpcore", "httpx"})
@@ -194,6 +194,23 @@ def _is_retryable_litellm_error(error: BaseException) -> bool:
     ) or _is_transport_error(error)
 
 
+def _resolve_timeout(timeout: _timedelta | float | None) -> _timedelta:
+    """Normalize a caller-supplied request bound to a positive ``timedelta``.
+
+    Shared by both classes so ``timeout`` means one thing across the module:
+    a bound on the whole request, seconds when given as a bare number.
+    """
+    if timeout is None:
+        return _DEFAULT_TIMEOUT
+    if not isinstance(timeout, _timedelta):
+        # Seconds — the form litellm's own `timeout` kwarg took while it was
+        # the one passing through here.
+        timeout = _timedelta(seconds=timeout)
+    if timeout <= _timedelta(0):
+        raise ValueError(f"timeout must be positive, got {timeout!r}")
+    return timeout
+
+
 async def _retry_litellm_call(
     operation: _Callable[[], _Awaitable[_T]],
     operation_name: str,
@@ -210,9 +227,9 @@ async def _retry_litellm_call(
         retry_on=_is_retryable_litellm_error,
         timeout=timeout,
         backoff=_deadline.exponential_backoff(
-            initial=_EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS,
+            initial=_RETRY_INITIAL_BACKOFF_SECONDS,
             multiplier=2.0,
-            max_delay=_EMBEDDING_RETRY_MAX_BACKOFF_SECONDS,
+            max_delay=_RETRY_MAX_BACKOFF_SECONDS,
         ),
         bound_attempt=True,
         operation_name=operation_name,
@@ -303,16 +320,8 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
                 "max_inflight_requests must be a positive int or None, got "
                 f"{max_inflight_requests!r}"
             )
-        if timeout is None:
-            timeout = _DEFAULT_EMBEDDING_TIMEOUT
-        elif not isinstance(timeout, _timedelta):
-            # Seconds — the form litellm's own `timeout` kwarg took while it
-            # was the one passing through here.
-            timeout = _timedelta(seconds=timeout)
-        if timeout <= _timedelta(0):
-            raise ValueError(f"timeout must be positive, got {timeout!r}")
         self._model = model
-        self._timeout = timeout
+        self._timeout = _resolve_timeout(timeout)
         self._kwargs = kwargs
         self._max_inflight_requests = max_inflight_requests
         self._dim: int | None = None
@@ -496,6 +505,14 @@ class LiteLLMTranscriber:
     Args:
         model: LiteLLM transcription model name (e.g., ``"whisper-1"``,
             ``"elevenlabs/scribe_v1"``).
+        timeout: Bound on each transcription request, end to end: fast
+            failures (429, 5xx, a refused or reset connection) are retried
+            with backoff inside it, a request that times out is not retried,
+            and expiry raises ``DeadlineExceededError``. A ``timedelta``, or
+            seconds as a number. Defaults to 10 minutes; raise it for long
+            audio, since one request carries a whole file. This is the only
+            clock on the request — litellm's own per-request ``timeout`` is
+            not forwarded.
         **kwargs: Additional keyword arguments passed through to every
             ``litellm.atranscription`` call (e.g., ``api_key``, ``api_base``,
             ``language``, ``extra_body``).
@@ -507,9 +524,16 @@ class LiteLLMTranscriber:
         >>> print(transcript)
     """
 
-    def __init__(self, model: str, **kwargs: _Any) -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        timeout: _timedelta | float | None = None,
+        **kwargs: _Any,
+    ) -> None:
         """Initialize the LiteLLM transcriber."""
         self._model = model
+        self._timeout = _resolve_timeout(timeout)
         self._kwargs = kwargs
 
     @coco.fn(memo=True, version=1, logic_tracking="self")
@@ -518,6 +542,10 @@ class LiteLLMTranscriber:
 
         ``FileLike`` provides async read methods. The content is read into a
         binary file-like object before calling LiteLLM.
+
+        Fast failures (429, 5xx, a dropped connection) are retried with
+        backoff inside the instance's ``timeout``; a request that times out
+        is terminal — see :func:`_is_timeout_error`.
 
         Args:
             file: ``FileLike`` object containing audio data.
@@ -529,18 +557,39 @@ class LiteLLMTranscriber:
 
         Note:
             Per-call keyword arguments override defaults provided when the
-            transcriber was initialized.
+            transcriber was initialized. ``timeout`` is not among them: it is
+            CocoIndex's clock on the whole request rather than a provider
+            argument, and is settable only on the constructor.
         """
-        audio = _io.BytesIO(await file.read())
-        audio.name = file.file_path.name
+        if "timeout" in kwargs:
+            raise TypeError(
+                "timeout is not a per-call argument — pass it to "
+                "LiteLLMTranscriber(...) to bound every request"
+            )
+        content = await file.read()
+        name = file.file_path.name
         call_kwargs = dict(self._kwargs)
         call_kwargs.update(kwargs)
-        response = await litellm.atranscription(
-            model=self._model,
-            file=audio,
-            **call_kwargs,
+
+        async def _call() -> _Any:
+            # A fresh buffer per attempt: litellm reads the audio to EOF, so
+            # replaying one BytesIO would upload an empty body on the retry.
+            # The bytes themselves are read once, above.
+            audio = _io.BytesIO(content)
+            audio.name = name
+            return await litellm.atranscription(
+                model=self._model,
+                file=audio,
+                **call_kwargs,
+            )
+
+        response = await _retry_litellm_call(
+            _call, "litellm.atranscription", self._timeout
         )
         return response.text  # type: ignore[no-any-return]
 
     def __coco_memo_key__(self) -> object:
+        # `timeout` is deliberately absent: it bounds the request but cannot
+        # change a transcript, so tuning it must not invalidate every cached
+        # transcription.
         return (self._model, self._kwargs)

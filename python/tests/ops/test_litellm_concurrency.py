@@ -157,7 +157,7 @@ async def test_releases_permit_during_retry_backoff(
     out until the first sub-batch had finished retrying — turning a 30s
     backoff into 30s of stalled throughput for everything else.
     """
-    monkeypatch.setattr(litellm_module, "_EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS", 0.3)
+    monkeypatch.setattr(litellm_module, "_RETRY_INITIAL_BACKOFF_SECONDS", 0.3)
     order: list[str] = []
     rate_limited = False
 
