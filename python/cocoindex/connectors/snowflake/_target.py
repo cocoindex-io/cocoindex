@@ -133,13 +133,13 @@ class TableSchema(Generic[RowT]):
         Create a TableSchema from a record type.
 
         Args:
-            record_type: A dataclass, NamedTuple, or Pydantic model.
+            record_type: A dataclass, NamedTuple, msgspec.Struct, or Pydantic model.
             primary_key: List of column names that form the primary key.
             column_overrides: Optional per-column SnowflakeType overrides.
         """
         if not is_record_type(record_type):
             raise TypeError(
-                f"record_type must be a record type (dataclass, NamedTuple, Pydantic model), "
+                f"record_type must be a record type (dataclass, NamedTuple, msgspec.Struct, Pydantic model), "
                 f"got {type(record_type)}"
             )
         columns = await cls._columns_from_record_type(record_type, column_overrides)

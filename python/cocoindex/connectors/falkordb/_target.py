@@ -361,11 +361,11 @@ class TableSchema(Generic[RowT]):
         column_overrides: dict[str, FalkorType | res_schema.VectorSchemaProvider]
         | None = None,
     ) -> "TableSchema[RowT]":
-        """Build a TableSchema by introspecting a dataclass / NamedTuple / Pydantic model."""
+        """Build a TableSchema by introspecting a dataclass / NamedTuple / msgspec.Struct / Pydantic model."""
         if not is_record_type(record_type):
             raise TypeError(
                 f"record_type must be a record type (dataclass, NamedTuple, "
-                f"Pydantic model), got {type(record_type)}"
+                f"msgspec.Struct, Pydantic model), got {type(record_type)}"
             )
         columns = await cls._columns_from_record_type(record_type, column_overrides)
         return cls(columns, primary_key=primary_key, row_type=record_type)

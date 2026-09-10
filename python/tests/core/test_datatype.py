@@ -1,7 +1,9 @@
 import dataclasses
+import inspect
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, NamedTuple
 
+import msgspec
 import numpy as np
 from numpy.typing import NDArray
 
@@ -24,6 +26,11 @@ class SimpleDataclass:
 class SimpleNamedTuple(NamedTuple):
     name: str
     value: int
+
+
+class SimpleMsgspecStruct(msgspec.Struct):
+    name: str
+    value: int = 0
 
 
 def test_ndarray_float32_no_dim() -> None:
@@ -202,6 +209,26 @@ def test_named_tuple() -> None:
         annotations=(),
         nullable=False,
     )
+
+
+def test_msgspec_struct() -> None:
+    typ = SimpleMsgspecStruct
+    result = analyze_type_info(typ)
+    assert result == DataTypeInfo(
+        core_type=SimpleMsgspecStruct,
+        base_type=SimpleMsgspecStruct,
+        variant=RecordType(record_type=SimpleMsgspecStruct),
+        annotations=(),
+        nullable=False,
+    )
+
+
+def test_msgspec_struct_fields() -> None:
+    fields = {f.name: f for f in RecordType(record_type=SimpleMsgspecStruct).fields}
+    assert fields["name"].type_hint is str
+    assert fields["name"].default_value is inspect.Parameter.empty
+    assert fields["value"].type_hint is int
+    assert fields["value"].default_value == 0
 
 
 def test_str() -> None:

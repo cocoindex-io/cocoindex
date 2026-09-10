@@ -209,7 +209,7 @@ class PgTableSource(Generic[RowT]):
         if row_type is not None:
             if not is_record_type(row_type):
                 raise TypeError(
-                    f"row_type must be a record type (dataclass, NamedTuple, or Pydantic model), "
+                    f"row_type must be a record type (dataclass, NamedTuple, msgspec.Struct, or Pydantic model), "
                     f"got {row_type}"
                 )
             record_info = RecordType(row_type)

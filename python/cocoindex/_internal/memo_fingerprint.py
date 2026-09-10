@@ -17,6 +17,9 @@ import struct
 import sys
 import typing
 
+import msgspec
+import msgspec.structs
+
 from . import core
 from .serde import (
     get_param_annotation,
@@ -25,7 +28,6 @@ from .serde import (
     strip_non_existence_type,
 )
 from .typing import Fingerprintable
-
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
 _StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
@@ -71,7 +73,7 @@ def _make_state_deserialize_fn(
             ann,
             source_label=f"prev_state param of {fn_label}()",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - fallback for any unsupported annotation
         return make_deserialize_fn(typing.Any)
 
 
@@ -128,6 +130,11 @@ def _is_pydantic_model(obj: object) -> bool:
     return hasattr(obj, "__pydantic_fields__") and not isinstance(obj, type)  # type: ignore[attr-defined]
 
 
+def _is_msgspec_struct_instance(obj: object) -> bool:
+    """Check if obj is a ``msgspec.Struct`` instance."""
+    return isinstance(obj, msgspec.Struct)
+
+
 def _canonicalize_dataclass(
     obj: object,
     _seen: dict[int, int],
@@ -170,6 +177,29 @@ def _canonicalize_pydantic(
         tuple(
             (name, _canonicalize(getattr(obj, name), _seen, state_methods))
             for name in field_names
+        ),
+    )
+
+
+def _canonicalize_msgspec(
+    obj: object,
+    _seen: dict[int, int],
+    state_methods: list[StateFnEntry],
+) -> Fingerprintable:
+    """Canonicalize a ``msgspec.Struct`` instance.
+
+    Preserves field definition order and includes all fields.
+    Format: ("msgspec", module, qualname, ((field_name, value), ...))
+    """
+    typ = type(obj)
+    fields = msgspec.structs.fields(typing.cast(type[msgspec.Struct], typ))
+    return (
+        "msgspec",
+        canonical_module_name(typ),
+        typ.__qualname__,
+        tuple(
+            (field.name, _canonicalize(getattr(obj, field.name), _seen, state_methods))
+            for field in fields
         ),
     )
 
@@ -293,7 +323,7 @@ def _canonicalize(
         if state_hook is not None and callable(state_hook):
             tag = "shook"
             # raw function for type hint extraction (unbound method on class)
-            raw_fn = getattr(typ, "__coco_memo_state__")
+            raw_fn = typ.__coco_memo_state__  # type: ignore[attr-defined]
             state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
@@ -357,12 +387,16 @@ def _canonicalize(
     if _is_pydantic_model(obj):
         return _canonicalize_pydantic(obj, _seen, state_methods)
 
+    # 6) msgspec.Struct instances
+    if _is_msgspec_struct_instance(obj):
+        return _canonicalize_msgspec(obj, _seen, state_methods)
+
     # 7) Fallback
     try:
         payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
         # Tag to avoid colliding with user-provided raw bytes.
         return ("pickle", payload)
-    except Exception:
+    except Exception:  # noqa: BLE001 - fallback for unsupported memo key types
         raise TypeError(
             f"Unsupported type for memoization key: {type(obj)!r}. "
             "Provide __coco_memo_key__() or register a memo key function."
@@ -449,9 +483,9 @@ register_memo_key_function(
 
 __all__ = [
     "NotMemoKeyable",
+    "fingerprint_call",
+    "memo_fingerprint",
     "register_memo_key_function",
     "register_not_memo_keyable",
     "unregister_memo_key_function",
-    "fingerprint_call",
-    "memo_fingerprint",
 ]

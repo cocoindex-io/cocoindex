@@ -366,18 +366,18 @@ class TableSchema(Generic[RowT]):
         | None = None,
     ) -> "TableSchema[RowT]":
         """
-        Create a TableSchema from a record type (dataclass, NamedTuple, or Pydantic model).
+        Create a TableSchema from a record type (dataclass, NamedTuple, msgspec.Struct, or Pydantic model).
 
         Python types are automatically mapped to SurrealDB types.
 
         Args:
-            record_type: A record type (dataclass, NamedTuple, or Pydantic model).
+            record_type: A record type (dataclass, NamedTuple, msgspec.Struct, or Pydantic model).
             column_overrides: Optional dict mapping field names to SurrealType or
                               VectorSchemaProvider to override the default type mapping.
         """
         if not is_record_type(record_type):
             raise TypeError(
-                f"record_type must be a record type (dataclass, NamedTuple, Pydantic model), "
+                f"record_type must be a record type (dataclass, NamedTuple, msgspec.Struct, Pydantic model), "
                 f"got {type(record_type)}"
             )
         columns = await cls._columns_from_record_type(record_type, column_overrides)
