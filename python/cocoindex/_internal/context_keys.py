@@ -180,7 +180,7 @@ class ContextProvider:
             state_fns: list[StateFnEntry] = []
             canonical = _canonicalize(
                 ("context_key", key._key, value),
-                _seen=None,
+                state=None,
                 state_methods=state_fns,
             )
             fp = core.fingerprint_simple_object(canonical)
