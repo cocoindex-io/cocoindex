@@ -52,6 +52,8 @@ prek run --all-files
 | Python formatting | `uv run ruff format .` |
 | Before pushing | `prek run --all-files` |
 
+After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — both `rust/py` and the Rust SDK under `rust/sdk/` call core directly, and the SDK is easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those.
+
 ## Code Structure
 
 ```
@@ -62,10 +64,15 @@ cocoindex/
 │   │       ├── engine/         # Core engine
 │   │       ├── state/          # States of the core engine
 │   │       └── inspect/        # Database inspection utilities
-│   ├── py/                     # Python bindings (PyO3)
+│   ├── py/                     # Python bindings (PyO3); calls core engine APIs
 │   ├── py_utils/               # Python-Rust utility helpers (error, convert, future)
 │   ├── utils/                  # General utilities: error, batching, fingerprint, etc.
-│   └── ops_text/               # Text processing operations (splitter, language detection)
+│   ├── code_ast/               # Tree-sitter foundation: language registry (links all grammars), CodeSource, positions
+│   ├── ops_text/               # Text processing operations (splitter, language detection)
+│   ├── code_match/             # Structural code pattern matching over tree-sitter ASTs
+│   └── sdk/
+│       ├── cocoindex/          # Rust SDK (`cocoindex` crate); calls core engine APIs directly, like py/
+│       └── cocoindex_macros/   # Proc macros for the Rust SDK (`#[function]`)
 │
 ├── python/
 │   ├── cocoindex/              # Python package
