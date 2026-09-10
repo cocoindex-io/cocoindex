@@ -9,7 +9,8 @@ use crate::engine::context::{
     DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
 };
 use crate::engine::context::{
-    FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
+    FnCallContext, FnCallMemoEntry, FnCallMemoOrigin, FnMemoCache, UserStateCache,
+    decode_stored_entry,
 };
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
@@ -2021,16 +2022,18 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
     let mut visited: HashSet<Fingerprint> = HashSet::new();
     let mut deps_to_walk: VecDeque<Fingerprint> = VecDeque::new();
 
-    // First pass: every Ready(Some) entry with `already_stored=true`
-    // contributes its target states and seeds the dep walk. `already_stored=false`
-    // entries were just executed this run; their target states are in the
-    // regular declared_target_states pipeline, not "contained".
+    // First pass: every Ready(Some) entry loaded from the store contributes its
+    // target states and seeds the dep walk — its body did not run, so nothing
+    // re-declared those paths. Whether its memo states were refreshed this run
+    // (`Loaded { states_updated: true }`) only affects flush, not containment.
+    // `Executed` entries declared their target states through the regular
+    // declared_target_states pipeline.
     for (fp, lock) in cache.iter() {
         let guard = lock
             .try_read()
             .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
         if let FnCallMemoEntry::Ready(Some(memo)) = &*guard {
-            if memo.already_stored {
+            if matches!(memo.origin, FnCallMemoOrigin::Loaded { .. }) {
                 visited.insert(*fp);
                 contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());
                 for dep_fp in memo.dependency_memo_entries.iter() {

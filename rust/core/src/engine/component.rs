@@ -1379,7 +1379,8 @@ impl<Prof: EngineProfile> Component<Prof> {
 }
 
 #[cfg(test)]
-mod tests {
+// `pub(crate)`: the `TestProfile` here is shared with `context.rs` tests.
+pub(crate) mod tests {
     use super::{ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, StatsGroup};
     use crate::engine::app::{App, AppUpdateOptions};
     use crate::engine::context::{ComponentProcessorContext, FnCallContext, MemoStatesPayload};
@@ -1461,10 +1462,10 @@ mod tests {
     }
 
     #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
-    struct TestProfile;
+    pub(crate) struct TestProfile;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
-    struct TestData(Vec<u8>);
+    pub(crate) struct TestData(pub(crate) Vec<u8>);
 
     impl Persist for TestData {
         fn to_bytes(&self) -> crate::prelude::Result<bytes::Bytes> {
@@ -1476,7 +1477,7 @@ mod tests {
         }
     }
 
-    struct NoopSink;
+    pub(crate) struct NoopSink;
 
     #[async_trait]
     impl TargetActionSink<TestProfile> for NoopSink {
@@ -1490,7 +1491,7 @@ mod tests {
         }
     }
 
-    struct NoopHandler;
+    pub(crate) struct NoopHandler;
 
     impl TargetHandler<TestProfile> for NoopHandler {
         fn reconcile(
@@ -1540,7 +1541,7 @@ mod tests {
             + Sync,
     >;
 
-    struct TestProcessor {
+    pub(crate) struct TestProcessor {
         info: ComponentProcessorInfo,
         memo_fp: Fingerprint,
         body_started: Arc<AtomicBool>,
