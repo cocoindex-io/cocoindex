@@ -45,8 +45,10 @@ impl Serialize for StableKey {
     }
 }
 
-/// Decodes one `StableKey` straight off a self-describing format, keeping the
-/// array / bin / str distinction the format already carries.
+/// Decodes one `StableKey` straight off a self-describing format, reading
+/// exactly what the format carries: seq -> `Array`, bytes -> `Bytes`,
+/// str -> `Str`, one-entry map -> tagged variant (`Uuid` / `Fingerprint` /
+/// `Symbol`).
 struct StableKeyVisitor;
 
 impl<'de> de::Visitor<'de> for StableKeyVisitor {
@@ -86,7 +88,7 @@ impl<'de> de::Visitor<'de> for StableKeyVisitor {
         self,
         mut seq: A,
     ) -> std::result::Result<StableKey, A::Error> {
-        let mut items = Vec::new();
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
         while let Some(item) = seq.next_element::<StableKey>()? {
             items.push(item);
         }
@@ -94,8 +96,8 @@ impl<'de> de::Visitor<'de> for StableKeyVisitor {
     }
 
     /// Tagged variants are written as a one-entry map. Values are read through
-    /// `next_value` so `Uuid`/`Fingerprint` see the real format context instead
-    /// of a buffer that claims to be human-readable.
+    /// `next_value` so `Uuid`/`Fingerprint` decode against the real format
+    /// (msgpack `bin` here, base64 text in human-readable formats).
     fn visit_map<A: de::MapAccess<'de>>(
         self,
         mut map: A,
@@ -120,68 +122,13 @@ impl<'de> de::Visitor<'de> for StableKeyVisitor {
 }
 
 impl<'de> Deserialize<'de> for StableKey {
+    /// Round trip is guaranteed only for formats that natively distinguish
+    /// array / bin / str, such as MessagePack, which is what the state store
+    /// uses. Formats without a bytes type (JSON) serialize `Bytes` as an
+    /// integer sequence and read it back as `Array`; nothing in production
+    /// deserializes a `StableKey` from such formats.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        // Binary formats (msgpack, the state-store encoding) distinguish
-        // array / bin / str natively, so decode directly off the format.
-        // Untagged buffering erases that: a sequence is taken by `serde_bytes`
-        // before `Array` is tried, valid UTF-8 bytes are taken by `String`
-        // before `Bytes`, and the buffer reports a human-readable context that
-        // makes `Fingerprint` demand base64. Human-readable formats keep the
-        // untagged path below, where those ambiguities are unavoidable anyway.
-        // This check needs the original format context: an outer untagged or
-        // flatten adapter can lose it before reaching this method. Persisted
-        // stable keys must therefore be deserialized without such buffering.
-        if !deserializer.is_human_readable() {
-            return deserializer.deserialize_any(StableKeyVisitor);
-        }
-
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Repr {
-            Null(()),
-            Bool(bool),
-            Int(i64),
-            Str(String),
-            // Intentionally before Array to preserve StableKey::Bytes roundtrip in
-            // human-readable formats (like JSON) where bytes serialize as a sequence
-            // of integers. Binary formats never reach this enum; see the
-            // `is_human_readable` branch above.
-            #[serde(with = "serde_bytes")]
-            Bytes(Vec<u8>),
-            Uuid {
-                uuid: uuid::Uuid,
-            },
-            Fp {
-                fp: utils::fingerprint::Fingerprint,
-            },
-            Sym {
-                sym: String,
-            },
-            Array(Vec<Repr>),
-        }
-
-        impl Repr {
-            fn into_stable_key(self) -> StableKey {
-                match self {
-                    Repr::Null(()) => StableKey::Null,
-                    Repr::Bool(b) => StableKey::Bool(b),
-                    Repr::Int(i) => StableKey::Int(i),
-                    Repr::Str(s) => StableKey::Str(Arc::from(s)),
-                    Repr::Bytes(b) => StableKey::Bytes(Arc::from(b)),
-                    Repr::Uuid { uuid } => StableKey::Uuid(uuid),
-                    Repr::Fp { fp } => StableKey::Fingerprint(fp),
-                    Repr::Sym { sym } => StableKey::Symbol(Arc::from(sym)),
-                    Repr::Array(items) => StableKey::Array(Arc::from(
-                        items
-                            .into_iter()
-                            .map(Repr::into_stable_key)
-                            .collect::<Vec<_>>(),
-                    )),
-                }
-            }
-        }
-
-        Ok(Repr::deserialize(deserializer)?.into_stable_key())
+        deserializer.deserialize_any(StableKeyVisitor)
     }
 }
 
@@ -492,6 +439,8 @@ mod tests {
         assert_eq!(decoded_empty, empty);
     }
 
+    /// JSON has no bytes type, so `Bytes` serializes as an integer sequence
+    /// and decodes as `Array`; every other variant round-trips unchanged.
     #[test]
     fn stable_key_serde_json_shape() {
         use serde_json::{Value, json};
@@ -499,23 +448,39 @@ mod tests {
         let uuid = uuid::Uuid::from_bytes([3u8; 16]);
         let fp = utils::fingerprint::Fingerprint([7u8; 16]);
 
-        let cases: Vec<(StableKey, Value)> = vec![
-            (StableKey::Null, Value::Null),
-            (StableKey::Bool(true), json!(true)),
-            (StableKey::Int(-7), json!(-7)),
-            (StableKey::Str(Arc::from("hi")), json!("hi")),
+        // (key, expected JSON, expected decoded key)
+        let cases: Vec<(StableKey, Value, StableKey)> = vec![
+            (StableKey::Null, Value::Null, StableKey::Null),
+            (StableKey::Bool(true), json!(true), StableKey::Bool(true)),
+            (StableKey::Int(-7), json!(-7), StableKey::Int(-7)),
+            (
+                StableKey::Str(Arc::from("hi")),
+                json!("hi"),
+                StableKey::Str(Arc::from("hi")),
+            ),
             (
                 StableKey::Bytes(Arc::from(&b"\x00\x01\xff"[..])),
                 json!([0, 1, 255]),
+                StableKey::Array(Arc::from([
+                    StableKey::Int(0),
+                    StableKey::Int(1),
+                    StableKey::Int(255),
+                ])),
             ),
-            (StableKey::Uuid(uuid), json!({ "uuid": uuid.to_string() })),
+            (
+                StableKey::Uuid(uuid),
+                json!({ "uuid": uuid.to_string() }),
+                StableKey::Uuid(uuid),
+            ),
             (
                 StableKey::Fingerprint(fp),
                 json!({ "fp": serde_json::to_value(fp).expect("fp to value") }),
+                StableKey::Fingerprint(fp),
             ),
             (
                 StableKey::Symbol(Arc::from("cocoindex/setup")),
                 json!({ "sym": "cocoindex/setup" }),
+                StableKey::Symbol(Arc::from("cocoindex/setup")),
             ),
             (
                 StableKey::Array(Arc::from([
@@ -523,14 +488,18 @@ mod tests {
                     StableKey::Str(Arc::from("a")),
                 ])),
                 json!([1, "a"]),
+                StableKey::Array(Arc::from([
+                    StableKey::Int(1),
+                    StableKey::Str(Arc::from("a")),
+                ])),
             ),
         ];
 
-        for (key, expected) in cases {
+        for (key, expected, expected_decoded) in cases {
             let got = serde_json::to_value(&key).expect("serialize");
             assert_eq!(got, expected);
-            let roundtrip: StableKey = serde_json::from_value(got).expect("deserialize");
-            assert_eq!(roundtrip, key);
+            let decoded: StableKey = serde_json::from_value(got).expect("deserialize");
+            assert_eq!(decoded, expected_decoded, "decoded shape for {key:?}");
         }
     }
 
@@ -557,8 +526,22 @@ mod tests {
         ]);
         assert_eq!(got, expected);
 
-        let roundtrip: StablePath = serde_json::from_value(got).expect("deserialize");
-        assert_eq!(roundtrip, path);
+        // The `Bytes` segment comes back as an `Array` of `Int`: JSON carries
+        // no bytes type, so the decoder reads the integer sequence it finds.
+        let expected_decoded = StablePath(Arc::from(vec![
+            StableKey::Int(42),
+            StableKey::Array(Arc::from([
+                StableKey::Int(0),
+                StableKey::Int(116),
+                StableKey::Int(101),
+                StableKey::Int(114),
+                StableKey::Int(109),
+            ])),
+            StableKey::Uuid(uuid),
+            StableKey::Fingerprint(fp),
+        ]));
+        let decoded: StablePath = serde_json::from_value(got).expect("deserialize");
+        assert_eq!(decoded, expected_decoded);
     }
 
     #[test]
@@ -785,14 +768,40 @@ mod tests {
                 "duplicate tag",
                 msgpack_map(&[("sym", msgpack_fixstr("a")), ("sym", msgpack_fixstr("b"))]),
             ),
-            ("null payload", msgpack_map(&[("uuid", vec![0xc0])])),
+            // A malformed or null payload must fail even when a valid tagged
+            // entry follows it; nothing falls through to the next entry.
+            (
+                "malformed payload before known tag",
+                msgpack_map(&[
+                    ("uuid", msgpack_fixstr("invalid")),
+                    ("sym", msgpack_fixstr("a")),
+                ]),
+            ),
+            (
+                "null payload before known tag",
+                msgpack_map(&[("uuid", vec![0xc0]), ("sym", msgpack_fixstr("a"))]),
+            ),
+            ("uuid null payload", msgpack_map(&[("uuid", vec![0xc0])])),
+            (
+                "fingerprint null payload",
+                msgpack_map(&[("fp", vec![0xc0])]),
+            ),
+            ("symbol null payload", msgpack_map(&[("sym", vec![0xc0])])),
             (
                 "uuid payload wrong length",
                 msgpack_map(&[("uuid", msgpack_bin(&[1u8; 4]))]),
             ),
             (
+                "uuid payload not bytes",
+                msgpack_map(&[("uuid", msgpack_fixstr("invalid"))]),
+            ),
+            (
                 "fingerprint payload wrong length",
                 msgpack_map(&[("fp", msgpack_bin(&[1u8; 4]))]),
+            ),
+            (
+                "fingerprint payload not bytes",
+                msgpack_map(&[("fp", msgpack_fixstr("invalid!"))]),
             ),
             (
                 "symbol payload not a string",
@@ -804,66 +813,6 @@ mod tests {
             assert!(
                 utils::deser::from_msgpack_slice::<StableKey>(&bytes).is_err(),
                 "{label} must be rejected"
-            );
-        }
-    }
-
-    /// The strict one-entry rule applies to binary formats only. JSON keeps
-    /// its prior lenient decoding, where unknown fields are ignored and a
-    /// recognized variant is chosen by enum priority.
-    #[test]
-    fn serde_json_tagged_map_stays_lenient() {
-        use serde_json::json;
-
-        let uuid = uuid::Uuid::from_bytes([3u8; 16]);
-        // Extra unknown field alongside a recognized tag.
-        let value = json!({ "sym": "a", "extra": 1 });
-        assert_eq!(
-            serde_json::from_value::<StableKey>(value).expect("lenient extra field"),
-            StableKey::Symbol(Arc::from("a"))
-        );
-        // Two recognized tags: `Uuid` precedes `Sym` in the untagged enum.
-        let value = json!({ "uuid": uuid.to_string(), "sym": "a" });
-        assert_eq!(
-            serde_json::from_value::<StableKey>(value).expect("lenient two tags"),
-            StableKey::Uuid(uuid)
-        );
-    }
-
-    #[test]
-    fn serde_json_tagged_map_payloads_and_duplicates() {
-        // Use raw JSON: constructing a serde_json::Value would discard
-        // duplicate fields before StableKey's deserializer sees them.
-        for json in [
-            r#"{"sym":"a","extra":1,"extra":2}"#,
-            r#"{"uuid":"invalid","sym":"a"}"#,
-            r#"{"sym":"a","uuid":"invalid"}"#,
-            r#"{"uuid":null,"sym":"a"}"#,
-            r#"{"fp":"invalid!","sym":"a"}"#,
-            r#"{"uuid":null,"uuid":null,"sym":"a"}"#,
-        ] {
-            assert_eq!(
-                serde_json::from_str::<StableKey>(json).expect("lenient tagged map"),
-                StableKey::Symbol(Arc::from("a")),
-                "unknown or invalid fields must not prevent a valid variant: {json}"
-            );
-        }
-
-        for json in [
-            r#"{}"#,
-            r#"{"unknown":1}"#,
-            r#"{"sym":"a","sym":"b"}"#,
-            r#"{"uuid":null}"#,
-            r#"{"fp":null}"#,
-            r#"{"sym":null}"#,
-            r#"{"uuid":"invalid"}"#,
-            r#"{"fp":"invalid!"}"#,
-            r#"{"fp":"AQ=="}"#,
-            r#"{"sym":1}"#,
-        ] {
-            assert!(
-                serde_json::from_str::<StableKey>(json).is_err(),
-                "map without a valid tagged variant must be rejected: {json}"
             );
         }
     }
