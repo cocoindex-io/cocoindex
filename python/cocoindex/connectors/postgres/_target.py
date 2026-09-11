@@ -58,6 +58,7 @@ import msgspec
 
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+from cocoindex._internal.target_state import AsyncTargetActionSinkFn
 
 logger = logging.getLogger(__name__)
 
@@ -1257,72 +1258,67 @@ _table_provider = coco.register_root_target_states_provider(
 # pass — giving cross-table, and mixed DDL+DML, atomicity within one database.
 _DbAction = _TableAction | _RowAction
 
-_db_sinks: dict[str, coco.TargetActionSink[_DbAction, _RowHandler]] = {}
+
+class _DbSink(NamedTuple):
+    """Equal database keys share an engine sink identity, without a local cache."""
+
+    db_key: str
+
+    async def __call__(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_DbAction],
+    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
+        pool = context_provider.get(self.db_key, asyncpg.Pool)
+        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(actions)
+
+        # Partition actions into three ordered phases so the transaction is
+        # correct by construction, independent of the order the engine
+        # batches actions in:
+        #   1. table DDL that leaves the table existing (create / alter /
+        #      replace) — must run before any row DML targeting it;
+        #   2. row DML (upserts + deletes);
+        #   3. table drops — must run after row DML, since deleting rows
+        #      from an already-dropped table would fail.
+        # `replace` drops-then-recreates internally, so it ends with the
+        # table existing and belongs to phase 1.
+        ensure_table_actions: list[tuple[int, _TableAction]] = []
+        drop_table_actions: list[tuple[int, _TableAction]] = []
+        rows_by_handler: dict[_RowHandler, list[_RowAction]] = {}
+        for i, action in enumerate(actions):
+            if isinstance(action, _TableAction):
+                if coco.is_non_existence(action.spec):
+                    drop_table_actions.append((i, action))
+                else:
+                    ensure_table_actions.append((i, action))
+            else:
+                rows_by_handler.setdefault(action.handler, []).append(action)
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for i, action in ensure_table_actions:
+                    outputs[i] = await _table_handler._apply_table_action(
+                        conn, pool, action
+                    )
+                for handler, handler_actions in rows_by_handler.items():
+                    await handler._execute_actions(conn, handler_actions)
+                for i, action in drop_table_actions:
+                    outputs[i] = await _table_handler._apply_table_action(
+                        conn, pool, action
+                    )
+        return outputs
 
 
 def _get_db_sink(
     db_key: str,
 ) -> coco.TargetActionSink[_DbAction, _RowHandler]:
-    """Return the shared per-database sink for *db_key*, creating it on first call.
-
-    Table actions apply DDL (and yield a child row handler); row actions apply
-    DML. Both branch on the action type inside a single connection and
-    transaction, so any actions batched together for one database are atomic.
-    Within the transaction, actions run in three phases — create/alter tables,
-    then row DML, then drop tables — so the ordering is correct by construction
-    even if creates, deletes, and row changes are batched together.
-    """
-    sink = _db_sinks.get(db_key)
-    if sink is None:
-
-        async def _apply(
-            context_provider: ContextProvider,
-            actions: Sequence[_DbAction],
-        ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-            pool = context_provider.get(db_key, asyncpg.Pool)
-            outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
-                actions
-            )
-
-            # Partition actions into three ordered phases so the transaction is
-            # correct by construction, independent of the order the engine
-            # batches actions in:
-            #   1. table DDL that leaves the table existing (create / alter /
-            #      replace) — must run before any row DML targeting it;
-            #   2. row DML (upserts + deletes);
-            #   3. table drops — must run after row DML, since deleting rows
-            #      from an already-dropped table would fail.
-            # `replace` drops-then-recreates internally, so it ends with the
-            # table existing and belongs to phase 1.
-            ensure_table_actions: list[tuple[int, _TableAction]] = []
-            drop_table_actions: list[tuple[int, _TableAction]] = []
-            rows_by_handler: dict[_RowHandler, list[_RowAction]] = {}
-            for i, action in enumerate(actions):
-                if isinstance(action, _TableAction):
-                    if coco.is_non_existence(action.spec):
-                        drop_table_actions.append((i, action))
-                    else:
-                        ensure_table_actions.append((i, action))
-                else:
-                    rows_by_handler.setdefault(action.handler, []).append(action)
-
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    for i, action in ensure_table_actions:
-                        outputs[i] = await _table_handler._apply_table_action(
-                            conn, pool, action
-                        )
-                    for handler, handler_actions in rows_by_handler.items():
-                        await handler._execute_actions(conn, handler_actions)
-                    for i, action in drop_table_actions:
-                        outputs[i] = await _table_handler._apply_table_action(
-                            conn, pool, action
-                        )
-            return outputs
-
-        sink = coco.TargetActionSink.from_async_fn(_apply)
-        _db_sinks[db_key] = sink
-    return sink
+    # The engine canonicalizes equal callbacks under a lock, so concurrent
+    # reconcile calls share one batching identity without a connector cache.
+    # Mypy cannot match this callable object's child-handler return type to the
+    # overloaded protocol. Keep the value-comparable object (not a bound method).
+    return coco.TargetActionSink.from_async_fn(
+        cast("AsyncTargetActionSinkFn[_DbAction, _RowHandler]", _DbSink(db_key))
+    )
 
 
 class TableTarget(
