@@ -1229,3 +1229,65 @@ def test_deps_rejected_with_logic_tracking_none() -> None:
         @coco.fn.as_async(memo=True, deps="ignored", logic_tracking=None)
         async def _g(x: str) -> str:
             return x
+
+
+# ---------------------------------------------------------------------------
+# Fn-memo HIT must still report the fn's own logic fp to the caller — on both
+# the sync and async call paths. Regression: the sync path used to create its
+# FnCallContext only on a miss, so a caller's memo entry rebuilt during a run
+# where the inner fn hit lost the dep, and a later code change to the inner fn
+# went undetected. (The async path always created the ctx before the probe.)
+# ---------------------------------------------------------------------------
+
+_hit_dep_runs: list[str] = []
+_hit_dep_n: dict[str, int] = {"n": 1}
+
+
+@coco.fn(memo=True)
+def _hit_dep_leaf_sync() -> int:
+    _hit_dep_runs.append("leaf")
+    return 1
+
+
+@coco.fn(memo=True)
+async def _hit_dep_mid(n: int) -> int:
+    _hit_dep_runs.append(f"mid{n}")
+    return _hit_dep_leaf_sync() + n
+
+
+async def _hit_dep_main() -> None:
+    await coco.use_mount(coco.component_subpath("mid"), _hit_dep_mid, _hit_dep_n["n"])
+
+
+def test_sync_fn_hit_still_reports_logic_dep_to_rebuilt_caller() -> None:
+    _hit_dep_runs.clear()
+    _hit_dep_n["n"] = 1
+    app: coco.App[[], None] = coco.App(
+        coco.AppConfig(name="test_sync_fn_hit_logic_dep", environment=coco_env),
+        _hit_dep_main,
+    )
+
+    # Run 1: everything executes.
+    app.update_blocking()
+    assert _hit_dep_runs == ["mid1", "leaf"]
+
+    # Run 2: mid's memo key changes -> mid re-executes, leaf HITS. Mid's
+    # rebuilt entry must still record leaf's logic fp.
+    _hit_dep_runs.clear()
+    _hit_dep_n["n"] = 2
+    app.update_blocking()
+    assert _hit_dep_runs == ["mid2"]
+
+    # Run 3: simulate leaf's code changing — its old fp leaves the registry.
+    leaf_fp = _hit_dep_leaf_sync._logic_fp  # type: ignore[attr-defined]
+    assert leaf_fp is not None
+    core.unregister_logic_fingerprint(leaf_fp)
+    try:
+        _hit_dep_runs.clear()
+        app.update_blocking()
+        assert _hit_dep_runs == [
+            "mid2",
+            "leaf",
+        ], f"leaf logic change not detected after hit-rebuild: {_hit_dep_runs}"
+    finally:
+        core.register_logic_fingerprint(leaf_fp)

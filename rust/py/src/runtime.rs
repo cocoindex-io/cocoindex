@@ -98,7 +98,7 @@ pub fn wrap_target_handler(py: Python<'_>, handler: &Py<PyAny>) -> PyResult<Py<P
         .call(py, (handler,), None)
 }
 
-#[pyclass(name = "AsyncContext")]
+#[pyclass(name = "AsyncContext", from_py_object)]
 #[derive(Clone)]
 pub struct PyAsyncContext(pub Arc<TaskLocals>);
 

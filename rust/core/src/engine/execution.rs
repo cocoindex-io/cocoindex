@@ -20,7 +20,8 @@ use crate::engine::target_state::{
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::ChildStablePathSet;
 use crate::state::target_state_path::{
-    TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
+    TargetProviderDeps, TargetStatePath, TargetStatePathWithProviderId,
+    TargetStateProviderGeneration,
 };
 use crate::state_store::{
     AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
@@ -87,6 +88,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         Prof::FunctionData,
         MemoStatesPayload<Prof>,
         Vec<Fingerprint>,
+        TargetProviderDeps,
     )>,
 > {
     // Short-circuit to miss under full_reprocess
@@ -107,6 +109,10 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                     &memo_info.logic_deps,
                     comp_ctx.app_ctx().env(),
                 )
+                && target_provider_deps_still_valid(
+                    memo_info.target_provider_deps.iter().map(|(p, g)| (p, g)),
+                    &comp_ctx.target_states_providers()?,
+                )
             {
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
@@ -122,7 +128,8 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                         // can still report this subtree's dependency set to the
                         // parent — otherwise a parent that mounts this component
                         // would not depend on it (or its descendants) and would
-                        // wrongly stay a memo hit when their code changes.
+                        // wrongly stay a memo hit when their code changes. The
+                        // target-provider deps ride along for the same reason.
                         return Ok(Some((
                             ret,
                             MemoStatesPayload {
@@ -130,6 +137,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                                 by_context_fp: context_memo_states,
                             },
                             memo_info.logic_deps.to_vec(),
+                            memo_info.target_provider_deps.into_iter().collect(),
                         )));
                     }
                     Err(e) => {
@@ -166,7 +174,8 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 /// Used when memo state validation indicates `can_reuse=true` but states have changed
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
 /// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
-/// preserving `processor_fp`, `return_value`, and `logic_deps`.
+/// preserving `processor_fp`, `return_value`, `logic_deps`, and
+/// `target_provider_deps`.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
@@ -209,6 +218,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
                         processor_fp: existing.processor_fp,
                         return_value: existing.return_value,
                         logic_deps: existing.logic_deps,
+                        target_provider_deps: existing.target_provider_deps,
                         memo_states: memo_states_borrowed,
                         context_memo_states: context_memo_states_borrowed,
                     };
@@ -259,6 +269,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     value: Prof::TargetStateValue,
 ) -> Result<()> {
     let target_state_path = provider.target_state_path().concat(&key);
+    let provider_dep = target_provider_dep(&provider);
     let declared_target_state = DeclaredTargetState {
         provider,
         item_key: key,
@@ -283,8 +294,47 @@ pub fn declare_target_state<Prof: EngineProfile>(
         }
         Ok(())
     })?;
-    fn_ctx.update(|inner| inner.target_state_paths.push(target_state_path));
+    fn_ctx.update(|inner| {
+        inner.target_state_paths.push(target_state_path);
+        if let Some((path, generation)) = provider_dep {
+            inner.target_provider_deps.insert(path, generation);
+        }
+    });
     Ok(())
+}
+
+/// Whether every recorded target-provider dependency still matches the live
+/// provider generation, i.e. whether a memo entry carrying `deps` may be reused.
+///
+/// A provider missing from `providers` is deliberately *not* a mismatch. Either
+/// it is built inside the memoized subtree itself — in which case reusing the
+/// memo means nothing in there ran, so nothing bumped its generation — or the
+/// target is gone entirely, and its leftover target states are the delete pass's
+/// business, not a reason to re-run this code. Treating "absent" as a mismatch
+/// would instead make every component that mounts its own target permanently
+/// unmemoizable.
+pub(crate) fn target_provider_deps_still_valid<'a, Prof: EngineProfile>(
+    deps: impl IntoIterator<Item = (&'a TargetStatePath, &'a TargetStateProviderGeneration)>,
+    providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+) -> bool {
+    deps.into_iter().all(|(path, recorded)| {
+        match providers.get(path).and_then(|p| p.provider_generation()) {
+            Some(current) => current == recorded,
+            None => true,
+        }
+    })
+}
+
+/// The `(provider path, generation)` pair to record as a memo dependency for a
+/// declaration made against `provider`, or `None` when the provider has no
+/// generation yet (it only gets one once it has been through a pre-commit, and
+/// a provider that never had one cannot have been invalidated).
+fn target_provider_dep<Prof: EngineProfile>(
+    provider: &TargetStateProvider<Prof>,
+) -> Option<(TargetStatePath, TargetStateProviderGeneration)> {
+    provider
+        .provider_generation()
+        .map(|generation| (provider.target_state_path().clone(), generation.clone()))
 }
 
 pub fn register_root_target_state_provider<Prof: EngineProfile>(
@@ -307,6 +357,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
+    let provider_dep = target_provider_dep(&provider);
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
             .target_states
@@ -339,8 +390,31 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
         inner
             .target_state_paths
             .push(child_provider.target_state_path().clone());
+        if let Some((path, generation)) = provider_dep {
+            inner.target_provider_deps.insert(path, generation);
+        }
     });
     Ok(child_provider)
+}
+
+/// What a commit does to the child-existence (`__cex`) subtree under the
+/// component. Decided once in [`submit`], after the processing action and
+/// the delete-mode preflight are both known.
+enum ChildExistenceAction {
+    /// Build: diff the children this build declared against the on-disk
+    /// rows, tombstoning the Component leaves that disappeared.
+    Reconcile(ChildStablePathSet),
+    /// Whole-component delete: nothing is declared, so every on-disk child
+    /// is removed and tombstoned — the cascade `launch_child_component_gc`
+    /// relies on.
+    RemoveAll,
+    /// Demote-only delete: the path stays in the tree as a Directory node
+    /// whose children were declared — and already reconciled — by the
+    /// parent's current build. They are live, so the subtree is left as
+    /// is: walking it against an empty set would tombstone them, and the
+    /// GC sweep would then delete target states they wrote in this same
+    /// update.
+    Keep,
 }
 
 struct Committer<Prof: EngineProfile> {
@@ -349,15 +423,12 @@ struct Committer<Prof: EngineProfile> {
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
     component_path: StablePath,
-
-    demote_component_only: bool,
 }
 
 impl<Prof: EngineProfile> Committer<Prof> {
     fn new(
         component_ctx: &ComponentProcessorContext<Prof>,
         target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
-        demote_component_only: bool,
     ) -> Result<Self> {
         let component_path = component_ctx.stable_path().clone();
         Ok(Self {
@@ -365,7 +436,6 @@ impl<Prof: EngineProfile> Committer<Prof> {
             app_store: component_ctx.app_ctx().app_store().clone(),
             target_states_providers: target_states_providers.clone(),
             component_path,
-            demote_component_only,
         })
     }
 
@@ -373,13 +443,14 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// them through [`AppStore::commit`](crate::state_store::AppStore::commit).
     /// The AppStore opens its own write txn, applies the plan's writes
     /// (tracking-info, fn-memo flush, user-state flush, target-owner cleanup),
-    /// and invokes the `ExistenceReconciler` callback to walk the
-    /// child-existence tree atomically inside the same txn. Then
-    /// launches Phase 5 GC.
+    /// and — unless `child_existence` is [`ChildExistenceAction::Keep`] —
+    /// invokes the `ExistenceReconciler` callback to walk the
+    /// child-existence tree atomically inside the same txn. Then launches
+    /// Phase 5 GC.
 
     async fn commit(
         self,
-        child_path_set: Option<ChildStablePathSet>,
+        child_existence: ChildExistenceAction,
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
         curr_version: Option<u64>,
@@ -397,12 +468,6 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // `__track` between this standalone read and `app_store.commit`.
         let (new_tracking_info, target_owners_to_delete) =
             self.build_commit_writes(curr_version).await?;
-
-        let child_path_set = if self.demote_component_only {
-            None
-        } else {
-            child_path_set.map(Arc::new)
-        };
 
         // On whole-component deletion, also clear the `Live` user-state
         // keyspace. The regular flush (clear_all_first / writes / deletes)
@@ -424,30 +489,20 @@ impl<Prof: EngineProfile> Committer<Prof> {
             user_state_writes: user_state_plan.writes,
             user_state_deletes: user_state_plan.deletes,
             user_state_clear_live,
-            child_path_set: child_path_set.clone(),
         };
 
-        // Reconciler closure: walks `child_path_set` against on-disk
-        // `__cex` rows, writes diffs and tombstones. Runs inside the
-        // AppStore's commit txn so the existence diff is atomic with
-        // the rest of the commit plan.
-        let app_store = self.app_store.clone();
-        let component_path = self.component_path.clone();
-        let cps = child_path_set;
-        // `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
-        // re-invoke it — clone the (cheap, `Arc`/owned) captures per call
-        // rather than moving them into the future.
-        let reconciler: ExistenceReconciler = Box::new(move |wtxn| {
-            let app_store = app_store.clone();
-            let component_path = component_path.clone();
-            let cps = cps.clone();
-            Box::pin(async move {
-                reconcile_child_existence(wtxn, &app_store, &component_path, cps.as_deref()).await
-            })
-        });
+        // The reconciler runs inside the AppStore's commit txn so the
+        // `__cex` diff is atomic with the rest of the plan.
+        let existence_reconciler = match child_existence {
+            ChildExistenceAction::Reconcile(declared) => {
+                Some(self.existence_reconciler(Some(Arc::new(declared))))
+            }
+            ChildExistenceAction::RemoveAll => Some(self.existence_reconciler(None)),
+            ChildExistenceAction::Keep => None,
+        };
 
         self.app_store
-            .commit(&self.component_path, plan, reconciler)
+            .commit(&self.component_path, plan, existence_reconciler)
             .await?;
 
         // Phase 5 GC: snapshot-read tombstones and spawn child delete
@@ -456,16 +511,67 @@ impl<Prof: EngineProfile> Committer<Prof> {
         self.launch_child_component_gc().await
     }
 
+    /// Closure that walks `declared_children` (`None`: nothing declared)
+    /// against the on-disk `__cex` rows under this component — see
+    /// [`reconcile_child_existence`]. `Fn` (not `FnOnce`) so a backend
+    /// that re-runs its commit txn can re-invoke it: the cheap
+    /// (`Arc`/owned) captures are cloned per call rather than moved into
+    /// the future.
+    fn existence_reconciler(
+        &self,
+        declared_children: Option<Arc<ChildStablePathSet>>,
+    ) -> ExistenceReconciler {
+        let app_store = self.app_store.clone();
+        let component_path = self.component_path.clone();
+        Box::new(move |wtxn| {
+            let app_store = app_store.clone();
+            let component_path = component_path.clone();
+            let declared_children = declared_children.clone();
+            Box::pin(async move {
+                reconcile_child_existence(
+                    wtxn,
+                    &app_store,
+                    &component_path,
+                    declared_children.as_deref(),
+                )
+                .await
+            })
+        })
+    }
+
     /// Engine-side reconcile that produces the `(new_tracking_info,
     /// target_owners_to_delete)` portion of [`CommitPlan`]. Delete
-    /// mode short-circuits to `(None, vec![])`, signalling the
-    /// session to delete the `__track` row.
+    /// mode short-circuits to `(None, owned_target_paths)`, signalling
+    /// the session to delete the `__track` row and every `__target`
+    /// owner row this component still holds.
     async fn build_commit_writes(
         &self,
         curr_version: Option<u64>,
     ) -> Result<(Option<Vec<u8>>, Vec<TargetStatePath>)> {
         if self.component_ctx.mode() == ComponentProcessingMode::Delete {
-            return Ok((None, Vec::new()));
+            // Whole-component deletion also drops the inverted `__target`
+            // owner index for every path this component still owns. Without
+            // this the `__track` row is removed but the owner rows leak,
+            // growing LMDB unboundedly for permanently-abandoned paths.
+            let owners_to_delete = match self
+                .app_store
+                .read_tracking_info(&self.component_path)
+                .await?
+            {
+                Some(bytes) => {
+                    let tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
+                        from_msgpack_slice(&bytes)?;
+                    tracking_info
+                        .target_state_items
+                        .keys()
+                        .map(|path_with_pid| path_with_pid.target_state_path.clone())
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+            return Ok((None, owners_to_delete));
         }
         let curr_version = curr_version
             .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
@@ -675,7 +781,8 @@ struct PreCommitCaptures<Prof: EngineProfile> {
 ///
 /// Delete-mode preflight (`delete_component_memo` + node-type check)
 /// runs outside, in [`submit`], before the precommit txn is opened —
-/// the `demote_component_only` decision lives there too.
+/// the demote-only ([`ChildExistenceAction::Keep`]) decision lives
+/// there too.
 #[allow(clippy::too_many_arguments)]
 async fn pre_commit<'tracking, Prof: EngineProfile>(
     app_store: &AppStore,
@@ -781,6 +888,27 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     if pending_retry {
         return Ok(PreCommitOutcome::PendingRetry);
     }
+
+    // Readable names for the provider-only segments (root providers,
+    // attachments) reachable from every declared target-state path. Such
+    // segments have no owner-index/tracking record, so these write-once name
+    // entries are the only persisted source inspection can resolve them from
+    // (see `DbEntryKey::TargetSegmentName`). Each chain walk stops at the
+    // first target-state-backed ancestor — its declaring component covers
+    // itself and everything above — so N sibling declarations under the same
+    // backed provider contribute no entries here (and no existence-check
+    // reads at apply time). Deduped by fingerprint; the apply step skips
+    // already-persisted entries.
+    let segment_names: HashMap<Fingerprint, StableKey> = {
+        let guard = declared_target_states.lock().await;
+        let mut names = HashMap::new();
+        for decl in guard.values() {
+            decl.provider
+                .collect_provider_only_segment_names(&mut names);
+        }
+        names
+    };
+
     let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
@@ -961,25 +1089,39 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     .and_then(|item| item.provider_generation.clone());
 
                 if let Some(child_provider) = &child_provider {
-                    let existing_gen = provider_generation.clone().unwrap_or_default();
-                    let new_gen = match recon_output.child_invalidation {
-                        Some(ChildInvalidation::Destructive) => {
-                            // Inside the open precommit WTxn — use the
-                            // in-txn variant to avoid nesting another
-                            // batched WTxn on LMDB (would deadlock).
-                            let new_id = app_store
-                                .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
-                                .await?;
-                            TargetStateProviderGeneration {
-                                provider_id: new_id,
-                                provider_schema_version: 0,
-                            }
+                    // A state created this pass mints a fresh generation for
+                    // its children, not the shared default: tracking left
+                    // behind at the same path by a destructively-replaced
+                    // predecessor sits under that default (e.g. rows of a
+                    // partition recreated after its parent table's replace),
+                    // and inheriting it would replay those stale entries as
+                    // deletes against the recreated target — with keys from
+                    // the pre-replace schema.
+                    let needs_fresh_generation = prev_item.is_none()
+                        || matches!(
+                            recon_output.child_invalidation,
+                            Some(ChildInvalidation::Destructive)
+                        );
+                    let new_gen = if needs_fresh_generation {
+                        // Inside the open precommit WTxn — use the
+                        // in-txn variant to avoid nesting another
+                        // batched WTxn on LMDB (would deadlock).
+                        let new_id = app_store
+                            .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
+                            .await?;
+                        TargetStateProviderGeneration {
+                            provider_id: new_id,
+                            provider_schema_version: 0,
                         }
-                        Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
-                            provider_id: existing_gen.provider_id,
-                            provider_schema_version: existing_gen.provider_schema_version + 1,
-                        },
-                        None => existing_gen,
+                    } else {
+                        let existing_gen = provider_generation.clone().unwrap_or_default();
+                        match recon_output.child_invalidation {
+                            Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
+                                provider_id: existing_gen.provider_id,
+                                provider_schema_version: existing_gen.provider_schema_version + 1,
+                            },
+                            _ => existing_gen,
+                        }
                     };
                     provider_generation = Some(new_gen.clone());
                     deferred_provider_generations.push((child_provider.clone(), new_gen));
@@ -1174,6 +1316,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             self_path: stable_path.clone(),
             new_tracking_info: new_tracking_info_bytes,
             preempted_owner_updates,
+            segment_names,
         },
     })
 }
@@ -1415,9 +1558,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     }
 
     // Delete-mode preflight (was in `pre_commit` body pre-Session).
-    // The early-return / `demote_component_only` decision needs to
-    // happen before opening the submit session so the early-return
-    // case doesn't write a stage marker.
+    // The early-return / demote-only decision needs to happen before
+    // opening the submit session so the early-return case doesn't
+    // write a stage marker.
     let mut demote_component_only = false;
     if comp_mode == ComponentProcessingMode::Delete {
         app_store.delete_component_memo(&stable_path).await?;
@@ -1436,6 +1579,14 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             }
         }
     }
+    let child_existence = if demote_component_only {
+        ChildExistenceAction::Keep
+    } else {
+        match child_path_set {
+            Some(declared) => ChildExistenceAction::Reconcile(declared),
+            None => ChildExistenceAction::RemoveAll,
+        }
+    };
 
     let contained_target_state_paths = Arc::new(contained_target_state_paths);
     // `declared_target_states` is shared across retries via
@@ -1664,9 +1815,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     // Commit. `AppStore::commit` is a normal trait method — no
     // session handoff needed.
-    let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
+    let committer = Committer::new(comp_ctx, &target_states_providers)?;
     if let Err(e) = committer
-        .commit(child_path_set, fn_memos, user_states, curr_version)
+        .commit(child_existence, fn_memos, user_states, curr_version)
         .await
     {
         // The commit txn either committed or rolled back before
@@ -1744,6 +1895,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         &'_ MemoStatesPayload<Prof>,
     )>,
     logic_deps: &HashSet<Fingerprint>,
+    target_provider_deps: &TargetProviderDeps,
 ) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(());
@@ -1761,6 +1913,11 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         processor_fp: fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
         logic_deps: logic_deps_sorted,
+        // Already sorted — `TargetProviderDeps` is a `BTreeMap`.
+        target_provider_deps: target_provider_deps
+            .iter()
+            .map(|(path, generation)| (path.clone(), generation.clone()))
+            .collect(),
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
     };

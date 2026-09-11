@@ -753,9 +753,14 @@ impl TargetHandler<TableSpec> for TableHandler {
                     MutualTrackingRecord::new(table_composite_record(&spec), spec.managed_by);
                 let resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
+                // `insert` / `replace` build the table from the desired schema, so
+                // every column is already correct. `upsert` means the table may or
+                // may not exist: `CREATE TABLE IF NOT EXISTS` can land on a table
+                // carrying the previous column set, so its columns still need
+                // reconciling.
                 let (main_action, column_transitions) = diff_composite(resolved.as_ref());
                 let mut column_actions = BTreeMap::new();
-                if main_action.is_none() {
+                if matches!(main_action, None | Some(DiffAction::Upsert)) {
                     for (sub_key, transition) in &column_transitions {
                         if let Some(action) = diff(Some(transition)) {
                             column_actions.insert(sub_key.clone(), action);
@@ -767,10 +772,9 @@ impl TargetHandler<TableSpec> for TableHandler {
                 // column change other than a pure add → may lose data → lossy.
                 let child_invalidation = if matches!(main_action, Some(DiffAction::Replace)) {
                     Some(TargetChildInvalidation::Destructive)
-                } else if main_action.is_none()
-                    && column_actions
-                        .values()
-                        .any(|a| !matches!(a, DiffAction::Insert))
+                } else if column_actions
+                    .values()
+                    .any(|a| !matches!(a, DiffAction::Insert))
                 {
                     Some(TargetChildInvalidation::Lossy)
                 } else {
@@ -868,15 +872,17 @@ async fn apply_table_action(
         return Ok(None);
     };
 
-    match main_action {
-        Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace) => {
-            create_table(conn, &spec).await?;
-        }
-        _ => {
-            if !column_actions.is_empty() {
-                apply_column_actions(conn, &spec, &column_actions).await?;
-            }
-        }
+    if matches!(
+        main_action,
+        Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace)
+    ) {
+        // `create_table` uses `IF NOT EXISTS`, so an `upsert` against an
+        // already-present table is a no-op — which is why an `upsert` still
+        // falls through to the column reconcile below.
+        create_table(conn, &spec).await?;
+    }
+    if matches!(main_action, None | Some(DiffAction::Upsert)) && !column_actions.is_empty() {
+        apply_column_actions(conn, &spec, &column_actions).await?;
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {

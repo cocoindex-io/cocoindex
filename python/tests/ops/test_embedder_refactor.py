@@ -17,11 +17,18 @@ import numpy as np
 import pytest
 
 pytest.importorskip("litellm", reason="litellm not installed")
+# Arrives with litellm; imported through importorskip so this module skips
+# rather than failing collection where neither is installed.
+httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-from litellm.exceptions import AuthenticationError  # noqa: E402
+from litellm.exceptions import (  # noqa: E402
+    APIConnectionError,
+    AuthenticationError,
+    Timeout,
+)
 
 import cocoindex as coco  # noqa: E402
-from cocoindex.ops.litellm import LiteLLMEmbedder  # noqa: E402
+from cocoindex.ops.litellm import LiteLLMEmbedder, _aligned_embeddings  # noqa: E402
 
 # Note on the sleep patch target below: retry sleeps now happen inside
 # cocoindex._internal.deadline via a late `asyncio.sleep` lookup. Patching
@@ -221,23 +228,67 @@ async def test_litellm_embedder_single_text_error_surfaces_original() -> None:
             await embedder.embed("only")
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_calls"),
+    [
+        # litellm.Timeout is terminal even though it reports HTTP 408 and
+        # descends from openai's APIConnectionError — both of which the
+        # classification would otherwise treat as retryable.
+        pytest.param(
+            Timeout(message="too slow", model="fake-model", llm_provider="openai"),
+            1,
+            id="litellm-timeout",
+        ),
+        # A refused/reset connection is a fast failure: still retried.
+        pytest.param(
+            APIConnectionError(
+                message="connection refused", model="fake-model", llm_provider="openai"
+            ),
+            3,
+            id="litellm-connection-error",
+        ),
+        # httpx timeouts subclass neither TimeoutError nor litellm.Timeout;
+        # they are matched by name.
+        pytest.param(httpx.ReadTimeout("stalled"), 1, id="httpx-read-timeout"),
+        pytest.param(httpx.PoolTimeout("no free slot"), 1, id="httpx-pool-timeout"),
+        pytest.param(httpx.ConnectError("refused"), 3, id="httpx-connect-error"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_litellm_embedder_splits_after_transient_retries_exhausted(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_litellm_embedder_retries_fast_failures_but_not_timeouts(
+    error: Exception, expected_calls: int
 ) -> None:
-    """A transient error that survives the same-size retry budget is still
-    splittable — a smaller request may pass where the large one timed out."""
-    # Near-zero retry budget: the retry wrapper exhausts its deadline almost
-    # immediately (DeadlineExceededError, a TimeoutError subclass).
-    monkeypatch.setattr("cocoindex.ops.litellm._EMBEDDING_RETRY_TIMEOUT_SECONDS", 0.05)
+    fake_response = type("R", (), {"data": [{"embedding": [0.1]}]})()
     embedder = LiteLLMEmbedder("fake-model")
+    mocked_embedding = AsyncMock(side_effect=[error, error, fake_response])
+
+    with (
+        patch("cocoindex.ops.litellm.litellm.aembedding", new=mocked_embedding),
+        patch("cocoindex.ops.litellm._asyncio.sleep", new=AsyncMock()),
+    ):
+        if expected_calls == 1:
+            with pytest.raises(type(error)):
+                await embedder.embed("hello")
+        else:
+            await embedder.embed("hello")
+
+    assert mocked_embedding.await_count == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_does_not_split_timeouts() -> None:
+    """A multi-text batch that times out propagates the timeout; splitting
+    would only re-spend a budget the backend already failed to meet."""
+    embedder = LiteLLMEmbedder("fake-model")
+    timeout_error = Timeout(
+        message="too slow", model="fake-model", llm_provider="openai"
+    )
     with patch(
         "cocoindex.ops.litellm.litellm.aembedding",
-        new=AsyncMock(side_effect=_FakeHTTPError(429)),
+        new=AsyncMock(side_effect=timeout_error),
     ):
-        with pytest.raises(coco.RetryWithSmallerBatch) as exc_info:
+        with pytest.raises(Timeout):
             await embedder._embed._execute_orig_async_fn(["a", "b"])
-    assert isinstance(exc_info.value.__cause__, TimeoutError)
 
 
 @pytest.mark.asyncio
@@ -282,3 +333,71 @@ async def test_litellm_embedder_does_not_retry_missing_credentials_server_error(
 
     mocked_embedding.assert_awaited_once()
     sleep.assert_not_called()
+
+
+# ============================================================================
+# Response items are aligned to inputs by `index` when the provider sends one
+# ============================================================================
+
+
+def test_aligned_embeddings_positional_when_no_index() -> None:
+    # A missing key and an explicit None are both "no index".
+    data = [{"embedding": [1.0]}, {"index": None, "embedding": [2.0]}]
+    assert [v.tolist() for v in _aligned_embeddings(data, 2)] == [[1.0], [2.0]]
+
+
+def test_aligned_embeddings_reorders_by_index() -> None:
+    data = [
+        {"index": 2, "embedding": [2.0]},
+        {"index": 0, "embedding": [0.0]},
+        {"index": 1, "embedding": [1.0]},
+    ]
+    assert [v.tolist() for v in _aligned_embeddings(data, 3)] == [[0.0], [1.0], [2.0]]
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_aligns_batch_by_index() -> None:
+    """The batch body maps a provider response that arrives out of order
+    back onto the input texts by ``index``."""
+    texts = ["a", "bb", "ccc"]
+    response = SimpleNamespace(
+        data=[{"index": i, "embedding": [float(len(texts[i]))]} for i in (2, 0, 1)]
+    )
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ):
+        vecs = await embedder._embed._execute_orig_async_fn(texts)
+    assert [v.tolist() for v in vecs] == [[1.0], [2.0], [3.0]]
+
+
+@pytest.mark.parametrize(
+    ("indices", "n", "match"),
+    [
+        pytest.param([0, None], 2, "with and without", id="partial"),
+        pytest.param([0, 0], 2, "not a permutation", id="duplicate"),
+        pytest.param([0, 1], 3, "2 items for 3 inputs", id="missing"),
+        pytest.param([-1, 0], 2, "not a permutation", id="negative"),
+        pytest.param([0, 2], 2, "not a permutation", id="out-of-range"),
+        pytest.param([0, "1"], 2, "not a permutation", id="non-int"),
+    ],
+)
+def test_aligned_embeddings_rejects_bad_indices(
+    indices: list[Any], n: int, match: str
+) -> None:
+    data = [{"index": i, "embedding": [0.0]} for i in indices]
+    with pytest.raises(RuntimeError, match=match):
+        _aligned_embeddings(data, n)
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_bad_index_fails_whole_batch() -> None:
+    """A malformed index set is a provider bug: it surfaces as-is rather than
+    as RetryWithSmallerBatch, since splitting would only hide the misorder."""
+    response = SimpleNamespace(data=[{"index": 0, "embedding": [0.0]}] * 2)
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ):
+        with pytest.raises(RuntimeError, match="not a permutation"):
+            await embedder._embed._execute_orig_async_fn(["a", "b"])

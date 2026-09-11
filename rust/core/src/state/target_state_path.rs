@@ -66,16 +66,33 @@ impl TargetStatePath {
         &self.0[..self.0.len() - 1]
     }
 
+    pub fn prefix(&self, len: usize) -> Self {
+        Self(Arc::from(&self.0[..len]))
+    }
+
     pub fn as_slice(&self) -> &[utils::fingerprint::Fingerprint] {
         &self.0
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TargetStateProviderGeneration {
     pub provider_id: u64,
     pub provider_schema_version: u64,
 }
+
+/// A memoized component's (or function call's) dependency on the generations of
+/// the target-state providers it declared against, keyed by provider path.
+///
+/// Recorded while the declarations happen and re-checked when the memo entry is
+/// probed. A memo hit skips re-declaring everything the entry covers; if the
+/// provider's generation has moved on since (a lossy or destructive schema
+/// change), those declarations are no longer known to be in sync with the
+/// target, so the entry must not be reused. Without this, the invalidation
+/// reaches memoized code only when the target happens to be part of the memo
+/// key — e.g. passed as an argument — and is silently dropped otherwise.
+pub type TargetProviderDeps =
+    std::collections::BTreeMap<TargetStatePath, TargetStateProviderGeneration>;
 
 impl Serialize for TargetStateProviderGeneration {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

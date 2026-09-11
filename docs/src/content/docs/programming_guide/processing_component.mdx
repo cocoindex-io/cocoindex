@@ -136,6 +136,15 @@ Each item in the iterable is a `(key, value)` tuple. The value is passed as the 
 
 In the static case this is just the keyed-loop form of [`mount()`](#mount) — the same per-file fan-out shown in [Core Concepts](./core_concepts#processing-component). The snippet above is equivalent to looping over the items and calling `mount(coco.component_subpath(coco.Symbol("process_file"), key), process_file, value, target)` for each one. The per-item `key` is what keeps each component's path stable across runs, so the engine matches, updates, and cleans up each item individually.
 
+Like `mount()`, `mount_each()` does not carry return values from the mounted functions. It returns a single handle covering all mounted components, which you can capture if you need to wait for readiness:
+
+```python
+handle = await coco.mount_each(process_file, files.items(), target)
+await handle.ready()  # waits until every per-item component is ready
+```
+
+If you want per-item results without creating components, use [`map()`](#map).
+
 You can provide an explicit subpath as the first argument:
 
 ```python
@@ -201,6 +210,25 @@ for f in files:
 :::tip
 When iterating over keyed items, prefer [`mount_each()`](#mount_each) — it handles the loop and subpath creation for you.
 :::
+
+## Memoized components
+
+`memo=True` on a function you **mount** memoizes the whole component — the *processing-component-level* memoization introduced in [Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations). On a cache hit the body doesn't run, and everything the previous run produced is carried over as a unit: the component's declared [target states](./target_state) **and** its child mounts. Cleanup of no-longer-mounted children only applies when the body actually *runs* — a run that no longer mounts a child removes that child's subtree, while a cache hit retains it.
+
+```python
+@coco.fn(memo=True)
+async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]) -> None:
+    ...
+
+await coco.mount_each(process_file, files.items(), table)
+```
+
+Skipping a stable item this way costs almost nothing in storage, provided you follow one principle:
+
+- **Declare large values as target states; don't return them.** Every memo entry — whether for a memoized component or for a memoized function called directly inside one (the *transform-level* memoization from Core Concepts) — must store its return value in order to serve a cache hit. A component that outputs via [`declare_row(...)`](./target_state) and returns `None` keeps its entry tiny: the declared values live in the component's own tracking, which [sync](#how-target-states-sync) needs regardless. A memoized function that *returns* a large value (an embedding vector, a parsed document) stores that value in every entry. A secondary difference: a directly-called memoized function's entry also records a reference to each target state it declared, so a hit can keep those states alive — a per-state cost that mounting avoids. See the cost note in [When to memoize](./function#when-to-memoize).
+- **A memoized component may mount children.** A memoized function *called directly* cannot mount — mounting is a side effect its cache can't replay ([`memo=True` constraints](./function#memoization)) — but the restriction doesn't apply once the function is mounted as a component. A memoized parent that mounts children still invalidates when a child's logic changes — the child's fingerprint is part of the parent's recorded logic deps.
+
+Where to put `memo=True` follows the placement rule in [When to memoize](./function#when-to-memoize) — *memoize a boundary only if its key can hit while every enclosing memo boundary misses*: the per-file pipeline above composes a file-level component memo with a chunk-level embedding memo, while a *memoized* component whose path is keyed by a content hash of its input makes any inner memo over the same content mostly redundant.
 
 ## How target states sync
 

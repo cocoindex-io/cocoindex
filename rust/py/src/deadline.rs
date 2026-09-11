@@ -10,7 +10,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
 const TESTING_ENV_VAR: &str = "COCOINDEX_TESTING";
 
-#[pyclass(name = "DeadlineContext")]
+#[pyclass(name = "DeadlineContext", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PyDeadlineContext(pub DeadlineContext);
 

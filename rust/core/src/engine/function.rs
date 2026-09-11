@@ -2,6 +2,7 @@ use crate::engine::context::{
     ComponentProcessorContext, FnCallContext, FnCallMemo, FnCallMemoEntry, MemoStatesPayload,
     decode_stored_entry,
 };
+use crate::engine::execution::target_provider_deps_still_valid;
 use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
@@ -19,6 +20,7 @@ fn build_fn_call_memo<Prof: EngineProfile>(
         Some(FnCallMemo {
             ret,
             target_state_paths: inner.target_state_paths.clone(),
+            target_provider_deps: inner.target_provider_deps.clone(),
             dependency_memo_entries: inner.dependency_memo_entries.clone(),
             logic_deps,
             memo_states: memo_states.positional,
@@ -60,6 +62,32 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
                 context_memo_states: &memo.context_memo_states,
             }),
             _ => None,
+        }
+    }
+
+    /// On a cache hit, merge the stored entry's target-provider deps into the
+    /// calling context.
+    ///
+    /// A hit skips re-declaring the entry's target states, so the caller's own
+    /// memo entry (a component or an enclosing memoized function) would
+    /// otherwise be re-stored *without* these deps — and a later provider
+    /// generation bump would no longer invalidate it. Each entry stores the
+    /// full dep set of its subtree (accumulated via `join_child` at record
+    /// time), so this single merge keeps propagation transitive across
+    /// arbitrarily nested hits. Call it exactly when the cached value is used;
+    /// the deps were validated against live generations at reserve time, so
+    /// the merged values always match what a fresh declaration would record.
+    pub fn join_cached_target_provider_deps(&self, parent_fn_ctx: &FnCallContext) {
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*self.guard
+            && !memo.target_provider_deps.is_empty()
+        {
+            parent_fn_ctx.update(|inner| {
+                inner.target_provider_deps.extend(
+                    memo.target_provider_deps
+                        .iter()
+                        .map(|(path, generation)| (path.clone(), generation.clone())),
+                );
+            });
         }
     }
 
@@ -126,6 +154,22 @@ pub async fn reserve_memoization<Prof: EngineProfile>(
     // a legacy entry with `child_components` — both cases force re-execution.
     if matches!(&*guard, FnCallMemoEntry::Stored(_)) {
         decode_stored_entry::<Prof>(&mut guard, comp_exec_ctx.app_ctx().env())?;
+    }
+
+    // A hit would skip re-declaring the target states this entry covers, so it
+    // is only reusable while the providers it declared against are still at the
+    // generations it recorded. Checked here rather than in `decode_stored_entry`
+    // because the finalize dep walk decodes entries to collect their contained
+    // target state paths — invalidating there would drop those paths from the
+    // contained set and let the delete pass remove live target states.
+    if let FnCallMemoEntry::Ready(Some(memo)) = &*guard
+        && !memo.target_provider_deps.is_empty()
+        && !target_provider_deps_still_valid(
+            memo.target_provider_deps.iter(),
+            &comp_exec_ctx.target_states_providers()?,
+        )
+    {
+        *guard = FnCallMemoEntry::Ready(None);
     }
 
     Ok(FnCallMemoGuard { guard })

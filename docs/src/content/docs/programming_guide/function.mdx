@@ -45,7 +45,7 @@ A function's behavior is determined by its **logic** (source code, [`deps`](#dep
 
 CocoIndex detects three kinds of changes:
 
-**Logic changes** — the function's source code, [`deps`](#deps) values, and explicit [`version`](#version) bumps. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain — but only through `@coco.fn` boundaries. If `foo` (memoized) calls `bar` (also `@coco.fn`-decorated, with or without `memo=True`), and `bar`'s logic changes, `foo`'s memo is invalidated. A bare Python helper that isn't decorated is invisible to change detection: editing it will not invalidate `foo`. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones — see [Common patterns](#common-patterns).
+**Logic changes** — a function's *logic* is its own source code (or, when you set [`version`](#version), that integer **instead of** the source), plus any [`deps`](#deps) values. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain, following *runtime invocations* rather than the static call graph: every `@coco.fn` function reached during a memoized call — directly, or through plain undecorated helpers — contributes its logic to that call. So if `foo` (memoized) calls `bar` (also `@coco.fn`-decorated, with or without `memo=True`) and `bar`'s logic changes, `foo`'s memo is invalidated; undecorated helpers in between don't break the chain. What the decorator buys is having a function's *own* logic tracked: an undecorated helper is invisible to change detection, so editing it invalidates nothing. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones — see [Common patterns](#common-patterns) and the [FAQ](../faq#how-does-logic-change-propagation-work). To stop propagation deliberately, set [`logic_tracking`](#logic_tracking) to `"self"` or `None`.
 
 **Input changes** — the function's arguments. Tracked by `@coco.fn`. When you call a function with different arguments, the fingerprints change. Input fingerprints do not propagate transitively.
 
@@ -69,8 +69,8 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 :::caution[`memo=True` constraints]
 A memoized function:
 
-- **Must run inside a [processing component](./processing_component)** for memoization to take effect. Outside a component context (e.g., called directly from a script or test), the function still executes correctly but the cache is bypassed silently — every call runs the body.
-- **Cannot mount child components** (`coco.mount(...)` / `coco.use_mount(...)` inside the body). Mounting is a side effect the cache cannot replay; CocoIndex raises an error if a memoized function attempts it. Either drop `memo=True`, or restructure so the mount happens in a non-memoized caller.
+- **Must run inside a [processing component](./processing_component)** for memoization to take effect. Outside a component context (e.g., invoked from a script or a test), the function still executes correctly but the cache is bypassed silently — every call runs the body.
+- **Cannot mount child components when called directly** (`coco.mount(...)` / `coco.use_mount(...)` inside the body of a memoized function invoked as a plain call). Mounting is a side effect the call's cache cannot replay; CocoIndex raises an error if a directly-called memoized function attempts it. The restriction applies to the call, not the function — the fix, which the error message itself suggests, is to **mount the memoized function as a component**: a [memoized component](./processing_component#memoized-components) may mount children freely (a cache hit carries its child mounts over along with its target states). Alternatively, drop `memo=True`, or restructure so the mount happens in a non-memoized caller.
 :::
 
 #### Cache-hit semantics
@@ -102,23 +102,24 @@ Propagation (logic, `deps`, context) is recorded during the **previous** invocat
 If a memoized function raises, no cache entry is written for that call. The next invocation with the same inputs sees a cache miss and re-executes the body — exceptions never poison the cache, so you don't need to wrap calls defensively.
 :::
 
-:::tip[When to memoize]
+#### When to memoize
 
-**Cost:** Function return values must be stored for memoization. Larger return values mean higher storage costs.
+**Cost:** A directly-called memoized function's cache entry must store everything needed to serve a hit — the return value, plus the *path* of every [target state](./target_state) it declared during the call (the state values themselves stay in the enclosing component's tracking; the recorded paths are what keep those states alive on a hit). Large return values, or a call that declares many target states, mean large entries. (A function *mounted* as a component avoids the per-state paths entirely: a [memoized component](./processing_component#memoized-components)'s entry holds fingerprints plus its return value — `None` for a typical mounted declarer.)
 
 **Benefit:** Memoization saves more when:
 
 - The computation is expensive
 - The function's caller is reprocessed frequently (due to logic or input changes)
 
+**Placement — one rule:** memoize at a boundary only if its key can hit while every *enclosing* memo boundary misses. Stacked levels pay off exactly when the outer boundary is keyed more coarsely than the inner one's inputs — a per-file component plus a per-chunk embedding memo composes well, because an edited file re-runs its component while its unchanged chunks still skip embedding. But if an enclosing *memoized* component's identity already commits to this function's inputs — say, the component path is keyed by a hash of the very content the function transforms — the inner memo can never hit on a *content-driven* rerun: the component memo shadows all of those. What remains is insurance against reruns of the enclosing component itself (its code edited, its `version` bumped): each entry permanently stores a value — often one your target also stores — that only such reruns can read. The arithmetic bites at scale: a 1536-dim float32 vector is ~6 KB, so an embedding memo under content-hash-keyed components costs ~600 MB per 100k chunks to insure against those rare reruns — usually a bad trade.
+
 **Examples:**
 
-- ✅ **Embedding functions** — good to memoize. Computation is heavy; return value is fixed-size and not too large.
+- ✅ **Embedding functions** — good to memoize when callers can re-run with the same text (e.g., per-file components re-running on edits). Computation is heavy; return value is fixed-size and not too large.
 - ❌ **Splitting text into fixed-size chunks** — usually not worth memoizing. Computation is light; return value can be large.
 - ✅ **Processing component for files that are mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
 - 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
-
-:::
+- ❌ **Chunk embedding inside a *memoized* component keyed by the chunk's content hash** — usually redundant by the placement rule: the component memo already commits to the text, so the inner memo serves only reruns caused by the component's own code or `version` changes — at the cost of storing every vector twice.
 
 ### Controlling change detection scope
 
@@ -135,8 +136,10 @@ These parameters control logic fingerprinting. Data fingerprinting (for argument
 The `logic_tracking` parameter controls whether and how logic changes are detected:
 
 - **`"full"` (default):** Track this function's logic AND all transitively called `@coco.fn` functions' logic. A change anywhere in the call chain invalidates dependent memos.
-- **`"self"`:** Track only this function's own logic. Changes in called functions do not propagate through this function.
-- **`None`:** Don't track this function's logic at all. Logic changes to this function are invisible to the change detection system.
+- **`"self"`:** Track only this function's own logic — its fingerprint still propagates to its callers, but the logic of functions it calls does not propagate through it.
+- **`None`:** Don't track logic through this function at all — neither its own logic nor its callees' reaches its callers.
+
+These settings govern nested *function calls*. A [mounted child component](./processing_component) is tracked through the component tree instead, so its logic reaches the parent regardless of the parent's `logic_tracking`.
 
 #### `version`
 
@@ -148,6 +151,10 @@ def process_chunk(chunk: Chunk) -> list[float]:
     # Bumping version invalidates all memoized callers, even if code looks the same
     return embed(chunk.text)
 ```
+
+:::caution[`version` replaces source tracking]
+Setting `version` makes the integer the function's logic **instead of** its source code — the body is no longer fingerprinted. Edits to a versioned function take effect only when you bump the number.
+:::
 
 #### `deps`
 

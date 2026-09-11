@@ -52,6 +52,10 @@ embedding = await embedder.embed("Hello, world!")
 table.declare_row(row=CodeEmbedding(code="Hello, world!", embedding=embedding))
 ```
 
+:::note[Built-in memoization]
+`embed()` is memoized (`memo=True`): inside a processing component, each distinct text's vector is cached across that component's runs, so a caller that re-executes doesn't recompute unchanged text — the tradeoff is model compute vs. cache storage (one full vector per distinct text). This composes well with the per-file component in the example below; mind the [memoization placement rule](../programming_guide/function#when-to-memoize) if your components are instead keyed by the embedded content. Callsite control over an op's memoization is tracked in [#2275](https://github.com/cocoindex-io/cocoindex/issues/2275).
+:::
+
 ### Using as a type annotation
 
 The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.

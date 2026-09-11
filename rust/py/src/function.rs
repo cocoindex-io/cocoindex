@@ -189,6 +189,15 @@ impl PyFnCallMemoGuard {
         Ok(resolved)
     }
 
+    /// On a cache hit, merge the stored entry's target-provider generation deps
+    /// into the calling context. Call exactly when the cached value is used
+    /// (next to `join_child_memo`) — see the core method for the rationale.
+    pub fn join_cached_target_provider_deps(&self, parent_fn_ctx: &PyFnCallContext) {
+        if let Some(guard) = &self.guard {
+            guard.join_cached_target_provider_deps(&parent_fn_ctx.0);
+        }
+    }
+
     /// Release the underlying Rust write lock without resolving the memo entry.
     ///
     /// Users should call this in a `finally` block if they don't end up calling `resolve(...)`.

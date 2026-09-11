@@ -16,7 +16,7 @@ The chunk-and-embed half is explained in full in the [base walkthrough](https://
 
 ## Flow overview
 
-![CocoIndex Google Drive embedding flow: read files from a Drive folder, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/google-drive-embedding/flow-v1.png)
+![CocoIndex Google Drive embedding flow: read files from a Drive folder, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/google-drive-embedding/flow-v1.svg)
 
 From a high level, these are the steps:
 

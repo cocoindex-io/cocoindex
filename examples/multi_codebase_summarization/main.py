@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import pathlib
-from typing import Collection
+from typing import Collection, cast
 
 import instructor
 from litellm import acompletion
@@ -29,7 +29,10 @@ from models import CodebaseInfo
 
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
-_instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.JSON)
+_instructor_client = cast(
+    instructor.AsyncInstructor,
+    instructor.from_litellm(acompletion, mode=instructor.Mode.JSON),
+)
 
 
 @coco.fn(memo=True)

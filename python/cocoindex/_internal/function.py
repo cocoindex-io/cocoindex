@@ -788,8 +788,16 @@ class SyncFunction(Function[P, R_co]):
             finally:
                 _context_var.reset(tok)
 
+        # Create the fn call context (and record this function's own logic fp)
+        # BEFORE the memo probe, mirroring the async path: the `finally` below
+        # joins it into the parent unconditionally, so even a cache hit reports
+        # this function's logic fp upward. Otherwise a caller's memo entry
+        # re-stored after a hit would lose the dep and a later code change to
+        # this function would go undetected.
         propagate = self._logic_tracking == "full"
-        fn_ctx: core.FnCallContext | None = None
+        fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
+        if self._logic_fp is not None:
+            fn_ctx.add_fn_logic_dep(self._logic_fp)
         try:
             if self._memo:
                 state_methods: list[StateFnEntry] = []
@@ -845,6 +853,12 @@ class SyncFunction(Function[P, R_co]):
                     if use_cache:
                         _deadline_checkpoint()
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                        # The hit skips re-declaring this entry's target states,
+                        # so its provider-generation deps must ride into the
+                        # caller's memo entry explicitly.
+                        guard.join_cached_target_provider_deps(
+                            parent_ctx._core_fn_call_ctx
+                        )
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -852,9 +866,6 @@ class SyncFunction(Function[P, R_co]):
                         )
 
                     # Execute (cache miss or stale states)
-                    fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
-                    if self._logic_fp is not None:
-                        fn_ctx.add_fn_logic_dep(self._logic_fp)
                     ret = _call_in_context(fn_ctx, in_memo_fn=True)
                     _deadline_checkpoint()
                     # Positional: collect only if not already set (cache-miss path).
@@ -881,15 +892,11 @@ class SyncFunction(Function[P, R_co]):
                 finally:
                     guard.close()
             else:
-                fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
-                if self._logic_fp is not None:
-                    fn_ctx.add_fn_logic_dep(self._logic_fp)
                 result = _call_in_context(fn_ctx, in_memo_fn=parent_ctx._in_memo_fn)
                 _deadline_checkpoint()
                 return result
         finally:
-            if fn_ctx is not None:
-                parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
+            parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
 
     async def as_async(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         """Call this sync function wrapped in async (runs via asyncio.to_thread)."""
@@ -1390,6 +1397,12 @@ class AsyncFunction(Function[P, R_co]):
                     if use_cache:
                         _deadline_checkpoint()
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                        # The hit skips re-declaring this entry's target states,
+                        # so its provider-generation deps must ride into the
+                        # caller's memo entry explicitly.
+                        guard.join_cached_target_provider_deps(
+                            parent_ctx._core_fn_call_ctx
+                        )
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -1440,7 +1453,7 @@ class AsyncFunction(Function[P, R_co]):
         finally:
             if guard is not None:
                 guard.close()
-            if fn_ctx is not None and parent_ctx is not None:
+            if parent_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
 
     async def _execute(

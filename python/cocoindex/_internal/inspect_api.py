@@ -57,6 +57,30 @@ def list_stable_paths_info_sync(
     return asyncio.run(_iter_stable_paths_collected(app))
 
 
+async def iter_stable_path_details(
+    app: App[Any, Any],
+) -> AsyncIterator[core.StablePathDetail]:
+    """
+    Async iterator of details for every stable path.
+
+    Runs the whole iteration in one read transaction with one shared
+    path-key resolver, so provider prefixes shared across paths are
+    resolved once — unlike calling :func:`get_stable_path_detail` per path.
+    """
+    core_app = await app._get_core()
+    async for detail in core.iter_stable_path_details(core_app):
+        yield detail
+
+
+async def iter_stable_path_details_by_name(
+    env: Environment,
+    app_name: str,
+) -> AsyncIterator[core.StablePathDetail]:
+    """Like :func:`iter_stable_path_details`, but takes an environment and an app name."""
+    async for detail in core.iter_stable_path_details_by_name(env._core_env, app_name):
+        yield detail
+
+
 async def get_stable_path_detail(
     app: App[Any, Any],
     path: StablePath,
@@ -108,6 +132,29 @@ async def query_stable_path_details_by_name(
     )
 
 
+async def iter_target_states(
+    app: App[Any, Any],
+) -> AsyncIterator[core.TargetStateEntry]:
+    """
+    Async iterator of tracked target states with their owner components.
+
+    Entries come in stored (fingerprint) order: children of the same parent
+    are adjacent, but there is no global human-meaningful ordering.
+    """
+    core_app = await app._get_core()
+    async for entry in core.iter_target_states(core_app):
+        yield entry
+
+
+async def iter_target_states_by_name(
+    env: Environment,
+    app_name: str,
+) -> AsyncIterator[core.TargetStateEntry]:
+    """Like :func:`iter_target_states`, but takes an environment and an app name."""
+    async for entry in core.iter_target_states_by_name(env._core_env, app_name):
+        yield entry
+
+
 __all__ = [
     "iter_stable_paths",
     "iter_stable_paths_by_name",
@@ -116,6 +163,10 @@ __all__ = [
     "list_stable_paths_sync",
     "get_stable_path_detail",
     "get_stable_path_detail_by_name",
+    "iter_stable_path_details",
+    "iter_stable_path_details_by_name",
     "query_stable_path_details",
     "query_stable_path_details_by_name",
+    "iter_target_states",
+    "iter_target_states_by_name",
 ]

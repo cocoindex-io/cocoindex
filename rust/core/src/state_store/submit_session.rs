@@ -64,7 +64,7 @@
 //! ```
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -179,6 +179,11 @@ pub struct PrecommitWritePlan {
     /// For each preempted other-owner: their new tracking-info bytes
     /// (with the preempted item removed by the engine).
     pub preempted_owner_updates: BTreeMap<StablePath, Vec<u8>>,
+    /// Readable names for the provider segments of the declared
+    /// target-state paths, keyed by lone segment fingerprint. Applied
+    /// write-once (existing entries left untouched) so inspection can
+    /// resolve provider-only segments without the app module loaded.
+    pub segment_names: HashMap<Fingerprint, StableKey>,
 }
 
 // ---------------------------------------------------------------------------
@@ -343,21 +348,17 @@ pub struct CommitPlan {
     /// removes the live-machinery committed state alongside the regular
     /// state (the regular flush above never clears `Live`).
     pub user_state_clear_live: bool,
-    /// In-memory child tree after this build. AppStore feeds it to
-    /// `existence_reconciler` (see [`AppStore::commit`]) inside its
-    /// commit txn, so the children-`__cex` read + tombstone writes
-    /// happen atomically with the other commit writes. `None` skips
-    /// existence reconciliation (e.g. `demote_component_only`).
-    pub child_path_set: Option<Arc<ChildStablePathSet>>,
 }
 
 /// Callback the AppStore invokes inside its commit txn to run the
 /// child-existence diff. Engine constructs this closure with all
 /// captures it needs (component path, child_path_set, an `AppStore`
-/// clone) and passes it to [`AppStore::commit`]. The closure receives
-/// the open `WriteTxn` and walks the in-memory tree, reads `__cex` per
-/// parent, writes deltas + tombstones — see
-/// [`reconcile_child_existence`].
+/// clone) and passes it to [`AppStore::commit`] — or passes `None`
+/// there to leave the `__cex` subtree untouched (a demote-only delete:
+/// the component became a Directory node whose children belong to the
+/// parent's current build). The closure receives the open `WriteTxn`
+/// and walks the in-memory tree, reads `__cex` per parent, writes
+/// deltas + tombstones — see [`reconcile_child_existence`].
 ///
 /// Lifetime: the closure runs strictly inside the commit txn, so the
 /// `&'a mut WriteTxn<'env>` borrow is bounded by the callback's await
@@ -440,6 +441,11 @@ impl AppStore {
                                     .write_tracking_info_raw(wtxn, &owner_path, &bytes)
                                     .await?;
                             }
+                            for (fp, segment_key) in &plan.segment_names {
+                                app_store
+                                    .write_target_segment_name_if_missing(wtxn, *fp, segment_key)
+                                    .await?;
+                            }
                             Ok(Some(output))
                         }
                         None => Ok(None),
@@ -450,14 +456,16 @@ impl AppStore {
     }
 
     /// Phase 4 success: open commit txn, apply finalized writes, invoke
-    /// `existence_reconciler` for the child-existence diff — all in one
-    /// write txn so the reconciler's per-parent `__cex` reads see the
-    /// same snapshot as the plan writes that just happened.
+    /// `existence_reconciler` (when given) for the child-existence diff —
+    /// all in one write txn so the reconciler's per-parent `__cex` reads
+    /// see the same snapshot as the plan writes that just happened.
+    /// `None` skips child-existence reconciliation entirely, leaving the
+    /// `__cex` subtree under `component_path` as it is.
     pub async fn commit(
         &self,
         component_path: &StablePath,
         plan: CommitPlan,
-        existence_reconciler: ExistenceReconciler,
+        existence_reconciler: Option<ExistenceReconciler>,
     ) -> Result<()> {
         let app_store = self.clone();
         let component_path = component_path.clone();
@@ -488,9 +496,19 @@ impl AppStore {
                             .await?;
                     }
                     for target_path in &plan.target_owners_to_delete {
-                        app_store
-                            .delete_target_state_owner(wtxn, target_path)
-                            .await?;
+                        // Only drop the owner row if it still points at us. A
+                        // component that preempted this path between our last
+                        // run and this delete has already upserted itself as
+                        // owner; deleting unconditionally would orphan it.
+                        let still_ours = app_store
+                            .read_target_state_owner_in_txn(wtxn, target_path)
+                            .await?
+                            .is_some_and(|info| info.component_path == component_path);
+                        if still_ours {
+                            app_store
+                                .delete_target_state_owner(wtxn, target_path)
+                                .await?;
+                        }
                     }
                     if plan.fn_memo_clear_all_first {
                         app_store.delete_all_fn_memos(wtxn, &component_path).await?;
@@ -523,7 +541,9 @@ impl AppStore {
                             .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
                             .await?;
                     }
-                    existence_reconciler(wtxn).await?;
+                    if let Some(reconcile) = existence_reconciler.as_ref() {
+                        reconcile(wtxn).await?;
+                    }
                     Ok(())
                 })
             })
@@ -560,6 +580,10 @@ impl AppStore {
 ///
 /// Sibling-by-sibling sorted-merge per level so each `__cex` read is
 /// O(N children) per parent and the writes are bounded by changes.
+///
+/// `child_path_set == None` means the component declares no children
+/// at all (whole-component delete): every on-disk child is removed and
+/// every Component leaf below it tombstoned, cascading the delete.
 ///
 /// Used by [`AppStore::commit`]: the AppStore opens the commit txn,
 /// then invokes the engine-supplied [`ExistenceReconciler`] which in

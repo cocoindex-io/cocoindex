@@ -132,6 +132,7 @@ A walkthrough URL means there's a step-by-step guide at
 - `docs_to_knowledge_graph` — Markdown docs → Neo4j concept graph of LLM-extracted triples. *(walkthrough: docs-to-knowledge-graph)*
 - `product_recommendation` — product catalog → LLM taxonomy extraction → Neo4j recommendation graph. *(walkthrough: product-recommendation)*
 - `meeting_notes_graph_neo4j` / `meeting_notes_graph_falkordb` — Google Drive meeting notes → Neo4j / FalkorDB graph.
+- `meeting_notes_graph_surrealdb` — local Markdown meeting notes → SurrealDB graph.
 
 ### Custom sources / targets / streaming
 - `pdf_to_markdown` — incremental PDF → Markdown with docling (local, no services). *(walkthrough: pdf-to-markdown)*

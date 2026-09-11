@@ -1,0 +1,4 @@
+.env
+*.db
+.venv/
+*.egg-info/

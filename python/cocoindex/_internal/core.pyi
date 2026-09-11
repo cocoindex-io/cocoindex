@@ -149,6 +149,9 @@ class FnCallMemoGuard:
         memo_states: list[Any] | None = None,
         context_memo_states: dict[Fingerprint, list[Any]] | None = None,
     ) -> None: ...
+    def join_cached_target_provider_deps(
+        self, parent_fn_ctx: FnCallContext
+    ) -> None: ...
     def resolve(
         self,
         fn_ctx: FnCallContext,
@@ -217,6 +220,7 @@ class ProviderGeneration:
 
 class TargetStateInfoItemSummary:
     target_state_path: str
+    fingerprint_path: str
     key: StableKey
     states: list[TargetStateVersion]
     provider_schema_version: int
@@ -233,6 +237,16 @@ class StablePathDetail:
     has_memoization: bool
     target_state_items: list[TargetStateInfoItemSummary]
 
+class StablePathDetailAsyncIterator:
+    """Async iterator of StablePathDetail; use with async for."""
+
+    def __aiter__(self) -> StablePathDetailAsyncIterator: ...
+    def __anext__(self) -> Awaitable[StablePathDetail]: ...
+
+def iter_stable_path_details(app: App) -> StablePathDetailAsyncIterator: ...
+def iter_stable_path_details_by_name(
+    env: Environment, app_name: str
+) -> StablePathDetailAsyncIterator: ...
 def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
 def get_stable_path_detail_by_name(
     env: Any, app_name: str, path: StablePath
@@ -252,6 +266,26 @@ def query_stable_path_details_by_name(
     recursive: bool,
     include_parents: bool,
 ) -> list[StablePathDetail]: ...
+
+class TargetStateEntry:
+    """A tracked target state entry from the inverted owner index."""
+
+    fingerprint_path: str
+    readable_path: str
+    readable_segments: list[str]
+    owner_component_path: StablePath
+    dangling: bool
+
+class TargetStateEntryAsyncIterator:
+    """Async iterator of TargetStateEntry; use with async for."""
+
+    def __aiter__(self) -> TargetStateEntryAsyncIterator: ...
+    def __anext__(self) -> Awaitable[TargetStateEntry]: ...
+
+def iter_target_states(app: App) -> TargetStateEntryAsyncIterator: ...
+def iter_target_states_by_name(
+    env: Any, app_name: str
+) -> TargetStateEntryAsyncIterator: ...
 
 # --- UpdateHandle ---
 class UpdateHandle:
@@ -357,6 +391,8 @@ class TargetActionSink:
     def new_async(
         callback: Callable[..., Coroutine[Any, Any, Any]],
     ) -> TargetActionSink: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 # --- TargetHandler (marker class, used for typing) ---
 class TargetHandler: ...
@@ -427,12 +463,6 @@ async def reserve_memoization_async(
     comp_ctx: ComponentProcessorContext,
     memo_fp: Fingerprint,
 ) -> FnCallMemoGuard: ...
-
-########################################################
-# Inspect
-########################################################
-
-def list_stable_paths(app: App) -> list[StablePath]: ...
 
 ########################################################
 # Ops (Text Processing Operations)
@@ -533,7 +563,6 @@ class SourceView:
     def segments(self) -> list[ViewSegment]: ...
 
 def render_ranges(source: CodeSource, ranges: list[tuple[int, int]]) -> SourceView: ...
-
 def detect_code_language(*, filename: str) -> str | None: ...
 
 # --- CodeSource (source text + lazily-parsed, shared AST) ---

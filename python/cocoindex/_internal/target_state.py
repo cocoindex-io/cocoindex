@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import (
+    Callable,
     Collection,
     Generic,
     Literal,
@@ -151,6 +152,14 @@ class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
     def from_fn(
         fn: TargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
     ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
+        """Create a sink from a sync callback.
+
+        Sinks share one identity — actions reconciled to them are batched and
+        applied together — iff their callbacks compare equal. The same function
+        or bound method always yields the same identity; a callable with value
+        equality (e.g. a frozen dataclass implementing ``__call__``) may be
+        constructed on the fly at each ``reconcile()`` call.
+        """
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(core.TargetActionSink.new_sync(canonical))
 
@@ -158,26 +167,92 @@ class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
     def from_async_fn(
         fn: AsyncTargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
     ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
+        """Create a sink from an async callback.
+
+        Identity semantics are the same as :meth:`from_fn`: callbacks that
+        compare equal yield sinks sharing one batching identity.
+        """
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(core.TargetActionSink.new_async(canonical))
 
 
+class _CanonicalKey:
+    """Dict key for `_ObjectDeduper`: hashes by the referent's value without
+    (where possible) keeping the referent alive.
+
+    Holds a weak reference when the object supports one, else the object
+    itself. A key whose referent died compares equal only to itself, so an
+    expired entry can never satisfy a lookup by value.
+    """
+
+    __slots__ = ("get", "_hash")
+
+    def __init__(self, obj: Any) -> None:
+        self.get: Callable[[], Any]
+        try:
+            self.get = weakref.ref(obj)
+        except TypeError:
+            # Not weakref-able (e.g. a NamedTuple instance): pin the object.
+            self.get = lambda: obj
+        self._hash = hash(obj)
+
+    def __hash__(self) -> int:
+        return self._hash
+
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        obj = self.get()
+        if obj is None:
+            return False
+        if isinstance(other, _CanonicalKey):
+            other_obj = other.get()
+            return other_obj is not None and bool(obj == other_obj)
+        return bool(obj == other)
+
+
 class _ObjectDeduper:
-    __slots__ = ("_lock", "_map")
+    """Canonicalize equal objects to one representative.
+
+    `TargetActionSink.from_fn`/`from_async_fn` route callbacks through this so
+    equal callbacks map to one canonical object, whose pointer the Rust side
+    then uses to intern the sink keeper (see `SinkKeeperRegistry` in
+    `rust/py/src/target_state.rs`) — together giving sinks value-based
+    identity.
+
+    Entries reference the canonical only weakly where the object supports weak
+    references; the sink keeper holds its callback strongly, so a canonical
+    stays pinned exactly while some sink still uses it. Once nothing does, the
+    entry expires — a later equal object becomes the new canonical — and
+    expired entries are swept once the map grows past a doubling threshold.
+    """
+
+    _MIN_PRUNE_AT = 64
+
+    __slots__ = ("_lock", "_map", "_prune_at")
     _lock: threading.Lock
-    _map: weakref.WeakValueDictionary[Any, Any]
+    _map: dict[_CanonicalKey, _CanonicalKey]
+    _prune_at: int
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._map = weakref.WeakValueDictionary()
+        self._map = {}
+        self._prune_at = self._MIN_PRUNE_AT
 
     def get_canonical(self, obj: Any) -> Any:
         with self._lock:
-            value = self._map.get(obj)
-            if value is not None:
-                return value
+            existing = self._map.get(obj)
+            if existing is not None:
+                value = existing.get()
+                if value is not None:
+                    return value
 
-            self._map[obj] = obj
+            if len(self._map) >= self._prune_at:
+                self._map = {k: k for k in self._map if k.get() is not None}
+                self._prune_at = max(self._MIN_PRUNE_AT, 2 * len(self._map))
+
+            key = _CanonicalKey(obj)
+            self._map[key] = key
             return obj
 
 

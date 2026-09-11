@@ -1,26 +1,11 @@
-# Security Policy for CocoIndex
+# Security Policy
 
-## Reporting a Vulnerability
-If you discover a security vulnerability in CocoIndex, please report it responsibly to our security team:
+Report vulnerabilities to **security@cocoindex.io** — please do not open
+public issues. Include a description, reproduction steps, and any relevant
+logs or proof-of-concept.
 
-**Email:** [security@cocoindex.io](mailto:security@cocoindex.io)
+Process, response SLAs, and disclosure terms are defined in the
+[CocoIndex organization security policy](https://github.com/cocoindex-io/.github/blob/main/SECURITY.md).
 
-⚠️ Please do not file GitHub issues for security vulnerabilities as they are public! ⚠️
-
-Please provide:
-- A detailed description of the vulnerability
-- Steps to reproduce the issue
-- Any relevant logs, screenshots, or proof-of-concept code
-
-We will acknowledge your report promptly and work with you to resolve the issue.
-
-## Scope
-This policy covers security issues related to CocoIndex open-source software.
-
-## Response & Disclosure
-- We aim to respond as soon as we can.
-- Security fixes will be released as soon as practical after verification.
-
----
-
-Thank you for helping us keep CocoIndex secure!
+**Scope:** the CocoIndex open-source framework — this repository and the
+PyPI package `cocoindex`. Security fixes land in the latest release.

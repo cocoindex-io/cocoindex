@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python, and the Kafka topic is just a [ta
 
 ## Flow overview
 
-![CocoIndex CSV → Kafka flow: watch a folder of CSV files, run one process_csv component per file that turns each row into a JSON message, and declare it as a Kafka topic target state](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/flow-v1.png)
+![CocoIndex CSV → Kafka flow: watch a folder of CSV files, run one process_csv component per file that turns each row into a JSON message, and declare it as a Kafka topic target state](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -90,7 +90,7 @@ The SASL block is what a managed broker (StreamNative or similar) wants. For a l
 
 ## Process a file
 
-![One process_csv component per CSV file, fanned out with mount_each: each file's rows become (key, value) target states on the Kafka topic](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/stage-process-csv.png)
+![One process_csv component per CSV file, fanned out with mount_each: each file's rows become (key, value) target states on the Kafka topic](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/stage-process-csv.svg)
 
 `process_csv` runs once per file. It reads the text, parses rows with `csv.DictReader` (the header row becomes the keys), and declares each row as a target state — key from the first column, value the JSON-encoded row:
 

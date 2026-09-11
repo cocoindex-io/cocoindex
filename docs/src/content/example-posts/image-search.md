@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex image search indexing flow: walk a folder of images, embed each with the CLIP image encoder, and declare a point into a Qdrant collection](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/flow-v1.png)
+![CocoIndex image search indexing flow: walk a folder of images, embed each with the CLIP image encoder, and declare a point into a Qdrant collection](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/flow-v1.svg)
 
 The indexing path is short — there's no text to chunk, just one embedding per image:
 
@@ -91,7 +91,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process an image
 
-![One process_file component per image, fanned out with mount_each: each image is CLIP-embedded and declared as a Qdrant point](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/stage-file-process.png)
+![One process_file component per image, fanned out with mount_each: each image is CLIP-embedded and declared as a Qdrant point](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/stage-file-process.svg)
 
 `process_file` runs once per image: read the bytes, embed with CLIP, and declare a Qdrant point keyed by a stable id derived from the path, with the filename in the payload.
 

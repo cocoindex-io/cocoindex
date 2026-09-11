@@ -1020,9 +1020,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 spec.table_schema,
                 if_not_exists=(action.main_action == "upsert"),
             )
-            return child
+            # Upsert may find an existing table with an older column set.
+            if action.main_action != "upsert":
+                return child
 
-        # No main change: reconcile non-PK columns incrementally.
+        # Reconcile non-PK columns incrementally.
         if action.column_actions:
             await self._apply_column_actions(
                 conn, key, spec.table_schema, action.column_actions
@@ -1209,8 +1211,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: `CREATE TABLE IF
+        # NOT EXISTS` can land on a table carrying the previous column set, so its
+        # columns still need reconciling. "insert" / "replace" build the table from
+        # the desired schema, so there is nothing left to reconcile.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in column_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -1221,9 +1227,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         if main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif main_action is None and any(
-            a != "insert" for a in column_actions.values()
-        ):
+        elif any(a != "insert" for a in column_actions.values()):
             # Column schema changes (other than adding new columns) may lose data.
             child_invalidation = "lossy"
 

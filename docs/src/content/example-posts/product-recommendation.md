@@ -27,7 +27,7 @@ The recommendation falls out of the graph: products whose *complementary* taxono
 
 ## Pipeline overview
 
-![CocoIndex flow: per-product LLM taxonomy extraction declaring Product nodes, then a single graph pass declaring the shared Taxonomy nodes and the two relationship types into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/product-recommendation/flow-v1.png)
+![CocoIndex flow: per-product LLM taxonomy extraction declaring Product nodes, then a single graph pass declaring the shared Taxonomy nodes and the two relationship types into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/product-recommendation/flow-v1.svg)
 
 The taxonomy labels are shared across products, so — like the [docs knowledge graph](https://cocoindex.io/docs/examples/docs-to-knowledge-graph/) — the pipeline runs in two phases:
 

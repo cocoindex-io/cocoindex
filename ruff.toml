@@ -3,3 +3,8 @@ quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "lf"
+
+# Ruff >=0.16 formats Python code blocks inside Markdown. The pre-commit
+# `ruff-format` hook only ever sees Python (`types: [python]`), so leaving this
+# on would make `uv run ruff format .` rewrite docs the CI gate never checks.
+exclude = ["*.md", "*.mdx"]

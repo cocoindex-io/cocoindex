@@ -159,7 +159,23 @@ pub enum DbEntryKey<'a> {
     StablePathPrefixPrefix(StablePathPrefix<'a>),
     StablePathPrefix(StablePathRef<'a>),
     StablePath(StablePath, StablePathEntryKey),
+    /// Prefix covering all `TargetState` entries, for prefix scans.
+    TargetStatePrefix,
     TargetState(TargetStatePath),
+
+    /// Readable name for one target-state path segment, keyed by the lone
+    /// segment fingerprint (a pure function of the key, so one entry serves
+    /// every path sharing the segment). Written idempotently (write-once) at
+    /// precommit time for provider segments, so inspection can resolve
+    /// provider-only segments (root providers, attachments) that have no
+    /// owner-index/tracking record. Never cleaned up: entries are tiny and
+    /// shared across paths.
+    /// Value type: StableKey (msgpack)
+    TargetSegmentName(Fingerprint),
+    /// Prefix covering all `TargetSegmentName` entries, for prefix scans.
+    /// Only used by the bench-support store hooks today.
+    #[cfg(feature = "bench-support")]
+    TargetSegmentNamePrefix,
 
     /// Value type: IdSequencerInfo
     IdSequencer(StableKey),
@@ -183,9 +199,21 @@ impl<'a> storekey::Encode for DbEntryKey<'a> {
                 key.encode(e)?;
             }
 
+            DbEntryKey::TargetStatePrefix => {
+                e.write_u8(0x20)?;
+            }
             DbEntryKey::TargetState(path) => {
                 e.write_u8(0x20)?;
                 path.encode(e)?;
+            }
+
+            DbEntryKey::TargetSegmentName(fp) => {
+                e.write_u8(0x28)?;
+                fp.encode(e)?;
+            }
+            #[cfg(feature = "bench-support")]
+            DbEntryKey::TargetSegmentNamePrefix => {
+                e.write_u8(0x28)?;
             }
 
             DbEntryKey::IdSequencer(key) => {
@@ -210,6 +238,10 @@ impl<'a> storekey::Decode for DbEntryKey<'a> {
             0x20 => {
                 let path: TargetStatePath = storekey::Decode::decode(d)?;
                 DbEntryKey::TargetState(path)
+            }
+            0x28 => {
+                let fp: Fingerprint = storekey::Decode::decode(d)?;
+                DbEntryKey::TargetSegmentName(fp)
             }
             _ => return Err(storekey::DecodeError::InvalidFormat),
         };
@@ -243,6 +275,12 @@ pub struct ComponentMemoizationInfo<'a> {
     pub return_value: MemoizedValue<'a>,
     #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
     pub logic_deps: Vec<Fingerprint>,
+    /// Generations of the target-state providers this component declared
+    /// against, sorted by path. Re-checked on the next probe so a lossy or
+    /// destructive schema change invalidates the memo even when the target
+    /// isn't part of the memo key. See `TargetProviderDeps`.
+    #[serde(rename = "TP", default, skip_serializing_if = "Vec::is_empty")]
+    pub target_provider_deps: Vec<(TargetStatePath, TargetStateProviderGeneration)>,
     #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub memo_states: Vec<MemoizedValue<'a>>,
     /// Context-borne memo states, keyed by the tracked-context value's fingerprint.
@@ -267,6 +305,10 @@ pub struct FunctionMemoizationEntry<'a> {
     /// Target states that are declared by the function.
     #[serde(rename = "E", default, skip_serializing_if = "Vec::is_empty")]
     pub target_state_paths: Vec<TargetStatePath>,
+    /// Generations of the providers those target states were declared against,
+    /// sorted by path. See `ComponentMemoizationInfo::target_provider_deps`.
+    #[serde(rename = "TP", default, skip_serializing_if = "Vec::is_empty")]
+    pub target_provider_deps: Vec<(TargetStatePath, TargetStateProviderGeneration)>,
     /// Dependency entries that are declared by the function.
     /// Only needs to keep dependencies with side effects other than return value (child components / target states / dependency entries with side effects).
     #[serde(rename = "D", default, skip_serializing_if = "Vec::is_empty")]
@@ -657,6 +699,21 @@ mod tests {
             state_bytes.len() > prefix_bytes.len(),
             "UserState key bytes should be strictly longer than prefix bytes"
         );
+    }
+
+    /// `TargetSegmentName` roundtrips and never matches the `TargetState`
+    /// prefix scan (its `0x28` discriminant is not an extension of `0x20`).
+    #[test]
+    fn target_segment_name_roundtrip_and_isolation() {
+        let fp = utils::fingerprint::Fingerprint([0xCD; 16]);
+        let bytes = DbEntryKey::TargetSegmentName(fp).encode().expect("encode");
+        match DbEntryKey::decode(&bytes).expect("decode") {
+            DbEntryKey::TargetSegmentName(decoded) => assert_eq!(decoded, fp),
+            other => panic!("expected TargetSegmentName, got {other:?}"),
+        }
+
+        let target_state_prefix = DbEntryKey::TargetStatePrefix.encode().expect("encode");
+        assert!(!bytes.starts_with(&target_state_prefix));
     }
 
     /// Prefix for path A must not match entries under path B.

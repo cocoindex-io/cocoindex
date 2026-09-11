@@ -11,11 +11,7 @@ pub mod slow_warn;
 
 pub mod prelude;
 
-#[cfg(feature = "bytes_decode")]
-pub mod bytes_decode;
 #[cfg(feature = "reqwest")]
 pub mod http;
 #[cfg(feature = "reqwest")]
 pub use reqwest;
-#[cfg(feature = "yaml")]
-pub mod yaml_ser;

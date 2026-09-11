@@ -152,7 +152,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<HashMap<UniCase<String>, &'static Program
         add("csv", &[".csv"], None);
         add("cuda", &[".cu", ".cuh"], None);
         add("d", &[".d", ".di"], None);
-        add("dart", &[".dart"], None);
+        add(
+            "dart",
+            &[".dart"],
+            Some(TreeSitterLanguageInfo::new(tree_sitter_dart::LANGUAGE, [])),
+        );
         add("dockerfile", &[".dockerfile", ".containerfile"], None);
         add(
             "dtd",
@@ -324,7 +328,7 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<HashMap<UniCase<String>, &'static Program
                 ".rockspec",
                 ".wlua",
             ],
-            None,
+            Some(TreeSitterLanguageInfo::new(tree_sitter_lua::LANGUAGE, [])),
         );
         add("luau", &[".luau"], None);
         add("magik", &[".magik"], None);
@@ -609,6 +613,20 @@ mod tests {
         let julia = get_language_info(".jl").unwrap();
         assert_eq!(julia.name.as_ref(), "julia");
         assert!(julia.treesitter_info.is_some());
+    }
+
+    #[test]
+    fn test_dart_has_treesitter() {
+        let dart = get_language_info(".dart").unwrap();
+        assert_eq!(dart.name.as_ref(), "dart");
+        assert!(dart.treesitter_info.is_some());
+    }
+
+    #[test]
+    fn test_lua_has_treesitter() {
+        let lua = get_language_info(".lua").unwrap();
+        assert_eq!(lua.name.as_ref(), "lua");
+        assert!(lua.treesitter_info.is_some());
     }
 
     #[test]

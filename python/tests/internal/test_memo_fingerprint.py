@@ -757,3 +757,26 @@ def test_apply_memo_key_transforms_varkw() -> None:
 
     assert result_args == (1,)
     assert result_kwargs == {"count": 2}
+
+
+def test_fingerprint_dict_and_set_with_fingerprint_keys_order_independent() -> None:
+    from cocoindex._internal import core
+    from cocoindex._internal.memo_fingerprint import memo_fingerprint
+
+    fp1 = core.fingerprint_simple_object("alpha")
+    fp2 = core.fingerprint_simple_object("beta")
+
+    # Dict order independence with Fingerprint keys
+    d1 = {fp1: "val1", fp2: "val2"}
+    d2 = {fp2: "val2", fp1: "val1"}
+    assert memo_fingerprint(d1) == memo_fingerprint(d2)
+
+    # Set order independence with Fingerprint elements
+    s1 = {fp1, fp2}
+    s2 = {fp2, fp1}
+    assert memo_fingerprint(s1) == memo_fingerprint(s2)
+
+    # Nested container order independence with Fingerprint keys
+    nested1 = {"items": [{fp1: 1, fp2: 2}]}
+    nested2 = {"items": [{fp2: 2, fp1: 1}]}
+    assert memo_fingerprint(nested1) == memo_fingerprint(nested2)

@@ -16,7 +16,7 @@ Everything else stays the same: ordinary `async` Python and your own types, with
 
 ## Flow overview
 
-![CocoIndex flow: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Turbopuffer namespace](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-turbopuffer/flow-v1.png)
+![CocoIndex flow: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Turbopuffer namespace](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-turbopuffer/flow-v1.svg)
 
 From a high level, these are the steps:
 

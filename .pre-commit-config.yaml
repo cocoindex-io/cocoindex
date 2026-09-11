@@ -25,6 +25,12 @@ repos:
         exclude_types: [python]  # Covered by Ruff W291.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        # Scans the staged diff for hardcoded secrets before each commit.
+
   - repo: local
     hooks:
       - id: cargo-fmt

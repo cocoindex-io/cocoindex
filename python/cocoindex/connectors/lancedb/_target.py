@@ -20,6 +20,7 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
+    cast,
 )
 
 from typing_extensions import TypeVar
@@ -537,7 +538,9 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self, table: lancedb.table.AsyncTable
     ) -> _OptimizeDecision:
         reasons: list[str] = []
-        stats = await table.stats()
+        # lancedb annotates `stats()` as returning a `TableStatistics` object, but
+        # the Rust binding hands back a plain nested dict.
+        stats = cast(dict[str, Any], await table.stats())
         fragment_stats = stats["fragment_stats"]
         num_small_fragments = fragment_stats["num_small_fragments"]
 
@@ -564,7 +567,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                         f"unindexed[{idx.name}]={unindexed} (indexed={indexed})"
                     )
 
-        versions = await table.list_versions()
+        # `list_versions()` is unannotated in lancedb; it returns a list of dicts.
+        versions = cast(
+            "list[dict[str, Any]]",
+            await table.list_versions(),  # type: ignore[no-untyped-call]
+        )
         if versions:
             latest_metadata = versions[-1].get("metadata", {})
             deletion_files = _metadata_int(latest_metadata, "total_deletion_files")
@@ -754,6 +761,7 @@ class _VectorIndexHandler:
                 await _drop_index_if_exists(table, action.name, self._table_name)
             else:
                 spec = action.spec
+                index_config: lancedb_index.IvfPq | lancedb_index.HnswPq
                 if spec.index_type == "ivf_pq":
                     index_config_kwargs: dict[str, Any] = {"distance_type": spec.metric}
                     if spec.num_partitions is not None:
@@ -1012,8 +1020,22 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     continue
 
                 spec = action.spec
+
+                if action.main_action in ("insert", "upsert", "replace"):
+                    await self._create_table(
+                        conn,
+                        key.table_name,
+                        spec.table_schema,
+                        if_not_exists=(action.main_action == "upsert"),
+                    )
+
+                # "insert" / "replace" just built the table from the desired
+                # schema, so its columns already match. "upsert" may have
+                # landed on a pre-existing table carrying an older column set
+                # (created above with `if_not_exists`), so fall through and
+                # reconcile non-PK columns in place.
                 null_backfilled_columns: frozenset[str] = frozenset()
-                if action.main_action is None and action.column_actions:
+                if action.main_action in (None, "upsert") and action.column_actions:
                     null_backfilled_columns = await self._apply_column_actions(
                         conn,
                         key.table_name,
@@ -1028,14 +1050,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     null_backfilled_columns=null_backfilled_columns,
                 )
                 outputs[i] = coco.ChildTargetDef(handler=handler)
-
-                if action.main_action in ("insert", "upsert", "replace"):
-                    await self._create_table(
-                        conn,
-                        key.table_name,
-                        spec.table_schema,
-                        if_not_exists=(action.main_action == "upsert"),
-                    )
         return outputs
 
     async def _drop_table(
@@ -1185,8 +1199,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         )
         main_action, sub_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: `create_table` with
+        # `if_not_exists` can land on a table carrying the previous column set, so
+        # its columns still need checking. "insert" / "replace" build the table from
+        # the desired schema, so there is nothing left to check.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in sub_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -1199,7 +1217,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             child_invalidation = "destructive"
 
         if (
-            main_action is None
+            main_action in (None, "upsert")
             and column_actions
             and any(a not in ("insert", "upsert") for a in column_actions.values())
         ):

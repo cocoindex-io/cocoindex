@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex face recognition flow: walk a folder of images, detect every face, embed each into a 128-d vector, and index one Qdrant point per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/flow-v1.png)
+![CocoIndex face recognition flow: walk a folder of images, detect every face, embed each into a 128-d vector, and index one Qdrant point per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/flow-v1.svg)
 
 Unlike a one-embedding-per-image index, an image here fans out to **many** faces — so the shape is *image → N faces → N points*:
 
@@ -85,7 +85,7 @@ async def process_file(file: FileLike, target: qdrant.CollectionTarget) -> None:
     await coco.map(process_face, faces, str(file.file_path.path), target)
 ```
 
-![One process_file component per image, fanned out with mount_each: each image is detected, every face embedded, and one Qdrant point declared per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/stage-file-process.png)
+![One process_file component per image, fanned out with mount_each: each image is detected, every face embedded, and one Qdrant point declared per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/stage-file-process.svg)
 
 [`@coco.fn(memo=True)`](https://cocoindex.io/docs/programming_guide/function/) makes it [incremental](https://cocoindex.io/docs/advanced_topics/memoization_keys/): an unchanged photo is never re-detected. Each image is its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/), so deleting a photo removes all its faces from Qdrant automatically. [`coco.map`](https://cocoindex.io/docs/programming_guide/app/) fans out one `process_face` per detected face — the multi-face equivalent of chunking a document.
 

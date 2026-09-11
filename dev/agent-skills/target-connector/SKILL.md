@@ -153,6 +153,8 @@ pool = context_provider.get(key.db_key, asyncpg.Pool)
 
 This decouples target identity from transient connection details — changing a password, switching replicas, or rotating credentials won't invalidate tracked states.
 
+**Resolve connections at action time, never at declare time.** Target states outlive the code that declared them: when a declaration disappears or an app is dropped, CocoIndex generates delete actions in a run where the mount/declare code never executes — only the persisted key and the current environment's `ContextProvider` are available then. Don't capture a live connection at declare time; resolve in the sink, then pass the typed connection down to child handlers directly (store `_pool: asyncpg.Pool`, not the key string).
+
 **Reference:** See `_TableKey` in `python/cocoindex/connectors/postgres/_target.py` and `python/cocoindex/connectors/surrealdb/_target.py`.
 
 ### Idempotent Actions
@@ -212,6 +214,33 @@ def _apply_actions(
 
 _shared_sink = coco.TargetActionSink.from_fn(_apply_actions)
 ```
+
+Sink identity is **value-based**: sinks whose callbacks compare equal share one
+batching identity, meaning their actions are batched and applied together (and
+a batch is the natural transaction boundary for transactional stores). For a
+sink scoped to an external resource — e.g. one sink per database so all of that
+database's writes share a transaction — make the callback a frozen dataclass
+keyed by the resource and construct it on the fly in `reconcile()`; no
+module-level sink registry is needed:
+
+```python
+@dataclasses.dataclass(frozen=True)
+class _DbSink:
+    db_key: str
+
+    async def __call__(
+        self, context_provider: ContextProvider, actions: Sequence[MyAction], /
+    ) -> None:
+        conn = context_provider.get(self.db_key, ConnType)
+        ...
+
+# In reconcile(): equal callbacks yield the same sink identity.
+sink = coco.TargetActionSink.from_async_fn(_DbSink(key.db_key))
+```
+
+An idle sink identity (no live sink object, no pending actions) is released
+automatically, so per-resource sinks do not accumulate for the process
+lifetime.
 
 ### Input Safety
 
