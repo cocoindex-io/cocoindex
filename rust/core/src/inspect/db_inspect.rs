@@ -1209,4 +1209,100 @@ mod tests {
         );
         assert_eq!(row_entry.owner_component_path, comp_d);
     }
+
+    /// Owner rows whose component path and target-state keys use tuple/bytes
+    /// stable keys must render readably, resolve through both the tracking
+    /// record and the persisted segment names, and never be marked dangling.
+    /// A codec that collapsed tuple->bytes broke the owner->tracking lookup,
+    /// which is exactly what the dangling marker reports.
+    #[tokio::test]
+    async fn resolves_tuple_and_bytes_segments_without_false_dangling() {
+        let (store, _dir) = make_test_store().await;
+
+        let root_fp = Fingerprint::from(&"root_target").unwrap();
+        let root_path = TargetStatePath::new(root_fp, None);
+        let tuple_key = StableKey::Array(Arc::from(vec![StableKey::Int(1), StableKey::Int(2)]));
+        let bytes_key = StableKey::Bytes(Arc::from(&b"abc"[..]));
+        let tuple_path = root_path.concat(&tuple_key);
+        let bytes_path = root_path.concat(&bytes_key);
+
+        // The owning component itself sits at `/"process"/[1,2]`.
+        let comp = StablePath(Arc::from(vec![
+            StableKey::Str(Arc::from("process")),
+            tuple_key.clone(),
+        ]));
+
+        commit_writes(
+            &store,
+            vec![(
+                comp.clone(),
+                tracking_bytes(vec![
+                    (with_pid(&tuple_path, None), tuple_key.clone()),
+                    (with_pid(&bytes_path, None), bytes_key.clone()),
+                ]),
+            )],
+            vec![
+                (tuple_path.clone(), comp.clone()),
+                (bytes_path.clone(), comp.clone()),
+            ],
+        )
+        .await;
+        commit_segment_names(
+            &store,
+            vec![(root_fp, StableKey::Symbol(Arc::from("root")))],
+        )
+        .await;
+
+        let db = store.db();
+        let txn = store.read_txn().await.unwrap();
+        let mut resolver = TargetKeyResolver::new(Default::default());
+        let entries = collect_target_states(&db, &txn, &mut resolver);
+        assert_eq!(entries.len(), 2);
+
+        for (path, expected_suffix) in [
+            (&tuple_path, "/@root/[1,2]"),
+            (&bytes_path, "/@root/b\"abc\""),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|e| e.fingerprint_path == path.to_string())
+                .unwrap_or_else(|| panic!("no entry for {path}"));
+            assert_eq!(entry.readable_path, expected_suffix);
+            assert_eq!(entry.owner_component_path, comp);
+            assert!(!entry.dangling, "{expected_suffix} must not be dangling");
+        }
+
+        // Tuple/bytes segments must also render from the persisted segment
+        // names *alone*, the only source `cocoindex ls --db` has for a
+        // provider-only segment. These two paths carry no owner row and no
+        // tracking item, so nothing else can resolve them.
+        let name_only_tuple = StableKey::Array(Arc::from(vec![StableKey::Int(7)]));
+        let name_only_bytes = StableKey::Bytes(Arc::from(&b"xyz"[..]));
+        commit_segment_names(
+            &store,
+            vec![
+                (
+                    Fingerprint::from(&name_only_tuple).unwrap(),
+                    name_only_tuple.clone(),
+                ),
+                (
+                    Fingerprint::from(&name_only_bytes).unwrap(),
+                    name_only_bytes.clone(),
+                ),
+            ],
+        )
+        .await;
+        let txn = store.read_txn().await.unwrap();
+        for (key, expected) in [
+            (&name_only_tuple, "/@root/[7]"),
+            (&name_only_bytes, "/@root/b\"xyz\""),
+        ] {
+            let path = root_path.concat(key);
+            let mut resolver = TargetKeyResolver::new(Default::default());
+            assert_eq!(
+                resolver.render_path(&db, &txn, &path, None).unwrap(),
+                expected
+            );
+        }
+    }
 }

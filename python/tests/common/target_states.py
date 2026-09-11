@@ -73,6 +73,13 @@ class AtMost:
     __hash__ = None  # type: ignore[assignment]
 
 
+# Component subpath segments that are *not* strings. These ride through the
+# state store as msgpack; a codec that collapsed a tuple segment to bytes (or
+# bytes to str) made the ownership guard resolve the wrong previous owner.
+TUPLE_SEGMENT: coco.StableKey = (1, 2)
+BYTES_SEGMENT: coco.StableKey = b"abc"
+
+
 class DictTargetStateStore:
     data: dict[str, DictDataWithPrev]
     metrics: Metrics
