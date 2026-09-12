@@ -15,6 +15,7 @@ import functools
 import os
 import pickle
 import subprocess
+import sys
 import threading
 import multiprocessing as mp
 import warnings
@@ -93,8 +94,21 @@ class Runner(ABC):
 # ============================================================================
 
 _WATCHDOG_INTERVAL_SECONDS = 10.0
+_MPS_LOW_WATERMARK_RATIO = "0.4"
+_MPS_HIGH_WATERMARK_RATIO = "0.5"
 _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
+
+
+def _configure_mps_allocator_defaults() -> None:
+    """Configure conservative PyTorch MPS allocator defaults if not explicitly set.
+
+    PyTorch evaluates watermark variables when initializing the MPS allocator.
+    This function is idempotent and respects pre-existing user environment settings.
+    """
+
+    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", _MPS_LOW_WATERMARK_RATIO)
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", _MPS_HIGH_WATERMARK_RATIO)
 
 
 def _get_pool() -> ProcessPoolExecutor:
@@ -132,6 +146,9 @@ def _subprocess_init(parent_pid: int) -> None:
     """Initialize the subprocess with watchdog and signal handling."""
     import signal
     import faulthandler
+
+    if sys.platform == "darwin":
+        _configure_mps_allocator_defaults()
 
     global _in_subprocess
     _in_subprocess = True
@@ -482,7 +499,24 @@ class GPURunner(Runner):
             await self._release_gpu(gpu_id)
 
 
+class _MPSGPURunner(GPURunner):
+    """Internal GPU runner that isolates built-in MPS execution by default.
+
+    Unlike generic ``coco.GPU`` which defaults to in-process execution, this
+    runner defaults to subprocess isolation to contain PyTorch Metal allocator
+    memory growth on Apple Silicon.
+    """
+
+    def _should_use_subprocess(self) -> bool:
+        _configure_mps_allocator_defaults()
+        if self._use_subprocess is None:
+            configured = os.environ.get("COCOINDEX_RUN_GPU_IN_SUBPROCESS")
+            self._use_subprocess = configured == "1" if configured is not None else True
+        return self._use_subprocess
+
+
 GPU = GPURunner(fraction=1.0)
+_MPS_GPU = _MPSGPURunner(fraction=1.0)
 
 _subprocess_multi_gpu_warned = False
 
