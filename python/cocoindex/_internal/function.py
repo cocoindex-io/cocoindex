@@ -24,6 +24,7 @@ from typing import (
     NamedTuple,
     ParamSpec,
     Protocol,
+    Self,
     TypeAlias,
     TypeVar,
     cast,
@@ -745,6 +746,15 @@ class SyncFunction(Function[P, R_co]):
         if fp is not None:
             core.unregister_logic_fingerprint(fp)
 
+    # Copying returns this same object, as `copy` does for plain functions. A
+    # distinct copy would share `_logic_fp` without having registered it, so its
+    # `__del__` would release the registration this object holds.
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        return self
+
     @overload
     def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
     @overload
@@ -1290,6 +1300,16 @@ class AsyncFunction(Function[P, R_co]):
         fp = getattr(self, "_logic_fp", None)
         if fp is not None:
             core.unregister_logic_fingerprint(fp)
+
+    # Same as `SyncFunction.__copy__`. Without these, `copy` would fall back to
+    # `__reduce__`, whose module/qualname lookup fails for a function defined in
+    # a local scope and returns the undecorated function when it was decorated
+    # under another name.
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        return self
 
     @property
     def _any_fn(self) -> AnyCallable[P, R_co]:
