@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import (
-    Callable,
     Collection,
     Generic,
     Literal,
@@ -155,10 +154,13 @@ class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
         """Create a sink from a sync callback.
 
         Sinks share one identity — actions reconciled to them are batched and
-        applied together — iff their callbacks compare equal. The same function
-        or bound method always yields the same identity; a callable with value
-        equality (e.g. a frozen dataclass implementing ``__call__``) may be
-        constructed on the fly at each ``reconcile()`` call.
+        applied together — iff their callbacks are of the same type and compare
+        equal. The same function or bound method always yields the same
+        identity; a callable with value equality (e.g. a frozen dataclass
+        implementing ``__call__``) may be constructed on the fly at each
+        ``reconcile()`` call. The callback must support weak references, so an
+        idle identity can be released; a tuple/NamedTuple callback is rejected
+        with ``TypeError``.
         """
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(core.TargetActionSink.new_sync(canonical))
@@ -178,22 +180,34 @@ class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
 
 class _CanonicalKey:
     """Dict key for `_ObjectDeduper`: hashes by the referent's value without
-    (where possible) keeping the referent alive.
+    keeping the referent alive.
 
-    Holds a weak reference when the object supports one, else the object
-    itself. A key whose referent died compares equal only to itself, so an
-    expired entry can never satisfy a lookup by value.
+    Holds only a weak reference, so the referent must be weakref-able; one that
+    is not (e.g. a tuple/NamedTuple instance) is rejected at construction rather
+    than pinned for the process lifetime. A key whose referent died compares
+    equal only to itself, so an expired entry can never satisfy a lookup by
+    value.
+
+    Equality also requires the exact same type. ``==`` alone is not type-safe
+    (a NamedTuple equals any same-shaped tuple, and a user class may define a
+    permissive ``__eq__``), and canonicalizing across types would route one
+    type's actions to the other type's callback.
     """
 
     __slots__ = ("get", "_hash")
+    get: weakref.ref[Any]
+    _hash: int
 
     def __init__(self, obj: Any) -> None:
-        self.get: Callable[[], Any]
         try:
             self.get = weakref.ref(obj)
         except TypeError:
-            # Not weakref-able (e.g. a NamedTuple instance): pin the object.
-            self.get = lambda: obj
+            raise TypeError(
+                f"target action sink callback of type {qualified_name(type(obj))} "
+                "must support weak references; define it as a frozen dataclass "
+                "(with weakref_slot=True if it uses slots=True) rather than a "
+                "tuple/NamedTuple"
+            ) from None
         self._hash = hash(obj)
 
     def __hash__(self) -> int:
@@ -206,13 +220,14 @@ class _CanonicalKey:
         if obj is None:
             return False
         if isinstance(other, _CanonicalKey):
-            other_obj = other.get()
-            return other_obj is not None and bool(obj == other_obj)
-        return bool(obj == other)
+            other = other.get()
+            if other is None:
+                return False
+        return type(other) is type(obj) and bool(obj == other)
 
 
 class _ObjectDeduper:
-    """Canonicalize equal objects to one representative.
+    """Canonicalize equal objects of one type to one representative.
 
     `TargetActionSink.from_fn`/`from_async_fn` route callbacks through this so
     equal callbacks map to one canonical object, whose pointer the Rust side
@@ -220,11 +235,11 @@ class _ObjectDeduper:
     `rust/py/src/target_state.rs`) — together giving sinks value-based
     identity.
 
-    Entries reference the canonical only weakly where the object supports weak
-    references; the sink keeper holds its callback strongly, so a canonical
-    stays pinned exactly while some sink still uses it. Once nothing does, the
-    entry expires — a later equal object becomes the new canonical — and
-    expired entries are swept once the map grows past a doubling threshold.
+    Entries reference the canonical only weakly; the sink keeper holds its
+    callback strongly, so a canonical stays pinned exactly while some sink
+    still uses it. Once nothing does, the entry expires — a later equal object
+    becomes the new canonical — and expired entries are swept once the map
+    grows past a doubling threshold.
     """
 
     _MIN_PRUNE_AT = 64
@@ -247,11 +262,10 @@ class _ObjectDeduper:
                 if value is not None:
                     return value
 
+            key = _CanonicalKey(obj)
             if len(self._map) >= self._prune_at:
                 self._map = {k: k for k in self._map if k.get() is not None}
                 self._prune_at = max(self._MIN_PRUNE_AT, 2 * len(self._map))
-
-            key = _CanonicalKey(obj)
             self._map[key] = key
             return obj
 
