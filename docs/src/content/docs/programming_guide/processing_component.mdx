@@ -242,7 +242,7 @@ After a processing component finishes, CocoIndex syncs its target states:
 2. **Applies changes** as a unit — creating, updating, or deleting target states as needed
 3. **Recursively cleans up** sub-paths where components are no longer mounted
 
-All writes happen strictly after processing completes — you never see partial effects from a processing failure or interrupt. Each target backend applies its batch atomically when supported (e.g., within a database transaction), but changes across different target backends are not transactional with each other.
+All writes happen strictly after processing completes — you never see partial effects from a processing failure or interrupt. Each target backend applies its batch atomically when supported (e.g., within a database transaction), but changes across different target backends are not transactional with each other. When several components finish around the same time, a backend may receive their changes in one batch; that is only an optimization — if the batch fails, CocoIndex retries per component so one component's failure never undoes another's.
 
 :::
 

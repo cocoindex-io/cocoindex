@@ -256,6 +256,15 @@ and cannot be weakly referenced) and is rejected. The frozen dataclass above is
 the recommended shape; if you add `slots=True` to it, also pass
 `weakref_slot=True`.
 
+A batch can hold the actions of several processing components that finished
+around the same time. Merging is only an optimization: if the sink raises, the
+engine retries the same actions in smaller batches split along component
+boundaries (never inside one component's actions), so only the component(s)
+whose actions actually fail end up failing — the others' actions are
+re-applied and committed normally. The sink needs no special handling for
+this, but it may see an action from a failed batch again, which idempotent
+actions (see above) already tolerate.
+
 ### Input Safety
 
 When building queries from user-provided names (table, column, index) or values (record IDs, keys), you must guard against injection and ensure correctness. See [input_safety.md](input_safety.md) for patterns on identifier validation, parameterized queries, and value escaping.

@@ -139,9 +139,15 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
         &self,
         host_runtime_ctx: &PyAsyncContext,
         host_ctx: Arc<Py<PyAny>>,
-        actions: Vec<Py<PyAny>>,
+        actions: &[Py<PyAny>],
     ) -> Result<Option<Vec<Option<ChildTargetDef<PyEngineProfile>>>>> {
-        let context_provider = Python::attach(|py| host_ctx.as_ref().clone_ref(py));
+        let (context_provider, actions) = Python::attach(|py| -> PyResult<_> {
+            Ok((
+                host_ctx.as_ref().clone_ref(py),
+                PyList::new(py, actions.iter().map(|action| action.bind(py)))?.unbind(),
+            ))
+        })
+        .from_py_result()?;
         let ret = self
             .callback
             .call(host_runtime_ctx, (context_provider, actions))?
