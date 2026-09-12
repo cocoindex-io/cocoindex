@@ -1,10 +1,11 @@
 """Tests for value-based ``TargetActionSink`` identity.
 
-Sinks built from callbacks that compare equal share one batching identity:
-their actions land in the same engine batch and are applied in one call, even
-when each ``reconcile()`` constructs a fresh (equal) callback. An idle
-identity — no live sink object, no pending actions — is released rather than
-pinned for the process lifetime.
+Sinks built from callbacks of the same type that compare equal share one
+batching identity: their actions land in the same engine batch and are applied
+in one call, even when each ``reconcile()`` constructs a fresh (equal)
+callback. An idle identity — no live sink object, no pending actions — is
+released rather than pinned for the process lifetime, which is why a callback
+must support weak references.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import threading
 import weakref
 from dataclasses import dataclass
 from typing import Any, Collection, NamedTuple
+
+import pytest
 
 import cocoindex as coco
 from tests import common
@@ -40,8 +43,50 @@ class _RecordingSink:
             _batches.append(list(actions))
 
 
+@dataclass(frozen=True)
+class _OtherRecordingSink:
+    """A distinct frozen-dataclass type with the same fields as ``_RecordingSink``."""
+
+    group: str
+
+    async def __call__(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[tuple[Any, Any]],
+        /,
+    ) -> None:
+        pass
+
+
+class _PermissiveSink:
+    """Weakref-able callback whose ``__eq__`` is not type-safe: it equals any
+    object carrying an equal ``group``, whatever that object's class."""
+
+    def __init__(self, group: str) -> None:
+        self.group = group
+
+    def __eq__(self, other: object) -> bool:
+        return getattr(other, "group", None) == self.group
+
+    def __hash__(self) -> int:
+        return hash(self.group)
+
+    async def __call__(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[tuple[Any, Any]],
+        /,
+    ) -> None:
+        pass
+
+
+class _OtherPermissiveSink(_PermissiveSink):
+    """A distinct type whose instances compare equal to ``_PermissiveSink``'s."""
+
+
 class _NtSink(NamedTuple):
-    """NamedTuple variant: not weakref-able, exercising the deduper's fallback."""
+    """NamedTuple callback: equal to any same-shaped tuple and not weakref-able,
+    so the framework must reject it rather than canonicalize it."""
 
     group: str
 
@@ -141,12 +186,60 @@ def test_sink_identity_by_callback_value() -> None:
     assert hash(a1._core) == hash(a2._core)
     assert a1._core != b._core
 
-    # NamedTuple callables (not weakref-able) still canonicalize by value.
-    nt1 = coco.TargetActionSink.from_async_fn(_NtSink("a"))
-    nt2 = coco.TargetActionSink.from_async_fn(_NtSink("a"))
-    assert nt1._core == nt2._core
-    # ...and stay distinct from other callback types with equal field values.
-    assert nt1._core != a1._core
+
+def test_sink_identity_is_keyed_by_callback_type() -> None:
+    # Distinct frozen-dataclass types with equal field values: distinct identities.
+    assert (
+        coco.TargetActionSink.from_async_fn(_RecordingSink("a"))._core
+        != coco.TargetActionSink.from_async_fn(_OtherRecordingSink("a"))._core
+    )
+
+    # A permissive ``__eq__`` that holds across types must not merge identities
+    # either — the engine would otherwise route one type's actions to the
+    # other type's ``__call__``. Within one type, value equality still shares.
+    assert _PermissiveSink("a") == _OtherPermissiveSink("a")
+    p1 = coco.TargetActionSink.from_async_fn(_PermissiveSink("a"))
+    p2 = coco.TargetActionSink.from_async_fn(_PermissiveSink("a"))
+    other = coco.TargetActionSink.from_async_fn(_OtherPermissiveSink("a"))
+    assert p1._core == p2._core
+    assert p1._core != other._core
+
+
+def test_non_weakrefable_callback_is_rejected() -> None:
+    with pytest.raises(TypeError, match="must support weak references"):
+        coco.TargetActionSink.from_async_fn(_NtSink("a"))
+
+    @dataclass(frozen=True, slots=True)
+    class _SlotsSink:
+        group: str
+
+        def __call__(
+            self,
+            context_provider: coco.ContextProvider,
+            actions: Collection[tuple[Any, Any]],
+            /,
+        ) -> None:
+            pass
+
+    with pytest.raises(TypeError, match="weakref_slot=True"):
+        coco.TargetActionSink.from_fn(_SlotsSink("a"))
+
+    @dataclass(frozen=True, slots=True, weakref_slot=True)
+    class _WeakrefSlotsSink:
+        group: str
+
+        def __call__(
+            self,
+            context_provider: coco.ContextProvider,
+            actions: Collection[tuple[Any, Any]],
+            /,
+        ) -> None:
+            pass
+
+    assert (
+        coco.TargetActionSink.from_fn(_WeakrefSlotsSink("a"))._core
+        == coco.TargetActionSink.from_fn(_WeakrefSlotsSink("a"))._core
+    )
 
 
 def test_sync_sink_identity_and_async_separation() -> None:
