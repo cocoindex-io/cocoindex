@@ -88,7 +88,7 @@ impl<'de> de::Visitor<'de> for StableKeyVisitor {
         self,
         mut seq: A,
     ) -> std::result::Result<StableKey, A::Error> {
-        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        let mut items = Vec::new();
         while let Some(item) = seq.next_element::<StableKey>()? {
             items.push(item);
         }
