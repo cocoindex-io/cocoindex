@@ -10,6 +10,8 @@ import pytest
 
 from tests import common
 from tests.common.target_states import (
+    BYTES_SEGMENT,
+    TUPLE_SEGMENT,
     AtMost,
     DictDataWithPrev,
     DictTargetStateStore,
@@ -62,9 +64,6 @@ _concurrent_claim_store = _BlockingSinkStore()
 _concurrent_claim_provider = coco.register_root_target_states_provider(
     "test_target_state/concurrent_claim", _concurrent_claim_store
 )
-_concurrent_claim_values: dict[str, int] = {}
-_allow_c3_mount: asyncio.Event | None = None
-_c3_declared: asyncio.Event | None = None
 
 
 @coco.fn
@@ -77,27 +76,6 @@ async def _process_component(name: str) -> None:
 async def _app_main() -> None:
     for name in sorted(_source_data):
         await coco.mount(coco.component_subpath(name), _process_component, name)
-
-
-@coco.fn
-async def _process_concurrent_claimant(name: str) -> None:
-    coco.declare_target_state(
-        _concurrent_claim_provider.target_state("x", _concurrent_claim_values[name])
-    )
-    if name == "C3":
-        assert _c3_declared is not None
-        _c3_declared.set()
-
-
-@coco.fn
-async def _app_main_concurrent_claimants() -> None:
-    for name in sorted(_concurrent_claim_values):
-        if name == "C3":
-            assert _allow_c3_mount is not None
-            await _allow_c3_mount.wait()
-        await coco.mount(
-            coco.component_subpath(name), _process_concurrent_claimant, name
-        )
 
 
 def test_ownership_transfer_basic() -> None:
@@ -216,35 +194,81 @@ def test_ownership_transfer_ordering_independence() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "owner, reclaimer, late",
+    [
+        pytest.param("C1", "C2", "C3", id="str-segments"),
+        # These tuple/bytes segments collided under the old decoder.
+        pytest.param((1, 2), b"\x01\x02", b"abc", id="tuple-and-bytes-segments"),
+    ],
+)
+@pytest.mark.parametrize(
+    "exhaust_pending", [False, True], ids=["same-update", "retry-exhaustion"]
+)
 @pytest.mark.asyncio
-async def test_concurrent_claimant_sees_owner_during_sink_apply() -> None:
-    """A later claimant must see the owner whose sink action is in flight."""
-    global _allow_c3_mount, _c3_declared
+async def test_concurrent_claimant_sees_owner_during_sink_apply(
+    owner: coco.StableKey,
+    reclaimer: coco.StableKey,
+    late: coco.StableKey,
+    exhaust_pending: bool,
+    request: pytest.FixtureRequest,
+) -> None:
+    """A concurrent claim can resume in this update or retry after exhaustion."""
+    source: dict[coco.StableKey, int] = {owner: 1}
+    allow_late_mount = asyncio.Event()
+    late_declared = asyncio.Event()
+    error_received = asyncio.Event()
+    errors: list[BaseException] = []
+
+    def record_error(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        errors.append(exc)
+        error_received.set()
+
+    @coco.fn
+    async def process_claimant(value: int, is_late: bool) -> None:
+        coco.declare_target_state(_concurrent_claim_provider.target_state("x", value))
+        if is_late:
+            late_declared.set()
+
+    @coco.fn
+    async def app_main() -> None:
+        handles: list[coco.ComponentMountHandle] = []
+        async with coco.exception_handler(record_error):
+            for segment, value in source.items():
+                is_late = segment == late
+                if is_late:
+                    await allow_late_mount.wait()
+                handles.append(
+                    await coco.mount(
+                        coco.component_subpath(segment),
+                        process_claimant,
+                        value,
+                        is_late,
+                    )
+                )
+        # Finish claims before root cleanup can delete the previous owner.
+        for handle in handles:
+            await handle.ready()
 
     _concurrent_claim_store.clear()
-    _concurrent_claim_values.clear()
-    test_env = common.create_test_env(
-        __file__, suffix="concurrent_claimant_sees_owner_during_sink_apply"
-    )
+    test_env = common.create_test_env(__file__, suffix=request.node.name)
     app = coco.App(
-        coco.AppConfig(
-            name="test_concurrent_claimant_sees_owner_during_sink_apply",
-            environment=test_env,
-        ),
-        _app_main_concurrent_claimants,
+        coco.AppConfig(name="concurrent_claimant", environment=test_env), app_main
     )
+    target_path = '/@test_target_state/concurrent_claim/"x"'
 
-    # Establish C1 as the committed owner.
-    _concurrent_claim_values["C1"] = 1
+    # Establish the first component as the committed owner.
     await app.update()
+    assert errors == []
     _concurrent_claim_store.metrics.collect()
+    assert await common.list_target_state_owners(app) == {
+        target_path: coco.ROOT_PATH / owner,
+    }
 
-    # C2 claims x in precommit, then pauses inside sink.apply. C3 is mounted
-    # only after we have observed that in-flight claim.
-    _concurrent_claim_values.clear()
-    _concurrent_claim_values.update(C2=2, C3=3)
-    _allow_c3_mount = asyncio.Event()
-    _c3_declared = asyncio.Event()
+    # The reclaimer claims x in precommit, then pauses inside sink.apply. The
+    # late claimant is mounted only after we have observed that in-flight claim.
+    source.clear()
+    source.update({reclaimer: 2, late: 3})
     _concurrent_claim_store.block_next_apply()
     update_task = asyncio.ensure_future(app.update())
     try:
@@ -252,24 +276,52 @@ async def test_concurrent_claimant_sees_owner_during_sink_apply() -> None:
             _concurrent_claim_store.wait_for_blocked_apply(), timeout=5.0
         )
         assert await common.list_target_state_owners(app) == {
-            '/@test_target_state/concurrent_claim/"x"': coco.ROOT_PATH / "C2",
+            target_path: coco.ROOT_PATH / reclaimer,
         }
-
-        # Let C3 enter submission while C2 is still in sink.apply. The current
-        # protocol makes C3 observe C2's live claim and retry behind it.
-        _allow_c3_mount.set()
-        await asyncio.wait_for(_c3_declared.wait(), timeout=5.0)
-        await asyncio.sleep(0)
+        allow_late_mount.set()
+        if exhaust_pending:
+            # This error proves precommit observed the in-flight owner and
+            # refused the takeover for every pending retry while the sink
+            # stayed blocked. Collect every error so extra failures cannot hide.
+            await asyncio.wait_for(error_received.wait(), timeout=5.0)
+            assert len(errors) == 1
+            assert "retries waiting for concurrent ownership transfer" in str(errors[0])
+            assert _concurrent_claim_store.data["x"].data == 1
+            assert _concurrent_claim_store.metrics.collect() == {}
+            assert await common.list_target_state_owners(app) == {
+                target_path: coco.ROOT_PATH / reclaimer,
+            }
+        else:
+            # Preserve the success case: release after the late declaration
+            # and require its transfer to finish within this same update. The
+            # exhaustion case above separately proves pending detection.
+            await asyncio.wait_for(late_declared.wait(), timeout=5.0)
     finally:
-        _allow_c3_mount.set()
+        allow_late_mount.set()
         _concurrent_claim_store.release_blocked_apply()
         await update_task
-        _allow_c3_mount = None
-        _c3_declared = None
 
-    assert _concurrent_claim_store.data["x"].data == 3
+    if exhaust_pending:
+        assert len(errors) == 1
+        assert _concurrent_claim_store.data["x"] == DictDataWithPrev(
+            data=2, prev=[1], prev_may_be_missing=False
+        )
+        assert await common.list_target_state_owners(app) == {
+            target_path: coco.ROOT_PATH / reclaimer,
+        }
+
+        # A subsequent update retries the failed claim using the committed
+        # previous state. No additional component errors are allowed.
+        errors.clear()
+        source.pop(reclaimer)
+        await app.update()
+
+    assert errors == []
+    assert _concurrent_claim_store.data["x"] == DictDataWithPrev(
+        data=3, prev=[2], prev_may_be_missing=False
+    )
     assert await common.list_target_state_owners(app) == {
-        '/@test_target_state/concurrent_claim/"x"': coco.ROOT_PATH / "C3",
+        target_path: coco.ROOT_PATH / late,
     }
 
 
@@ -549,4 +601,92 @@ def test_ownership_transfer_sink_failure_then_owner_deleted() -> None:
     app.update_blocking()
     assert GlobalDictTarget.store.data == {}
     assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "delete": 1}
+    assert common.list_target_state_owners_sync(app) == {}
+
+
+# Segment -> target states that component declares.
+_typed_path_source: dict[coco.StableKey, dict[str, object]] = {}
+
+
+@coco.fn
+async def _process_typed_path_component(entries: dict[str, object]) -> None:
+    for key, value in entries.items():
+        coco.declare_target_state(GlobalDictTarget.target_state(key, value))
+
+
+@coco.fn
+async def _app_main_typed_paths_await_ready() -> None:
+    """Awaits every child's ready() so transfer is a preempt, not delete+insert."""
+    handles = []
+    with coco.component_subpath("process"):
+        for segment in sorted(_typed_path_source, key=repr):
+            handles.append(
+                await coco.mount(
+                    coco.component_subpath(segment),
+                    _process_typed_path_component,
+                    _typed_path_source[segment],
+                )
+            )
+    for handle in handles:
+        await handle.ready()
+
+
+def _typed_owner(segment: coco.StableKey) -> coco.StablePath:
+    return coco.ROOT_PATH / "process" / segment
+
+
+def test_ownership_transfer_between_typed_component_paths() -> None:
+    """Transfer between a tuple-segment and a bytes-segment component path.
+
+    Checks the previous state reaches the new owner (a single upsert carrying
+    `prev`, not delete+insert), that the new owner's row is the one kept, and
+    that unmounting clears every row.
+    """
+    GlobalDictTarget.store.clear()
+    _typed_path_source.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_typed_path_ownership_transfer", environment=coco_env),
+        _app_main_typed_paths_await_ready,
+    )
+
+    # Run 1: the tuple-segment component owns "x".
+    _typed_path_source[TUPLE_SEGMENT] = {"x": 1}
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "x": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': _typed_owner(TUPLE_SEGMENT),
+    }
+
+    # Run 2: the bytes-segment component takes over. Resolving the previous
+    # owner is what the decoder broke, so `prev` is the load-bearing assertion.
+    _typed_path_source.clear()
+    _typed_path_source[BYTES_SEGMENT] = {"x": 2}
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "x": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=False),
+    }
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': _typed_owner(BYTES_SEGMENT),
+    }
+
+    # Run 3: transfer back from the bytes-segment owner to the tuple segment.
+    _typed_path_source.clear()
+    _typed_path_source[TUPLE_SEGMENT] = {"x": 3}
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "x": DictDataWithPrev(data=3, prev=[2], prev_may_be_missing=False),
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/global_dict/"x"': _typed_owner(TUPLE_SEGMENT),
+    }
+
+    # Run 4: unmount. No owner row may survive its component.
+    _typed_path_source.clear()
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {}
     assert common.list_target_state_owners_sync(app) == {}

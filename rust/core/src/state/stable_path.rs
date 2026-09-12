@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{fmt::Write as FmtWrite, io::Write};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,56 +45,90 @@ impl Serialize for StableKey {
     }
 }
 
+/// Decodes one `StableKey` straight off a self-describing format, reading
+/// exactly what the format carries: seq -> `Array`, bytes -> `Bytes`,
+/// str -> `Str`, one-entry map -> tagged variant (`Uuid` / `Fingerprint` /
+/// `Symbol`).
+struct StableKeyVisitor;
+
+impl<'de> de::Visitor<'de> for StableKeyVisitor {
+    type Value = StableKey;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a stable key")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<StableKey, E> {
+        Ok(StableKey::Null)
+    }
+
+    fn visit_bool<E: de::Error>(self, v: bool) -> std::result::Result<StableKey, E> {
+        Ok(StableKey::Bool(v))
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<StableKey, E> {
+        Ok(StableKey::Int(v))
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<StableKey, E> {
+        i64::try_from(v)
+            .map(StableKey::Int)
+            .map_err(|_| de::Error::custom(format!("integer {v} out of range for i64")))
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<StableKey, E> {
+        Ok(StableKey::Str(Arc::from(v)))
+    }
+
+    fn visit_bytes<E: de::Error>(self, v: &[u8]) -> std::result::Result<StableKey, E> {
+        Ok(StableKey::Bytes(Arc::from(v)))
+    }
+
+    fn visit_seq<A: de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<StableKey, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element::<StableKey>()? {
+            items.push(item);
+        }
+        Ok(StableKey::Array(Arc::from(items)))
+    }
+
+    /// Tagged variants are written as a one-entry map. Values are read through
+    /// `next_value` so `Uuid`/`Fingerprint` decode against the real format
+    /// (msgpack `bin` here, base64 text in human-readable formats).
+    fn visit_map<A: de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<StableKey, A::Error> {
+        const TAGS: &[&str] = &["uuid", "fp", "sym"];
+        let Some(tag) = map.next_key::<String>()? else {
+            return Err(de::Error::invalid_length(0, &"a one-entry tagged map"));
+        };
+        let key = match tag.as_str() {
+            "uuid" => StableKey::Uuid(map.next_value()?),
+            "fp" => StableKey::Fingerprint(map.next_value()?),
+            "sym" => StableKey::Symbol(Arc::from(map.next_value::<String>()?)),
+            other => return Err(de::Error::unknown_field(other, TAGS)),
+        };
+        if map.next_key::<de::IgnoredAny>()?.is_some() {
+            return Err(de::Error::custom(
+                "tagged stable key must have exactly one entry",
+            ));
+        }
+        Ok(key)
+    }
+}
+
 impl<'de> Deserialize<'de> for StableKey {
+    /// Round trip is guaranteed only for formats that natively distinguish
+    /// array / bin / str, such as MessagePack, which is what the state store
+    /// uses. Formats without a bytes type (JSON) serialize `Bytes` as an
+    /// integer sequence and read it back as `Array`; nothing in production
+    /// deserializes a `StableKey` from such formats.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Repr {
-            Null(()),
-            Bool(bool),
-            Int(i64),
-            Str(String),
-            // Intentionally before Array to preserve StableKey::Bytes roundtrip in formats
-            // (like JSON) where bytes can be represented as a sequence of integers.
-            // `serde_bytes` makes this consume a native byte string too (msgpack
-            // `bin`, the state-store format) — a plain `Vec<u8>` only deserializes
-            // via `deserialize_seq`, so a `bin` would fail to match any variant.
-            #[serde(with = "serde_bytes")]
-            Bytes(Vec<u8>),
-            Uuid {
-                uuid: uuid::Uuid,
-            },
-            Fp {
-                fp: utils::fingerprint::Fingerprint,
-            },
-            Sym {
-                sym: String,
-            },
-            Array(Vec<Repr>),
-        }
-
-        impl Repr {
-            fn into_stable_key(self) -> StableKey {
-                match self {
-                    Repr::Null(()) => StableKey::Null,
-                    Repr::Bool(b) => StableKey::Bool(b),
-                    Repr::Int(i) => StableKey::Int(i),
-                    Repr::Str(s) => StableKey::Str(Arc::from(s)),
-                    Repr::Bytes(b) => StableKey::Bytes(Arc::from(b)),
-                    Repr::Uuid { uuid } => StableKey::Uuid(uuid),
-                    Repr::Fp { fp } => StableKey::Fingerprint(fp),
-                    Repr::Sym { sym } => StableKey::Symbol(Arc::from(sym)),
-                    Repr::Array(items) => StableKey::Array(Arc::from(
-                        items
-                            .into_iter()
-                            .map(Repr::into_stable_key)
-                            .collect::<Vec<_>>(),
-                    )),
-                }
-            }
-        }
-
-        Ok(Repr::deserialize(deserializer)?.into_stable_key())
+        deserializer.deserialize_any(StableKeyVisitor)
     }
 }
 
@@ -405,6 +439,8 @@ mod tests {
         assert_eq!(decoded_empty, empty);
     }
 
+    /// JSON has no bytes type, so `Bytes` serializes as an integer sequence
+    /// and decodes as `Array`; every other variant round-trips unchanged.
     #[test]
     fn stable_key_serde_json_shape() {
         use serde_json::{Value, json};
@@ -412,23 +448,39 @@ mod tests {
         let uuid = uuid::Uuid::from_bytes([3u8; 16]);
         let fp = utils::fingerprint::Fingerprint([7u8; 16]);
 
-        let cases: Vec<(StableKey, Value)> = vec![
-            (StableKey::Null, Value::Null),
-            (StableKey::Bool(true), json!(true)),
-            (StableKey::Int(-7), json!(-7)),
-            (StableKey::Str(Arc::from("hi")), json!("hi")),
+        // (key, expected JSON, expected decoded key)
+        let cases: Vec<(StableKey, Value, StableKey)> = vec![
+            (StableKey::Null, Value::Null, StableKey::Null),
+            (StableKey::Bool(true), json!(true), StableKey::Bool(true)),
+            (StableKey::Int(-7), json!(-7), StableKey::Int(-7)),
+            (
+                StableKey::Str(Arc::from("hi")),
+                json!("hi"),
+                StableKey::Str(Arc::from("hi")),
+            ),
             (
                 StableKey::Bytes(Arc::from(&b"\x00\x01\xff"[..])),
                 json!([0, 1, 255]),
+                StableKey::Array(Arc::from([
+                    StableKey::Int(0),
+                    StableKey::Int(1),
+                    StableKey::Int(255),
+                ])),
             ),
-            (StableKey::Uuid(uuid), json!({ "uuid": uuid.to_string() })),
+            (
+                StableKey::Uuid(uuid),
+                json!({ "uuid": uuid.to_string() }),
+                StableKey::Uuid(uuid),
+            ),
             (
                 StableKey::Fingerprint(fp),
                 json!({ "fp": serde_json::to_value(fp).expect("fp to value") }),
+                StableKey::Fingerprint(fp),
             ),
             (
                 StableKey::Symbol(Arc::from("cocoindex/setup")),
                 json!({ "sym": "cocoindex/setup" }),
+                StableKey::Symbol(Arc::from("cocoindex/setup")),
             ),
             (
                 StableKey::Array(Arc::from([
@@ -436,14 +488,18 @@ mod tests {
                     StableKey::Str(Arc::from("a")),
                 ])),
                 json!([1, "a"]),
+                StableKey::Array(Arc::from([
+                    StableKey::Int(1),
+                    StableKey::Str(Arc::from("a")),
+                ])),
             ),
         ];
 
-        for (key, expected) in cases {
+        for (key, expected, expected_decoded) in cases {
             let got = serde_json::to_value(&key).expect("serialize");
             assert_eq!(got, expected);
-            let roundtrip: StableKey = serde_json::from_value(got).expect("deserialize");
-            assert_eq!(roundtrip, key);
+            let decoded: StableKey = serde_json::from_value(got).expect("deserialize");
+            assert_eq!(decoded, expected_decoded, "decoded shape for {key:?}");
         }
     }
 
@@ -470,31 +526,329 @@ mod tests {
         ]);
         assert_eq!(got, expected);
 
-        let roundtrip: StablePath = serde_json::from_value(got).expect("deserialize");
-        assert_eq!(roundtrip, path);
+        // The `Bytes` segment comes back as an `Array` of `Int`: JSON carries
+        // no bytes type, so the decoder reads the integer sequence it finds.
+        let expected_decoded = StablePath(Arc::from(vec![
+            StableKey::Int(42),
+            StableKey::Array(Arc::from([
+                StableKey::Int(0),
+                StableKey::Int(116),
+                StableKey::Int(101),
+                StableKey::Int(114),
+                StableKey::Int(109),
+            ])),
+            StableKey::Uuid(uuid),
+            StableKey::Fingerprint(fp),
+        ]));
+        let decoded: StablePath = serde_json::from_value(got).expect("deserialize");
+        assert_eq!(decoded, expected_decoded);
     }
 
     #[test]
-    fn serde_msgpack_bytes_roundtrip() {
-        // `StableKey::Bytes` must survive a serde msgpack round-trip — it rides
-        // inside component paths and target-state keys, which may embed raw
-        // bytes. msgpack serializes a `Vec<u8>` as a native `bin`, so the
-        // deserializer has to accept a `bin` (not just an int sequence).
-        for key in [
-            StableKey::Bytes(Arc::from(&b"\x00\x01\xff sha"[..])),
+    fn serde_msgpack_every_variant_roundtrip() {
+        // Every variant must survive the state store's msgpack encoding
+        // unchanged: ownership guards compare decoded component paths, so a
+        // variant swap (array->bytes, bytes->str) silently retargets them.
+        let arr = |items: Vec<StableKey>| StableKey::Array(Arc::from(items));
+        let cases = vec![
+            StableKey::Null,
+            StableKey::Bool(false),
+            StableKey::Bool(true),
+            StableKey::Int(0),
+            StableKey::Int(-1),
+            StableKey::Int(i64::MIN),
+            StableKey::Int(i64::MAX),
+            StableKey::Int(255),
+            StableKey::Int(256),
+            StableKey::Str(Arc::from("")),
+            StableKey::Str(Arc::from("process")),
+            StableKey::Str(Arc::from("\u{4e2d}\u{6587}/caf\u{e9}")),
+            StableKey::Str(Arc::from("nul\0inside")),
+            StableKey::Bytes(Arc::from(&b""[..])),
+            // Valid UTF-8 bytes must not decode as `Str`.
+            StableKey::Bytes(Arc::from(&b"abc"[..])),
+            StableKey::Bytes(Arc::from("\u{4e2d}\u{6587}".as_bytes())),
+            StableKey::Bytes(Arc::from(&b"nul\0inside"[..])),
+            StableKey::Bytes(Arc::from(&b"\x00\x01\xff"[..])),
+            StableKey::Uuid(uuid::Uuid::from_bytes([3u8; 16])),
+            StableKey::Fingerprint(utils::fingerprint::Fingerprint([7u8; 16])),
+            StableKey::Symbol(Arc::from("cocoindex/setup")),
+            // Arrays whose elements all fit in a byte must not decode as `Bytes`.
+            arr(vec![]),
+            arr(vec![StableKey::Int(1)]),
+            arr(vec![StableKey::Int(1), StableKey::Int(1)]),
+            arr(vec![StableKey::Int(1), StableKey::Int(2)]),
+            // Reordering must stay distinguishable from the case above.
+            arr(vec![StableKey::Int(2), StableKey::Int(1)]),
+            arr(vec![StableKey::Int(0), StableKey::Int(255)]),
+            arr(vec![StableKey::Int(-1), StableKey::Int(256)]),
+            arr(vec![
+                StableKey::Str(Arc::from("process")),
+                arr(vec![StableKey::Int(1), StableKey::Int(2)]),
+            ]),
             // A nested array carrying a symbol, strings, and a raw-bytes key.
-            StableKey::Array(Arc::from(vec![
-                StableKey::Array(Arc::from(vec![
+            arr(vec![
+                arr(vec![
                     StableKey::Symbol(Arc::from("obj")),
                     StableKey::Str(Arc::from("tenant")),
-                ])),
+                ]),
                 StableKey::Str(Arc::from("src/main.rs")),
                 StableKey::Bytes(Arc::from(&[0xde, 0xad, 0xbe, 0xef][..])),
-            ])),
-        ] {
+            ]),
+            arr(vec![
+                StableKey::Null,
+                StableKey::Bool(true),
+                StableKey::Bytes(Arc::from(&b"abc"[..])),
+                StableKey::Uuid(uuid::Uuid::from_bytes([9u8; 16])),
+                StableKey::Fingerprint(utils::fingerprint::Fingerprint([1u8; 16])),
+                StableKey::Symbol(Arc::from("sym")),
+                arr(vec![arr(vec![])]),
+            ]),
+        ];
+
+        for key in cases {
             let bytes = rmp_serde::to_vec_named(&key).expect("encode");
-            let decoded: StableKey = rmp_serde::from_slice(&bytes).expect("decode bytes key");
+            // Same wrapper the state store reads through.
+            let decoded: StableKey =
+                utils::deser::from_msgpack_slice(&bytes).expect("decode stable key");
+            assert_eq!(decoded, key, "round-trip changed variant for {key:?}");
+        }
+    }
+
+    /// The deserializer must read bytes the *unchanged* serializer produces, so
+    /// pin the wire shapes rather than only round-tripping through it.
+    #[test]
+    fn serde_msgpack_decodes_serializer_fixtures() {
+        let uuid = uuid::Uuid::from_bytes([3u8; 16]);
+        let fp = utils::fingerprint::Fingerprint([7u8; 16]);
+        let cases: Vec<(StableKey, Vec<u8>)> = vec![
+            (StableKey::Null, vec![0xc0]),
+            (StableKey::Bool(true), vec![0xc3]),
+            (StableKey::Int(1), vec![0x01]),
+            (StableKey::Int(-1), vec![0xff]),
+            // fixstr "ab"
+            (StableKey::Str(Arc::from("ab")), vec![0xa2, b'a', b'b']),
+            // bin8 of b"ab" -- distinct from the fixstr above.
+            (
+                StableKey::Bytes(Arc::from(&b"ab"[..])),
+                vec![0xc4, 0x02, b'a', b'b'],
+            ),
+            // fixarray of 2 ints -- the shape from the issue report.
+            (
+                StableKey::Array(Arc::from(vec![StableKey::Int(1), StableKey::Int(2)])),
+                vec![0x92, 0x01, 0x02],
+            ),
+            (StableKey::Array(Arc::from(vec![])), vec![0x90]),
+            (
+                StableKey::Uuid(uuid),
+                [
+                    &[0x81, 0xa4, b'u', b'u', b'i', b'd', 0xc4, 0x10][..],
+                    &[3u8; 16][..],
+                ]
+                .concat(),
+            ),
+            (
+                StableKey::Fingerprint(fp),
+                [&[0x81, 0xa2, b'f', b'p', 0xc4, 0x10][..], &[7u8; 16][..]].concat(),
+            ),
+            (
+                StableKey::Symbol(Arc::from("a")),
+                vec![0x81, 0xa3, b's', b'y', b'm', 0xa1, b'a'],
+            ),
+        ];
+
+        for (key, wire) in cases {
+            assert_eq!(
+                rmp_serde::to_vec_named(&key).expect("encode"),
+                wire,
+                "serializer shape changed for {key:?}"
+            );
+            let decoded: StableKey =
+                utils::deser::from_msgpack_slice(&wire).expect("decode fixture");
             assert_eq!(decoded, key);
         }
+    }
+
+    /// The root path and a path holding one empty-array segment are different
+    /// paths; msgpack must not flatten one into the other.
+    #[test]
+    fn serde_msgpack_root_path_differs_from_empty_array_segment() {
+        let root = StablePath::root();
+        let empty_segment = StablePath(Arc::from(vec![StableKey::Array(Arc::from(vec![]))]));
+        assert_ne!(root, empty_segment);
+
+        let root_bytes = rmp_serde::to_vec_named(&root).expect("encode root");
+        let segment_bytes = rmp_serde::to_vec_named(&empty_segment).expect("encode segment");
+        assert_ne!(root_bytes, segment_bytes);
+
+        assert_eq!(
+            utils::deser::from_msgpack_slice::<StablePath>(&root_bytes).expect("decode root"),
+            root
+        );
+        assert_eq!(
+            utils::deser::from_msgpack_slice::<StablePath>(&segment_bytes).expect("decode segment"),
+            empty_segment
+        );
+    }
+
+    /// Hand-rolled msgpack so the test can build shapes the serializer never
+    /// emits (duplicate keys, extra entries, malformed payloads).
+    fn msgpack_fixstr(s: &str) -> Vec<u8> {
+        assert!(s.len() < 32);
+        let mut out = vec![0xa0 | s.len() as u8];
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    fn msgpack_bin(v: &[u8]) -> Vec<u8> {
+        assert!(v.len() < 256);
+        let mut out = vec![0xc4, v.len() as u8];
+        out.extend_from_slice(v);
+        out
+    }
+
+    fn msgpack_map(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        assert!(entries.len() < 16);
+        let mut out = vec![0x80 | entries.len() as u8];
+        for (k, v) in entries {
+            out.extend_from_slice(&msgpack_fixstr(k));
+            out.extend_from_slice(v);
+        }
+        out
+    }
+
+    #[test]
+    fn serde_msgpack_tagged_map_accepts_only_one_known_tag() {
+        let uuid_payload = msgpack_bin(&[3u8; 16]);
+
+        // Each recognized tag alone decodes.
+        let accepted: Vec<(Vec<u8>, StableKey)> = vec![
+            (
+                msgpack_map(&[("uuid", uuid_payload.clone())]),
+                StableKey::Uuid(uuid::Uuid::from_bytes([3u8; 16])),
+            ),
+            (
+                msgpack_map(&[("fp", msgpack_bin(&[7u8; 16]))]),
+                StableKey::Fingerprint(utils::fingerprint::Fingerprint([7u8; 16])),
+            ),
+            (
+                msgpack_map(&[("sym", msgpack_fixstr("a"))]),
+                StableKey::Symbol(Arc::from("a")),
+            ),
+        ];
+        for (bytes, expected) in accepted {
+            assert_eq!(
+                utils::deser::from_msgpack_slice::<StableKey>(&bytes).expect("decode tagged"),
+                expected
+            );
+        }
+
+        let rejected: Vec<(&str, Vec<u8>)> = vec![
+            ("unknown tag", msgpack_map(&[("nope", vec![0x01])])),
+            ("missing tag (empty map)", msgpack_map(&[])),
+            // A recognized tag plus an extra entry is ambiguous; the previous
+            // decoder silently resolved such maps by enum priority.
+            (
+                "known tag plus extra",
+                msgpack_map(&[("sym", msgpack_fixstr("a")), ("zextra", vec![0x01])]),
+            ),
+            (
+                "extra before known tag",
+                msgpack_map(&[("zextra", vec![0x01]), ("sym", msgpack_fixstr("a"))]),
+            ),
+            (
+                "two recognized tags",
+                msgpack_map(&[("uuid", uuid_payload.clone()), ("sym", msgpack_fixstr("a"))]),
+            ),
+            (
+                "two recognized tags reversed",
+                msgpack_map(&[("sym", msgpack_fixstr("a")), ("uuid", uuid_payload)]),
+            ),
+            (
+                "duplicate tag",
+                msgpack_map(&[("sym", msgpack_fixstr("a")), ("sym", msgpack_fixstr("b"))]),
+            ),
+            // A malformed or null payload must fail even when a valid tagged
+            // entry follows it; nothing falls through to the next entry.
+            (
+                "malformed payload before known tag",
+                msgpack_map(&[
+                    ("uuid", msgpack_fixstr("invalid")),
+                    ("sym", msgpack_fixstr("a")),
+                ]),
+            ),
+            (
+                "null payload before known tag",
+                msgpack_map(&[("uuid", vec![0xc0]), ("sym", msgpack_fixstr("a"))]),
+            ),
+            ("uuid null payload", msgpack_map(&[("uuid", vec![0xc0])])),
+            (
+                "fingerprint null payload",
+                msgpack_map(&[("fp", vec![0xc0])]),
+            ),
+            ("symbol null payload", msgpack_map(&[("sym", vec![0xc0])])),
+            (
+                "uuid payload wrong length",
+                msgpack_map(&[("uuid", msgpack_bin(&[1u8; 4]))]),
+            ),
+            (
+                "uuid payload not bytes",
+                msgpack_map(&[("uuid", msgpack_fixstr("invalid"))]),
+            ),
+            (
+                "fingerprint payload wrong length",
+                msgpack_map(&[("fp", msgpack_bin(&[1u8; 4]))]),
+            ),
+            (
+                "fingerprint payload not bytes",
+                msgpack_map(&[("fp", msgpack_fixstr("invalid!"))]),
+            ),
+            (
+                "symbol payload not a string",
+                msgpack_map(&[("sym", vec![0x01])]),
+            ),
+        ];
+
+        for (label, bytes) in rejected {
+            assert!(
+                utils::deser::from_msgpack_slice::<StableKey>(&bytes).is_err(),
+                "{label} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn serde_msgpack_rejects_unrepresentable_and_malformed_input() {
+        // No `StableKey` variant holds an unsigned value above `i64::MAX` or a
+        // float, so both must fail rather than silently truncate.
+        let too_large = rmp_serde::to_vec_named(&u64::MAX).expect("encode u64");
+        assert!(utils::deser::from_msgpack_slice::<StableKey>(&too_large).is_err());
+        let float = rmp_serde::to_vec_named(&1.5f64).expect("encode f64");
+        assert!(utils::deser::from_msgpack_slice::<StableKey>(&float).is_err());
+        // 0xc1 is reserved and cannot begin a MessagePack value, including
+        // inside an otherwise valid array.
+        assert!(utils::deser::from_msgpack_slice::<StableKey>(&[0xc1]).is_err());
+        assert!(utils::deser::from_msgpack_slice::<StableKey>(&[0x91, 0xc1]).is_err());
+
+        // `i64::MAX` itself encodes as a uint64 and must still decode.
+        let max = rmp_serde::to_vec_named(&StableKey::Int(i64::MAX)).expect("encode i64::MAX");
+        assert_eq!(
+            utils::deser::from_msgpack_slice::<StableKey>(&max).expect("decode i64::MAX"),
+            StableKey::Int(i64::MAX)
+        );
+
+        // Truncated input at every prefix of a nested array.
+        let key = StableKey::Array(Arc::from(vec![
+            StableKey::Str(Arc::from("process")),
+            StableKey::Bytes(Arc::from(&b"\x00\x01"[..])),
+        ]));
+        let full = rmp_serde::to_vec_named(&key).expect("encode");
+        for len in 1..full.len() {
+            assert!(
+                utils::deser::from_msgpack_slice::<StableKey>(&full[..len]).is_err(),
+                "truncation to {len} bytes must be rejected"
+            );
+        }
+        assert!(utils::deser::from_msgpack_slice::<StableKey>(&[]).is_err());
     }
 }

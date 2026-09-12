@@ -1017,3 +1017,48 @@ class TestShowTargetStates:
             )
             assert result.returncode != 0
             assert "cannot be combined" in result.stderr.lower()
+
+
+class TestShowTargetStatesTypedKeys:
+    """Tuple/bytes component paths and target-state keys in `show`.
+
+    Regression for the MessagePack `StableKey` decoder: tuple segments used to
+    read back as bytes and UTF-8 bytes as strings, so the owner lookup missed
+    and entries rendered as `#fingerprint` marked `[dangling]`.
+    """
+
+    @staticmethod
+    def _assert_typed_keys_rendered(stdout: str) -> None:
+        assert "@test_cli/typed_keys/[1,2]" in stdout
+        assert '@test_cli/typed_keys/b"abc"' in stdout
+        # Owners render with their own tuple/bytes component segments.
+        assert 'owner:/"process"/[1,2]' in stdout
+        assert 'owner:/"process"/b"abc"' in stdout
+        assert "/#" not in stdout
+        assert "[dangling]" not in stdout
+
+    def test_show_target_states_renders_tuple_and_bytes_keys(self) -> None:
+        run_cli("update", "./typed_key_app.py")
+
+        result = run_cli("show", "./typed_key_app.py", "--target-states")
+
+        self._assert_typed_keys_rendered(result.stdout)
+
+    def test_show_target_states_typed_keys_from_database(self) -> None:
+        """Same rendering from the database alone, without the app module.
+
+        Leaf keys come from tracking info; the root provider segment comes from
+        the persisted segment-name entries.
+        """
+        run_cli("update", "./typed_key_app.py")
+
+        result = run_cli(
+            "show",
+            "--db",
+            "./cocoindex.db",
+            "--app-name",
+            "TypedKeyApp",
+            "--target-states",
+        )
+
+        self._assert_typed_keys_rendered(result.stdout)
