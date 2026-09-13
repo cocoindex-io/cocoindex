@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import math
 from typing import Any
@@ -7,6 +8,7 @@ import pytest
 from cocoindex._internal.function import _apply_memo_key, _normalize_memo_key
 from cocoindex._internal.memo_fingerprint import (
     fingerprint_call,
+    memo_fingerprint,
     register_memo_key_function,
     unregister_memo_key_function,
 )
@@ -163,6 +165,54 @@ def test_cycles_are_supported_and_deterministic() -> None:
     assert fingerprint_call(_dummy_fn, (x1,), {}, []) == fingerprint_call(
         _dummy_fn, (x2,), {}, []
     )
+
+
+@pytest.mark.parametrize(
+    "shared",
+    [[1, 2], {"x": [1, 2]}, ([1, 2],), {1, 2}, frozenset({1, 2})],
+    ids=["list", "dict", "tuple", "set", "frozenset"],
+)
+def test_shared_values_match_independent_values(shared: object) -> None:
+    aliased = [shared, shared]
+    independent = [copy.deepcopy(shared), copy.deepcopy(shared)]
+    assert memo_fingerprint(aliased) == memo_fingerprint(independent)
+    assert fingerprint_call(_dummy_fn, (aliased,), {}, []) == fingerprint_call(
+        _dummy_fn, (independent,), {}, []
+    )
+    assert memo_fingerprint({"a": shared, "b": shared}) == memo_fingerprint(
+        {"b": copy.deepcopy(shared), "a": copy.deepcopy(shared)}
+    )
+
+
+def test_shared_dataclass_matches_independent_values() -> None:
+    @dataclasses.dataclass
+    class Value:
+        items: list[int]
+
+    shared = Value([1, 2])
+    assert memo_fingerprint([shared, shared]) == memo_fingerprint(
+        [Value([1, 2]), Value([1, 2])]
+    )
+
+
+def test_cycles_after_completed_siblings_are_order_independent() -> None:
+    first: list[object] = []
+    first.append(first)
+    second: list[object] = []
+    second.append(second)
+    assert memo_fingerprint({"items": [1, 2], "cycle": first}) == memo_fingerprint(
+        {"cycle": second, "items": [1, 2]}
+    )
+    assert memo_fingerprint([first, first]) == memo_fingerprint([first, second])
+
+
+def test_different_cycle_targets_do_not_collide() -> None:
+    root: list[object] = []
+    child: list[object] = [root]
+    root.append(child)
+    self_cycle: list[object] = []
+    self_cycle.append(self_cycle)
+    assert memo_fingerprint(root) != memo_fingerprint([self_cycle])
 
 
 def test_pickle_fallback_for_unsupported_objects() -> None:
