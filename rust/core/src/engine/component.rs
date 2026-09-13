@@ -114,8 +114,14 @@ struct ComponentInner<Prof: EngineProfile> {
     /// this child's Weak entry from the parent's active_children.
     parent: Option<Component<Prof>>,
 
-    /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
+    /// Serializes runs of this component. A run holds the permit from before
+    /// its body starts until its memo is stored (see `execute_once`), so two
+    /// runs never overlap, and the memo one run stores is in place before the
+    /// next decides whether to execute its body.
     build_semaphore: tokio::sync::Semaphore,
+    /// Memo key of the latest run that executed under `build_semaphore`. A run
+    /// that finds its own key here on acquiring the permit knows a same-key
+    /// run just completed, and re-checks the memo instead of executing again.
     last_memo_fp: Mutex<Option<Fingerprint>>,
 
     /// Identity registry of child components, keyed by their full StablePath,
@@ -567,6 +573,86 @@ impl ComponentExecutionHandle {
 struct ComponentBuildOutput<Prof: EngineProfile> {
     ret: Prof::FunctionData,
     built_target_states_providers: TargetStateProviderRegistry<Prof>,
+}
+
+/// Result of looking up a component's memo for the processor about to run.
+enum MemoLookup<Prof: EngineProfile> {
+    /// A valid memo stands in for a run: report the stored run's outcome and
+    /// output.
+    Reuse(ComponentRunOutcome, ComponentBuildOutput<Prof>),
+    /// No usable memo. `revalidated_states` is `Some` when a memo matched the
+    /// key but its memo states no longer validate: the states collected during
+    /// validation are then stored with the new memo, instead of being
+    /// collected again once the body has run.
+    Miss {
+        revalidated_states: Option<MemoStatesPayload<Prof>>,
+    },
+}
+
+/// How the permit-guarded part of `execute_once` ended.
+enum GuardedRun<Prof: EngineProfile> {
+    /// The body did not run: a run with the same memo key completed under the
+    /// permit while this one waited for it, and its memo was reused.
+    Reused(ComponentRunOutcome, ComponentBuildOutput<Prof>),
+    /// The body ran (build mode), or the component was deleted (delete mode).
+    Executed {
+        children_outcome: ComponentRunOutcome,
+        build_output: Option<ComponentBuildOutput<Prof>>,
+        touched_previous_states: bool,
+    },
+}
+
+/// Look up the memo stored for `comp_ctx`'s component and, when `processor`
+/// has a memo state handler, validate the stored memo states through it. A
+/// stored memo whose key is not `memo_fp` — or any stored memo, when the
+/// processor is not memoized (`memo_fp` is `None`) — is invalidated. A failure
+/// to read or decode the memo is logged and counts as a miss; a failure in the
+/// state handler propagates.
+async fn lookup_component_memo<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    processor: &Prof::ComponentProc,
+    memo_fp: Option<Fingerprint>,
+) -> Result<MemoLookup<Prof>> {
+    let memo = match use_or_invalidate_component_memoization(comp_ctx, memo_fp).await {
+        Ok(memo) => memo,
+        Err(err) => {
+            error!("component memoization restore failed: {err:?}");
+            None
+        }
+    };
+    let Some((ret, memo_states, stored_logic_deps, stored_provider_deps)) = memo else {
+        return Ok(MemoLookup::Miss {
+            revalidated_states: None,
+        });
+    };
+    if processor.has_memo_state_handler() && !memo_states.is_empty() {
+        let fut = processor.handle_memo_states(
+            comp_ctx.app_ctx().env().host_runtime_ctx(),
+            comp_ctx,
+            Some(memo_states),
+        )?;
+        let (new_states, can_reuse, states_changed) = fut.await?;
+        if !can_reuse {
+            return Ok(MemoLookup::Miss {
+                revalidated_states: Some(new_states),
+            });
+        }
+        // Reusable, but the states themselves moved (e.g. an mtime changed
+        // while the content hash did not): refresh them in the stored memo.
+        if states_changed {
+            update_component_memo_states(comp_ctx, &new_states).await?;
+        }
+    }
+    // Report the stored dependency sets upward even on a memo hit, so a
+    // mounting parent's memo depends on this whole subtree (see
+    // `merge_logic_deps` in `execute_once`).
+    Ok(MemoLookup::Reuse(
+        ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps),
+        ComponentBuildOutput {
+            ret,
+            built_target_states_providers: Default::default(),
+        },
+    ))
 }
 
 impl<Prof: EngineProfile> Component<Prof> {
@@ -1022,158 +1108,130 @@ impl<Prof: EngineProfile> Component<Prof> {
 
             // Fast-path: component memoization check does not require acquiring the build permit.
             // If it hits, we can immediately return without processing/submitting/waiting.
-
-            match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store).await
-            {
-                Ok(Some((ret, memo_states, stored_logic_deps, stored_provider_deps))) => {
-                    // If processor has state handler and there are stored states, validate them.
-                    if processor.has_memo_state_handler() && !memo_states.is_empty() {
-                        let fut = processor.handle_memo_states(
-                            processor_context.app_ctx().env().host_runtime_ctx(),
-                            processor_context,
-                            Some(memo_states),
-                        )?;
-                        let (new_states, can_reuse, states_changed) = fut.await?;
-                        if can_reuse {
-                            // Memo is reusable — update stored states if they changed
-                            if states_changed {
-                                update_component_memo_states(processor_context, &new_states)
-                                    .await?;
-                            }
-                            processing_stats.update(processor_name.as_ref(), |stats| {
-                                stats.num_execution_starts += 1;
-                                stats.num_unchanged += 1;
-                            });
-                            // Report the stored dependency set upward even on a
-                            // memo hit, so a mounting parent's memo depends on
-                            // this whole subtree (see `merge_logic_deps` below).
-                            return Ok((
-                                ComponentRunOutcome::reused(
-                                    stored_logic_deps,
-                                    stored_provider_deps,
-                                ),
-                                Some(ComponentBuildOutput {
-                                    ret,
-                                    built_target_states_providers: Default::default(),
-                                }),
-                            ));
-                        }
-                        // Not reusable — fall through to re-execution
-                        memo_states_for_store = Some(new_states);
-                    } else {
-                        // No state handler or no states — use cached result directly
-                        processing_stats.update(processor_name.as_ref(), |stats| {
-                            stats.num_execution_starts += 1;
-                            stats.num_unchanged += 1;
-                        });
-                        return Ok((
-                            ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps),
-                            Some(ComponentBuildOutput {
-                                ret,
-                                built_target_states_providers: Default::default(),
-                            }),
-                        ));
-                    }
+            match lookup_component_memo(processor_context, processor, memo_fp_to_store).await? {
+                MemoLookup::Reuse(outcome, output) => {
+                    processing_stats.update(processor_name, |stats| {
+                        stats.num_execution_starts += 1;
+                        stats.num_unchanged += 1;
+                    });
+                    return Ok((outcome, Some(output)));
                 }
-                Err(err) => {
-                    error!("component memoization restore failed: {err:?}");
+                MemoLookup::Miss { revalidated_states } => {
+                    memo_states_for_store = revalidated_states;
                 }
-                Ok(None) => {}
             }
 
-            processor_context
-                .processing_stats()
-                .update(processor_name.as_ref(), |stats| {
-                    stats.num_execution_starts += 1;
-                });
-            reported_processor_name = Some(Cow::Borrowed(processor.processor_info().name.as_str()));
+            processing_stats.update(processor_name, |stats| {
+                stats.num_execution_starts += 1;
+            });
+            reported_processor_name = Some(Cow::Borrowed(processor_name));
         }
 
         let result = {
             let reported_processor_name = &mut reported_processor_name;
             async move {
-                // Acquire the semaphore to ensure `process()` and `submit()` cannot overlap
-                // with another execution of the same component.
-                let (ret, submit_output, mut children_outcome) = {
-                    let _permit = self.inner.build_semaphore.acquire().await?;
+                // The permit is held until the memo is stored (or, in delete
+                // mode, the tombstone cleaned up), not only across `process()`
+                // and `submit()`: a run queued behind this one must find the
+                // stored memo once it gets the permit, so it can reuse it
+                // instead of executing again.
+                let _permit = self.inner.build_semaphore.acquire().await?;
 
-                    // Build mode only: write the component's own existence bit
-                    // (and ancestor chain) into the parent in its own txn,
-                    // before the user processor runs. Maintains the invariant
-                    // that existence ⊇ tracked state and eliminates the
-                    // dual-writer conflict with the parent's commit-time
-                    // existence reconciliation. See `internal_states.md` §3.1.
-                    if processor_context.mode() == ComponentProcessingMode::Build
-                        && !processor_context.preview()
+                // A run with the same memo key completed under the permit while
+                // this one waited for it — e.g. two `App::update` calls on one
+                // app that both missed the fast-path above before either had
+                // stored a memo. Re-check the memo now; a failed run stores
+                // none, so a miss falls through to executing.
+                if let Some(processor) = processor
+                    && memo_fp_to_store.is_some()
+                    && *self.inner.last_memo_fp.lock().unwrap() == memo_fp_to_store
+                {
+                    match lookup_component_memo(processor_context, processor, memo_fp_to_store)
+                        .await?
                     {
-                        eager_existence_upsert(processor_context).await?;
-                    }
-
-                    // Eagerly load all function-memo and user-state entries for
-                    // this component into the per-build cache (one read txn), so
-                    // every subsequent fn-call probe and `use_state` serves from
-                    // memory. Skipped under `full_reprocess` and in delete mode
-                    // (no `ComponentBuildingState`); see the cache flush logic
-                    // for how those cases are handled at commit time.
-                    processor_context.prefetch_states().await?;
-
-                    if memo_fp_to_store.is_some() {
-                        *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
-                        // TODO: when matching, it means there're ongoing processing for the same memoization key pending on children.
-                        // We can piggyback on the same processing to avoid duplicating the work.
-                    }
-
-                    // The earlier deadline check guards memo lookup. A component can still
-                    // spend time waiting for the build semaphore, existence upsert, or state
-                    // prefetch before the user body starts, so check again at the actual
-                    // processor-entry boundary.
-                    deadline.check()?;
-
-                    let ret: Result<Option<Prof::FunctionData>> = match &processor {
-                        Some(processor) => processor
-                            .process(
-                                processor_context.app_ctx().env().host_runtime_ctx(),
-                                &processor_context,
-                            )?
-                            .await
-                            .map(Some),
-                        None => Ok(None),
-                    };
-
-                    // Wait until children components ready before submitting this
-                    // component's target states and child-existence reconciliation.
-                    let components_readiness = processor_context.components_readiness();
-                    components_readiness.set_build_done();
-                    let mut children_outcome = components_readiness
-                        .readiness()
-                        .wait()
-                        .await
-                        .clone()
-                        .into_result()?;
-
-                    // Merge children's logic deps into this component's context. The
-                    // full set (own fp ∪ all descendants) is taken once after
-                    // memo-state collection below and used for both this component's
-                    // own memo and the outcome reported to its parent.
-                    processor_context
-                        .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
-                    processor_context.merge_target_provider_deps(std::mem::take(
-                        &mut children_outcome.target_provider_deps,
-                    ));
-
-                    let ret = ret?;
-                    deadline.check()?;
-                    let submit_output = submit(processor_context, processor, |name| {
-                        if reported_processor_name.is_none() {
-                            processing_stats.update(&name, |stats| {
-                                stats.num_execution_starts += 1;
-                            });
-                            *reported_processor_name = Some(Cow::Owned(name.to_string()));
+                        MemoLookup::Reuse(outcome, output) => {
+                            return Ok(GuardedRun::Reused(outcome, output));
                         }
-                    })
-                    .await?;
-                    Ok::<_, Error>((ret, submit_output, children_outcome))
-                }?;
+                        MemoLookup::Miss { revalidated_states } => {
+                            memo_states_for_store = revalidated_states;
+                        }
+                    }
+                }
+
+                // Build mode only: write the component's own existence bit
+                // (and ancestor chain) into the parent in its own txn,
+                // before the user processor runs. Maintains the invariant
+                // that existence ⊇ tracked state and eliminates the
+                // dual-writer conflict with the parent's commit-time
+                // existence reconciliation. See `internal_states.md` §3.1.
+                if processor_context.mode() == ComponentProcessingMode::Build
+                    && !processor_context.preview()
+                {
+                    eager_existence_upsert(processor_context).await?;
+                }
+
+                // Eagerly load all function-memo and user-state entries for
+                // this component into the per-build cache (one read txn), so
+                // every subsequent fn-call probe and `use_state` serves from
+                // memory. Skipped under `full_reprocess` and in delete mode
+                // (no `ComponentBuildingState`); see the cache flush logic
+                // for how those cases are handled at commit time.
+                processor_context.prefetch_states().await?;
+
+                if memo_fp_to_store.is_some() {
+                    *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
+                }
+
+                // The earlier deadline check guards memo lookup. A component can still
+                // spend time waiting for the build semaphore, existence upsert, or state
+                // prefetch before the user body starts, so check again at the actual
+                // processor-entry boundary.
+                deadline.check()?;
+
+                let ret: Result<Option<Prof::FunctionData>> = match &processor {
+                    Some(processor) => processor
+                        .process(
+                            processor_context.app_ctx().env().host_runtime_ctx(),
+                            &processor_context,
+                        )?
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                };
+
+                // Wait until children components ready before submitting this
+                // component's target states and child-existence reconciliation.
+                let components_readiness = processor_context.components_readiness();
+                components_readiness.set_build_done();
+                let mut children_outcome = components_readiness
+                    .readiness()
+                    .wait()
+                    .await
+                    .clone()
+                    .into_result()?;
+
+                // Merge children's logic deps into this component's context. The
+                // full set (own fp ∪ all descendants) is taken once after
+                // memo-state collection below and used for both this component's
+                // own memo and the outcome reported to its parent.
+                processor_context
+                    .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
+                processor_context.merge_target_provider_deps(std::mem::take(
+                    &mut children_outcome.target_provider_deps,
+                ));
+
+                let ret = ret?;
+                deadline.check()?;
+                let submit_output = submit(processor_context, processor, |name| {
+                    if reported_processor_name.is_none() {
+                        processing_stats.update(&name, |stats| {
+                            stats.num_execution_starts += 1;
+                        });
+                        *reported_processor_name = Some(Cow::Owned(name.to_string()));
+                    }
+                })
+                .await?;
+
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {
@@ -1199,19 +1257,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 MemoStatesPayload::default()
                             };
 
-                            let comp_memo = if let Some(fp) = memo_fp_to_store
-                                && let last_memo_fp = processor_context
-                                    .component()
-                                    .inner
-                                    .last_memo_fp
-                                    .lock()
-                                    .unwrap()
-                                && *last_memo_fp == memo_fp_to_store
-                            {
-                                Some((fp, &ret, &memo_states))
-                            } else {
-                                None
-                            };
+                            // Still under the permit, so no other run of this
+                            // component has started since `last_memo_fp` was
+                            // set above: the memo stored here is the latest.
+                            let comp_memo = memo_fp_to_store.map(|fp| (fp, &ret, &memo_states));
                             // Take the full dependency set once (O(1) move). It
                             // must run after the memo-state collection above, which
                             // reads the set via `collect_context_initial_states`.
@@ -1262,11 +1311,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                         None
                     }
                 };
-                Ok::<_, Error>((
+                Ok::<_, Error>(GuardedRun::Executed {
                     children_outcome,
                     build_output,
-                    submit_output.touched_previous_states,
-                ))
+                    touched_previous_states: submit_output.touched_previous_states,
+                })
             }
             .await
         };
@@ -1276,7 +1325,19 @@ impl<Prof: EngineProfile> Component<Prof> {
             .map(|s| s.as_ref())
             .unwrap_or(db_schema::UNKNOWN_PROCESSOR_NAME);
         match result {
-            Ok((children_outcome, build_output, touched_previous_states)) => {
+            Ok(GuardedRun::Reused(outcome, output)) => {
+                // The execution start was counted before the permit; the run
+                // ends like a fast-path memo hit.
+                processing_stats.update(final_processor_name, |stats| {
+                    stats.num_unchanged += 1;
+                });
+                Ok((outcome, Some(output)))
+            }
+            Ok(GuardedRun::Executed {
+                children_outcome,
+                build_output,
+                touched_previous_states,
+            }) => {
                 processing_stats.update(final_processor_name, |stats| {
                     if reported_processor_name.is_none() {
                         stats.num_execution_starts += 1;
@@ -1399,7 +1460,7 @@ mod tests {
     use cocoindex_utils::fingerprint::Fingerprint;
     use std::hash::{Hash, Hasher};
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1545,6 +1606,8 @@ mod tests {
         memo_fp: Fingerprint,
         body_started: Arc<AtomicBool>,
         advance_clock_in_state_handler: bool,
+        /// What the memo state handler reports as `can_reuse` on a memo hit.
+        memo_states_reusable: bool,
         on_process: Option<ProcessHook>,
     }
 
@@ -1560,8 +1623,14 @@ mod tests {
                 memo_fp,
                 body_started,
                 advance_clock_in_state_handler,
+                memo_states_reusable: false,
                 on_process: None,
             }
+        }
+
+        fn with_reusable_memo_states(mut self) -> Self {
+            self.memo_states_reusable = true;
+            self
         }
 
         fn with_on_process(mut self, hook: ProcessHook) -> Self {
@@ -1615,6 +1684,7 @@ mod tests {
             + 'static,
         > {
             let advance_clock = self.advance_clock_in_state_handler;
+            let reusable = self.memo_states_reusable;
             Ok(async move {
                 if advance_clock {
                     testing_advance_deadline_clock(Duration::from_secs(2));
@@ -1624,7 +1694,7 @@ mod tests {
                         positional: vec![TestData(b"state".to_vec())],
                         by_context_fp: Vec::new(),
                     },
-                    false,
+                    reusable,
                     false,
                 ))
             })
@@ -1799,5 +1869,87 @@ mod tests {
         // ...but nothing is active, immediately and without polling.
         assert!(!child.is_active());
         assert!(!root.is_active());
+    }
+
+    /// Start two updates of `app` back to back — the second before the first
+    /// has stored its memo — with memoizable root processors sharing `body`.
+    /// Returns both updates' results in start order.
+    async fn update_twice_concurrently(
+        app: &App<TestProfile>,
+        name: &str,
+        body: ProcessHook,
+    ) -> [crate::prelude::Result<TestData>; 2] {
+        let memo_fp = Fingerprint::from(&name).unwrap();
+        let processor = || {
+            TestProcessor::new(name, memo_fp, Arc::new(AtomicBool::new(false)), false)
+                .with_reusable_memo_states()
+                .with_on_process(body.clone())
+        };
+        let (first, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        let (second, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        [first.result().await, second.result().await]
+    }
+
+    /// Two runs of one component with the same memo key that both start before
+    /// either has stored a memo execute the body once: the run that loses the
+    /// race for the build permit finds the winner's memo under the permit and
+    /// reuses it — same result, no second execution.
+    #[tokio::test]
+    async fn concurrent_same_key_runs_execute_body_once() {
+        let (app, _dir) = test_app("memo_piggyback").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body: ProcessHook = {
+            let body_runs = body_runs.clone();
+            Arc::new(move |_ctx| {
+                let body_runs = body_runs.clone();
+                Box::pin(async move {
+                    body_runs.fetch_add(1, Ordering::SeqCst);
+                    // Outlast the second run's memo fast-path lookup, so that
+                    // it misses and has to wait for the permit.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            })
+        };
+        let [first, second] = update_twice_concurrently(&app, "memo_piggyback", body).await;
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// The re-check under the permit consults the memo store, not only the
+    /// key marker: a run that fails stores no memo, so the run queued behind
+    /// it executes the body itself instead of reusing a stale result.
+    #[tokio::test]
+    async fn queued_run_executes_after_a_failed_same_key_run() {
+        let (app, _dir) = test_app("memo_after_failure").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body: ProcessHook = {
+            let body_runs = body_runs.clone();
+            Arc::new(move |_ctx| {
+                let body_runs = body_runs.clone();
+                Box::pin(async move {
+                    let run = body_runs.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    if run == 0 {
+                        return Err(cocoindex_utils::internal_error!("first run fails"));
+                    }
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            })
+        };
+        let results = update_twice_concurrently(&app, "memo_after_failure", body).await;
+        assert_eq!(body_runs.load(Ordering::SeqCst), 2);
+        let (failed, succeeded): (Vec<_>, Vec<_>) =
+            results.into_iter().partition(|result| result.is_err());
+        assert_eq!(failed.len(), 1, "exactly the first run to execute fails");
+        assert_eq!(
+            succeeded.into_iter().next().unwrap().unwrap(),
+            TestData(b"ret".to_vec())
+        );
     }
 }
