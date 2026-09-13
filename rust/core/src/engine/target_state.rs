@@ -41,12 +41,6 @@ impl<Prof: EngineProfile> Clone for ChildTargetSlot<Prof> {
     }
 }
 
-impl<Prof: EngineProfile> Default for ChildTargetSlot<Prof> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<Prof: EngineProfile> ChildTargetSlot<Prof> {
     pub fn new() -> Self {
         Self {

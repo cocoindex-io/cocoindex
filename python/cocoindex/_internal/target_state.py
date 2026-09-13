@@ -208,9 +208,10 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     released; a tuple/NamedTuple callback is rejected with ``TypeError``.
 
     A sink built with :meth:`from_fn` / :meth:`from_async_fn` serves leaf
-    target states only. A sink whose actions may carry child target states
-    (container targets, or a sink shared between a container and its leaves)
-    is built with :meth:`from_fn_with_children` /
+    target states (or, deprecated, a container whose callback returns
+    ``ChildTargetDef`` entries). A sink whose actions may carry child target
+    states (container targets, or a sink shared between a container and its
+    leaves) is built with :meth:`from_fn_with_children` /
     :meth:`from_async_fn_with_children` and fulfills a :class:`ChildSlot` per
     child-bearing action.
 
