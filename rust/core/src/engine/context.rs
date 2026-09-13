@@ -192,7 +192,24 @@ pub struct FnCallMemo<Prof: EngineProfile> {
     /// Context-borne memo states, keyed by tracked-context value fingerprint.
     /// See `db_schema::FunctionMemoizationEntry::context_memo_states`.
     pub context_memo_states: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
-    pub(crate) already_stored: bool,
+    /// How this entry came to exist in the current run. Drives both flush
+    /// (does the DB row need writing?) and finalize (are the entry's target
+    /// states carried by the entry instead of the declared pipeline?).
+    pub(crate) origin: FnCallMemoOrigin,
+}
+
+/// See [`FnCallMemo::origin`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FnCallMemoOrigin {
+    /// The body ran this run. Its target states went through
+    /// `declared_target_states`; the row must be written at flush.
+    Executed,
+    /// Decoded from a stored row (cache hit, or reached via the finalize dep
+    /// walk); the body did not run. Its `target_state_paths` and transitive
+    /// `dependency_memo_entries` are "contained" and must be kept alive at
+    /// commit. `states_updated` is set by `FnCallMemoGuard::update_memo_states`
+    /// and only forces a row rewrite; it never changes the contained decision.
+    Loaded { states_updated: bool },
 }
 
 /// Combined payload of positional and context-borne memo states.
@@ -321,9 +338,11 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
     ///
     /// Inclusion rule:
     ///
-    /// - `Ready(Some, already_stored=false)` → serialize bytes into
-    ///   `writes` (new or re-executed entries that must be written).
-    /// - `Ready(Some, already_stored=true)` → skip (DB row already correct).
+    /// - `Ready(Some, Executed)` and `Ready(Some, Loaded { states_updated: true })`
+    ///   → serialize bytes into `writes` (new, re-executed, or state-refreshed
+    ///   entries that must be written).
+    /// - `Ready(Some, Loaded { states_updated: false })` → skip (DB row already
+    ///   correct).
     /// - `Stored(_)` and `Ready(None)` → record in `deletes`, only when
     ///   `is_fully_loaded=true` (otherwise these entries can't exist on
     ///   disk because prefetch didn't run).
@@ -348,8 +367,13 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
             let state = std::mem::replace(&mut *guard, FnCallMemoEntry::Pending);
             match state {
                 FnCallMemoEntry::Ready(Some(memo)) => {
-                    if memo.already_stored {
-                        // Cache hit: DB row already correct.
+                    if matches!(
+                        memo.origin,
+                        FnCallMemoOrigin::Loaded {
+                            states_updated: false
+                        }
+                    ) {
+                        // Cache hit with unchanged states: DB row already correct.
                         continue;
                     }
                     let ret_bytes = memo.ret.to_bytes()?;
@@ -460,7 +484,9 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
         logic_deps: decoded.logic_deps.into_iter().collect(),
         memo_states,
         context_memo_states,
-        already_stored: true,
+        origin: FnCallMemoOrigin::Loaded {
+            states_updated: false,
+        },
     }));
     Ok(())
 }
@@ -1477,5 +1503,124 @@ mod tests {
         apply_plan_via_commit(&store, &p, cache).await;
 
         assert!(read_regular_states(&store, &p).await.is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // FnMemoCache flush classification by `FnCallMemoOrigin`
+    // ---------------------------------------------------------------------
+
+    mod fn_memo_origin {
+        use super::super::{FnCallMemo, FnCallMemoEntry, FnCallMemoOrigin, FnMemoCache};
+        // The engine-wide test profile (and its `TestData`, distinct from the
+        // `TestData` in the enclosing module) lives with the component tests.
+        use crate::engine::component::tests::{TestData, TestProfile};
+        use crate::state::db_schema::MemoizedValue;
+        use cocoindex_utils::fingerprint::Fingerprint;
+        use std::collections::HashSet;
+
+        fn fp(name: &str) -> Fingerprint {
+            Fingerprint::from(&name).unwrap()
+        }
+
+        fn memo(origin: FnCallMemoOrigin) -> FnCallMemo<TestProfile> {
+            FnCallMemo {
+                ret: TestData(b"ret".to_vec()),
+                target_state_paths: vec![],
+                target_provider_deps: Default::default(),
+                dependency_memo_entries: HashSet::new(),
+                logic_deps: HashSet::new(),
+                memo_states: vec![TestData(b"state".to_vec())],
+                context_memo_states: vec![],
+                origin,
+            }
+        }
+
+        fn set(
+            cache: &mut FnMemoCache<TestProfile>,
+            name: &str,
+            entry: FnCallMemoEntry<TestProfile>,
+        ) {
+            let lock = cache.entry_or_pending(fp(name));
+            *lock.try_write().unwrap() = entry;
+        }
+
+        /// Flush must write executed entries and loaded entries whose memo
+        /// states were refreshed, skip loaded entries with unchanged states,
+        /// and delete rows that were never touched or were invalidated.
+        #[test]
+        fn flush_plan_writes_by_origin() {
+            let mut cache = FnMemoCache::<TestProfile>::new();
+            // Prefetched rows: mark the cache fully loaded so untouched rows
+            // become deletes instead of a prefix clear.
+            cache.populate(vec![
+                (fp("stored"), b"row".to_vec()),
+                (fp("invalid"), b"row".to_vec()),
+            ]);
+            set(&mut cache, "invalid", FnCallMemoEntry::Ready(None));
+            set(
+                &mut cache,
+                "executed",
+                FnCallMemoEntry::Ready(Some(memo(FnCallMemoOrigin::Executed))),
+            );
+            set(
+                &mut cache,
+                "loaded",
+                FnCallMemoEntry::Ready(Some(memo(FnCallMemoOrigin::Loaded {
+                    states_updated: false,
+                }))),
+            );
+            set(
+                &mut cache,
+                "refreshed",
+                FnCallMemoEntry::Ready(Some(memo(FnCallMemoOrigin::Loaded {
+                    states_updated: true,
+                }))),
+            );
+            set(&mut cache, "pending", FnCallMemoEntry::Pending);
+
+            let plan = cache.into_flush_plan().unwrap();
+
+            assert!(!plan.clear_all_first);
+            let mut writes: Vec<Fingerprint> = plan.writes.into_iter().map(|(f, _)| f).collect();
+            writes.sort_by_key(|f| f.to_base64());
+            let mut expected_writes = vec![fp("executed"), fp("refreshed")];
+            expected_writes.sort_by_key(|f| f.to_base64());
+            assert_eq!(writes, expected_writes);
+
+            let mut deletes = plan.deletes;
+            deletes.sort_by_key(|f| f.to_base64());
+            let mut expected_deletes = vec![fp("stored"), fp("invalid")];
+            expected_deletes.sort_by_key(|f| f.to_base64());
+            assert_eq!(deletes, expected_deletes);
+        }
+
+        /// A refreshed loaded entry must be written with its stored memo
+        /// states replaced, and nothing else about the row changed.
+        #[test]
+        fn refreshed_row_carries_new_states() {
+            let mut cache = FnMemoCache::<TestProfile>::new();
+            cache.populate(vec![]);
+            let mut m = memo(FnCallMemoOrigin::Loaded {
+                states_updated: true,
+            });
+            m.memo_states = vec![TestData(b"new-state".to_vec())];
+            set(&mut cache, "refreshed", FnCallMemoEntry::Ready(Some(m)));
+
+            let plan = cache.into_flush_plan().unwrap();
+            assert_eq!(plan.writes.len(), 1);
+            assert!(plan.deletes.is_empty());
+            let (_, bytes) = &plan.writes[0];
+            let decoded: crate::state::db_schema::FunctionMemoizationEntry<'_> =
+                cocoindex_utils::deser::from_msgpack_slice(bytes).unwrap();
+            let [MemoizedValue::Inlined(state)] = decoded.memo_states.as_slice() else {
+                panic!(
+                    "expected exactly one memo state, got {:?}",
+                    decoded.memo_states
+                );
+            };
+            assert_eq!(state.as_ref(), b"new-state");
+            let MemoizedValue::Inlined(ret) = &decoded.return_value;
+            assert_eq!(ret.as_ref(), b"ret");
+        }
     }
 }
