@@ -602,10 +602,12 @@ enum GuardedRun<Prof: EngineProfile> {
     },
 }
 
-/// Look up the memo stored for `comp_ctx`'s component under `memo_fp` and,
-/// when `processor` has a memo state handler, validate the stored memo states
-/// through it. A failure to read or decode the memo is logged and counts as a
-/// miss; a failure in the state handler propagates.
+/// Look up the memo stored for `comp_ctx`'s component and, when `processor`
+/// has a memo state handler, validate the stored memo states through it. A
+/// stored memo whose key is not `memo_fp` — or any stored memo, when the
+/// processor is not memoized (`memo_fp` is `None`) — is invalidated. A failure
+/// to read or decode the memo is logged and counts as a miss; a failure in the
+/// state handler propagates.
 async fn lookup_component_memo<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor: &Prof::ComponentProc,
@@ -1136,9 +1138,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                 let _permit = self.inner.build_semaphore.acquire().await?;
 
                 // A run with the same memo key completed under the permit while
-                // this one waited for it — e.g. two concurrent mounts of one
-                // component that both missed the fast-path above before either
-                // had stored a memo. Re-check the memo now; a failed run stores
+                // this one waited for it — e.g. two `App::update` calls on one
+                // app that both missed the fast-path above before either had
+                // stored a memo. Re-check the memo now; a failed run stores
                 // none, so a miss falls through to executing.
                 if let Some(processor) = processor
                     && memo_fp_to_store.is_some()
