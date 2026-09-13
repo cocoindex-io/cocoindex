@@ -423,7 +423,12 @@ class _NamespaceHandler(
         prev_possible_records: Collection[_NamespaceTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_NamespaceAction, _NamespaceTrackingRecord] | None:
+    ) -> (
+        coco.TargetReconcileOutput[
+            _NamespaceAction, _NamespaceTrackingRecord, _RowHandler
+        ]
+        | None
+    ):
         key = _NamespaceKey(*_NAMESPACE_KEY_CHECKER.check(key))
         tracking_record: _NamespaceTrackingRecord | coco.NonExistenceType
 

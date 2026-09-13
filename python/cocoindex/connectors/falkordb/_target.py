@@ -940,7 +940,10 @@ class _TableHandler(
         prev_possible_records: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord] | None:
+    ) -> (
+        coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RecordHandler]
+        | None
+    ):
         key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
 
         if coco.is_non_existence(desired_state):

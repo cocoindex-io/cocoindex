@@ -121,7 +121,9 @@ def _reconcile_entry(
     desired_state: _EntrySpec | coco.NonExistenceType,
     prev_possible_records: Collection[_EntryTrackingRecord],
     prev_may_be_missing: bool,
-) -> coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord] | None:
+) -> (
+    coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler] | None
+):
     """Common reconcile logic for both root and non-root entries."""
     if coco.is_non_existence(desired_state):
         # Determine entry type from previous state (None fingerprint = dir)
@@ -194,7 +196,10 @@ class _EntryHandler(
         prev_possible_records: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord] | None:
+    ) -> (
+        coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
+        | None
+    ):
         key = _ENTRY_NAME_CHECKER.check(key)
         path = self._base_path / key
         return _reconcile_entry(
@@ -242,7 +247,10 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
         prev_possible_records: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord] | None:
+    ) -> (
+        coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
+        | None
+    ):
         root_key = _RootKey(*_ROOT_KEY_CHECKER.check(key))
         if root_key.base_dir_key is None:
             path_str = str((pathlib.Path.cwd() / root_key.path).resolve())

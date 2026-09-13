@@ -809,7 +809,10 @@ class _CollectionHandler(
         prev_may_be_missing: bool,
         /,
     ) -> (
-        coco.TargetReconcileOutput[_CollectionAction, _CollectionTrackingRecord] | None
+        coco.TargetReconcileOutput[
+            _CollectionAction, _CollectionTrackingRecord, _DocHandler
+        ]
+        | None
     ):
         key = _CollectionKey(*_COLLECTION_KEY_CHECKER.check(key))
         tracking_record: _CollectionTrackingRecord | coco.NonExistenceType

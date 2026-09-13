@@ -280,7 +280,12 @@ class DictsTargetStateStore(coco.TargetHandler[None, None, DictTargetStateStore]
         desired_state: None | coco.NonExistenceType,
         prev_possible_records: Collection[None],
         prev_may_be_missing: bool,
-    ) -> coco.TargetReconcileOutput[_DictTargetStateStoreAction, None] | None:
+    ) -> (
+        coco.TargetReconcileOutput[
+            _DictTargetStateStoreAction, None, DictTargetStateStore
+        ]
+        | None
+    ):
         assert isinstance(key, str)
         if coco.is_non_existence(desired_state):
             return coco.TargetReconcileOutput(
@@ -451,7 +456,12 @@ class AttachmentDictsTargetStateStore(
         desired_state: None | coco.NonExistenceType,
         prev_possible_records: Collection[None],
         prev_may_be_missing: bool,
-    ) -> coco.TargetReconcileOutput[_DictTargetStateStoreAction, None] | None:
+    ) -> (
+        coco.TargetReconcileOutput[
+            _DictTargetStateStoreAction, None, _AttachmentChildHandler
+        ]
+        | None
+    ):
         assert isinstance(key, str)
         if coco.is_non_existence(desired_state):
             return coco.TargetReconcileOutput(

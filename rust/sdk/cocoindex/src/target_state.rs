@@ -232,6 +232,47 @@ where
         Self::from_async_fn_with_children_ctx(move |_host_ctx, actions| f(actions))
     }
 
+    /// Deprecated form of [`Self::from_async_fn_with_children`] taking the
+    /// pre-slot closure shape: the closure returns the child handler
+    /// definitions as a `Vec` index-aligned with the actions (`None` for an
+    /// action without a child). The definitions are used to fulfill the
+    /// actions' child slots; a missing definition for an action that has a
+    /// slot, or a length mismatch, fails the batch.
+    #[deprecated(note = "use `from_async_fn_with_children` and fulfill each action's `ChildSlot`")]
+    pub fn from_async_fn_with_child_defs<F, Fut>(f: F) -> Self
+    where
+        F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send + 'static,
+    {
+        let f = Arc::new(f);
+        Self::from_async_fn_with_children(move |actions| {
+            let f = f.clone();
+            async move {
+                let (actions, slots): (Vec<_>, Vec<_>) = actions.into_iter().unzip();
+                let defs = f(actions).await?;
+                if defs.len() != slots.len() {
+                    return Err(Error::engine(format!(
+                        "target action sink returned {} child handler definitions for {} actions",
+                        defs.len(),
+                        slots.len()
+                    )));
+                }
+                for (slot, def) in slots.into_iter().zip(defs) {
+                    if let Some(slot) = slot {
+                        let def = def.ok_or_else(|| {
+                            Error::engine(
+                                "target action sink returned no child handler for an action \
+                                 whose target state declared a child",
+                            )
+                        })?;
+                        slot.fulfill(def)?;
+                    }
+                }
+                Ok(())
+            }
+        })
+    }
+
     /// Like [`Self::from_async_fn`], but the apply closure also receives the
     /// host context (the environment's [`ContextStore`]) so it can resolve a
     /// provided connection by its stable key at apply time (`design_connectors.md`

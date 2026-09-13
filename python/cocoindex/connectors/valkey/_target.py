@@ -542,7 +542,10 @@ class _IndexHandler(
         prev_possible_records: Collection[_IndexTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_IndexAction, _IndexTrackingRecord] | None:
+    ) -> (
+        coco.TargetReconcileOutput[_IndexAction, _IndexTrackingRecord, _DocumentHandler]
+        | None
+    ):
         if not isinstance(key, tuple) or len(key) != 2:
             raise TypeError(
                 f"Index key must be a (db_key, index_name) tuple, got {key!r}"

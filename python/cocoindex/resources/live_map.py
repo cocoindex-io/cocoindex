@@ -151,7 +151,7 @@ class _ContainerHandler(
         prev_possible_records: _Collection[_ContainerRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> "_coco.TargetReconcileOutput[_ContainerAction, _ContainerRecord] | None":
+    ) -> "_coco.TargetReconcileOutput[_ContainerAction, _ContainerRecord, _EntryHandler] | None":
         if _coco.is_non_existence(desired_state):
             return _coco.TargetReconcileOutput(
                 action=_ContainerAction(None, True),

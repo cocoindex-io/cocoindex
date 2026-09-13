@@ -11,8 +11,10 @@ from typing import (
     Any,
     Sequence,
     TypeAlias,
+    overload,
 )
 import threading
+import warnings
 import weakref
 from typing_extensions import TypeVar
 
@@ -40,6 +42,9 @@ TrackingRecordT_co = TypeVar("TrackingRecordT_co", covariant=True, default=Any)
 HandlerT_contra = TypeVar(
     "HandlerT_contra", contravariant=True, bound="TargetHandler[Any, Any, Any]"
 )
+HandlerT_co = TypeVar(
+    "HandlerT_co", covariant=True, bound="TargetHandler[Any, Any, Any]"
+)
 OptChildHandlerT = TypeVar(
     "OptChildHandlerT",
     bound="TargetHandler[Any, Any, Any] | None",
@@ -51,6 +56,12 @@ OptChildHandlerT_co = TypeVar(
     bound="TargetHandler[Any, Any, Any] | None",
     default=None,
     covariant=True,
+)
+# Deprecated second type parameter of `TargetActionSink`. Defaults to `Any` so
+# `TargetActionSink[A]` accepts a sink annotated the pre-slot way,
+# `TargetActionSink[A, ChildHandler]`, and vice versa.
+_DeprecatedChildHandlerT_co = TypeVar(
+    "_DeprecatedChildHandlerT_co", default=Any, covariant=True
 )
 
 
@@ -114,16 +125,56 @@ class ChildSlot(Generic[HandlerT_contra]):
         self._core.fulfill(_TypedTargetHandlerWrapper(handler))
 
 
+class ChildTargetDef(Generic[HandlerT_co], NamedTuple):
+    """Deprecated: a child handler returned from a sink under the pre-slot contract.
+
+    Before child slots, a container sink built with
+    :meth:`TargetActionSink.from_fn` / :meth:`TargetActionSink.from_async_fn`
+    returned one ``ChildTargetDef`` (or ``None``) per action, index-aligned with
+    ``actions``. Such sinks still work and emit a :class:`DeprecationWarning`;
+    new code builds the sink with :meth:`TargetActionSink.from_fn_with_children`
+    and fulfills each :class:`ChildSlot` instead. This class will be removed in
+    a future release.
+    """
+
+    handler: HandlerT_co
+
+
 class TargetActionSinkFn(Protocol[ActionT_contra]):
+    """Sync callback of a sink built with :meth:`TargetActionSink.from_fn`."""
+
     def __call__(
         self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
     ) -> None: ...
 
 
 class AsyncTargetActionSinkFn(Protocol[ActionT_contra]):
+    """Async callback of a sink built with :meth:`TargetActionSink.from_async_fn`."""
+
     async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
     ) -> None: ...
+
+
+class LegacyTargetActionSinkFn(Protocol[ActionT_contra]):
+    """Deprecated: the pre-slot callback contract of :meth:`TargetActionSink.from_fn`.
+
+    The callback returns one :class:`ChildTargetDef` (or ``None``) per action,
+    index-aligned with ``actions``. Such sinks still run and emit a
+    :class:`DeprecationWarning`; see :class:`ChildTargetDef`.
+    """
+
+    def __call__(
+        self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
+    ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
+
+
+class LegacyAsyncTargetActionSinkFn(Protocol[ActionT_contra]):
+    """Deprecated: async counterpart of :class:`LegacyTargetActionSinkFn`."""
+
+    async def __call__(
+        self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
+    ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
 
 
 class TargetActionSinkWithChildrenFn(Protocol[ActionT_contra]):
@@ -146,7 +197,7 @@ class AsyncTargetActionSinkWithChildrenFn(Protocol[ActionT_contra]):
     ) -> None: ...
 
 
-class TargetActionSink(Generic[ActionT_contra]):
+class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     """Applies batches of actions to the external system.
 
     Sinks share one identity — actions reconciled to them are batched and
@@ -161,6 +212,10 @@ class TargetActionSink(Generic[ActionT_contra]):
     is built with :meth:`from_fn_with_children` /
     :meth:`from_async_fn_with_children` and fulfills a :class:`ChildSlot` per
     child-bearing action.
+
+    The second type parameter is deprecated and ignored. It remains so that
+    ``TargetActionSink[Action, ChildHandler]`` annotations written for the
+    pre-slot contract keep working; write ``TargetActionSink[Action]``.
     """
 
     __slots__ = ("_core",)
@@ -169,21 +224,60 @@ class TargetActionSink(Generic[ActionT_contra]):
     def __init__(self, core_action_sink: core.TargetActionSink):
         self._core = core_action_sink
 
+    def __class_getitem__(cls, params: Any) -> Any:
+        if isinstance(params, tuple) and len(params) == 2:
+            warnings.warn(
+                "TargetActionSink takes one type argument; the second (child "
+                "handler) argument is deprecated and ignored",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return super().__class_getitem__(params)  # type: ignore[misc]
+
+    @overload
     @staticmethod
     def from_fn(
         fn: TargetActionSinkFn[ActionT_contra],
-    ) -> "TargetActionSink[ActionT_contra]":
-        """Create a leaf sink from a sync callback ``(context_provider, actions)``."""
+    ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]": ...
+    @overload
+    @staticmethod
+    def from_fn(
+        fn: LegacyTargetActionSinkFn[ActionT_contra],
+    ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]": ...
+    @staticmethod
+    def from_fn(
+        fn: TargetActionSinkFn[Any] | LegacyTargetActionSinkFn[Any],
+    ) -> "TargetActionSink[Any, Any]":
+        """Create a leaf sink from a sync callback ``(context_provider, actions)``.
+
+        A callback returning ``ChildTargetDef`` entries (the deprecated
+        pre-slot contract, :class:`LegacyTargetActionSinkFn`) is still accepted.
+        """
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(
             core.TargetActionSink.new_sync(canonical, with_children=False)
         )
 
+    @overload
     @staticmethod
     def from_async_fn(
         fn: AsyncTargetActionSinkFn[ActionT_contra],
-    ) -> "TargetActionSink[ActionT_contra]":
-        """Create a leaf sink from an async callback ``(context_provider, actions)``."""
+    ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]": ...
+    @overload
+    @staticmethod
+    def from_async_fn(
+        fn: LegacyAsyncTargetActionSinkFn[ActionT_contra],
+    ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]": ...
+    @staticmethod
+    def from_async_fn(
+        fn: AsyncTargetActionSinkFn[Any] | LegacyAsyncTargetActionSinkFn[Any],
+    ) -> "TargetActionSink[Any, Any]":
+        """Create a leaf sink from an async callback ``(context_provider, actions)``.
+
+        A callback returning ``ChildTargetDef`` entries (the deprecated
+        pre-slot contract, :class:`LegacyAsyncTargetActionSinkFn`) is still
+        accepted.
+        """
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(
             core.TargetActionSink.new_async(canonical, with_children=False)
@@ -192,7 +286,7 @@ class TargetActionSink(Generic[ActionT_contra]):
     @staticmethod
     def from_fn_with_children(
         fn: TargetActionSinkWithChildrenFn[ActionT_contra],
-    ) -> "TargetActionSink[ActionT_contra]":
+    ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]":
         """Create a container sink from a sync callback
         ``(context_provider, actions, child_slots)``.
 
@@ -209,7 +303,7 @@ class TargetActionSink(Generic[ActionT_contra]):
     @staticmethod
     def from_async_fn_with_children(
         fn: AsyncTargetActionSinkWithChildrenFn[ActionT_contra],
-    ) -> "TargetActionSink[ActionT_contra]":
+    ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]":
         """Async counterpart of :meth:`from_fn_with_children`."""
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(
@@ -301,7 +395,18 @@ _SYNC_FN_DEDUPER = _ObjectDeduper()
 _ASYNC_FN_DEDUPER = _ObjectDeduper()
 
 
-class TargetReconcileOutput(Generic[ActionT, TrackingRecordT_co], NamedTuple):
+class TargetReconcileOutput(
+    Generic[ActionT, TrackingRecordT_co, OptChildHandlerT_co], NamedTuple
+):
+    """What ``reconcile()`` returns when an action is needed.
+
+    The third type parameter declares the handler type of the child target
+    states the action's sink fulfills (through :class:`ChildSlot`), or ``None``
+    for a leaf target. Nothing in the tuple depends on it: it is how a
+    :class:`TargetHandler` states its child handler type, which types the
+    provider chain (``declare_target_state_with_child`` / ``mount_target``).
+    """
+
     action: ActionT
     sink: TargetActionSink[ActionT]
     tracking_record: TrackingRecordT_co | NonExistenceType
@@ -312,11 +417,10 @@ class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co
     """Reconciles one kind of target state.
 
     ``OptChildHandlerT_co`` is the handler type of the child target states this
-    handler's sink fulfills (through :class:`ChildSlot`), or ``None`` for a leaf
-    target. ``reconcile`` does not mention it: it types the provider chain
-    (``declare_target_state_with_child`` / ``mount_target``), so a container
-    handler subclasses ``TargetHandler[Spec, TrackingRecord, ChildHandler]``
-    explicitly.
+    handler's sink fulfills, or ``None`` for a leaf target. A container handler
+    declares it on the return type of ``reconcile``
+    (``TargetReconcileOutput[Action, TrackingRecord, ChildHandler]``), or by
+    subclassing ``TargetHandler[Spec, TrackingRecord, ChildHandler]``.
     """
 
     def reconcile(
@@ -326,7 +430,7 @@ class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co
         prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
-    ) -> TargetReconcileOutput[Any, TrackingRecordT] | None: ...
+    ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT_co] | None: ...
 
 
 class TargetStateProvider(

@@ -51,7 +51,9 @@ For targets nested inside another target (e.g., files inside a directory):
 1. Build the parent's sink with `TargetActionSink.from_fn_with_children()` / `from_async_fn_with_children()`. Its callback receives a third positional argument, `child_slots: Mapping[int, ChildSlot[ChildHandler]]` — one slot per action whose target state was declared with a child, keyed by the action's index in `actions` — and calls `child_slots[i].fulfill(handler)` for each. Orphan deletes (and leaf actions on a shared sink) have no slot; index with `child_slots[i]`, not `.get()`, so a missing slot surfaces as a bug
 2. Call `declare_target_state_with_child(parent_ts)` to get an unresolved child provider
 3. CocoIndex resolves the child provider with the handler the sink fulfilled when the parent's sink executes; a slot left unfulfilled fails the commit
-4. Subclass `coco.TargetHandler[Spec, TrackingRecord, ChildHandler]` explicitly on the container handler: the third parameter types the provider chain and is not inferable from `reconcile()`
+4. Declare the child handler type as the third argument of the container handler's `reconcile()` return type, `coco.TargetReconcileOutput[Action, TrackingRecord, ChildHandler]` (or subclass `coco.TargetHandler[Spec, TrackingRecord, ChildHandler]` explicitly); it types the provider chain
+
+`coco.ChildTargetDef` and sinks that return an index-aligned list of child handlers are deprecated (they still run, with a `DeprecationWarning`); never use them in new connectors. `coco.TargetActionSink` takes one type argument; a second one is deprecated and ignored.
 
 ### Child Invalidation
 
@@ -102,7 +104,7 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
         prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
-    ) -> TargetReconcileOutput[Any, TrackingRecordT] | None:
+    ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT] | None:
         ...
 
     # Optional: override to support attachment types
@@ -119,7 +121,7 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
 
 **Returns:**
 
-- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed (generic params: `[ActionT, TrackingRecordT]`)
+- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed (generic params: `[ActionT, TrackingRecordT, OptChildHandlerT]`; the third declares the child handler type a container's sink fulfills, `None` for leaf targets)
 - `None` if no changes are required
 
 The optional `child_invalidation` field is only relevant for container targets — see [Child Invalidation](#child-invalidation).

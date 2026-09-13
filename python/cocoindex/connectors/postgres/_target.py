@@ -1191,7 +1191,10 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         prev_possible_records: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord] | None:
+    ) -> (
+        coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
+        | None
+    ):
         key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
 
         tracking_record: _TableTrackingRecord | coco.NonExistenceType

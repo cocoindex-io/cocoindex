@@ -80,6 +80,7 @@ from .context_keys import ContextKey, ContextProvider
 
 from .target_state import (
     ChildSlot,
+    ChildTargetDef,
     TargetReconcileOutput,
     TargetActionSink,
     PendingTargetStateProvider,
@@ -915,6 +916,7 @@ __all__ = [
     "ContextProvider",
     # .target_state
     "ChildSlot",
+    "ChildTargetDef",
     "TargetState",
     "TargetStateProvider",
     "TargetReconcileOutput",

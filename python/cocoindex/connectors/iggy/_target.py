@@ -196,7 +196,7 @@ class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
         prev_possible_records: Collection[None],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_TopicAction, None]:
+    ) -> coco.TargetReconcileOutput[_TopicAction, None, _MessageHandler]:
         topic_key = _TopicKey(*_TOPIC_KEY_CHECKER.check(key))
 
         tracking_record: None | coco.NonExistenceType

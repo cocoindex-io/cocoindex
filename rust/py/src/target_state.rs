@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::CString;
 use std::hash::{Hash, Hasher};
 use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
@@ -10,7 +11,8 @@ use cocoindex_core::engine::target_state::{
     TargetStateProviderRegistry, WeakTargetActionSinkKeeper,
 };
 use futures::FutureExt;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::exceptions::PyDeprecationWarning;
+use pyo3::types::{PyDict, PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::prelude::*;
@@ -163,7 +165,8 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
         host_ctx: Arc<Py<PyAny>>,
         actions: Vec<TargetActionWithChildSlot<PyEngineProfile>>,
     ) -> Result<()> {
-        let call = Python::attach(|py| -> Result<_> {
+        let actions_len = actions.len();
+        let (call, legacy_child_slots) = Python::attach(|py| -> Result<_> {
             let context_provider = host_ctx.as_ref().clone_ref(py);
             // Split the child slots off while building the action list, so a
             // leaf-only batch costs nothing beyond the list itself.
@@ -190,32 +193,127 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
                         .from_py_result()?;
                     slots.set_item(idx, slot).from_py_result()?;
                 }
-                Ok(self
+                let call = self
                     .callback
                     .call(
                         host_runtime_ctx,
                         (context_provider, actions.unbind(), slots.unbind()),
                     )?
-                    .boxed())
+                    .boxed();
+                Ok((call, None))
             } else {
-                if !child_slots.is_empty() {
-                    client_bail!(
-                        "target action sink built with `TargetActionSink.from_fn()` / \
-                         `from_async_fn()` received {} action(s) with child target states; \
-                         build it with `from_fn_with_children()` / `from_async_fn_with_children()` \
-                         and fulfill their child slots",
-                        child_slots.len()
-                    );
-                }
-                Ok(self
+                // A `from_fn` / `from_async_fn` sink gets no slots. If it
+                // returns the deprecated index-aligned child-handler list, the
+                // slots are fulfilled from it after the call.
+                let call = self
                     .callback
                     .call(host_runtime_ctx, (context_provider, actions.unbind()))?
-                    .boxed())
+                    .boxed();
+                Ok((call, Some(child_slots)))
             }
         })?;
-        call.await?;
+        let ret = call.await?;
+        if let Some(child_slots) = legacy_child_slots {
+            Python::attach(|py| {
+                self.fulfill_from_legacy_child_defs(py, ret.bind(py), actions_len, child_slots)
+            })?;
+        }
         Ok(())
     }
+}
+
+impl PyTargetActionSinkInner {
+    /// Deprecated pre-slot contract: a `from_fn` / `from_async_fn` callback
+    /// returned a sequence of `ChildTargetDef | None` index-aligned with the
+    /// actions. Fulfill the engine's slots from it (after a deprecation
+    /// warning) so such sinks keep working until the contract is removed.
+    fn fulfill_from_legacy_child_defs(
+        &self,
+        py: Python<'_>,
+        ret: &Bound<'_, PyAny>,
+        actions_len: usize,
+        child_slots: Vec<(usize, ChildTargetSlot<PyEngineProfile>)>,
+    ) -> Result<()> {
+        if ret.is_none() {
+            if child_slots.is_empty() {
+                return Ok(());
+            }
+            client_bail!(
+                "target action sink built with `TargetActionSink.from_fn()` / \
+                 `from_async_fn()` received {} action(s) with child target states; \
+                 build it with `from_fn_with_children()` / `from_async_fn_with_children()` \
+                 and fulfill their child slots",
+                child_slots.len()
+            );
+        }
+        (|| -> PyResult<()> {
+            let message = CString::new(format!(
+                "{} returned child handler definitions from a target action sink \
+                 callback; that contract is deprecated and will be removed. Build the \
+                 sink with `TargetActionSink.from_fn_with_children()` / \
+                 `from_async_fn_with_children()` and fulfill the child slots instead \
+                 (see \"Migrating from ChildTargetDef\" in the custom target connector docs).",
+                callback_label(self.callback.object().bind(py))
+            ))?;
+            let category = py.get_type::<PyDeprecationWarning>();
+            PyErr::warn(py, category.as_any(), &message, 1)
+        })()
+        .from_py_result()?;
+        let defs = ret
+            .cast::<PySequence>()
+            .map_err(PyErr::from)
+            .from_py_result()?;
+        let len = defs.len().from_py_result()?;
+        if len != actions_len {
+            client_bail!(
+                "target action sink returned {} child handler definitions for {} actions",
+                len,
+                actions_len
+            );
+        }
+        let wrap = &python_objects().child_slot_wrapper_fn;
+        for (idx, slot) in child_slots {
+            let def = defs.get_item(idx).from_py_result()?;
+            if def.is_none() {
+                client_bail!(
+                    "target action sink returned no child handler for the action at index {} \
+                     whose target state declared a child",
+                    idx
+                );
+            }
+            let handler = def.getattr("handler").from_py_result()?;
+            // Route through the Python `ChildSlot` so the handler gets its
+            // typed-deserialization wrapper, as a slot-aware sink's would.
+            wrap.call1(py, (PyChildTargetSlot(slot),))
+                .from_py_result()?
+                .call_method1(py, "fulfill", (handler,))
+                .from_py_result()?;
+        }
+        Ok(())
+    }
+}
+
+/// `module.qualname` of a sink callback for messages: a function or bound
+/// method carries its own name, a callable object falls back to its type's.
+fn callback_label(callback: &Bound<'_, PyAny>) -> String {
+    fn attr(obj: &Bound<'_, PyAny>, name: &str) -> Option<String> {
+        obj.getattr(name).ok()?.extract::<String>().ok()
+    }
+    let named = |obj: &Bound<'_, PyAny>| {
+        Some(format!(
+            "{}.{}",
+            attr(obj, "__module__")?,
+            attr(obj, "__qualname__")?
+        ))
+    };
+    named(callback)
+        .or_else(|| named(callback.get_type().as_any()))
+        .unwrap_or_else(|| {
+            callback
+                .repr()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|_| "<callback>".to_string())
+        })
 }
 
 /// Core child slot handed to a container sink. The Python-facing `ChildSlot`

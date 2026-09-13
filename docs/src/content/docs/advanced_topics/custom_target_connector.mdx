@@ -37,7 +37,7 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
         prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
-    ) -> TargetReconcileOutput[Any, TrackingRecordT] | None:
+    ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT] | None:
         ...
 
     # Optional: override to support attachment types (see "Implementing attachment providers")
@@ -49,7 +49,7 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
 
 - `ValueT`: The specification for the target state (e.g., file content, row data)
 - `TrackingRecordT`: What's stored to detect changes on future runs
-- `OptChildHandlerT`: The child handler type, or `None` for leaf targets. Nothing in `reconcile()` mentions it — it types the provider you get from `declare_target_state_with_child()` — so a container handler subclasses `coco.TargetHandler[Spec, TrackingRecord, ChildHandler]` explicitly.
+- `OptChildHandlerT`: The child handler type, or `None` for leaf targets. A container handler declares it as the third argument of its `reconcile()` return type, `TargetReconcileOutput[Action, TrackingRecord, ChildHandler]`; it types the provider you get from `declare_target_state_with_child()`.
 
 **Parameters:**
 
@@ -148,12 +148,14 @@ A **container** target's sink is built with `from_fn_with_children()` / `from_as
 `TargetReconcileOutput` bundles what `reconcile()` returns when an action is needed:
 
 ```python
-class TargetReconcileOutput(Generic[ActionT, TrackingRecordT], NamedTuple):
+class TargetReconcileOutput(Generic[ActionT, TrackingRecordT, OptChildHandlerT], NamedTuple):
     action: ActionT                                    # What to do
     sink: TargetActionSink[ActionT]                    # How to execute it
     tracking_record: TrackingRecordT | NonExistenceType  # What to remember
     child_invalidation: Literal["destructive", "lossy"] | None = None  # For container targets
 ```
+
+`OptChildHandlerT` is the handler type of the child target states the action's sink fulfills (`None` for leaf targets). Nothing in the tuple depends on it; it is how a container handler declares its child handler type.
 
 The `child_invalidation` field is only relevant for **container targets** (those with children). See [Child invalidation](#child-invalidation) for details.
 
@@ -446,6 +448,58 @@ def declare_dir_target(path: pathlib.Path) -> DirTarget:
     child_provider = coco.declare_target_state_with_child(parent_ts)
     return DirTarget(child_provider)
 ```
+
+### Migrating from `ChildTargetDef`
+
+Before child slots, a container target's sink was built with `from_fn()` / `from_async_fn()` and returned a list of `coco.ChildTargetDef(handler=...)` (or `None`) index-aligned with `actions`. That contract is deprecated and will be removed in a future release. Sinks written against it still run and emit a `DeprecationWarning`, and the pre-slot annotations still type-check:
+
+- `coco.TargetActionSink[Action, ChildHandler]` is accepted; the second type argument is deprecated and ignored (evaluating it at runtime warns). Write `coco.TargetActionSink[Action]`.
+- `coco.TargetReconcileOutput[Action, TrackingRecord, ChildHandler]` is unchanged: the third argument is how a container handler declares its child handler type.
+
+To migrate a container sink:
+
+1. Build it with `from_fn_with_children()` / `from_async_fn_with_children()` instead of `from_fn()` / `from_async_fn()`.
+2. Add the third positional parameter, `child_slots: Mapping[int, coco.ChildSlot[ChildHandler]]`, and return `None`.
+3. Replace each `outputs[i] = coco.ChildTargetDef(handler=h)` with `child_slots[i].fulfill(h)`; drop the `None` entries and the `return outputs`.
+
+```python
+# Before
+def _apply_dir_actions(
+    context_provider: coco.ContextProvider,
+    actions: Sequence[_DirAction],
+) -> list[coco.ChildTargetDef[_EntryHandler] | None]:
+    outputs: list[coco.ChildTargetDef[_EntryHandler] | None] = []
+    for action in actions:
+        if action.should_delete:
+            shutil.rmtree(action.path, ignore_errors=True)
+            outputs.append(None)
+        else:
+            action.path.mkdir(parents=True, exist_ok=True)
+            outputs.append(coco.ChildTargetDef(handler=_EntryHandler(action.path)))
+    return outputs
+
+
+_dir_sink = coco.TargetActionSink[_DirAction, _EntryHandler].from_fn(_apply_dir_actions)
+
+
+# After
+def _apply_dir_actions(
+    context_provider: coco.ContextProvider,
+    actions: Sequence[_DirAction],
+    child_slots: Mapping[int, coco.ChildSlot[_EntryHandler]],
+) -> None:
+    for i, action in enumerate(actions):
+        if action.should_delete:
+            shutil.rmtree(action.path, ignore_errors=True)
+        else:
+            action.path.mkdir(parents=True, exist_ok=True)
+            child_slots[i].fulfill(_EntryHandler(action.path))
+
+
+_dir_sink = coco.TargetActionSink.from_fn_with_children(_apply_dir_actions)
+```
+
+Leaf sinks need no change. If a leaf sink shares its callback with a container level (one sink per database serving table DDL and row writes), migrate it the same way: leaf actions simply have no entry in `child_slots`.
 
 ## Implementing attachment providers
 

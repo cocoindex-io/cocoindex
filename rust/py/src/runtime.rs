@@ -125,6 +125,13 @@ pub enum PyCallback {
 }
 
 impl PyCallback {
+    /// The Python callable, however it is invoked.
+    pub fn object(&self) -> &Py<PyAny> {
+        match self {
+            PyCallback::Sync(callback) | PyCallback::Async(callback) => callback,
+        }
+    }
+
     pub fn call<A>(
         &self,
         host_runtime_ctx: &PyAsyncContext,
