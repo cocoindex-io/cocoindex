@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import inspect
 import logging
@@ -192,6 +193,10 @@ class ComponentContext:
                     if inspect.isawaitable(ret):
                         await ret
                     return  # Handler swallowed → don't propagate.
+                except asyncio.CancelledError:
+                    # Cancellation is not a handler failure: never feed it
+                    # to outer handlers (which could swallow it).
+                    raise
                 except BaseException as handler_exc:
                     current_exc = handler_exc
                     source = "handler"

@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 from typing import Iterator
 
@@ -323,3 +324,47 @@ def test_handler_raised_deadline_exceeded_propagates_through_ready() -> None:
     assert isinstance(caught[0], coco.DeadlineExceededError)
     assert isinstance(caught[0], TimeoutError)
     assert str(caught[0]) == "handler deadline"
+
+
+def test_cancellation_in_handler_skips_outer_handlers() -> None:
+    """``CancelledError`` raised while a handler runs is not treated as a
+    handler failure: outer handlers never see it and it propagates as-is."""
+    envmod.reset_default_env_for_tests()
+
+    outer_calls: list[str] = []
+    caught: list[BaseException] = []
+
+    @coco.lifespan
+    def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+        builder.settings.db_path = common.get_env_db_path(
+            "test_exception_handlers_cancel_skips_outer"
+        )
+
+        def outer(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            outer_calls.append(type(exc).__name__)
+
+        builder.set_exception_handler(outer)
+        yield
+
+    @coco.fn
+    async def _child() -> None:
+        raise ValueError("boom")
+
+    @coco.fn
+    async def _root() -> None:
+        def inner(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            raise asyncio.CancelledError()
+
+        async with coco.exception_handler(inner):
+            handle = await coco.mount(coco.component_subpath("child"), _child)
+        try:
+            await handle.ready()
+        except BaseException as exc:
+            caught.append(exc)
+
+    app = coco.App("test_exception_handlers_cancel_skips_outer", _root)
+    app.update_blocking()
+
+    assert outer_calls == []
+    assert len(caught) == 1
+    assert isinstance(caught[0], asyncio.CancelledError)
