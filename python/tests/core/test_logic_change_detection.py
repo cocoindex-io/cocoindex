@@ -1,5 +1,6 @@
 """Tests for logic change detection: memoized results are invalidated when function code changes."""
 
+import copy
 import gc
 import pathlib
 import sys
@@ -245,6 +246,57 @@ def test_memo_hit_survives_redefining_fn_with_identical_code() -> None:
     # has run before the next update.
     sync_memo_fn = _define_sync_memo_fn(metrics)
     async_memo_fn = _define_async_memo_fn(metrics)
+    gc.collect()
+
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+# ============================================================================
+# Copying a function keeps its memo: dropping a copy must not release the logic
+# fingerprint registration held by the original.
+# ============================================================================
+
+
+def test_memo_hit_survives_dropping_copies_of_fn() -> None:
+    """Dropping a `copy.copy` or `copy.deepcopy` of a memoized function keeps
+    both its function memo and its component memo."""
+    metrics = Metrics()
+    sync_memo_fn = _define_sync_memo_fn(metrics)
+    async_memo_fn = _define_async_memo_fn(metrics)
+
+    @coco.fn
+    async def app_main() -> None:
+        sync_memo_fn("call")
+        await async_memo_fn("call")
+        await coco.use_mount(coco.component_subpath("sync"), sync_memo_fn, "mount")
+        await coco.use_mount(coco.component_subpath("async"), async_memo_fn, "mount")
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_hit_survives_dropping_copies_of_fn",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    app.update_blocking()
+    assert metrics.collect() == {
+        "sync_memo_fn(call)": 1,
+        "async_memo_fn(call)": 1,
+        "sync_memo_fn(mount)": 1,
+        "async_memo_fn(mount)": 1,
+    }
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    copies = [
+        copy.copy(sync_memo_fn),
+        copy.deepcopy(sync_memo_fn),
+        copy.copy(async_memo_fn),
+        copy.deepcopy(async_memo_fn),
+    ]
+    del copies
     gc.collect()
 
     app.update_blocking()
