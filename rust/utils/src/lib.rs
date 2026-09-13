@@ -4,6 +4,7 @@ pub mod db;
 pub mod deser;
 pub mod error;
 pub mod fingerprint;
+pub mod gpu_pool;
 pub mod immutable;
 pub mod ratelimit;
 pub mod retryable;
