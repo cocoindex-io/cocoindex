@@ -8,7 +8,7 @@ use crate::prelude::*;
 use cocoindex_core::engine::runtime::{
     cancel_all, get_runtime, reset_global_cancellation, shutdown_runtime,
 };
-use cocoindex_py_utils::from_py_future;
+use cocoindex_py_utils::{cerror_to_pyerr, from_py_future};
 use futures::FutureExt;
 use pyo3::{call::PyCallArgs, exceptions::PyException};
 use pyo3_async_runtimes::TaskLocals;
@@ -164,7 +164,7 @@ impl PyCallback {
     }
 }
 
-/// Wrap an optional Python async callback `(err_str) -> Awaitable[None]`
+/// Wrap an optional Python async callback `(exc) -> Awaitable[None]`
 /// as the Rust `OnError` closure expected by `Component::run_in_background`,
 /// `Component::delete`, and the live-component controller.
 ///
@@ -172,11 +172,16 @@ impl PyCallback {
 /// `update_async`, and `delete_async` (live-component ops). The propagation
 /// semantics are uniform across all of them:
 ///
+/// - The engine error is converted with [`cerror_to_pyerr`], the same mapping
+///   foreground paths (`use_mount`, `handle.ready()`) use: a Python-originated
+///   failure reaches the callback as its original exception object (type +
+///   traceback intact); engine-native failures map to the usual Python types.
 /// - Coroutine returns normally (handler chain swallows) → `Ok(())` →
 ///   spawned task swallows.
 /// - Coroutine raises (chain exhausted via raises) → `Err(...)` → spawned
-///   task propagates via `handle.ready()`. Lets the Python exception
-///   handler chain control propagation.
+///   task propagates via `handle.ready()`. The error is the `HostedPyErr`
+///   produced by `PyCallback::call`, so the exception the handler raised
+///   re-surfaces in Python with its type intact.
 /// - Dispatch-level failures (couldn't schedule the coroutine) are logged
 ///   and converted to `Err` so they surface rather than disappearing.
 pub fn build_on_error(
@@ -189,22 +194,15 @@ pub fn build_on_error(
         let cb = cb.clone();
         let host_runtime_ctx = host_runtime_ctx.clone();
         Box::pin(async move {
-            let err_str = format!("{err:?}");
-            let fut = match cb.call(&host_runtime_ctx, (err_str,)) {
+            let exc = Python::attach(|py| cerror_to_pyerr(err).into_value(py));
+            let fut = match cb.call(&host_runtime_ctx, (exc,)) {
                 Ok(fut) => fut,
                 Err(e) => {
                     error!("exception handler dispatch failed:\n{e:?}");
-                    return Err(cocoindex_utils::prelude::Error::internal_msg(format!(
-                        "exception handler dispatch failed: {e:?}"
-                    )));
+                    return Err(e.context("exception handler dispatch failed"));
                 }
             };
-            match fut.await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(cocoindex_utils::prelude::Error::internal_msg(format!(
-                    "{e:?}"
-                ))),
-            }
+            fut.await.map(|_| ())
         })
     }))
 }

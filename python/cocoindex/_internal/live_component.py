@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
-import traceback
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from typing import (
@@ -271,7 +270,9 @@ class LiveComponentOperator:
             )
         return ctrl
 
-    def _resolve_exception_handler(self) -> Callable[[str], Awaitable[None]]:
+    def _resolve_exception_handler(
+        self,
+    ) -> Callable[[BaseException], Awaitable[None]]:
         """Build a resolver for the parent's exception handler chain.
 
         Delegates to :meth:`ComponentContext.resolve_exception_handler`
@@ -279,7 +280,7 @@ class LiveComponentOperator:
         so component-failure logs go through one canonical Python
         fallback. Always non-None. Used both by :meth:`update_full`
         (passes to Rust as ``on_error``) and :meth:`report_exception`
-        (invokes directly with a stringified exception).
+        (invokes directly with the reported exception).
         """
         return get_context_from_ctx().resolve_exception_handler(
             stable_path=self._path.to_string(),
@@ -450,20 +451,19 @@ class LiveComponentOperator:
         cycle failures from initial build failures (``"mount"`` /
         ``"mount_each"``).
 
-        The exception is formatted via :func:`traceback.format_exception`
-        so handlers and the fallback log both see the full Python
-        traceback (when ``exc.__traceback__`` is set — i.e. when the
-        caller is reporting a caught exception). This matches the
-        text-with-trace shape that the Rust-side ``on_error`` path
-        produces for background ``mount`` / ``mount_each`` failures.
+        Handlers receive ``exc`` itself, so they can route by type and
+        recover the traceback via :func:`traceback.format_exception` (when
+        ``exc.__traceback__`` is set, i.e. when the caller is reporting a
+        caught exception). This matches what the Rust-side ``on_error``
+        path delivers for background ``mount`` / ``mount_each`` failures.
 
-        Falls back to ERROR-level logging if no handler is registered or
-        every handler re-raises. Intended for surfacing recoverable errors
-        (e.g. an external watcher emits a malformed event) without
-        tearing down the live component.
+        Falls back to ERROR-level logging if no handler is registered. If
+        every handler re-raises, the final handler's exception propagates
+        to the caller. Intended for surfacing recoverable errors (e.g. an
+        external watcher emits a malformed event) without tearing down the
+        live component.
         """
-        err_text = "".join(traceback.format_exception(exc))
-        await self._resolve_exception_handler()(err_text)
+        await self._resolve_exception_handler()(exc)
 
 
 @runtime_checkable
