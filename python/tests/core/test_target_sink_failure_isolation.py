@@ -33,24 +33,28 @@ def _record_failure(exc: BaseException, ctx: coco.ExceptionContext) -> None:
 coco_env = common.create_test_env(__file__, exception_handler=_record_failure)
 
 
-class _Observations:
-    """Shared across threads: ``reconcile`` runs on an engine thread."""
+class _RunState:
+    """Per-run input and observations, shared across threads (``reconcile``
+    runs on an engine thread)."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        # The item whose actions the sink rejects in this run, if any.
+        self.poison_item: int | None = None
         self.store: dict[int, str] = {}
         self.batches: list[list[tuple[int, str]]] = []
         self.num_reconciled = 0
         self.gate_taken = False
 
-    def reset_run(self) -> None:
+    def reset_run(self, poison_item: int | None) -> None:
         with self.lock:
+            self.poison_item = poison_item
             self.batches.clear()
             self.num_reconciled = 0
             self.gate_taken = False
 
 
-_obs = _Observations()
+_run = _RunState()
 
 
 async def _wait_until_all_reconciled() -> None:
@@ -63,8 +67,8 @@ async def _wait_until_all_reconciled() -> None:
     """
     deadline = time.monotonic() + 10
     while True:
-        with _obs.lock:
-            if _obs.num_reconciled >= _NUM_ITEMS:
+        with _run.lock:
+            if _run.num_reconciled >= _NUM_ITEMS:
                 break
         if time.monotonic() > deadline:
             raise TimeoutError("components did not all reconcile in time")
@@ -85,17 +89,17 @@ class _TransactionalSink:
         /,
     ) -> None:
         batch = list(actions)
-        with _obs.lock:
-            _obs.batches.append(batch)
-            takes_gate = not _obs.gate_taken
-            _obs.gate_taken = True
+        with _run.lock:
+            _run.batches.append(batch)
+            takes_gate = not _run.gate_taken
+            _run.gate_taken = True
         if takes_gate:
             await _wait_until_all_reconciled()
         if any(value == "poison" for _, value in batch):
             raise ValueError("poisoned batch")
-        with _obs.lock:
+        with _run.lock:
             for key, value in batch:
-                _obs.store[key] = value
+                _run.store[key] = value
 
 
 class _Handler:
@@ -107,8 +111,8 @@ class _Handler:
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[tuple[int, str], Any] | None:
-        with _obs.lock:
-            _obs.num_reconciled += 1
+        with _run.lock:
+            _run.num_reconciled += 1
         if coco.is_non_existence(desired_state):
             return None
         if not prev_may_be_missing and all(
@@ -128,46 +132,50 @@ _provider = coco.register_root_target_states_provider(
 
 
 @coco.fn
-async def _process_item(item: int, poison_item: int | None) -> None:
-    if item == poison_item:
+async def _process_item(item: int) -> None:
+    poisoned = item == _run.poison_item
+    if poisoned:
         # Finish last, so the poisoned actions never take the gated first sink
         # call but always land in the merged batch queued behind it.
         await asyncio.sleep(0.1)
-    value = "poison" if item == poison_item else f"v{item}"
+    value = "poison" if poisoned else f"v{item}"
     coco.declare_target_state(_provider.target_state(item, value))
 
 
-async def _root(poison_item: int | None) -> None:
+async def _root() -> None:
     await coco.mount_each(
         coco.component_subpath("item"),
         _process_item,
         [(i, i) for i in range(_NUM_ITEMS)],
-        poison_item,
     )
 
 
 def test_merged_batch_failure_is_confined_to_the_failing_component() -> None:
-    config = coco.AppConfig(
-        name="test_target_sink_failure_isolation", environment=coco_env
+    # One app for both runs: the second run must see the first run's tracking
+    # records, and a second `App` with the same name would collide with the
+    # first while it is still registered.
+    app = coco.App(
+        coco.AppConfig(name="test_target_sink_failure_isolation", environment=coco_env),
+        _root,
     )
 
-    _obs.reset_run()
+    _run.reset_run(poison_item=_POISON_ITEM)
     _failed_paths.clear()
-    coco.App(config, _root, poison_item=_POISON_ITEM).update_blocking()
+    app.update_blocking()
 
     # Every other component's actions landed, and only the poisoned component
     # failed, even though its actions were merged into a batch with others.
-    assert _obs.store == {i: f"v{i}" for i in range(_NUM_ITEMS) if i != _POISON_ITEM}
+    assert _run.store == {i: f"v{i}" for i in range(_NUM_ITEMS) if i != _POISON_ITEM}
     assert _failed_paths == [str(coco.ROOT_PATH / "item" / _POISON_ITEM)]
-    merged = [b for b in _obs.batches if len(b) > 1 and (_POISON_ITEM, "poison") in b]
-    assert merged, _obs.batches
+    merged = [b for b in _run.batches if len(b) > 1 and (_POISON_ITEM, "poison") in b]
+    assert merged, _run.batches
 
-    _obs.reset_run()
+    _run.reset_run(poison_item=None)
     _failed_paths.clear()
-    coco.App(config, _root, poison_item=None).update_blocking()
+    app.update_blocking()
 
-    assert _obs.store == {i: f"v{i}" for i in range(_NUM_ITEMS)}
+    assert _run.store == {i: f"v{i}" for i in range(_NUM_ITEMS)}
     assert _failed_paths == []
     # Only the previously failed component had anything left to apply: the
     # others' target states were committed by the first run.
-    assert _obs.batches == [[(_POISON_ITEM, f"v{_POISON_ITEM}")]]
+    assert _run.batches == [[(_POISON_ITEM, f"v{_POISON_ITEM}")]]
