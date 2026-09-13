@@ -12,6 +12,7 @@ from typing import (
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -380,29 +381,28 @@ class _IndexHandler(
 ):
     """Handles creation/deletion of Valkey search indexes."""
 
-    _sink: coco.TargetActionSink[_IndexAction, _DocumentHandler]
+    _sink: coco.TargetActionSink[_IndexAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
+            self._apply_actions
+        )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
-        actions: Collection[_IndexAction],
-    ) -> list[coco.ChildTargetDef[_DocumentHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_DocumentHandler] | None] = [None] * len(
-            actions_list
-        )
-
+        actions: Sequence[_IndexAction],
+        child_slots: Mapping[int, coco.ChildSlot[_DocumentHandler]],
+        /,
+    ) -> None:
         by_key: dict[_IndexKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
+        for i, action in enumerate(actions):
             by_key.setdefault(action.key, []).append(i)
 
         for key, idxs in by_key.items():
             client = context_provider.get(key.db_key, GlideClient)  # type: ignore[type-abstract]
             for i in idxs:
-                action = actions_list[i]
+                action = actions[i]
 
                 if action.main_action in ("replace", "delete"):
                     # Drop the index first; on "replace" we also purge all
@@ -417,12 +417,11 @@ class _IndexHandler(
                         await self._delete_prefix_keys(client, key.index_name)
 
                 if coco.is_non_existence(action.spec):
-                    outputs[i] = None
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_DocumentHandler(
+                child_slots[i].fulfill(
+                    _DocumentHandler(
                         client=client,
                         index_name=key.index_name,
                     )
@@ -435,8 +434,6 @@ class _IndexHandler(
                         spec.schema,
                         if_not_exists=(action.main_action == "upsert"),
                     )
-
-        return outputs
 
     async def _delete_prefix_keys(
         self, client: GlideClient, index_name: str, *, max_iterations: int = 10_000

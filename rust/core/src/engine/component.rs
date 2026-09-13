@@ -1390,7 +1390,7 @@ mod tests {
     use crate::engine::environment::Environment;
     use crate::engine::profile::{EngineProfile, Persist};
     use crate::engine::target_state::{
-        ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
+        TargetActionSink, TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput,
         TargetStateProviderRegistry,
     };
     use crate::state::stable_path::{StableKey, StablePath};
@@ -1484,9 +1484,9 @@ mod tests {
             &self,
             _host_runtime_ctx: &(),
             _host_ctx: Arc<()>,
-            _actions: &[()],
-        ) -> crate::prelude::Result<Option<Vec<Option<ChildTargetDef<TestProfile>>>>> {
-            Ok(None)
+            _actions: &[TargetActionWithChildSlot<TestProfile>],
+        ) -> crate::prelude::Result<()> {
+            Ok(())
         }
     }
 

@@ -29,7 +29,7 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -829,7 +829,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]
-    _sink: coco.TargetActionSink[_RowAction, None]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -840,9 +840,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._managed_conn = managed_conn
         self._table_name = table_name
         self._table_schema = table_schema
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_RowAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -1101,12 +1099,12 @@ def _apply_column_actions(
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-) -> list[coco.ChildTargetDef["_RowHandler"] | None]:
-    actions_list = list(actions)
-    outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(actions_list)
-
+    child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
+    /,
+) -> None:
+    """Apply table actions (DDL) and fulfill the child row handlers."""
     by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions_list):
+    for i, action in enumerate(actions):
         by_key.setdefault(action.key, []).append(i)
 
     for key, idxs in by_key.items():
@@ -1114,7 +1112,7 @@ def _apply_table_actions(
         config = managed_conn.config
 
         for i in idxs:
-            action = actions_list[i]
+            action = actions[i]
             assert action.key == key
 
             if action.main_action in ("replace", "delete"):
@@ -1128,12 +1126,11 @@ def _apply_table_actions(
                     _logger.warning("Failed to drop table %s: %s", key.table_name, e)
 
             if coco.is_non_existence(action.spec):
-                outputs[i] = None
                 continue
 
             spec = action.spec
-            outputs[i] = coco.ChildTargetDef(
-                handler=_RowHandler(
+            child_slots[i].fulfill(
+                _RowHandler(
                     managed_conn=managed_conn,
                     table_name=key.table_name,
                     table_schema=spec.table_schema,
@@ -1167,10 +1164,8 @@ def _apply_table_actions(
                     action.column_actions,
                 )
 
-    return outputs
 
-
-_table_action_sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
     _apply_table_actions
 )
 

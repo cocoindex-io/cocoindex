@@ -22,6 +22,7 @@ from typing import (
     Generic,
     Iterator,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -474,7 +475,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _dataset: str
     _table_name: str
     _table_schema: TableSchema[Any]
-    _sink: coco.TargetActionSink[_RowAction, None]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -489,9 +490,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._dataset = dataset
         self._table_name = table_name
         self._table_schema = table_schema
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_RowAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -744,42 +743,41 @@ def _apply_column_actions(
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
-    _sink: coco.TargetActionSink[_TableAction, _RowHandler]
+    _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
+        self._sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
             self._apply_actions
         )
 
     def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_TableAction]
-    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
-            actions_list
-        )
-
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_TableAction],
+        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
+        /,
+    ) -> None:
+        """Apply table actions (DDL) and fulfill the child row handlers."""
         by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
+        for i, action in enumerate(actions):
             by_key.setdefault(action.key, []).append(i)
 
         for key, idxs in by_key.items():
             config = context_provider.get(key.db_key, ConnectionConfig)
             with _connect(config) as client:
                 for i in idxs:
-                    action = actions_list[i]
+                    action = actions[i]
                     assert action.key == key
 
                     if action.main_action in ("replace", "delete"):
                         _drop_table(client, key)
 
                     if coco.is_non_existence(action.spec):
-                        outputs[i] = None
                         continue
 
                     spec = action.spec
-                    outputs[i] = coco.ChildTargetDef(
-                        handler=_RowHandler(
+                    child_slots[i].fulfill(
+                        _RowHandler(
                             db_key=key.db_key,
                             project=key.project,
                             dataset=key.dataset,
@@ -806,8 +804,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         _apply_column_actions(
                             client, key, spec.table_schema, action.column_actions
                         )
-
-        return outputs
 
     def reconcile(
         self,

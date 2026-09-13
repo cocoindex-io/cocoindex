@@ -6,7 +6,7 @@ import os
 import pathlib
 import shutil
 from dataclasses import dataclass
-from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
+from typing import Collection, Generic, Literal, Mapping, NamedTuple, Sequence, cast
 
 import cocoindex as coco
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
@@ -90,11 +90,15 @@ def _execute_entry_action(
 def _apply_actions_with_child(
     context_provider: ContextProvider,
     actions: Sequence[_EntryAction],
+    child_slots: Mapping[int, coco.ChildSlot[_EntryHandler]],
     /,
-) -> list[coco.ChildTargetDef["_EntryHandler"] | None]:
-    """Apply actions and return child handlers for directories."""
-    outputs: list[coco.ChildTargetDef[_EntryHandler] | None] = []
-    for action in actions:
+) -> None:
+    """Apply entry actions; a created directory fulfills its child slot.
+
+    Files and directories share this sink: file actions carry no child slot,
+    directory creates do.
+    """
+    for i, action in enumerate(actions):
         if action.base_dir_key is not None:
             base = context_provider.get(action.base_dir_key, pathlib.Path)
             path = (base / action.path).resolve()
@@ -102,16 +106,13 @@ def _apply_actions_with_child(
             path = pathlib.Path(action.path)  # already absolute
         result_path = _execute_entry_action(path, action)
         if result_path is not None:
-            outputs.append(coco.ChildTargetDef(handler=_EntryHandler(result_path)))
-        else:
-            outputs.append(None)
-    return outputs
+            child_slots[i].fulfill(_EntryHandler(result_path))
 
 
 # Shared action sink
-_action_sink_with_child = coco.TargetActionSink[
-    "_EntryAction", "_EntryHandler"
-].from_fn(_apply_actions_with_child)
+_action_sink_with_child = coco.TargetActionSink[_EntryAction].from_fn_with_children(
+    _apply_actions_with_child
+)
 
 
 def _reconcile_entry(
@@ -121,8 +122,7 @@ def _reconcile_entry(
     prev_possible_records: Collection[_EntryTrackingRecord],
     prev_may_be_missing: bool,
 ) -> (
-    coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, "_EntryHandler"]
-    | None
+    coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler] | None
 ):
     """Common reconcile logic for both root and non-root entries."""
     if coco.is_non_existence(desired_state):
@@ -197,7 +197,7 @@ class _EntryHandler(
         prev_may_be_missing: bool,
         /,
     ) -> (
-        coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, "_EntryHandler"]
+        coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
         | None
     ):
         key = _ENTRY_NAME_CHECKER.check(key)

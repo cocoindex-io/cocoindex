@@ -386,13 +386,19 @@ def mount_live_async(
 # --- TargetActionSink ---
 class TargetActionSink:
     @staticmethod
-    def new_sync(callback: Callable[..., Any]) -> TargetActionSink: ...
+    def new_sync(
+        callback: Callable[..., Any], with_children: bool
+    ) -> TargetActionSink: ...
     @staticmethod
     def new_async(
-        callback: Callable[..., Coroutine[Any, Any, Any]],
+        callback: Callable[..., Coroutine[Any, Any, Any]], with_children: bool
     ) -> TargetActionSink: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
+
+# --- ChildTargetSlot ---
+class ChildTargetSlot:
+    def fulfill(self, handler: Any, /) -> None: ...
 
 # --- TargetHandler (marker class, used for typing) ---
 class TargetHandler: ...
@@ -412,7 +418,7 @@ def init_runtime(
     package_id: str,
     lang: str,
     serialize_fn: Callable[[Any], bytes],
-    handler_wrapper_fn: Callable[[Any], Any],
+    child_slot_wrapper_fn: Callable[[ChildTargetSlot], Any],
     non_existence: Any,
     not_set: Any,
 ) -> None: ...

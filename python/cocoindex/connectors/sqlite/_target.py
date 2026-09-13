@@ -27,6 +27,7 @@ from typing import (
     Generic,
     Iterator,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -430,7 +431,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _table_name: str
     _table_schema: TableSchema[Any]
     _is_virtual_table: bool
-    _sink: coco.TargetActionSink[_RowAction, None]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -443,9 +444,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_name = table_name
         self._table_schema = table_schema
         self._is_virtual_table = is_virtual_table
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_RowAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -876,14 +875,13 @@ def _apply_column_actions(
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-) -> list[coco.ChildTargetDef["_RowHandler"] | None]:
-    """Apply table actions (DDL) and return child row handlers."""
-    actions_list = list(actions)
-    outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(actions_list)
-
+    child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
+    /,
+) -> None:
+    """Apply table actions (DDL) and fulfill the child row handlers."""
     # Group actions by table key so we can apply all DDL for the same table
     by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions_list):
+    for i, action in enumerate(actions):
         by_key.setdefault(action.key, []).append(i)
 
     for key, idxs in by_key.items():
@@ -892,7 +890,7 @@ def _apply_table_actions(
 
         with managed_conn.transaction() as conn:
             for i in idxs:
-                action = actions_list[i]
+                action = actions[i]
                 assert action.key == key
 
                 # Check if this is a virtual table (for special handling)
@@ -919,12 +917,11 @@ def _apply_table_actions(
                     _drop_table(conn, key.table_name)
 
                 if coco.is_non_existence(action.spec):
-                    outputs[i] = None
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_RowHandler(
+                child_slots[i].fulfill(
+                    _RowHandler(
                         managed_conn=managed_conn,
                         table_name=key.table_name,
                         table_schema=spec.table_schema,
@@ -967,11 +964,9 @@ def _apply_table_actions(
                         action.column_actions,
                     )
 
-    return outputs
-
 
 # Shared action sink for table-level actions
-_table_action_sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
     _apply_table_actions
 )
 

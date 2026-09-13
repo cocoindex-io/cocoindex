@@ -25,7 +25,7 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -653,12 +653,11 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let db_key = self.db_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let db_key = db_key.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         match action {
                             TargetAction::Create(a) | TargetAction::Update(a) => {
                                 let spec = a.spec.ok_or_else(|| {
@@ -679,21 +678,22 @@ impl TableHandler {
                                 if !a.retype_cols.is_empty() {
                                     apply_retypes(&db, &spec, &a.retype_cols).await?;
                                 }
-                                out.push(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                    db_key: db_key.clone(),
-                                    spec,
-                                })));
+                                if let Some(slot) = child_slot {
+                                    slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler {
+                                        db_key: db_key.clone(),
+                                        spec,
+                                    }))?;
+                                }
                             }
                             TargetAction::Delete(a) => {
                                 if let Some(d) = a.drop {
                                     drop_table(&db, d.pg_schema_name.as_deref(), &d.table_name)
                                         .await?;
                                 }
-                                out.push(None);
                             }
                         }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )

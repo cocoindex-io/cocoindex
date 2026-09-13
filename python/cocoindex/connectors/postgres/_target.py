@@ -23,6 +23,7 @@ from typing import (
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -971,24 +972,25 @@ class _TableAction(NamedTuple):
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
-    _sink: coco.TargetActionSink[_TableAction, _RowHandler]
+    _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_TableAction]
-    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-        """Apply table actions (DDL) and return child row handlers."""
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
-            actions_list
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
+            self._apply_actions
         )
 
+    async def _apply_actions(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_TableAction],
+        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
+        /,
+    ) -> None:
+        """Apply table actions (DDL) and fulfill the child row handlers."""
         # Group actions by table key so we can apply all DDL for the same table
         # within a single transaction/connection.
         by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
+        for i, action in enumerate(actions):
             by_key.setdefault(action.key, []).append(i)
 
         for key, idxs in by_key.items():
@@ -996,7 +998,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     for i in idxs:
-                        action = actions_list[i]
+                        action = actions[i]
                         assert action.key == key
 
                         if action.main_action in ("replace", "delete"):
@@ -1005,12 +1007,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                             )
 
                         if coco.is_non_existence(action.spec):
-                            outputs[i] = None
                             continue
 
                         spec = action.spec
-                        outputs[i] = coco.ChildTargetDef(
-                            handler=_RowHandler(
+                        child_slots[i].fulfill(
+                            _RowHandler(
                                 pool=pool,
                                 table_name=key.table_name,
                                 pg_schema_name=key.pg_schema_name,
@@ -1037,8 +1038,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                             await self._apply_column_actions(
                                 conn, key, spec.table_schema, action.column_actions
                             )
-
-        return outputs
 
     async def _drop_table(
         self,

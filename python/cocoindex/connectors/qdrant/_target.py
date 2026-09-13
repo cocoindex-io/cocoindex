@@ -18,6 +18,7 @@ from typing import (
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -360,27 +361,28 @@ def create_client(url: str, *, prefer_grpc: bool = True, **kwargs: Any) -> Qdran
 class _CollectionHandler(
     coco.TargetHandler[_CollectionSpec, _CollectionTrackingRecord, _PointHandler]
 ):
-    _sink: coco.TargetActionSink[_CollectionAction, _PointHandler]
+    _sink: coco.TargetActionSink[_CollectionAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_CollectionAction]
-    ) -> list[coco.ChildTargetDef[_PointHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_PointHandler] | None] = [None] * len(
-            actions_list
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
+            self._apply_actions
         )
 
+    async def _apply_actions(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_CollectionAction],
+        child_slots: Mapping[int, coco.ChildSlot[_PointHandler]],
+        /,
+    ) -> None:
         by_key: dict[_CollectionKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
+        for i, action in enumerate(actions):
             by_key.setdefault(action.key, []).append(i)
 
         for key, idxs in by_key.items():
             client = context_provider.get(key.db_key, QdrantClient)
             for i in idxs:
-                action = actions_list[i]
+                action = actions[i]
 
                 if action.main_action in ("replace", "delete"):
                     try:
@@ -392,12 +394,11 @@ class _CollectionHandler(
                         pass
 
                 if coco.is_non_existence(action.spec):
-                    outputs[i] = None
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_PointHandler(
+                child_slots[i].fulfill(
+                    _PointHandler(
                         client=client,
                         collection_name=key.collection_name,
                     )
@@ -410,8 +411,6 @@ class _CollectionHandler(
                         spec.schema,
                         if_not_exists=(action.main_action == "upsert"),
                     )
-
-        return outputs
 
     async def _create_collection(
         self,

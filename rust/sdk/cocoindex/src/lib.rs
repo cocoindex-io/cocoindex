@@ -116,7 +116,7 @@ pub use statediff::{
 };
 pub use stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
 pub use target_state::{
-    ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink,
+    ChildSlot, ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink,
     TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
     TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
     register_root_target_states_provider,

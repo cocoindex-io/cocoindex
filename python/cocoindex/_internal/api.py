@@ -79,6 +79,7 @@ from cocoindex.connectorkits import default_subpath_name as _default_subpath_nam
 from .context_keys import ContextKey, ContextProvider
 
 from .target_state import (
+    ChildSlot,
     ChildTargetDef,
     TargetReconcileOutput,
     TargetActionSink,
@@ -914,6 +915,7 @@ __all__ = [
     "ContextKey",
     "ContextProvider",
     # .target_state
+    "ChildSlot",
     "ChildTargetDef",
     "TargetState",
     "TargetStateProvider",

@@ -20,14 +20,15 @@ import logging
 import uuid as uuid_mod
 from dataclasses import dataclass
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
+    TYPE_CHECKING,
 )
 
 from typing_extensions import TypeVar
@@ -451,7 +452,7 @@ class _SharedRecordApplier:
     """
 
     _graph: Any
-    sink: coco.TargetActionSink[_RecordAction, None]
+    sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(self, graph: Any) -> None:
         self._graph = graph
@@ -585,7 +586,7 @@ class _VectorIndexHandler:
 
     _graph: Any
     _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction, None]
+    _sink: coco.TargetActionSink[_VectorIndexAction]
 
     def __init__(self, graph: Any, table_name: str) -> None:
         self._graph = graph
@@ -641,7 +642,7 @@ class _VectorIndexHandler:
         prev_may_be_missing: bool,
         /,
     ) -> (
-        coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexTrackingRecord, None]
+        coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexTrackingRecord]
         | None
     ):
         assert isinstance(key, str)
@@ -699,7 +700,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _pk_field: str
     _table_schema: TableSchema[Any] | None
     _graph: Any
-    _sink: coco.TargetActionSink[_RecordAction, None]
+    _sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(
         self,
@@ -708,7 +709,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         pk_field: str,
         table_schema: TableSchema[Any] | None,
         graph: Any,
-        sink: coco.TargetActionSink[_RecordAction, None],
+        sink: coco.TargetActionSink[_RecordAction],
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
@@ -743,7 +744,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         prev_possible_records: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_RecordAction, _RowFingerprint, None] | None:
+    ) -> coco.TargetReconcileOutput[_RecordAction, _RowFingerprint] | None:
         key = _ROW_KEY_CHECKER.check(key)
 
         if coco.is_non_existence(desired_state):
@@ -925,10 +926,12 @@ class _TableHandler(
 ):
     """Handler for table-level state — Cypher index DDL + best-effort constraints."""
 
-    _sink: coco.TargetActionSink[_TableAction, _RecordHandler]
+    _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
+            self._apply_actions
+        )
 
     def reconcile(
         self,
@@ -1018,16 +1021,15 @@ class _TableHandler(
         )
 
     async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Sequence[_TableAction]
-    ) -> list[coco.ChildTargetDef[_RecordHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RecordHandler] | None] = [None] * len(
-            actions_list
-        )
-
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_TableAction],
+        child_slots: Mapping[int, coco.ChildSlot[_RecordHandler]],
+        /,
+    ) -> None:
         # Group by db_key so each Redis connection is acquired once per batch.
         by_db: dict[str, list[int]] = {}
-        for i, action in enumerate(actions_list):
+        for i, action in enumerate(actions):
             by_db.setdefault(action.key.db_key, []).append(i)
 
         for db_key, idxs in by_db.items():
@@ -1044,7 +1046,7 @@ class _TableHandler(
             remove_normal: list[int] = []
 
             for i in idxs:
-                action = actions_list[i]
+                action = actions[i]
                 if coco.is_non_existence(action.spec):
                     if action.is_relation:
                         remove_relation.append(i)
@@ -1059,14 +1061,13 @@ class _TableHandler(
             ordered = create_normal + create_relation + remove_relation + remove_normal
 
             for i in ordered:
-                action = actions_list[i]
+                action = actions[i]
                 spec = action.spec
 
                 if action.main_action in ("replace", "delete"):
                     await self._drop_table_artifacts(graph, action.key, action)
 
                 if coco.is_non_existence(spec):
-                    outputs[i] = None
                     continue
 
                 if action.main_action in ("insert", "upsert", "replace"):
@@ -1074,8 +1075,8 @@ class _TableHandler(
                 # FalkorDB has no incremental column DDL — column_actions are
                 # tracked for fingerprint stability but not applied here.
 
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_RecordHandler(
+                child_slots[i].fulfill(
+                    _RecordHandler(
                         table_name=action.key.table_name,
                         is_relation=spec.is_relation,
                         pk_field=spec.primary_key,
@@ -1084,8 +1085,6 @@ class _TableHandler(
                         sink=shared_applier.sink,
                     )
                 )
-
-        return outputs
 
     @staticmethod
     async def _create_table(graph: Any, key: _TableKey, spec: _TableSpec) -> None:

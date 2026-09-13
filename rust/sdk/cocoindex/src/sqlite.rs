@@ -29,7 +29,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -577,20 +577,22 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let db_key = self.db_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let db_key = db_key.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         let a = match action {
                             TargetAction::Create(a)
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        out.push(apply_table_action(&db, &db_key, a).await?);
+                        let child = apply_table_action(&db, &db_key, a).await?;
+                        if let (Some(slot), Some(child)) = (child_slot, child) {
+                            slot.fulfill(child)?;
+                        }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )
@@ -611,8 +613,9 @@ fn resolve_db(
     })
 }
 
-/// Apply one resolved table action and return the row child provider (or
-/// `None` for a drop). Mirrors Python's `_apply_table_actions` decision tree.
+/// Apply one resolved table action and return the row child handler
+/// definition (`None` for a drop), which the sink uses to fulfill the
+/// action's child slot. Mirrors Python's `_apply_table_actions` decision tree.
 async fn apply_table_action(
     db: &Database,
     db_key: &str,

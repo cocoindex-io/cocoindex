@@ -28,7 +28,7 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -1166,12 +1166,11 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let graph_key = self.graph_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let graph_key = graph_key.clone();
                 async move {
                     let graph = resolve_graph(&host_ctx, &graph_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         match action {
                             TargetAction::Create(a) | TargetAction::Update(a) => {
                                 let spec = a.spec.ok_or_else(|| {
@@ -1193,22 +1192,23 @@ impl TableHandler {
                                     )
                                     .await?;
                                 }
-                                out.push(Some(ChildTargetDef::new::<RecordState, _>(
-                                    RecordHandler {
-                                        graph_key: graph_key.clone(),
-                                        spec,
-                                    },
-                                )));
+                                if let Some(slot) = child_slot {
+                                    slot.fulfill(ChildTargetDef::new::<RecordState, _>(
+                                        RecordHandler {
+                                            graph_key: graph_key.clone(),
+                                            spec,
+                                        },
+                                    ))?;
+                                }
                             }
                             TargetAction::Delete(a) => {
                                 if let Some(table_name) = a.drop {
                                     remove_table(&graph, &table_name).await?;
                                 }
-                                out.push(None);
                             }
                         }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )

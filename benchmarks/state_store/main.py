@@ -34,7 +34,7 @@ class _NoopTargetHandler:
     we measure cocoindex's own per-target write path without external IO."""
 
     def __init__(self) -> None:
-        self._sink: coco.TargetActionSink[tuple[coco.StableKey, bool], None] = (
+        self._sink: coco.TargetActionSink[tuple[coco.StableKey, bool]] = (
             coco.TargetActionSink.from_fn(self._apply)
         )
 

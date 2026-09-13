@@ -16,31 +16,111 @@ use std::{
     ops::Range,
 };
 
-pub struct ChildTargetDef<Prof: EngineProfile> {
-    pub handler: Prof::TargetHdl,
+enum ChildTargetSlotState<H> {
+    Pending,
+    Fulfilled(H),
+    Consumed,
 }
+
+/// Fulfillment handle for the child target provider of one action.
+///
+/// The engine mints one slot per action whose target state was declared with
+/// `declare_target_state_with_child`, hands it to the sink alongside the action,
+/// and reads the handler back (via [`Self::take`]) once the sink call returns.
+/// A slot is fulfilled at most once per sink call; fulfilling it after the
+/// engine has read it back is an error too, so a sink that stashes a slot for
+/// later is caught. When a failed batch is re-applied in smaller batches, the
+/// slots of the re-applied actions are [reset](Self::reset) first.
+///
+/// Clones share one state: the engine keeps one clone, the sink gets the other.
+pub struct ChildTargetSlot<Prof: EngineProfile> {
+    state: Arc<Mutex<ChildTargetSlotState<Prof::TargetHdl>>>,
+}
+
+impl<Prof: EngineProfile> Clone for ChildTargetSlot<Prof> {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+}
+
+impl<Prof: EngineProfile> ChildTargetSlot<Prof> {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ChildTargetSlotState::Pending)),
+        }
+    }
+
+    /// Provide the handler for the child target states under this action.
+    pub fn fulfill(&self, handler: Prof::TargetHdl) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        match &*state {
+            ChildTargetSlotState::Pending => {
+                *state = ChildTargetSlotState::Fulfilled(handler);
+                Ok(())
+            }
+            ChildTargetSlotState::Fulfilled(_) => {
+                client_bail!("child target slot fulfilled more than once")
+            }
+            ChildTargetSlotState::Consumed => {
+                client_bail!("child target slot fulfilled after its sink call returned")
+            }
+        }
+    }
+
+    /// Forget a fulfillment from a failed sink call, so the action can be
+    /// applied again. Only the runner calls this, between attempts of one
+    /// batch; the engine reads the slot back only after the last attempt.
+    fn reset(&self) {
+        *self.state.lock().unwrap() = ChildTargetSlotState::Pending;
+    }
+
+    /// Take the handler out; `None` if the slot was never fulfilled. Consumes
+    /// the slot: a later `fulfill` fails, and a second `take` is an internal
+    /// error.
+    pub fn take(&self) -> Result<Option<Prof::TargetHdl>> {
+        let mut state = self.state.lock().unwrap();
+        match std::mem::replace(&mut *state, ChildTargetSlotState::Consumed) {
+            ChildTargetSlotState::Pending => Ok(None),
+            ChildTargetSlotState::Fulfilled(handler) => Ok(Some(handler)),
+            ChildTargetSlotState::Consumed => {
+                Err(internal_error!("child target slot taken more than once"))
+            }
+        }
+    }
+}
+
+/// One action for a sink call, with the slot for its child target provider
+/// when the declaring call was `declare_target_state_with_child`.
+pub type TargetActionWithChildSlot<Prof> = (
+    <Prof as EngineProfile>::TargetAction,
+    Option<ChildTargetSlot<Prof>>,
+);
 
 #[async_trait]
 pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    /// Apply `actions` to the external system as one unit.
+    /// Apply `actions` to the external system as one unit. Every child slot
+    /// handed over must be fulfilled before this returns; the engine reads
+    /// them back afterwards.
     ///
     /// One call may carry the actions of several processing components: the
     /// engine merges the actions of components that finish while an earlier
     /// call is in flight. When a call fails, the engine re-applies subsets of
-    /// the same actions to isolate the failure, so an implementation must
-    /// tolerate seeing actions of a failed call again — which idempotent
-    /// actions do by construction. The actions are borrowed for that reason:
-    /// the engine keeps them for the retry.
+    /// the same actions (with their child slots reset) to isolate the failure,
+    /// so an implementation must tolerate seeing actions of a failed call
+    /// again — which idempotent actions do by construction. The actions are
+    /// borrowed for that reason: the engine keeps them for the retry.
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     async fn apply(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        actions: &[Prof::TargetAction],
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
+        actions: &[TargetActionWithChildSlot<Prof>],
+    ) -> Result<()>;
 }
 
 /// Cloneable handle to a target action sink and its per-sink batcher.
@@ -71,10 +151,10 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        actions: Vec<Prof::TargetAction>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
+        actions: Vec<TargetActionWithChildSlot<Prof>>,
+    ) -> Result<()> {
         if actions.is_empty() {
-            return Ok(None);
+            return Ok(());
         }
         // The outer `Result` is the batcher's own failure (e.g. cancellation);
         // the inner one is this input's outcome from the sink.
@@ -126,7 +206,7 @@ impl<Prof: EngineProfile> Hash for TargetActionSinkKeeper<Prof> {
 struct TargetActionRunnerInput<Prof: EngineProfile> {
     host_runtime_ctx: Prof::HostRuntimeCtx,
     host_ctx: Arc<Prof::HostCtx>,
-    actions: Vec<Prof::TargetAction>,
+    actions: Vec<TargetActionWithChildSlot<Prof>>,
 }
 
 struct TargetActionRunnerContext<Prof: EngineProfile> {
@@ -164,16 +244,17 @@ impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
     /// optimization that must not couple their fates, so a failure is
     /// reported per input rather than as a batch-level `Err`, which the
     /// batcher would fan out to every input of the batch.
-    type Output = Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
+    type Output = Result<()>;
 
     async fn run(
         &self,
         inputs: Vec<Self::Input>,
     ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
         let num_inputs = inputs.len();
-        let mut groups =
-            HashMap::<TargetActionRunnerContext<Prof>, Vec<(usize, Vec<Prof::TargetAction>)>>::new(
-            );
+        let mut groups = HashMap::<
+            TargetActionRunnerContext<Prof>,
+            Vec<(usize, Vec<TargetActionWithChildSlot<Prof>>)>,
+        >::new();
         for (input_idx, input) in inputs.into_iter().enumerate() {
             let context = TargetActionRunnerContext {
                 host_runtime_ctx: input.host_runtime_ctx,
@@ -202,6 +283,14 @@ impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
             }
 
             let results = apply_isolating_failures(&spans, |range| {
+                // A retry re-applies actions whose slots the failed call may
+                // have fulfilled already; the last attempt's fulfillment is
+                // the one the engine reads back.
+                for (_, slot) in &actions[range.clone()] {
+                    if let Some(slot) = slot {
+                        slot.reset();
+                    }
+                }
                 self.sink.apply(
                     &context.host_runtime_ctx,
                     Arc::clone(&context.host_ctx),
@@ -225,8 +314,7 @@ impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
 ///
 /// `spans` locates each component's actions within one flat action list:
 /// contiguous, in component order. `apply(range)` makes one sink call over
-/// the actions in `range` and yields either `None` (the sink defines no child
-/// handlers) or one entry per action.
+/// the actions in `range`.
 ///
 /// The whole batch is applied first, so the happy path costs the single sink
 /// call it always did. When that call fails and the batch spans more than one
@@ -240,12 +328,12 @@ impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
 /// Cancellation and deadline errors are not caused by any particular
 /// component, so they are reported to every component of the failed batch
 /// without retrying.
-async fn apply_isolating_failures<O, Fut>(
+async fn apply_isolating_failures<Fut>(
     spans: &[Range<usize>],
     apply: impl Fn(Range<usize>) -> Fut,
-) -> Vec<Result<Option<Vec<O>>>>
+) -> Vec<Result<()>>
 where
-    Fut: Future<Output = Result<Option<Vec<O>>>>,
+    Fut: Future<Output = Result<()>>,
 {
     let mut results = Vec::with_capacity(spans.len());
     // Sub-batches still to apply, as index ranges over `spans`. The second
@@ -262,28 +350,10 @@ where
         else {
             continue;
         };
-        let err = match apply(action_range.clone()).await {
-            Ok(None) => {
-                results.extend(sub_spans.iter().map(|_| Ok(None)));
+        let err = match apply(action_range).await {
+            Ok(()) => {
+                results.extend(sub_spans.iter().map(|_| Ok(())));
                 continue;
-            }
-            Ok(Some(handlers)) => {
-                if handlers.len() == action_range.len() {
-                    let mut handlers = handlers.into_iter();
-                    results.extend(
-                        sub_spans
-                            .iter()
-                            .map(|span| Ok(Some(handlers.by_ref().take(span.len()).collect()))),
-                    );
-                    continue;
-                }
-                // The call succeeded as far as the sink is concerned; a
-                // mismatch is a sink bug that retrying would not isolate.
-                client_error!(
-                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                    action_range.len(),
-                    handlers.len(),
-                )
             }
             Err(err) => {
                 if sub.len() > 1 && !err.is_cancelled() && !err.is_deadline_exceeded() {
@@ -655,9 +725,8 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
 mod tests {
     use super::*;
 
-    /// Sink stand-in over actions `0..n`: records each call's action range,
-    /// fails a call that includes a poisoned action, and otherwise returns
-    /// each action's index as its "child handler".
+    /// Sink stand-in over actions `0..n`: records each call's action range
+    /// and fails a call that includes a poisoned action.
     struct FakeSink {
         poisoned: Vec<usize>,
         calls: Mutex<Vec<Range<usize>>>,
@@ -671,12 +740,12 @@ mod tests {
             }
         }
 
-        async fn apply(&self, range: Range<usize>) -> Result<Option<Vec<usize>>> {
+        async fn apply(&self, range: Range<usize>) -> Result<()> {
             self.calls.lock().unwrap().push(range.clone());
             if let Some(bad) = range.clone().find(|idx| self.poisoned.contains(idx)) {
                 return Err(client_error!("poisoned action {bad}"));
             }
-            Ok(Some(range.collect()))
+            Ok(())
         }
 
         fn calls(&self) -> Vec<Range<usize>> {
@@ -698,16 +767,14 @@ mod tests {
     }
 
     /// Per-component outcomes with errors rendered as their message.
-    fn summarize(
-        results: Vec<Result<Option<Vec<usize>>>>,
-    ) -> Vec<std::result::Result<Option<Vec<usize>>, String>> {
+    fn summarize(results: Vec<Result<()>>) -> Vec<std::result::Result<(), String>> {
         results
             .into_iter()
             .map(|result| result.map_err(|err| err.to_string()))
             .collect()
     }
 
-    fn poisoned(idx: usize) -> std::result::Result<Option<Vec<usize>>, String> {
+    fn poisoned(idx: usize) -> std::result::Result<(), String> {
         Err(format!("Invalid Request: poisoned action {idx}"))
     }
 
@@ -716,14 +783,7 @@ mod tests {
         let sink = FakeSink::new(&[]);
         let results = apply_isolating_failures(&spans(&[2, 1, 3]), |r| sink.apply(r)).await;
         assert_eq!(sink.calls(), vec![0..6]);
-        assert_eq!(
-            summarize(results),
-            vec![
-                Ok(Some(vec![0, 1])),
-                Ok(Some(vec![2])),
-                Ok(Some(vec![3, 4, 5])),
-            ]
-        );
+        assert_eq!(summarize(results), vec![Ok(()), Ok(()), Ok(())]);
     }
 
     #[tokio::test]
@@ -735,12 +795,7 @@ mod tests {
         assert_eq!(sink.calls(), vec![0..4, 0..2, 2..4, 2..3, 3..4]);
         assert_eq!(
             summarize(results),
-            vec![
-                Ok(Some(vec![0])),
-                Ok(Some(vec![1])),
-                poisoned(2),
-                Ok(Some(vec![3])),
-            ]
+            vec![Ok(()), Ok(()), poisoned(2), Ok(())]
         );
     }
 
@@ -751,7 +806,7 @@ mod tests {
         // The poisoned component's three actions stay one unit: it is retried
         // whole and fails whole; its sibling still lands.
         assert_eq!(sink.calls(), vec![0..5, 0..3, 3..5]);
-        assert_eq!(summarize(results), vec![poisoned(1), Ok(Some(vec![3, 4]))]);
+        assert_eq!(summarize(results), vec![poisoned(1), Ok(())]);
     }
 
     #[tokio::test]
@@ -761,12 +816,7 @@ mod tests {
         assert_eq!(sink.calls(), vec![0..4, 0..2, 0..1, 1..2, 2..4, 2..3, 3..4]);
         assert_eq!(
             summarize(results),
-            vec![
-                poisoned(0),
-                Ok(Some(vec![1])),
-                Ok(Some(vec![2])),
-                poisoned(3)
-            ]
+            vec![poisoned(0), Ok(()), Ok(()), poisoned(3)]
         );
     }
 
@@ -799,7 +849,7 @@ mod tests {
             let results = apply_isolating_failures(&spans(&[1, 2, 1]), |r| {
                 calls.lock().unwrap().push(r);
                 let err = make_error();
-                async move { Err::<Option<Vec<usize>>, _>(err) }
+                async move { Err::<(), _>(err) }
             })
             .await;
             assert_eq!(*calls.lock().unwrap(), vec![0..4]);
@@ -811,31 +861,5 @@ mod tests {
                 assert_eq!(err.is_deadline_exceeded(), probe.is_deadline_exceeded());
             }
         }
-    }
-
-    #[tokio::test]
-    async fn absent_child_handlers_pass_through() {
-        let results = apply_isolating_failures(&spans(&[1, 2]), |_| async {
-            Ok::<Option<Vec<usize>>, _>(None)
-        })
-        .await;
-        assert_eq!(summarize(results), vec![Ok(None), Ok(None)]);
-    }
-
-    #[tokio::test]
-    async fn child_handler_length_mismatch_is_reported_without_retry() {
-        let calls = Mutex::new(Vec::new());
-        let results = apply_isolating_failures(&spans(&[1, 2]), |r| {
-            calls.lock().unwrap().push(r);
-            async { Ok(Some(vec![0])) }
-        })
-        .await;
-        assert_eq!(*calls.lock().unwrap(), vec![0..3]);
-        let expected = Err(
-            "Invalid Request: expect child providers returned by Sink to be the same length as \
-             the actions (3), got 1"
-                .to_string(),
-        );
-        assert_eq!(summarize(results), vec![expected.clone(), expected]);
     }
 }

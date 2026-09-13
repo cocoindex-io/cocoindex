@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Collection, Literal, NamedTuple
+from typing import Any, Collection, Literal, Mapping, NamedTuple, Sequence
 import threading
 import cocoindex as coco
 
@@ -73,6 +73,23 @@ class AtMost:
     __hash__ = None  # type: ignore[assignment]
 
 
+class RecordingChildSlot(coco.ChildSlot[Any]):
+    """Stand-in for a ``ChildSlot`` when a sink is called directly in a test.
+
+    Keeps the handler the sink fulfilled it with, instead of handing it to the
+    engine.
+    """
+
+    handler: Any
+
+    def __init__(self) -> None:
+        self.handler = None
+
+    def fulfill(self, handler: Any, /) -> None:
+        assert self.handler is None, "child slot fulfilled twice"
+        self.handler = handler
+
+
 # Component subpath segments that are *not* strings. These ride through the
 # state store as msgpack; a codec that collapsed a tuple segment to bytes (or
 # bytes to str) made the ownership guard resolve the wrong previous owner.
@@ -80,7 +97,7 @@ TUPLE_SEGMENT: coco.StableKey = (1, 2)
 BYTES_SEGMENT: coco.StableKey = b"abc"
 
 
-class DictTargetStateStore:
+class DictTargetStateStore(coco.TargetHandler[Any, Any, None]):
     data: dict[str, DictDataWithPrev]
     metrics: Metrics
     _lock: threading.Lock
@@ -197,14 +214,12 @@ class _DictTargetStateStoreAction(NamedTuple):
     destructive: bool = False
 
 
-class DictsTargetStateStore:
+class DictsTargetStateStore(coco.TargetHandler[None, None, DictTargetStateStore]):
     _stores: dict[str, DictTargetStateStore]
     metrics: Metrics
     _lock: threading.Lock
     _use_async: bool
-    _action_sink: coco.TargetActionSink[
-        _DictTargetStateStoreAction, DictTargetStateStore
-    ]
+    _action_sink: coco.TargetActionSink[_DictTargetStateStoreAction]
     sink_exception: bool = False
     child_invalidation: Literal["destructive", "lossy"] | None = None
 
@@ -214,22 +229,22 @@ class DictsTargetStateStore:
         self._lock = threading.Lock()
         self._use_async = use_async
         self._action_sink = (
-            coco.TargetActionSink.from_async_fn(self._async_sink)
+            coco.TargetActionSink.from_async_fn_with_children(self._async_sink)
             if use_async
-            else coco.TargetActionSink.from_fn(self._sink)
+            else coco.TargetActionSink.from_fn_with_children(self._sink)
         )
 
     def _sink(
         self,
         context_provider: coco.ContextProvider,
-        actions: Collection[_DictTargetStateStoreAction],
+        actions: Sequence[_DictTargetStateStoreAction],
+        child_slots: Mapping[int, coco.ChildSlot[DictTargetStateStore]],
         /,
-    ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
-        child_state_defs: list[coco.ChildTargetDef[DictTargetStateStore] | None] = []
+    ) -> None:
         if self.sink_exception:
             raise ValueError("injected sink exception")
         with self._lock:
-            for name, exists, action, destructive in actions:
+            for i, (name, exists, action, destructive) in enumerate(actions):
                 if action == "insert":
                     if name in self._stores:
                         raise ValueError(f"store {name} already exists")
@@ -246,20 +261,18 @@ class DictsTargetStateStore:
                     self.metrics.increment(action)
 
                 if exists:
-                    child_state_defs.append(coco.ChildTargetDef(self._stores[name]))
-                else:
-                    child_state_defs.append(None)
+                    child_slots[i].fulfill(self._stores[name])
 
             self.metrics.increment("sink")
-        return child_state_defs
 
     async def _async_sink(
         self,
         context_provider: coco.ContextProvider,
-        actions: Collection[_DictTargetStateStoreAction],
+        actions: Sequence[_DictTargetStateStoreAction],
+        child_slots: Mapping[int, coco.ChildSlot[DictTargetStateStore]],
         /,
-    ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
-        return self._sink(context_provider, actions)
+    ) -> None:
+        self._sink(context_provider, actions, child_slots)
 
     def reconcile(
         self,
@@ -353,7 +366,7 @@ class AsyncDictsTarget:
         )
 
 
-class _AttachmentChildHandler:
+class _AttachmentChildHandler(coco.TargetHandler[Any, Any, None]):
     """Child handler that supports attachment types, returning DictTargetStateStore handlers."""
 
     _attachment_stores: dict[str, DictTargetStateStore]
@@ -381,16 +394,16 @@ class _AttachmentChildHandler:
         return None
 
 
-class AttachmentDictsTargetStateStore:
+class AttachmentDictsTargetStateStore(
+    coco.TargetHandler[None, None, _AttachmentChildHandler]
+):
     """Like DictsTargetStateStore but child handlers support attachment types."""
 
     _handlers: dict[str, _AttachmentChildHandler]
     metrics: Metrics
     _lock: threading.Lock
     _supported_attachment_types: frozenset[str]
-    _action_sink: coco.TargetActionSink[
-        _DictTargetStateStoreAction, _AttachmentChildHandler
-    ]
+    _action_sink: coco.TargetActionSink[_DictTargetStateStoreAction]
 
     child_invalidation: Literal["destructive", "lossy"] | None = None
 
@@ -404,17 +417,17 @@ class AttachmentDictsTargetStateStore:
         self._supported_attachment_types = supported_attachment_types or frozenset(
             {"items"}
         )
-        self._action_sink = coco.TargetActionSink.from_fn(self._sink)
+        self._action_sink = coco.TargetActionSink.from_fn_with_children(self._sink)
 
     def _sink(
         self,
         context_provider: coco.ContextProvider,
-        actions: Collection[_DictTargetStateStoreAction],
+        actions: Sequence[_DictTargetStateStoreAction],
+        child_slots: Mapping[int, coco.ChildSlot[_AttachmentChildHandler]],
         /,
-    ) -> list[coco.ChildTargetDef[_AttachmentChildHandler] | None]:
-        child_state_defs: list[coco.ChildTargetDef[_AttachmentChildHandler] | None] = []
+    ) -> None:
         with self._lock:
-            for name, exists, action, destructive in actions:
+            for i, (name, exists, action, destructive) in enumerate(actions):
                 if action == "insert":
                     if name in self._handlers:
                         raise ValueError(f"handler {name} already exists")
@@ -433,12 +446,9 @@ class AttachmentDictsTargetStateStore:
                     self.metrics.increment(action)
 
                 if exists:
-                    child_state_defs.append(coco.ChildTargetDef(self._handlers[name]))
-                else:
-                    child_state_defs.append(None)
+                    child_slots[i].fulfill(self._handlers[name])
 
             self.metrics.increment("sink")
-        return child_state_defs
 
     def reconcile(
         self,
