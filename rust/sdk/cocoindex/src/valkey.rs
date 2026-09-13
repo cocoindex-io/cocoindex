@@ -24,7 +24,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -534,12 +534,11 @@ impl TargetHandler<IndexSpec> for IndexHandler {
 
 fn index_sink(db_key: String) -> TargetActionSink<IndexAction> {
     TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<TargetAction<IndexAction>>| {
+        move |host_ctx, actions: Vec<(TargetAction<IndexAction>, Option<ChildSlot>)>| {
             let db_key = db_key.clone();
             async move {
                 let db = resolve_db(&host_ctx, &db_key)?;
-                let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                for action in actions {
+                for (action, child_slot) in actions {
                     match action {
                         TargetAction::Create(a) | TargetAction::Update(a) => {
                             let spec = a.spec.ok_or_else(|| {
@@ -572,18 +571,19 @@ fn index_sink(db_key: String) -> TargetActionSink<IndexAction> {
                                 )
                                 .await?;
                             }
-                            out.push(Some(ChildTargetDef::new::<Document, _>(
-                                DocumentHandler::new(db_key.clone(), a.index_name),
-                            )));
+                            if let Some(slot) = child_slot {
+                                slot.fulfill(ChildTargetDef::new::<Document, _>(
+                                    DocumentHandler::new(db_key.clone(), a.index_name),
+                                ))?;
+                            }
                         }
                         TargetAction::Delete(a) => {
                             drop_index(&db, &a.index_name).await?;
                             delete_prefix_keys(&db, &a.index_name).await?;
-                            out.push(None);
                         }
                     }
                 }
-                Ok(out)
+                Ok(())
             }
         },
     )

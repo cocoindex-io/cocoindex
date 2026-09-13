@@ -30,6 +30,7 @@ if DEPS_AVAILABLE:
     from cocoindex.connectorkits import target as connector_target
     from cocoindex.connectors import doris
     from cocoindex.connectors.doris import _target as doris_target
+    from tests.common.target_states import RecordingChildSlot
     from cocoindex.connectors.doris._target import (
         DorisConnectionConfig,
         TableSchema,
@@ -237,4 +238,4 @@ def test_end_to_end_genuine_ddl_failure_propagates_through_apply_table_actions(
     monkeypatch.setattr(doris_target, "_execute_ddl_sync", fake_execute)
 
     with pytest.raises(Exception, match="Access denied"):
-        _apply_table_actions(ctx, [action])
+        _apply_table_actions(ctx, [action], {0: RecordingChildSlot()})

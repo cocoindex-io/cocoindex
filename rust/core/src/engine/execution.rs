@@ -14,8 +14,8 @@ use crate::engine::context::{
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
-    ChildInvalidation, TargetActionSinkKeeper, TargetHandler, TargetStateProvider,
-    TargetStateProviderRegistry,
+    ChildInvalidation, ChildTargetSlot, TargetActionSinkKeeper, TargetActionWithChildSlot,
+    TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::ChildStablePathSet;
@@ -693,15 +693,18 @@ impl<Prof: EngineProfile> Committer<Prof> {
 }
 
 struct SinkInput<Prof: EngineProfile> {
-    actions: Vec<Prof::TargetAction>,
-    child_providers: Option<Vec<Option<TargetStateProvider<Prof>>>>,
+    actions: Vec<TargetActionWithChildSlot<Prof>>,
+    /// Child providers awaiting a handler, each paired with the engine's clone
+    /// of the slot handed to the sink for the declaring action. Read back after
+    /// the sink call; a slot the sink left unfulfilled is an error.
+    pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
     fn default() -> Self {
         Self {
             actions: Vec::new(),
-            child_providers: None,
+            pending_children: Vec::new(),
         }
     }
 }
@@ -712,15 +715,12 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
         action: Prof::TargetAction,
         child_provider: Option<TargetStateProvider<Prof>>,
     ) {
-        self.actions.push(action);
-        if let Some(child_providers) = self.child_providers.as_mut() {
-            child_providers.push(child_provider);
-        } else if let Some(child_provider) = child_provider {
-            let mut v = Vec::with_capacity(self.actions.len());
-            v.extend(std::iter::repeat(None).take(self.actions.len() - 1));
-            v.push(Some(child_provider));
-            self.child_providers = Some(v);
-        }
+        let child_slot = child_provider.map(|child_provider| {
+            let slot = ChildTargetSlot::new();
+            self.pending_children.push((child_provider, slot.clone()));
+            slot
+        });
+        self.actions.push((action, child_slot));
     }
 }
 
@@ -1504,7 +1504,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         Ok(match outcome {
                             PreCommitOutcome::Done { output, write_plan: _ } => {
                                 for input in output.actions_by_sinks.values() {
-                                    if input.child_providers.is_some() {
+                                    if !input.pending_children.is_empty() {
                                         client_bail!(
                                             "preview currently supports flat/leaf target actions only; \
                                              target actions requiring child target providers are not supported yet"
@@ -1515,7 +1515,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                 let processor_name_for_del = output.processor_name_for_del;
                                 let mut guard = collector.lock().unwrap();
                                 for (_sink, input) in output.actions_by_sinks {
-                                    guard.extend(input.actions);
+                                    guard.extend(input.actions.into_iter().map(|(action, _)| action));
                                 }
                                 *preview_result_capture.lock().unwrap() =
                                     Some((previously_exists, processor_name_for_del));
@@ -1757,51 +1757,20 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let sink_result: Result<()> = async {
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in actions_by_sinks {
-            let handlers = sink
-                .apply(
-                    host_runtime_ctx,
-                    Arc::clone(comp_ctx.host_ctx()),
-                    input.actions,
-                )
-                .await?;
-            if let Some(child_providers) = input.child_providers {
-                let Some(handlers) = handlers else {
-                    client_bail!("expect child providers returned by Sink");
+            sink.apply(
+                host_runtime_ctx,
+                Arc::clone(comp_ctx.host_ctx()),
+                input.actions,
+            )
+            .await?;
+            for (child_provider, slot) in input.pending_children {
+                let Some(handler) = slot.take()? else {
+                    client_bail!(
+                        "target action sink did not fulfill the child target slot for {}",
+                        child_provider.target_state_path()
+                    );
                 };
-                if handlers.len() != child_providers.len() {
-                    client_bail!(
-                        "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                        child_providers.len(),
-                        handlers.len(),
-                    );
-                }
-                for (child_target_state_def, child_provider) in
-                    std::iter::zip(handlers, child_providers)
-                {
-                    if let Some(child_provider) = child_provider {
-                        if let Some(child_target_state_def) = child_target_state_def {
-                            pending_fulfillments
-                                .push((child_provider, child_target_state_def.handler));
-                        } else {
-                            client_bail!(
-                                "expect child provider returned by Sink to be fulfilled"
-                            );
-                        }
-                    }
-                }
-            } else {
-                // Orphan deletes for container targets have no child provider
-                // to fulfill, but their sink still returns an all-None handler
-                // list.
-                if handlers
-                    .into_iter()
-                    .flatten()
-                    .any(|handler| handler.is_some())
-                {
-                    client_bail!(
-                        "target action sink returned child handlers without child providers"
-                    );
-                }
+                pending_fulfillments.push((child_provider, handler));
             }
         }
         Ok(())

@@ -10,27 +10,103 @@ use crate::{
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map},
     hash::{Hash, Hasher},
 };
 
-pub struct ChildTargetDef<Prof: EngineProfile> {
-    pub handler: Prof::TargetHdl,
+enum ChildTargetSlotState<H> {
+    Pending,
+    Fulfilled(H),
+    Consumed,
 }
+
+/// Fulfillment handle for the child target provider of one action.
+///
+/// The engine mints one slot per action whose target state was declared with
+/// `declare_target_state_with_child`, hands it to the sink alongside the action,
+/// and reads the handler back (via [`Self::take`]) once the sink call returns.
+/// A slot is fulfilled at most once; fulfilling it after the engine has read it
+/// back is an error too, so a sink that stashes a slot for later is caught.
+///
+/// Clones share one state: the engine keeps one clone, the sink gets the other.
+pub struct ChildTargetSlot<Prof: EngineProfile> {
+    state: Arc<Mutex<ChildTargetSlotState<Prof::TargetHdl>>>,
+}
+
+impl<Prof: EngineProfile> Clone for ChildTargetSlot<Prof> {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+}
+
+impl<Prof: EngineProfile> Default for ChildTargetSlot<Prof> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Prof: EngineProfile> ChildTargetSlot<Prof> {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ChildTargetSlotState::Pending)),
+        }
+    }
+
+    /// Provide the handler for the child target states under this action.
+    pub fn fulfill(&self, handler: Prof::TargetHdl) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        match &*state {
+            ChildTargetSlotState::Pending => {
+                *state = ChildTargetSlotState::Fulfilled(handler);
+                Ok(())
+            }
+            ChildTargetSlotState::Fulfilled(_) => {
+                client_bail!("child target slot fulfilled more than once")
+            }
+            ChildTargetSlotState::Consumed => {
+                client_bail!("child target slot fulfilled after its sink call returned")
+            }
+        }
+    }
+
+    /// Take the handler out; `None` if the slot was never fulfilled. Consumes
+    /// the slot: a later `fulfill` fails, and a second `take` is an internal
+    /// error.
+    pub fn take(&self) -> Result<Option<Prof::TargetHdl>> {
+        let mut state = self.state.lock().unwrap();
+        match std::mem::replace(&mut *state, ChildTargetSlotState::Consumed) {
+            ChildTargetSlotState::Pending => Ok(None),
+            ChildTargetSlotState::Fulfilled(handler) => Ok(Some(handler)),
+            ChildTargetSlotState::Consumed => {
+                Err(internal_error!("child target slot taken more than once"))
+            }
+        }
+    }
+}
+
+/// One action for a sink call, with the slot for its child target provider
+/// when the declaring call was `declare_target_state_with_child`.
+pub type TargetActionWithChildSlot<Prof> = (
+    <Prof as EngineProfile>::TargetAction,
+    Option<ChildTargetSlot<Prof>>,
+);
 
 #[async_trait]
 pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    /// Run the logic to apply the action.
+    /// Apply the actions. Every child slot handed over must be fulfilled before
+    /// this returns; the engine reads them back afterwards.
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     async fn apply(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        actions: Vec<Prof::TargetAction>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
+        actions: Vec<TargetActionWithChildSlot<Prof>>,
+    ) -> Result<()>;
 }
 
 /// Cloneable handle to a target action sink and its per-sink batcher.
@@ -61,10 +137,10 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        actions: Vec<Prof::TargetAction>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
+        actions: Vec<TargetActionWithChildSlot<Prof>>,
+    ) -> Result<()> {
         if actions.is_empty() {
-            return Ok(None);
+            return Ok(());
         }
         self.inner
             .batcher
@@ -114,7 +190,7 @@ impl<Prof: EngineProfile> Hash for TargetActionSinkKeeper<Prof> {
 struct TargetActionRunnerInput<Prof: EngineProfile> {
     host_runtime_ctx: Prof::HostRuntimeCtx,
     host_ctx: Arc<Prof::HostCtx>,
-    actions: Vec<Prof::TargetAction>,
+    actions: Vec<TargetActionWithChildSlot<Prof>>,
 }
 
 struct TargetActionRunnerContext<Prof: EngineProfile> {
@@ -145,68 +221,39 @@ struct TargetActionRunner<Prof: EngineProfile> {
 #[async_trait]
 impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
     type Input = TargetActionRunnerInput<Prof>;
-    type Output = Option<Vec<Option<ChildTargetDef<Prof>>>>;
+    type Output = ();
 
     async fn run(
         &self,
         inputs: Vec<Self::Input>,
     ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
         let num_inputs = inputs.len();
-        if num_inputs == 0 {
-            return Ok(Vec::new().into_iter());
-        }
 
+        // Each input is one component's reconciled actions; the sink wants one
+        // flat action list per compatible host context. Child slots travel with
+        // their actions, so nothing has to be sliced back per input afterwards.
         let mut groups =
-            HashMap::<TargetActionRunnerContext<Prof>, Vec<(usize, Vec<Prof::TargetAction>)>>::new(
-            );
-        for (input_idx, input) in inputs.into_iter().enumerate() {
+            HashMap::<TargetActionRunnerContext<Prof>, Vec<TargetActionWithChildSlot<Prof>>>::new();
+        for input in inputs {
             let context = TargetActionRunnerContext {
                 host_runtime_ctx: input.host_runtime_ctx,
                 host_ctx: input.host_ctx,
             };
-            groups
-                .entry(context)
-                .or_default()
-                .push((input_idx, input.actions));
+            match groups.entry(context) {
+                hash_map::Entry::Occupied(mut entry) => entry.get_mut().extend(input.actions),
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(input.actions);
+                }
+            }
         }
 
-        let mut outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> =
-            std::iter::repeat_with(|| None).take(num_inputs).collect();
-        for (context, inputs) in groups {
-            let mut actions = Vec::new();
-            let mut action_counts = Vec::with_capacity(inputs.len());
-            let mut input_indexes = Vec::with_capacity(inputs.len());
-
-            // Each input is one component's reconciled actions; the sink wants
-            // one flat action list per compatible host context.
-            for (input_idx, mut input_actions) in inputs {
-                input_indexes.push(input_idx);
-                action_counts.push(input_actions.len());
-                actions.append(&mut input_actions);
-            }
-
-            let actions_len = actions.len();
-            let Some(handlers) = self
-                .sink
+        for (context, actions) in groups {
+            self.sink
                 .apply(&context.host_runtime_ctx, context.host_ctx, actions)
-                .await?
-            else {
-                continue;
-            };
-            if handlers.len() != actions_len {
-                client_bail!(
-                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                    actions_len,
-                    handlers.len(),
-                );
-            }
-            let mut handlers = handlers.into_iter();
-            for (input_idx, count) in std::iter::zip(input_indexes, action_counts) {
-                outputs[input_idx] = Some(handlers.by_ref().take(count).collect());
-            }
+                .await?;
         }
 
-        Ok(outputs.into_iter())
+        Ok(std::iter::repeat_n((), num_inputs))
     }
 }
 

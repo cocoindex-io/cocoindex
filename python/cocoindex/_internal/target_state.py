@@ -5,12 +5,12 @@ from typing import (
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Protocol,
     Any,
     Sequence,
     TypeAlias,
-    overload,
 )
 import threading
 import weakref
@@ -37,8 +37,8 @@ ValueT = TypeVar("ValueT", default=Any)
 ValueT_contra = TypeVar("ValueT_contra", contravariant=True, default=Any)
 TrackingRecordT = TypeVar("TrackingRecordT", default=Any)
 TrackingRecordT_co = TypeVar("TrackingRecordT_co", covariant=True, default=Any)
-HandlerT_co = TypeVar(
-    "HandlerT_co", covariant=True, bound="TargetHandler[Any, Any, Any]"
+HandlerT_contra = TypeVar(
+    "HandlerT_contra", contravariant=True, bound="TargetHandler[Any, Any, Any]"
 )
 OptChildHandlerT = TypeVar(
     "OptChildHandlerT",
@@ -93,55 +93,76 @@ class _TypedTargetHandlerWrapper:
         }
 
 
-class ChildTargetDef(Generic[HandlerT_co], NamedTuple):
-    handler: HandlerT_co
+class ChildSlot(Generic[HandlerT_contra]):
+    """Fulfillment handle for the child target states under one container action.
+
+    A sink built with :meth:`TargetActionSink.from_fn_with_children` or
+    :meth:`TargetActionSink.from_async_fn_with_children` receives one slot per
+    action whose target state was declared with ``declare_target_state_with_child``
+    (or ``mount_target``), keyed by the action's index in the batch. It must call
+    :meth:`fulfill` exactly once per slot, before returning, with the handler for
+    the child target states. A slot left unfulfilled fails the commit.
+    """
+
+    __slots__ = ("_core",)
+    _core: core.ChildTargetSlot
+
+    def __init__(self, core_slot: core.ChildTargetSlot) -> None:
+        self._core = core_slot
+
+    def fulfill(self, handler: HandlerT_contra, /) -> None:
+        self._core.fulfill(_TypedTargetHandlerWrapper(handler))
 
 
-class TargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
-    # Case 1: No child handler
-    @overload
-    def __call__(
-        self: TargetActionSinkFn[ActionT_contra, None],
-        context_provider: ContextProvider,
-        actions: Sequence[ActionT_contra],
-        /,
-    ) -> None: ...
-    # Case 2: With child handler
-    @overload
-    def __call__(
-        self: TargetActionSinkFn[ActionT_contra, HandlerT_co],
-        context_provider: ContextProvider,
-        actions: Sequence[ActionT_contra],
-        /,
-    ) -> Sequence[ChildTargetDef[HandlerT_co] | None] | None: ...
+class TargetActionSinkFn(Protocol[ActionT_contra]):
     def __call__(
         self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
-    ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
-
-
-class AsyncTargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
-    # Case 1: No child handler
-    @overload
-    async def __call__(
-        self: AsyncTargetActionSinkFn[ActionT_contra, None],
-        context_provider: ContextProvider,
-        actions: Sequence[ActionT_contra],
-        /,
     ) -> None: ...
-    # Case 2: With child handler
-    @overload
-    async def __call__(
-        self: AsyncTargetActionSinkFn[ActionT_contra, HandlerT_co],
-        context_provider: ContextProvider,
-        actions: Sequence[ActionT_contra],
-        /,
-    ) -> Sequence[ChildTargetDef[HandlerT_co] | None] | None: ...
+
+
+class AsyncTargetActionSinkFn(Protocol[ActionT_contra]):
     async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
-    ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
+    ) -> None: ...
 
 
-class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
+class TargetActionSinkWithChildrenFn(Protocol[ActionT_contra]):
+    def __call__(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[ActionT_contra],
+        child_slots: Mapping[int, ChildSlot[Any]],
+        /,
+    ) -> None: ...
+
+
+class AsyncTargetActionSinkWithChildrenFn(Protocol[ActionT_contra]):
+    async def __call__(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[ActionT_contra],
+        child_slots: Mapping[int, ChildSlot[Any]],
+        /,
+    ) -> None: ...
+
+
+class TargetActionSink(Generic[ActionT_contra]):
+    """Applies batches of actions to the external system.
+
+    Sinks share one identity — actions reconciled to them are batched and
+    applied together — iff their callbacks compare equal. The same function
+    or bound method always yields the same identity; a callable with value
+    equality (e.g. a frozen dataclass implementing ``__call__``) may be
+    constructed on the fly at each ``reconcile()`` call.
+
+    A sink built with :meth:`from_fn` / :meth:`from_async_fn` serves leaf
+    target states only. A sink whose actions may carry child target states
+    (container targets, or a sink shared between a container and its leaves)
+    is built with :meth:`from_fn_with_children` /
+    :meth:`from_async_fn_with_children` and fulfills a :class:`ChildSlot` per
+    child-bearing action.
+    """
+
     __slots__ = ("_core",)
     _core: core.TargetActionSink
 
@@ -150,30 +171,50 @@ class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
 
     @staticmethod
     def from_fn(
-        fn: TargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
-    ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
-        """Create a sink from a sync callback.
-
-        Sinks share one identity — actions reconciled to them are batched and
-        applied together — iff their callbacks compare equal. The same function
-        or bound method always yields the same identity; a callable with value
-        equality (e.g. a frozen dataclass implementing ``__call__``) may be
-        constructed on the fly at each ``reconcile()`` call.
-        """
+        fn: TargetActionSinkFn[ActionT_contra],
+    ) -> "TargetActionSink[ActionT_contra]":
+        """Create a leaf sink from a sync callback ``(context_provider, actions)``."""
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
-        return TargetActionSink(core.TargetActionSink.new_sync(canonical))
+        return TargetActionSink(
+            core.TargetActionSink.new_sync(canonical, with_children=False)
+        )
 
     @staticmethod
     def from_async_fn(
-        fn: AsyncTargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
-    ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
-        """Create a sink from an async callback.
-
-        Identity semantics are the same as :meth:`from_fn`: callbacks that
-        compare equal yield sinks sharing one batching identity.
-        """
+        fn: AsyncTargetActionSinkFn[ActionT_contra],
+    ) -> "TargetActionSink[ActionT_contra]":
+        """Create a leaf sink from an async callback ``(context_provider, actions)``."""
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
-        return TargetActionSink(core.TargetActionSink.new_async(canonical))
+        return TargetActionSink(
+            core.TargetActionSink.new_async(canonical, with_children=False)
+        )
+
+    @staticmethod
+    def from_fn_with_children(
+        fn: TargetActionSinkWithChildrenFn[ActionT_contra],
+    ) -> "TargetActionSink[ActionT_contra]":
+        """Create a container sink from a sync callback
+        ``(context_provider, actions, child_slots)``.
+
+        ``child_slots`` maps the index of each action whose target state was
+        declared with a child to the :class:`ChildSlot` the callback must
+        fulfill; actions without a child (orphan deletes, leaf actions on a
+        shared sink) have no entry.
+        """
+        canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
+        return TargetActionSink(
+            core.TargetActionSink.new_sync(canonical, with_children=True)
+        )
+
+    @staticmethod
+    def from_async_fn_with_children(
+        fn: AsyncTargetActionSinkWithChildrenFn[ActionT_contra],
+    ) -> "TargetActionSink[ActionT_contra]":
+        """Async counterpart of :meth:`from_fn_with_children`."""
+        canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
+        return TargetActionSink(
+            core.TargetActionSink.new_async(canonical, with_children=True)
+        )
 
 
 class _CanonicalKey:
@@ -260,16 +301,24 @@ _SYNC_FN_DEDUPER = _ObjectDeduper()
 _ASYNC_FN_DEDUPER = _ObjectDeduper()
 
 
-class TargetReconcileOutput(
-    Generic[ActionT, TrackingRecordT_co, OptChildHandlerT_co], NamedTuple
-):
+class TargetReconcileOutput(Generic[ActionT, TrackingRecordT_co], NamedTuple):
     action: ActionT
-    sink: TargetActionSink[ActionT, OptChildHandlerT_co]
+    sink: TargetActionSink[ActionT]
     tracking_record: TrackingRecordT_co | NonExistenceType
     child_invalidation: Literal["destructive", "lossy"] | None = None
 
 
 class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co]):
+    """Reconciles one kind of target state.
+
+    ``OptChildHandlerT_co`` is the handler type of the child target states this
+    handler's sink fulfills (through :class:`ChildSlot`), or ``None`` for a leaf
+    target. ``reconcile`` does not mention it: it types the provider chain
+    (``declare_target_state_with_child`` / ``mount_target``), so a container
+    handler subclasses ``TargetHandler[Spec, TrackingRecord, ChildHandler]``
+    explicitly.
+    """
+
     def reconcile(
         self,
         key: StableKey,
@@ -277,7 +326,7 @@ class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co
         prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
-    ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT_co] | None: ...
+    ) -> TargetReconcileOutput[Any, TrackingRecordT] | None: ...
 
 
 class TargetStateProvider(

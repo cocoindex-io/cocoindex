@@ -5,18 +5,19 @@ use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
-    ChildInvalidation, ChildTargetDef, TargetActionSink, TargetActionSinkKeeper, TargetHandler,
-    TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
-    WeakTargetActionSinkKeeper,
+    ChildInvalidation, ChildTargetSlot, TargetActionSink, TargetActionSinkKeeper,
+    TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput, TargetStateProvider,
+    TargetStateProviderRegistry, WeakTargetActionSinkKeeper,
 };
-use pyo3::types::{PyList, PySequence, PyTuple};
+use futures::FutureExt;
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::prelude::*;
 
 use crate::stable_path::PyStableKey;
 
-use crate::runtime::{PyAsyncContext, PyCallback, python_objects, wrap_target_handler};
+use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
 use crate::value::PyStoredValue;
 
 #[pyclass(name = "TargetActionSink", from_py_object)]
@@ -27,14 +28,19 @@ pub struct PyTargetActionSink {
 
 pub struct PyTargetActionSinkInner {
     callback: PyCallback,
+    /// Whether the callback takes the child-slot mapping as its third argument
+    /// (`from_fn_with_children` / `from_async_fn_with_children`).
+    with_children: bool,
 }
 
-/// Interns sink keepers by callback object so that sinks constructed from the
-/// same callback share one batching identity (the keeper, whose pointer the
-/// engine groups actions by). The Python layer canonicalizes callbacks that
-/// compare equal to one representative object (`_ObjectDeduper` in
-/// `_internal/target_state.py`) before calling `new_sync`/`new_async`, so
-/// together the two layers give sinks value-based identity.
+/// Interns sink keepers by callback object and calling convention, so that
+/// sinks constructed from the same callback share one batching identity (the
+/// keeper, whose pointer the engine groups actions by). The Python layer
+/// canonicalizes callbacks that compare equal to one representative object
+/// (`_ObjectDeduper` in `_internal/target_state.py`) before calling
+/// `new_sync`/`new_async`, so together the two layers give sinks value-based
+/// identity. The convention is part of the key because the keeper fixes how
+/// the callback is invoked.
 ///
 /// Entries hold the keeper only weakly, so an idle sink (no pending actions,
 /// no live Python reference) is freed together with its batcher. A live entry
@@ -43,8 +49,14 @@ pub struct PyTargetActionSinkInner {
 /// callback. Dead entries never match (upgrade fails) and are swept lazily
 /// once the map grows past a doubling threshold.
 struct SinkKeeperRegistry {
-    map: HashMap<usize, WeakTargetActionSinkKeeper<PyEngineProfile>>,
+    map: HashMap<SinkKeeperKey, WeakTargetActionSinkKeeper<PyEngineProfile>>,
     prune_at: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct SinkKeeperKey {
+    callback_ptr: usize,
+    with_children: bool,
 }
 
 const SINK_REGISTRY_MIN_PRUNE_AT: usize = 64;
@@ -59,10 +71,10 @@ impl SinkKeeperRegistry {
 
     fn get_or_create(
         &mut self,
-        callback_ptr: usize,
+        key: SinkKeeperKey,
         make: impl FnOnce() -> PyTargetActionSinkInner,
     ) -> TargetActionSinkKeeper<PyEngineProfile> {
-        if let Some(weak) = self.map.get(&callback_ptr) {
+        if let Some(weak) = self.map.get(&key) {
             if let Some(keeper) = weak.upgrade() {
                 return keeper;
             }
@@ -72,7 +84,7 @@ impl SinkKeeperRegistry {
             self.map.retain(|_, weak| weak.upgrade().is_some());
             self.prune_at = (self.map.len() * 2).max(SINK_REGISTRY_MIN_PRUNE_AT);
         }
-        self.map.insert(callback_ptr, keeper.downgrade());
+        self.map.insert(key, keeper.downgrade());
         keeper
     }
 }
@@ -88,26 +100,36 @@ static ASYNC_SINK_REGISTRY: LazyLock<Mutex<SinkKeeperRegistry>> =
 #[pymethods]
 impl PyTargetActionSink {
     #[staticmethod]
-    pub fn new_sync(callback: Py<PyAny>) -> Self {
-        let callback_ptr = callback.as_ptr() as usize;
-        let keeper = SYNC_SINK_REGISTRY
-            .lock()
-            .unwrap()
-            .get_or_create(callback_ptr, || PyTargetActionSinkInner {
-                callback: PyCallback::Sync(Arc::new(callback)),
-            });
+    pub fn new_sync(callback: Py<PyAny>, with_children: bool) -> Self {
+        let key = SinkKeeperKey {
+            callback_ptr: callback.as_ptr() as usize,
+            with_children,
+        };
+        let keeper =
+            SYNC_SINK_REGISTRY
+                .lock()
+                .unwrap()
+                .get_or_create(key, || PyTargetActionSinkInner {
+                    callback: PyCallback::Sync(Arc::new(callback)),
+                    with_children,
+                });
         Self { keeper }
     }
 
     #[staticmethod]
-    pub fn new_async(callback: Py<PyAny>) -> Self {
-        let callback_ptr = callback.as_ptr() as usize;
-        let keeper = ASYNC_SINK_REGISTRY
-            .lock()
-            .unwrap()
-            .get_or_create(callback_ptr, || PyTargetActionSinkInner {
-                callback: PyCallback::Async(Arc::new(callback)),
-            });
+    pub fn new_async(callback: Py<PyAny>, with_children: bool) -> Self {
+        let key = SinkKeeperKey {
+            callback_ptr: callback.as_ptr() as usize,
+            with_children,
+        };
+        let keeper =
+            ASYNC_SINK_REGISTRY
+                .lock()
+                .unwrap()
+                .get_or_create(key, || PyTargetActionSinkInner {
+                    callback: PyCallback::Async(Arc::new(callback)),
+                    with_children,
+                });
         Self { keeper }
     }
 
@@ -139,36 +161,73 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
         &self,
         host_runtime_ctx: &PyAsyncContext,
         host_ctx: Arc<Py<PyAny>>,
-        actions: Vec<Py<PyAny>>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<PyEngineProfile>>>>> {
-        let context_provider = Python::attach(|py| host_ctx.as_ref().clone_ref(py));
-        let ret = self
-            .callback
-            .call(host_runtime_ctx, (context_provider, actions))?
-            .await?;
-        Python::attach(|py| -> PyResult<_> {
-            if ret.is_none(py) {
-                return Ok(None);
-            }
-            let seq = ret.bind(py).cast::<PySequence>()?;
-            let len = seq.len()? as usize;
-            let mut results: Vec<Option<ChildTargetDef<PyEngineProfile>>> = Vec::with_capacity(len);
-            for i in 0..len {
-                let obj = seq.get_item(i)?;
-                if obj.is_none() {
-                    results.push(None);
-                } else {
-                    // Extract handler from ChildTargetDef NamedTuple and wrap for typed deserialization
-                    let (handler,) = obj.extract::<(Py<PyAny>,)>()?;
-                    let wrapped = wrap_target_handler(py, &handler)?;
-                    results.push(Some(ChildTargetDef {
-                        handler: PyTargetHandler(wrapped),
-                    }));
+        actions: Vec<TargetActionWithChildSlot<PyEngineProfile>>,
+    ) -> Result<()> {
+        let call = Python::attach(|py| -> Result<_> {
+            let context_provider = host_ctx.as_ref().clone_ref(py);
+            // Split the child slots off while building the action list, so a
+            // leaf-only batch costs nothing beyond the list itself.
+            let mut child_slots = Vec::new();
+            let actions = PyList::new(
+                py,
+                actions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (action, slot))| {
+                        if let Some(slot) = slot {
+                            child_slots.push((idx, slot));
+                        }
+                        action
+                    }),
+            )
+            .from_py_result()?;
+            if self.with_children {
+                let slots = PyDict::new(py);
+                let wrap = &python_objects().child_slot_wrapper_fn;
+                for (idx, slot) in child_slots {
+                    let slot = wrap
+                        .call1(py, (PyChildTargetSlot(slot),))
+                        .from_py_result()?;
+                    slots.set_item(idx, slot).from_py_result()?;
                 }
+                Ok(self
+                    .callback
+                    .call(
+                        host_runtime_ctx,
+                        (context_provider, actions.unbind(), slots.unbind()),
+                    )?
+                    .boxed())
+            } else {
+                if !child_slots.is_empty() {
+                    client_bail!(
+                        "target action sink built with `TargetActionSink.from_fn()` / \
+                         `from_async_fn()` received {} action(s) with child target states; \
+                         build it with `from_fn_with_children()` / `from_async_fn_with_children()` \
+                         and fulfill their child slots",
+                        child_slots.len()
+                    );
+                }
+                Ok(self
+                    .callback
+                    .call(host_runtime_ctx, (context_provider, actions.unbind()))?
+                    .boxed())
             }
-            Ok(Some(results))
-        })
-        .from_py_result()
+        })?;
+        call.await?;
+        Ok(())
+    }
+}
+
+/// Core child slot handed to a container sink. The Python-facing `ChildSlot`
+/// wraps it (see `child_slot_wrapper_fn`), adding the typed-deserialization
+/// wrapper around the handler before it reaches `fulfill`.
+#[pyclass(name = "ChildTargetSlot")]
+pub struct PyChildTargetSlot(ChildTargetSlot<PyEngineProfile>);
+
+#[pymethods]
+impl PyChildTargetSlot {
+    fn fulfill(&self, handler: Py<PyAny>) -> PyResult<()> {
+        self.0.fulfill(PyTargetHandler(handler)).into_py_result()
     }
 }
 

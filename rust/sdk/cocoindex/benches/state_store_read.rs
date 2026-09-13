@@ -155,19 +155,17 @@ mod fixture {
             assert!(prev.is_empty() && desired.is_some());
             let extra_depth = self.extra_depth;
             Ok(Some(TargetReconcileOutput {
-                sink: TargetActionSink::from_async_fn_with_children(
-                    move |actions: Vec<TargetAction<()>>| async move {
-                        Ok(actions
-                            .iter()
-                            .map(|_| {
-                                Some(ChildTargetDef::new::<(), _>(NodeHandler {
-                                    level: 0,
-                                    extra_depth,
-                                }))
-                            })
-                            .collect())
-                    },
-                ),
+                sink: TargetActionSink::from_async_fn_with_children(move |actions| async move {
+                    for (_action, child_slot) in actions {
+                        if let Some(slot) = child_slot {
+                            slot.fulfill(ChildTargetDef::new::<(), _>(NodeHandler {
+                                level: 0,
+                                extra_depth,
+                            }))?;
+                        }
+                    }
+                    Ok(())
+                }),
                 ..create_output()
             }))
         }

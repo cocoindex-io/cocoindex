@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use cocoindex::{
-    App, ChildTargetDef, Result, StableKey, TargetAction, TargetActionSink,
+    App, ChildSlot, ChildTargetDef, Result, StableKey, TargetAction, TargetActionSink,
     TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetStateProvider,
     declare_target_state, mount_target, register_root_target_states_provider,
 };
@@ -398,31 +398,33 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-/// Build a container sink that fulfills each create/update with a fresh child row
-/// handler (recording into `row_log`) and emits no child for deletes.
+/// Build a container sink that fulfills each create/update's child slot with a
+/// fresh child row handler (recording into `row_log`); deletes carry no slot.
 fn table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children(move |actions: Vec<TargetAction<TableAction>>| {
-        let table_log = table_log.clone();
-        let row_log = row_log.clone();
-        async move {
-            let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-            for action in actions {
-                match action {
-                    TargetAction::Create(t) | TargetAction::Update(t) => {
-                        table_log.lock().unwrap().push(format!("ensure {}", t.name));
-                        out.push(Some(ChildTargetDef::new::<String, _>(RowHandler {
-                            sink: recording_sink(row_log.clone()),
-                        })));
-                    }
-                    TargetAction::Delete(t) => {
-                        table_log.lock().unwrap().push(format!("drop {}", t.name));
-                        out.push(None);
+    TargetActionSink::from_async_fn_with_children(
+        move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
+            let table_log = table_log.clone();
+            let row_log = row_log.clone();
+            async move {
+                for (action, child_slot) in actions {
+                    match action {
+                        TargetAction::Create(t) | TargetAction::Update(t) => {
+                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                            if let Some(slot) = child_slot {
+                                slot.fulfill(ChildTargetDef::new::<String, _>(RowHandler {
+                                    sink: recording_sink(row_log.clone()),
+                                }))?;
+                            }
+                        }
+                        TargetAction::Delete(t) => {
+                            table_log.lock().unwrap().push(format!("drop {}", t.name));
+                        }
                     }
                 }
+                Ok(())
             }
-            Ok(out)
-        }
-    })
+        },
+    )
 }
 
 async fn run_table(
@@ -1008,30 +1010,32 @@ fn partitioned_table_sink(
     part_log: Log,
     row_log: Log,
 ) -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children(move |actions: Vec<TargetAction<TableAction>>| {
-        let table_log = table_log.clone();
-        let part_log = part_log.clone();
-        let row_log = row_log.clone();
-        async move {
-            let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-            for action in actions {
-                match action {
-                    TargetAction::Create(t) | TargetAction::Update(t) => {
-                        table_log.lock().unwrap().push(format!("ensure {}", t.name));
-                        out.push(Some(ChildTargetDef::new::<TableSpec, _>(TableHandler {
-                            sink: table_sink(part_log.clone(), row_log.clone()),
-                            invalidation: Some(TargetChildInvalidation::Destructive),
-                        })));
-                    }
-                    TargetAction::Delete(t) => {
-                        table_log.lock().unwrap().push(format!("drop {}", t.name));
-                        out.push(None);
+    TargetActionSink::from_async_fn_with_children(
+        move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
+            let table_log = table_log.clone();
+            let part_log = part_log.clone();
+            let row_log = row_log.clone();
+            async move {
+                for (action, child_slot) in actions {
+                    match action {
+                        TargetAction::Create(t) | TargetAction::Update(t) => {
+                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                            if let Some(slot) = child_slot {
+                                slot.fulfill(ChildTargetDef::new::<TableSpec, _>(TableHandler {
+                                    sink: table_sink(part_log.clone(), row_log.clone()),
+                                    invalidation: Some(TargetChildInvalidation::Destructive),
+                                }))?;
+                            }
+                        }
+                        TargetAction::Delete(t) => {
+                            table_log.lock().unwrap().push(format!("drop {}", t.name));
+                        }
                     }
                 }
+                Ok(())
             }
-            Ok(out)
-        }
-    })
+        },
+    )
 }
 
 async fn run_partitioned_table(

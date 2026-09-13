@@ -51,6 +51,7 @@ from cocoindex.connectors.kafka._target import (  # noqa: E402
     KafkaTopicTarget,
 )
 import cocoindex as coco  # noqa: E402
+from tests.common.target_states import RecordingChildSlot  # noqa: E402
 from cocoindex._internal.context_keys import ContextProvider  # noqa: E402
 
 
@@ -129,24 +130,20 @@ class TestTopicHandler:
         context_provider = MagicMock(spec=ContextProvider)
         context_provider.get.return_value = producer
 
-        children = await handler._apply_actions(context_provider, [action])
+        slot = RecordingChildSlot()
+        await handler._apply_actions(context_provider, [action], {0: slot})
 
-        assert len(children) == 1
-        child_def = children[0]
-        assert child_def is not None
-        assert isinstance(child_def.handler, _MessageHandler)
+        assert isinstance(slot.handler, _MessageHandler)
 
     @pytest.mark.asyncio
-    async def test_sink_returns_none_for_deletion(self) -> None:
+    async def test_sink_skips_child_for_deletion(self) -> None:
         handler = _TopicHandler()
         key = _TopicKey(producer_key="pk", topic="my-topic")
         action = _TopicAction(key=key, spec=coco.NON_EXISTENCE)
 
         context_provider = MagicMock(spec=ContextProvider)
-        children = await handler._apply_actions(context_provider, [action])
-
-        assert len(children) == 1
-        assert children[0] is None
+        # An orphan delete has no child provider, so the engine hands over no slot.
+        await handler._apply_actions(context_provider, [action], {})
 
 
 # =============================================================================

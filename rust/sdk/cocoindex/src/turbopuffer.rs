@@ -20,7 +20,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -753,12 +753,11 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
 
 fn namespace_sink(conn_key: String) -> TargetActionSink<NamespaceAction> {
     TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<TargetAction<NamespaceAction>>| {
+        move |host_ctx, actions: Vec<(TargetAction<NamespaceAction>, Option<ChildSlot>)>| {
             let conn_key = conn_key.clone();
             async move {
                 let conn = resolve_conn(&host_ctx, &conn_key)?;
-                let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                for action in actions {
+                for (action, child_slot) in actions {
                     match action {
                         TargetAction::Create(a) | TargetAction::Update(a) => {
                             // Namespaces are created implicitly on write; clear on
@@ -766,21 +765,22 @@ fn namespace_sink(conn_key: String) -> TargetActionSink<NamespaceAction> {
                             if a.clear && a.managed_by.is_system() {
                                 conn.delete_namespace(&a.namespace).await?;
                             }
-                            out.push(Some(ChildTargetDef::new::<Row, _>(RowHandler::new(
-                                conn_key.clone(),
-                                a.namespace,
-                                a.schema,
-                            ))));
+                            if let Some(slot) = child_slot {
+                                slot.fulfill(ChildTargetDef::new::<Row, _>(RowHandler::new(
+                                    conn_key.clone(),
+                                    a.namespace,
+                                    a.schema,
+                                )))?;
+                            }
                         }
                         TargetAction::Delete(a) => {
                             if a.managed_by.is_system() {
                                 conn.delete_namespace(&a.namespace).await?;
                             }
-                            out.push(None);
                         }
                     }
                 }
-                Ok(out)
+                Ok(())
             }
         },
     )

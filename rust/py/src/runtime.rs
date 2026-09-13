@@ -16,7 +16,8 @@ use tokio_util::task::AbortOnDropHandle;
 
 pub struct PythonObjects {
     pub serialize_fn: Py<PyAny>,
-    pub handler_wrapper_fn: Py<PyAny>,
+    /// `ChildSlot(core_slot)`: wraps a `ChildTargetSlot` for a container sink.
+    pub child_slot_wrapper_fn: Py<PyAny>,
     pub non_existence: Py<PyAny>,
     pub not_set: Py<PyAny>,
 }
@@ -44,7 +45,7 @@ pub fn init_runtime(
     package_id: String,
     lang: String,
     serialize_fn: Py<PyAny>,
-    handler_wrapper_fn: Py<PyAny>,
+    child_slot_wrapper_fn: Py<PyAny>,
     non_existence: Py<PyAny>,
     not_set: Py<PyAny>,
 ) -> PyResult<()> {
@@ -57,7 +58,7 @@ pub fn init_runtime(
     PY_OBJECTS
         .set(std::mem::ManuallyDrop::new(PythonObjects {
             serialize_fn,
-            handler_wrapper_fn,
+            child_slot_wrapper_fn,
             non_existence,
             not_set,
         }))
@@ -89,13 +90,6 @@ pub fn py_reset_global_cancellation() {
 pub fn python_objects() -> &'static PythonObjects {
     // ManuallyDrop<T> implements Deref<Target = T>, so &**x coerces to &T.
     &**PY_OBJECTS.get().expect("Python objects not initialized")
-}
-
-/// Wrap a Python target handler with _TypedTargetHandlerWrapper for typed deserialization.
-pub fn wrap_target_handler(py: Python<'_>, handler: &Py<PyAny>) -> PyResult<Py<PyAny>> {
-    python_objects()
-        .handler_wrapper_fn
-        .call(py, (handler,), None)
 }
 
 #[pyclass(name = "AsyncContext", from_py_object)]

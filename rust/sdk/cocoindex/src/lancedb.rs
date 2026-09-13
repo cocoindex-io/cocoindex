@@ -32,7 +32,7 @@ use crate::statediff::{
     diff, diff_composite, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     mount_target, register_root_target_states_provider,
 };
@@ -584,12 +584,11 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let db_key = self.db_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let db_key = db_key.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         match action {
                             TargetAction::Create(a) | TargetAction::Update(a) => {
                                 let spec = a.spec.ok_or_else(|| {
@@ -600,17 +599,22 @@ impl TableHandler {
                                     null_backfilled_columns =
                                         ensure_table(&db, &spec, a.recreate).await?;
                                 }
-                                out.push(Some(ChildTargetDef::new::<RowState, _>(
-                                    RowHandler::new(db_key.clone(), spec, null_backfilled_columns),
-                                )));
+                                if let Some(slot) = child_slot {
+                                    slot.fulfill(ChildTargetDef::new::<RowState, _>(
+                                        RowHandler::new(
+                                            db_key.clone(),
+                                            spec,
+                                            null_backfilled_columns,
+                                        ),
+                                    ))?;
+                                }
                             }
                             TargetAction::Delete(a) => {
                                 drop_table(&db, &a.table_name).await?;
-                                out.push(None);
                             }
                         }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )

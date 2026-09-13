@@ -12,6 +12,7 @@ import pytest
 
 import cocoindex as coco
 from tests import common
+from tests.common.target_states import RecordingChildSlot
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
 try:
@@ -935,7 +936,9 @@ async def test_table_handler_skips_optimize_for_existing_table() -> None:
         column_actions={},
     )
 
-    await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
+    await handler._apply_actions(
+        cast(Any, _FakeContextProvider(conn)), [action], {0: RecordingChildSlot()}
+    )
 
     assert conn.open_table_count == 0
     assert conn.table.optimize_count == 0
@@ -956,7 +959,9 @@ async def test_table_handler_does_not_optimize_new_table_before_row_mutations() 
         column_actions={},
     )
 
-    await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
+    await handler._apply_actions(
+        cast(Any, _FakeContextProvider(conn)), [action], {0: RecordingChildSlot()}
+    )
 
     assert conn.create_table_count == 1
     assert conn.open_table_count == 0

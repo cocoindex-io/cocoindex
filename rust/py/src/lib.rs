@@ -66,6 +66,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(live_component::mount_live_async, m)?)?;
 
     m.add_class::<target_state::PyTargetActionSink>()?;
+    m.add_class::<target_state::PyChildTargetSlot>()?;
     m.add_class::<target_state::PyTargetHandler>()?;
     m.add_class::<target_state::PyTargetStateProvider>()?;
     m.add_function(wrap_pyfunction!(target_state::declare_target_state, m)?)?;
