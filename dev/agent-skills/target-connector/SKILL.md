@@ -216,13 +216,13 @@ def _apply_actions(context_provider: ContextProvider, actions: Sequence[MyAction
 _shared_sink = coco.TargetActionSink.from_fn(_apply_actions)
 ```
 
-Sink identity is **value-based**: sinks whose callbacks compare equal share one
-batching identity, meaning their actions are batched and applied together (and
-a batch is the natural transaction boundary for transactional stores). For a
-sink scoped to an external resource — e.g. one sink per database so all of that
-database's writes share a transaction — make the callback a frozen dataclass
-keyed by the resource and construct it on the fly in `reconcile()`; no
-module-level sink registry is needed.
+Sink identity is **value-based**: sinks whose callbacks are of the same type and
+compare equal share one batching identity, meaning their actions are batched and
+applied together (and a batch is the natural transaction boundary for
+transactional stores). For a sink scoped to an external resource — e.g. one sink
+per database so all of that database's writes share a transaction — make the
+callback a frozen dataclass keyed by the resource and construct it on the fly in
+`reconcile()`; no module-level sink registry is needed.
 
 Such a sink can serve a container level and its leaf level at once (table DDL
 and row writes on one connection). Build it with `from_async_fn_with_children`;
@@ -256,9 +256,23 @@ class _DbSink:
 sink = coco.TargetActionSink.from_async_fn_with_children(_DbSink(key.db_key))
 ```
 
-An idle sink identity (no live sink object, no pending actions) is released
-automatically, so per-resource sinks do not accumulate for the process
-lifetime.
+A value-keyed callback must have two properties, and the framework enforces
+both:
+
+- **Type-safe equality.** Identity is keyed by the callback's exact type as
+  well as `==`, so a callback only ever shares identity with instances of its
+  own class. Without this, a class with a permissive `__eq__` would silently
+  route another connector's actions to its `__call__`.
+- **Weak-referenceable.** An idle sink identity (no live sink object, no
+  pending actions) is released automatically, so per-resource sinks do not
+  accumulate for the process lifetime. That relies on referencing the
+  canonical callback only weakly, so `from_fn`/`from_async_fn` raise
+  `TypeError` for a callback that does not support weak references.
+
+A `tuple`/`NamedTuple` fails both (it compares equal to any same-shaped tuple
+and cannot be weakly referenced) and is rejected. The frozen dataclass above is
+the recommended shape; if you add `slots=True` to it, also pass
+`weakref_slot=True`.
 
 ### Input Safety
 
