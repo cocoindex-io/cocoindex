@@ -247,30 +247,34 @@ async fn apply_isolating_failures<O, Fut>(
 where
     Fut: Future<Output = Result<Option<Vec<O>>>>,
 {
-    let mut results: Vec<Option<Result<Option<Vec<O>>>>> =
-        std::iter::repeat_with(|| None).take(spans.len()).collect();
+    let mut results = Vec::with_capacity(spans.len());
     // Sub-batches still to apply, as index ranges over `spans`. The second
-    // half of a split is pushed first, so sub-batches run in component order.
+    // half of a split is pushed first, so sub-batches complete in component
+    // order and each one's results are simply appended.
     let mut pending = vec![0..spans.len()];
     while let Some(sub) = pending.pop() {
+        debug_assert_eq!(results.len(), sub.start);
         let sub_spans = &spans[sub.clone()];
-        let (Some(first), Some(last)) = (sub_spans.first(), sub_spans.last()) else {
+        let Some(action_range) = sub_spans
+            .first()
+            .zip(sub_spans.last())
+            .map(|(first, last)| first.start..last.end)
+        else {
             continue;
         };
-        let action_range = first.start..last.end;
         let err = match apply(action_range.clone()).await {
             Ok(None) => {
-                for idx in sub {
-                    results[idx] = Some(Ok(None));
-                }
+                results.extend(sub_spans.iter().map(|_| Ok(None)));
                 continue;
             }
             Ok(Some(handlers)) => {
                 if handlers.len() == action_range.len() {
                     let mut handlers = handlers.into_iter();
-                    for (idx, span) in std::iter::zip(sub, sub_spans) {
-                        results[idx] = Some(Ok(Some(handlers.by_ref().take(span.len()).collect())));
-                    }
+                    results.extend(
+                        sub_spans
+                            .iter()
+                            .map(|span| Ok(Some(handlers.by_ref().take(span.len()).collect()))),
+                    );
                     continue;
                 }
                 // The call succeeded as far as the sink is concerned; a
@@ -303,20 +307,12 @@ where
                 err
             }
         };
-        // Attribute the error to every component of this sub-batch: the
-        // original to the first, a replica to each of the others.
-        let mut component_idxs = sub;
-        if let Some(first_idx) = component_idxs.next() {
-            for idx in component_idxs {
-                results[idx] = Some(Err(err.replica()));
-            }
-            results[first_idx] = Some(Err(err));
-        }
+        // Every component of this sub-batch gets the error: a replica for
+        // all but one, the original for the last.
+        results.extend((1..sub_spans.len()).map(|_| Err(err.replica())));
+        results.push(Err(err));
     }
     results
-        .into_iter()
-        .map(|result| result.expect("every component is assigned an outcome"))
-        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
