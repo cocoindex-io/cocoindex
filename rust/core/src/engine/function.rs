@@ -1,6 +1,6 @@
 use crate::engine::context::{
-    ComponentProcessorContext, FnCallContext, FnCallMemo, FnCallMemoEntry, MemoStatesPayload,
-    decode_stored_entry,
+    ComponentProcessorContext, FnCallContext, FnCallMemo, FnCallMemoEntry, FnCallMemoOrigin,
+    MemoStatesPayload, decode_stored_entry,
 };
 use crate::engine::execution::target_provider_deps_still_valid;
 use crate::engine::profile::EngineProfile;
@@ -25,7 +25,7 @@ fn build_fn_call_memo<Prof: EngineProfile>(
             logic_deps,
             memo_states: memo_states.positional,
             context_memo_states: memo_states.by_context_fp,
-            already_stored: false,
+            origin: FnCallMemoOrigin::Executed,
         })
     })
 }
@@ -94,14 +94,17 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
     /// Update memo states on a cache hit without re-execution.
     ///
     /// Used when the state function indicates `can_reuse=true` but the state value itself
-    /// has changed (e.g. mtime changed but content fingerprint is the same). Sets
-    /// `already_stored = false` so the entry gets persisted with updated states at
-    /// finalization time.
+    /// has changed (e.g. mtime changed but content fingerprint is the same). Marks the
+    /// origin `Loaded { states_updated: true }` so flush rewrites the row with the new
+    /// states.
     pub fn update_memo_states(&mut self, memo_states: MemoStatesPayload<Prof>) {
         if let FnCallMemoEntry::Ready(Some(ref mut memo)) = *self.guard {
             memo.memo_states = memo_states.positional;
             memo.context_memo_states = memo_states.by_context_fp;
-            memo.already_stored = false;
+            // `Executed` entries are always written; nothing to mark.
+            if let FnCallMemoOrigin::Loaded { states_updated } = &mut memo.origin {
+                *states_updated = true;
+            }
         }
     }
 
