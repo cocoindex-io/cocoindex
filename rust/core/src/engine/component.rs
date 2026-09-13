@@ -1484,7 +1484,7 @@ mod tests {
             &self,
             _host_runtime_ctx: &(),
             _host_ctx: Arc<()>,
-            _actions: Vec<TargetActionWithChildSlot<TestProfile>>,
+            _actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
             Ok(())
         }

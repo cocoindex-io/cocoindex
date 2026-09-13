@@ -200,7 +200,7 @@ Understanding what happens at runtime:
 
 3. **Reconciliation**: When the processing unit finishes, CocoIndex calls your handler's `reconcile()` method for each target state. For declared target states, `desired_target_state` contains the spec; for previously declared but now missing states, `desired_target_state` is `NON_EXISTENCE` (triggering cleanup). Your `reconcile()` compares the desired state with previous records and returns `TargetReconcileOutput` if an action is needed, or `None` if no changes are required.
 
-4. **Action Execution**: CocoIndex batches actions by their `TargetActionSink` and executes them. The sink applies changes to the external system (database writes, file operations, API calls, etc.).
+4. **Action Execution**: CocoIndex batches actions by their `TargetActionSink` and executes them. The sink applies changes to the external system (database writes, file operations, API calls, etc.). A batch may combine the actions of several processing components that finish around the same time; if the sink fails, CocoIndex retries in smaller batches along component boundaries, so only the components whose actions actually fail are affected. The sink may therefore see an action from a failed batch again — keep actions idempotent.
 
 5. **Tracking Persistence**: After successful execution, CocoIndex persists the new tracking records. On the next run, these become the `prev_possible_records` for change detection.
 

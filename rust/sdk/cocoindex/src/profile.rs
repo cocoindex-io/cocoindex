@@ -153,6 +153,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
 // Action — Reconciliation action.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub(crate) enum Action {
     Create(Value),
     Update(Value),
@@ -274,9 +275,12 @@ impl TargetActionSink<RustProfile> for BoxedSink {
         &self,
         _host_runtime_ctx: &(),
         host_ctx: Arc<ContextStore>,
-        actions: Vec<TargetActionWithChildSlot<RustProfile>>,
+        actions: &[TargetActionWithChildSlot<RustProfile>],
     ) -> cocoindex_utils::error::Result<()> {
-        (self.apply_fn)(host_ctx, actions).await
+        // The engine keeps the actions to retry subsets of a failed batch; an
+        // `Action` wraps `Bytes` and a slot is an `Arc`, so this is a refcount
+        // bump per action.
+        (self.apply_fn)(host_ctx, actions.to_vec()).await
     }
 }
 

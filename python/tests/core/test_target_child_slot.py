@@ -10,6 +10,8 @@ provider exists, and a sink built with ``from_fn`` rejects child-bearing actions
 
 from __future__ import annotations
 
+import contextlib
+import sys
 import threading
 import typing
 import warnings
@@ -248,6 +250,20 @@ def _run(name: str, main: Callable[[], Coroutine[Any, Any, None]]) -> None:
     coco.App(coco.AppConfig(name=name, environment=coco_env), main).update_blocking()
 
 
+def _expect_legacy_deprecation() -> contextlib.AbstractContextManager[Any]:
+    """Expect the legacy-contract ``DeprecationWarning`` where it is observable.
+
+    The engine emits it from one of its own threads. With context-aware
+    warnings (the default on free-threaded builds) a thread without a warnings
+    context resolves against the global filters, which ignore
+    ``DeprecationWarning`` unless the interpreter was started with ``-W``, so
+    ``pytest.warns`` cannot observe it there and only the behaviour is checked.
+    """
+    if getattr(sys.flags, "context_aware_warnings", 0):
+        return contextlib.nullcontext()
+    return pytest.warns(DeprecationWarning, match="from_fn_with_children")
+
+
 def test_child_slots_only_for_child_bearing_actions() -> None:
     _batches.clear()
 
@@ -324,7 +340,7 @@ def test_legacy_child_defs_still_fulfill_children() -> None:
             )
             coco.declare_target_state(child.target_state("row", "v"))
 
-    with pytest.warns(DeprecationWarning, match="from_fn_with_children"):
+    with _expect_legacy_deprecation():
         _run("test_child_slot_legacy_defs", declare)
     # The child provider was fulfilled from the returned definition, so the
     # child declaration reached the child handler's sink.
@@ -346,7 +362,7 @@ def test_legacy_child_defs_misaligned_fails(
 
     _legacy_mode["mode"] = mode
     try:
-        with pytest.warns(DeprecationWarning), pytest.raises(Exception, match=message):
+        with _expect_legacy_deprecation(), pytest.raises(Exception, match=message):
             _run(f"test_child_slot_legacy_{mode}", declare)
     finally:
         _legacy_mode["mode"] = "aligned"

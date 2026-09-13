@@ -163,25 +163,24 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
         &self,
         host_runtime_ctx: &PyAsyncContext,
         host_ctx: Arc<Py<PyAny>>,
-        actions: Vec<TargetActionWithChildSlot<PyEngineProfile>>,
+        actions: &[TargetActionWithChildSlot<PyEngineProfile>],
     ) -> Result<()> {
         let actions_len = actions.len();
         let (call, legacy_child_slots) = Python::attach(|py| -> Result<_> {
             let context_provider = host_ctx.as_ref().clone_ref(py);
             // Split the child slots off while building the action list, so a
-            // leaf-only batch costs nothing beyond the list itself.
+            // leaf-only batch costs nothing beyond the list itself. The engine
+            // keeps the actions (to retry subsets of a failed batch), hence
+            // the borrow.
             let mut child_slots = Vec::new();
             let actions = PyList::new(
                 py,
-                actions
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (action, slot))| {
-                        if let Some(slot) = slot {
-                            child_slots.push((idx, slot));
-                        }
-                        action
-                    }),
+                actions.iter().enumerate().map(|(idx, (action, slot))| {
+                    if let Some(slot) = slot {
+                        child_slots.push((idx, slot.clone()));
+                    }
+                    action.bind(py)
+                }),
             )
             .from_py_result()?;
             if self.with_children {
