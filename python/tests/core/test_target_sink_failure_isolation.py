@@ -157,13 +157,9 @@ def test_merged_batch_failure_is_confined_to_the_failing_component() -> None:
 
     # Every other component's actions landed, and only the poisoned component
     # failed, even though its actions were merged into a batch with others.
-    assert _obs.store == {
-        i: f"v{i}" for i in range(_NUM_ITEMS) if i != _POISON_ITEM
-    }
+    assert _obs.store == {i: f"v{i}" for i in range(_NUM_ITEMS) if i != _POISON_ITEM}
     assert _failed_paths == [str(coco.ROOT_PATH / "item" / _POISON_ITEM)]
-    merged = [
-        b for b in _obs.batches if len(b) > 1 and (_POISON_ITEM, "poison") in b
-    ]
+    merged = [b for b in _obs.batches if len(b) > 1 and (_POISON_ITEM, "poison") in b]
     assert merged, _obs.batches
 
     _obs.reset_run()
