@@ -80,6 +80,10 @@ pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
         .collect()
 }
 
+/// Read the component's stored memo and return it when it was stored under
+/// `processor_fp` and its logic and target-provider dependencies still hold;
+/// otherwise delete it. Whether a stored memo may be consulted at all under
+/// `full_reprocess` is the caller's decision (see `Component::execute_once`).
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
@@ -91,11 +95,6 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         TargetProviderDeps,
     )>,
 > {
-    // Short-circuit to miss under full_reprocess
-    if comp_ctx.full_reprocess() {
-        return Ok(None);
-    }
-
     let app_store = comp_ctx.app_ctx().app_store();
     let path = comp_ctx.stable_path();
     {
