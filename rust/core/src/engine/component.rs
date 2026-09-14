@@ -119,10 +119,12 @@ struct ComponentInner<Prof: EngineProfile> {
     /// runs never overlap, and the memo one run stores is in place before the
     /// next decides whether to execute its body.
     build_semaphore: tokio::sync::Semaphore,
-    /// Memo key of the latest run that executed under `build_semaphore`. A run
+    /// The memo most recently stored under `build_semaphore`, if any. A run
     /// that finds its own key here on acquiring the permit knows a same-key
-    /// run just completed, and re-checks the memo instead of executing again.
-    last_memo_fp: Mutex<Option<Fingerprint>>,
+    /// run just completed and stored its result, so it re-checks the memo
+    /// instead of executing again — under `full_reprocess` only when that run
+    /// belonged to the same operation (see `execute_once`).
+    last_stored_memo: Mutex<Option<StoredMemo>>,
 
     /// Identity registry of child components, keyed by their full StablePath,
     /// so a re-mount of a path whose component is still referenced shares the
@@ -575,6 +577,14 @@ struct ComponentBuildOutput<Prof: EngineProfile> {
     built_target_states_providers: TargetStateProviderRegistry<Prof>,
 }
 
+/// A memo stored by a run of a component under its `build_semaphore`: the
+/// operation that stored it and the key it was stored under.
+#[derive(Clone, Copy)]
+struct StoredMemo {
+    operation_generation: u64,
+    memo_fp: Fingerprint,
+}
+
 /// Result of looking up a component's memo for the processor about to run.
 enum MemoLookup<Prof: EngineProfile> {
     /// A valid memo stands in for a run: report the stored run's outcome and
@@ -667,7 +677,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 stable_path,
                 parent,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
-                last_memo_fp: Mutex::new(None),
+                last_stored_memo: Mutex::new(None),
                 active_children: parking_lot::Mutex::new(HashMap::new()),
                 live_state: parking_lot::Mutex::new(None),
                 active_ops: std::sync::atomic::AtomicUsize::new(0),
@@ -1108,16 +1118,21 @@ impl<Prof: EngineProfile> Component<Prof> {
 
             // Fast-path: component memoization check does not require acquiring the build permit.
             // If it hits, we can immediately return without processing/submitting/waiting.
-            match lookup_component_memo(processor_context, processor, memo_fp_to_store).await? {
-                MemoLookup::Reuse(outcome, output) => {
-                    processing_stats.update(processor_name, |stats| {
-                        stats.num_execution_starts += 1;
-                        stats.num_unchanged += 1;
-                    });
-                    return Ok((outcome, Some(output)));
-                }
-                MemoLookup::Miss { revalidated_states } => {
-                    memo_states_for_store = revalidated_states;
+            // Under `full_reprocess` a stored memo may only be reused when this very
+            // operation stored it, which only the permit-holding re-check below can
+            // tell, so the fast-path is skipped.
+            if !processor_context.full_reprocess() {
+                match lookup_component_memo(processor_context, processor, memo_fp_to_store).await? {
+                    MemoLookup::Reuse(outcome, output) => {
+                        processing_stats.update(processor_name, |stats| {
+                            stats.num_execution_starts += 1;
+                            stats.num_unchanged += 1;
+                        });
+                        return Ok((outcome, Some(output)));
+                    }
+                    MemoLookup::Miss { revalidated_states } => {
+                        memo_states_for_store = revalidated_states;
+                    }
                 }
             }
 
@@ -1141,10 +1156,17 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // this one waited for it — e.g. two `App::update` calls on one
                 // app that both missed the fast-path above before either had
                 // stored a memo. Re-check the memo now; a failed run stores
-                // none, so a miss falls through to executing.
+                // none (and records none), so a miss falls through to
+                // executing. Under `full_reprocess` only a memo stored by this
+                // same operation qualifies: that is the operation's own
+                // execution of the component, not a cache from a previous run.
+                let last_stored_memo = *self.inner.last_stored_memo.lock().unwrap();
                 if let Some(processor) = processor
-                    && memo_fp_to_store.is_some()
-                    && *self.inner.last_memo_fp.lock().unwrap() == memo_fp_to_store
+                    && let Some(memo_fp) = memo_fp_to_store
+                    && let Some(stored) = last_stored_memo
+                    && stored.memo_fp == memo_fp
+                    && (!processor_context.full_reprocess()
+                        || stored.operation_generation == processor_context.operation_generation())
                 {
                     match lookup_component_memo(processor_context, processor, memo_fp_to_store)
                         .await?
@@ -1177,10 +1199,6 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // (no `ComponentBuildingState`); see the cache flush logic
                 // for how those cases are handled at commit time.
                 processor_context.prefetch_states().await?;
-
-                if memo_fp_to_store.is_some() {
-                    *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
-                }
 
                 // The earlier deadline check guards memo lookup. A component can still
                 // spend time waiting for the build semaphore, existence upsert, or state
@@ -1257,9 +1275,6 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 MemoStatesPayload::default()
                             };
 
-                            // Still under the permit, so no other run of this
-                            // component has started since `last_memo_fp` was
-                            // set above: the memo stored here is the latest.
                             let comp_memo = memo_fp_to_store.map(|fp| (fp, &ret, &memo_states));
                             // Take the full dependency set once (O(1) move). It
                             // must run after the memo-state collection above, which
@@ -1279,6 +1294,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 &target_provider_deps,
                             )
                             .await?;
+                            // Record the store for a run queued on the permit
+                            // (see the re-check above). Still under the permit,
+                            // so this is the component's latest memo.
+                            if let Some(memo_fp) = memo_fp_to_store {
+                                *self.inner.last_stored_memo.lock().unwrap() = Some(StoredMemo {
+                                    operation_generation: processor_context.operation_generation(),
+                                    memo_fp,
+                                });
+                            }
                             children_outcome.logic_deps = logic_deps;
                             children_outcome.target_provider_deps = target_provider_deps;
                         }
@@ -1443,7 +1467,9 @@ impl<Prof: EngineProfile> Component<Prof> {
 mod tests {
     use super::{ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, StatsGroup};
     use crate::engine::app::{App, AppUpdateOptions};
-    use crate::engine::context::{ComponentProcessorContext, FnCallContext, MemoStatesPayload};
+    use crate::engine::context::{
+        ComponentProcessingAction, ComponentProcessorContext, FnCallContext, MemoStatesPayload,
+    };
     use crate::engine::deadline::{
         DeadlineContext, testing_advance_deadline_clock, testing_deadline_clock_lock,
         testing_disable_deadline_clock, testing_reset_deadline_clock,
@@ -1871,6 +1897,20 @@ mod tests {
         assert!(!root.is_active());
     }
 
+    /// A processor body that counts its runs and then holds the build for
+    /// `hold`, long enough for a concurrent same-key run to miss the memo
+    /// fast-path and queue on the permit.
+    fn counting_body(body_runs: Arc<AtomicUsize>, hold: Duration) -> ProcessHook {
+        Arc::new(move |_ctx| {
+            let body_runs = body_runs.clone();
+            Box::pin(async move {
+                body_runs.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(hold).await;
+                Ok(TestData(b"ret".to_vec()))
+            })
+        })
+    }
+
     /// Start two updates of `app` back to back — the second before the first
     /// has stored its memo — with memoizable root processors sharing `body`.
     /// Returns both updates' results in start order.
@@ -1902,19 +1942,7 @@ mod tests {
     async fn concurrent_same_key_runs_execute_body_once() {
         let (app, _dir) = test_app("memo_piggyback").await;
         let body_runs = Arc::new(AtomicUsize::new(0));
-        let body: ProcessHook = {
-            let body_runs = body_runs.clone();
-            Arc::new(move |_ctx| {
-                let body_runs = body_runs.clone();
-                Box::pin(async move {
-                    body_runs.fetch_add(1, Ordering::SeqCst);
-                    // Outlast the second run's memo fast-path lookup, so that
-                    // it misses and has to wait for the permit.
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    Ok(TestData(b"ret".to_vec()))
-                })
-            })
-        };
+        let body = counting_body(body_runs.clone(), Duration::from_millis(100));
         let [first, second] = update_twice_concurrently(&app, "memo_piggyback", body).await;
         assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
         assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
@@ -1950,6 +1978,152 @@ mod tests {
         assert_eq!(
             succeeded.into_iter().next().unwrap().unwrap(),
             TestData(b"ret".to_vec())
+        );
+    }
+
+    /// Run one update whose root runs the same memoizable child component
+    /// twice concurrently — the second run started before the first has
+    /// stored its memo — with child processors sharing `body`. A path can be
+    /// mounted only once per parent, so the second run gets a build context
+    /// built directly. Returns both results in start order.
+    async fn run_same_child_twice_in_one_update(
+        app: &App<TestProfile>,
+        name: &str,
+        full_reprocess: bool,
+        body: ProcessHook,
+    ) -> [crate::prelude::Result<TestData>; 2] {
+        let child_path = StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+        let child_memo_fp = Fingerprint::from(&format!("{name}/child")).unwrap();
+        let child_processor = || {
+            TestProcessor::new(
+                "child",
+                child_memo_fp,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_reusable_memo_states()
+            .with_on_process(body.clone())
+        };
+        let child_processors = Mutex::new(Some((child_processor(), child_processor())));
+        let results: Arc<Mutex<Option<[crate::prelude::Result<TestData>; 2]>>> = Default::default();
+        let root_processor = {
+            let results = results.clone();
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&format!("{name}/root")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                let (first, second) = child_processors.lock().unwrap().take().unwrap();
+                let child_path = child_path.clone();
+                let results = results.clone();
+                Box::pin(async move {
+                    let child = ctx
+                        .component()
+                        .mount_child(&FnCallContext::new(true), child_path)?;
+                    let first = child
+                        .clone()
+                        .use_mount(&ctx, first, DeadlineContext::NONE)
+                        .await?;
+                    let second_ctx = ComponentProcessorContext::new(
+                        child.clone(),
+                        Some(ctx.clone()),
+                        ctx.processing_stats().clone(),
+                        ctx.host_ctx().clone(),
+                        ComponentProcessingAction::new_build(
+                            ctx.target_states_providers()?,
+                            ctx.full_reprocess(),
+                            ctx.live(),
+                            None,
+                            None,
+                        ),
+                    );
+                    let second = child
+                        .run(
+                            second,
+                            second_ctx,
+                            DeadlineContext::NONE,
+                            DeadlineContext::NONE,
+                        )
+                        .await?;
+                    let first = first.result(Some(&ctx)).await;
+                    let second = second.result(Some(&ctx)).await;
+                    *results.lock().unwrap() = Some([first, second]);
+                    Ok(TestData(b"root".to_vec()))
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(
+                root_processor,
+                AppUpdateOptions {
+                    full_reprocess,
+                    ..AppUpdateOptions::default()
+                },
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        results.lock().unwrap().take().expect("root processor ran")
+    }
+
+    /// `full_reprocess` ignores memos from previous runs, not this operation's
+    /// own executions: two concurrent runs of one component in one
+    /// `full_reprocess` update execute the body once, the second reusing the
+    /// memo the first stored — the re-check under the permit sees that this
+    /// operation stored it.
+    #[tokio::test]
+    async fn concurrent_same_key_runs_execute_body_once_under_full_reprocess() {
+        let (app, _dir) = test_app("memo_piggyback_full_reprocess").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::from_millis(100));
+        let [first, second] =
+            run_same_child_twice_in_one_update(&app, "memo_piggyback_full_reprocess", true, body)
+                .await;
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// A memo stored by a previous operation is a cache: a later
+    /// `full_reprocess` update executes the body again even though the
+    /// component's last stored memo carries its key.
+    #[tokio::test]
+    async fn full_reprocess_reexecutes_a_memo_stored_by_a_previous_operation() {
+        let (app, _dir) = test_app("memo_full_reprocess_generation").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::ZERO);
+        let memo_fp = Fingerprint::from(&"memo_full_reprocess_generation").unwrap();
+        let processor = || {
+            TestProcessor::new(
+                "memo_full_reprocess_generation",
+                memo_fp,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_reusable_memo_states()
+            .with_on_process(body.clone())
+        };
+        for full_reprocess in [false, true] {
+            let (handle, _) = app
+                .update(
+                    processor(),
+                    AppUpdateOptions {
+                        full_reprocess,
+                        ..AppUpdateOptions::default()
+                    },
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(handle.result().await.unwrap(), TestData(b"ret".to_vec()));
+        }
+        assert_eq!(
+            body_runs.load(Ordering::SeqCst),
+            2,
+            "the full_reprocess update must not reuse the previous update's memo"
         );
     }
 }
