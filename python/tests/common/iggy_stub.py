@@ -110,7 +110,8 @@ class MockIggyClient:
         messages_count: int = 0,
         partitions_count: int = 1,
     ) -> None:
-        self.consumer = consumer
+        # Default to an empty topic for tests that only send messages.
+        self.consumer = MockIggyConsumer([]) if consumer is None else consumer
         self.topic = MockTopicDetails(
             messages_count=messages_count,
             partitions_count=partitions_count,
@@ -122,7 +123,6 @@ class MockIggyClient:
         return self.topic
 
     async def consumer_group(self, **kwargs: Any) -> MockIggyConsumer:
-        assert self.consumer is not None, "MockIggyClient has no consumer"
         self.consumer_group_calls.append(kwargs)
         return self.consumer
 
