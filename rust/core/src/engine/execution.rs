@@ -1185,6 +1185,8 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         // Phase 2: Delete + Contained — iterate remaining tracked entries not matched above.
         for (target_state_path_with_pid, item) in tracking_info.target_state_items.iter_mut() {
             // Skip stale entries — commit() will prune them via version retention.
+            // This is also what prunes, rather than reconciles, the children of a
+            // container that is no longer declared: its deletion action subsumes them.
             let parent_provider_gen = target_states_providers
                 .get(target_state_path_with_pid.target_state_path.provider_path())
                 .and_then(|p| p.provider_generation());
