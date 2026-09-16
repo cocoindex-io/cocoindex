@@ -541,12 +541,10 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
                         );
                         continue;
                     };
-                    if !provider.is_orphaned() {
-                        building_state
-                            .target_states
-                            .provider_registry
-                            .add(target_state_path, provider.clone())?;
-                    }
+                    building_state
+                        .target_states
+                        .provider_registry
+                        .add(target_state_path, provider.clone())?;
                 }
                 Ok(())
             })?;
