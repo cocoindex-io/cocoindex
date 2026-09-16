@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any, NamedTuple, cast
 from unittest.mock import MagicMock
 
 import pytest
+import pytest_asyncio
 
 # --- Mock confluent_kafka before importing the connector ---
 
@@ -51,6 +53,9 @@ from cocoindex.connectors.kafka._target import (  # noqa: E402
     KafkaTopicTarget,
 )
 import cocoindex as coco  # noqa: E402
+from cocoindex.connectors import kafka  # noqa: E402
+from cocoindex.connectors.kafka import _target as kafka_target  # noqa: E402
+from tests import common  # noqa: E402
 from tests.common.target_states import RecordingChildSlot  # noqa: E402
 from cocoindex._internal.context_keys import ContextProvider  # noqa: E402
 
@@ -311,3 +316,120 @@ class TestKafkaTopicTarget:
         target = KafkaTopicTarget(provider)
 
         assert target.__coco_memo_key__() == "test-memo-key"
+
+
+# =============================================================================
+# App-level tests — container-deletion semantics
+# =============================================================================
+#
+# The topic is user-managed, so CocoIndex reconciles its messages one by one
+# only while the topic itself stays declared. Removing the topic declaration,
+# or dropping the app, abandons the topic: no tombstones are produced for the
+# messages it held.
+
+_PRODUCER_KEY: coco.ContextKey[Any] = coco.ContextKey("test_kafka_target_producer")
+
+
+@dataclass
+class _TopicScenario:
+    """What ``_app_main`` declares; tests mutate it between runs."""
+
+    declare_topic: bool = True
+    messages: dict[str, bytes] = field(default_factory=dict)
+
+
+@coco.fn
+async def _app_main(scenario: _TopicScenario) -> None:
+    if not scenario.declare_topic:
+        return
+    target = await kafka.mount_kafka_topic_target(_PRODUCER_KEY, "exp-topic")
+    for key, value in scenario.messages.items():
+        target.declare_target_state(key=key, value=value)
+
+
+class _TopicApp(NamedTuple):
+    app: coco.App[Any, Any]
+    producer: MockAIOProducer
+    scenario: _TopicScenario
+
+
+@pytest_asyncio.fixture
+async def topic_app(
+    request: pytest.FixtureRequest,
+    producer: MockAIOProducer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _TopicApp:
+    # The topic handler isinstance-checks the provided producer against the
+    # ``AIOProducer`` the connector bound at import time, which comes from
+    # whichever test module stubbed ``confluent_kafka.aio`` first in this
+    # process (``test_kafka_source.py`` installs its own stub).
+    monkeypatch.setattr(kafka_target, "AIOProducer", MockAIOProducer)
+    # Created inside an async fixture so the Environment binds to the test's
+    # running event loop.
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    env.context_provider.provide(_PRODUCER_KEY, producer)
+    scenario = _TopicScenario()
+    app = coco.App(
+        coco.AppConfig(name=request.node.name, environment=env), _app_main, scenario
+    )
+    return _TopicApp(app=app, producer=producer, scenario=scenario)
+
+
+@pytest.mark.asyncio
+async def test_app_child_removal_produces_tombstone(topic_app: _TopicApp) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", "k1", b"v1")]
+
+    topic_app.producer.clear()
+    del topic_app.scenario.messages["k1"]
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", "k1", None)]
+
+
+@pytest.mark.asyncio
+async def test_app_parent_removal_abandons_messages(topic_app: _TopicApp) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+
+    topic_app.producer.clear()
+    topic_app.scenario.declare_topic = False
+    await topic_app.app.update()
+    # Intended: un-declaring the user-managed topic abandons it, messages
+    # included, so k1 gets no tombstone.
+    assert topic_app.producer.produced_messages == []
+
+
+@pytest.mark.asyncio
+async def test_app_drop_abandons_messages(topic_app: _TopicApp) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+
+    topic_app.producer.clear()
+    await topic_app.app.drop()
+    # Intended: dropping the app abandons the user-managed topic, messages
+    # included, so k1 gets no tombstone.
+    assert topic_app.producer.produced_messages == []
+
+
+@pytest.mark.asyncio
+async def test_app_redeclared_topic_starts_from_scratch(
+    topic_app: _TopicApp,
+) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+    topic_app.scenario.declare_topic = False
+    await topic_app.app.update()
+
+    # Abandoning the topic pruned k1's tracking entry, so bringing the topic
+    # back without k1 has nothing to tombstone...
+    topic_app.producer.clear()
+    topic_app.scenario.declare_topic = True
+    del topic_app.scenario.messages["k1"]
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == []
+
+    # ...and re-declaring k1 with its old value republishes it as new.
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", "k1", b"v1")]
