@@ -9,53 +9,19 @@ messages are sent for the messages it held.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple, Sequence
-from unittest.mock import MagicMock
+from typing import Any, NamedTuple
 
 import pytest
 import pytest_asyncio
 
-# --- Mock apache_iggy before importing the connector ---
+from tests.common.iggy_stub import MockIggyClient
 
-
-class MockSendMessage:
-    """Stand-in for ``apache_iggy.SendMessage`` that keeps its payload."""
-
-    def __init__(self, payload: bytes | str) -> None:
-        self.payload = payload
-
-
-class MockIggyClient:
-    """Stand-in for ``apache_iggy.IggyClient`` that records sent payloads."""
-
-    def __init__(self) -> None:
-        self.sent_payloads: list[bytes | str] = []
-
-    async def send_messages(
-        self,
-        *,
-        stream: str,
-        topic: str,
-        partitioning: int,
-        messages: Sequence[MockSendMessage],
-    ) -> None:
-        self.sent_payloads.extend(message.payload for message in messages)
-
-    def clear(self) -> None:
-        self.sent_payloads.clear()
-
-
-_mock_module = MagicMock()
-_mock_module.IggyClient = MockIggyClient
-_mock_module.SendMessage = MockSendMessage
-sys.modules.setdefault("apache_iggy", _mock_module)
-
-import cocoindex as coco  # noqa: E402
-from cocoindex.connectors import iggy  # noqa: E402
-from cocoindex.connectors.iggy import _target as iggy_target  # noqa: E402
-from tests import common  # noqa: E402
+# ``tests.common.iggy_stub`` must be imported before the connector so that the
+# connector binds the stub SDK.
+import cocoindex as coco
+from cocoindex.connectors import iggy
+from tests import common
 
 _CLIENT_KEY: coco.ContextKey[Any] = coco.ContextKey("test_iggy_target_client")
 
@@ -90,15 +56,7 @@ class _TopicApp(NamedTuple):
 
 
 @pytest_asyncio.fixture
-async def topic_app(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> _TopicApp:
-    # The connector bound ``IggyClient`` (isinstance-checked when it resolves
-    # the context key) and ``SendMessage`` at import time, from whichever test
-    # module stubbed ``apache_iggy`` first in this process
-    # (``test_iggy_source.py`` installs its own stub).
-    monkeypatch.setattr(iggy_target, "IggyClient", MockIggyClient)
-    monkeypatch.setattr(iggy_target, "Message", MockSendMessage)
+async def topic_app(request: pytest.FixtureRequest) -> _TopicApp:
     client = MockIggyClient()
     # Created inside an async fixture so the Environment binds to the test's
     # running event loop.

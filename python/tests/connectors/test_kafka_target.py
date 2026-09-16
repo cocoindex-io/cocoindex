@@ -5,8 +5,6 @@ These tests mock the AIOProducer to verify handler behavior without a real Kafka
 
 from __future__ import annotations
 
-import asyncio
-import sys
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, cast
 from unittest.mock import MagicMock
@@ -14,36 +12,12 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
-# --- Mock confluent_kafka before importing the connector ---
+from tests.common.kafka_stub import MockAIOProducer
 
-
-class MockAIOProducer:
-    """Mock AIOProducer that records produce calls and returns resolved futures."""
-
-    def __init__(self) -> None:
-        self.produced_messages: list[tuple[str, Any, Any]] = []
-
-    async def produce(
-        self, topic: str, *, key: Any = None, value: Any = None
-    ) -> asyncio.Future[None]:
-        self.produced_messages.append((topic, key, value))
-        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        fut.set_result(None)
-        return fut
-
-    def clear(self) -> None:
-        self.produced_messages.clear()
-
-
-_mock_aio = MagicMock()
-_mock_aio.AIOProducer = MockAIOProducer
-_mock_module = MagicMock()
-_mock_module.aio = _mock_aio
-sys.modules.setdefault("confluent_kafka", _mock_module)
-sys.modules.setdefault("confluent_kafka.aio", _mock_aio)
-
-from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]  # noqa: E402
-from cocoindex.connectors.kafka._target import (  # noqa: E402
+# ``tests.common.kafka_stub`` must be imported before the connector so that the
+# connector binds the stub SDK.
+from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]
+from cocoindex.connectors.kafka._target import (
     _MessageAction,
     _MessageHandler,
     _TopicAction,
@@ -52,12 +26,11 @@ from cocoindex.connectors.kafka._target import (  # noqa: E402
     _TopicSpec,
     KafkaTopicTarget,
 )
-import cocoindex as coco  # noqa: E402
-from cocoindex.connectors import kafka  # noqa: E402
-from cocoindex.connectors.kafka import _target as kafka_target  # noqa: E402
-from tests import common  # noqa: E402
-from tests.common.target_states import RecordingChildSlot  # noqa: E402
-from cocoindex._internal.context_keys import ContextProvider  # noqa: E402
+import cocoindex as coco
+from cocoindex.connectors import kafka
+from tests import common
+from tests.common.target_states import RecordingChildSlot
+from cocoindex._internal.context_keys import ContextProvider
 
 
 # =============================================================================
@@ -357,13 +330,7 @@ class _TopicApp(NamedTuple):
 async def topic_app(
     request: pytest.FixtureRequest,
     producer: MockAIOProducer,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> _TopicApp:
-    # The topic handler isinstance-checks the provided producer against the
-    # ``AIOProducer`` the connector bound at import time, which comes from
-    # whichever test module stubbed ``confluent_kafka.aio`` first in this
-    # process (``test_kafka_source.py`` installs its own stub).
-    monkeypatch.setattr(kafka_target, "AIOProducer", MockAIOProducer)
     # Created inside an async fixture so the Environment binds to the test's
     # running event loop.
     env = common.create_test_env(__file__, suffix=request.node.name)
