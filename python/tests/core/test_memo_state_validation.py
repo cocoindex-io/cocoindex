@@ -7,6 +7,8 @@ Tests cover:
 - State changed, not reusable → function re-executed, new states persisted
 - State changed, still reusable → function NOT re-executed, new states persisted
 - State changed → previously declared target states cleaned up (sync and async)
+- State changed, still reusable → target states declared inside the memoized
+  body are kept (sync, async, and via a nested callee's memo entry)
 """
 
 from dataclasses import dataclass
@@ -506,7 +508,9 @@ class TwoLevelEntry:
     def __coco_memo_key__(self) -> object:
         return self.name
 
-    def __coco_memo_state__(self, prev_state: Any) -> coco.MemoStateOutcome:
+    def __coco_memo_state__(
+        self, prev_state: tuple[int, str] | coco.NonExistenceType
+    ) -> coco.MemoStateOutcome:
         new_state = (self.mtime, self.fingerprint)
         if coco.is_non_existence(prev_state):
             return coco.MemoStateOutcome(state=new_state, memo_valid=True)
@@ -658,7 +662,7 @@ def test_state_changed_but_reusable_async() -> None:
 
 
 # ============================================================================
-# State changed but reusable — component-level (sync)
+# State changed but reusable — target states declared inside the memo body
 # ============================================================================
 
 
@@ -676,40 +680,251 @@ def _run_two_level_comp() -> None:
         _declare_two_level(value)
 
 
-def test_state_changed_but_reusable_component_sync() -> None:
-    """Component-level: mtime changes but fingerprint same → no re-execution."""
+def test_state_changed_but_reusable_keeps_inner_target_states_sync() -> None:
+    """A memoized function declares its target state *inside* its body. When its
+    memo state changes but stays valid (mtime moved, fingerprint same), the body
+    is skipped — and the target state it declared last time must survive.
+
+    Entry Y never changes: it is a plain hit on every run, showing the
+    behaviour is per-entry."""
     GlobalDictTarget.store.clear()
     _two_level_source.clear()
     _metrics.clear()
 
     app = coco.App(
         coco.AppConfig(
-            name="test_state_changed_but_reusable_comp_sync", environment=coco_env
+            name="test_state_changed_but_reusable_keeps_inner_sync",
+            environment=coco_env,
         ),
         _run_two_level_comp,
     )
 
-    # Run 1: cache miss
+    # Run 1: cache miss — both execute and declare
     _two_level_source["X"] = TwoLevelEntry(
         name="X", mtime=1000, fingerprint="abc123", content="hello"
     )
+    _two_level_source["Y"] = TwoLevelEntry(
+        name="Y", mtime=1000, fingerprint="yyy", content="stable"
+    )
     app.update_blocking()
-    assert _metrics.collect() == {"call.declare_two_level": 1}
+    assert _metrics.collect() == {"call.declare_two_level": 2}
+    expected = {
+        "X": DictDataWithPrev(data="comp: hello", prev=[], prev_may_be_missing=True),
+        "Y": DictDataWithPrev(data="comp: stable", prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.data == expected
 
-    # Run 2: mtime changes but fingerprint same → reusable
+    # Run 2: X's mtime changes but fingerprint same → reusable, 0 calls.
+    # The target states must NOT be deleted even though the body did not
+    # re-declare them.
     _two_level_source["X"] = TwoLevelEntry(
         name="X", mtime=2000, fingerprint="abc123", content="hello"
     )
     app.update_blocking()
     assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
 
-    # Run 3: verify state persisted
+    # Run 3: no change → still 0 calls, still present
     app.update_blocking()
     assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
 
-    # Run 4: fingerprint changes → re-executes
+    # Run 4: keep X's mtime at 2000 but break its fingerprint. The state fn
+    # short-circuits on an mtime match, so this is a hit only if run 2's
+    # refreshed state (mtime 2000) was actually persisted. A stale row (mtime
+    # 1000) would fall through to the fingerprint check and re-execute.
+    _two_level_source["X"] = TwoLevelEntry(
+        name="X", mtime=2000, fingerprint="zzz", content="hello"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 5: X's mtime and fingerprint change → re-executes; the previous
+    # record is still tracked, so the target sees it as prev (not "may be
+    # missing").
     _two_level_source["X"] = TwoLevelEntry(
         name="X", mtime=3000, fingerprint="def456", content="world"
     )
     app.update_blocking()
     assert _metrics.collect() == {"call.declare_two_level": 1}
+    expected = {
+        "X": DictDataWithPrev(
+            data="comp: world", prev=["comp: hello"], prev_may_be_missing=False
+        ),
+        "Y": DictDataWithPrev(data="comp: stable", prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 6: no change → 0 calls, unchanged
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 7: X is no longer processed → its target state is cleaned up.
+    # Protection applies only to entries that hit; an entry nobody calls is
+    # still reconciled away.
+    del _two_level_source["X"]
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {
+        "Y": DictDataWithPrev(data="comp: stable", prev=[], prev_may_be_missing=True),
+    }
+
+
+# ============================================================================
+# State changed but reusable — target states declared inside the memo body
+# (async)
+# ============================================================================
+
+
+@coco.fn.as_async(memo=True)
+def _declare_two_level_async(entry: TwoLevelEntry) -> None:
+    _metrics.increment("call.declare_two_level_async")
+    coco.declare_target_state(
+        GlobalDictTarget.target_state(entry.name, f"comp_async: {entry.content}")
+    )
+
+
+@coco.fn
+async def _run_two_level_comp_async() -> None:
+    for value in _two_level_source.values():
+        await _declare_two_level_async(value)
+
+
+def test_state_changed_but_reusable_keeps_inner_target_states_async() -> None:
+    """Async twin of the sync test above: the async hit path is separate Python
+    code calling the same engine method."""
+    GlobalDictTarget.store.clear()
+    _two_level_source.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_state_changed_but_reusable_keeps_inner_async",
+            environment=coco_env,
+        ),
+        _run_two_level_comp_async,
+    )
+
+    # Run 1: cache miss — executes and declares
+    _two_level_source["X"] = TwoLevelEntry(
+        name="X", mtime=1000, fingerprint="abc123", content="hello"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.declare_two_level_async": 1}
+    expected = {
+        "X": DictDataWithPrev(
+            data="comp_async: hello", prev=[], prev_may_be_missing=True
+        ),
+    }
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 2: mtime changes but fingerprint same → reusable, 0 calls, target kept
+    _two_level_source["X"] = TwoLevelEntry(
+        name="X", mtime=2000, fingerprint="abc123", content="hello"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 3: no change → still present
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 4: fingerprint changes → re-executes with the previous record tracked
+    _two_level_source["X"] = TwoLevelEntry(
+        name="X", mtime=3000, fingerprint="def456", content="world"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.declare_two_level_async": 1}
+    expected = {
+        "X": DictDataWithPrev(
+            data="comp_async: world",
+            prev=["comp_async: hello"],
+            prev_may_be_missing=False,
+        ),
+    }
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 5: no change → 0 calls
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+
+# ============================================================================
+# State changed but reusable — target path known only to a dep-walked callee
+# ============================================================================
+
+
+@coco.fn(memo=True)
+def _inner_declare(name: str, content: str) -> None:
+    _metrics.increment("call.inner_declare")
+    coco.declare_target_state(GlobalDictTarget.target_state(name, f"inner: {content}"))
+
+
+@coco.fn(memo=True)
+def _outer_two_level(entry: TwoLevelEntry, version: int) -> None:
+    _metrics.increment("call.outer_two_level")
+    _inner_declare(entry.name, entry.content)
+
+
+_outer_version: list[int] = [1]
+_call_inner_directly: list[bool] = [True]
+
+
+@coco.fn
+def _run_nested_two_level_inner_first() -> None:
+    for value in _two_level_source.values():
+        if _call_inner_directly[0]:
+            _inner_declare(value.name, value.content)
+        _outer_two_level(value, _outer_version[0])
+
+
+def test_state_changed_but_reusable_keeps_dep_walked_target_states_sync() -> None:
+    """The inner memoized function declares the target state; on run 1 it is a
+    cache hit inside the outer's execution, so only the inner's own memo entry
+    records that target. On run 2 the outer hits with a refreshed state and the
+    inner is never probed: its target state, and its memo entry, must survive."""
+    GlobalDictTarget.store.clear()
+    _two_level_source.clear()
+    _metrics.clear()
+    _outer_version[0] = 1
+    _call_inner_directly[0] = True
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_state_changed_but_reusable_keeps_dep_walked_sync",
+            environment=coco_env,
+        ),
+        _run_nested_two_level_inner_first,
+    )
+
+    # Run 1: inner misses (direct call), outer misses, inner hits inside outer
+    _two_level_source["X"] = TwoLevelEntry(
+        name="X", mtime=1000, fingerprint="abc123", content="hello"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.inner_declare": 1, "call.outer_two_level": 1}
+    expected = {
+        "X": DictDataWithPrev(data="inner: hello", prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 2: no direct call; outer hits with refreshed state; inner never
+    # probed. Its target survives only via the dep walk.
+    _call_inner_directly[0] = False
+    _two_level_source["X"] = TwoLevelEntry(
+        name="X", mtime=2000, fingerprint="abc123", content="hello"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 3: outer-only miss → inner must be a plain hit (its row survived)
+    _outer_version[0] = 2
+    app.update_blocking()
+    assert _metrics.collect() == {"call.outer_two_level": 1}
+    assert GlobalDictTarget.store.data == expected
