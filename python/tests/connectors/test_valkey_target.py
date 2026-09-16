@@ -75,6 +75,12 @@ def _decode_vector(blob: bytes, dim: int) -> list[float]:
     return list(struct.unpack(f"<{dim}f", blob))
 
 
+async def _index_names(client: Any) -> set[str]:
+    """Return the names of all search indexes on the server."""
+    names = await glide_ft.list(client)
+    return {n.decode() if isinstance(n, bytes) else n for n in names}
+
+
 async def _wait_for_index_count(
     client: Any,
     index_name: str,
@@ -662,7 +668,7 @@ async def test_ip_distance_metric(valkey_env: _ValkeyEnv) -> None:
 @requires_server
 @pytest.mark.asyncio
 async def test_drop_index_when_not_declared(valkey_env: _ValkeyEnv) -> None:
-    """Test that index is dropped when no longer declared."""
+    """Un-declaring the index drops it together with its document hashes."""
     index_name = _unique_name("test_drop")
     source_docs: list[valkey.Document] = []
     declare_index = True
@@ -687,21 +693,65 @@ async def test_drop_index_when_not_declared(valkey_env: _ValkeyEnv) -> None:
         declare_fn,
     )
 
-    source_docs.append(valkey.Document(id="d1", vector=_make_vector(_DIM, 1.0)))
+    source_docs.extend(
+        [
+            valkey.Document(id="d1", vector=_make_vector(_DIM, 1.0)),
+            valkey.Document(id="d2", vector=_make_vector(_DIM, 2.0)),
+        ]
+    )
     await app.update()
 
-    info = await glide_ft.info(valkey_env.client, index_name)
-    assert info is not None
+    client = valkey_env.client
+    hash_keys = [f"{index_name}:d1", f"{index_name}:d2"]
+    assert index_name in await _index_names(client)
+    assert await client.exists(hash_keys) == 2
 
     declare_index = False
     source_docs.clear()
     await app.update()
 
-    try:
-        await glide_ft.info(valkey_env.client, index_name)
-        pytest.fail("Index should have been dropped")
-    except Exception:
-        pass
+    assert index_name not in await _index_names(client)
+    assert await client.exists(hash_keys) == 0
+
+
+@requires_glide
+@requires_server
+@pytest.mark.asyncio
+async def test_app_drop_removes_index_and_documents(valkey_env: _ValkeyEnv) -> None:
+    """``App.drop()`` removes the index together with its document hashes."""
+    index_name = _unique_name("test_app_drop")
+
+    async def declare_fn() -> None:
+        index = await coco.use_mount(
+            coco.component_subpath("setup", "index"),
+            valkey.declare_index_target,
+            _VALKEY_DB_KEY,
+            index_name,
+            await valkey.IndexSchema.create(
+                vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA, distance="cosine"),
+            ),
+        )
+        for doc in (
+            valkey.Document(id="d1", vector=_make_vector(_DIM, 1.0)),
+            valkey.Document(id="d2", vector=_make_vector(_DIM, 2.0)),
+        ):
+            index.declare_document(doc)
+
+    app = coco.App(
+        coco.AppConfig(name="test_app_drop", environment=valkey_env.coco_env),
+        declare_fn,
+    )
+    await app.update()
+
+    client = valkey_env.client
+    hash_keys = [f"{index_name}:d1", f"{index_name}:d2"]
+    assert index_name in await _index_names(client)
+    assert await client.exists(hash_keys) == 2
+
+    await app.drop()
+
+    assert index_name not in await _index_names(client)
+    assert await client.exists(hash_keys) == 0
 
 
 @requires_glide
