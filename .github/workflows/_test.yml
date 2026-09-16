@@ -126,6 +126,41 @@ jobs:
           with:
             install-only: true
 
+        # The Omnigraph connector's live tests drive the real `omnigraph` CLI
+        # against a temporary store. They gate on OMNIGRAPH_TEST_STORE=1 and
+        # expect the binary at test/bin/omnigraph (git-ignored), so install
+        # the pinned release there on every platform it ships for; elsewhere
+        # the live tests skip as they do on a developer machine without it.
+        - name: Install Omnigraph CLI for the connector's live tests
+          if: runner.os != 'Windows'
+          shell: bash
+          env:
+            OMNIGRAPH_VERSION: "0.10.0"
+          run: |
+            case "${{ runner.os }}-${{ runner.arch }}" in
+              Linux-X64)   asset=omnigraph-linux-x86_64 ;;
+              Linux-ARM64) asset=omnigraph-linux-arm64 ;;
+              macOS-ARM64) asset=omnigraph-macos-arm64 ;;
+              *)
+                echo "No Omnigraph release for ${{ runner.os }}-${{ runner.arch }}; live tests will skip"
+                exit 0
+                ;;
+            esac
+            base="https://github.com/ModernRelay/omnigraph/releases/download/v${OMNIGRAPH_VERSION}"
+            mkdir -p test/bin
+            cd test/bin
+            curl -sSfL -o "$asset.tar.gz" "$base/$asset.tar.gz"
+            curl -sSfL -o "$asset.sha256" "$base/$asset.sha256"
+            if command -v sha256sum >/dev/null; then
+              sha256sum -c "$asset.sha256"
+            else
+              shasum -a 256 -c "$asset.sha256"
+            fi
+            tar xzf "$asset.tar.gz" omnigraph
+            rm "$asset.tar.gz" "$asset.sha256"
+            ./omnigraph --version
+            echo "OMNIGRAPH_TEST_STORE=1" >> "$GITHUB_ENV"
+
         - name: Run build-test hooks
           env:
             UV_NO_SYNC: "1"
