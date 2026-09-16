@@ -26,3 +26,24 @@ def load_module_as(source_path: str, fake_module_name: str) -> ModuleType:
     sys.modules[fake_module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def install_stub_module(name: str, **attrs: object) -> ModuleType:
+    """
+    Register a stub module under ``name`` in ``sys.modules``.
+
+    Use it to stand in for an optional third-party SDK before importing the
+    code under test, so that code binds the stub's attributes (typically stub
+    classes) instead of failing to import the SDK.
+
+    Args:
+        name: Fully qualified module name to register.
+        **attrs: Attributes to expose on the stub module.
+
+    Returns:
+        The registered module object.
+    """
+    module = ModuleType(name)
+    vars(module).update(attrs)
+    sys.modules[name] = module
+    return module
