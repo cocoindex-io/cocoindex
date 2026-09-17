@@ -38,6 +38,9 @@ struct AppContextInner<Prof: EngineProfile> {
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    /// Source of operation generations; see
+    /// [`ComponentProcessorContext::operation_generation`].
+    operation_generation: std::sync::atomic::AtomicU64,
     /// Cancellation token for in-flight app operations. Wrapped in a `Mutex` so
     /// it can be replaced with a fresh child of the global token after a
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
@@ -78,6 +81,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
+                operation_generation: std::sync::atomic::AtomicU64::new(0),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
@@ -135,6 +139,15 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
     pub fn inflight_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
         self.inner.inflight_semaphore.as_ref()
+    }
+
+    /// Mint the generation of a new operation; see
+    /// [`ComponentProcessorContext::operation_generation`].
+    fn next_operation_generation(&self) -> u64 {
+        self.inner
+            .operation_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
     /// Returns a clone of the current app-level cancellation token.
@@ -685,6 +698,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
+    /// See [`ComponentProcessorContext::operation_generation`].
+    operation_generation: u64,
 
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 
@@ -726,11 +741,16 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
+        let operation_generation = match &parent_context {
+            Some(parent) => parent.operation_generation(),
+            None => component.app_ctx().next_operation_generation(),
+        };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
+                operation_generation,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
@@ -1032,6 +1052,18 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.full_reprocess,
             ComponentProcessingAction::Delete { .. } => false,
         }
+    }
+
+    /// Generation of the operation this context belongs to. A context created
+    /// without a parent — the root of an `App::update` or `App::drop_app`, or
+    /// a live component's own cycle — starts a new operation; children inherit
+    /// their parent's. So two runs of one component share a generation exactly
+    /// when the same operation started both, which is how `full_reprocess`
+    /// tells a memo stored earlier in the same operation (that operation's own
+    /// execution) from one left behind by a previous run (a cache it must
+    /// ignore). See `Component::execute_once`.
+    pub(crate) fn operation_generation(&self) -> u64 {
+        self.inner.operation_generation
     }
 
     pub fn preview(&self) -> bool {
