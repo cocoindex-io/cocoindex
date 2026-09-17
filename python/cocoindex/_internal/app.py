@@ -246,31 +246,56 @@ class App(Generic[P, R]):
         config.environment._info.register_app(self._name, self)
 
     async def _get_core_env_app(self) -> tuple[Environment, core.App]:
-        with self._lock:
-            if self._core_env_app is not None:
-                return self._core_env_app
-        env = await self._environment._get_env()
-        return self._ensure_core_env_app(env)
+        while True:
+            with self._lock:
+                if self._core_env_app is not None:
+                    return self._core_env_app
+            env = await self._environment._get_env()
+            core_env_app = self._ensure_core_env_app(env)
+            if core_env_app is not None:
+                return core_env_app
+            # Do not retain the stopped environment while retrying. In particular,
+            # its LMDB handle must be released before a new environment is opened.
+            del env
 
     def _get_core_env_app_sync(self) -> tuple[Environment, core.App]:
-        with self._lock:
-            if self._core_env_app is not None:
-                return self._core_env_app
-        env = self._environment._get_env_sync()
-        return self._ensure_core_env_app(env)
+        while True:
+            with self._lock:
+                if self._core_env_app is not None:
+                    return self._core_env_app
+            env = self._environment._get_env_sync()
+            core_env_app = self._ensure_core_env_app(env)
+            if core_env_app is not None:
+                return core_env_app
+            # See the async path above. The sync path can race with stop from
+            # another thread in exactly the same way.
+            del env
 
     async def _get_core(self) -> core.App:
         _env, core_app = await self._get_core_env_app()
         return core_app
 
-    def _ensure_core_env_app(self, env: Environment) -> tuple[Environment, core.App]:
+    def _ensure_core_env_app(
+        self, env: Environment
+    ) -> tuple[Environment, core.App] | None:
         with self._lock:
             if self._core_env_app is None:
+                if isinstance(
+                    self._environment, LazyEnvironment
+                ) and not self._environment._is_current_env(env):
+                    return None
                 self._core_env_app = (
                     env,
                     core.App(self._name, env._core_env, self._max_inflight_components),
                 )
             return self._core_env_app
+
+    def _release_core_env_app(self, environment: LazyEnvironment) -> None:
+        """Release transient core objects owned by a stopped lazy environment."""
+        if self._environment is not environment:
+            return
+        with self._lock:
+            self._core_env_app = None
 
     def update(
         self,
