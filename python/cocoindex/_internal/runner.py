@@ -17,7 +17,6 @@ import pickle
 import subprocess
 import threading
 import multiprocessing as mp
-import warnings
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -97,13 +96,32 @@ _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
 
 
+# Upper bound on subprocess workers. `GPUPool` is what actually gates GPU
+# concurrency; this only has to be wide enough not to be the tighter limit.
+# Workers spawn on demand, so a wide pool costs nothing until calls overlap.
+_MAX_SUBPROCESS_WORKERS = 32
+# Submissions to try when the pool breaks. One: no retry.
+#
+# `ProcessPoolExecutor` terminates *every* worker when one dies, failing all
+# calls in flight, not just the one that crashed. Retrying therefore re-runs
+# the innocent neighbours' functions, side effects included, and they still fail
+# if the poison call keeps crashing. Surfacing immediately is both safer and
+# consistent with how the engine already handles a failed component: nothing is
+# written or memoized for it, and the next update retries it cleanly.
+_MAX_POOL_ATTEMPTS = 1
+
+
 def _get_pool() -> ProcessPoolExecutor:
-    """Get or create the singleton subprocess pool."""
+    """Get or create the singleton subprocess pool.
+
+    Wide enough that the GPU pool, not this executor, decides how many calls run
+    at once. Otherwise every device serializes behind a single worker.
+    """
     global _pool
     with _pool_lock:
         if _pool is None:
             _pool = ProcessPoolExecutor(
-                max_workers=1,
+                max_workers=_MAX_SUBPROCESS_WORKERS,
                 initializer=_subprocess_init,
                 initargs=(os.getpid(),),
                 mp_context=mp.get_context("spawn"),
@@ -119,13 +137,14 @@ def _restart_pool(old_pool: ProcessPoolExecutor | None = None) -> None:
             return  # Another thread already restarted
         prev_pool = _pool
         _pool = ProcessPoolExecutor(
-            max_workers=1,
+            max_workers=_MAX_SUBPROCESS_WORKERS,
             initializer=_subprocess_init,
             initargs=(os.getpid(),),
             mp_context=mp.get_context("spawn"),
         )
         if prev_pool is not None:
-            prev_pool.shutdown(cancel_futures=True)
+            # `wait=False`: do not join the dead pool's workers on the event loop.
+            prev_pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _subprocess_init(parent_pid: int) -> None:
@@ -174,7 +193,11 @@ def _start_parent_watchdog(parent_pid: int) -> None:
 
 def _execute_in_subprocess(payload_bytes: bytes) -> bytes:
     """Run in subprocess: unpack, execute, return pickled result."""
-    fn, args, kwargs = pickle.loads(payload_bytes)
+    fn, args, kwargs, gpu_ids, fraction = pickle.loads(payload_bytes)
+    # ContextVars do not cross a process boundary, so the parent's assignment
+    # travels in the payload and is re-established here.
+    _current_gpus.set(gpu_ids)
+    _current_gpu_fraction.set(fraction)
     result = fn(*args, **kwargs)
     # Handle async callables (functions or callable objects with async __call__)
     if asyncio.iscoroutine(result):
@@ -185,20 +208,36 @@ def _execute_in_subprocess(payload_bytes: bytes) -> bytes:
 async def _submit_to_pool_async(fn: Callable[..., Any], *args: Any) -> Any:
     """Submit work to pool and wait asynchronously."""
     loop = asyncio.get_running_loop()
-    while True:
+    for attempt in range(_MAX_POOL_ATTEMPTS):
         pool = _get_pool()
         try:
             return await loop.run_in_executor(pool, fn, *args)
         except BrokenProcessPool:
+            # A worker can die for a reason unrelated to this call, so retry on
+            # a fresh one. Exhausting the attempts means the call itself kills
+            # its worker: surface it instead of respawning forever.
             _restart_pool(old_pool=pool)
+            if attempt == _MAX_POOL_ATTEMPTS - 1:
+                raise
+    raise AssertionError("unreachable: the loop returns or raises")
 
 
-async def execute_in_subprocess(fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+async def execute_in_subprocess(
+    gpu_ids: list[int],
+    fraction: float,
+    fn: Callable[..., R],
+    *args: Any,
+    **kwargs: Any,
+) -> R:
     """Execute a function in a subprocess and return the result.
 
-    The function and all arguments must be picklable.
+    The function and all arguments must be picklable. ``gpu_ids`` and
+    ``fraction`` are the caller's GPU assignment, positional so a submitted
+    function is free to have parameters of any name.
     """
-    payload = pickle.dumps((fn, args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
+    payload = pickle.dumps(
+        (fn, args, kwargs, gpu_ids, fraction), protocol=pickle.HIGHEST_PROTOCOL
+    )
     result_bytes = await _submit_to_pool_async(_execute_in_subprocess, payload)
     return pickle.loads(result_bytes)  # type: ignore[no-any-return]
 
@@ -392,9 +431,10 @@ class GPURunner(Runner):
     The assigned GPU id(s) are available inside the function via
     ``coco.current_gpu()`` (first id) and ``coco.current_gpus()`` (full list).
     The allocated fraction is available via ``coco.current_gpu_fraction()``.
-    For multi-GPU subprocess mode (where ``CUDA_VISIBLE_DEVICES`` must be set
-    per-process), use in-process mode (the default) until per-GPU subprocess
-    pools are implemented.
+    Subprocess mode reports the same assignment as in-process mode: the id is
+    carried in the payload and re-established in the child. Workers are shared
+    rather than pinned per device, so ``CUDA_VISIBLE_DEVICES`` is not set per
+    worker and a worker can serve different GPUs across calls.
     """
 
     _fraction: float
@@ -447,9 +487,13 @@ class GPURunner(Runner):
         tok_frac = _current_gpu_fraction.set(self._fraction)
         try:
             if self._should_use_subprocess():
-                _warn_subprocess_multi_gpu()
-                # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
-                return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
+                return await execute_in_subprocess(
+                    gpu_ids,
+                    self._fraction,
+                    fn,  # type: ignore[arg-type]
+                    *args,
+                    **kwargs,
+                )
             return await fn(*args, **kwargs)
         finally:
             _current_gpus.reset(tok_gpus)
@@ -469,8 +513,9 @@ class GPURunner(Runner):
         gpu_ids = [gpu_id]
         try:
             if self._should_use_subprocess():
-                _warn_subprocess_multi_gpu()
-                return await execute_in_subprocess(fn, *args, **kwargs)
+                return await execute_in_subprocess(
+                    gpu_ids, self._fraction, fn, *args, **kwargs
+                )
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 self._get_gpu_executor(),
@@ -483,22 +528,3 @@ class GPURunner(Runner):
 
 
 GPU = GPURunner(fraction=1.0)
-
-_subprocess_multi_gpu_warned = False
-
-
-def _warn_subprocess_multi_gpu() -> None:
-    global _subprocess_multi_gpu_warned
-    if _subprocess_multi_gpu_warned:
-        return
-    _subprocess_multi_gpu_warned = True
-    pool = _get_default_gpu_pool()
-    if pool.num_gpus > 1:
-        warnings.warn(
-            f"COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 with num_gpus={pool.num_gpus}: "
-            "subprocess mode does not yet support per-GPU CUDA_VISIBLE_DEVICES. "
-            "All subprocess calls run on the same GPU regardless of pool "
-            "assignment. Use in-process mode for multi-GPU support.",
-            UserWarning,
-            stacklevel=4,
-        )
