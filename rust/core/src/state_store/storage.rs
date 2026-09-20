@@ -129,20 +129,16 @@ struct StorageInner {
 /// future that runs against the shared `WriteTxn` and resolves to a boxed
 /// output. The future is bound to the borrow of the txn (`'a`).
 ///
-/// `Fn + Sync` (not `FnOnce`) so the batcher can retry the entire batch on
+/// `Fn` (not `FnOnce`) so the batcher can retry the entire batch on
 /// `MDB_MAP_FULL`: the env is resized between attempts, then every body is
 /// called again with a fresh write transaction. Callers must therefore
 /// ensure their closures are side-effect–free on the captured state (i.e.
 /// they may be invoked more than once). In practice all callers clone `Arc`
 /// handles inside the closure and do not move-out of captures, so this is
 /// already satisfied.
-///
-/// `Sync` is required because `try_run_once` holds `&[TxnBody]` across
-/// `await` points; for `&T` to be `Send`, `T` must be `Sync`.
 type TxnBody = Box<
     dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
-        + Send
-        + Sync,
+        + Send,
 >;
 
 /// Returns `true` if `err` is an LMDB `MDB_MAP_FULL` error.
@@ -165,12 +161,28 @@ fn is_map_full(err: &Error) -> bool {
 /// Safety: `resize` is only called while holding the coordinator write guard,
 /// which guarantees no read or write LMDB transaction opened through this
 /// coordinator is active in the current process.
+#[derive(Clone)]
 struct TxnRunner {
     db_env: heed::Env<heed::WithoutTls>,
     coord: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl TxnRunner {
+    /// Runs `inputs` in one write txn, resizing the map and retrying the whole
+    /// batch on `MDB_MAP_FULL`. Must be polled on a single OS thread from start
+    /// to finish — see [`Runner::run`].
+    async fn run_with_resize_retry(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
+        loop {
+            match self.try_run_once(inputs).await {
+                Ok(outputs) => return Ok(outputs),
+                Err(e) if is_map_full(&e) => {
+                    self.resize_on_map_full().await?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Attempts one write-txn pass over `inputs`. If any body or the final
     /// commit returns an error the write txn and coordinator read guard are
     /// dropped before the error propagates. On `MapFull` the caller should
@@ -219,19 +231,26 @@ impl Runner for TxnRunner {
     type Input = TxnBody;
     type Output = Box<dyn Any + Send>;
 
+    /// LMDB ties a write transaction to the OS thread that began it: only that
+    /// thread can release the writer lock, and LMDB ignores a failed release.
+    /// A write txn that begins on one runtime worker and commits or aborts on
+    /// another — which work-stealing allows at any `.await` that suspends —
+    /// leaves the lock held for good and blocks every later writer.
+    ///
+    /// So the whole batch runs on one blocking-pool thread, where `block_on`
+    /// polls the bodies instead of the runtime's workers.
     async fn run(
         &self,
         inputs: Vec<TxnBody>,
     ) -> Result<impl ExactSizeIterator<Item = Box<dyn Any + Send>>> {
-        loop {
-            match self.try_run_once(&inputs).await {
-                Ok(outputs) => return Ok(outputs.into_iter()),
-                Err(e) if is_map_full(&e) => {
-                    self.resize_on_map_full().await?;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        let runner = self.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let span = Span::current();
+        let outputs = tokio::task::spawn_blocking(move || {
+            runtime.block_on(runner.run_with_resize_retry(&inputs).instrument(span))
+        })
+        .await??;
+        Ok(outputs.into_iter())
     }
 }
 
@@ -345,6 +364,11 @@ impl Storage {
     /// resolves to `Err`, the whole batch is rolled back (the `WriteTxn` is
     /// dropped without committing) and every caller in the batch receives
     /// an error.
+    ///
+    /// A batch — opening the txn, every body, the commit or rollback — runs on
+    /// one blocking-pool thread, because LMDB requires a write txn to begin
+    /// and end on the same OS thread. The writer lock is held throughout, so
+    /// a body should only await work that belongs inside the txn.
     ///
     /// The future must be boxed (`BoxFuture<'a, _>` = `Pin<Box<dyn Future +
     /// Send + 'a>>`) because stable Rust can't yet express a `Send` bound on
@@ -827,6 +851,66 @@ mod tests {
                 payload.as_slice(),
                 "{key} payload should match what was written"
             );
+        }
+    }
+
+    /// Regression test for #2424. LMDB's writer lock belongs to the OS thread
+    /// that began the write txn; on Linux a release from any other thread
+    /// fails silently and wedges every later writer. A body that really
+    /// suspends lets a multi-thread runtime resume its task on another
+    /// worker, so the runner has to keep the whole txn on one thread.
+    #[test]
+    fn write_txn_stays_on_one_thread_when_a_body_suspends() {
+        use std::time::Duration;
+
+        const ROUNDS: usize = 8;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_time()
+            .build()
+            .unwrap();
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            lmdb_map_size: 4 * 1024 * 1024,
+        };
+
+        let rounds = rt.block_on(async {
+            let storage = Storage::new(&settings).await.unwrap();
+            let mut rounds = Vec::new();
+            for _ in 0..ROUNDS {
+                // A txn that ended on the wrong thread leaves the writer lock
+                // held, so the next round would block forever rather than fail.
+                let round = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    storage.run_txn(|_wtxn| {
+                        Box::pin(async {
+                            let before = std::thread::current().id();
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                            Ok((before, std::thread::current().id()))
+                        })
+                    }),
+                )
+                .await;
+                let timed_out = round.is_err();
+                rounds.push(round);
+                if timed_out {
+                    break;
+                }
+            }
+            rounds
+        });
+        // A wedged writer blocks its thread for good; dropping the runtime
+        // would wait on it and turn the failure below into a hang.
+        rt.shutdown_background();
+
+        for round in rounds {
+            let (before, after) = round
+                .expect("write txn blocked on a writer lock leaked by an earlier txn")
+                .unwrap();
+            assert_eq!(before, after, "write txn resumed on a different thread");
         }
     }
 }
