@@ -54,7 +54,7 @@ jobs:
         # which is where the sccache/protoc/Python/prek steps below live.
         - name: Free disk space
           if: runner.os == 'Linux'
-          uses: jlumbroso/free-disk-space@v1.3.1
+          uses: jlumbroso/free-disk-space@v2.0.0
           with:
             android: true
             dotnet: true
