@@ -14,7 +14,6 @@ import asyncio
 import functools
 import os
 import pickle
-import subprocess
 import threading
 import multiprocessing as mp
 import warnings
@@ -325,8 +324,8 @@ class GPURunner(Runner):
     async def _acquire_gpu(self) -> int:
         return await _get_default_gpu_pool().acquire(self._fraction)
 
-    async def _release_gpu(self, gpu_id: int) -> None:
-        await _get_default_gpu_pool().release(gpu_id, self._fraction)
+    def _release_gpu(self, gpu_id: int) -> None:
+        _get_default_gpu_pool().release(gpu_id, self._fraction)
 
     async def run(
         self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
@@ -350,7 +349,7 @@ class GPURunner(Runner):
         finally:
             _current_gpus.reset(tok_gpus)
             _current_gpu_fraction.reset(tok_frac)
-            await self._release_gpu(gpu_id)
+            self._release_gpu(gpu_id)
 
     async def run_sync_fn(
         self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
@@ -375,7 +374,7 @@ class GPURunner(Runner):
                 ),
             )
         finally:
-            await self._release_gpu(gpu_id)
+            self._release_gpu(gpu_id)
 
 
 GPU = GPURunner(fraction=1.0)

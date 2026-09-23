@@ -1,11 +1,15 @@
 use crate::error::Result;
-use crate::{client_bail, client_error, internal_error};
+use crate::{client_bail, internal_bail, internal_error};
 use container::SortedVec;
 use futures::stream::{FuturesUnordered, StreamExt};
 use gpu_capacity::GPUCapacity;
 use std::collections::VecDeque;
+use std::io::Read;
 use std::num::NonZeroUsize;
+use std::process::Stdio;
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 /// Tracks fractional GPU capacity across multiple GPUs.
@@ -32,49 +36,43 @@ struct Acquisition {
     notifier: oneshot::Sender<usize>,
 }
 
-struct AcquireGuard<'a> {
+struct AcquisitionGuard<'a> {
     pool: &'a GPUPool,
-    fraction: GPUCapacity,
-    receiver: oneshot::Receiver<usize>,
-    defused: bool,
+    acquired_gpus: Vec<usize>,
+    requested_capacity: GPUCapacity,
+    receivers: FuturesUnordered<oneshot::Receiver<usize>>,
 }
 
-impl<'a> Drop for AcquireGuard<'a> {
-    fn drop(&mut self) {
-        if self.defused {
-            return;
+impl<'a> AcquisitionGuard<'a> {
+    pub async fn acquire(&mut self) -> Result<Vec<usize>> {
+        while let Some(gpu_id) = self.receivers.next().await {
+            self.acquired_gpus.push(gpu_id.map_err(|err| {
+                internal_error!("GPUPool reservation cancelled while waiting: {err}")
+            })?);
         }
-        let mut state = self.pool.state.lock().expect("lock poisoned");
-        if let Ok(gpu_id) = self.receiver.try_recv() {
-            let updated = state.capacities[gpu_id]
-                .checked_add(&self.fraction)
-                .unwrap_or(GPUCapacity::MAX);
-            state.capacities.update(gpu_id, updated);
-        }
-        self.receiver.close();
-        GPUPool::process_acquisition_queue(&mut state);
+        self.receivers.clear();
+        Ok(std::mem::take(&mut self.acquired_gpus))
     }
 }
 
-struct AcquireFullGuard<'a> {
-    pool: &'a GPUPool,
-    acquired_gpus: Vec<usize>,
-    receivers: FuturesUnordered<oneshot::Receiver<usize>>,
-    defused: bool,
-}
-
-impl<'a> Drop for AcquireFullGuard<'a> {
+impl<'a> Drop for AcquisitionGuard<'a> {
     fn drop(&mut self) {
-        if self.defused {
+        if self.acquired_gpus.is_empty() && self.receivers.is_empty() {
             return;
         }
-        let mut state = self.pool.state.lock().expect("lock poisoned");
+        let mut state = self.pool.state.lock().unwrap_or_else(|e| e.into_inner());
         for &gpu_id in &self.acquired_gpus {
-            state.capacities.update(gpu_id, GPUCapacity::MAX);
+            let updated = state.capacities[gpu_id]
+                .checked_add(&self.requested_capacity)
+                .unwrap_or(GPUCapacity::MAX);
+            state.capacities.update(gpu_id, updated);
         }
         for mut receiver in std::mem::take(&mut self.receivers) {
             if let Ok(gpu_id) = receiver.try_recv() {
-                state.capacities.update(gpu_id, GPUCapacity::MAX);
+                let updated = state.capacities[gpu_id]
+                    .checked_add(&self.requested_capacity)
+                    .unwrap_or(GPUCapacity::MAX);
+                state.capacities.update(gpu_id, updated);
             }
         }
         GPUPool::process_acquisition_queue(&mut state);
@@ -114,6 +112,7 @@ impl GPUPool {
     /// The function would try to host the acquisition using the remaining GPUs,
     /// or it will send it to the queue which will reserve a GPU now or later.
     ///
+    /// When the acquisition is cancelled, the GPU capacity is released and the queue is processed.
     pub async fn acquire(&self, fraction: GPUCapacity) -> Result<usize> {
         if fraction == GPUCapacity::ZERO {
             client_bail!("Acquired fraction must be between 0.0 and 1.0, got 0");
@@ -133,18 +132,22 @@ impl GPUPool {
                 return Ok(gpu_id);
             }
             let receiver = Self::send_acquisition_to_queue(&mut pool.acquisition_queue, fraction);
-            AcquireGuard {
+            AcquisitionGuard {
                 pool: self,
-                fraction,
-                receiver,
-                defused: false,
+                acquired_gpus: vec![],
+                requested_capacity: fraction,
+                receivers: FuturesUnordered::from_iter(std::iter::once(receiver)),
             }
         };
-        let gpu_id = (&mut guard.receiver)
-            .await
-            .map_err(|err| internal_error!("GPUPool dropped while waiting: {err}"))?;
-        guard.defused = true;
-        Ok(gpu_id)
+        let acquired_gpus = guard.acquire().await?;
+        debug_assert_eq!(
+            acquired_gpus.len(),
+            1,
+            "Expected one GPU for fraction {}, but got: {:?}",
+            fraction,
+            &acquired_gpus
+        );
+        Ok(acquired_gpus[0])
     }
 
     fn send_acquisition_to_queue(
@@ -199,23 +202,14 @@ impl GPUPool {
             })
             .take(gpus_to_be_acquired)
             .collect::<FuturesUnordered<_>>();
-            AcquireFullGuard {
+            AcquisitionGuard {
                 pool: self,
                 acquired_gpus,
+                requested_capacity: GPUCapacity::MAX,
                 receivers,
-                defused: false,
             }
         };
-
-        while let Some(res) = guard.receivers.next().await {
-            let gpu_id = res.map_err(|err| {
-                client_error!("GPUPool reservation cancelled while waiting: {err}")
-            })?;
-            guard.acquired_gpus.push(gpu_id);
-        }
-
-        guard.defused = true;
-        Ok(std::mem::take(&mut guard.acquired_gpus))
+        guard.acquire().await
     }
 
     /// release adds back capacities to GPUs, and processes pending acquisitions afterward.
@@ -224,22 +218,22 @@ impl GPUPool {
     /// Initially:
     /// ```text
     /// GPUs: G1(capacity=0), G2(capacity=0), G3(capacity=0)
-    /// Queue: T1(req=0.7, reserved=[G1]) T2(req=0.5, reserved=[G2])
+    /// Queue: T1(req=0.7, reserved=[G1]), T2(req=0.5, reserved=[G2])
     /// ```
     /// After releasing 0.5 capacity to G1:
     /// ```text
     /// GPUs: G1(capacity=0.5), G2(capacity=0), G3(capacity=0)
     /// Queue: T1(req=0.7, reserved=[G1]), T2(req=0.5, reserved=[G2])
     /// ```
-    /// After releasing 0.6 capacity to G2:
+    /// After releasing 0.6 capacity to G2, T2 will be hosted by G1, then get popped:
     /// ```text
-    /// GPUs: G1(capacity=0.5), G2(capacity=0.6), G3(capacity=0)
-    /// Queue: T1(req=0.7, reserved=[G2]), T2(req=0.5, reserved=[G1])
+    /// GPUs: G1(capacity=0), G2(capacity=0.6), G3(capacity=0)
+    /// Queue: T1(req=0.7, reserved=[G2])
     /// ```
     /// After releasing 0.1 capacity to G2, T1 will be hosted by G2, then get popped:
     /// ```text
-    /// GPUs: G1(capacity=0.5), G2(capacity=0), G3(capacity=0)
-    /// Queue: T2(req=0.5, reserved=[G1])
+    /// GPUs: G1(capacity=0), G2(capacity=0), G3(capacity=0)
+    /// Queue: (empty)
     /// ```
     pub fn release(&self, gpu_id: usize, fraction: GPUCapacity) -> Result<()> {
         if gpu_id >= self.num_gpus() {
@@ -268,9 +262,6 @@ impl GPUPool {
         while pending_acquisitions.len() < length
             && let Some(acquisition) = pool.acquisition_queue.pop_front()
         {
-            if acquisition.notifier.is_closed() {
-                continue;
-            }
             if let Some(gpu_id) = pool
                 .capacities
                 .find_excluding_top_n(&acquisition.demand, pending_acquisitions.len())
@@ -307,11 +298,11 @@ impl GPUPool {
     /// 4. Default to ``1``.
     ///
     fn detect_num_gpus() -> Result<usize> {
-        if let Some(env_num) = std::env::var("COCOINDEX_NUM_GPUS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-        {
-            return Ok(std::cmp::max(1, env_num));
+        if let Some(env_num) = std::env::var("COCOINDEX_NUM_GPUS").ok() {
+            match env_num.parse::<usize>() {
+                Ok(num) => return Ok(std::cmp::max(1, num)),
+                Err(err) => panic!("Failed to parse COCOINDEX_NUM_GPUS={env_num}: {err}"),
+            }
         }
         if let Ok(cuda_visible) = std::env::var("CUDA_VISIBLE_DEVICES") {
             let count = cuda_visible
@@ -322,10 +313,7 @@ impl GPUPool {
             return Ok(std::cmp::max(1, count));
         }
         #[cfg(not(test))]
-        let output = std::process::Command::new("nvidia-smi")
-            .arg("--query-gpu=count")
-            .arg("--format=csv,noheader")
-            .output()?;
+        let output = Self::call_nvdia_smi(Duration::from_secs(5))?;
         #[cfg(test)]
         let output = {
             if std::env::var("MOCK_NVIDIA_SMI_NOT_FOUND").is_ok() {
@@ -355,6 +343,40 @@ impl GPUPool {
             .trim()
             .parse::<usize>()?;
         Ok(std::cmp::max(1, count))
+    }
+
+    fn call_nvdia_smi(timeout: Duration) -> Result<std::process::Output> {
+        let mut child = std::process::Command::new("nvidia-smi")
+            .arg("--query-gpu=count")
+            .arg("--format=csv,noheader")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let start = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait()? {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                let _ = child
+                    .stdout
+                    .take()
+                    .and_then(|mut out| out.read_to_end(&mut stdout).ok());
+                let _ = child
+                    .stderr
+                    .take()
+                    .and_then(|mut err| err.read_to_end(&mut stderr).ok());
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            if start.elapsed() >= timeout {
+                let _ = child.kill();
+                internal_bail!("Timeout waiting for nvidia-smi");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 }
 
@@ -1251,6 +1273,16 @@ mod tests {
                 assert_eq!(pool.num_gpus(), 1);
             },
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Failed to parse COCOINDEX_NUM_GPUS=test: invalid digit found in string"
+    )]
+    fn test_detect_num_gpus_parse_error() {
+        temp_env::with_vars([("COCOINDEX_NUM_GPUS", Some("test"))], || {
+            let _pool = GPUPool::default();
+        });
     }
 
     #[test]

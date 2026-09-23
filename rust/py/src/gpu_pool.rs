@@ -7,7 +7,7 @@
 //! that batch carries the batcher's runner function.
 
 use crate::prelude::*;
-use cocoindex_utils::gpu_pool::{gpu_capacity::GPUCapacity, GPUPool};
+use cocoindex_utils::gpu_pool::{GPUPool, gpu_capacity::GPUCapacity};
 use pyo3::exceptions::PyValueError;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::num::NonZeroUsize;
@@ -46,10 +46,7 @@ impl PyGPUPool {
             GPUCapacity::try_from(fraction).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let gpu_pool = self.inner.clone();
         future_into_py(py, async move {
-            gpu_pool
-                .acquire(fraction)
-                .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+            gpu_pool.acquire(fraction).await.into_py_result()
         })
     }
 
@@ -68,15 +65,12 @@ impl PyGPUPool {
             gpu_pool
                 .acquire_full(NonZeroUsize::new(gpu_count).unwrap())
                 .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+                .into_py_result()
         })
     }
 
     pub fn release<'py>(&self, gpu_id: usize, fraction: f32) -> PyResult<()> {
-        let fraction =
-            GPUCapacity::try_from(fraction).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        self.inner
-            .release(gpu_id, fraction)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        let fraction = GPUCapacity::try_from(fraction).into_py_result()?;
+        self.inner.release(gpu_id, fraction).into_py_result()
     }
 }

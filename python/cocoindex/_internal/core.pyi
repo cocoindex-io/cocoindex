@@ -737,6 +737,3 @@ class GPUPool:
 
     @staticmethod
     def default() -> "GPUPool": ...
-
-    @staticmethod
-    def from_config(config_str: str) -> "GPUPool": ...
