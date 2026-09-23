@@ -1,6 +1,7 @@
 use crate::error::Result;
-use crate::{client_bail, internal_error};
+use crate::{client_bail, client_error, internal_error};
 use container::SortedVec;
+use futures::stream::{FuturesUnordered, StreamExt};
 use gpu_capacity::GPUCapacity;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -29,6 +30,55 @@ struct PoolState {
 struct Acquisition {
     demand: GPUCapacity,
     notifier: oneshot::Sender<usize>,
+}
+
+struct AcquireGuard<'a> {
+    pool: &'a GPUPool,
+    fraction: GPUCapacity,
+    receiver: oneshot::Receiver<usize>,
+    defused: bool,
+}
+
+impl<'a> Drop for AcquireGuard<'a> {
+    fn drop(&mut self) {
+        if self.defused {
+            return;
+        }
+        let mut state = self.pool.state.lock().expect("lock poisoned");
+        if let Ok(gpu_id) = self.receiver.try_recv() {
+            let updated = state.capacities[gpu_id]
+                .checked_add(&self.fraction)
+                .unwrap_or(GPUCapacity::MAX);
+            state.capacities.update(gpu_id, updated);
+        }
+        self.receiver.close();
+        GPUPool::process_acquisition_queue(&mut state);
+    }
+}
+
+struct AcquireFullGuard<'a> {
+    pool: &'a GPUPool,
+    acquired_gpus: Vec<usize>,
+    receivers: FuturesUnordered<oneshot::Receiver<usize>>,
+    defused: bool,
+}
+
+impl<'a> Drop for AcquireFullGuard<'a> {
+    fn drop(&mut self) {
+        if self.defused {
+            return;
+        }
+        let mut state = self.pool.state.lock().expect("lock poisoned");
+        for &gpu_id in &self.acquired_gpus {
+            state.capacities.update(gpu_id, GPUCapacity::MAX);
+        }
+        for mut receiver in std::mem::take(&mut self.receivers) {
+            if let Ok(gpu_id) = receiver.try_recv() {
+                state.capacities.update(gpu_id, GPUCapacity::MAX);
+            }
+        }
+        GPUPool::process_acquisition_queue(&mut state);
+    }
 }
 
 impl GPUPool {
@@ -68,8 +118,10 @@ impl GPUPool {
         if fraction == GPUCapacity::ZERO {
             client_bail!("Acquired fraction must be between 0.0 and 1.0, got 0");
         }
-        let receiver = {
+        let mut guard = {
             let mut pool = self.state.lock().expect("lock poisoned");
+            pool.acquisition_queue
+                .retain(|acq| !acq.notifier.is_closed());
             if pool.acquisition_queue.len() < self.num_gpus
                 && let Some(gpu_id) = pool
                     .capacities
@@ -80,11 +132,19 @@ impl GPUPool {
                 pool.capacities.update(gpu_id, updated_capacity);
                 return Ok(gpu_id);
             }
-            Self::send_acquisition_to_queue(&mut pool.acquisition_queue, fraction)
+            let receiver = Self::send_acquisition_to_queue(&mut pool.acquisition_queue, fraction);
+            AcquireGuard {
+                pool: self,
+                fraction,
+                receiver,
+                defused: false,
+            }
         };
-        receiver
+        let gpu_id = (&mut guard.receiver)
             .await
-            .map_err(|err| internal_error!("GPUPool dropped while waiting: {err}"))
+            .map_err(|err| internal_error!("GPUPool dropped while waiting: {err}"))?;
+        guard.defused = true;
+        Ok(gpu_id)
     }
 
     fn send_acquisition_to_queue(
@@ -114,8 +174,10 @@ impl GPUPool {
                 self.num_gpus
             );
         }
-        let (mut acquired_gpus, receivers) = {
+        let mut guard = {
             let mut pool = self.state.lock().expect("lock poisoned");
+            pool.acquisition_queue
+                .retain(|acq| !acq.notifier.is_closed());
             let mut acquired_gpus = Vec::with_capacity(gpu_count);
             if pool.acquisition_queue.len() < self.num_gpus {
                 let taken_gpus = pool.capacities.find_many_excluding_top_n(
@@ -136,21 +198,24 @@ impl GPUPool {
                 Self::send_acquisition_to_queue(&mut pool.acquisition_queue, GPUCapacity::MAX)
             })
             .take(gpus_to_be_acquired)
-            .collect::<Vec<_>>();
-            (acquired_gpus, receivers)
+            .collect::<FuturesUnordered<_>>();
+            AcquireFullGuard {
+                pool: self,
+                acquired_gpus,
+                receivers,
+                defused: false,
+            }
         };
-        match futures::future::try_join_all(receivers).await {
-            Ok(gpu_ids) => {
-                acquired_gpus.extend(gpu_ids);
-                Ok(acquired_gpus)
-            }
-            Err(err) => {
-                for gpu_id in acquired_gpus {
-                    let _ = self.release(gpu_id, GPUCapacity::MAX);
-                }
-                client_bail!("GPUPool reservation cancelled while waiting: {err}")
-            }
+
+        while let Some(res) = guard.receivers.next().await {
+            let gpu_id = res.map_err(|err| {
+                client_error!("GPUPool reservation cancelled while waiting: {err}")
+            })?;
+            guard.acquired_gpus.push(gpu_id);
         }
+
+        guard.defused = true;
+        Ok(std::mem::take(&mut guard.acquired_gpus))
     }
 
     /// release adds back capacities to GPUs, and processes pending acquisitions afterward.
@@ -196,11 +261,16 @@ impl GPUPool {
     /// 2. Processing does not change the order of pending acquisitions
     ///
     fn process_acquisition_queue(pool: &mut PoolState) {
+        pool.acquisition_queue
+            .retain(|acq| !acq.notifier.is_closed());
         let length = pool.capacities.len();
         let mut pending_acquisitions = Vec::with_capacity(length);
         while pending_acquisitions.len() < length
             && let Some(acquisition) = pool.acquisition_queue.pop_front()
         {
+            if acquisition.notifier.is_closed() {
+                continue;
+            }
             if let Some(gpu_id) = pool
                 .capacities
                 .find_excluding_top_n(&acquisition.demand, pending_acquisitions.len())
@@ -591,6 +661,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_acquire_cancelled_by_caller() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(1).unwrap()));
+        let _busy = pool.acquire(GPUCapacity::MAX).await?; // GPU0 fully busy
+        let cloned = pool.clone();
+        let task = tokio::spawn(async move { cloned.acquire(GPUCapacity::unchecked(0.5)).await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        task.abort(); // drops future while waiting in queue
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.acquisition_queue.len(), 0);
+        drop(state);
+        pool.release(0, GPUCapacity::MAX)?;
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.capacities[0], GPUCapacity::MAX);
+        assert_eq!(state.acquisition_queue.len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_acquire_cancelled_after_assigned() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(1).unwrap()));
+        let busy = pool.acquire(GPUCapacity::MAX).await?; // GPU0 fully busy
+        let cloned = pool.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = tx.send(());
+            cloned.acquire(GPUCapacity::unchecked(0.5)).await
+        });
+        rx.await.unwrap(); // main thread waiting for the `acquire` call
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Release capacity so that process_acquisition_queue assigns GPU 0 to the task
+        pool.release(busy, GPUCapacity::MAX)?;
+        // Immediately abort the task: the assigned GPU fraction must not be leaked!
+        task.abort();
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.capacities[0], GPUCapacity::MAX);
+        assert_eq!(state.acquisition_queue.len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_acquire_full_gpus_enough() -> Result<()> {
         let pool = GPUPool::new(NonZeroUsize::new(2).unwrap());
         let gpus = pool
@@ -705,6 +819,133 @@ mod tests {
         }
 
         pool.release(partially_used_gpu, GPUCapacity::unchecked(0.6))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_cancelled_by_caller() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(3).unwrap()));
+        let _busy = pool.acquire(GPUCapacity::unchecked(0.6)).await?; // GPU0 partially busy
+        let cloned = pool.clone();
+        let task =
+            tokio::spawn(async move { cloned.acquire_full(NonZeroUsize::new(3).unwrap()).await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        task.abort(); // == caller-side cancellation: drops the future mid-await
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.capacities[1], GPUCapacity::MAX);
+        assert_eq!(state.capacities[2], GPUCapacity::MAX);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_cancelled_after_assigned() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(2).unwrap()));
+        let g0 = pool.acquire(GPUCapacity::MAX).await?;
+        let g1 = pool.acquire(GPUCapacity::MAX).await?;
+        // Both GPUs busy.
+        let cloned = pool.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = tx.send(());
+            cloned.acquire_full(NonZeroUsize::new(2).unwrap()).await
+        });
+        rx.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        pool.release(g0, GPUCapacity::MAX)?;
+        pool.release(g1, GPUCapacity::MAX)?;
+        task.abort();
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.capacities[0], GPUCapacity::MAX);
+        assert_eq!(state.capacities[1], GPUCapacity::MAX);
+        assert_eq!(state.acquisition_queue.len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_cancelled_after_partial_queued_assigned() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(3).unwrap()));
+        let g0 = pool.acquire(GPUCapacity::MAX).await?;
+        let g1 = pool.acquire(GPUCapacity::MAX).await?;
+        // GPU 0 and GPU 1 are busy. GPU 2 is free.
+        let cloned = pool.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = tx.send(());
+            // One acquired, two receivers waiting.
+            cloned.acquire_full(NonZeroUsize::new(3).unwrap()).await
+        });
+        rx.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        pool.release(g0, GPUCapacity::MAX)?;
+
+        // Only one receiver is waiting at this moment.
+        task.abort();
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.capacities[0], GPUCapacity::MAX);
+        assert_eq!(state.capacities[1], GPUCapacity::ZERO);
+        assert_eq!(state.capacities[2], GPUCapacity::MAX);
+        assert_eq!(state.acquisition_queue.len(), 0);
+        drop(state);
+
+        pool.release(g1, GPUCapacity::MAX)?;
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.capacities[1], GPUCapacity::MAX);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_acquire_full_cancellation_unblocks_other_waiters() -> Result<()> {
+        let pool = Arc::new(GPUPool::new(NonZeroUsize::new(2).unwrap()));
+        let g0 = pool.acquire(GPUCapacity::MAX).await?;
+        let g1 = pool.acquire(GPUCapacity::MAX).await?;
+        // Both GPUs busy.
+        let cloned = pool.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task_full = tokio::spawn(async move {
+            let _ = tx.send(());
+            cloned.acquire_full(NonZeroUsize::new(2).unwrap()).await
+        });
+        rx.await.unwrap();
+
+        let cloned = pool.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task_single = tokio::spawn(async move {
+            let _ = tx.send(());
+            cloned.acquire(GPUCapacity::MAX).await
+        });
+        rx.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!task_single.is_finished());
+
+        // Cancel the task waiting for 2 GPUs
+        task_full.abort();
+        let _ = task_full.await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Release 1 GPU: task_single should receive it without being blocked by task_full
+        pool.release(g0, GPUCapacity::MAX)?;
+        let acquired_gpu = tokio::time::timeout(std::time::Duration::from_millis(500), task_single)
+            .await
+            .expect("did not timeout")
+            .unwrap()?;
+        assert_eq!(acquired_gpu, 0);
+
+        pool.release(acquired_gpu, GPUCapacity::MAX)?;
+        pool.release(g1, GPUCapacity::MAX)?;
+        let state = pool.state.lock().unwrap();
+        assert_eq!(state.capacities[0], GPUCapacity::MAX);
+        assert_eq!(state.capacities[1], GPUCapacity::MAX);
+        assert_eq!(state.acquisition_queue.len(), 0);
         Ok(())
     }
 
