@@ -31,8 +31,7 @@ from typing import Any
 import cocoindex as coco
 
 from tests.common.environment import get_env_db_path
-from tests.common.target_states import GlobalDictTarget, Metrics
-
+from tests.common.target_states import DictDataWithPrev, GlobalDictTarget, Metrics
 
 # ============================================================================
 # Test fixtures
@@ -159,7 +158,9 @@ class TwoLevelStatefulEmbedder:
     def __coco_memo_key__(self) -> object:
         return self.name
 
-    def __coco_memo_state__(self, prev_state: Any) -> coco.MemoStateOutcome:
+    def __coco_memo_state__(
+        self, prev_state: tuple[int, int] | coco.NonExistenceType
+    ) -> coco.MemoStateOutcome:
         new_state = (self.generation, self.content_hash)
         if coco.is_non_existence(prev_state):
             return coco.MemoStateOutcome(state=new_state, memo_valid=False)
@@ -238,6 +239,89 @@ def test_detect_change_context_state_valid_with_updated_state() -> None:
     )
     app.update_blocking()
     assert _metrics_two_level.collect() == {"embed2": 1}
+
+
+# ============================================================================
+# Test 2b: memo_valid=True with updated state — target states declared inside
+# the memo body must survive the hit
+# ============================================================================
+
+_metrics_two_level_declare = Metrics()
+
+
+@coco.fn(memo=True)
+def _embed_two_level_declaring(key: str) -> None:
+    _metrics_two_level_declare.increment("embed2_declare")
+    emb = coco.use_context(TWO_LEVEL_KEY)
+    coco.declare_target_state(
+        GlobalDictTarget.target_state(key, f"{emb.name}:{key}:{emb.content_hash}")
+    )
+
+
+@coco.fn
+def _run_embed_two_level_declaring() -> None:
+    _embed_two_level_declaring("k1")
+
+
+def test_detect_change_context_state_valid_with_updated_state_keeps_target_states() -> (
+    None
+):
+    """Context-borne twin of the argument-borne case: a generation bump with the
+    same content hash is a hit with refreshed state. The target state the memo
+    body declared last time must not be deleted."""
+    GlobalDictTarget.store.clear()
+    _metrics_two_level_declare.clear()
+
+    ctx = coco.ContextProvider()
+    ctx.provide(
+        TWO_LEVEL_KEY, TwoLevelStatefulEmbedder("x", generation=1, content_hash=10)
+    )
+    settings = coco.Settings.from_env(
+        db_path=get_env_db_path("test_ctx_tracked_two_level_declaring")
+    )
+    env = coco.Environment(settings, context_provider=ctx)
+    app = coco.App(
+        coco.AppConfig(name="test_ctx_tracked_two_level_declaring", environment=env),
+        _run_embed_two_level_declaring,
+    )
+
+    # Run 1: cache miss — declares.
+    app.update_blocking()
+    assert _metrics_two_level_declare.collect() == {"embed2_declare": 1}
+    expected = {
+        "k1": DictDataWithPrev(data="x:k1:10", prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 2: generation bump, hash unchanged → hit with refreshed state.
+    # The target state must survive even though the body did not re-declare it.
+    env.context_provider.provide(
+        TWO_LEVEL_KEY, TwoLevelStatefulEmbedder("x", generation=2, content_hash=10)
+    )
+    app.update_blocking()
+    assert _metrics_two_level_declare.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 3: no change → still present.
+    env.context_provider.provide(
+        TWO_LEVEL_KEY, TwoLevelStatefulEmbedder("x", generation=2, content_hash=10)
+    )
+    app.update_blocking()
+    assert _metrics_two_level_declare.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 4: content hash changes → re-execute; the previous record is still
+    # tracked, so the target sees it as prev.
+    env.context_provider.provide(
+        TWO_LEVEL_KEY, TwoLevelStatefulEmbedder("x", generation=3, content_hash=11)
+    )
+    app.update_blocking()
+    assert _metrics_two_level_declare.collect() == {"embed2_declare": 1}
+    assert GlobalDictTarget.store.data == {
+        "k1": DictDataWithPrev(
+            data="x:k1:11", prev=["x:k1:10"], prev_may_be_missing=False
+        ),
+    }
 
 
 # ============================================================================
