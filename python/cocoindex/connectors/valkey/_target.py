@@ -405,16 +405,18 @@ class _IndexHandler(
                 action = actions[i]
 
                 if action.main_action in ("replace", "delete"):
-                    # Drop the index first; on "replace" we also purge all
-                    # prefixed document keys before re-creating the index.
+                    # Drop the index, then purge the document hashes under its
+                    # prefix. Once the index is reconciled away the engine no
+                    # longer reconciles its documents, so this action owns
+                    # their removal; on "replace" the index is re-created
+                    # below and the documents are re-declared from scratch.
                     try:
                         await ft.dropindex(client, key.index_name)
                     except RequestError:
                         # Index was already removed externally — nothing to do.
                         logger.debug("dropindex %s: index not found", key.index_name)
 
-                    if action.main_action == "replace":
-                        await self._delete_prefix_keys(client, key.index_name)
+                    await self._delete_prefix_keys(client, key.index_name)
 
                 if coco.is_non_existence(action.spec):
                     continue
