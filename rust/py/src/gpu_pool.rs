@@ -1,10 +1,10 @@
-//! Python bindings for batching infrastructure.
+//! Python bindings for GPU pool management.
 //!
-//! Exposes BatchQueue and Batcher to Python for implementing batched function execution.
+//! Exposes `GPUPool` to Python for coordinating GPU capacity across tasks.
 //!
-//! Design: Multiple batchers can share the same queue (e.g., for GPU serialization),
-//! and each batcher has its own runner function. When a batcher creates a batch,
-//! that batch carries the batcher's runner function.
+//! Supports asynchronous acquisition of fractional GPU capacity (`acquire`),
+//! acquisition of multiple GPUs (`acquire_full`), and returning capacity back to
+//! the pool (`release`).
 
 use crate::prelude::*;
 use cocoindex_utils::gpu_pool::{GPUPool, gpu_capacity::GPUCapacity};
@@ -30,9 +30,10 @@ impl PyGPUPool {
     }
 
     #[staticmethod]
-    pub fn default() -> Self {
+    pub fn default(py: Python<'_>) -> Self {
         Self {
-            inner: Arc::new(GPUPool::default()),
+            // Releases the GIL during the probe so other Python threads are not stalled.
+            inner: Arc::new(py.detach(|| GPUPool::default())),
         }
     }
 
