@@ -96,13 +96,26 @@ _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
 
 
+# Ceiling on subprocess workers. `GPUPool` is meant to be the limit that decides how
+# many calls run at once; this is here so a runaway does not spawn processes without
+# bound. It is not always the looser of the two: the pool admits `1/fraction` calls per
+# GPU, so a small fraction across many devices can ask for more than this and queue.
+# Workers are spawned on demand and an idle one is reused, so the pool never grows past
+# the number of calls that have actually overlapped.
+_MAX_SUBPROCESS_WORKERS = 32
+
+
 def _get_pool() -> ProcessPoolExecutor:
-    """Get or create the singleton subprocess pool."""
+    """Get or create the singleton subprocess pool.
+
+    Sized so that `GPUPool`, rather than this executor, normally decides how many calls
+    run at once. A single worker made every device serialize behind it.
+    """
     global _pool
     with _pool_lock:
         if _pool is None:
             _pool = ProcessPoolExecutor(
-                max_workers=1,
+                max_workers=_MAX_SUBPROCESS_WORKERS,
                 initializer=_subprocess_init,
                 initargs=(os.getpid(),),
                 mp_context=mp.get_context("spawn"),
@@ -118,7 +131,7 @@ def _restart_pool(old_pool: ProcessPoolExecutor | None = None) -> None:
             return  # Another thread already restarted
         prev_pool = _pool
         _pool = ProcessPoolExecutor(
-            max_workers=1,
+            max_workers=_MAX_SUBPROCESS_WORKERS,
             initializer=_subprocess_init,
             initargs=(os.getpid(),),
             mp_context=mp.get_context("spawn"),
@@ -194,11 +207,41 @@ async def _submit_to_pool_async(fn: Callable[..., Any], *args: Any) -> Any:
     handles a failed component: nothing is written or memoized for it, and the next
     update retries it cleanly. The pool is replaced either way, so the next call
     does not inherit the broken one.
+
+    On cancellation the submission is waited out rather than abandoned. A worker that
+    has already started cannot be interrupted, so it still holds the GPU it was given;
+    returning early would let the caller release that capacity while the work is still
+    running, and the next call would be admitted onto the same card. A cancelled call
+    therefore costs as long as the submission takes to finish, which is the price of
+    not oversubscribing the device.
     """
-    loop = asyncio.get_running_loop()
     pool = _get_pool()
+    future: asyncio.Future[Any] | None = None
     try:
-        return await loop.run_in_executor(pool, fn, *args)
+        # `submit` raises when the pool is already broken, so it belongs inside the
+        # guard: outside it, that failure escapes without the pool being replaced and
+        # every later call inherits the dead one.
+        future = asyncio.wrap_future(pool.submit(fn, *args))
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        if future is not None:
+            # Looped, because the wait is itself cancellable: a second cancel would
+            # otherwise return here immediately and hand the GPU back with the worker
+            # still on it, which is the case this guard exists for. Waiting cannot be
+            # escalated away, since the child cannot be interrupted at all.
+            while not future.done():
+                try:
+                    await asyncio.wait([future])
+                except asyncio.CancelledError:
+                    pass
+            # Read the outcome even though the result is being thrown away. A pool that
+            # broke while we waited would otherwise stay installed for the next call,
+            # and the unretrieved exception is reported at collection time.
+            if not future.cancelled() and isinstance(
+                future.exception(), BrokenProcessPool
+            ):
+                _restart_pool(old_pool=pool)
+        raise
     except BrokenProcessPool:
         _restart_pool(old_pool=pool)
         raise

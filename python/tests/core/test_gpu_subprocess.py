@@ -1,15 +1,21 @@
-"""Tests for GPU subprocess mode: the GPU assignment reaches the child process."""
+"""Tests for GPU subprocess mode: assignment propagation, parallelism, cancellation."""
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from collections.abc import Iterator
 from concurrent.futures.process import BrokenProcessPool
+from pathlib import Path
 
 import pytest
 
 from cocoindex._internal import runner as _runner_mod
 from cocoindex._internal.runner import GPURunner, configure_gpu_pool
+
+# Seconds a call waits for its peers before declaring them serialized.
+_RENDEZVOUS_TIMEOUT = 30.0
 
 # Each test starts `spawn` interpreters that import the Rust extension, which the
 # project-wide 30s budget does not cover on a cold runner.
@@ -37,6 +43,66 @@ def _probe() -> tuple[int | None, float | None, int]:
     import cocoindex as coco
 
     return coco.current_gpu(), coco.current_gpu_fraction(), os.getpid()
+
+
+def _probe_together(rendezvous: str, expected: int) -> tuple[int | None, int]:
+    """Report the assignment, but only once every peer has also started.
+
+    Each call announces itself in `rendezvous` and waits for the others, so it
+    cannot return unless all `expected` calls are resident at the same time. Were
+    the pool to serialize them this raises, rather than merely running slowly.
+    """
+    import time
+    import uuid
+
+    import cocoindex as coco
+
+    gpu = coco.current_gpu()
+    open(os.path.join(rendezvous, uuid.uuid4().hex), "w").close()
+    deadline = time.monotonic() + _RENDEZVOUS_TIMEOUT
+    while len(os.listdir(rendezvous)) < expected:
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"only {len(os.listdir(rendezvous))} of {expected} calls "
+                "were running at once"
+            )
+        time.sleep(0.01)
+    return gpu, os.getpid()
+
+
+def _record_span(log_path: str, tag: str, seconds: float) -> str:
+    """Write start and end timestamps so a test can see whether two calls overlapped."""
+    import time
+
+    with open(log_path, "a") as handle:
+        print("span", f"{tag}:start", time.monotonic(), file=handle)
+    time.sleep(seconds)
+    with open(log_path, "a") as handle:
+        print("span", f"{tag}:end", time.monotonic(), file=handle)
+    return tag
+
+
+def _read_spans(log: Path) -> dict[str, float]:
+    """The start/end stamps `_record_span` wrote, as {tag: monotonic}."""
+    spans: dict[str, float] = {}
+    for line in log.read_text().strip().splitlines():
+        _, tag, stamp = line.split()
+        spans[tag] = float(stamp)
+    return spans
+
+
+async def _await_worker_start(log: Path, tag: str, timeout: float = 60.0) -> None:
+    """Block until the child has recorded that it started.
+
+    Sleeping a fixed interval instead would make the test a race against interpreter
+    startup: on a slow runner the cancel lands before the worker begins, `cancel()`
+    then succeeds outright, no orphan is ever created, and the test fails having
+    proved nothing.
+    """
+    deadline = time.monotonic() + timeout
+    while f"{tag}:start" not in (log.read_text() if log.exists() else ""):
+        assert time.monotonic() < deadline, f"worker never started: {tag}"
+        await asyncio.sleep(0.05)
 
 
 async def _aprobe() -> tuple[int | None, float | None, int]:
@@ -129,3 +195,109 @@ async def test_real_cuda_work_lands_on_the_assigned_device() -> None:
     assert assigned is not None
     assert ran_on == assigned
     assert pid != os.getpid()
+
+
+@pytest.mark.asyncio
+async def test_subprocess_multi_gpu_runs_concurrently(tmp_path: Path) -> None:
+    """The motivating bug: one shared worker serialized every GPU behind it."""
+    configure_gpu_pool(4)
+    runner = GPURunner(fraction=1.0)
+    results = await asyncio.gather(
+        *(runner.run_sync_fn(_probe_together, str(tmp_path), 4) for _ in range(4))
+    )
+    assert sorted(gpu for gpu, _ in results if gpu is not None) == [0, 1, 2, 3]
+    assert len({pid for _, pid in results}) == 4
+
+
+@pytest.mark.asyncio
+async def test_fractional_calls_share_a_gpu_concurrently(tmp_path: Path) -> None:
+    """Calls sharing one GPU by fraction must also run at the same time."""
+    configure_gpu_pool(1)
+    runner = GPURunner(fraction=0.25)
+    results = await asyncio.gather(
+        *(runner.run_sync_fn(_probe_together, str(tmp_path), 4) for _ in range(4))
+    )
+    assert all(gpu == 0 for gpu, _ in results)
+    assert len({pid for _, pid in results}) == 4
+
+
+@pytest.mark.asyncio
+async def test_pool_stays_wide_after_a_crash(tmp_path: Path) -> None:
+    """Restarting a broken pool must not narrow it back to one worker."""
+    configure_gpu_pool(2)
+    runner = GPURunner(fraction=1.0)
+    with pytest.raises(BrokenProcessPool):
+        await runner.run_sync_fn(_kill_worker)
+
+    results = await asyncio.gather(
+        *(runner.run_sync_fn(_probe_together, str(tmp_path), 2) for _ in range(2))
+    )
+    assert len({pid for _, pid in results}) == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelled_call_keeps_the_gpu_until_its_worker_stops(
+    tmp_path: Path,
+) -> None:
+    """A cancelled call must not hand its GPU back while the worker is still on it.
+
+    The child cannot be interrupted once it has started. Releasing the capacity at
+    cancellation time therefore admits the next call onto a card that is still busy,
+    which is how two full-GPU jobs end up on one device.
+    """
+    configure_gpu_pool(1)
+    runner = GPURunner(fraction=1.0)
+    log = tmp_path / "timeline.txt"
+
+    first = asyncio.create_task(
+        runner.run_sync_fn(_record_span, str(log), "cancelled", 3.0)
+    )
+    await _await_worker_start(log, "cancelled")
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    await runner.run_sync_fn(_record_span, str(log), "next", 0.1)
+
+    spans = _read_spans(log)
+    assert {"cancelled:end", "next:start"} <= spans.keys(), (
+        f"the cancelled worker never finished, or the next call never ran: {spans}"
+    )
+    # The second call may only start once the cancelled one has left the GPU.
+    assert spans["next:start"] >= spans["cancelled:end"], (
+        f"second call started while the cancelled worker was still running: {spans}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancel_does_not_release_the_gpu_early(tmp_path: Path) -> None:
+    """Cancelling twice must not shortcut the wait.
+
+    The first cancel makes the call look hung for as long as the work takes, so a second
+    one is the natural next thing a person does. The wait is itself cancellable, so
+    without care that second cancel returns immediately and frees a card the worker is
+    still using.
+    """
+    configure_gpu_pool(1)
+    runner = GPURunner(fraction=1.0)
+    log = tmp_path / "timeline.txt"
+
+    first = asyncio.create_task(
+        runner.run_sync_fn(_record_span, str(log), "cancelled", 3.0)
+    )
+    await _await_worker_start(log, "cancelled")
+    first.cancel()
+    await asyncio.sleep(0.2)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    await runner.run_sync_fn(_record_span, str(log), "next", 0.1)
+
+    spans = _read_spans(log)
+    assert {"cancelled:end", "next:start"} <= spans.keys(), (
+        f"the cancelled worker never finished, or the next call never ran: {spans}"
+    )
+    assert spans["next:start"] >= spans["cancelled:end"], (
+        f"a second cancel released the GPU while the worker was still running: {spans}"
+    )

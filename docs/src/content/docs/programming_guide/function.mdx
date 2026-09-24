@@ -372,12 +372,16 @@ The `coco.GPU` runner:
 - Sync functions run on a dedicated GPU thread to avoid blocking the event loop
 - Set the environment variable `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run in a subprocess for GPU memory isolation
 
-:::note[Subprocess mode and the GPU assignment]
-`coco.current_gpu()` reports the same assignment inside the subprocess as it does in-process, so a function can select its device the same way in both modes.
+:::caution[Subprocess mode and GPU memory]
+`coco.current_gpu()` reports the same assignment inside the subprocess as it does in-process, and calls run in parallel rather than queueing behind a single worker.
 
-Subprocess mode still runs one call at a time: every call shares a single worker, whatever the pool admits. Read the assignment rather than assuming a device, because the worker is not pinned to one: `CUDA_VISIBLE_DEVICES` is not set per worker, so it serves whichever GPU each call was given, and a function that ignores `coco.current_gpu()` can reach a GPU it was not assigned. One worker touching several cards also holds a CUDA context on each, costing hundreds of MB apiece, so prefer in-process mode when spreading work across GPUs.
+The pool spawns a worker per concurrent call up to a cap, reuses idle ones, and keeps them resident for the life of the process. Each is a separate interpreter holding its own CUDA context, costing hundreds of MB of device memory before your model allocates anything. A fractional runner like `coco.GPU(0.25)`, which lets four calls share a card, can therefore hold four of them.
 
-A call that kills its worker surfaces as `BrokenProcessPool` and is not retried. The component fails, nothing is written or memoized for it, and the next `app.update()` retries it cleanly.
+Workers are not pinned to a device: `CUDA_VISIBLE_DEVICES` is not set per worker, so a worker serves whichever GPU each call was given, and a function that ignores `coco.current_gpu()` can reach a GPU it was not assigned.
+
+Cancelling a call does not release its GPU immediately. A worker that has already started cannot be interrupted, so the capacity is held until it finishes; otherwise the next call would be admitted onto a card that is still busy. Cancelling again does not shorten that wait, for the same reason.
+
+A dying worker takes the whole pool with it: `ProcessPoolExecutor` terminates every worker when one fails, so **other calls running at the same time can fail too**, not just the one that crashed. Failures surface as `BrokenProcessPool` and are not retried: the component fails, nothing is written or memoized for it, and the next `app.update()` retries it cleanly.
 :::
 
 You can combine batching with a runner:
