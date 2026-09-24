@@ -428,10 +428,15 @@ impl Storage {
         Ok(db.map(|db| AppStore::new(db, env, storage.clone())))
     }
 
-    /// Drop an app's data from this LMDB environment. heed 0.22 doesn't
-    /// expose `mdb_drop`, so the sub-database stays registered in the
-    /// env's catalog but is emptied. `list_app_names` filters out
-    /// empty sub-databases, so the app is effectively gone.
+    /// Drop an app's data from this LMDB environment by emptying its
+    /// sub-database (`Database::clear`, i.e. `mdb_drop(dbi, 0)`). The
+    /// sub-database stays registered in the env's catalog, and
+    /// `list_app_names` filters out empty sub-databases, so the app is
+    /// effectively gone. It is not deleted with `Database::remove`
+    /// (`mdb_drop(dbi, 1)`): that closes the dbi the same `App`'s
+    /// `AppStore` keeps using after a drop (e.g. `update --reset`), and
+    /// LMDB can reassign the slot to the next sub-database opened, so
+    /// later writes through the stale handle would land there.
     /// Idempotent: dropping a non-existent app is a no-op.
     pub async fn drop_app(&self, app_name: &str) -> Result<()> {
         let db = {
