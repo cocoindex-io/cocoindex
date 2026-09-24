@@ -345,6 +345,7 @@ impl GPUPool {
         Ok(std::cmp::max(1, count))
     }
 
+    #[cfg(not(test))]
     fn call_nvdia_smi(timeout: Duration) -> Result<std::process::Output> {
         let mut child = std::process::Command::new("nvidia-smi")
             .arg("--query-gpu=count")
