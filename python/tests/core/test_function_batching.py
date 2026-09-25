@@ -1227,3 +1227,58 @@ async def test_gpu_runner_subprocess_retry_with_smaller_batch(
 # Note: With always-async design, functions with batching/runner are always async.
 # The underlying implementation can be sync - it gets wrapped appropriately.
 # Both in-process and subprocess execution work for sync underlying functions.
+
+
+# ============================================================================
+# Tests for plain @coco.fn(batching=True) and @coco.fn(runner=...)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_fn_batching_plain_async() -> None:
+    """Test that @coco.fn(batching=True) works directly with async def."""
+
+    @coco.fn(batching=True, max_batch_size=4)
+    async def embed(texts: list[str]) -> list[list[float]]:
+        return [[float(len(t))] for t in texts]
+
+    res = await embed("hello")
+    assert res == [5.0]
+
+    results = await asyncio.gather(
+        embed("a"),
+        embed("bb"),
+        embed("ccc"),
+    )
+    assert results == [[1.0], [2.0], [3.0]]
+
+
+@pytest.mark.asyncio
+async def test_fn_runner_plain_async() -> None:
+    """Test that @coco.fn(runner=...) works directly with async def."""
+
+    @coco.fn(runner=coco.GPU)
+    async def gpu_fn(val: int) -> int:
+        return val * 10
+
+    res = await gpu_fn(7)
+    assert res == 70
+
+
+def test_fn_batching_rejects_sync() -> None:
+    """Test that @coco.fn(batching=True) rejects sync def with helpful message."""
+    with pytest.raises(ValueError, match="Batching and runner require the function to be async"):
+
+        @coco.fn(batching=True)
+        def sync_embed(texts: list[str]) -> list[list[float]]:
+            return [[float(len(t))] for t in texts]
+
+
+def test_fn_runner_rejects_sync() -> None:
+    """Test that @coco.fn(runner=...) rejects sync def with helpful message."""
+    with pytest.raises(ValueError, match="Batching and runner require the function to be async"):
+
+        @coco.fn(runner=coco.GPU)
+        def sync_gpu_fn(val: int) -> int:
+            return val * 10
+
