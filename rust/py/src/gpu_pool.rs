@@ -30,11 +30,11 @@ impl PyGPUPool {
     }
 
     #[staticmethod]
-    pub fn default(py: Python<'_>) -> Self {
-        Self {
+    pub fn default(py: Python<'_>) -> PyResult<Self> {
+        Ok(Self {
             // Releases the GIL during the probe so other Python threads are not stalled.
-            inner: Arc::new(py.detach(|| GPUPool::default())),
-        }
+            inner: Arc::new(py.detach(|| GPUPool::detected().into_py_result())?),
+        })
     }
 
     #[getter]

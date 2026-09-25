@@ -1,15 +1,11 @@
-use crate::error::Result;
-use crate::{client_bail, internal_bail, internal_error};
+use crate::error::{ContextExt, Result};
+use crate::{client_bail, internal_error};
 use container::SortedVec;
 use futures::stream::{FuturesUnordered, StreamExt};
 use gpu_capacity::GPUCapacity;
 use std::collections::VecDeque;
-use std::io::Read;
 use std::num::NonZeroUsize;
-use std::process::Stdio;
 use std::sync::Mutex;
-use std::thread;
-use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 /// Tracks fractional GPU capacity across multiple GPUs.
@@ -299,10 +295,11 @@ impl GPUPool {
     ///
     fn detect_num_gpus() -> Result<usize> {
         if let Some(env_num) = std::env::var("COCOINDEX_NUM_GPUS").ok() {
-            match env_num.parse::<usize>() {
-                Ok(num) => return Ok(std::cmp::max(1, num)),
-                Err(err) => panic!("Failed to parse COCOINDEX_NUM_GPUS={env_num}: {err}"),
-            }
+            return Ok(env_num
+                .trim()
+                .parse::<usize>()
+                .with_context(|| format!("Failed to parse COCOINDEX_NUM_GPUS={env_num}"))?
+                .max(1));
         }
         if let Ok(cuda_visible) = std::env::var("CUDA_VISIBLE_DEVICES") {
             let count = cuda_visible
@@ -313,7 +310,7 @@ impl GPUPool {
             return Ok(std::cmp::max(1, count));
         }
         #[cfg(not(test))]
-        let output = Self::call_nvdia_smi(Duration::from_secs(5))?;
+        let output = Self::call_nvdia_smi(std::time::Duration::from_secs(5))?;
         #[cfg(test)]
         let output = {
             if std::env::var("MOCK_NVIDIA_SMI_NOT_FOUND").is_ok() {
@@ -336,22 +333,27 @@ impl GPUPool {
         if !output.status.success() {
             return Ok(1);
         }
-        let count = String::from_utf8_lossy(&output.stdout)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let count = stdout
             .lines()
             .next()
             .unwrap_or_default()
             .trim()
-            .parse::<usize>()?;
+            .parse::<usize>()
+            .with_context(|| format!("Failed to parse nvidia-smi output: {stdout}"))?;
         Ok(std::cmp::max(1, count))
     }
 
     #[cfg(not(test))]
-    fn call_nvdia_smi(timeout: Duration) -> Result<std::process::Output> {
+    fn call_nvdia_smi(timeout: std::time::Duration) -> Result<std::process::Output> {
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+
         let mut child = std::process::Command::new("nvidia-smi")
             .arg("--query-gpu=count")
             .arg("--format=csv,noheader")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()?;
         let start = Instant::now();
         loop {
@@ -374,16 +376,24 @@ impl GPUPool {
             }
             if start.elapsed() >= timeout {
                 let _ = child.kill();
-                internal_bail!("Timeout waiting for nvidia-smi");
+                let reap_deadline = Instant::now() + Duration::from_millis(100);
+                while Instant::now() < reap_deadline {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                crate::internal_bail!("Timeout waiting for nvidia-smi");
             }
-            thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
-}
 
-impl Default for GPUPool {
-    fn default() -> Self {
-        Self::new(NonZeroUsize::new(Self::detect_num_gpus().unwrap_or(1)).unwrap())
+    /// Detect how many GPUs there are, and create a GPUPool based on the number.
+    pub fn detected() -> Result<Self> {
+        Ok(Self::new(
+            NonZeroUsize::new(Self::detect_num_gpus()?).unwrap(),
+        ))
     }
 }
 
@@ -1228,7 +1238,7 @@ mod tests {
                 ("CUDA_VISIBLE_DEVICES", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 4);
             },
         );
@@ -1242,7 +1252,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 3);
             },
         );
@@ -1256,7 +1266,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 1);
             },
         );
@@ -1270,19 +1280,20 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", Some("0")),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 1);
             },
         );
     }
 
     #[test]
-    #[should_panic(
-        expected = "Failed to parse COCOINDEX_NUM_GPUS=test: invalid digit found in string"
-    )]
     fn test_detect_num_gpus_parse_error() {
         temp_env::with_vars([("COCOINDEX_NUM_GPUS", Some("test"))], || {
-            let _pool = GPUPool::default();
+            let pool_result = GPUPool::detected();
+            assert!(pool_result.is_err());
+            let error_msg = pool_result.err().unwrap().to_string();
+            assert!(error_msg.contains("Failed to parse COCOINDEX_NUM_GPUS=test"));
+            assert!(error_msg.contains("invalid digit found in string"));
         });
     }
 
@@ -1294,7 +1305,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", Some("2")),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 2);
             },
         );
@@ -1308,7 +1319,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 1);
             },
         );
@@ -1322,7 +1333,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 3);
             },
         );
@@ -1337,7 +1348,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 8);
             },
         );
@@ -1346,8 +1357,10 @@ mod tests {
     #[test]
     fn test_detect_num_gpus_nvidia_smi_empty_output() {
         temp_env::with_vars_unset(["CUDA_VISIBLE_DEVICES", "COCOINDEX_NUM_GPUS"], || {
-            let pool = GPUPool::default();
-            assert_eq!(pool.num_gpus(), 1);
+            let detect_result = GPUPool::detected();
+            assert!(detect_result.is_err());
+            let error_msg = detect_result.err().unwrap().to_string();
+            assert!(error_msg.contains("Failed to parse nvidia-smi output: "));
         })
     }
 
@@ -1361,7 +1374,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 1);
             },
         );
@@ -1377,8 +1390,11 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
-                assert_eq!(pool.num_gpus(), 1);
+                let detect_result = GPUPool::detected();
+                assert!(detect_result.is_err());
+                let error_msg = detect_result.err().unwrap().to_string();
+                dbg!(&error_msg);
+                assert!(error_msg.contains("nvidia-smi not found"));
             },
         );
     }
@@ -1393,7 +1409,7 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let pool = GPUPool::default();
+                let pool = GPUPool::detected().unwrap();
                 assert_eq!(pool.num_gpus(), 1);
             },
         );
