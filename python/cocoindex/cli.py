@@ -1046,6 +1046,15 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Compute target actions without applying them. Prints planned actions.",
 )
+@click.option(
+    "--fail-on-error/--no-fail-on-error",
+    default=True,
+    show_default=True,
+    help=(
+        "Exit with status 1 when any component errors occurred during the update. "
+        "Use --no-fail-on-error for pipelines that tolerate partial failures."
+    ),
+)
 def update(
     app_target: str,
     force: bool,
@@ -1054,6 +1063,7 @@ def update(
     full_reprocess: bool,
     live: bool,
     preview: bool,
+    fail_on_error: bool,
 ) -> None:
     """
     Run an app in catch-up mode. With --live, run in live mode.
@@ -1067,7 +1077,10 @@ def update(
 
     app = _load_app(app_target)
 
+    has_errors = False
+
     async def _do(cancelled: Any) -> None:
+        nonlocal has_errors
         from cocoindex._internal.app import show_progress
 
         try:
@@ -1113,10 +1126,26 @@ def update(
                 await show_progress(handle)
             else:
                 await handle.result()
+
+            # Check stats for component errors after completion.
+            stats = handle.stats()
+            if stats is not None:
+                total = stats.total
+                if total.num_errors > 0:
+                    has_errors = True
         finally:
             await _stop_all_environments()
 
     _run_async_cmd(_do, quiet=quiet)
+
+    if fail_on_error and has_errors:
+        # Emit a concise summary to stderr so that --quiet users can still
+        # see *why* the process exited non-zero.
+        click.echo(
+            "cocoindex update failed: component errors occurred during the run",
+            err=True,
+        )
+        sys.exit(1)
 
 
 @cli.command()
