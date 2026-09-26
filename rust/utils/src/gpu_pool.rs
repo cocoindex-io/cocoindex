@@ -14,9 +14,9 @@ use tokio::sync::oneshot;
 /// GPU with enough remaining capacity is available, then returns its id.
 /// ``release(gpu_id, fraction)`` restores capacity and wakes waiters.
 ///
-/// The default pool size is auto-detected from ``COCOINDEX_NUM_GPUS``,
+/// The ``detected`` pool size is auto-detected from ``COCOINDEX_NUM_GPUS``,
 /// ``CUDA_VISIBLE_DEVICES``, or ``nvidia-smi`` (falling back to 1).
-/// Call ``configure_gpu_pool(N)`` to override programmatically.
+/// Construct with ``GPUPool::new(N)`` to override programmatically.
 pub struct GPUPool {
     num_gpus: usize,
     state: Mutex<PoolState>,
@@ -310,25 +310,28 @@ impl GPUPool {
             return Ok(std::cmp::max(1, count));
         }
         #[cfg(not(test))]
-        let output = Self::call_nvdia_smi(std::time::Duration::from_secs(5))?;
+        let output = Self::call_nvidia_smi(std::time::Duration::from_secs(5));
         #[cfg(test)]
         let output = {
             if std::env::var("MOCK_NVIDIA_SMI_NOT_FOUND").is_ok() {
-                return Err(crate::error::Error::internal(std::io::Error::new(
+                Err(crate::error::Error::internal(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "nvidia-smi not found",
-                )));
+                )))
+            } else {
+                let mock_gpu_count = std::env::var("MOCK_NVIDIA_SMI_STDOUT").unwrap_or_default();
+                let mock_exit_code = std::env::var("MOCK_NVIDIA_SMI_EXIT_CODE")
+                    .ok()
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or(0);
+                std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("echo \"{mock_gpu_count}\"; exit {mock_exit_code}"))
+                    .output()
+                    .map_err(|e| internal_error!("{e}"))
             }
-            let mock_gpu_count = std::env::var("MOCK_NVIDIA_SMI_STDOUT").unwrap_or_default();
-            let mock_exit_code = std::env::var("MOCK_NVIDIA_SMI_EXIT_CODE")
-                .ok()
-                .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(0);
-            std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("echo \"{mock_gpu_count}\"; exit {mock_exit_code}"))
-                .output()
-        }?;
+        };
+        let Ok(output) = output else { return Ok(1) };
 
         if !output.status.success() {
             return Ok(1);
@@ -345,7 +348,7 @@ impl GPUPool {
     }
 
     #[cfg(not(test))]
-    fn call_nvdia_smi(timeout: std::time::Duration) -> Result<std::process::Output> {
+    fn call_nvidia_smi(timeout: std::time::Duration) -> Result<std::process::Output> {
         use std::io::Read;
         use std::time::{Duration, Instant};
 
@@ -1390,11 +1393,8 @@ mod tests {
                 ("COCOINDEX_NUM_GPUS", None),
             ],
             || {
-                let detect_result = GPUPool::detected();
-                assert!(detect_result.is_err());
-                let error_msg = detect_result.err().unwrap().to_string();
-                dbg!(&error_msg);
-                assert!(error_msg.contains("nvidia-smi not found"));
+                let pool = GPUPool::detected().unwrap();
+                assert_eq!(pool.num_gpus(), 1);
             },
         );
     }
