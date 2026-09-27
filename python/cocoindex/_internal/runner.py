@@ -270,27 +270,20 @@ class GPUPool:
 
     _num_gpus: int
     _capacity: list[float]
-    _cond: asyncio.Condition | None
-    _bound_loop: asyncio.AbstractEventLoop | None
+    _lock: threading.Lock
+    _waiters: list[tuple[float, asyncio.AbstractEventLoop, asyncio.Future[int]]]
 
     def __init__(self, num_gpus: int) -> None:
         if num_gpus < 1:
             raise ValueError(f"num_gpus must be >= 1, got {num_gpus}")
         self._num_gpus = num_gpus
         self._capacity = [1.0] * num_gpus
-        self._cond = None
-        self._bound_loop = None
+        self._lock = threading.Lock()
+        self._waiters = []
 
     @property
     def num_gpus(self) -> int:
         return self._num_gpus
-
-    def _get_cond(self) -> asyncio.Condition:
-        loop = asyncio.get_running_loop()
-        if self._cond is None or self._bound_loop is not loop:
-            self._cond = asyncio.Condition()
-            self._bound_loop = loop
-        return self._cond
 
     def _find_available(self, fraction: float) -> int | None:
         best_gpu = None
@@ -301,20 +294,69 @@ class GPUPool:
                 best_cap = cap
         return best_gpu
 
+    def _wake_waiters_locked(self) -> None:
+        """Wake pending waiters in FIFO order if capacity is available.
+
+        Must be called while holding self._lock.
+        """
+        i = 0
+        while i < len(self._waiters):
+            frac, loop, fut = self._waiters[i]
+            if fut.cancelled():
+                self._waiters.pop(i)
+                continue
+            gpu_id = self._find_available(frac)
+            if gpu_id is not None:
+                self._capacity[gpu_id] -= frac
+                self._waiters.pop(i)
+
+                def _resolve(
+                    f: asyncio.Future[int],
+                    gid: int,
+                    f_frac: float,
+                ) -> None:
+                    if not f.cancelled():
+                        f.set_result(gid)
+                    else:
+                        with self._lock:
+                            self._capacity[gid] += f_frac
+                            self._wake_waiters_locked()
+
+                loop.call_soon_threadsafe(_resolve, fut, gpu_id, frac)
+            else:
+                i += 1
+
     async def acquire(self, fraction: float) -> int:
-        async with self._get_cond():
-            while True:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if not self._waiters:
                 gpu_id = self._find_available(fraction)
                 if gpu_id is not None:
                     self._capacity[gpu_id] -= fraction
                     return gpu_id
-                await self._get_cond().wait()
+            fut: asyncio.Future[int] = loop.create_future()
+            self._waiters.append((fraction, loop, fut))
+
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            with self._lock:
+                item = (fraction, loop, fut)
+                if item in self._waiters:
+                    self._waiters.remove(item)
+                elif fut.done() and not fut.cancelled():
+                    try:
+                        assigned_gpu = fut.result()
+                        self._capacity[assigned_gpu] += fraction
+                        self._wake_waiters_locked()
+                    except Exception:
+                        pass
+            raise
 
     async def release(self, gpu_id: int, fraction: float) -> None:
-        cond = self._get_cond()
-        async with cond:
+        with self._lock:
             self._capacity[gpu_id] += fraction
-            cond.notify_all()
+            self._wake_waiters_locked()
 
 
 # ============================================================================
