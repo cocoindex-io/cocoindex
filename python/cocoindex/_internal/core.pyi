@@ -711,7 +711,7 @@ class RateLimiter:
 
 class GPUPool:
     def __init__(self, num_gpus: int) -> None: ...
-    
+
     @property
     def num_gpus(self) -> int: ...
 
@@ -720,7 +720,7 @@ class GPUPool:
         Acquires a fraction of a GPU and returns the GPU ID.
         """
         ...
-    
+
     async def acquire_full(self, gpu_count: int) -> list[int]:
         """
         Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.

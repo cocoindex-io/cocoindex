@@ -8,6 +8,15 @@ use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
 
+#[cfg(not(test))]
+const NVIDIA_SMI_TIMEOUT_SECS: u64 = 5;
+#[cfg(not(test))]
+const NVIDIA_SMI_POLLING_INTERVAL_MILLISECS: u64 = 100;
+#[cfg(not(test))]
+const NVIDIA_SMI_REAP_DEADLINE_MILLISECS: u64 = 100;
+#[cfg(not(test))]
+const NVIDIA_SMI_REAP_POLLING_INTERVAL_MILLISECS: u64 = 10;
+
 /// Tracks fractional GPU capacity across multiple GPUs.
 ///
 /// Each GPU starts with capacity 1.0. ``acquire(fraction)`` blocks until a
@@ -310,7 +319,7 @@ impl GPUPool {
             return Ok(std::cmp::max(1, count));
         }
         #[cfg(not(test))]
-        let output = Self::call_nvidia_smi(std::time::Duration::from_secs(5));
+        let output = Self::call_nvidia_smi(std::time::Duration::from_secs(NVIDIA_SMI_TIMEOUT_SECS));
         #[cfg(test)]
         let output = {
             if std::env::var("MOCK_NVIDIA_SMI_NOT_FOUND").is_ok() {
@@ -343,7 +352,7 @@ impl GPUPool {
             .unwrap_or_default()
             .trim()
             .parse::<usize>()
-            .with_context(|| format!("Failed to parse nvidia-smi output: {stdout}"))?;
+            .unwrap_or_default();
         Ok(std::cmp::max(1, count))
     }
 
@@ -379,16 +388,19 @@ impl GPUPool {
             }
             if start.elapsed() >= timeout {
                 let _ = child.kill();
-                let reap_deadline = Instant::now() + Duration::from_millis(100);
+                let reap_deadline =
+                    Instant::now() + Duration::from_millis(NVIDIA_SMI_REAP_DEADLINE_MILLISECS);
                 while Instant::now() < reap_deadline {
                     if let Ok(Some(_)) = child.try_wait() {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(
+                        NVIDIA_SMI_REAP_POLLING_INTERVAL_MILLISECS,
+                    ));
                 }
                 crate::internal_bail!("Timeout waiting for nvidia-smi");
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(NVIDIA_SMI_POLLING_INTERVAL_MILLISECS));
         }
     }
 
@@ -1360,10 +1372,8 @@ mod tests {
     #[test]
     fn test_detect_num_gpus_nvidia_smi_empty_output() {
         temp_env::with_vars_unset(["CUDA_VISIBLE_DEVICES", "COCOINDEX_NUM_GPUS"], || {
-            let detect_result = GPUPool::detected();
-            assert!(detect_result.is_err());
-            let error_msg = detect_result.err().unwrap().to_string();
-            assert!(error_msg.contains("Failed to parse nvidia-smi output: "));
+            let pool = GPUPool::detected().unwrap();
+            assert_eq!(pool.num_gpus(), 1);
         })
     }
 

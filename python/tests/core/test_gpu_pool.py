@@ -269,4 +269,3 @@ async def test_coco_fn_current_gpus_and_fraction() -> None:
         assert len(gpus) == 1
         assert 0 <= gpus[0] < 2
         assert fraction == 0.5
-
