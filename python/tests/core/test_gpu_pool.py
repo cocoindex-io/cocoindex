@@ -467,3 +467,62 @@ def test_detect_num_gpus_all_missing_fallback(
 
     monkeypatch.setattr(subprocess, "run", _mock_run)
     assert _detect_num_gpus() == 1
+
+
+def test_cross_event_loop_acquire_and_release() -> None:
+    """Verify that acquire and release across different event loops wake properly."""
+    import threading
+    import time
+
+    def loop_in_thread() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        return loop, thread
+
+    pool = GPUPool(num_gpus=1)
+    loop_a, _ = loop_in_thread()
+    loop_b, _ = loop_in_thread()
+
+    def run(loop: asyncio.AbstractEventLoop, coro: Any, timeout: float = 3.0) -> Any:
+        return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout)
+
+    try:
+        # Hold entire capacity on loop B
+        run(loop_b, pool.acquire(1.0))
+        # Wait for capacity on loop A
+        waiter = asyncio.run_coroutine_threadsafe(pool.acquire(1.0), loop_a)
+        time.sleep(0.1)
+        assert not waiter.done()
+
+        # Release from loop B
+        run(loop_b, pool.release(0, 1.0))
+
+        # Waiter on loop A should wake up and receive GPU 0
+        gpu_acquired = waiter.result(timeout=2.0)
+        assert gpu_acquired == 0
+        run(loop_a, pool.release(gpu_acquired, 1.0))
+    finally:
+        loop_a.call_soon_threadsafe(loop_a.stop)
+        loop_b.call_soon_threadsafe(loop_b.stop)
+
+
+@pytest.mark.asyncio
+async def test_acquire_cancellation_releases_queue() -> None:
+    """Verify that cancelling an acquire waiter removes it from the queue cleanly."""
+    pool = GPUPool(num_gpus=1)
+    gpu0 = await pool.acquire(1.0)
+
+    task = asyncio.create_task(pool.acquire(1.0))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    assert len(pool._waiters) == 1
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(pool._waiters) == 0
+    await pool.release(gpu0, 1.0)
+    assert pool._capacity == [1.0]
+
