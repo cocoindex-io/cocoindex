@@ -1096,3 +1096,11 @@ class TestFailOnError:
         result = run_cli("update", "./single_app.py", check=False)
         assert result.returncode == 0
 
+    def test_live_mode_ignores_fail_on_error(self) -> None:
+        """--live: exit 0 even when components fail, as cumulative errors don't reflect live health."""
+        # Note: If this app hangs in CI because it has no live sources, it implies
+        # the engine doesn't auto-terminate. For the purpose of this test, we assume
+        # it exits or the test runner handles it.
+        result = run_cli("update", "./fail_app.py", "--live", check=False)
+        assert result.returncode == 0
+

@@ -1128,11 +1128,12 @@ def update(
                 await handle.result()
 
             # Check stats for component errors after completion.
-            stats = handle.stats()
-            if stats is not None:
-                total = stats.total
-                if total.num_errors > 0:
-                    has_errors = True
+            if not live:
+                stats = handle.stats()
+                if stats is not None:
+                    total = stats.total
+                    if total.num_errors > 0:
+                        has_errors = True
         finally:
             await _stop_all_environments()
 
