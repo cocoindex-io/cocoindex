@@ -14,6 +14,7 @@ import pytest_asyncio
 from numpy.typing import NDArray
 
 import cocoindex as coco
+from cocoindex.connectorkits.target import ManagedBy
 from cocoindex.resources.schema import VectorSchema
 
 from tests import common
@@ -26,7 +27,7 @@ coco_env = common.create_test_env(__file__)
 # =============================================================================
 
 try:
-    from surrealdb import AsyncSurreal  # type: ignore[import-untyped]
+    from surrealdb import AsyncSurreal, RecordID  # type: ignore[import-untyped]
 
     HAS_SURREALDB = True
 except ImportError:
@@ -41,7 +42,7 @@ requires_surrealdb = pytest.mark.skipif(
 if HAS_SURREALDB:
     from cocoindex.connectors import surrealdb  # type: ignore[attr-defined]
     from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
-        _format_record_id,
+        _to_record_id,
         _validate_identifier,
     )
 
@@ -80,30 +81,20 @@ class TestValidateIdentifier:
 
 
 @requires_surrealdb
-class TestFormatRecordId:
-    """Tests for _format_record_id()."""
+class TestToRecordId:
+    """Tests for _to_record_id(): IDs stay typed, nothing is string-formatted."""
 
-    def test_string_simple(self) -> None:
-        assert _format_record_id("alice") == "`alice`"
+    def test_string(self) -> None:
+        assert _to_record_id("t", "alice") == RecordID("t", "alice")
 
-    def test_string_with_backtick(self) -> None:
-        assert _format_record_id("has`tick") == r"`has\`tick`"
+    def test_int_and_numeric_string_stay_distinct(self) -> None:
+        assert _to_record_id("t", 123) != _to_record_id("t", "123")
 
-    def test_string_with_backslash(self) -> None:
-        assert _format_record_id(r"back\slash") == r"`back\\slash`"
+    def test_tuple_becomes_array_id(self) -> None:
+        assert _to_record_id("t", ("sap", 1)) == RecordID("t", ["sap", 1])
 
-    def test_int(self) -> None:
-        assert _format_record_id(42) == "42"
-
-    def test_float(self) -> None:
-        assert _format_record_id(3.14) == "3.14"
-
-    def test_string_numeric_stays_quoted(self) -> None:
-        # string "123" must remain distinct from int 123
-        assert _format_record_id("123") == "`123`"
-
-    def test_string_empty(self) -> None:
-        assert _format_record_id("") == "``"
+    def test_awkward_string(self) -> None:
+        assert _to_record_id("t", "a`b\\c").id == "a`b\\c"
 
 
 @requires_surrealdb
@@ -366,7 +357,6 @@ async def declare_schemaless_rows() -> None:
 
 async def declare_nothing() -> None:
     """Declare nothing — used to test table cleanup."""
-    pass
 
 
 # =============================================================================
@@ -1960,3 +1950,296 @@ async def test_type_mapping(
     assert row["count"] == 42
     assert abs(row["score"] - 3.14) < 0.01
     assert row["label"] == "hello"
+
+
+# =============================================================================
+# Hardened target: errors surface, typed values, array IDs, fields mode, txns
+# =============================================================================
+
+
+def _hardened_app(
+    ns: str,
+    db: str,
+    table_name: str,
+    declare: Any,
+    *,
+    schema: Any = None,
+) -> Any:
+    """App over a user-managed table (the platform owns DDL); ``declare(table)`` fills it."""
+    coco_env.context_provider.provide(
+        SURREAL_DB_KEY,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL,
+            namespace=ns,
+            database=db,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
+        ),
+    )
+
+    async def main() -> None:
+        table = await coco.use_mount(  # type: ignore[call-overload]
+            coco.component_subpath("setup", "table"),
+            surrealdb.mount_table_target,
+            SURREAL_DB_KEY,
+            table_name,
+            schema,
+            managed_by=ManagedBy.USER,
+        )
+        declare(table)
+
+    return coco.App(
+        coco.AppConfig(name=f"hard_{table_name}", environment=coco_env), main
+    )
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_statement_error_raises_and_retries(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """T1: a rejected write fails the update; the next run retries it."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE fi SCHEMAFULL")
+    await _query(conn, "DEFINE FIELD name ON fi TYPE int")
+    rows = [{"id": "1", "name": "not-an-int"}]
+    app = _hardened_app(ns, db, "fi", lambda t: [t.declare_record(row=r) for r in rows])
+
+    with pytest.raises(Exception, match="name"):
+        await app.update()
+    assert await _query_table(conn, "fi") == []
+
+    # Same data, schema fixed: must be retried, not skipped as "already applied".
+    await _query(conn, "DEFINE FIELD OVERWRITE name ON fi TYPE string")
+    await app.update()
+    assert [r["name"] for r in await _query_table(conn, "fi")] == ["not-an-int"]
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_typed_values_round_trip(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """T2: values arrive as native SurrealDB types, not strings."""
+    import datetime
+    import decimal
+
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE typed SCHEMALESS")
+    guid = uuid_mod.uuid4()
+    row = {
+        "id": "1",
+        "at": datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC),
+        "day": datetime.date(2026, 1, 2),
+        "amount": decimal.Decimal("1000.50"),
+        "guid": guid,
+        "blob": b"\x00\x01",
+        "span": datetime.timedelta(seconds=90),
+        "tags": ["a", "b"],
+        "meta": {"n": np.int64(3), "when": datetime.date(2026, 1, 3)},
+        "vec": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    app = _hardened_app(ns, db, "typed", lambda t: t.declare_record(row=row))
+    await app.update()
+
+    res = await _query(
+        conn,
+        "SELECT type::of(at) AS at, type::of(day) AS day, type::of(amount) AS amount, "
+        "type::of(guid) AS guid, type::of(blob) AS blob, type::of(span) AS span, "
+        "type::of(tags) AS tags, type::of(meta.when) AS mwhen, type::of(meta.n) AS mn, "
+        "type::of(vec) AS vec FROM typed",
+    )
+    assert res == [
+        {
+            "at": "datetime",
+            "day": "datetime",
+            "amount": "decimal",
+            "guid": "uuid",
+            "blob": "bytes",
+            "span": "duration",
+            "tags": "array",
+            "mwhen": "datetime",
+            "mn": "int",
+            "vec": "array",
+        }
+    ]
+    stored = (await _query_table(conn, "typed"))[0]
+    assert stored["amount"] == decimal.Decimal("1000.50")
+    assert stored["guid"] == guid
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_array_record_ids_and_relations(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """T3: array record IDs, and relations between them."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE person SCHEMALESS")
+    await _query(conn, "DEFINE TABLE knows TYPE RELATION SCHEMALESS")
+    coco_env.context_provider.provide(
+        SURREAL_DB_KEY,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL, namespace=ns, database=db, credentials=None
+        ),
+    )
+
+    async def main() -> None:
+        person = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "person"),
+            surrealdb.mount_table_target,  # type: ignore[arg-type]
+            SURREAL_DB_KEY,
+            "person",
+            None,
+            managed_by=ManagedBy.USER,
+        )
+        knows = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "knows"),
+            surrealdb.mount_relation_target,  # type: ignore[arg-type]
+            SURREAL_DB_KEY,
+            "knows",
+            person,
+            person,
+            None,
+            managed_by=ManagedBy.USER,
+        )
+        person.declare_record(row={"id": ("sap", "0001"), "name": "A"})
+        person.declare_record(row={"id": ("sap", "0002"), "name": "B"})
+        knows.declare_relation(from_id=("sap", "0001"), to_id=("sap", "0002"))
+
+    app = coco.App(coco.AppConfig(name="hard_arr", environment=coco_env), main)
+    await app.update()
+
+    res = await _query(conn, "SELECT VALUE meta::id(id) FROM person ORDER BY id")
+    assert res == [["sap", "0001"], ["sap", "0002"]]
+    edges = await _query(conn, "SELECT VALUE [meta::id(in), meta::id(out)] FROM knows")
+    assert edges == [[["sap", "0001"], ["sap", "0002"]]]
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_record_mode_keeps_foreign_fields(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """T6 record mode: MERGE never wipes fields written by another owner."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE obj SCHEMALESS")
+    rows: list[dict[str, Any]] = [{"id": "1", "a": 1, "b": 2}]
+    app = _hardened_app(
+        ns, db, "obj", lambda t: [t.declare_record(row=r) for r in rows]
+    )
+    await app.update()
+    await _query(conn, "UPDATE obj:`1` SET foreign = 'keep'")
+
+    rows[:] = [{"id": "1", "a": 10}]  # b is no longer declared -> unset
+    await app.update()
+    got = (await _query_table(conn, "obj"))[0]
+    assert (got["a"], got["foreign"], "b" in got) == (10, "keep", False)
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_fields_mode(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """T6 fields mode: a group MERGEs its fields onto a record it does not own."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE o SCHEMALESS")
+    base: list[dict[str, Any]] = [{"id": "1", "title": "T"}]
+    derived: list[dict[str, Any]] = [{"id": "1", "risk": 5, "band": "hi"}]
+
+    def declare(t: Any) -> None:
+        for r in base:
+            t.declare_record(row=r)
+        for d in derived:
+            t.declare_fields(
+                id=d["id"], group="rules", fields={"risk": d["risk"], "band": d["band"]}
+            )
+
+    app = _hardened_app(ns, db, "o", declare)
+    await app.update()
+    got = (await _query_table(conn, "o"))[0]
+    assert (got["title"], got["risk"], got["band"]) == ("T", 5, "hi")
+
+    # An updated base record keeps the fields-mode values.
+    base[:] = [{"id": "1", "title": "T2"}]
+    await app.update()
+    got = (await _query_table(conn, "o"))[0]
+    assert (got["title"], got["risk"]) == ("T2", 5)
+
+    # Dropping the group unsets exactly its fields.
+    derived[:] = []
+    await app.update()
+    got = (await _query_table(conn, "o"))[0]
+    assert got["title"] == "T2" and "risk" not in got and "band" not in got
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_fields_mode_missing_record_raises_then_retries(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """T6: zero affected rows raises, and the write is retried next run."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE o2 SCHEMALESS")
+    app = _hardened_app(
+        ns, db, "o2", lambda t: t.declare_fields(id="1", group="g", fields={"x": 1})
+    )
+    with pytest.raises(Exception, match="missing"):
+        await app.update()
+    await _query(conn, "CREATE o2:`1` SET t = 'base'")
+    await app.update()
+    got = (await _query_table(conn, "o2"))[0]
+    assert (got["t"], got["x"]) == ("base", 1)
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_bounded_transactions_and_no_op_rerun(
+    surreal_conn: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T7: large batches are chunked; T6/ING-02: an unchanged re-run writes nothing."""
+    from cocoindex.connectors.surrealdb import _target
+
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE big SCHEMALESS")
+    monkeypatch.setattr(_target, "_MAX_ACTIONS_PER_TXN", 100)
+    calls: list[int] = []
+    orig = _target._SharedRecordApplier._apply_chunk
+
+    async def spy(self: Any, chunk: Any) -> None:
+        calls.append(len(chunk))
+        await orig(self, chunk)
+
+    monkeypatch.setattr(_target._SharedRecordApplier, "_apply_chunk", spy)
+
+    n = 350
+    app = _hardened_app(
+        ns,
+        db,
+        "big",
+        lambda t: [t.declare_record(row={"id": i, "v": i}) for i in range(n)],
+    )
+    await app.update()
+    assert len(await _query_table(conn, "big")) == n
+    assert sum(calls) == n and max(calls) <= 100
+
+    calls.clear()
+    await app.update()
+    assert calls == []
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_connection_is_reused() -> None:
+    """T8: one connection per factory and event loop."""
+    if not await _check_server_reachable():
+        pytest.skip(f"SurrealDB server not reachable at {_SURREALDB_URL}")
+    f = surrealdb.ConnectionFactory(
+        url=_SURREALDB_URL, namespace="pool_ns", database="pool_db"
+    )
+    try:
+        assert await f.acquire() is await f.acquire()
+    finally:
+        await f.close()
