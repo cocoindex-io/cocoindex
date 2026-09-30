@@ -52,7 +52,6 @@ class _RunState:
         self.child_providers: dict[
             int, tuple[coco.PendingTargetStateProvider[str, None], str]
         ] = {}
-        self.gate_taken = False
 
     def reset_run(self, poison_merged_batch: bool) -> None:
         with self.lock:
@@ -60,14 +59,13 @@ class _RunState:
             self.poison_table = None
             self.table_batches.clear()
             self.child_providers.clear()
-            self.gate_taken = False
 
 
 _run = _RunState()
 
 
 def _committed_tables() -> set[int]:
-    """Tables whose action the engine has handed to the table sink.
+    """Tables whose precommit has committed.
 
     The engine assigns a container's child provider its generation, which
     shows in the provider's memo key, only once the precommit that declared the
@@ -85,12 +83,13 @@ def _committed_tables() -> set[int]:
     }
 
 
-async def _wait_until_others_committed(holder: int) -> None:
-    """Hold the first table batch until every other table's action is queued
-    behind it, so they all merge into the next sink call."""
-    others = set(range(_NUM_TABLES)) - {holder}
+async def _wait_until_all_committed() -> None:
+    """Hold the first table batch until every table has committed, so the
+    other tables' actions are all queued behind it and merge into the next
+    sink call."""
+    all_tables = set(range(_NUM_TABLES))
     deadline = time.monotonic() + 10
-    while not others <= _committed_tables():
+    while not all_tables <= _committed_tables():
         if time.monotonic() > deadline:
             raise TimeoutError("tables did not all commit in time")
         await asyncio.sleep(0.01)
@@ -141,9 +140,8 @@ async def _apply_tables(
 ) -> None:
     tables = [table for table, _ in actions]
     with _run.lock:
+        takes_gate = not _run.table_batches
         _run.table_batches.append(tables)
-        takes_gate = not _run.gate_taken
-        _run.gate_taken = True
         if _run.poison_merged_batch and _run.poison_table is None and len(tables) > 1:
             # Choosing the poisoned table from a merged batch, rather than up
             # front, merges its actions with other components' whatever order
@@ -151,7 +149,7 @@ async def _apply_tables(
             _run.poison_table = tables[-1]
         poisoned = _run.poison_table in tables
     if takes_gate:
-        await _wait_until_others_committed(tables[0])
+        await _wait_until_all_committed()
     # Fulfill before failing: a failed attempt leaves its slots fulfilled, and
     # the retry must be able to fulfill them again.
     for i, table in enumerate(tables):
