@@ -45,7 +45,7 @@ try:
     from glide.async_commands import ft
 except ImportError as e:
     raise ImportError(
-        "valkey-glide>=2.4.0 is required to use the Valkey connector. "
+        "valkey-glide>=2.5.2 is required to use the Valkey connector. "
         "Please install cocoindex[valkey]."
     ) from e
 
@@ -751,6 +751,8 @@ def create_client_config(
 
     addresses = [NodeAddress(host=host, port=port)]
     config_kwargs: dict[str, Any] = dict(kwargs)
+
+    config_kwargs.setdefault("client_info_tag", "cocoindex")
 
     # Explicit parameters take precedence over **kwargs to prevent
     # accidental override of security-sensitive settings.

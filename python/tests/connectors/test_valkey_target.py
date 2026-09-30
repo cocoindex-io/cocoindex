@@ -173,10 +173,17 @@ class TestCreateClientConfig:
     def test_default_config(self) -> None:
         config = valkey.create_client_config()
         assert config is not None
+        assert config.client_name == "cocoindex_vector_store"
+        assert config.client_info_tag == "cocoindex"
 
     def test_custom_host_port(self) -> None:
         config = valkey.create_client_config("myhost", 7777)
         assert config is not None
+
+    def test_kwargs_override(self) -> None:
+        config = valkey.create_client_config(client_info_tag="my_custom_tag", client_name="my_custom_name")
+        assert config.client_info_tag == "my_custom_tag"
+        assert config.client_name == "my_custom_name"
 
 
 @requires_glide
