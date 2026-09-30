@@ -20,7 +20,6 @@ import cocoindex as coco
 from tests import common
 
 _NUM_TABLES = 8
-_POISON_TABLE = 3
 
 _failed_paths: list[str] = []
 
@@ -31,7 +30,7 @@ def _record_failure(exc: BaseException, ctx: coco.ExceptionContext) -> None:
 
 coco_env = common.create_test_env(__file__, exception_handler=_record_failure)
 
-# (table id, value); the value "poison" makes the sink reject the batch.
+# (table id, value)
 _TableAction = tuple[int, str]
 # (table id, row key, value)
 _RowAction = tuple[int, str, str]
@@ -42,36 +41,59 @@ class _RunState:
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        # Whether the sink poisons a table of the first merged table batch in
+        # this run, and the table it poisoned.
+        self.poison_merged_batch = False
         self.poison_table: int | None = None
         self.tables: dict[int, str] = {}
         self.rows: dict[tuple[int, str], str] = {}
-        self.table_batches: list[list[_TableAction]] = []
-        self.num_reconciled = 0
+        self.table_batches: list[list[int]] = []
+        # Each table's child provider, with its memo key when declared.
+        self.child_providers: dict[
+            int, tuple[coco.PendingTargetStateProvider[str, None], str]
+        ] = {}
         self.gate_taken = False
 
-    def reset_run(self, poison_table: int | None) -> None:
+    def reset_run(self, poison_merged_batch: bool) -> None:
         with self.lock:
-            self.poison_table = poison_table
+            self.poison_merged_batch = poison_merged_batch
+            self.poison_table = None
             self.table_batches.clear()
-            self.num_reconciled = 0
+            self.child_providers.clear()
             self.gate_taken = False
 
 
 _run = _RunState()
 
 
-async def _wait_until_all_reconciled() -> None:
-    """Hold the first table batch until every table has reconciled, so the
-    other tables' actions merge into the batch queued behind it."""
+def _committed_tables() -> set[int]:
+    """Tables whose action the engine has handed to the table sink.
+
+    The engine assigns a container's child provider its generation, which
+    shows in the provider's memo key, only once the precommit that declared the
+    container has committed, and queues the container's action for its sink
+    right after, with nothing to await in between. The state store may retry a
+    precommit on a write conflict, and each attempt runs ``reconcile``, so
+    counting ``reconcile`` calls can run ahead of the commit; this can't.
+    """
+    with _run.lock:
+        watched = list(_run.child_providers.items())
+    return {
+        table
+        for table, (provider, declared_key) in watched
+        if provider.memo_key != declared_key
+    }
+
+
+async def _wait_until_others_committed(holder: int) -> None:
+    """Hold the first table batch until every other table's action is queued
+    behind it, so they all merge into the next sink call."""
+    others = set(range(_NUM_TABLES)) - {holder}
     deadline = time.monotonic() + 10
-    while True:
-        with _run.lock:
-            if _run.num_reconciled >= _NUM_TABLES:
-                break
+    while not others <= _committed_tables():
         if time.monotonic() > deadline:
-            raise TimeoutError("tables did not all reconcile in time")
+            raise TimeoutError("tables did not all commit in time")
         await asyncio.sleep(0.01)
-    await asyncio.sleep(0.3)
 
 
 async def _apply_rows(
@@ -117,21 +139,27 @@ async def _apply_tables(
     child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
     /,
 ) -> None:
-    batch = list(actions)
+    tables = [table for table, _ in actions]
     with _run.lock:
-        _run.table_batches.append(batch)
+        _run.table_batches.append(tables)
         takes_gate = not _run.gate_taken
         _run.gate_taken = True
+        if _run.poison_merged_batch and _run.poison_table is None and len(tables) > 1:
+            # Choosing the poisoned table from a merged batch, rather than up
+            # front, merges its actions with other components' whatever order
+            # the tables commit in.
+            _run.poison_table = tables[-1]
+        poisoned = _run.poison_table in tables
     if takes_gate:
-        await _wait_until_all_reconciled()
+        await _wait_until_others_committed(tables[0])
     # Fulfill before failing: a failed attempt leaves its slots fulfilled, and
     # the retry must be able to fulfill them again.
-    for i, (table, _) in enumerate(batch):
+    for i, table in enumerate(tables):
         child_slots[i].fulfill(_RowHandler(table))
-    if any(value == "poison" for _, value in batch):
+    if poisoned:
         raise ValueError("poisoned batch")
     with _run.lock:
-        for table, value in batch:
+        for table, value in actions:
             _run.tables[table] = value
 
 
@@ -148,8 +176,6 @@ class _TableHandler(coco.TargetHandler[str, None, _RowHandler]):
         /,
     ) -> coco.TargetReconcileOutput[_TableAction, None, _RowHandler] | None:
         assert isinstance(key, int)
-        with _run.lock:
-            _run.num_reconciled += 1
         if coco.is_non_existence(desired_target_state):
             return None
         # A container always emits an action so its child provider is fulfilled.
@@ -164,14 +190,18 @@ _table_provider = coco.register_root_target_states_provider(
 
 
 @coco.fn
+def _declare_table(table: int) -> coco.PendingTargetStateProvider[str, None]:
+    rows = coco.declare_target_state_with_child(
+        _table_provider.target_state(table, f"v{table}")
+    )
+    with _run.lock:
+        _run.child_providers[table] = (rows, rows.memo_key)
+    return rows
+
+
+@coco.fn
 async def _process_table(table: int) -> None:
-    poisoned = table == _run.poison_table
-    if poisoned:
-        # Finish last, so the poisoned actions never take the gated first sink
-        # call but always land in the merged batch queued behind it.
-        await asyncio.sleep(0.1)
-    value = "poison" if poisoned else f"v{table}"
-    rows = await coco.mount_target(_table_provider.target_state(table, value))
+    rows = await coco.use_mount(_declare_table, table)
     coco.declare_target_state(rows.target_state(f"row{table}", "x"))
 
 
@@ -189,22 +219,22 @@ def test_child_slots_are_fulfilled_by_the_retry_of_a_failed_merged_batch() -> No
         _root,
     )
 
-    _run.reset_run(poison_table=_POISON_TABLE)
+    _run.reset_run(poison_merged_batch=True)
     _failed_paths.clear()
     app.update_blocking()
 
-    survivors = {i for i in range(_NUM_TABLES) if i != _POISON_TABLE}
-    merged = [
-        b for b in _run.table_batches if len(b) > 1 and (_POISON_TABLE, "poison") in b
-    ]
-    assert merged, _run.table_batches
+    # The sink poisons a table only in a merged batch, so there was one.
+    poison = _run.poison_table
+    assert poison is not None, _run.table_batches
+    survivors = {i for i in range(_NUM_TABLES) if i != poison}
     assert _run.tables == {i: f"v{i}" for i in survivors}
-    # Every surviving table's child provider resolved from the retry, so its
-    # row reached the row sink; only the poisoned table failed.
+    # The survivors merged with the poisoned table had their child slots
+    # fulfilled again by the retry, so every survivor's row reached the row
+    # sink; only the poisoned table failed.
     assert _run.rows == {(i, f"row{i}"): "x" for i in survivors}
-    assert _failed_paths == [str(coco.ROOT_PATH / "table" / _POISON_TABLE)]
+    assert _failed_paths == [str(coco.ROOT_PATH / "table" / poison)]
 
-    _run.reset_run(poison_table=None)
+    _run.reset_run(poison_merged_batch=False)
     _failed_paths.clear()
     app.update_blocking()
 
