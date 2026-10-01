@@ -46,6 +46,12 @@ pub(crate) trait StorageBackend: Send + Sync + 'static {
         app: &AppStoreHandle,
         prefix: &[u8],
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
+    async fn scan_prefix_pair(
+        &self,
+        app: &AppStoreHandle,
+        first_prefix: &[u8],
+        second_prefix: &[u8],
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, Vec<(Vec<u8>, Vec<u8>)>)>;
 
     async fn txn_get(
         &self,
@@ -97,8 +103,8 @@ impl LmdbBackend {
         Self { env, coord }
     }
 
-    fn open_read_txn(&self) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
-        open_read_txn_on_env_with_retry(&self.env)
+    async fn open_read_txn(&self) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+        open_read_txn_on_env_with_retry_async(&self.env).await
     }
 
     fn db(app: &AppStoreHandle) -> Result<LmdbDatabase> {
@@ -156,6 +162,57 @@ pub(crate) fn open_read_txn_on_env_with_retry(
             Err(e) => return Err(e.into()),
         }
     }
+}
+
+/// Async sibling of [`open_read_txn_on_env_with_retry`] for runtime callers.
+///
+/// The synchronous helper is intentionally reserved for `spawn_blocking` and
+/// inspection threads. Calling it from an async method would block a Tokio
+/// worker for the whole retry window.
+pub(crate) async fn open_read_txn_on_env_with_retry_async<'env>(
+    env: &'env heed::Env<heed::WithoutTls>,
+) -> Result<heed::RoTxn<'env, heed::WithoutTls>> {
+    use cocoindex_utils::retryable::{self as retryable, RetryOptions};
+    use std::time::Duration;
+
+    const PHASE1_OPTIONS: RetryOptions = RetryOptions {
+        retry_timeout: Some(Duration::from_secs(3)),
+        initial_backoff: Duration::from_millis(10),
+        max_backoff: Duration::from_secs(1),
+    };
+    const PHASE2_OPTIONS: RetryOptions = RetryOptions {
+        retry_timeout: None,
+        initial_backoff: Duration::from_millis(10),
+        max_backoff: Duration::from_secs(1),
+    };
+
+    let try_open = || async {
+        match env.read_txn() {
+            Ok(txn) => retryable::Ok(txn),
+            Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
+                warn!("LMDB readers full, retrying");
+                Err(retryable::Error::retryable(internal_error!(
+                    "LMDB readers full"
+                )))
+            }
+            Err(e) => Err(retryable::Error::not_retryable(e)),
+        }
+    };
+
+    let txn = match retryable::run(&try_open, &PHASE1_OPTIONS).await {
+        Ok(txn) => txn,
+        Err(e) if !e.is_retryable => return Err(e.into()),
+        Err(_) => {
+            let cleared = env.clear_stale_readers()?;
+            if cleared > 0 {
+                warn!("Cleared {cleared} stale LMDB readers");
+            }
+            retryable::run(&try_open, &PHASE2_OPTIONS)
+                .await
+                .map_err(Into::<Error>::into)?
+        }
+    };
+    Ok(txn)
 }
 
 #[async_trait]
@@ -228,7 +285,7 @@ impl StorageBackend for LmdbBackend {
     async fn get(&self, app: &AppStoreHandle, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let db = Self::db(app)?;
         let _guard = self.coord.read().await;
-        let rtxn = self.open_read_txn()?;
+        let rtxn = self.open_read_txn().await?;
         Ok(db.get(&rtxn, key)?.map(<[u8]>::to_vec))
     }
 
@@ -239,13 +296,35 @@ impl StorageBackend for LmdbBackend {
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let db = Self::db(app)?;
         let _guard = self.coord.read().await;
-        let rtxn = self.open_read_txn()?;
+        let rtxn = self.open_read_txn().await?;
         let mut out = Vec::new();
         for entry in db.prefix_iter(&rtxn, prefix)? {
             let (k, v) = entry?;
             out.push((k.to_vec(), v.to_vec()));
         }
         Ok(out)
+    }
+
+    async fn scan_prefix_pair(
+        &self,
+        app: &AppStoreHandle,
+        first_prefix: &[u8],
+        second_prefix: &[u8],
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, Vec<(Vec<u8>, Vec<u8>)>)> {
+        let db = Self::db(app)?;
+        let _guard = self.coord.read().await;
+        let rtxn = self.open_read_txn().await?;
+        let mut first = Vec::new();
+        for entry in db.prefix_iter(&rtxn, first_prefix)? {
+            let (key, value) = entry?;
+            first.push((key.to_vec(), value.to_vec()));
+        }
+        let mut second = Vec::new();
+        for entry in db.prefix_iter(&rtxn, second_prefix)? {
+            let (key, value) = entry?;
+            second.push((key.to_vec(), value.to_vec()));
+        }
+        Ok((first, second))
     }
 
     async fn txn_get(
@@ -518,19 +597,41 @@ mod postgres {
         }
 
         async fn drop_app(&self, app_name: &str) -> Result<()> {
-            sqlx::query("DELETE FROM cocoindex_apps WHERE app_name = $1")
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| pg_err(e, "failed to begin Postgres app drop"))?;
+            sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+                .bind(ADVISORY_LOCK_CLASS)
+                .bind(ADVISORY_LOCK_KEY)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| pg_err(e, "failed to lock Postgres app drop"))?;
+            sqlx::query("DELETE FROM cocoindex_state WHERE app_name = $1")
                 .bind(app_name)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| pg_err(e, "failed to drop Postgres app store"))?;
+            tx.commit()
+                .await
+                .map_err(|e| pg_err(e, "failed to commit Postgres app drop"))?;
             Ok(())
         }
 
         async fn list_app_names(&self) -> Result<Vec<String>> {
-            sqlx::query_scalar::<_, String>("SELECT app_name FROM cocoindex_apps ORDER BY app_name")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| pg_err(e, "failed to list Postgres app stores"))
+            sqlx::query_scalar::<_, String>(
+                "SELECT apps.app_name
+                 FROM cocoindex_apps AS apps
+                 WHERE EXISTS (
+                     SELECT 1 FROM cocoindex_state AS state
+                     WHERE state.app_name = apps.app_name
+                 )
+                 ORDER BY apps.app_name",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| pg_err(e, "failed to list Postgres app stores"))
         }
 
         async fn get(&self, app: &AppStoreHandle, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -545,6 +646,45 @@ mod postgres {
         ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
             let app_name = Self::app_name(app)?;
             Self::query_scan_prefix(&self.pool, app_name, prefix).await
+        }
+
+        async fn scan_prefix_pair(
+            &self,
+            app: &AppStoreHandle,
+            first_prefix: &[u8],
+            second_prefix: &[u8],
+        ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, Vec<(Vec<u8>, Vec<u8>)>)> {
+            let app_name = Self::app_name(app)?;
+            let rows: Vec<(i32, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+                "SELECT 0::int AS prefix_index, key, value
+                 FROM cocoindex_state
+                 WHERE app_name = $1
+                   AND substring(key FROM 1 FOR length($2)) = $2
+                 UNION ALL
+                 SELECT 1::int AS prefix_index, key, value
+                 FROM cocoindex_state
+                 WHERE app_name = $3
+                   AND substring(key FROM 1 FOR length($4)) = $4
+                 ORDER BY prefix_index, key",
+            )
+            .bind(app_name)
+            .bind(first_prefix)
+            .bind(app_name)
+            .bind(second_prefix)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| pg_err(e, "Postgres state prefix-pair read failed"))?;
+
+            let mut first = Vec::new();
+            let mut second = Vec::new();
+            for (prefix_index, key, value) in rows {
+                if prefix_index == 0 {
+                    first.push((key, value));
+                } else {
+                    second.push((key, value));
+                }
+            }
+            Ok((first, second))
         }
 
         async fn txn_get(

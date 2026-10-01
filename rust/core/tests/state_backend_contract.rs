@@ -28,6 +28,14 @@ async fn run_contract(storage: &Storage, app_name: &str) {
         .create_app_store(app_name)
         .await
         .expect("create app store");
+    assert!(
+        !storage
+            .list_app_names()
+            .await
+            .unwrap()
+            .contains(&app_name.to_string()),
+        "a newly created but empty app must not be listed"
+    );
     let tracking_path = test_path("tracking");
     assert!(
         app.read_tracking_info(&tracking_path)
@@ -52,6 +60,14 @@ async fn run_contract(storage: &Storage, app_name: &str) {
     assert_eq!(
         app.read_tracking_info(&tracking_path).await.unwrap(),
         Some(b"version-one".to_vec())
+    );
+    assert!(
+        storage
+            .list_app_names()
+            .await
+            .unwrap()
+            .contains(&app_name.to_string()),
+        "an app with persisted state must be listed"
     );
 
     // A body failure must roll back every write in the batch.
@@ -288,6 +304,26 @@ async fn assert_persisted(storage: &Storage, app_name: &str) {
     );
 }
 
+async fn assert_drop_matches_lmdb(storage: &Storage, app_name: &str) {
+    storage.drop_app(app_name).await.unwrap();
+    assert!(
+        !storage
+            .list_app_names()
+            .await
+            .unwrap()
+            .contains(&app_name.to_string()),
+        "a dropped app must not be listed"
+    );
+    assert!(
+        storage
+            .open_app_store_by_name(app_name)
+            .await
+            .unwrap()
+            .is_some(),
+        "dropping data must leave the empty app handle openable, as LMDB does"
+    );
+}
+
 #[tokio::test]
 async fn lmdb_backend_contract() {
     let dir = TempDir::new().unwrap();
@@ -302,7 +338,7 @@ async fn lmdb_backend_contract() {
         .await
         .unwrap();
     assert_persisted(&reopened, app_name).await;
-    reopened.drop_app(app_name).await.unwrap();
+    assert_drop_matches_lmdb(&reopened, app_name).await;
 }
 
 #[cfg(feature = "postgres")]
@@ -326,7 +362,7 @@ async fn postgres_backend_contract() {
         .await
         .expect("reopen Postgres state backend");
     assert_persisted(&reopened, &app_name).await;
-    reopened.drop_app(&app_name).await.unwrap();
+    assert_drop_matches_lmdb(&reopened, &app_name).await;
 
     // Schema version is explicit and fail-closed.
     let pool = sqlx::PgPool::connect(&url).await.unwrap();

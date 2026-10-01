@@ -116,10 +116,11 @@ def test_postgres_url_is_preserved_in_engine_wire_format() -> None:
 
 
 def test_postgres_url_is_redacted_in_repr() -> None:
-    url = "postgres://user:secret@db.example/cocoindex"
+    url = "postgres://user:secret@db.example/cocoindex?sslmode=require&password=query-secret"
     text = repr(Settings(db_path=url))
     assert "secret" not in text
     assert "***@db.example" in text
+    assert "password=***" in text
 
 
 def test_default_db_path_preserves_postgres_url(
@@ -127,6 +128,6 @@ def test_default_db_path_preserves_postgres_url(
 ) -> None:
     from cocoindex._internal import setting
 
-    url = "postgres://user:secret@db.example/cocoindex"
+    url = "POSTGRESQL://user:secret@db.example/cocoindex"
     monkeypatch.setenv("COCOINDEX_DB", url)
     assert setting.get_default_db_path() == url

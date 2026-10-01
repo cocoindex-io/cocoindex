@@ -34,7 +34,9 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::backend::{AppStoreHandle, LmdbDatabase, StorageBackend};
+use crate::state_store::backend::{
+    AppStoreHandle, LmdbDatabase, StorageBackend, open_read_txn_on_env_with_retry_async,
+};
 use crate::state_store::txn::{ReadTxn, WriteTxn};
 
 /// Per-app handle within a `Storage`.
@@ -169,50 +171,10 @@ impl AppStore {
             }
         };
         let guard = self.storage.txn_coordinator().read_owned().await;
-        let try_open = || async {
-            match env.read_txn() {
-                Ok(txn) => cocoindex_utils::retryable::Ok(txn),
-                Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
-                    warn!("LMDB readers full, retrying");
-                    Err(cocoindex_utils::retryable::Error::retryable(
-                        internal_error!("LMDB readers full"),
-                    ))
-                }
-                Err(e) => Err(cocoindex_utils::retryable::Error::not_retryable(e)),
-            }
-        };
-
-        // Phase 1: short timeout for transient concurrency.
-        let txn = match cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE1).await {
-            Ok(txn) => txn,
-            Err(e) if !e.is_retryable => return Err(e.into()),
-            Err(_) => {
-                let cleared = env.clear_stale_readers()?;
-                if cleared > 0 {
-                    warn!("Cleared {cleared} stale LMDB readers");
-                }
-                cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE2)
-                    .await
-                    .map_err(Into::<Error>::into)?
-            }
-        };
+        let txn = open_read_txn_on_env_with_retry_async(env).await?;
         Ok(ReadTxn::new(guard, txn))
     }
 }
-
-static READ_TXN_RETRY_PHASE1: cocoindex_utils::retryable::RetryOptions =
-    cocoindex_utils::retryable::RetryOptions {
-        retry_timeout: Some(std::time::Duration::from_secs(3)),
-        initial_backoff: std::time::Duration::from_millis(10),
-        max_backoff: std::time::Duration::from_secs(1),
-    };
-
-static READ_TXN_RETRY_PHASE2: cocoindex_utils::retryable::RetryOptions =
-    cocoindex_utils::retryable::RetryOptions {
-        retry_timeout: None,
-        initial_backoff: std::time::Duration::from_millis(10),
-        max_backoff: std::time::Duration::from_secs(1),
-    };
 
 // --- Key encoding helpers (internal) -------------------------------------
 
@@ -982,28 +944,30 @@ impl AppStore {
     /// single read snapshot. Used by the per-component prefetch
     /// ([`crate::engine::context::ComponentProcessorContext::prefetch_states`]).
     ///
-    /// Both ranges are read under one `RoTxn` rather than two. Under
-    /// `MDB_NOTLS` each read-txn begin takes the reader-table mutex, so a
-    /// single snapshot halves that cost — most visibly when many child
-    /// components prefetch concurrently during `mount_each` fan-out — and
-    /// halves concurrent reader-slot occupancy against the
-    /// `MDB_READERS_FULL` limit.
+    /// Both ranges are read under one backend snapshot rather than two. For
+    /// LMDB this avoids a second reader-table lock and reader-slot occupancy;
+    /// for Postgres it keeps both ranges mutually consistent.
     pub async fn prefetch_fn_processing_states(
         &self,
         path: &StablePath,
     ) -> Result<(Vec<(Fingerprint, Vec<u8>)>, Vec<(StableKey, Vec<u8>)>)> {
         // Function memos, keyed by fingerprint.
         let fp_prefix = key_fn_memo_prefix(path)?;
+        let us_prefix = key_user_state_prefix(path, StateKind::Regular)?;
+        let (fp_rows, us_rows) = self
+            .backend
+            .scan_prefix_pair(&self.handle, &fp_prefix, &us_prefix)
+            .await?;
+
         let mut memos = Vec::new();
-        for (raw_key, raw_val) in self.scan_prefix_raw(&fp_prefix).await? {
+        for (raw_key, raw_val) in fp_rows {
             let fp: Fingerprint = storekey::decode(raw_key[fp_prefix.len()..].as_ref())?;
             memos.push((fp, raw_val));
         }
 
         // User states, keyed by stable key.
-        let us_prefix = key_user_state_prefix(path, StateKind::Regular)?;
         let mut states = Vec::new();
-        for (raw_key, raw_val) in self.scan_prefix_raw(&us_prefix).await? {
+        for (raw_key, raw_val) in us_rows {
             let user_key: StableKey = storekey::decode(raw_key[us_prefix.len()..].as_ref())?;
             states.push((user_key, raw_val));
         }

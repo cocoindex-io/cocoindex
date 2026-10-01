@@ -94,17 +94,19 @@ impl std::fmt::Debug for StorageSettings {
 
 impl StorageSettings {
     fn backend_name(&self) -> Result<&'static str> {
-        match self.db_path.to_str() {
-            Some(url) if url.starts_with("postgres://") || url.starts_with("postgresql://") => {
-                Ok("postgres")
-            }
-            Some(url) if url.contains("://") => {
-                client_bail!(
-                    "unsupported storage backend URL scheme: {}",
-                    redact_url(url)
-                )
-            }
-            _ => Ok("lmdb"),
+        let Some(url) = self.db_path.to_str() else {
+            return Ok("lmdb");
+        };
+        let Some((scheme, _)) = url.split_once("://") else {
+            return Ok("lmdb");
+        };
+        if scheme.eq_ignore_ascii_case("postgres") || scheme.eq_ignore_ascii_case("postgresql") {
+            Ok("postgres")
+        } else {
+            client_bail!(
+                "unsupported storage backend URL scheme: {}",
+                redact_url(url)
+            )
         }
     }
 }
@@ -124,12 +126,44 @@ pub fn redact_url(url: &str) -> String {
         Some((_credentials, host)) => format!("***@{host}"),
         None => authority.to_string(),
     };
-    format!(
-        "{}{}{}",
-        &url[..authority_start],
-        redacted_authority,
-        &url[authority_end..]
-    )
+    let suffix = &url[authority_end..];
+    let Some(query_start) = suffix.find('?') else {
+        return format!(
+            "{}{}{}",
+            &url[..authority_start],
+            redacted_authority,
+            suffix
+        );
+    };
+
+    let mut redacted = String::with_capacity(url.len());
+    redacted.push_str(&url[..authority_start]);
+    redacted.push_str(&redacted_authority);
+    redacted.push_str(&suffix[..=query_start]);
+
+    let query_and_fragment = &suffix[query_start + 1..];
+    let (query, fragment) = query_and_fragment
+        .split_once('#')
+        .map_or((query_and_fragment, None), |(query, fragment)| {
+            (query, Some(fragment))
+        });
+    for (index, part) in query.split('&').enumerate() {
+        if index > 0 {
+            redacted.push('&');
+        }
+        let key = part.split_once('=').map_or(part, |(key, _)| key);
+        if key.to_ascii_lowercase().ends_with("password") {
+            redacted.push_str(key);
+            redacted.push_str("=***");
+        } else {
+            redacted.push_str(part);
+        }
+    }
+    if let Some(fragment) = fragment {
+        redacted.push('#');
+        redacted.push_str(fragment);
+    }
+    redacted
 }
 
 #[derive(Clone)]
@@ -796,6 +830,14 @@ mod tests {
         assert!(!format!("{pg:?}").contains("secret"));
         assert!(format!("{pg:?}").contains("***@db.example"));
 
+        let uppercase = StorageSettings {
+            db_path: PathBuf::from("POSTGRESQL://user:secret@db.example/cocoindex"),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        assert_eq!(uppercase.backend_name().unwrap(), "postgres");
+        assert!(!format!("{uppercase:?}").contains("secret"));
+
         let unsupported = StorageSettings {
             db_path: PathBuf::from("mysql://user:secret@db.example/cocoindex"),
             lmdb_max_dbs: DEFAULT_MAX_DBS,
@@ -812,10 +854,16 @@ mod tests {
     }
 
     #[test]
-    fn redact_url_removes_userinfo_only() {
+    fn redact_url_removes_credentials() {
         assert_eq!(
             redact_url("postgres://user:secret@db.example:5432/cocoindex?sslmode=require"),
             "postgres://***@db.example:5432/cocoindex?sslmode=require"
+        );
+        assert_eq!(
+            redact_url(
+                "postgres://user:secret@db.example:5432/cocoindex?sslmode=require&password=query-secret&sslpassword=ssl-secret"
+            ),
+            "postgres://***@db.example:5432/cocoindex?sslmode=require&password=***&sslpassword=***"
         );
         assert_eq!(redact_url("/tmp/cocoindex.db"), "/tmp/cocoindex.db");
     }

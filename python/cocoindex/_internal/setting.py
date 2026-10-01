@@ -10,11 +10,12 @@ from typing import Any, Self
 
 
 def _is_backend_url(value: str) -> bool:
-    return value.startswith(("postgres://", "postgresql://"))
+    scheme, separator, _ = value.partition("://")
+    return bool(separator) and scheme.lower() in {"postgres", "postgresql"}
 
 
 def redact_db_url(value: str) -> str:
-    """Return a connection string without userinfo for logs and reprs."""
+    """Return a connection string without credentials for logs and reprs."""
     if "://" not in value:
         return value
     scheme, rest = value.split("://", 1)
@@ -25,7 +26,22 @@ def redact_db_url(value: str) -> str:
     authority = rest[:authority_end]
     if "@" in authority:
         authority = "***@" + authority.rsplit("@", 1)[1]
-    return f"{scheme}://{authority}{rest[authority_end:]}"
+    suffix = rest[authority_end:]
+    query_start = suffix.find("?")
+    fragment_start = suffix.find("#")
+    if query_start < 0 or (fragment_start >= 0 and fragment_start < query_start):
+        return f"{scheme}://{authority}{suffix}"
+
+    query_end = fragment_start if fragment_start >= 0 else len(suffix)
+    query = suffix[query_start + 1 : query_end]
+    redacted_parts = []
+    for part in query.split("&"):
+        key = part.partition("=")[0]
+        redacted_parts.append(
+            f"{key}=***" if key.lower().endswith("password") else part
+        )
+    redacted_query = "&".join(redacted_parts)
+    return f"{scheme}://{authority}{suffix[: query_start + 1]}{redacted_query}{suffix[query_end:]}"
 
 
 def get_default_db_path() -> pathlib.Path | str | None:
@@ -149,7 +165,7 @@ class Settings:
         )
 
     @classmethod
-    def from_env(cls, db_path: os.PathLike[str] | None = None) -> Self:
+    def from_env(cls, db_path: os.PathLike[str] | str | None = None) -> Self:
         """Load settings from environment variables."""
 
         lmdb_kwargs: dict[str, Any] = {}
