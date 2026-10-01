@@ -367,6 +367,15 @@ impl Storage {
     /// dropped without committing) and every caller in the batch receives
     /// an error.
     ///
+    /// The exception is `MDB_MAP_FULL` from any body or the commit: the map is
+    /// grown and the whole batch re-run on a fresh txn, and only the last
+    /// attempt's output is returned. So `body` may run more than once per call
+    /// and must be replay-safe. `Fn` rules out moving out of captures, but
+    /// nothing checks for side effects outside the txn, which a failed attempt
+    /// doesn't roll back: hand results out through the return value (or a
+    /// shared slot each run overwrites), never by accumulating into shared
+    /// state.
+    ///
     /// A batch — opening the txn, every body, the commit or rollback — runs on
     /// one blocking-pool thread, because LMDB requires a write txn to begin
     /// and end on the same OS thread. The writer lock is held throughout, so
