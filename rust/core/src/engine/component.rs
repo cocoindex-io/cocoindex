@@ -1485,6 +1485,7 @@ mod tests {
     };
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
+    use crate::state_store::test_support::hold_write_batch;
     use async_trait::async_trait;
     use cocoindex_utils::fingerprint::Fingerprint;
     use std::hash::{Hash, Hasher};
@@ -1581,21 +1582,27 @@ mod tests {
     }
 
     /// Plans an action for every desired target state (none for a deletion)
-    /// and counts its `reconcile` calls.
+    /// and counts its `reconcile` calls. With `reject`, it rejects every
+    /// desired target state instead, as a connector rejecting a declared
+    /// value does.
     struct CountingHandler {
         reconcile_calls: Arc<AtomicUsize>,
         sink: TargetActionSinkKeeper<TestProfile>,
+        reject: bool,
     }
 
     impl TargetHandler<TestProfile> for CountingHandler {
         fn reconcile(
             &self,
-            _key: StableKey,
+            key: StableKey,
             desired_target_state: Option<&()>,
             _prev_possible_records: &[TestData],
             _prev_may_be_missing: bool,
         ) -> crate::prelude::Result<Option<TargetReconcileOutput<TestProfile>>> {
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+            if self.reject && desired_target_state.is_some() {
+                cocoindex_utils::client_bail!("target state {key:?} rejected");
+            }
             Ok(desired_target_state.map(|_| TargetReconcileOutput {
                 action: (),
                 sink: self.sink.clone(),
@@ -2163,25 +2170,7 @@ mod tests {
         // write txn of its own, which would wait on that batch's writer lock.
         let overflow_store = env.create_app_store("overflow").await.unwrap();
 
-        // Hold a write batch open, so the `run_txn` calls made meanwhile queue
-        // into the next batch, which runs their bodies in call order.
-        let held = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let holder = tokio::spawn({
-            let (env, held, release) = (env.clone(), held.clone(), release.clone());
-            async move {
-                env.run_txn(move |_wtxn| {
-                    let (held, release) = (held.clone(), release.clone());
-                    Box::pin(async move {
-                        held.notify_one();
-                        release.notified().await;
-                        Ok(())
-                    })
-                })
-                .await
-            }
-        });
-        held.notified().await;
+        let batch = hold_write_batch(env.storage()).await;
 
         let collector = PreviewActionCollector::<TestProfile>::default();
         let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
@@ -2202,6 +2191,7 @@ mod tests {
             CountingHandler {
                 reconcile_calls: reconcile_calls.clone(),
                 sink: TargetActionSinkKeeper::new(NoopSink),
+                reject: false,
             },
         )
         .unwrap();
@@ -2240,8 +2230,7 @@ mod tests {
         }));
         assert!(futures::poll!(overflow.as_mut()).is_pending());
 
-        release.notify_one();
-        holder.await.unwrap().unwrap();
+        batch.release().await;
         overflow.await.unwrap();
         preview.await.unwrap();
 
@@ -2250,5 +2239,85 @@ mod tests {
             "the overflowing write must make the batch re-run the preview's precommit"
         );
         assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
+    }
+
+    /// Precommits that share a write batch fail independently, even across
+    /// apps sharing the environment: a target handler rejecting one
+    /// component's target state fails that component's submit alone.
+    #[tokio::test]
+    async fn rejected_target_state_fails_only_its_own_components_submit() {
+        let (accepting_app, _dir) = test_app("accepting_app").await;
+        let env = accepting_app.app_ctx().env().clone();
+        let rejecting_app = App::new("rejecting_app", env.clone(), None).await.unwrap();
+
+        let batch = hold_write_batch(env.storage()).await;
+
+        // Each app's root component declares one target state, through a
+        // handler that accepts it or rejects it.
+        let root_ctx = |app: &App<TestProfile>, reject: bool| {
+            let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+                .new_processor_context_for_build(
+                    None,
+                    ProcessingStats::new(),
+                    false,
+                    false,
+                    None,
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            let reconcile_calls = Arc::new(AtomicUsize::new(0));
+            let provider = register_root_target_state_provider(
+                &ctx,
+                "target".to_string(),
+                CountingHandler {
+                    reconcile_calls: reconcile_calls.clone(),
+                    sink: TargetActionSinkKeeper::new(NoopSink),
+                    reject,
+                },
+            )
+            .unwrap();
+            declare_target_state(
+                &ctx,
+                &FnCallContext::default(),
+                provider,
+                StableKey::Int(0),
+                (),
+            )
+            .unwrap();
+            (ctx, reconcile_calls)
+        };
+        let (accepting_ctx, accepting_reconcile_calls) = root_ctx(&accepting_app, false);
+        let (rejecting_ctx, _) = root_ctx(&rejecting_app, true);
+        let processor = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"rejected_target_state").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+
+        // Polling each submit once runs it up to queuing its precommit: the
+        // accepting one first, so the rejection aborts a txn it ran in.
+        let mut accepting = std::pin::pin!(submit(&accepting_ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(accepting.as_mut()).is_pending());
+        let mut rejecting = std::pin::pin!(submit(&rejecting_ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(rejecting.as_mut()).is_pending());
+
+        batch.release().await;
+        let Err(err) = rejecting.await else {
+            panic!("the rejecting component's submit must fail");
+        };
+        assert!(
+            err.to_string().contains("rejected"),
+            "unexpected error: {err}"
+        );
+        accepting
+            .await
+            .expect("the accepting component's submit must not fail with the rejecting one");
+        assert_eq!(
+            accepting_reconcile_calls.load(Ordering::SeqCst),
+            2,
+            "the accepting precommit runs again to commit without the rejected one"
+        );
     }
 }
