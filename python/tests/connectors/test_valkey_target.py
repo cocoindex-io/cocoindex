@@ -30,10 +30,17 @@ from tests import common
 # =============================================================================
 
 try:
+    import importlib.metadata
+    
     from glide import GlideClient, GlideClientConfiguration, NodeAddress
     from glide.async_commands import ft as glide_ft
 
-    HAS_GLIDE = True
+    try:
+        _glide_ver = importlib.metadata.version("valkey-glide")
+        _ver_tuple = tuple(int(x) for x in _glide_ver.split(".")[:3] if x.isdigit())
+        HAS_GLIDE = _ver_tuple >= (2, 5, 2)
+    except Exception:
+        HAS_GLIDE = False
 except ImportError:
     HAS_GLIDE = False
 
