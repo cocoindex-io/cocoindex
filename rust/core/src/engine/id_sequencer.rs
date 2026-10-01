@@ -9,18 +9,18 @@
 //! Storage I/O goes through methods on `AppStore` / `Storage`; this module
 //! is the in-memory caching half and never touches the storage backend
 //! directly.
+//!
+//! `pre_commit` bypasses this cache: it reserves a child provider's fresh
+//! generation ID (under `TARGET_ID_KEY`) with
+//! `AppStore::reserve_id_range_in_txn`, directly inside the open precommit
+//! write txn. Being a txn write, that reservation rolls back if the batcher
+//! re-runs the batch on `MDB_MAP_FULL`.
 
 use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
 use crate::state_store::{AppStore, Storage};
-
-// Deferred ID allocation (the old `IdReservation` struct) is gone:
-// the session-driven `submit()` reconcile body no longer carries a
-// `WriteTxn`, so each fresh ID call goes straight to the standalone
-// autocommit primitive `app_store.reserve_id_range_standalone`. Only
-// the rare `ChildInvalidation::Destructive` branch issues these calls.
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -112,9 +112,9 @@ impl IdSequencerManager {
             let batch_size = state.next_batch_size;
             let app_store = app_store.clone();
             let key = key.clone();
-            // `reserve_id_range` is idempotent under retry: each attempt
-            // reads the current counter, computes `start_id`, writes
-            // `start_id + batch_size`.
+            // `reserve_id_range_in_txn` is idempotent under retry: each
+            // attempt reads the current counter, computes `start_id`,
+            // writes `start_id + batch_size`.
             let start_id = storage
                 .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
