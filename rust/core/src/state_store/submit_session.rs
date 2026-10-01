@@ -394,7 +394,9 @@ impl AppStore {
     /// only the last attempt's output. So the callback must be
     /// side-effect-free on its captures: clone what the body consumes
     /// inside the closure (typically a few `Arc::clone`s) rather than
-    /// moving it out.
+    /// moving it out. A result handed out through a captured slot rather
+    /// than the return value (as the preview path does) must overwrite the
+    /// slot on each run, never accumulate into it.
     pub async fn precommit<T, F>(
         &self,
         component_path: &StablePath,

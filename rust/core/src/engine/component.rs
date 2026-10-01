@@ -1467,16 +1467,21 @@ mod tests {
     use crate::engine::app::{App, AppUpdateOptions};
     use crate::engine::context::{
         ComponentProcessingAction, ComponentProcessorContext, FnCallContext, MemoStatesPayload,
+        PreviewActionCollector,
     };
     use crate::engine::deadline::{
         DeadlineContext, testing_advance_deadline_clock, testing_deadline_clock_lock,
         testing_disable_deadline_clock, testing_reset_deadline_clock,
     };
     use crate::engine::environment::Environment;
+    use crate::engine::execution::{
+        declare_target_state, register_root_target_state_provider, submit,
+    };
     use crate::engine::profile::{EngineProfile, Persist};
+    use crate::engine::stats::ProcessingStats;
     use crate::engine::target_state::{
-        TargetActionSink, TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput,
-        TargetStateProviderRegistry,
+        TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot, TargetHandler,
+        TargetReconcileOutput, TargetStateProviderRegistry,
     };
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
@@ -1575,17 +1580,28 @@ mod tests {
         }
     }
 
-    struct NoopHandler;
+    /// Plans an action for every desired target state (none for a deletion)
+    /// and counts its `reconcile` calls.
+    struct CountingHandler {
+        reconcile_calls: Arc<AtomicUsize>,
+        sink: TargetActionSinkKeeper<TestProfile>,
+    }
 
-    impl TargetHandler<TestProfile> for NoopHandler {
+    impl TargetHandler<TestProfile> for CountingHandler {
         fn reconcile(
             &self,
             _key: StableKey,
-            _desired_target_state: Option<&()>,
+            desired_target_state: Option<&()>,
             _prev_possible_records: &[TestData],
             _prev_may_be_missing: bool,
         ) -> crate::prelude::Result<Option<TargetReconcileOutput<TestProfile>>> {
-            Ok(None)
+            self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(desired_target_state.map(|_| TargetReconcileOutput {
+                action: (),
+                sink: self.sink.clone(),
+                tracking_record: Some(TestData(Vec::new())),
+                child_invalidation: None,
+            }))
         }
     }
 
@@ -1608,7 +1624,7 @@ mod tests {
         type HostCtx = ();
         type ComponentProc = TestProcessor;
         type FunctionData = TestData;
-        type TargetHdl = NoopHandler;
+        type TargetHdl = CountingHandler;
         type TargetStateTrackingRecord = TestData;
         type TargetAction = ();
         type TargetActionSink = NoopSink;
@@ -1744,11 +1760,18 @@ mod tests {
     }
 
     async fn test_app(name: &str) -> (App<TestProfile>, tempfile::TempDir) {
+        test_app_with_map_size(name, 1 << 24).await
+    }
+
+    async fn test_app_with_map_size(
+        name: &str,
+        lmdb_map_size: usize,
+    ) -> (App<TestProfile>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let settings = StorageSettings {
             db_path: dir.path().join("lmdb"),
             lmdb_max_dbs: 64,
-            lmdb_map_size: 1 << 24,
+            lmdb_map_size,
         };
         let providers = Arc::new(Mutex::new(TargetStateProviderRegistry::new(
             Default::default(),
@@ -2123,5 +2146,109 @@ mod tests {
             2,
             "the full_reprocess update must not reuse the previous update's memo"
         );
+    }
+
+    /// A write batch that hits `MDB_MAP_FULL` is re-run in full once the map
+    /// has grown, so a preview's precommit body can run more than once per
+    /// call. Queue it into one batch just ahead of a write that overflows the
+    /// map: every run re-plans the preview's actions, and each action must
+    /// still be collected once.
+    #[tokio::test]
+    async fn preview_collects_actions_once_when_its_write_batch_reruns() {
+        const NUM_TARGET_STATES: usize = 3;
+        let (app, _dir) =
+            test_app_with_map_size("preview_batch_rerun", page_size::get() * 16).await;
+        let env = app.app_ctx().env().clone();
+        // Created before the batch below is held: `create_app_store` opens a
+        // write txn of its own, which would wait on that batch's writer lock.
+        let overflow_store = env.create_app_store("overflow").await.unwrap();
+
+        // Hold a write batch open, so the `run_txn` calls made meanwhile queue
+        // into the next batch, which runs their bodies in call order.
+        let held = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let holder = tokio::spawn({
+            let (env, held, release) = (env.clone(), held.clone(), release.clone());
+            async move {
+                env.run_txn(move |_wtxn| {
+                    let (held, release) = (held.clone(), release.clone());
+                    Box::pin(async move {
+                        held.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    })
+                })
+                .await
+            }
+        });
+        held.notified().await;
+
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+            .new_processor_context_for_build(
+                None,
+                ProcessingStats::new(),
+                false,
+                false,
+                Some(collector.clone()),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let reconcile_calls = Arc::new(AtomicUsize::new(0));
+        let provider = register_root_target_state_provider(
+            &ctx,
+            "preview_batch_rerun".to_string(),
+            CountingHandler {
+                reconcile_calls: reconcile_calls.clone(),
+                sink: TargetActionSinkKeeper::new(NoopSink),
+            },
+        )
+        .unwrap();
+        for i in 0..NUM_TARGET_STATES {
+            declare_target_state(
+                &ctx,
+                &FnCallContext::default(),
+                provider.clone(),
+                StableKey::Int(i as i64),
+                (),
+            )
+            .unwrap();
+        }
+        let processor = TestProcessor::new(
+            "preview_batch_rerun",
+            Fingerprint::from(&"preview_batch_rerun").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+
+        // Polling each future once runs it up to queuing its body: the
+        // preview's precommit first, then a write that overflows the map.
+        let mut preview = std::pin::pin!(submit(&ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(preview.as_mut()).is_pending());
+        let mut overflow = std::pin::pin!(env.run_txn(move |wtxn| {
+            let overflow_store = overflow_store.clone();
+            Box::pin(async move {
+                let value = vec![0u8; 16 * 1024];
+                for i in 0..64 {
+                    overflow_store
+                        .db()
+                        .put(wtxn, format!("key_{i:02}").as_bytes(), &value)?;
+                }
+                Ok(())
+            })
+        }));
+        assert!(futures::poll!(overflow.as_mut()).is_pending());
+
+        release.notify_one();
+        holder.await.unwrap().unwrap();
+        overflow.await.unwrap();
+        preview.await.unwrap();
+
+        assert!(
+            reconcile_calls.load(Ordering::SeqCst) >= 2 * NUM_TARGET_STATES,
+            "the overflowing write must make the batch re-run the preview's precommit"
+        );
+        assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
     }
 }
