@@ -45,7 +45,7 @@ pub(crate) type Database = heed::Database<heed::types::Bytes, heed::types::Bytes
 /// of the parent `Env` (so standalone read methods can open their own
 /// `RoTxn` without the caller having to do so), and a clone of the
 /// parent `Storage` (so the session backend can route writes through
-/// `Storage::run_txn_boxed`'s single-writer batcher — bypassing it
+/// `Storage::run_txn`'s single-writer batcher — bypassing it
 /// would serialize every per-session write through heed's writer
 /// mutex with no amortization).
 #[derive(Clone)]
@@ -81,24 +81,6 @@ impl AppStore {
     pub(super) async fn run_in_batcher<F>(&self, body: F) -> Result<()>
     where
         F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        // Call `body(wtxn)` directly (borrowing `body` via its `Fn` impl) rather
-        // than capturing it in an `async move` block. This keeps the outer closure
-        // `Fn` (retryable) instead of `FnOnce`.
-        self.run_in_batcher_typed::<(), _>(move |wtxn| body(wtxn))
-            .await
-    }
-
-    /// Generic variant of [`Self::run_in_batcher`] that returns a
-    /// typed value out of the batched body. Used by methods like
-    /// `reserve_id_range` whose batched work computes a fresh value.
-    pub(super) async fn run_in_batcher_typed<T, F>(&self, body: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
             + Sync
             + 'static,
@@ -426,20 +408,6 @@ impl AppStore {
         };
         let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
         Ok(Some(info.node_type))
-    }
-
-    /// Reserve an ID range outside a caller-supplied txn. Routed
-    /// through the single-writer batcher so concurrent callers
-    /// coalesce. Returns the first reserved ID.
-    pub async fn reserve_id_range(&self, key: &StableKey, count: u64) -> Result<u64> {
-        let app_store = self.clone();
-        let key = key.clone();
-        self.run_in_batcher_typed(move |wtxn| {
-            let app_store = app_store.clone();
-            let key = key.clone();
-            Box::pin(async move { app_store.reserve_id_range_in_txn(wtxn, &key, count).await })
-        })
-        .await
     }
 }
 
