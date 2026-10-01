@@ -369,6 +369,7 @@ dependencies = [
  "rpds",
  "serde",
  "serde_with",
+ "sqlx",
  "storekey",
  "tokio",
  "tokio-stream",

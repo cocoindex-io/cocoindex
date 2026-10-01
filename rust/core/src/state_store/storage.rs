@@ -1,22 +1,30 @@
-//! Per-environment storage handle: opens the underlying LMDB env, batches
-//! write transactions, and exposes per-app [`AppStore`] creation.
+//! Per-environment storage handle: selects the backend, batches write
+//! transactions, and exposes per-app [`AppStore`] creation.
 //!
-//! `Storage` is the env-level analog of the per-app [`AppStore`]. Both are
-//! cheaply clonable (internally `Arc`-backed) so callers can move them
-//! into spawned threads for inspection-style streaming reads.
+//! LMDB remains the default. A `postgres://`/`postgresql://` value in
+//! [`StorageSettings::db_path`] selects the optional Postgres adapter.
+//! `Storage` is cheaply clonable (internally `Arc`-backed) so callers can
+//! move it into spawned tasks.
 
 use crate::prelude::*;
 use crate::state::db_schema::{
     ChildExistenceInfo, DbEntryKey, StablePathEntryKey, StablePathNodeType,
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
-use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::WriteTxn;
+use crate::state_store::app_store::AppStore;
+#[cfg(feature = "postgres")]
+use crate::state_store::backend::PostgresBackend;
+use crate::state_store::backend::{
+    LmdbBackend, LmdbDatabase, StorageBackend, open_read_txn_on_env_with_retry,
+};
+use crate::state_store::txn::{WriteTxn, WriteTxnInner};
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "postgres")]
+use sqlx::Acquire;
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,56 +32,6 @@ use std::sync::Arc;
 const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
 const MAP_SIZE_GROWTH_FACTOR: usize = 2;
-
-/// Sync sibling of [`AppStore::read_txn`]'s `MDB_READERS_FULL` retry,
-/// for use inside `spawn_blocking` where the async retry helper isn't
-/// reachable. Same two-phase policy. Caller must already hold a coordinator
-/// read guard before opening the LMDB read transaction.
-fn open_read_txn_on_env_with_retry(
-    env: &heed::Env<heed::WithoutTls>,
-) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
-    use std::time::{Duration, Instant};
-
-    const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
-    const MAX_BACKOFF: Duration = Duration::from_secs(1);
-    const PHASE1_TIMEOUT: Duration = Duration::from_secs(3);
-
-    // Phase 1: short timeout for transient concurrency.
-    let phase1_start = Instant::now();
-    let mut backoff = INITIAL_BACKOFF;
-    loop {
-        match env.read_txn() {
-            Ok(txn) => return Ok(txn),
-            Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
-                if phase1_start.elapsed() >= PHASE1_TIMEOUT {
-                    break;
-                }
-                warn!("LMDB readers full, retrying");
-                std::thread::sleep(backoff);
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    // Phase 2: clear stale readers, then retry indefinitely.
-    let cleared = env.clear_stale_readers()?;
-    if cleared > 0 {
-        warn!("Cleared {cleared} stale LMDB readers");
-    }
-    backoff = INITIAL_BACKOFF;
-    loop {
-        match env.read_txn() {
-            Ok(txn) => return Ok(txn),
-            Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
-                warn!("LMDB readers still full after clearing stale readers, retrying");
-                std::thread::sleep(backoff);
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-}
 
 fn default_max_dbs() -> u32 {
     DEFAULT_MAX_DBS
@@ -105,13 +63,73 @@ fn align_map_size_to_page(requested: usize) -> usize {
 ///
 /// The on-disk schema (field names, defaults) is the public configuration
 /// surface deserialized from user settings.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StorageSettings {
+    /// LMDB directory, or an explicit `postgres://`/`postgresql://` URL.
+    ///
+    /// Keeping URLs in the historical field means existing Rust struct
+    /// literals and the Python flat wire format remain source-compatible.
     pub db_path: PathBuf,
     #[serde(default = "default_max_dbs")]
     pub lmdb_max_dbs: u32,
     #[serde(default = "default_map_size")]
     pub lmdb_map_size: usize,
+}
+
+impl std::fmt::Debug for StorageSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let db_path = self.db_path.to_string_lossy();
+        let displayed = if db_path.contains("://") {
+            redact_url(&db_path)
+        } else {
+            db_path.into_owned()
+        };
+        f.debug_struct("StorageSettings")
+            .field("db_path", &displayed)
+            .field("lmdb_max_dbs", &self.lmdb_max_dbs)
+            .field("lmdb_map_size", &self.lmdb_map_size)
+            .finish()
+    }
+}
+
+impl StorageSettings {
+    fn backend_name(&self) -> Result<&'static str> {
+        match self.db_path.to_str() {
+            Some(url) if url.starts_with("postgres://") || url.starts_with("postgresql://") => {
+                Ok("postgres")
+            }
+            Some(url) if url.contains("://") => {
+                client_bail!(
+                    "unsupported storage backend URL scheme: {}",
+                    redact_url(url)
+                )
+            }
+            _ => Ok("lmdb"),
+        }
+    }
+}
+
+/// Remove credentials from a URL before it reaches logs or `Debug` output.
+pub fn redact_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map(|i| authority_start + i)
+        .unwrap_or(url.len());
+    let authority = &url[authority_start..authority_end];
+    let redacted_authority = match authority.rsplit_once('@') {
+        Some((_credentials, host)) => format!("***@{host}"),
+        None => authority.to_string(),
+    };
+    format!(
+        "{}{}{}",
+        &url[..authority_start],
+        redacted_authority,
+        &url[authority_end..]
+    )
 }
 
 #[derive(Clone)]
@@ -120,7 +138,7 @@ pub struct Storage {
 }
 
 struct StorageInner {
-    db_env: heed::Env<heed::WithoutTls>,
+    backend: Arc<dyn StorageBackend>,
     coord: Arc<tokio::sync::RwLock<()>>,
     batcher: Batcher<TxnRunner>,
 }
@@ -130,20 +148,41 @@ struct StorageInner {
 /// output. The future is bound to the borrow of the txn (`'a`).
 ///
 /// `Fn` (not `FnOnce`) so the batcher can retry the entire batch on
-/// `MDB_MAP_FULL`: the env is resized between attempts, then every body is
-/// called again with a fresh write transaction, and only the last
-/// attempt's outputs are returned. Callers must therefore ensure their
-/// closures are side-effect–free on the captured state (i.e. they may be
-/// invoked more than once): clone captures inside the closure rather than
-/// moving them out, and never accumulate into shared state from inside the
-/// body — a body that reports through a shared slot overwrites it on each
-/// run, and the caller acts on it after `run_txn` returns.
+/// backend-transient failures: LMDB `MDB_MAP_FULL` (after resizing) and
+/// Postgres serialization/deadlock failures (after rollback). Every body is
+/// called again with a fresh write transaction, and only the last attempt's
+/// outputs are returned. Callers must therefore ensure their closures are
+/// side-effect-free on the captured state (i.e. they may be invoked more than
+/// once): clone captures inside the closure rather than moving them out, and
+/// never accumulate into shared state from inside the body — a body that
+/// reports through a shared slot overwrites it on each run, and the caller acts
+/// on it after `run_txn` returns.
 type TxnBody = Box<
     dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
-        + Send,
+        + Send
+        + Sync,
 >;
 
 /// Returns `true` if `err` is an LMDB `MDB_MAP_FULL` error.
+#[cfg(feature = "postgres")]
+fn postgres_error(e: sqlx::Error, context: &'static str) -> Error {
+    Error::internal(anyhow::Error::from(e).context(context))
+}
+
+#[cfg(feature = "postgres")]
+fn is_retryable_postgres_error(err: &Error) -> bool {
+    let Error::Internal(anyhow_err) = err.without_contexts() else {
+        return false;
+    };
+    let Some(sqlx_err) = anyhow_err.downcast_ref::<sqlx::Error>() else {
+        return false;
+    };
+    let Some(db_err) = sqlx_err.as_database_error() else {
+        return false;
+    };
+    matches!(db_err.code().as_deref(), Some("40001" | "40P01"))
+}
+
 fn is_map_full(err: &Error) -> bool {
     let inner = err.without_contexts();
     if let Error::Internal(anyhow_err) = inner {
@@ -164,39 +203,131 @@ fn is_map_full(err: &Error) -> bool {
 /// which guarantees no read or write LMDB transaction opened through this
 /// coordinator is active in the current process.
 #[derive(Clone)]
-struct TxnRunner {
-    db_env: heed::Env<heed::WithoutTls>,
-    coord: Arc<tokio::sync::RwLock<()>>,
+enum TxnRunner {
+    Lmdb {
+        db_env: heed::Env<heed::WithoutTls>,
+        coord: Arc<tokio::sync::RwLock<()>>,
+    },
+    #[cfg(feature = "postgres")]
+    Postgres(Arc<PostgresBackend>),
 }
 
 impl TxnRunner {
-    /// Runs `inputs` in one write txn, resizing the map and retrying the whole
-    /// batch on `MDB_MAP_FULL`. Must be polled on a single OS thread from start
-    /// to finish — see [`Runner::run`].
-    async fn run_with_resize_retry(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
-        loop {
-            match self.try_run_once(inputs).await {
-                Ok(outputs) => return Ok(outputs),
-                Err(e) if is_map_full(&e) => {
-                    self.resize_on_map_full().await?;
+    /// Runs `inputs` in one write txn, retrying the whole batch on a
+    /// backend-specific transient failure.
+    async fn run_with_retry(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
+        match self {
+            Self::Lmdb { db_env, coord } => {
+                let runner = Self::Lmdb {
+                    db_env: db_env.clone(),
+                    coord: coord.clone(),
+                };
+                loop {
+                    match runner.try_run_once_lmdb(inputs).await {
+                        Ok(outputs) => return Ok(outputs),
+                        Err(e) if is_map_full(&e) => {
+                            runner.resize_on_map_full().await?;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
-                Err(e) => return Err(e),
+            }
+            #[cfg(feature = "postgres")]
+            Self::Postgres(backend) => {
+                let mut backoff = std::time::Duration::from_millis(10);
+                loop {
+                    match Self::try_run_once_postgres(backend, inputs).await {
+                        Ok(outputs) => return Ok(outputs),
+                        Err(e) if is_retryable_postgres_error(&e) => {
+                            warn!(
+                                "Postgres state transaction retrying after serialization failure"
+                            );
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             }
         }
     }
 
-    /// Attempts one write-txn pass over `inputs`. If any body or the final
-    /// commit returns an error the write txn and coordinator read guard are
-    /// dropped before the error propagates. On `MapFull` the caller should
+    /// Attempts one LMDB write-txn pass over `inputs`. If any body or the
+    /// final commit returns an error the write txn and coordinator read guard
+    /// are dropped before the error propagates. On `MapFull` the caller should
     /// resize (under the coordinator write guard) and retry.
-    async fn try_run_once(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
-        let _read_guard = self.coord.read().await;
+    async fn try_run_once_lmdb(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
+        let (db_env, coord) = match self {
+            Self::Lmdb { db_env, coord } => (db_env, coord),
+            #[cfg(feature = "postgres")]
+            Self::Postgres(_) => {
+                client_bail!("LMDB transaction runner received a non-LMDB backend")
+            }
+        };
+        let _read_guard = coord.read().await;
         let mut outputs = Vec::with_capacity(inputs.len());
-        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
+        let mut wtxn = WriteTxn::lmdb(db_env.write_txn()?);
         for body in inputs {
             outputs.push(body(&mut wtxn).await?);
         }
-        wtxn.into_inner().commit()?;
+        match wtxn.into_inner() {
+            WriteTxnInner::Lmdb(txn) => txn.commit()?,
+            #[cfg(feature = "postgres")]
+            WriteTxnInner::Postgres(_) => unreachable!("LMDB runner produced a Postgres txn"),
+        }
+        Ok(outputs)
+    }
+
+    #[cfg(feature = "postgres")]
+    async fn try_run_once_postgres(
+        backend: &PostgresBackend,
+        inputs: &[TxnBody],
+    ) -> Result<Vec<Box<dyn Any + Send>>> {
+        let _write_guard = backend.write_lock().await;
+        let mut conn = backend
+            .pool()
+            .acquire()
+            .await
+            .map_err(|e| postgres_error(e, "failed to acquire Postgres state connection"))?;
+        let mut txn = conn
+            .begin()
+            .await
+            .map_err(|e| postgres_error(e, "failed to begin Postgres state transaction"))?;
+        // SERIALIZABLE catches read-modify-write races. The advisory lock
+        // serializes all CocoIndex state transactions in this database so the
+        // first implementation is correct even for callers that build
+        // multi-row invariants; retries handle deadlock/serialization errors.
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+            .execute(&mut *txn)
+            .await
+            .map_err(|e| postgres_error(e, "failed to set Postgres state isolation level"))?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(0x434f434f_i32)
+            .bind(1_i32)
+            .execute(&mut *txn)
+            .await
+            .map_err(|e| postgres_error(e, "failed to lock Postgres state transaction"))?;
+
+        let mut wtxn = WriteTxn::postgres(txn);
+        let mut outputs = Vec::with_capacity(inputs.len());
+        for body in inputs {
+            match body(&mut wtxn).await {
+                Ok(output) => outputs.push(output),
+                Err(e) => {
+                    if let WriteTxnInner::Postgres(txn) = wtxn.into_inner() {
+                        let _ = txn.rollback().await;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        match wtxn.into_inner() {
+            WriteTxnInner::Postgres(txn) => txn
+                .commit()
+                .await
+                .map_err(|e| postgres_error(e, "failed to commit Postgres state transaction"))?,
+            WriteTxnInner::Lmdb(_) => unreachable!("Postgres runner produced an LMDB txn"),
+        }
         Ok(outputs)
     }
 
@@ -211,8 +342,13 @@ impl TxnRunner {
     }
 
     async fn resize_on_map_full(&self) -> Result<usize> {
-        let resize_guard = self.coord.write().await;
-        let new_size = Self::next_map_size(&self.db_env)?;
+        let (db_env, coord) = match self {
+            Self::Lmdb { db_env, coord } => (db_env, coord),
+            #[cfg(feature = "postgres")]
+            Self::Postgres(_) => client_bail!("LMDB resize attempted on a non-LMDB backend"),
+        };
+        let resize_guard = coord.write().await;
+        let new_size = Self::next_map_size(db_env)?;
         warn!(
             "LMDB map full, auto-resizing to {} bytes and retrying",
             new_size
@@ -221,7 +357,7 @@ impl TxnRunner {
         // transactions in this process; the failed write txn and its read
         // guard were dropped before this path runs.
         unsafe {
-            self.db_env.resize(new_size)?;
+            db_env.resize(new_size)?;
         }
         drop(resize_guard);
         Ok(new_size)
@@ -239,67 +375,112 @@ impl Runner for TxnRunner {
     /// another — which work-stealing allows at any `.await` that suspends —
     /// leaves the lock held for good and blocks every later writer.
     ///
-    /// So the whole batch runs on one blocking-pool thread, where `block_on`
-    /// polls the bodies instead of the runtime's workers.
+    /// So the whole LMDB batch runs on one blocking-pool thread, where
+    /// `block_on` polls the bodies instead of the runtime's workers. Postgres
+    /// transactions are ordinary async transactions and can run directly.
     async fn run(
         &self,
         inputs: Vec<TxnBody>,
     ) -> Result<impl ExactSizeIterator<Item = Box<dyn Any + Send>>> {
-        let runner = self.clone();
-        let runtime = tokio::runtime::Handle::current();
-        let span = Span::current();
-        let outputs = tokio::task::spawn_blocking(move || {
-            runtime.block_on(runner.run_with_resize_retry(&inputs).instrument(span))
-        })
-        .await??;
-        Ok(outputs.into_iter())
+        match self {
+            Self::Lmdb { .. } => {
+                let runner = self.clone();
+                let runtime = tokio::runtime::Handle::current();
+                let span = Span::current();
+                let outputs = tokio::task::spawn_blocking(move || {
+                    runtime.block_on(runner.run_with_retry(&inputs).instrument(span))
+                })
+                .await??;
+                Ok(outputs.into_iter())
+            }
+            #[cfg(feature = "postgres")]
+            Self::Postgres(_) => {
+                let outputs = self.run_with_retry(&inputs).await?;
+                Ok(outputs.into_iter())
+            }
+        }
     }
 }
 
 impl Storage {
     pub async fn new(settings: &StorageSettings) -> Result<Self> {
-        let db_path = settings.db_path.join("mdb");
-        std::fs::create_dir_all(&db_path)?;
-        // Backward compatibility: migrate files from old layout into mdb/.
-        Self::migrate_legacy_db_files(&settings.db_path, &db_path)?;
-        if settings.lmdb_max_dbs < 1 {
-            client_bail!("lmdb_max_dbs must be >= 1, got {}", settings.lmdb_max_dbs);
-        }
-        if settings.lmdb_map_size == 0 {
-            client_bail!("lmdb_map_size must be > 0, got {}", settings.lmdb_map_size);
-        }
-        let map_size = align_map_size_to_page(settings.lmdb_map_size);
-        if map_size != settings.lmdb_map_size {
-            debug!(
-                "Rounded lmdb_map_size up from {} to {} to match the system page size ({})",
-                settings.lmdb_map_size,
-                map_size,
-                page_size::get()
-            );
-        }
-        let db_env = unsafe {
-            heed::EnvOpenOptions::new()
-                .read_txn_without_tls()
-                .max_dbs(settings.lmdb_max_dbs)
-                .map_size(map_size)
-                .open(db_path)
-        }?;
-        let cleared_count = db_env.clear_stale_readers()?;
-        if cleared_count > 0 {
-            info!("Cleared {cleared_count} stale readers");
-        }
+        let backend_name = settings.backend_name()?;
         let coord = Arc::new(tokio::sync::RwLock::new(()));
-        let batcher = Batcher::new(
-            TxnRunner {
-                db_env: db_env.clone(),
-                coord: coord.clone(),
-            },
-            Arc::new(BatchQueue::new()),
-            BatchingOptions::default(),
-        );
+        let (backend, batcher): (Arc<dyn StorageBackend>, Batcher<TxnRunner>) = match backend_name {
+            "lmdb" => {
+                if settings.db_path.as_os_str().is_empty() {
+                    client_bail!("Settings.db_path must be provided for the LMDB backend");
+                }
+                let db_path = settings.db_path.join("mdb");
+                std::fs::create_dir_all(&db_path)?;
+                // Backward compatibility: migrate files from old layout into mdb/.
+                Self::migrate_legacy_db_files(&settings.db_path, &db_path)?;
+                if settings.lmdb_max_dbs < 1 {
+                    client_bail!("lmdb_max_dbs must be >= 1, got {}", settings.lmdb_max_dbs);
+                }
+                if settings.lmdb_map_size == 0 {
+                    client_bail!("lmdb_map_size must be > 0, got {}", settings.lmdb_map_size);
+                }
+                let map_size = align_map_size_to_page(settings.lmdb_map_size);
+                if map_size != settings.lmdb_map_size {
+                    debug!(
+                        "Rounded lmdb_map_size up from {} to {} to match the system page size ({})",
+                        settings.lmdb_map_size,
+                        map_size,
+                        page_size::get()
+                    );
+                }
+                let db_env = unsafe {
+                    heed::EnvOpenOptions::new()
+                        .read_txn_without_tls()
+                        .max_dbs(settings.lmdb_max_dbs)
+                        .map_size(map_size)
+                        .open(db_path)
+                }?;
+                let cleared_count = db_env.clear_stale_readers()?;
+                if cleared_count > 0 {
+                    info!("Cleared {cleared_count} stale readers");
+                }
+                let backend = Arc::new(LmdbBackend::new(db_env.clone(), coord.clone()))
+                    as Arc<dyn StorageBackend>;
+                let batcher = Batcher::new(
+                    TxnRunner::Lmdb {
+                        db_env: db_env.clone(),
+                        coord: coord.clone(),
+                    },
+                    Arc::new(BatchQueue::new()),
+                    BatchingOptions::default(),
+                );
+                (backend, batcher)
+            }
+            "postgres" => {
+                #[cfg(feature = "postgres")]
+                {
+                    let url = settings
+                        .db_path
+                        .to_str()
+                        .ok_or_else(|| client_error!("Postgres state URL must be valid UTF-8"))?;
+                    let pg = Arc::new(PostgresBackend::connect(url).await?);
+                    let backend: Arc<dyn StorageBackend> = pg.clone();
+                    let batcher = Batcher::new(
+                        TxnRunner::Postgres(pg),
+                        Arc::new(BatchQueue::new()),
+                        BatchingOptions::default(),
+                    );
+                    (backend, batcher)
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    client_bail!(
+                        "Postgres state backend support is not compiled in; rebuild with --features postgres"
+                    );
+                }
+            }
+            _ => unreachable!("backend_name validates all schemes"),
+        };
         Ok(Self {
             inner: Arc::new(StorageInner {
-                db_env,
+                backend,
                 coord,
                 batcher,
             }),
@@ -311,8 +492,10 @@ impl Storage {
     #[cfg(test)]
     pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
         let coord = Arc::new(tokio::sync::RwLock::new(()));
+        let backend =
+            Arc::new(LmdbBackend::new(db_env.clone(), coord.clone())) as Arc<dyn StorageBackend>;
         let batcher = Batcher::new(
-            TxnRunner {
+            TxnRunner::Lmdb {
                 db_env: db_env.clone(),
                 coord: coord.clone(),
             },
@@ -321,7 +504,7 @@ impl Storage {
         );
         Self {
             inner: Arc::new(StorageInner {
-                db_env,
+                backend,
                 coord,
                 batcher,
             }),
@@ -367,14 +550,14 @@ impl Storage {
     /// dropped without committing) and every caller in the batch receives
     /// an error.
     ///
-    /// The exception is `MDB_MAP_FULL` from any body or the commit: the map is
-    /// grown and the whole batch re-run on a fresh txn, and only the last
-    /// attempt's output is returned. So `body` may run more than once per call
-    /// and must be replay-safe. `Fn` rules out moving out of captures, but
-    /// nothing checks for side effects outside the txn, which a failed attempt
-    /// doesn't roll back: hand results out through the return value (or a
-    /// shared slot each run overwrites), never by accumulating into shared
-    /// state.
+    /// Transient backend failures retry the whole batch on a fresh txn:
+    /// LMDB `MDB_MAP_FULL` after resizing the map, and Postgres
+    /// serialization/deadlock errors after rollback. Only the last attempt's
+    /// output is returned. So `body` may run more than once per call and must
+    /// be replay-safe. `Fn` rules out moving out of captures, but nothing
+    /// checks for side effects outside the txn, which a failed attempt doesn't
+    /// roll back: hand results out through the return value (or a shared slot
+    /// each run overwrites), never by accumulating into shared state.
     ///
     /// A batch — opening the txn, every body, the commit or rollback — runs on
     /// one blocking-pool thread, because LMDB requires a write txn to begin
@@ -411,60 +594,31 @@ impl Storage {
             .map_err(|_| internal_error!("Storage::run_txn: output type mismatch"))
     }
 
-    /// Create the per-app sub-database and wrap it in an `AppStore`.
+    /// Create the per-app sub-store and wrap it in an `AppStore`.
     pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
-        let _guard = self.inner.coord.read().await;
-        let mut wtxn = self.inner.db_env.write_txn()?;
-        let db = self
+        self.inner.backend.create_app(app_name).await?;
+        let handle = self
             .inner
-            .db_env
-            .create_database(&mut wtxn, Some(app_name))?;
-        wtxn.commit()?;
-        Ok(AppStore::new(db, self.inner.db_env.clone(), self.clone()))
+            .backend
+            .open_app(app_name)
+            .await?
+            .ok_or_else(|| internal_error!("app store disappeared after creation: {app_name}"))?;
+        Ok(AppStore::new(
+            handle,
+            self.inner.backend.clone(),
+            self.clone(),
+        ))
     }
 
-    /// Open the per-app sub-database by name, or `None` if it doesn't exist.
-    /// Opens an internal read transaction for the lookup.
+    /// Open the per-app sub-store by name, or `None` if it doesn't exist.
     pub async fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
-        let _guard = self.inner.coord.read().await;
-        let rtxn = self.inner.db_env.read_txn()?;
-        let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
-        // The dbi handle opened in a read txn only becomes usable by other
-        // transactions after this txn commits; dropping (aborting) it instead
-        // leaves the handle invalid and later reads fail with EINVAL when the
-        // sub-database was created by another process.
-        rtxn.commit()?;
-        let env = self.inner.db_env.clone();
-        let storage = self.clone();
-        Ok(db.map(|db| AppStore::new(db, env, storage.clone())))
+        let handle = self.inner.backend.open_app(app_name).await?;
+        Ok(handle.map(|handle| AppStore::new(handle, self.inner.backend.clone(), self.clone())))
     }
 
-    /// Drop an app's data from this LMDB environment. heed 0.22 doesn't
-    /// expose `mdb_drop`, so the sub-database stays registered in the
-    /// env's catalog but is emptied. `list_app_names` filters out
-    /// empty sub-databases, so the app is effectively gone.
-    /// Idempotent: dropping a non-existent app is a no-op.
+    /// Drop an app's data. Idempotent: dropping a non-existent app is a no-op.
     pub async fn drop_app(&self, app_name: &str) -> Result<()> {
-        let db = {
-            let _guard = self.inner.coord.read().await;
-            let rtxn = self.inner.db_env.read_txn()?;
-            let db = self
-                .inner
-                .db_env
-                .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?;
-            // See `open_app_store_by_name`: commit so the dbi handle stays
-            // valid for the write txn below.
-            rtxn.commit()?;
-            db
-        };
-        let Some(db) = db else {
-            return Ok(());
-        };
-        let _guard = self.inner.coord.read().await;
-        let mut wtxn = self.inner.db_env.write_txn()?;
-        db.clear(&mut wtxn)?;
-        wtxn.commit()?;
-        Ok(())
+        self.inner.backend.drop_app(app_name).await
     }
 
     /// Run `f` with `app_store`'s `(db, txn, sender)` on a
@@ -484,7 +638,7 @@ impl Storage {
     where
         T: Send + 'static,
         F: FnOnce(
-                &Database,
+                &LmdbDatabase,
                 &heed::RoTxn<'_, heed::WithoutTls>,
                 &tokio::sync::mpsc::Sender<Result<T>>,
             ) -> Result<()>
@@ -492,13 +646,20 @@ impl Storage {
             + 'static,
     {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
-
+        let Some(env) = app_store.lmdb_env_handle() else {
+            let _ = tx.try_send(Err(client_error!(
+                "streaming inspection is not yet supported by the Postgres state backend"
+            )));
+            return rx;
+        };
+        let db = app_store
+            .db()
+            .expect("lmdb_env_handle returned Some for a non-LMDB app");
         let coord = self.inner.coord.clone();
         tokio::task::spawn_blocking(move || {
             let result: Result<()> = (|| {
                 let _guard = coord.blocking_read();
-                let txn = open_read_txn_on_env_with_retry(&app_store.env)?;
-                let db = app_store.db();
+                let txn = open_read_txn_on_env_with_retry(&env)?;
                 f(&db, &txn, &tx)
             })();
             if let Err(err) = result {
@@ -530,7 +691,7 @@ impl Storage {
     /// in `inspect::db_inspect`, which folds per-path reads into the same
     /// txn.
     pub(crate) fn for_each_stable_path_in_txn(
-        db: &Database,
+        db: &LmdbDatabase,
         txn: &heed::RoTxn<'_, heed::WithoutTls>,
         mut emit: impl FnMut(StablePath, StablePathNodeType) -> Result<bool>,
     ) -> Result<()> {
@@ -597,27 +758,9 @@ impl Storage {
         })
     }
 
-    /// List every non-empty named app sub-store in this storage environment.
-    /// The "unnamed database" is LMDB's catalog of named sub-databases.
+    /// List every non-empty app sub-store in this storage environment.
     pub async fn list_app_names(&self) -> Result<Vec<String>> {
-        let db_env = &self.inner.db_env;
-        let _guard = self.inner.coord.read().await;
-        let rtxn = db_env.read_txn()?;
-        let unnamed: heed::Database<heed::types::Str, heed::types::DecodeIgnore> = db_env
-            .open_database(&rtxn, None)?
-            .expect("the unnamed database always exists");
-
-        let mut names = Vec::new();
-        for result in unnamed.iter(&rtxn)? {
-            let (name, ()) = result?;
-            if let Ok(Some(db)) =
-                db_env.open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(name))
-                && db.first(&rtxn)?.is_some()
-            {
-                names.push(name.to_string());
-            }
-        }
-        Ok(names)
+        self.inner.backend.list_app_names().await
     }
 }
 
@@ -625,6 +768,57 @@ impl Storage {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(not(feature = "postgres"))]
+    #[tokio::test]
+    async fn postgres_url_without_feature_errors() {
+        let settings = StorageSettings {
+            db_path: PathBuf::from("postgresql://user:secret@db.example/cocoindex"),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        let err = match Storage::new(&settings).await {
+            Ok(_) => panic!("Postgres URL unexpectedly opened without the postgres feature"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("not compiled in"));
+        assert!(!err.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn storage_url_detection_and_redaction() {
+        let pg = StorageSettings {
+            db_path: PathBuf::from("postgresql://user:secret@db.example/cocoindex"),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        assert_eq!(pg.backend_name().unwrap(), "postgres");
+        assert!(!format!("{pg:?}").contains("secret"));
+        assert!(format!("{pg:?}").contains("***@db.example"));
+
+        let unsupported = StorageSettings {
+            db_path: PathBuf::from("mysql://user:secret@db.example/cocoindex"),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        assert!(unsupported.backend_name().is_err());
+
+        let lmdb = StorageSettings {
+            db_path: PathBuf::from("/tmp/cocoindex"),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        assert_eq!(lmdb.backend_name().unwrap(), "lmdb");
+    }
+
+    #[test]
+    fn redact_url_removes_userinfo_only() {
+        assert_eq!(
+            redact_url("postgres://user:secret@db.example:5432/cocoindex?sslmode=require"),
+            "postgres://***@db.example:5432/cocoindex?sslmode=require"
+        );
+        assert_eq!(redact_url("/tmp/cocoindex.db"), "/tmp/cocoindex.db");
+    }
 
     #[test]
     fn align_map_size_rounds_up_to_page_multiple() {
@@ -682,7 +876,7 @@ mod tests {
         let storage = Storage::new(&settings).await.unwrap();
         let app_store = storage.create_app_store("resize_test").await.unwrap();
         assert_eq!(
-            app_store.env.info().map_size,
+            app_store.lmdb_env().info().map_size,
             initial_map_size,
             "initial map size should match configured value"
         );
@@ -706,7 +900,9 @@ mod tests {
                 let entries = entries_for_txn.clone();
                 Box::pin(async move {
                     for (key, value) in &entries {
-                        app_store.db().put(wtxn, key.as_bytes(), value)?;
+                        app_store
+                            .put_raw_in_txn(wtxn, key.as_bytes(), value)
+                            .await?;
                     }
                     Ok(())
                 })
@@ -714,7 +910,7 @@ mod tests {
             .await
             .expect("single run_txn should succeed after MapFull resize-and-retry");
 
-        let final_map_size = app_store.env.info().map_size;
+        let final_map_size = app_store.lmdb_env().info().map_size;
         let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
@@ -733,15 +929,14 @@ mod tests {
         );
 
         // Read back first, middle, and last keys; verify full payload bytes.
-        let rtxn = app_store.read_txn().await.unwrap();
         for key in ["key_0000", "key_0031", "key_0063"] {
             let bytes = app_store
-                .db()
-                .get(&*rtxn, key.as_bytes())
+                .get_raw(key.as_bytes())
+                .await
                 .unwrap()
                 .unwrap_or_else(|| panic!("{key} should exist after successful commit"));
             assert_eq!(
-                bytes.as_ref(),
+                bytes.as_slice(),
                 payload.as_slice(),
                 "{key} payload should match what was written"
             );
@@ -795,7 +990,9 @@ mod tests {
                     let entries = entries_for_write.clone();
                     Box::pin(async move {
                         for (key, value) in &entries {
-                            app_store.db().put(wtxn, key.as_bytes(), value)?;
+                            app_store
+                                .put_raw_in_txn(wtxn, key.as_bytes(), value)
+                                .await?;
                         }
                         Ok(())
                     })
@@ -833,7 +1030,7 @@ mod tests {
             .expect("write task panicked")
             .expect("write should succeed after reader released");
 
-        let final_map_size = app_store.env.info().map_size;
+        let final_map_size = app_store.lmdb_env().info().map_size;
         let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
@@ -850,15 +1047,14 @@ mod tests {
              final_map_size={final_map_size}"
         );
 
-        let rtxn = app_store.read_txn().await.unwrap();
         for key in ["key_0000", "key_0031", "key_0063"] {
             let bytes = app_store
-                .db()
-                .get(&*rtxn, key.as_bytes())
+                .get_raw(key.as_bytes())
+                .await
                 .unwrap()
                 .unwrap_or_else(|| panic!("{key} should exist after successful write"));
             assert_eq!(
-                bytes.as_ref(),
+                bytes.as_slice(),
                 payload.as_slice(),
                 "{key} payload should match what was written"
             );

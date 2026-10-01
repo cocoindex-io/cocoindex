@@ -1217,6 +1217,16 @@ mod tests {
         }
     }
 
+    fn commit_lmdb(wtxn: WriteTxn<'_>) {
+        match wtxn.into_inner() {
+            crate::state_store::txn::WriteTxnInner::Lmdb(txn) => txn.commit().unwrap(),
+            #[cfg(feature = "postgres")]
+            crate::state_store::txn::WriteTxnInner::Postgres(_) => {
+                panic!("test helper received a Postgres transaction")
+            }
+        }
+    }
+
     fn sym(s: &str) -> StableKey {
         StableKey::Symbol(Arc::from(s))
     }
@@ -1250,7 +1260,15 @@ mod tests {
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
         let storage = crate::state_store::Storage::from_env(env.clone());
-        (AppStore::new(db, env, storage), dir)
+        let handle = crate::state_store::AppStoreHandle::Lmdb {
+            db,
+            env: env.clone(),
+        };
+        let backend = Arc::new(crate::state_store::LmdbBackend::new(
+            env.clone(),
+            storage.txn_coordinator(),
+        )) as Arc<dyn crate::state_store::StorageBackend>;
+        (AppStore::new(handle, backend, storage), dir)
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
@@ -1351,7 +1369,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.lmdb_env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
             .await
@@ -1364,7 +1383,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        commit_lmdb(wtxn);
 
         let mut cache = UserStateCache::new();
         cache
@@ -1394,12 +1413,13 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.lmdb_env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        commit_lmdb(wtxn);
 
         let mut cache = UserStateCache::new(); // no populate
         cache.use_state(sym("new_k"), td("new_val")).unwrap();
@@ -1418,12 +1438,13 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.lmdb_env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        commit_lmdb(wtxn);
 
         let mut cache = UserStateCache::new();
         cache.populate(vec![(sym("a"), b("a_val"))]).unwrap();
@@ -1444,12 +1465,13 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.lmdb_env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        commit_lmdb(wtxn);
 
         let mut cache = UserStateCache::new();
         cache.populate(vec![(sym("k"), b("old"))]).unwrap();
@@ -1468,7 +1490,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.lmdb_env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1477,7 +1500,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        commit_lmdb(wtxn);
 
         let mut cache = UserStateCache::new();
         cache
@@ -1497,12 +1520,13 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.lmdb_env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        commit_lmdb(wtxn);
 
         let cache = UserStateCache::new(); // no populate, no use_state
 

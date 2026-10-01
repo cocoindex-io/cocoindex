@@ -1,12 +1,10 @@
 ---
 title: "*Internal storage* configuration"
 description: >
-  CocoIndex persists target states and memo results in LMDB. The database grows
-  automatically when a write runs out of space; tune the initial map_size and
-  max_dbs via environment variables or programmatic settings for large-scale
-  deployments.
+  CocoIndex persists target states and memo results in LMDB by default, with
+  optional Postgres-backed state for ephemeral or multi-runner deployments.
 ---
-CocoIndex uses an [LMDB](http://www.lmdb.tech/doc/) database to persist its internal state. This database tracks target states and [memoization](../programming_guide/function) results from previous runs, enabling CocoIndex to detect what changed and apply only the necessary updates.
+CocoIndex uses an [LMDB](http://www.lmdb.tech/doc/) database by default to persist its internal state. This database tracks target states and [memoization](../programming_guide/function) results from previous runs, enabling CocoIndex to detect what changed and apply only the necessary updates.
 
 ## Database path
 
@@ -32,6 +30,24 @@ settings = coco.Settings(db_path=pathlib.Path("./cocoindex.db"))
 ```
 
 Setting `db_path` in the lifespan or `Settings` takes precedence over the `COCOINDEX_DB` environment variable. If neither is provided, CocoIndex will raise an error.
+
+## Postgres-backed state (opt-in)
+
+CocoIndex can use a Postgres database for the internal tracking and memoization state instead of LMDB. Pass a `postgres://` or `postgresql://` URL through the existing `db_path` setting; filesystem paths continue to select LMDB and keep the exact same layout and byte format:
+
+```python
+settings = coco.Settings(
+    db_path="postgresql://user:password@db.example/cocoindex?sslmode=require"
+)
+```
+
+The URL can also be supplied through `COCOINDEX_DB`. Credentials are redacted from `Settings.__repr__`, Rust `Debug` output, and CLI display.
+
+The backend creates and version-checks its own tables on first use. State transactions run at `SERIALIZABLE` isolation and take a database-scoped advisory transaction lock, so concurrent runners cannot lose read-modify-write updates. A transaction failure rolls the whole batch back; serialization/deadlock failures are retried by the same replay-safe batch path as LMDB's map-full retry. LMDB remains the default and does not require a Postgres server or a Postgres driver at runtime.
+
+:::note[Current phase]
+Streaming inspection (`cocoindex show` over an external store) is still LMDB-only. The Postgres backend currently guarantees serialized, atomic state commits; coordinated build leases that prevent two runners from *executing* the same source item before commit are a follow-up phase.
+:::
 
 ## LMDB tuning
 
