@@ -512,10 +512,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     /// Closure that walks `declared_children` (`None`: nothing declared)
     /// against the on-disk `__cex` rows under this component — see
-    /// [`reconcile_child_existence`]. `Fn` (not `FnOnce`) so a backend
-    /// that re-runs its commit txn can re-invoke it: the cheap
-    /// (`Arc`/owned) captures are cloned per call rather than moved into
-    /// the future.
+    /// [`reconcile_child_existence`]. `Fn` (not `FnOnce`) because LMDB's
+    /// batcher re-invokes it when it re-runs the commit txn after growing
+    /// the map on `MDB_MAP_FULL`: the cheap (`Arc`/owned) captures are
+    /// cloned per call rather than moved into the future.
     fn existence_reconciler(
         &self,
         declared_children: Option<Arc<ChildStablePathSet>>,
@@ -757,9 +757,11 @@ enum PreCommitOutcome<Prof: EngineProfile> {
 
 /// Captures bundle shared into the precommit callback closure. Every
 /// field is `O(1)` to clone (Arc-internal or persistent data structure)
-/// so the body's per-call `Arc::clone(&captures)` is cheap. LMDB never
-/// retries the callback, but the bundle's `Fn`-friendly shape keeps the
-/// closure structurally aligned with retry-capable backends.
+/// so the body's per-call `Arc::clone(&captures)` is cheap. The callback
+/// must stay `Fn` and only read the bundle: LMDB's batcher re-runs the
+/// whole write batch after growing the map on `MDB_MAP_FULL`, so one
+/// `AppStore::precommit` call can run it — and with it `pre_commit` and
+/// every `TargetHandler::reconcile` — more than once.
 struct PreCommitCaptures<Prof: EngineProfile> {
     app_store: AppStore,
     stable_path: StablePath,
@@ -921,13 +923,14 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             processor_name,
         )));
     }
-    // Provider generation updates deferred to after Phase 1 + Phase 2 complete
+    // Provider generation updates deferred to after the precommit txn commits
     // — `TargetStateProvider::set_provider_generation` is OnceLock-backed and
-    // would error on a hypothetical retry. The detection sub-pass already
-    // returned PendingRetry before any reconcile ran, so by the time we
-    // reach here we're committed to this attempt; collecting and applying at
-    // the end keeps the invariant "set at most once per successful lifecycle"
-    // explicit.
+    // would error on a retry. Passing the detection sub-pass (the only
+    // PendingRetry exit) doesn't make this attempt final: LMDB's batcher
+    // re-runs the whole precommit callback, this function included, after
+    // growing the map on `MDB_MAP_FULL`. Collecting here and letting
+    // `submit()` apply them after the commit keeps the invariant "set at most
+    // once per successful lifecycle".
     let mut deferred_provider_generations: Vec<(
         TargetStateProvider<Prof>,
         TargetStateProviderGeneration,
@@ -1302,9 +1305,9 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     }
 
     // Provider-generation updates: buffered into the output, applied
-    // by `submit()` after the precommit txn commits — so a retry of
-    // precommit (a fresh precommit_read on PendingRetry) doesn't trip
-    // the `OnceLock::set` "already set" guard.
+    // by `submit()` after the precommit txn commits — so a re-run of this
+    // function (the batcher's `MDB_MAP_FULL` retry) doesn't trip the
+    // `OnceLock::set` "already set" guard.
     Ok(PreCommitOutcome::Done {
         output: PreCommitOutput {
             curr_version,

@@ -365,10 +365,10 @@ pub struct CommitPlan {
 /// suspension scope. The body's future is `'a`-tied so it can't outlive
 /// the borrow.
 ///
-/// `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
-/// invoke the reconciler more than once; it therefore clones or
-/// `Arc`-shares its captures rather than moving them in. The LMDB
-/// AppStore invokes it exactly once.
+/// `Fn` (not `FnOnce`) because the LMDB AppStore can invoke it more
+/// than once: on `MDB_MAP_FULL` the batcher grows the map and re-runs
+/// the whole write batch, this commit included. It therefore clones or
+/// `Arc`-shares its captures rather than moving them in.
 pub type ExistenceReconciler =
     Box<dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send + Sync>;
 
@@ -388,11 +388,13 @@ impl AppStore {
     /// AGENTS.md "LMDB write paths"). LMDB has no savepoints — to
     /// "abort" on PendingRetry, the body contributes no writes.
     ///
-    /// The callback is `Fn` (not `FnOnce`) for shape parity with
-    /// retry-capable backends; LMDB's batcher never retries the body,
-    /// so it's invoked at most once per call here. Captures consumed by
-    /// the body must be cloned inside the closure (typically a few
-    /// `Arc::clone`s).
+    /// The callback is `Fn` (not `FnOnce`) because it can run more than
+    /// once per call: on `MDB_MAP_FULL` the batcher grows the map and
+    /// re-runs every body in the write batch against a fresh txn, keeping
+    /// only the last attempt's output. So the callback must be
+    /// side-effect-free on its captures: clone what the body consumes
+    /// inside the closure (typically a few `Arc::clone`s) rather than
+    /// moving it out.
     pub async fn precommit<T, F>(
         &self,
         component_path: &StablePath,
