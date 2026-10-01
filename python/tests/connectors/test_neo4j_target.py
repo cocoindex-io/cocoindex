@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self, cast
 
 import pytest
 import pytest_asyncio
@@ -22,13 +22,17 @@ from cocoindex.connectors.neo4j._cypher import (
     build_constraint_create,
     build_constraint_drop,
     build_node_delete,
+    build_node_delete_batch,
     build_node_index_create,
     build_node_index_drop,
     build_node_upsert,
+    build_node_upsert_batch,
     build_relationship_delete,
+    build_relationship_delete_batch,
     build_relationship_index_create,
     build_relationship_index_drop,
     build_relationship_upsert,
+    build_relationship_upsert_batch,
     build_vector_index_create,
     build_vector_index_drop,
     constraint_name,
@@ -40,6 +44,7 @@ from cocoindex.connectors.neo4j._cypher import (
 from tests import common
 
 coco_env = common.create_test_env(__file__)
+_NO_CONTEXT = cast(Any, None)
 
 
 # =============================================================================
@@ -61,6 +66,96 @@ requires_neo4j_server = pytest.mark.skipif(
     not (HAS_NEO4J and _HAS_NEO4J_SERVER),
     reason="NEO4J_TEST_SERVER is not set",
 )
+
+
+class _FakeTransaction:
+    def __init__(self, driver: _FakeDriver) -> None:
+        self._driver = driver
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    async def run(self, cypher: str, **params: Any) -> None:
+        self.calls.append((cypher, params))
+        self._driver.query_count += 1
+        if self._driver.fail_on_query == self._driver.query_count:
+            raise RuntimeError("simulated Neo4j write failure")
+
+    async def commit(self) -> None:
+        self.commit_count += 1
+
+    async def rollback(self) -> None:
+        self.rollback_count += 1
+
+
+class _FakeSession:
+    def __init__(self, driver: _FakeDriver) -> None:
+        self._driver = driver
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def begin_transaction(self) -> _FakeTransaction:
+        tx = _FakeTransaction(self._driver)
+        self._driver.transactions.append(tx)
+        return tx
+
+
+class _FakeDriver:
+    def __init__(self) -> None:
+        self.database: str | None = None
+        self.session_count = 0
+        self.transactions: list[_FakeTransaction] = []
+        self.query_count = 0
+        self.fail_on_query: int | None = None
+
+    def session(self, *, database: str) -> _FakeSession:
+        self.database = database
+        self.session_count += 1
+        return _FakeSession(self)
+
+
+def _make_record_action(
+    *,
+    table_name: str,
+    is_relation: bool,
+    pk_field: str,
+    record_id: Any,
+    value: dict[str, Any] | None,
+    from_label: str | None = None,
+    from_pk_field: str | None = None,
+    from_id: Any | None = None,
+    to_label: str | None = None,
+    to_pk_field: str | None = None,
+    to_id: Any | None = None,
+) -> Any:
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    return neo_target._RecordAction(
+        table_name=table_name,
+        is_relation=is_relation,
+        pk_field=pk_field,
+        record_id=record_id,
+        value=value,
+        from_label=from_label,
+        from_pk_field=from_pk_field,
+        from_id=from_id,
+        to_label=to_label,
+        to_pk_field=to_pk_field,
+        to_id=to_id,
+    )
+
+
+def _fake_applier() -> tuple[Any, _FakeDriver]:
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    driver = _FakeDriver()
+    graph = neo_target._GraphHandle(driver, "neo4j")  # type: ignore[arg-type]
+    return neo_target._SharedRecordApplier(graph), driver
+
 
 if HAS_NEO4J:
     from cocoindex.connectors import neo4j as neo  # type: ignore[attr-defined]
@@ -134,6 +229,47 @@ class TestNodeUpsertCypher:
     def test_empty_pk_raises(self) -> None:
         with pytest.raises(ValueError):
             build_node_upsert("X", [], True)
+
+
+class TestBatchedCypher:
+    def test_node_upsert_uses_unwind_and_row_params(self) -> None:
+        assert build_node_upsert_batch("Document", ["filename"]) == (
+            "UNWIND $data AS row\n"
+            "MERGE (n:`Document` {`filename`: row.key_0}) "
+            "SET n += row.props"
+        )
+
+    def test_node_delete_uses_unwind(self) -> None:
+        assert build_node_delete_batch("Document", ["filename"]) == (
+            "UNWIND $data AS row\n"
+            "MATCH (n:`Document` {`filename`: row.key_0}) DETACH DELETE n"
+        )
+
+    def test_relationship_upsert_uses_unwind(self) -> None:
+        assert build_relationship_upsert_batch(
+            "REL", "A", ["x"], "B", ["y"], ["id"]
+        ) == (
+            "UNWIND $data AS row\n"
+            "MERGE (s:`A` {`x`: row.from_key_0}) "
+            "MERGE (t:`B` {`y`: row.to_key_0}) "
+            "MERGE (s)-[r:`REL` {`id`: row.rel_key_0}]->(t) "
+            "SET r += row.props"
+        )
+
+    def test_relationship_delete_uses_unwind(self) -> None:
+        assert build_relationship_delete_batch("REL", ["id"]) == (
+            "UNWIND $data AS row\nMATCH ()-[r:`REL` {`id`: row.key_0}]->() DELETE r"
+        )
+
+    def test_batch_builders_reject_empty_pk(self) -> None:
+        with pytest.raises(ValueError):
+            build_node_upsert_batch("X", [])
+        with pytest.raises(ValueError):
+            build_node_delete_batch("X", [])
+        with pytest.raises(ValueError):
+            build_relationship_upsert_batch("REL", "A", ["x"], "B", ["y"], [])
+        with pytest.raises(ValueError):
+            build_relationship_delete_batch("REL", [])
 
 
 class TestNodeDeleteCypher:
@@ -533,6 +669,316 @@ class TestTableReconcile:
         assert out_reproc.child_invalidation == "lossy"
 
 
+@requires_neo4j
+class TestSharedRecordApplierBatching:
+    @pytest.mark.asyncio
+    async def test_empty_batch_opens_no_transaction(self) -> None:
+        applier, driver = _fake_applier()
+
+        await applier._apply_actions(_NO_CONTEXT, [])
+
+        assert driver.session_count == 0
+        assert driver.transactions == []
+
+    @pytest.mark.asyncio
+    async def test_single_node_upsert_is_one_batch_query(self) -> None:
+        applier, driver = _fake_applier()
+        action = _make_record_action(
+            table_name="Document",
+            is_relation=False,
+            pk_field="id",
+            record_id="doc-1",
+            value={"id": "doc-1", "title": "A"},
+        )
+
+        await applier._apply_actions(_NO_CONTEXT, [action])
+
+        assert len(driver.transactions) == 1
+        tx = driver.transactions[0]
+        assert tx.commit_count == 1
+        assert tx.rollback_count == 0
+        assert tx.calls == [
+            (
+                build_node_upsert_batch("Document", ["id"]),
+                {"data": [{"key_0": "doc-1", "props": {"title": "A"}}]},
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_groups_by_node_label_and_preserves_duplicate_keys(self) -> None:
+        applier, driver = _fake_applier()
+        actions = [
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id="doc-1",
+                value={"id": "doc-1", "title": "first"},
+            ),
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id="doc-2",
+                value={"id": "doc-2", "title": "second"},
+            ),
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id="doc-1",
+                value={"id": "doc-1", "title": "last"},
+            ),
+            _make_record_action(
+                table_name="Other",
+                is_relation=False,
+                pk_field="id",
+                record_id="other-1",
+                value={"id": "other-1", "title": "other"},
+            ),
+        ]
+
+        await applier._apply_actions(_NO_CONTEXT, actions)
+
+        tx = driver.transactions[0]
+        assert len(tx.calls) == 2
+        assert tx.calls[0] == (
+            build_node_upsert_batch("Document", ["id"]),
+            {
+                "data": [
+                    {"key_0": "doc-1", "props": {"title": "first"}},
+                    {"key_0": "doc-2", "props": {"title": "second"}},
+                    {"key_0": "doc-1", "props": {"title": "last"}},
+                ]
+            },
+        )
+        assert tx.calls[1] == (
+            build_node_upsert_batch("Other", ["id"]),
+            {"data": [{"key_0": "other-1", "props": {"title": "other"}}]},
+        )
+
+    @pytest.mark.asyncio
+    async def test_groups_by_relationship_endpoints_and_type(self) -> None:
+        applier, driver = _fake_applier()
+        actions = [
+            _make_record_action(
+                table_name="Person",
+                is_relation=False,
+                pk_field="id",
+                record_id="p1",
+                value={"id": "p1"},
+            ),
+            _make_record_action(
+                table_name="Company",
+                is_relation=False,
+                pk_field="id",
+                record_id="c1",
+                value={"id": "c1"},
+            ),
+            _make_record_action(
+                table_name="WORKS_AT",
+                is_relation=True,
+                pk_field="id",
+                record_id="r1",
+                value={"id": "r1", "role": "engineer"},
+                from_label="Person",
+                from_pk_field="id",
+                from_id="p1",
+                to_label="Company",
+                to_pk_field="id",
+                to_id="c1",
+            ),
+            _make_record_action(
+                table_name="KNOWS",
+                is_relation=True,
+                pk_field="id",
+                record_id="r2",
+                value={"id": "r2", "since": 2020},
+                from_label="Person",
+                from_pk_field="id",
+                from_id="p1",
+                to_label="Person",
+                to_pk_field="id",
+                to_id="p2",
+            ),
+        ]
+
+        await applier._apply_actions(_NO_CONTEXT, actions)
+
+        tx = driver.transactions[0]
+        assert len(tx.calls) == 4
+        assert tx.calls[0][0] == build_node_upsert_batch("Person", ["id"])
+        assert tx.calls[1][0] == build_node_upsert_batch("Company", ["id"])
+        assert tx.calls[2] == (
+            build_relationship_upsert_batch(
+                "WORKS_AT", "Person", ["id"], "Company", ["id"], ["id"]
+            ),
+            {
+                "data": [
+                    {
+                        "from_key_0": "p1",
+                        "to_key_0": "c1",
+                        "rel_key_0": "r1",
+                        "props": {"role": "engineer"},
+                    }
+                ]
+            },
+        )
+        assert tx.calls[3][0] == build_relationship_upsert_batch(
+            "KNOWS", "Person", ["id"], "Person", ["id"], ["id"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_delete_buckets_keep_existing_order(self) -> None:
+        applier, driver = _fake_applier()
+        actions = [
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id="doc-1",
+                value={"id": "doc-1", "title": "updated"},
+            ),
+            _make_record_action(
+                table_name="OldNode",
+                is_relation=False,
+                pk_field="id",
+                record_id="old-node",
+                value=None,
+            ),
+            _make_record_action(
+                table_name="REL",
+                is_relation=True,
+                pk_field="id",
+                record_id="rel-1",
+                value={"id": "rel-1", "weight": 2},
+                from_label="Document",
+                from_pk_field="id",
+                from_id="doc-1",
+                to_label="Document",
+                to_pk_field="id",
+                to_id="doc-2",
+            ),
+            _make_record_action(
+                table_name="OLD_REL",
+                is_relation=True,
+                pk_field="id",
+                record_id="old-rel",
+                value=None,
+            ),
+        ]
+
+        await applier._apply_actions(_NO_CONTEXT, actions)
+
+        tx = driver.transactions[0]
+        assert [cypher for cypher, _ in tx.calls] == [
+            build_node_upsert_batch("Document", ["id"]),
+            build_relationship_upsert_batch(
+                "REL", "Document", ["id"], "Document", ["id"], ["id"]
+            ),
+            build_relationship_delete_batch("OLD_REL", ["id"]),
+            build_node_delete_batch("OldNode", ["id"]),
+        ]
+        assert tx.calls[-2][1] == {"data": [{"key_0": "old-rel"}]}
+        assert tx.calls[-1][1] == {"data": [{"key_0": "old-node"}]}
+
+    @pytest.mark.asyncio
+    async def test_same_key_update_then_delete_keeps_delete_last(self) -> None:
+        applier, driver = _fake_applier()
+        actions = [
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id="doc-1",
+                value={"id": "doc-1", "title": "updated"},
+            ),
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id="doc-1",
+                value=None,
+            ),
+        ]
+
+        await applier._apply_actions(_NO_CONTEXT, actions)
+
+        tx = driver.transactions[0]
+        assert tx.calls == [
+            (
+                build_node_upsert_batch("Document", ["id"]),
+                {"data": [{"key_0": "doc-1", "props": {"title": "updated"}}]},
+            ),
+            (
+                build_node_delete_batch("Document", ["id"]),
+                {"data": [{"key_0": "doc-1"}]},
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_groups_are_split_into_bounded_chunks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_NEO4J_MAX_UNWIND_ROWS", 2)
+        applier, driver = _fake_applier()
+        actions = [
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id=f"doc-{i}",
+                value={"id": f"doc-{i}"},
+            )
+            for i in range(5)
+        ]
+
+        await applier._apply_actions(_NO_CONTEXT, actions)
+
+        tx = driver.transactions[0]
+        assert [len(params["data"]) for _, params in tx.calls] == [2, 2, 1]
+        assert sum(len(params["data"]) for _, params in tx.calls) == 5
+
+    @pytest.mark.asyncio
+    async def test_failed_batch_rolls_back_and_can_be_retried(self) -> None:
+        applier, driver = _fake_applier()
+        actions = [
+            _make_record_action(
+                table_name="Document",
+                is_relation=False,
+                pk_field="id",
+                record_id="doc-1",
+                value={"id": "doc-1"},
+            ),
+            _make_record_action(
+                table_name="Other",
+                is_relation=False,
+                pk_field="id",
+                record_id="other-1",
+                value={"id": "other-1"},
+            ),
+        ]
+        driver.fail_on_query = 2
+
+        with pytest.raises(RuntimeError, match="simulated Neo4j write failure"):
+            await applier._apply_actions(_NO_CONTEXT, actions)
+
+        failed_tx = driver.transactions[0]
+        assert failed_tx.commit_count == 0
+        assert failed_tx.rollback_count == 1
+        assert len(failed_tx.calls) == 2
+
+        driver.fail_on_query = None
+        await applier._apply_actions(_NO_CONTEXT, actions)
+
+        retried_tx = driver.transactions[1]
+        assert retried_tx.commit_count == 1
+        assert retried_tx.rollback_count == 0
+        assert len(retried_tx.calls) == 2
+
+
 # =============================================================================
 # Integration tests — require running Neo4j (testcontainers spins one up)
 # =============================================================================
@@ -813,6 +1259,129 @@ async def test_relationship_upsert_with_endpoint_merge(
     assert pairs == {("alice", "bob"), ("bob", "carol")}
     for _, _, rel in edges:
         assert rel["predicate"] == "connects"
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_batched_apply_mixed_groups_and_deletes(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """One applier call batches multiple labels, endpoints, and relationship types."""
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    uri, auth = neo4j_clean
+    graph = await neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j").acquire()
+    applier = neo_target._SharedRecordApplier(graph)
+
+    await applier._apply_actions(
+        _NO_CONTEXT,
+        [
+            _make_record_action(
+                table_name="Person",
+                is_relation=False,
+                pk_field="id",
+                record_id="p1",
+                value={"id": "p1", "name": "Alice"},
+            ),
+            _make_record_action(
+                table_name="Person",
+                is_relation=False,
+                pk_field="id",
+                record_id="p2",
+                value={"id": "p2", "name": "Bob"},
+            ),
+            _make_record_action(
+                table_name="Company",
+                is_relation=False,
+                pk_field="id",
+                record_id="c1",
+                value={"id": "c1", "name": "CocoIndex"},
+            ),
+            _make_record_action(
+                table_name="WORKS_AT",
+                is_relation=True,
+                pk_field="id",
+                record_id="w1",
+                value={"id": "w1", "role": "engineer"},
+                from_label="Person",
+                from_pk_field="id",
+                from_id="p1",
+                to_label="Company",
+                to_pk_field="id",
+                to_id="c1",
+            ),
+            _make_record_action(
+                table_name="KNOWS",
+                is_relation=True,
+                pk_field="id",
+                record_id="k1",
+                value={"id": "k1", "since": 2020},
+                from_label="Person",
+                from_pk_field="id",
+                from_id="p1",
+                to_label="Person",
+                to_pk_field="id",
+                to_id="p2",
+            ),
+        ],
+    )
+
+    people = {row["id"]: row for row in await _read_nodes(uri, auth, "Person")}
+    companies = {row["id"]: row for row in await _read_nodes(uri, auth, "Company")}
+    works_at = await _read_relationships(uri, auth, "WORKS_AT")
+    knows = await _read_relationships(uri, auth, "KNOWS")
+    assert set(people) == {"p1", "p2"}
+    assert set(companies) == {"c1"}
+    assert len(works_at) == 1
+    assert len(knows) == 1
+    assert works_at[0][2]["role"] == "engineer"
+    assert knows[0][2]["since"] == 2020
+
+    await applier._apply_actions(
+        _NO_CONTEXT,
+        [
+            _make_record_action(
+                table_name="WORKS_AT",
+                is_relation=True,
+                pk_field="id",
+                record_id="w1",
+                value=None,
+            ),
+            _make_record_action(
+                table_name="KNOWS",
+                is_relation=True,
+                pk_field="id",
+                record_id="k1",
+                value=None,
+            ),
+            _make_record_action(
+                table_name="Person",
+                is_relation=False,
+                pk_field="id",
+                record_id="p1",
+                value=None,
+            ),
+            _make_record_action(
+                table_name="Person",
+                is_relation=False,
+                pk_field="id",
+                record_id="p2",
+                value=None,
+            ),
+            _make_record_action(
+                table_name="Company",
+                is_relation=False,
+                pk_field="id",
+                record_id="c1",
+                value=None,
+            ),
+        ],
+    )
+
+    assert await _read_nodes(uri, auth, "Person") == []
+    assert await _read_nodes(uri, auth, "Company") == []
+    assert await _read_relationships(uri, auth, "WORKS_AT") == []
+    assert await _read_relationships(uri, auth, "KNOWS") == []
 
 
 @requires_neo4j_server

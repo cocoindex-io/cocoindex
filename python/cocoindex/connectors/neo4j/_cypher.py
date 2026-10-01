@@ -22,13 +22,17 @@ __all__ = [
     "build_constraint_create",
     "build_constraint_drop",
     "build_node_delete",
+    "build_node_delete_batch",
     "build_node_index_create",
     "build_node_index_drop",
     "build_node_upsert",
+    "build_node_upsert_batch",
     "build_relationship_delete",
+    "build_relationship_delete_batch",
     "build_relationship_index_create",
     "build_relationship_index_drop",
     "build_relationship_upsert",
+    "build_relationship_upsert_batch",
     "build_vector_index_create",
     "build_vector_index_drop",
     "constraint_name",
@@ -62,6 +66,12 @@ def _quote(name: str) -> str:
 def _key_clause(prefix: str, fields: Sequence[str]) -> str:
     """Build ``{<f1>: $<prefix>_0, <f2>: $<prefix>_1, ...}`` for a MATCH/MERGE pattern."""
     parts = [f"{_quote(f)}: ${prefix}_{i}" for i, f in enumerate(fields)]
+    return "{" + ", ".join(parts) + "}"
+
+
+def _row_key_clause(prefix: str, fields: Sequence[str]) -> str:
+    """Build ``{<f1>: row.<prefix>_0, ...}`` for an UNWIND batch pattern."""
+    parts = [f"{_quote(f)}: row.{prefix}_{i}" for i, f in enumerate(fields)]
     return "{" + ", ".join(parts) + "}"
 
 
@@ -117,6 +127,36 @@ def build_node_delete(label: str, pk_fields: Sequence[str]) -> str:
     return f"MATCH (n:{_quote(label)} {_key_clause('key', pk_fields)}) DETACH DELETE n"
 
 
+def build_node_upsert_batch(label: str, pk_fields: Sequence[str]) -> str:
+    """Batched node upsert over ``$data``.
+
+    Every input row carries ``key_0...`` for the primary key and a ``props``
+    map. ``SET n += row.props`` is intentionally unconditional so all rows in
+    one label/PK group share one query shape; an empty map is a no-op.
+    """
+    if not pk_fields:
+        raise ValueError(
+            "build_node_upsert_batch requires at least one primary key field"
+        )
+    return (
+        "UNWIND $data AS row\n"
+        f"MERGE (n:{_quote(label)} {_row_key_clause('key', pk_fields)}) "
+        "SET n += row.props"
+    )
+
+
+def build_node_delete_batch(label: str, pk_fields: Sequence[str]) -> str:
+    """Batched ``DETACH DELETE`` for nodes of one label and PK shape."""
+    if not pk_fields:
+        raise ValueError(
+            "build_node_delete_batch requires at least one primary key field"
+        )
+    return (
+        "UNWIND $data AS row\n"
+        f"MATCH (n:{_quote(label)} {_row_key_clause('key', pk_fields)}) DETACH DELETE n"
+    )
+
+
 def build_relationship_upsert(
     rel_type: str,
     from_label: str,
@@ -157,6 +197,48 @@ def build_relationship_delete(rel_type: str, pk_fields: Sequence[str]) -> str:
         )
     return (
         f"MATCH ()-[r:{_quote(rel_type)} {_key_clause('key', pk_fields)}]->() DELETE r"
+    )
+
+
+def build_relationship_upsert_batch(
+    rel_type: str,
+    from_label: str,
+    from_pk_fields: Sequence[str],
+    to_label: str,
+    to_pk_fields: Sequence[str],
+    rel_pk_fields: Sequence[str],
+) -> str:
+    """Batched endpoint MERGE + relationship MERGE over ``$data``.
+
+    Rows carry ``from_key_*``, ``to_key_*``, ``rel_key_*``, and ``props``.
+    As with node upserts, ``SET r += row.props`` is unconditional to keep one
+    query shape for the whole relationship group.
+    """
+    if not from_pk_fields or not to_pk_fields or not rel_pk_fields:
+        raise ValueError(
+            "build_relationship_upsert_batch requires PK fields for from, to, "
+            "and the relationship"
+        )
+    return (
+        "UNWIND $data AS row\n"
+        f"MERGE (s:{_quote(from_label)} {_row_key_clause('from_key', from_pk_fields)}) "
+        f"MERGE (t:{_quote(to_label)} {_row_key_clause('to_key', to_pk_fields)}) "
+        f"MERGE (s)-[r:{_quote(rel_type)} "
+        f"{_row_key_clause('rel_key', rel_pk_fields)}]->(t) "
+        "SET r += row.props"
+    )
+
+
+def build_relationship_delete_batch(rel_type: str, pk_fields: Sequence[str]) -> str:
+    """Batched relationship DELETE for one relationship type and PK shape."""
+    if not pk_fields:
+        raise ValueError(
+            "build_relationship_delete_batch requires at least one primary key field"
+        )
+    return (
+        "UNWIND $data AS row\n"
+        f"MATCH ()-[r:{_quote(rel_type)} {_row_key_clause('key', pk_fields)}]->() "
+        "DELETE r"
     )
 
 

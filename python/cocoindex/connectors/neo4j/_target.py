@@ -480,14 +480,49 @@ class _RecordAction(NamedTuple):
     to_id: Any | None
 
 
+class _RecordBatchKey(NamedTuple):
+    """Query-shape key for one bounded UNWIND batch."""
+
+    table_name: str
+    is_relation: bool
+    is_delete: bool
+    pk_field: str
+    from_label: str | None
+    from_pk_field: str | None
+    to_label: str | None
+    to_pk_field: str | None
+
+
+def _record_batch_key(action: _RecordAction) -> _RecordBatchKey:
+    return _RecordBatchKey(
+        table_name=action.table_name,
+        is_relation=action.is_relation,
+        is_delete=action.value is None,
+        pk_field=action.pk_field,
+        from_label=action.from_label,
+        from_pk_field=action.from_pk_field,
+        to_label=action.to_label,
+        to_pk_field=action.to_pk_field,
+    )
+
+
+# Keep each UNWIND payload bounded independently of how many component
+# actions the engine merged into one sink call.
+_NEO4J_MAX_UNWIND_ROWS = 1000
+
+
 class _SharedRecordApplier:
     """Owns a TargetActionSink shared by all record handlers for one
     Neo4j database.
 
     Unlike FalkorDB which can't multi-statement transact, we wrap each
     apply batch in a single Neo4j transaction so partial writes roll back
-    on failure. Actions are still grouped into the four-bucket ordering
-    so an edge is never written before its endpoints exist.
+    on failure. Actions are grouped by query shape so each label/type uses
+    one bounded ``UNWIND $data AS row`` statement per chunk while preserving
+    the four-bucket ordering that creates endpoints before edges. Labels,
+    relationship types, and key property names stay literal in the grouped
+    query, so Neo4j can continue using the connector-created indexes and
+    uniqueness constraints for MATCH/MERGE.
     """
 
     _graph: _GraphHandle
@@ -503,94 +538,118 @@ class _SharedRecordApplier:
         if not actions:
             return
 
-        upsert_normal: list[_RecordAction] = []
-        upsert_relation: list[_RecordAction] = []
-        delete_relation: list[_RecordAction] = []
-        delete_normal: list[_RecordAction] = []
+        upsert_normal: dict[_RecordBatchKey, list[_RecordAction]] = {}
+        upsert_relation: dict[_RecordBatchKey, list[_RecordAction]] = {}
+        delete_relation: dict[_RecordBatchKey, list[_RecordAction]] = {}
+        delete_normal: dict[_RecordBatchKey, list[_RecordAction]] = {}
 
         for action in actions:
+            key = _record_batch_key(action)
             if action.value is not None:
                 if action.is_relation:
-                    upsert_relation.append(action)
+                    upsert_relation.setdefault(key, []).append(action)
                 else:
-                    upsert_normal.append(action)
+                    upsert_normal.setdefault(key, []).append(action)
             else:
                 if action.is_relation:
-                    delete_relation.append(action)
+                    delete_relation.setdefault(key, []).append(action)
                 else:
-                    delete_normal.append(action)
+                    delete_normal.setdefault(key, []).append(action)
 
         async with self._graph._driver.session(  # noqa: SLF001
             database=self._graph.database
         ) as session:
             tx = await session.begin_transaction()
             try:
-                for action in upsert_normal:
-                    await self._apply_node_upsert(tx, action)
-                for action in upsert_relation:
-                    await self._apply_relation_upsert(tx, action)
-                for action in delete_relation:
-                    await self._apply_relation_delete(tx, action)
-                for action in delete_normal:
-                    await self._apply_node_delete(tx, action)
+                for key, grouped in upsert_normal.items():
+                    await self._apply_node_upserts(tx, key, grouped)
+                for key, grouped in upsert_relation.items():
+                    await self._apply_relation_upserts(tx, key, grouped)
+                for key, grouped in delete_relation.items():
+                    await self._apply_relation_deletes(tx, key, grouped)
+                for key, grouped in delete_normal.items():
+                    await self._apply_node_deletes(tx, key, grouped)
                 await tx.commit()
             except BaseException:
                 await tx.rollback()
                 raise
 
     @staticmethod
-    async def _apply_node_upsert(tx: Any, action: _RecordAction) -> None:
-        assert action.value is not None
-        # PK is always single-field in v1.0; props are everything except the PK.
-        pk_value = action.value.get(action.pk_field, action.record_id)
-        props = {k: v for k, v in action.value.items() if k != action.pk_field}
-        cypher = _cypher.build_node_upsert(
-            label=action.table_name,
-            pk_fields=[action.pk_field],
-            has_value_fields=bool(props),
-        )
-        params: dict[str, Any] = {"key_0": pk_value}
-        if props:
-            params["props"] = props
-        await tx.run(cypher, **params)
+    async def _run_data_batches(
+        tx: Any, cypher: str, data: Sequence[dict[str, Any]]
+    ) -> None:
+        for start in range(0, len(data), _NEO4J_MAX_UNWIND_ROWS):
+            await tx.run(
+                cypher, data=list(data[start : start + _NEO4J_MAX_UNWIND_ROWS])
+            )
 
     @staticmethod
-    async def _apply_node_delete(tx: Any, action: _RecordAction) -> None:
-        cypher = _cypher.build_node_delete(
-            label=action.table_name, pk_fields=[action.pk_field]
+    async def _apply_node_upserts(
+        tx: Any, key: _RecordBatchKey, actions: Sequence[_RecordAction]
+    ) -> None:
+        data: list[dict[str, Any]] = []
+        for action in actions:
+            assert action.value is not None
+            # PK is always single-field in v1.0; props are everything except the PK.
+            pk_value = action.value.get(action.pk_field, action.record_id)
+            props = {k: v for k, v in action.value.items() if k != action.pk_field}
+            data.append({"key_0": pk_value, "props": props})
+        await _SharedRecordApplier._run_data_batches(
+            tx,
+            _cypher.build_node_upsert_batch(key.table_name, [key.pk_field]),
+            data,
         )
-        await tx.run(cypher, key_0=action.record_id)
 
     @staticmethod
-    async def _apply_relation_upsert(tx: Any, action: _RecordAction) -> None:
-        assert action.value is not None
-        assert action.from_label is not None and action.from_pk_field is not None
-        assert action.to_label is not None and action.to_pk_field is not None
-        props = {k: v for k, v in action.value.items() if k != action.pk_field}
-        cypher = _cypher.build_relationship_upsert(
-            rel_type=action.table_name,
-            from_label=action.from_label,
-            from_pk_fields=[action.from_pk_field],
-            to_label=action.to_label,
-            to_pk_fields=[action.to_pk_field],
-            rel_pk_fields=[action.pk_field],
-            has_value_fields=bool(props),
+    async def _apply_node_deletes(
+        tx: Any, key: _RecordBatchKey, actions: Sequence[_RecordAction]
+    ) -> None:
+        await _SharedRecordApplier._run_data_batches(
+            tx,
+            _cypher.build_node_delete_batch(key.table_name, [key.pk_field]),
+            [{"key_0": action.record_id} for action in actions],
         )
-        params: dict[str, Any] = {
-            "from_key_0": action.from_id,
-            "to_key_0": action.to_id,
-            "rel_key_0": action.record_id,
-        }
-        if props:
-            params["props"] = props
-        await tx.run(cypher, **params)
 
     @staticmethod
-    async def _apply_relation_delete(tx: Any, action: _RecordAction) -> None:
-        cypher = _cypher.build_relationship_delete(
-            rel_type=action.table_name, pk_fields=[action.pk_field]
+    async def _apply_relation_upserts(
+        tx: Any, key: _RecordBatchKey, actions: Sequence[_RecordAction]
+    ) -> None:
+        assert key.from_label is not None and key.from_pk_field is not None
+        assert key.to_label is not None and key.to_pk_field is not None
+        data: list[dict[str, Any]] = []
+        for action in actions:
+            assert action.value is not None
+            props = {k: v for k, v in action.value.items() if k != action.pk_field}
+            data.append(
+                {
+                    "from_key_0": action.from_id,
+                    "to_key_0": action.to_id,
+                    "rel_key_0": action.record_id,
+                    "props": props,
+                }
+            )
+        await _SharedRecordApplier._run_data_batches(
+            tx,
+            _cypher.build_relationship_upsert_batch(
+                rel_type=key.table_name,
+                from_label=key.from_label,
+                from_pk_fields=[key.from_pk_field],
+                to_label=key.to_label,
+                to_pk_fields=[key.to_pk_field],
+                rel_pk_fields=[key.pk_field],
+            ),
+            data,
         )
-        await tx.run(cypher, key_0=action.record_id)
+
+    @staticmethod
+    async def _apply_relation_deletes(
+        tx: Any, key: _RecordBatchKey, actions: Sequence[_RecordAction]
+    ) -> None:
+        await _SharedRecordApplier._run_data_batches(
+            tx,
+            _cypher.build_relationship_delete_batch(key.table_name, [key.pk_field]),
+            [{"key_0": action.record_id} for action in actions],
+        )
 
 
 # ---------------------------------------------------------------------------
