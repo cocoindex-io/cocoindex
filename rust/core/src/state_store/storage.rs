@@ -131,11 +131,13 @@ struct StorageInner {
 ///
 /// `Fn` (not `FnOnce`) so the batcher can retry the entire batch on
 /// `MDB_MAP_FULL`: the env is resized between attempts, then every body is
-/// called again with a fresh write transaction. Callers must therefore
-/// ensure their closures are side-effect–free on the captured state (i.e.
-/// they may be invoked more than once). In practice all callers clone `Arc`
-/// handles inside the closure and do not move-out of captures, so this is
-/// already satisfied.
+/// called again with a fresh write transaction, and only the last
+/// attempt's outputs are returned. Callers must therefore ensure their
+/// closures are side-effect–free on the captured state (i.e. they may be
+/// invoked more than once): clone captures inside the closure rather than
+/// moving them out, and never accumulate into shared state from inside the
+/// body — a body that reports through a shared slot overwrites it on each
+/// run, and the caller acts on it after `run_txn` returns.
 type TxnBody = Box<
     dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
         + Send,

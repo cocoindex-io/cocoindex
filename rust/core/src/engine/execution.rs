@@ -1411,12 +1411,18 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     if comp_ctx.preview() {
         // Mirror normal precommit Phase 2 planning, but always return
         // `Ok(None)` from the callback so AppStore applies/commits no
-        // tracking writes. Actions are collected in-memory only.
+        // tracking writes; the callback hands its output out through
+        // `preview_output` instead. One `precommit` call can run the
+        // callback more than once — a batch retried on `MDB_MAP_FULL`
+        // re-runs every body in it — so each run overwrites the slot
+        // (`None` on `PendingRetry`) and only the last run's output
+        // counts. Its actions reach the shared collector once, after
+        // `precommit` returns.
         let collector = comp_ctx
             .preview_collector()
             .cloned()
             .ok_or_else(|| internal_error!("preview mode requires a preview collector"))?;
-        let preview_result: Arc<Mutex<Option<(bool, Option<String>)>>> = Arc::new(Mutex::new(None));
+        let preview_output: Arc<Mutex<Option<PreCommitOutput<Prof>>>> = Arc::new(Mutex::new(None));
 
         let contained_target_state_paths = Arc::new(contained_target_state_paths);
         let declared_target_states = Arc::new(tokio::sync::Mutex::new(declared_target_states));
@@ -1424,9 +1430,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         let mut pending_backoff = std::time::Duration::from_millis(5);
         const MAX_PENDING_RETRIES: u32 = 8;
         let mut pending_attempt: u32 = 0;
-        loop {
-            let preview_result_capture = preview_result.clone();
-            let collector = collector.clone();
+        let pre_commit_out = loop {
+            let preview_output_capture = preview_output.clone();
             let captures: Arc<PreCommitCaptures<Prof>> = Arc::new(PreCommitCaptures {
                 app_store: app_store.clone(),
                 stable_path: stable_path.clone(),
@@ -1439,8 +1444,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             app_store
                 .precommit(&stable_path, move |wtxn, session| {
                     let c = Arc::clone(&captures);
-                    let preview_result_capture = preview_result_capture.clone();
-                    let collector = collector.clone();
+                    let preview_output_capture = preview_output_capture.clone();
                     Box::pin(async move {
                         let declared_paths_all: Vec<TargetStatePath> = {
                             let guard = c.declared_target_states.lock().await;
@@ -1505,8 +1509,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         )
                         .await?;
 
-                        Ok(match outcome {
+                        let output = match outcome {
                             PreCommitOutcome::Done { output, write_plan: _ } => {
+                                // Checked in here rather than after `precommit`:
+                                // the error rolls back the whole batch, so no
+                                // generation ID `pre_commit` reserved for a
+                                // child provider commits.
                                 for input in output.actions_by_sinks.values() {
                                     if !input.pending_children.is_empty() {
                                         client_bail!(
@@ -1515,49 +1523,48 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                         );
                                     }
                                 }
-                                let previously_exists = output.previously_exists;
-                                let processor_name_for_del = output.processor_name_for_del;
-                                let mut guard = collector.lock().unwrap();
-                                for (_sink, input) in output.actions_by_sinks {
-                                    guard.extend(input.actions.into_iter().map(|(action, _)| action));
-                                }
-                                *preview_result_capture.lock().unwrap() =
-                                    Some((previously_exists, processor_name_for_del));
-                                None::<(PrecommitWritePlan, PreCommitOutput<Prof>)>
+                                Some(output)
                             }
                             PreCommitOutcome::PendingRetry => None,
-                        })
+                        };
+                        *preview_output_capture.lock().unwrap() = output;
+                        Ok(None::<(PrecommitWritePlan, ())>)
                     })
                 })
                 .await?;
 
-            if preview_result.lock().unwrap().is_some() {
-                break;
+            let output = preview_output.lock().unwrap().take();
+            match output {
+                Some(output) => break output,
+                None => {
+                    // PendingRetry: back off, retry.
+                    pending_attempt += 1;
+                    if pending_attempt >= MAX_PENDING_RETRIES {
+                        client_bail!(
+                            "preview pre_commit gave up after {} retries waiting for concurrent ownership transfer at {}",
+                            MAX_PENDING_RETRIES,
+                            comp_ctx.stable_path(),
+                        );
+                    }
+                    tokio::time::sleep(pending_backoff).await;
+                    pending_backoff =
+                        std::cmp::min(pending_backoff * 2, std::time::Duration::from_millis(200));
+                }
             }
-            pending_attempt += 1;
-            if pending_attempt >= MAX_PENDING_RETRIES {
-                client_bail!(
-                    "preview pre_commit gave up after {} retries waiting for concurrent ownership transfer at {}",
-                    MAX_PENDING_RETRIES,
-                    comp_ctx.stable_path(),
-                );
-            }
-            tokio::time::sleep(pending_backoff).await;
-            pending_backoff =
-                std::cmp::min(pending_backoff * 2, std::time::Duration::from_millis(200));
-        }
+        };
 
-        let (previously_exists, processor_name_for_del) = preview_result
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| internal_error!("preview pre_commit produced no output"))?;
-        if let Some(ref name) = processor_name_for_del {
+        if let Some(ref name) = pre_commit_out.processor_name_for_del {
             collect_processor_name_name_for_del(name);
         }
+        collector.lock().unwrap().extend(
+            pre_commit_out
+                .actions_by_sinks
+                .into_values()
+                .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
+        );
         return Ok(SubmitOutput {
             built_target_states_providers,
-            touched_previous_states: previously_exists,
+            touched_previous_states: pre_commit_out.previously_exists,
         });
     }
 
