@@ -31,7 +31,7 @@ from tests import common
 
 try:
     import importlib.metadata
-    
+
     from glide import GlideClient, GlideClientConfiguration, NodeAddress
     from glide.async_commands import ft as glide_ft
 
