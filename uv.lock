@@ -859,7 +859,7 @@ build-test = [
     { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
 ]
 ci = [
-    { name = "valkey-glide" },
+    { name = "valkey-glide", marker = "sys_platform != 'win32'" },
     { name = "aiohttp" },
     { name = "aiomoto", extra = ["s3"] },
     { name = "asyncpg" },
@@ -877,7 +877,7 @@ ci = [
     { name = "types-psutil" },
 ]
 ci-enabled-optional-deps = [
-    { name = "valkey-glide" },
+    { name = "valkey-glide", marker = "sys_platform != 'win32'" },
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "neo4j" },
@@ -885,7 +885,7 @@ ci-enabled-optional-deps = [
     { name = "pymysql" },
 ]
 dev = [
-    { name = "valkey-glide" },
+    { name = "valkey-glide", marker = "sys_platform != 'win32'" },
     { name = "aiohttp" },
     { name = "aiomoto", extra = ["s3"] },
     { name = "asyncpg" },
@@ -1011,7 +1011,7 @@ build-test = [
 ]
 ci = [
     { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "valkey-glide", specifier = ">=2.5.2" },
+    { name = "valkey-glide", marker = "sys_platform != 'win32'", specifier = ">=2.5.2" },
     { name = "aiomoto", extras = ["s3"], specifier = ">=0.3.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "asyncpg-stubs" },
@@ -1029,7 +1029,7 @@ ci = [
 ]
 ci-enabled-optional-deps = [
     { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "valkey-glide", specifier = ">=2.5.2" },
+    { name = "valkey-glide", marker = "sys_platform != 'win32'", specifier = ">=2.5.2" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "neo4j", specifier = ">=5.18.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
@@ -1037,7 +1037,7 @@ ci-enabled-optional-deps = [
 ]
 dev = [
     { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "valkey-glide", specifier = ">=2.5.2" },
+    { name = "valkey-glide", marker = "sys_platform != 'win32'", specifier = ">=2.5.2" },
     { name = "aiomoto", extras = ["s3"], specifier = ">=0.3.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "asyncpg-stubs" },
