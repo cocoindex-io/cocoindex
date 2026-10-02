@@ -825,11 +825,12 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             sql = f'DELETE FROM {table_name} WHERE "{pk_cols[0]}" IN ({placeholders})'
             params.extend(action.key[0] for action in chunk)
         else:
-            # Match keys via `(pk cols) IN (VALUES ...)`, which Postgres plans as
-            # a single hash semi-join. An OR chain of per-key equalities plans as
-            # a BitmapOr whose planning time grows quadratically with the number
-            # of keys (tens of seconds for a full chunk). VALUES columns don't
-            # infer types from the compared columns, so each placeholder is cast.
+            # Not an OR chain of per-key equalities: Postgres plans that as a
+            # BitmapOr whose planning time grows quadratically with the number of
+            # keys (tens of seconds for a full chunk), while `IN (VALUES ...)`
+            # plans as one join against the key list. VALUES columns don't take
+            # their types from the compared columns, so each placeholder is cast
+            # to the declared column type.
             columns = self._table_schema.columns
             pk_types = [columns[c].type for c in pk_cols]
             value_rows: list[str] = []

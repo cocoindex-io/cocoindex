@@ -1107,13 +1107,19 @@ async def test_postgres_delete_rows_with_composite_key(pg_env: _PgEnv) -> None:
     )
 
     all_rows: list[dict[str, Any]] = [
-        {"repo": repo, "sha": bytes([i]), "path": ["src", f"f{i}"], "content": "x"}
+        {"repo": repo, "sha": bytes([i]), "path": ["src", f], "content": "x"}
         for repo in ("a", "b")
         for i in range(50)
+        for f in ("x", "y")
     ]
-    # Keep rows sharing parts of a deleted key, so a match on any key column
-    # subset would over-delete.
-    kept_rows = [r for r in all_rows if r["repo"] == "a" or r["sha"][0] % 2 == 0]
+    # Delete only keys ("b", odd sha, ["src", "x"]): every row sharing a proper
+    # subset of a deleted key's columns is kept, so matching on any subset of
+    # the key columns would over-delete.
+    kept_rows = [
+        r
+        for r in all_rows
+        if r["repo"] == "a" or r["sha"][0] % 2 == 0 or r["path"][1] == "y"
+    ]
     rows = all_rows
 
     try:
