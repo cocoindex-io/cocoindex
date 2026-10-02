@@ -859,6 +859,7 @@ build-test = [
     { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
 ]
 ci = [
+    { name = "valkey-glide" },
     { name = "aiohttp" },
     { name = "aiomoto", extra = ["s3"] },
     { name = "asyncpg" },
