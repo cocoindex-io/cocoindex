@@ -95,6 +95,7 @@ falkordb = ["falkordb>=1.1.0"]
 neo4j = ["neo4j>=5.18.0"]
 kafka = ["confluent_kafka>=2.6"]
 iggy = ["apache-iggy>=0.8.0"]
+pulsar = ["pulsar-client>=3.13.0,<4"]
 oci = ["oci>=2.0"]
 entity_resolution = ["faiss-cpu>=1.7"]
 entity_resolution_llm = [
@@ -132,6 +133,7 @@ all = [
     "neo4j>=5.18.0",
     "confluent_kafka>=2.6",
     "apache-iggy>=0.8.0",
+    "pulsar-client>=3.13.0,<4",
     "oci>=2.0",
     "faiss-cpu>=1.7",
     "instructor>=1.0",
@@ -248,6 +250,8 @@ module = [
     "oci.*",
     "confluent_kafka",
     "confluent_kafka.*",
+    "pulsar",
+    "pulsar.*",
     "openai",
     "openai.*",
     "transformers",
