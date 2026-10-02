@@ -825,13 +825,26 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             sql = f'DELETE FROM {table_name} WHERE "{pk_cols[0]}" IN ({placeholders})'
             params.extend(action.key[0] for action in chunk)
         else:
-            or_parts: list[str] = []
+            # Match keys via `(pk cols) IN (VALUES ...)`, which Postgres plans as
+            # a single hash semi-join. An OR chain of per-key equalities plans as
+            # a BitmapOr whose planning time grows quadratically with the number
+            # of keys (tens of seconds for a full chunk). VALUES columns don't
+            # infer types from the compared columns, so each placeholder is cast.
+            columns = self._table_schema.columns
+            pk_types = [columns[c].type for c in pk_cols]
+            value_rows: list[str] = []
             for row_idx, action in enumerate(chunk):
                 base = row_idx * num_pk
-                and_parts = [f'"{pk_cols[j]}" = ${base + j + 1}' for j in range(num_pk)]
-                or_parts.append(f"({' AND '.join(and_parts)})")
+                placeholders = ", ".join(
+                    f"${base + j + 1}::{pk_types[j]}" for j in range(num_pk)
+                )
+                value_rows.append(f"({placeholders})")
                 params.extend(action.key)
-            sql = f"DELETE FROM {table_name} WHERE {' OR '.join(or_parts)}"
+            pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+            sql = (
+                f"DELETE FROM {table_name} "
+                f"WHERE ({pk_list}) IN (VALUES {', '.join(value_rows)})"
+            )
 
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
