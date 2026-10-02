@@ -180,6 +180,9 @@ class OCIFile(file.FileLike[str]):
         return _metadata_from_head(headers)
 
     async def _read_impl(self, size: int = -1) -> bytes:
+        if size == 0 or (size > 0 and await self.size() == 0):
+            return b""
+
         kwargs: dict[str, Any] = {
             "namespace_name": self._file_path.namespace,
             "bucket_name": self._file_path.bucket_name,
@@ -622,6 +625,9 @@ async def read(
         object_name: Full object name.
         size: Number of bytes to read. If -1 (default), read the entire object.
     """
+    if size == 0:
+        return b""
+
     kwargs: dict[str, Any] = {
         "namespace_name": namespace,
         "bucket_name": bucket_name,
