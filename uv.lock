@@ -817,7 +817,6 @@ neo4j = [
     { name = "neo4j" },
 ]
 oci = [
-    { name = "valkey-glide" },
     { name = "oci" },
 ]
 postgres = [
