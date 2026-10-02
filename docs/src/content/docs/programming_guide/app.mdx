@@ -196,6 +196,21 @@ with coco.runtime():
     app.update_blocking()
 ```
 
+The same App can be retained and reused across sequential runtime lifecycles. After
+`stop()` returns (or a `runtime()` block exits), its next update or drop starts a new
+lifespan and uses freshly initialized resources. Persisted memoization and target-state
+tracking in the internal database remain available across these cycles.
+
+This restart guarantee applies to Apps using the default lazy environment (the default
+when `AppConfig.environment` is omitted). An App explicitly bound to the concrete
+Environment returned by `await coco.default_env()` remains bound to that particular
+Environment; it is not rebound when the default runtime restarts. Apps using a separate
+explicit Environment are likewise unaffected by starting or stopping the default
+runtime.
+
+Finish update and drop operations before stopping the runtime. Shutdown concurrent with
+in-flight operations is not supported.
+
 ## Managing apps with CLI
 
 CocoIndex provides a CLI for managing your apps without writing additional code.

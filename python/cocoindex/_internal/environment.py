@@ -293,6 +293,7 @@ class LazyEnvironment:
         "_lifespan_fn_lock",
         "_lifespan_fn",
         "_start_stop_lock",
+        "_env_lock",
         "_exit_stack",
         "_env",
         "_info",
@@ -303,6 +304,7 @@ class LazyEnvironment:
     _lifespan_fn_lock: threading.Lock
     _lifespan_fn: LifespanFn | None
     _start_stop_lock: asyncio.Lock | None
+    _env_lock: threading.Lock
     _exit_stack: AsyncExitStack | None
     _env: Environment | None
     _info: EnvironmentInfo
@@ -311,6 +313,7 @@ class LazyEnvironment:
         self._name = name
         self._lifespan_fn_lock = threading.Lock()
         self._start_stop_lock = None  # Created lazily when needed
+        self._env_lock = threading.Lock()
         self._lifespan_fn = None
         self._exit_stack = None
         self._env = None
@@ -344,8 +347,9 @@ class LazyEnvironment:
         Start the default environment (executes on the default environment's event loop).
         """
         async with self._get_start_stop_lock():
-            if self._env is not None:
-                return self._env
+            with self._env_lock:
+                if self._env is not None:
+                    return self._env
             with self._lifespan_fn_lock:
                 fn = self._lifespan_fn or _noop_lifespan_fn
 
@@ -408,7 +412,8 @@ class LazyEnvironment:
                     exception_handler=env_builder._exception_handler,
                     info=self._info,
                 )
-                self._env = env
+                with self._env_lock:
+                    self._env = env
                 return env
             except:
                 await exit_stack.aclose()
@@ -416,11 +421,17 @@ class LazyEnvironment:
                 raise
 
     def _get_env_sync(self) -> Environment:
-        if self._env is not None:
-            return self._env
+        with self._env_lock:
+            if self._env is not None:
+                return self._env
         env_loop = default_env_loop()
         fut = asyncio.run_coroutine_threadsafe(self._get_env(), env_loop)
         return fut.result()
+
+    def _is_current_env(self, env: Environment) -> bool:
+        """Return whether ``env`` is the active concrete environment."""
+        with self._env_lock:
+            return self._env is env
 
     async def start(self) -> Environment:
         """
@@ -433,9 +444,18 @@ class LazyEnvironment:
         Stop the default environment (executes on the default environment's event loop).
         """
         async with self._get_start_stop_lock():
-            exit_stack = self._exit_stack
-            self._exit_stack = None
-            self._env = None
+            with self._env_lock:
+                exit_stack = self._exit_stack
+                self._exit_stack = None
+                env = self._env
+                self._env = None
+
+            if env is not None:
+                for app in self._info.get_apps():
+                    app._release_core_env_app(self)
+            # Do not keep the concrete environment alive if lifespan cleanup raises
+            # and the resulting traceback retains this frame.
+            del env
 
         if exit_stack is not None:
             await exit_stack.aclose()

@@ -12,20 +12,28 @@ _env_db_path_from_env_var = get_env_db_path("_default_from_env_var")
 
 
 class _Resource:
-    pass
+    def __init__(self, generation: int) -> None:
+        self.generation = generation
+        self.closed = False
 
 
 _RESOURCE_KEY = coco.ContextKey[_Resource]("test_default_env/resource")
 
 _num_active_resources = 0
+_num_resource_generations = 0
 
 
 @contextmanager
 def _acquire_resource() -> Iterator[_Resource]:
-    global _num_active_resources
+    global _num_active_resources, _num_resource_generations
     _num_active_resources += 1
-    yield _Resource()
-    _num_active_resources -= 1
+    _num_resource_generations += 1
+    resource = _Resource(_num_resource_generations)
+    try:
+        yield resource
+    finally:
+        resource.closed = True
+        _num_active_resources -= 1
 
 
 @pytest.fixture(scope="module")
@@ -51,8 +59,16 @@ def test_default_env(_default_env: None) -> None:
 
 
 def _trivial_fn(s: str, i: int) -> str:
-    assert isinstance(coco.use_context(_RESOURCE_KEY), _Resource)
+    resource = coco.use_context(_RESOURCE_KEY)
+    assert isinstance(resource, _Resource)
+    assert not resource.closed
     return f"{s} {i}"
+
+
+def _resource_generation() -> int:
+    resource = coco.use_context(_RESOURCE_KEY)
+    assert not resource.closed
+    return resource.generation
 
 
 def test_app(_default_env: None) -> None:
@@ -79,8 +95,68 @@ def test_app_implicit_startup(_default_env: None) -> None:
     )
 
     assert _num_active_resources == 0
-    assert app.update_blocking() == "Hello 1"
-    assert _num_active_resources == 1
+    try:
+        assert app.update_blocking() == "Hello 1"
+        assert _num_active_resources == 1
+    finally:
+        coco.stop_blocking()
+
+
+def test_retained_app_across_runtime_cycles(_default_env: None) -> None:
+    app = coco.App("retained_sync_app", _resource_generation)
+    generations: list[int] = []
+
+    for _ in range(3):
+        with coco.runtime():
+            generation = app.update_blocking()
+            assert isinstance(generation, int)
+            generations.append(generation)
+            assert _num_active_resources == 1
+        assert _num_active_resources == 0
+
+    assert generations[1] == generations[0] + 1
+    assert generations[2] == generations[1] + 1
+
+
+def test_retained_app_implicitly_restarts_after_stop(_default_env: None) -> None:
+    app = coco.App("retained_sync_implicit_restart", _resource_generation)
+
+    with coco.runtime():
+        first_generation = app.update_blocking()
+        assert isinstance(first_generation, int)
+
+    second_generation = app.update_blocking()
+    try:
+        assert isinstance(second_generation, int)
+        assert second_generation == first_generation + 1
+        assert _num_active_resources == 1
+    finally:
+        coco.stop_blocking()
+
+
+def test_stop_edge_cases_and_registration_survive_restart(
+    _default_env: None,
+) -> None:
+    coco.stop_blocking()
+    coco.stop_blocking()
+
+    app = coco.App("retained_sync_registration", _resource_generation)
+    never_initialized = coco.App(
+        "retained_sync_never_initialized", _resource_generation
+    )
+    with coco.runtime():
+        app.update_blocking()
+
+    with pytest.raises(ValueError, match="already registered"):
+        coco.App("retained_sync_registration", _resource_generation)
+
+    with coco.runtime():
+        app_generation = app.update_blocking()
+        generation = never_initialized.update_blocking()
+        assert isinstance(app_generation, int)
+        assert isinstance(generation, int)
+        assert app_generation == generation
+        assert generation > 0
 
 
 # =============================================================================
