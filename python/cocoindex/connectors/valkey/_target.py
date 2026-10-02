@@ -743,6 +743,7 @@ def create_client_config(
         client_name: Client name for the connection, visible in CLIENT LIST
             and monitoring dashboards. Pass ``None`` to disable.
         **kwargs: Additional keyword arguments passed to GlideClientConfiguration.
+            ``client_info_tag`` defaults to ``"cocoindex"``.
 
     Returns:
         GlideClientConfiguration instance.

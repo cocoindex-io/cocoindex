@@ -188,7 +188,9 @@ class TestCreateClientConfig:
         assert config is not None
 
     def test_kwargs_override(self) -> None:
-        config = valkey.create_client_config(client_info_tag="my_custom_tag", client_name="my_custom_name")
+        config = valkey.create_client_config(
+            client_info_tag="my_custom_tag", client_name="my_custom_name"
+        )
         assert config.client_info_tag == "my_custom_tag"
         assert config.client_name == "my_custom_name"
 
