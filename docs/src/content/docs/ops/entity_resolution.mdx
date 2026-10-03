@@ -179,6 +179,9 @@ Uses the same litellm model-string format as [`LiteLLMEmbedder`](./litellm):
 | Anthropic | `anthropic/claude-haiku-4-5` |
 | Google (Gemini) | `gemini/gemini-2.0-flash` |
 | Groq | `groq/llama-3.3-70b-versatile` |
+| OrcaRouter | `openai/openai/gpt-5.5` |
+
+For an OpenAI-compatible gateway such as [OrcaRouter](https://www.orcarouter.ai), use the `openai/` provider prefix with a namespaced model id (the outer `openai/` selects the protocol; the inner `openai/…` is the router's model id) and point `api_base` at `https://api.orcarouter.ai/v1`.
 
 See the [LiteLLM docs](https://docs.litellm.ai/docs/providers) for the full list of 100+ supported providers.
 
