@@ -181,11 +181,12 @@ struct StorageInner {
 /// future that runs against the shared `WriteTxn` and resolves to a boxed
 /// output. The future is bound to the borrow of the txn (`'a`).
 ///
-/// `Fn` (not `FnOnce`) so the batcher can retry the entire batch on
-/// backend-transient failures: LMDB `MDB_MAP_FULL` (after resizing) and
-/// Postgres serialization/deadlock failures (after rollback). Every body is
-/// called again with a fresh write transaction, and only the last attempt's
-/// outputs are returned. Callers must therefore ensure their closures are
+/// `Fn` (not `FnOnce`) because the runner may call a body again, with a
+/// fresh write transaction, after aborting the txn it ran in — on
+/// `MDB_MAP_FULL`, once the env is resized; when another body sharing the
+/// txn fails (see [`TxnRunner::run_isolating_failures`]); or on a retryable
+/// Postgres serialization/deadlock failure — and returns only the last
+/// call's output. Callers must therefore ensure their closures are
 /// side-effect-free on the captured state (i.e. they may be invoked more than
 /// once): clone captures inside the closure rather than moving them out, and
 /// never accumulate into shared state from inside the body — a body that
@@ -196,6 +197,15 @@ type TxnBody = Box<
         + Send
         + Sync,
 >;
+
+/// Outcome of one write-txn pass over a sub-batch of bodies.
+enum TxnPass {
+    /// Every body succeeded and the txn committed: one output per body.
+    Committed(Vec<Box<dyn Any + Send>>),
+    /// The body at `index` failed with `err`. The txn was aborted, and the
+    /// bodies after it did not run.
+    BodyFailed { index: usize, err: Error },
+}
 
 /// Returns `true` if `err` is an LMDB `MDB_MAP_FULL` error.
 #[cfg(feature = "postgres")]
@@ -231,7 +241,7 @@ fn is_map_full(err: &Error) -> bool {
 /// When a `MDB_MAP_FULL` error occurs (either from a put inside a body or
 /// from the final commit), the write txn and its coordinator read guard are
 /// dropped, the coordinator write guard is acquired, the map size is doubled
-/// via `env.resize`, and the whole batch is retried.
+/// via `env.resize`, and every body of that txn is run again.
 ///
 /// Safety: `resize` is only called while holding the coordinator write guard,
 /// which guarantees no read or write LMDB transaction opened through this
@@ -247,76 +257,149 @@ enum TxnRunner {
 }
 
 impl TxnRunner {
-    /// Runs `inputs` in one write txn, retrying the whole batch on a
-    /// backend-specific transient failure.
-    async fn run_with_retry(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
-        match self {
-            Self::Lmdb { db_env, coord } => {
-                let runner = Self::Lmdb {
-                    db_env: db_env.clone(),
-                    coord: coord.clone(),
-                };
-                loop {
-                    match runner.try_run_once_lmdb(inputs).await {
-                        Ok(outputs) => return Ok(outputs),
-                        Err(e) if is_map_full(&e) => {
-                            runner.resize_on_map_full().await?;
-                        }
-                        Err(e) => return Err(e),
+    /// Runs `bodies` in order and returns each body's own outcome, so a body
+    /// that fails fails only its own caller. Must be polled on a single OS
+    /// thread from start to finish — see [`Runner::run`].
+    ///
+    /// The bodies share one write txn unless one of them fails. Neither
+    /// backend has a savepoint interface here, so the writes a failing body
+    /// made before it failed can only be dropped by aborting the txn, which
+    /// drops the writes of the bodies ahead of it too. Those bodies ran
+    /// cleanly: they run again and commit in a txn of their own, then the
+    /// bodies behind the failing one continue in the next txn, so the bodies
+    /// still commit in input order. Committing the bodies ahead on their own,
+    /// rather than running them again with the rest, keeps each body to at
+    /// most two runs however many of its batch mates fail — barring
+    /// backend-transient retries, and bodies that fail only when run again.
+    ///
+    /// A failure that is no one body's doing — opening the txn, growing the
+    /// map, committing — goes to every body of that txn.
+    async fn run_isolating_failures(&self, bodies: &[TxnBody]) -> Vec<Result<Box<dyn Any + Send>>> {
+        let mut outcomes: Vec<Option<Result<Box<dyn Any + Send>>>> =
+            std::iter::repeat_with(|| None).take(bodies.len()).collect();
+        // Sub-batches still to run, as index ranges over `bodies`. The
+        // earliest one is on top, so they run (and commit) in input order.
+        let mut pending = vec![0..bodies.len()];
+        while let Some(sub) = pending.pop() {
+            if sub.is_empty() {
+                continue;
+            }
+            match self.run_batch_with_retry(&bodies[sub.clone()]).await {
+                Ok(TxnPass::Committed(outputs)) => {
+                    for (outcome, output) in outcomes[sub].iter_mut().zip(outputs) {
+                        *outcome = Some(Ok(output));
                     }
+                }
+                Ok(TxnPass::BodyFailed { index, err }) => {
+                    if sub.len() > 1 {
+                        debug!(
+                            "Body {} of a {}-body write txn failed; committing the others                              without it: {err}",
+                            index + 1,
+                            sub.len()
+                        );
+                    }
+                    let failed = sub.start + index;
+                    outcomes[failed] = Some(Err(err));
+                    pending.push(failed + 1..sub.end);
+                    pending.push(sub.start..failed);
+                }
+                Err(err) => {
+                    let (last, rest) = outcomes[sub]
+                        .split_last_mut()
+                        .expect("an empty sub-batch is skipped above");
+                    for outcome in rest {
+                        *outcome = Some(Err(err.replica()));
+                    }
+                    *last = Some(Err(err));
                 }
             }
+        }
+        outcomes
+            .into_iter()
+            .map(|outcome| outcome.expect("every body is assigned an outcome"))
+            .collect()
+    }
+
+    /// Runs `bodies` in one write txn, retrying backend-transient failures.
+    async fn run_batch_with_retry(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
+        match self {
+            Self::Lmdb { .. } => self.run_with_resize_retry(bodies).await,
             #[cfg(feature = "postgres")]
-            Self::Postgres(backend) => {
-                let mut backoff = std::time::Duration::from_millis(10);
-                loop {
-                    match Self::try_run_once_postgres(backend, inputs).await {
-                        Ok(outputs) => return Ok(outputs),
-                        Err(e) if is_retryable_postgres_error(&e) => {
-                            warn!(
-                                "Postgres state transaction retrying after serialization failure"
-                            );
-                            tokio::time::sleep(backoff).await;
-                            backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
-                        }
-                        Err(e) => return Err(e),
-                    }
+            Self::Postgres(_) => self.run_with_postgres_retry(bodies).await,
+        }
+    }
+
+    /// Runs `bodies` in one write txn, resizing the map and running them all
+    /// again on `MDB_MAP_FULL`.
+    async fn run_with_resize_retry(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
+        loop {
+            match self.try_run_once(bodies).await {
+                Err(e) if is_map_full(&e) => {
+                    self.resize_on_map_full().await?;
                 }
+                result => return result,
             }
         }
     }
 
-    /// Attempts one LMDB write-txn pass over `inputs`. If any body or the
-    /// final commit returns an error the write txn and coordinator read guard
-    /// are dropped before the error propagates. On `MapFull` the caller should
-    /// resize (under the coordinator write guard) and retry.
-    async fn try_run_once_lmdb(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
-        let (db_env, coord) = match self {
-            Self::Lmdb { db_env, coord } => (db_env, coord),
-            #[cfg(feature = "postgres")]
-            Self::Postgres(_) => {
-                client_bail!("LMDB transaction runner received a non-LMDB backend")
+    /// Runs `bodies` in one write txn, retrying the whole sub-batch after a
+    /// retryable Postgres serialization/deadlock failure.
+    #[cfg(feature = "postgres")]
+    async fn run_with_postgres_retry(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
+        let mut backoff = std::time::Duration::from_millis(10);
+        loop {
+            match self.try_run_once(bodies).await {
+                Err(e) if is_retryable_postgres_error(&e) => {
+                    warn!("Postgres state transaction retrying after serialization failure");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+                }
+                result => return result,
             }
-        };
-        let _read_guard = coord.read().await;
-        let mut outputs = Vec::with_capacity(inputs.len());
-        let mut wtxn = WriteTxn::lmdb(db_env.write_txn()?);
-        for body in inputs {
-            outputs.push(body(&mut wtxn).await?);
         }
-        match wtxn.into_inner() {
-            WriteTxnInner::Lmdb(txn) => txn.commit()?,
+    }
+
+    /// Attempts one write-txn pass over `bodies`, committing only if every
+    /// body succeeds. A body's own failure is reported as
+    /// [`TxnPass::BodyFailed`], any other failure (`MapFull` from a body
+    /// included, or a retryable Postgres failure) as `Err`; either way the
+    /// write txn and coordinator/backend write guard are dropped before this
+    /// returns. On `MapFull` the caller should resize (under the coordinator
+    /// write guard) and retry.
+    async fn try_run_once(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
+        match self {
+            Self::Lmdb { db_env, coord } => {
+                let _read_guard = coord.read().await;
+                let mut outputs = Vec::with_capacity(bodies.len());
+                let mut wtxn = WriteTxn::lmdb(db_env.write_txn()?);
+                for (index, body) in bodies.iter().enumerate() {
+                    match body(&mut wtxn).await {
+                        Ok(output) => outputs.push(output),
+                        // The map filled up under the txn's writes as a whole,
+                        // not this body's alone.
+                        Err(err) if is_map_full(&err) => return Err(err),
+                        Err(err) => return Ok(TxnPass::BodyFailed { index, err }),
+                    }
+                }
+                match wtxn.into_inner() {
+                    WriteTxnInner::Lmdb(txn) => txn.commit()?,
+                    #[cfg(feature = "postgres")]
+                    WriteTxnInner::Postgres(_) => {
+                        unreachable!("LMDB runner produced a Postgres txn")
+                    }
+                }
+                Ok(TxnPass::Committed(outputs))
+            }
             #[cfg(feature = "postgres")]
-            WriteTxnInner::Postgres(_) => unreachable!("LMDB runner produced a Postgres txn"),
+            Self::Postgres(backend) => Self::try_run_once_postgres(backend, bodies).await,
         }
-        Ok(outputs)
     }
 
     #[cfg(feature = "postgres")]
     async fn try_run_once_postgres(
         backend: &PostgresBackend,
-        inputs: &[TxnBody],
-    ) -> Result<Vec<Box<dyn Any + Send>>> {
+        bodies: &[TxnBody],
+    ) -> Result<TxnPass> {
         let _write_guard = backend.write_lock().await;
         let mut conn = backend
             .pool()
@@ -343,15 +426,20 @@ impl TxnRunner {
             .map_err(|e| postgres_error(e, "failed to lock Postgres state transaction"))?;
 
         let mut wtxn = WriteTxn::postgres(txn);
-        let mut outputs = Vec::with_capacity(inputs.len());
-        for body in inputs {
+        let mut outputs = Vec::with_capacity(bodies.len());
+        for (index, body) in bodies.iter().enumerate() {
             match body(&mut wtxn).await {
                 Ok(output) => outputs.push(output),
-                Err(e) => {
+                Err(err) => {
+                    let retryable = is_retryable_postgres_error(&err);
                     if let WriteTxnInner::Postgres(txn) = wtxn.into_inner() {
                         let _ = txn.rollback().await;
                     }
-                    return Err(e);
+                    return if retryable {
+                        Err(err)
+                    } else {
+                        Ok(TxnPass::BodyFailed { index, err })
+                    };
                 }
             }
         }
@@ -362,7 +450,7 @@ impl TxnRunner {
                 .map_err(|e| postgres_error(e, "failed to commit Postgres state transaction"))?,
             WriteTxnInner::Lmdb(_) => unreachable!("Postgres runner produced an LMDB txn"),
         }
-        Ok(outputs)
+        Ok(TxnPass::Committed(outputs))
     }
 
     /// Doubles the env's current map size (aligned to page). Caller must hold
@@ -401,7 +489,11 @@ impl TxnRunner {
 #[async_trait]
 impl Runner for TxnRunner {
     type Input = TxnBody;
-    type Output = Box<dyn Any + Send>;
+    /// Per-body outcome. Sharing a write txn is an optimization that must not
+    /// couple the bodies' fates, so a body's failure is reported to its own
+    /// caller rather than as a batch-level `Err`, which the batcher would fan
+    /// out to every caller of the batch.
+    type Output = Result<Box<dyn Any + Send>>;
 
     /// LMDB ties a write transaction to the OS thread that began it: only that
     /// thread can release the writer lock, and LMDB ignores a failed release.
@@ -409,30 +501,21 @@ impl Runner for TxnRunner {
     /// another — which work-stealing allows at any `.await` that suspends —
     /// leaves the lock held for good and blocks every later writer.
     ///
-    /// So the whole LMDB batch runs on one blocking-pool thread, where
-    /// `block_on` polls the bodies instead of the runtime's workers. Postgres
-    /// transactions are ordinary async transactions and can run directly.
+    /// So the whole batch — every write txn it takes — runs on one
+    /// blocking-pool thread, where `block_on` polls the bodies instead of the
+    /// runtime's workers.
     async fn run(
         &self,
         inputs: Vec<TxnBody>,
-    ) -> Result<impl ExactSizeIterator<Item = Box<dyn Any + Send>>> {
-        match self {
-            Self::Lmdb { .. } => {
-                let runner = self.clone();
-                let runtime = tokio::runtime::Handle::current();
-                let span = Span::current();
-                let outputs = tokio::task::spawn_blocking(move || {
-                    runtime.block_on(runner.run_with_retry(&inputs).instrument(span))
-                })
-                .await??;
-                Ok(outputs.into_iter())
-            }
-            #[cfg(feature = "postgres")]
-            Self::Postgres(_) => {
-                let outputs = self.run_with_retry(&inputs).await?;
-                Ok(outputs.into_iter())
-            }
-        }
+    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
+        let runner = self.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let span = Span::current();
+        let outcomes = tokio::task::spawn_blocking(move || {
+            runtime.block_on(runner.run_isolating_failures(&inputs).instrument(span))
+        })
+        .await?;
+        Ok(outcomes.into_iter())
     }
 }
 
@@ -579,22 +662,31 @@ impl Storage {
     /// coalesced into a single underlying write txn for throughput. FIFO:
     /// the first caller executes inline; concurrent callers queue up and are
     /// flushed together once the current batch commits. Bodies within a
-    /// batch are awaited sequentially against the same txn. If any body
-    /// resolves to `Err`, the whole batch is rolled back (the `WriteTxn` is
-    /// dropped without committing) and every caller in the batch receives
-    /// an error.
+    /// batch are awaited sequentially against the same txn, in call order.
     ///
-    /// Transient backend failures retry the whole batch on a fresh txn:
+    /// A failing body fails only its own caller: if `body` resolves to `Err`,
+    /// this call returns that error and none of the body's writes commit,
+    /// while every other caller in the batch still gets its own body's
+    /// result. LMDB can only drop a body's writes by aborting the whole txn,
+    /// so the bodies that ran ahead of a failing one run again in a new txn.
+    /// A failure that no body caused, such as a failed commit, still reaches
+    /// every caller whose body was in that txn.
+    ///
+    /// Backend-transient failures retry the affected sub-batch on a fresh txn:
     /// LMDB `MDB_MAP_FULL` after resizing the map, and Postgres
-    /// serialization/deadlock errors after rollback. Only the last attempt's
-    /// output is returned. So `body` may run more than once per call and must
-    /// be replay-safe. `Fn` rules out moving out of captures, but nothing
-    /// checks for side effects outside the txn, which a failed attempt doesn't
-    /// roll back: hand results out through the return value (or a shared slot
-    /// each run overwrites), never by accumulating into shared state.
+    /// serialization/deadlock errors after rollback.
     ///
-    /// A batch — opening the txn, every body, the commit or rollback — runs on
-    /// one blocking-pool thread, because LMDB requires a write txn to begin
+    /// That re-run, and the one after `MDB_MAP_FULL` from any body or the
+    /// commit (the map is grown and the txn's bodies re-run on a fresh txn),
+    /// mean `body` may run more than once per call, with only its last run's
+    /// output returned, so it must be replay-safe. `Fn` rules out moving out
+    /// of captures, but nothing checks for side effects outside the txn,
+    /// which an aborted run doesn't roll back: hand results out through the
+    /// return value (or a shared slot each run overwrites), never by
+    /// accumulating into shared state.
+    ///
+    /// A batch — opening each txn, every body, each commit or rollback — runs
+    /// on one blocking-pool thread, because LMDB requires a write txn to begin
     /// and end on the same OS thread. The writer lock is held throughout, so
     /// a body should only await work that belongs inside the txn.
     ///
@@ -613,7 +705,7 @@ impl Storage {
         // The latter would move `body` into the async block, making the outer closure
         // `FnOnce`. By calling `body(wtxn)` directly we borrow `body` (via its `Fn`
         // impl) and only move the returned `future` into the mapping async block,
-        // keeping the outer closure `Fn` (retryable on `MDB_MAP_FULL`).
+        // keeping the outer closure `Fn` (re-runnable, see `TxnBody`).
         let erased: TxnBody = Box::new(move |wtxn| {
             let future = body(wtxn);
             Box::pin(async move {
@@ -621,7 +713,9 @@ impl Storage {
                 Ok(Box::new(value) as Box<dyn Any + Send>)
             })
         });
-        let output = self.inner.batcher.run(erased).await?;
+        // The outer `Result` is the batcher's own failure (e.g. a body that
+        // panicked); the inner one is this body's outcome.
+        let output = self.inner.batcher.run(erased).await??;
         output
             .downcast::<T>()
             .map(|b| *b)
@@ -801,6 +895,8 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state_store::test_support::{hold_write_batch, make_test_store};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     #[cfg(not(feature = "postgres"))]
@@ -1107,6 +1203,79 @@ mod tests {
                 "{key} payload should match what was written"
             );
         }
+    }
+
+    /// Bodies that share a write batch fail independently: a failing body
+    /// fails only its own caller and none of its writes commit, while every
+    /// other body commits, in call order, without seeing the failed bodies'
+    /// writes.
+    #[tokio::test]
+    async fn failing_bodies_fail_only_their_own_callers() {
+        const KEYS: [&str; 5] = ["ok_0", "fail_1", "ok_2", "fail_3", "ok_4"];
+        let (app_store, _dir) = make_test_store().await;
+        let storage = app_store.storage.clone();
+        let batch = hold_write_batch(&storage).await;
+
+        // Queue one call per key into the next batch. Each body writes its
+        // key, then fails if the key says so, or else returns the keys it
+        // found already written.
+        let runs: [Arc<AtomicUsize>; KEYS.len()] = Default::default();
+        let mut calls: Vec<_> = std::iter::zip(KEYS, &runs)
+            .map(|(key, runs)| {
+                let (app_store, runs) = (app_store.clone(), runs.clone());
+                Box::pin(storage.run_txn(move |wtxn| {
+                    let (app_store, runs) = (app_store.clone(), runs.clone());
+                    Box::pin(async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        let mut written = Vec::new();
+                        for other in KEYS {
+                            if app_store
+                                .get_raw_in_txn(wtxn, other.as_bytes())
+                                .await?
+                                .is_some()
+                            {
+                                written.push(other);
+                            }
+                        }
+                        app_store.put_raw_in_txn(wtxn, key.as_bytes(), b"").await?;
+                        if key.starts_with("fail") {
+                            client_bail!("{key} rejected");
+                        }
+                        Ok(written)
+                    })
+                }))
+            })
+            .collect();
+        for call in &mut calls {
+            assert!(futures::poll!(call.as_mut()).is_pending());
+        }
+        batch.release().await;
+
+        let [ok_0, fail_1, ok_2, fail_3, ok_4] =
+            futures::future::join_all(calls).await.try_into().unwrap();
+        assert_eq!(ok_0.unwrap(), Vec::<&str>::new());
+        assert_eq!(ok_2.unwrap(), ["ok_0"]);
+        assert_eq!(ok_4.unwrap(), ["ok_0", "ok_2"]);
+        for (outcome, key) in [(fail_1, "fail_1"), (fail_3, "fail_3")] {
+            let err = outcome.expect_err("a failing body fails its own caller");
+            assert!(
+                err.to_string().contains(&format!("{key} rejected")),
+                "{key}'s caller got another body's error: {err}"
+            );
+        }
+
+        for key in KEYS {
+            assert_eq!(
+                app_store.get_raw(key.as_bytes()).await.unwrap().is_some(),
+                key.starts_with("ok"),
+                "{key} must commit iff its body succeeded"
+            );
+        }
+        // `ok_0` and `ok_2` ran ahead of a failing body, so they ran again to
+        // commit without it: once more each, although `ok_0` was batched with
+        // two failing bodies.
+        let runs = runs.map(|runs| runs.load(Ordering::SeqCst));
+        assert_eq!(runs, [2, 1, 2, 1, 1], "runs per body of {KEYS:?}");
     }
 
     /// Regression test for #2424. LMDB's writer lock belongs to the OS thread

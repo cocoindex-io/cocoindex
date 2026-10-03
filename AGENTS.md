@@ -299,7 +299,7 @@ async def pool(pg_dsn: str) -> Any:
 
 - All LMDB writes must go through `Storage::run_txn` (uses the single-writer batcher).
 - Do not open a heed write txn directly or wrap the env in a separate mutex/semaphore — bypassing the batcher loses fsync coalescing and regresses concurrent-submit throughput by 10-100×.
-- LMDB has no savepoints. If a sub-operation needs to "abort," handle it at the body level (e.g. return a sentinel result without writing); never attempt per-body rollback inside the batcher.
+- LMDB has no savepoints. If a sub-operation needs to "abort" without failing its caller, handle it at the body level (e.g. return a sentinel result without writing). A body that returns `Err` fails only its own caller: the batcher drops its writes by aborting the txn and re-running the bodies ahead of it, so every body must be safe to re-run.
 - An LMDB write txn must begin and end (commit or abort) on the same OS thread: the writer lock is thread-owned and LMDB ignores a failed release, so a txn that migrates between runtime workers blocks every later writer for good. heed marks `RwTxn` as `Send` regardless, so the compiler won't catch it. `Storage::run_txn` runs each batch on one blocking thread for this reason; never hold a write txn across an `.await` on the multi-thread runtime.
 
 ### Sync vs Async

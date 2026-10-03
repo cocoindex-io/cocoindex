@@ -513,9 +513,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// Closure that walks `declared_children` (`None`: nothing declared)
     /// against the on-disk `__cex` rows under this component — see
     /// [`reconcile_child_existence`]. `Fn` (not `FnOnce`) because LMDB's
-    /// batcher re-invokes it when it re-runs the commit txn after growing
-    /// the map on `MDB_MAP_FULL`: the cheap (`Arc`/owned) captures are
-    /// cloned per call rather than moved into the future.
+    /// batcher re-invokes it when it re-runs the commit's body, after
+    /// growing the map on `MDB_MAP_FULL` or after another body in its write
+    /// batch fails: the cheap (`Arc`/owned) captures are cloned per call
+    /// rather than moved into the future.
     fn existence_reconciler(
         &self,
         declared_children: Option<Arc<ChildStablePathSet>>,
@@ -758,10 +759,11 @@ enum PreCommitOutcome<Prof: EngineProfile> {
 /// Captures bundle shared into the precommit callback closure. Every
 /// field is `O(1)` to clone (Arc-internal or persistent data structure)
 /// so the body's per-call `Arc::clone(&captures)` is cheap. The callback
-/// must stay `Fn` and only read the bundle: LMDB's batcher re-runs the
-/// whole write batch after growing the map on `MDB_MAP_FULL`, so one
-/// `AppStore::precommit` call can run it — and with it `pre_commit` and
-/// every `TargetHandler::reconcile` — more than once.
+/// must stay `Fn` and only read the bundle: LMDB's batcher re-runs a body
+/// after growing the map on `MDB_MAP_FULL`, or after another body in its
+/// write batch fails, so one `AppStore::precommit` call can run it — and
+/// with it `pre_commit` and every `TargetHandler::reconcile` — more than
+/// once.
 struct PreCommitCaptures<Prof: EngineProfile> {
     app_store: AppStore,
     stable_path: StablePath,
@@ -928,9 +930,10 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     // would error on a retry. Passing the detection sub-pass (the only
     // PendingRetry exit) doesn't make this attempt final: LMDB's batcher
     // re-runs the whole precommit callback, this function included, after
-    // growing the map on `MDB_MAP_FULL`. Collecting here and letting
-    // `submit()` apply them after the commit keeps the invariant "set at most
-    // once per successful lifecycle".
+    // growing the map on `MDB_MAP_FULL` or after another body in its write
+    // batch fails. Collecting here and letting `submit()` apply them after
+    // the commit keeps the invariant "set at most once per successful
+    // lifecycle".
     let mut deferred_provider_generations: Vec<(
         TargetStateProvider<Prof>,
         TargetStateProviderGeneration,
@@ -1025,30 +1028,24 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 }
             };
 
-            // Compute prev_states and prev_may_be_missing uniformly from prev_item.
+            // Compute prev_may_be_missing uniformly from prev_item.
             // A `Deleted` entry among the states means the sink may be absent —
             // e.g. a prior delete whose sink_apply succeeded but whose commit
             // didn't finish (crash, or a `rollback_pending_tokens` after a later
             // failure). Multi-state on its own does NOT imply missing: every
-            // value the sink could hold is already among `prev_states`, so the
-            // handler's own `all(prev == desired)` check decides whether to act.
-            let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
-                let schema_version_mismatch = match parent_provider_gen {
-                    Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
-                    None => false,
-                };
-                let prev_may_be_missing = full_reprocess
-                    || schema_version_mismatch
-                    || prev_item.states.iter().any(|(_, s)| s.is_deleted());
-                let prev_states = prev_item
-                    .states
-                    .iter()
-                    .filter_map(|(_, s)| s.as_ref())
-                    .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
-                    .collect::<Result<Vec<_>>>()?;
-                (prev_states, prev_may_be_missing)
-            } else {
-                (vec![], true)
+            // value the sink could hold is already among the previous records, so
+            // the `all(prev == desired)` check decides whether to act.
+            let prev_may_be_missing = match &prev_item {
+                Some(prev_item) => {
+                    let schema_version_mismatch = match parent_provider_gen {
+                        Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
+                        None => false,
+                    };
+                    full_reprocess
+                        || schema_version_mismatch
+                        || prev_item.states.iter().any(|(_, s)| s.is_deleted())
+                }
+                None => true,
             };
 
             // Lock the shared map to run `reconcile` against `&decl.value`,
@@ -1063,21 +1060,42 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 })?;
                 let target_state_key_bytes = storekey::encode_vec(&decl.item_key)
                     .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
-                let recon_output = decl
-                    .provider
-                    .handler()
-                    .ok_or_else(|| {
-                        internal_error!(
-                            "provider not ready for target state with key {:?}",
-                            decl.item_key
-                        )
-                    })?
-                    .reconcile(
+                let handler = decl.provider.handler().ok_or_else(|| {
+                    internal_error!(
+                        "provider not ready for target state with key {:?}",
+                        decl.item_key
+                    )
+                })?;
+                let prev_states = prev_item.as_ref().map_or(&[][..], |item| &item.states);
+                // A handler that tracks the fingerprint of the declared value
+                // has nothing to do for a state that is surely present with
+                // every previous record equal to that fingerprint, so
+                // `reconcile` is not called for it. A container's `reconcile`
+                // always runs: its action is what fulfills the child slot.
+                let unchanged = decl.child_provider.is_none()
+                    && !prev_may_be_missing
+                    && !prev_states.is_empty()
+                    && match handler.value_fingerprint_record(&decl.value)? {
+                        Some(record) => prev_states
+                            .iter()
+                            .all(|(_, s)| s.as_ref() == Some(record.as_ref())),
+                        None => false,
+                    };
+                let recon_output = if unchanged {
+                    None
+                } else {
+                    let prev_records = prev_states
+                        .iter()
+                        .filter_map(|(_, s)| s.as_ref())
+                        .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                        .collect::<Result<Vec<_>>>()?;
+                    handler.reconcile(
                         decl.item_key.clone(),
                         Some(&decl.value),
-                        &prev_states,
+                        &prev_records,
                         prev_may_be_missing,
-                    )?;
+                    )?
+                };
                 (
                     target_state_key_bytes,
                     recon_output,
@@ -1306,7 +1324,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
 
     // Provider-generation updates: buffered into the output, applied
     // by `submit()` after the precommit txn commits — so a re-run of this
-    // function (the batcher's `MDB_MAP_FULL` retry) doesn't trip the
+    // function (by the batcher, see `PreCommitCaptures`) doesn't trip the
     // `OnceLock::set` "already set" guard.
     Ok(PreCommitOutcome::Done {
         output: PreCommitOutput {
@@ -1413,11 +1431,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         // `Ok(None)` from the callback so AppStore applies/commits no
         // tracking writes; the callback hands its output out through
         // `preview_output` instead. One `precommit` call can run the
-        // callback more than once — a batch retried on `MDB_MAP_FULL`
-        // re-runs every body in it — so each run overwrites the slot
-        // (`None` on `PendingRetry`) and only the last run's output
-        // counts. Its actions reach the shared collector once, after
-        // `precommit` returns.
+        // callback more than once — the batcher re-runs a body on
+        // `MDB_MAP_FULL`, or when a body after it in the same write txn
+        // fails — so each run overwrites the slot (`None` on
+        // `PendingRetry`) and only the last run's output counts. Its
+        // actions reach the shared collector once, after `precommit`
+        // returns.
         let collector = comp_ctx
             .preview_collector()
             .cloned()
@@ -1512,7 +1531,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         let output = match outcome {
                             PreCommitOutcome::Done { output, write_plan: _ } => {
                                 // Checked in here rather than after `precommit`:
-                                // the error rolls back the whole batch, so no
+                                // the error drops this body's writes, so no
                                 // generation ID `pre_commit` reserved for a
                                 // child provider commits.
                                 for input in output.actions_by_sinks.values() {

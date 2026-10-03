@@ -67,10 +67,13 @@ _DeprecatedChildHandlerT_co = TypeVar(
 class _TypedTargetHandlerWrapper:
     """Wraps a TargetHandler to auto-deserialize tracking records (StoredValue → typed objects)."""
 
-    __slots__ = ("_handler", "_deserializer")
+    __slots__ = ("_handler", "_deserializer", "tracks_value_fingerprint")
 
     def __init__(self, handler: Any) -> None:
         self._handler = handler
+        self.tracks_value_fingerprint: bool = getattr(
+            handler, "tracks_value_fingerprint", False
+        )
         # reconcile(self, key, desired, prev_possible_records, ...) — position 3
         reconcile_label = qualified_name(type(handler).reconcile)
         try:
@@ -435,6 +438,12 @@ class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co
     declares it on the return type of ``reconcile``
     (``TargetReconcileOutput[Action, TrackingRecord, ChildHandler]``), or by
     subclassing ``TargetHandler[Spec, TrackingRecord, ChildHandler]``.
+
+    A handler may set the class attribute ``tracks_value_fingerprint = True`` to
+    state that its tracking record for a declared value is exactly
+    ``connectorkits.fingerprint.fingerprint_object(value)``, and that a value
+    whose fingerprint equals every previous record needs no action. ``reconcile``
+    is then not called for such unchanged values.
     """
 
     def reconcile(
