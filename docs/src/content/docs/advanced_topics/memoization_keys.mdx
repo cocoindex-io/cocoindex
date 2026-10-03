@@ -1,22 +1,42 @@
 ---
 title: "*Memoization keys* & states"
 description: >
-  Customize how CocoIndex fingerprints memoized inputs via __coco_memo_key__ or
-  registered functions, and layer state validation (e.g. mtime, then content hash)
-  on top — plus NotMemoKeyable to opt out for stateful types.
+  Customize how CocoIndex fingerprints memoized inputs via __coco_memo_key__,
+  registered memo key functions, or stable type IDs, and layer state validation
+  (e.g. mtime, then content hash) on top.
 ---
-As described in [Function — Change detection](../programming_guide/function#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
+As described in [Function — Change detection](../programming_guide/function#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether a memo can be reused. By default, most types are fingerprinted automatically.
+
+Fingerprinting happens at these points:
+
+- **Function arguments** — when the function is called.
+- **Change-detected context values** — when they are provided (for example, by `builder.provide()`), before `use_context()` reads them.
+- **`deps` values** — once, when the `@coco.fn(..., deps=...)` or `@coco.fn.as_async(..., deps=...)` decorator is applied.
+
+This page covers how to customize that pipeline — how objects are fingerprinted and validated:
 
 - **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
 - **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
+- **Stable type IDs** — how to keep a type's memo namespace stable across refactors.
+
+:::tip[Choose the smallest mechanism]
+Most values need no customization. CocoIndex already handles primitives, containers, dataclasses, Pydantic models, class objects, and other picklable objects.
+
+- Only one function should transform or ignore an argument → use [`memo_key=`](#override-at-the-call-site-with-memo_key).
+- You control the type and every use should share the same key → define [`__coco_memo_key__`](#define-__coco_memo_key__-when-you-control-the-type).
+- You don't control the type and every use should share the same key → [register a key function](#register-a-key-function-when-you-dont-control-the-type).
+- A matching key still needs a freshness check, such as mtime or ETag → use a [memo state](#memo-state-validation).
+- A class may move or be renamed while keeping the same memo namespace → use a [stable type ID](#use-stable-type-ids-across-refactors).
+- A value must never participate in memoization → inherit from [`NotMemoKeyable`](#preventing-memoization).
+:::
 
 ## How data fingerprinting works
 
-For each data value (function argument, `deps` value, or context value), CocoIndex derives a canonical form with this precedence:
+For each data value, CocoIndex derives a canonical form with this precedence:
 
-1. If the object implements **`__coco_memo_key__()`**, CocoIndex uses its return value.
-2. Otherwise, if you registered a **memo key function** for the object's type, CocoIndex uses that.
-3. Otherwise, CocoIndex falls back to structural canonicalization for a limited set of primitives/containers.
+1. If the object implements **`__coco_memo_key__()`**, CocoIndex uses its return value. This applies to class instances, not class objects (`type`).
+2. Otherwise, if a **memo key function** is registered for the object's type, CocoIndex uses it.
+3. Otherwise, CocoIndex uses its built-in canonicalization.
 
 The following types are handled automatically (no custom key needed):
 
@@ -24,7 +44,7 @@ The following types are handled automatically (no custom key needed):
 - **Containers**: `list`, `tuple`, `dict`, `set`, `frozenset` (recursively canonicalized)
 - **Dataclass instances**: all fields included in definition order
 - **Pydantic v2 models**: all fields included
-- **Class objects** (`type`): identified by module and qualified name
+- **Class objects** (`type`): identified by a stable type ID when configured, otherwise by module and qualified name
 - **Other picklable objects**: used as a fallback via `pickle`
 
 The canonical forms are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
@@ -59,40 +79,126 @@ class UserRow:
         return ("users", self.user_id, self.updated_at)
 ```
 
+The method is used whenever a `UserRow` is fingerprinted as a function argument, `deps` value, or change-detected context value. For example:
+
+```python
+import cocoindex as coco
+
+@coco.fn(memo=True)
+def format_user(row: UserRow) -> str:
+    print("format_user executed")
+    return f"{row.user_id}: updated at {row.updated_at}"
+```
+
+Inside a processing component, the first update executes `format_user`. When logic and context also remain unchanged, a later update with another `UserRow` containing the same `user_id` and `updated_at` reuses the cached result. Changing either value changes the memo key, so the function executes again.
+
 ### Register a key function (when you don't control the type)
 
-If you can't add `__coco_memo_key__` (stdlib / third-party types), register a handler:
+If you can't add `__coco_memo_key__` (stdlib / third-party types), register a key function:
 
 ```python
 from pathlib import Path
-from cocoindex import register_memo_key_function
+from cocoindex import register_memo_type
 
 def path_key(p: Path) -> object:
     p = p.resolve()
     st = p.stat()
     return (str(p), st.st_mtime_ns, st.st_size)
 
-register_memo_key_function(Path, path_key)
+register_memo_type(Path, path_key)
 ```
 
 - Registration is **MRO-aware**: if you register both a base class and a subclass, the **most specific** match wins.
 - Your key function must return the same kinds of stable objects as `__coco_memo_key__` (small primitives/tuples).
 
-### Override at the call site with `memo_key=`
+### Use stable type IDs across refactors
 
-The two approaches above are **type-level**: every memoized function sees the same fingerprint for a given object. To customize fingerprinting **only for a specific function**, pass `memo_key=` to `@coco.fn` (or `@coco.fn.as_async`). It maps parameter names to either a callable (transform the value before fingerprinting) or `None` (exclude the parameter entirely).
+By default, CocoIndex identifies types in memo keys by their module and qualified name (`module.QualName`). If you move or rename a class, set `__coco_memo_type_id__` with an ordinary string (for new entries) or `coco.prev_type_id()` (for existing automatic entries):
 
 ```python
-@coco.fn(memo=True, memo_key={"entry": lambda e: (e.name, e.version), "extra": None})
-def transform(entry: SourceDataEntry, extra: str) -> str:
-    ...
+from dataclasses import dataclass
+from typing import ClassVar
+import cocoindex as coco
+
+# Ordinary string for new entries:
+@dataclass
+class NewEntry:
+    __coco_memo_type_id__: ClassVar[str] = "com.example.NewEntry/v1"
+
+    id: str
+    content: str
+
+# Retain existing automatic entries:
+@dataclass
+class SourceEntry:  # Moved to new_package.models
+    __coco_memo_type_id__: ClassVar[str] = coco.prev_type_id(
+        "old_package.models",
+        "SourceEntry",
+    )
+
+    name: str
+    version: int
+```
+
+Declare `prev_type_id` on each moved class; like any class attribute, a base-class declaration propagates to subclasses.
+
+For types you don't control, register the ID with `register_memo_type()`:
+
+```python
+from some_library import ExternalRecord
+import cocoindex as coco
+
+coco.register_memo_type(
+    ExternalRecord,
+    lambda record: (record.id, record.version),
+    stable_type_id="com.example.ExternalRecord/v1",
+)
+```
+
+Each call replaces the type's entire registration. If a type needs a key function, state function, and stable type ID, pass them together in one call.
+
+- **Inheritance**: Declaring `__coco_memo_type_id__` on a base class is a deliberate statement that the family shares the same namespace, and propagates to subclasses. For dataclass and Pydantic instances, field tuples keep payloads distinct; a subclass can and should override the ID by declaring its own `__coco_memo_type_id__` when semantics diverge.
+- **Precedence**: Type identity resolution follows this precedence:
+  1. **Declared stable type ID** (`__coco_memo_type_id__`, own or inherited).
+  2. **Registered stable type ID** (most specific registration across the type's MRO via `register_memo_type()`).
+  3. **Automatic fallback** (the type's canonical module and qualified name, `module.QualName`).
+
+:::note[Pickle fallback]
+Types using pickle fallback fingerprint raw bytes without type namespacing. Setting or registering a stable type ID alone has no effect on them — register a memo key function together with the stable type ID.
+:::
+
+### Class objects as inputs
+
+When passing a class object itself (such as `ProductRow` rather than an instance `ProductRow(...)`), CocoIndex fingerprints only the class identity (its declared/registered stable ID or module + qualname), without invoking `__coco_memo_key__` methods or hashing class attributes.
+
+To customize memoization for class objects globally, register a memo key function on the class's custom metaclass or on `type`.
+
+:::caution[Avoid colliding class objects]
+Unlike instances (where field tuples keep payloads distinct), raw class objects do not hash schema attributes or field tuples. Classes sharing an inherited or metaclass-level stable type ID will produce identical fingerprints. If a memoized function accepts class objects and must distinguish between them, declare a distinct `__coco_memo_type_id__` on each class or provide a custom `memo_key=` at the call site.
+:::
+
+### Override at the call site with `memo_key=`
+
+The approaches above are **type-level**: every memoized function sees the same fingerprint for a given object. To customize fingerprinting **only for a specific function**, pass `memo_key=` to `@coco.fn` (or `@coco.fn.as_async`). It maps parameter names to either a callable (transform the value before fingerprinting) or `None` (exclude the parameter entirely).
+
+```python
+@coco.fn(
+    memo=True,
+    memo_key={
+        "entry": lambda entry: (entry.name, entry.version),
+        "request_id": None,
+    },
+)
+def transform(entry: SourceDataEntry, request_id: str) -> str:
+    # request_id is request metadata and does not affect the result.
+    return f"{entry.name}@{entry.version}"
 ```
 
 Each entry in `memo_key`:
 
 - **Callable** — applied to the argument; its return value is fingerprinted in place of the original. Semantically the same as `__coco_memo_key__()` on the type, but scoped to this one function. Useful when the type's default fingerprint is correct everywhere *else*, and only this function should treat the argument differently.
 - **`None`** — the parameter is excluded from the memo key. Changing its value never invalidates the cache. Useful for arguments that don't affect the result (logger handles, debug flags, request-scoped context that isn't part of the computation).
-- **Not listed** — the parameter is fingerprinted normally (type-level `__coco_memo_key__`, registered handler, or default canonicalization).
+- **Not listed** — the parameter is fingerprinted normally (type-level `__coco_memo_key__`, registered memo key function, or default canonicalization).
 
 It works for every parameter kind:
 
@@ -103,11 +209,6 @@ It works for every parameter kind:
 
 `memo_key` is validated at decoration time: unknown parameter names raise `ValueError`, and values that are neither callable nor `None` raise `TypeError`.
 
-:::tip[Picking the right tool]
-- You control the type and the fingerprint is the same wherever it's used → **`__coco_memo_key__`**.
-- You don't control the type but want a global handler → **`register_memo_key_function`**.
-- Only *this* function should treat an argument specially (transform or skip it) → **`memo_key=`**.
-:::
 
 ## Memo state validation
 
@@ -117,14 +218,14 @@ Sometimes fingerprint matching alone isn't enough to decide whether a cached res
 - **Async validation**: for an S3 object, send a HEAD request to check freshness — an inherently async operation.
 - **Stateful validation**: for HTTP resources, store the last fetch time and use `If-Modified-Since` on the next run.
 
-Memo state validation addresses these by letting you attach a **state function** to your objects. It runs *after* a fingerprint match, giving you a chance to check freshness before the cached result is reused.
+Memo state validation addresses these by letting you attach a **state function** to your objects. A state function captures initial state when a memo entry is created and, after a later fingerprint match, checks freshness before the cached result is reused. For ordinary function arguments, initial state is captured after a cache miss executes the function. For change-detected context values, initial state is captured when the value is provided.
 
 ### How it works
 
-When CocoIndex finds a fingerprint match, it calls each state function with the stored state from the previous run:
+CocoIndex calls each state function with the state from the previous invocation:
 
-1. **First run** (no previous state): `prev_state` is `coco.NON_EXISTENCE`. Use `coco.is_non_existence(prev_state)` to detect this.
-2. **Subsequent runs**: `prev_state` is whatever you returned last time.
+1. **Initial state capture**: `prev_state` is `coco.NON_EXISTENCE`. Use `coco.is_non_existence(prev_state)` to detect this.
+2. **Validation after a later fingerprint match**: `prev_state` is whatever the state function returned previously.
 
 Your state function returns a `coco.MemoStateOutcome(state=..., memo_valid=...)`:
 
@@ -159,7 +260,9 @@ class LocalFile:
         # Identity only — which file is it?
         return str(self.path.resolve())
 
-    def __coco_memo_state__(self, prev_state: tuple[int, str] | coco.NonExistenceType) -> coco.MemoStateOutcome:
+    def __coco_memo_state__(
+        self, prev_state: tuple[int, str] | coco.NonExistenceType
+    ) -> coco.MemoStateOutcome:
         st = os.stat(self.path)
         new_mtime = st.st_mtime_ns
         if coco.is_non_existence(prev_state):
@@ -173,8 +276,10 @@ class LocalFile:
             # mtime unchanged — definitely reusable, no content read needed
             return coco.MemoStateOutcome(state=prev_state, memo_valid=True)
         # mtime changed — read content and check hash
-        content_hash = coco.connectorkits.fingerprint_bytes(self.path.read_bytes())
-        return coco.MemoStateOutcome(state=(new_mtime, content_hash), memo_valid=content_hash == prev_hash)
+        content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        return coco.MemoStateOutcome(
+            state=(new_mtime, content_hash), memo_valid=content_hash == prev_hash
+        )
 ```
 
 :::tip[Keys vs states for files]
@@ -189,23 +294,34 @@ This works for simple cases. State validation becomes useful when you need multi
 
 ### Register a state function (when you don't control the type)
 
-Pass a `state_fn` keyword argument to `register_memo_key_function`. The state function receives the object as its first argument and `prev_state` as its second. Annotate `prev_state` with the expected type:
+Pass a `state_fn` keyword argument together with a callable `key_fn` to `register_memo_type`; `state_fn` cannot be registered by itself. The state function receives the object as its first argument and `prev_state` as its second. Annotate `prev_state` with the expected type:
 
 ```python
 from pathlib import Path
-from cocoindex import register_memo_key_function
+import cocoindex as coco
 
 def path_key(p: Path) -> object:
     return str(p.resolve())
 
-def path_state(p: Path, prev_state: tuple[int, int] | coco.NonExistenceType) -> coco.MemoStateOutcome:
+def path_state(
+    p: Path, prev_state: tuple[int, int] | coco.NonExistenceType
+) -> coco.MemoStateOutcome:
     st = p.stat()
     new_state = (st.st_mtime_ns, st.st_size)
     memo_valid = not coco.is_non_existence(prev_state) and new_state == prev_state
     return coco.MemoStateOutcome(state=new_state, memo_valid=memo_valid)
 
-register_memo_key_function(Path, path_key, state_fn=path_state)
+coco.register_memo_type(
+    Path,
+    path_key,
+    state_fn=path_state,
+    stable_type_id="stdlib.pathlib.Path/v1",
+)
 ```
+
+A registered `state_fn` cannot be layered onto a type's own `__coco_memo_key__`. The intrinsic method takes precedence over registry functions, so neither the registered key function nor its state function is used. If you control the type, define `__coco_memo_state__` alongside `__coco_memo_key__`. The registry has no independent state-only attachment for a third-party type that already defines `__coco_memo_key__`.
+
+Omit `stable_type_id` if the type does not need a stable type ID. When a type needs both state validation and a stable type ID, provide them in the same registration call.
 
 ### Async state methods
 
@@ -213,6 +329,7 @@ A state method can return an `Awaitable`. CocoIndex handles this automatically:
 
 - **In an async CocoIndex function**: awaitables from all state methods are gathered concurrently.
 - **In a sync CocoIndex function**: if no event loop is running, CocoIndex uses `asyncio.run()`. If a loop is already running, it raises an error — switch to an async function or use `@coco.fn.as_async`.
+- **For change-detected context values**: initial state is captured synchronously at `builder.provide()`. If `builder.provide()` runs inside an active event loop, use a synchronous state function; an async state function must be initialized by providing the value outside that loop.
 
 ```python
 import cocoindex as coco
@@ -252,21 +369,13 @@ class MyStatefulGenerator(coco.NotMemoKeyable):
         return self._counter
 ```
 
-### Register as not memo-keyable (when you don't control the type)
-
-```python
-import cocoindex as coco
-from some_library import StatefulGenerator
-
-coco.register_not_memo_keyable(StatefulGenerator)
-```
-
-In either case, attempting to use the type as a memo key raises a clear error.
+Attempting to use a `NotMemoKeyable` instance as a memo key raises a clear error.
 
 ## Best practices
 
 - **Keep keys small and deterministic**: use identifiers and versions, not full payloads. No `id(obj)`, pointer addresses, or random values.
-- **Separate identity from freshness**: put stable identifiers (file path, URL, primary key) in the key. Put freshness checks (mtime, ETag, version) in the state.
+- **Separate identity from freshness**: put stable key values (file path, URL, primary key) in the key. Put freshness checks (mtime, ETag, version) in the state.
 - **Use state validation for expensive checks**: if freshness validation is costly (content hashing, network calls), a state function lets you do it only when the fingerprint matches, and only when a cheap pre-check (mtime) fails.
 - **Use `MemoStateOutcome(state=new_state, memo_valid=True)` for cheap state updates**: when a cheap property changes (mtime) but the expensive check (content hash) confirms nothing meaningful changed, return `memo_valid=True` while updating the state. This avoids re-executing the function and avoids re-checking the expensive property next time.
+- **Choose stable type IDs deliberately**: use a globally unique, durable name, and bump its version when two type/schema versions should not share memo entries. Do not reuse a stable type ID for unrelated types.
 - **Mark stateful types as `NotMemoKeyable`**: prevent subtle bugs from incorrect memoization of types with side effects.

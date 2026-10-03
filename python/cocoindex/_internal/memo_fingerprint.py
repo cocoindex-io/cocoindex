@@ -1,9 +1,9 @@
 """
 Persistent memoization fingerprinting (implementation).
 
-This module implements the Python-side canonicalization described in
-`docs/docs/dev/memo_key.md`, and relies on a single Rust call to hash the final
-canonical form into a fixed-size fingerprint.
+This module implements Python-side memo-key canonicalization; user-facing
+behavior is documented in
+`docs/src/content/docs/advanced_topics/memoization_keys.mdx`.
 """
 
 from __future__ import annotations
@@ -26,17 +26,17 @@ from .serde import (
 )
 from .typing import Fingerprintable
 
-
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
 _StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
 
 
-class _MemoFns(typing.NamedTuple):
-    key_fn: _KeyFn
+class _MemoTypeRegistry(typing.NamedTuple):
+    key_fn: _KeyFn | None = None
     state_fn: _StateFn | None = None
+    stable_type_id: str | None = None
 
 
-_memo_fns: dict[type, _MemoFns] = {}
+_memo_type_registry: dict[type, _MemoTypeRegistry] = {}
 
 
 class StateFnEntry(typing.NamedTuple):
@@ -49,6 +49,24 @@ class StateFnEntry(typing.NamedTuple):
 
     deserialize_prev: typing.Callable[[typing.Any], typing.Any]
     call: typing.Callable[[typing.Any], typing.Any]
+
+
+@dataclasses.dataclass(slots=True)
+class _CanonicalizeState:
+    seen: dict[int, int] = dataclasses.field(default_factory=dict)
+    keepalive: list[object] = dataclasses.field(default_factory=list)
+
+    def remember(self, obj: object) -> int | None:
+        oid = id(obj)
+        ordinal = self.seen.get(oid)
+        if ordinal is not None:
+            assert self.keepalive[ordinal] is obj
+            return ordinal
+
+        ordinal = len(self.keepalive)
+        self.keepalive.append(obj)
+        self.seen[oid] = ordinal
+        return None
 
 
 @functools.cache
@@ -71,7 +89,7 @@ def _make_state_deserialize_fn(
             ann,
             source_label=f"prev_state param of {fn_label}()",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         return make_deserialize_fn(typing.Any)
 
 
@@ -118,6 +136,169 @@ def canonical_module_name(obj: typing.Any) -> str:
     return mod
 
 
+class _PreviousTypeId(str):
+    """A prior automatic type identity carried through the stable-ID path."""
+
+    __slots__ = ("_identity_parts",)
+    _identity_parts: tuple[str, str]
+
+    def __new__(cls, module: str, qualname: str) -> typing.Self:
+        marker = super().__new__(cls, f"{len(module)}:{module}{qualname}")
+        object.__setattr__(marker, "_identity_parts", (module, qualname))
+        return marker
+
+    def __setattr__(self, name: str, value: object) -> typing.NoReturn:
+        raise AttributeError(f"{type(self).__name__} is immutable")
+
+    def __delattr__(self, name: str) -> typing.NoReturn:
+        raise AttributeError(f"{type(self).__name__} is immutable")
+
+    def __reduce__(self) -> tuple[type[_PreviousTypeId], tuple[str, str]]:
+        return type(self), self._identity_parts
+
+
+def prev_type_id(module: str, qualname: str) -> str:
+    """Return a marker that reuses a type's prior automatic identity."""
+    return _PreviousTypeId(module, qualname)
+
+
+def _register_memo_type_registry(typ: type, registry: _MemoTypeRegistry) -> None:
+    """Register memo configuration for one exact Python type."""
+    _memo_type_registry[typ] = registry
+
+
+def _unregister_memo_type_registry(typ: type) -> None:
+    """Best-effort removal of an exact-type memo registration."""
+    _memo_type_registry.pop(typ, None)
+
+
+def _registered_memo_type_registry(typ: type) -> _MemoTypeRegistry | None:
+    """Return the exact type's registration from the type-keyed table."""
+    return _memo_type_registry.get(typ)
+
+
+_MEMO_KEY_ATTR = "__coco_memo_key__"
+_MEMO_STATE_ATTR = "__coco_memo_state__"
+_CLASS_OBJECT_OWNER_IDENTITY: tuple[Fingerprintable, Fingerprintable] = (
+    canonical_module_name(type),
+    type.__qualname__,
+)
+
+
+def _type_identity_parts(
+    typ: type,
+    registry: _MemoTypeRegistry | None,
+    fallback_owner: type | None = None,
+    *,
+    is_class_object: bool = False,
+) -> tuple[Fingerprintable, Fingerprintable]:
+    """Return stable type ID or module+qualname type identity parts.
+    The stable type ID case still returns two parts to preserve the existing
+    module/qualname identity shape used by type-aware canonical forms. The
+    tagged first slot keeps stable type IDs disjoint from ordinary module
+    names; ``None`` fills the qualname slot.
+    ``fallback_owner`` anchors the automatic module/qualname identity to the
+    type that owns a registered key function selected via MRO: the runtime
+    type's own declared or registered stable ID still wins, but when no stable
+    ID applies the identity stays with the key function's owner type.
+    """
+    stable_type_id = getattr(typ, "__coco_memo_type_id__", None)
+    if not isinstance(stable_type_id, str):
+        if registry is not None and registry.stable_type_id is not None:
+            stable_type_id = registry.stable_type_id
+        else:
+            for owner in typ.__mro__:
+                if is_class_object and owner is object and typ is not object:
+                    break
+                reg = (
+                    registry
+                    if (registry is not None and owner is typ)
+                    else _registered_memo_type_registry(owner)
+                )
+                if reg is not None and reg.stable_type_id is not None:
+                    stable_type_id = reg.stable_type_id
+                    break
+    if isinstance(stable_type_id, _PreviousTypeId):
+        return stable_type_id._identity_parts
+    if isinstance(stable_type_id, str):
+        return (("__coco_memo_type_id__", stable_type_id), None)
+    fallback_owner = typ if fallback_owner is None else fallback_owner
+    return (
+        canonical_module_name(fallback_owner),
+        getattr(fallback_owner, "__qualname__", None),
+    )
+
+
+def _canonicalize_registered_memo_key(
+    obj: object,
+    owner: type,
+    registry: _MemoTypeRegistry,
+    state: _CanonicalizeState,
+    state_methods: list[StateFnEntry],
+) -> Fingerprintable:
+    key_fn = registry.key_fn
+    assert key_fn is not None
+    key = key_fn(obj)
+    tag = "hook"
+    if registry.state_fn is not None:
+        tag = "shook"
+        bound = functools.partial(registry.state_fn, obj)
+        state_methods.append(_make_state_fn_entry(bound, registry.state_fn))
+    if isinstance(obj, type):
+        # Class objects keep the identity of the metaclass owner whose
+        # registration supplied the key function.
+        identity = _type_identity_parts(owner, registry, is_class_object=True)
+    else:
+        # Instances resolve identity on the runtime type, so a subclass can
+        # override an inherited registered stable ID by declaring or
+        # registering its own; the automatic identity falls back to the owner.
+        typ = type(obj)
+        identity = _type_identity_parts(
+            typ,
+            registry if typ is owner else _registered_memo_type_registry(typ),
+            fallback_owner=owner,
+        )
+    return (
+        tag,
+        *identity,
+        _canonicalize(key, state, state_methods),
+    )
+
+
+def _canonicalize_class_object(
+    cls: type,
+    state: _CanonicalizeState,
+    state_methods: list[StateFnEntry],
+) -> Fingerprintable:
+    """Canonicalize a class object without invoking memo attributes on it."""
+
+    metaclass: type = type(cls)
+    metaclass_registry = _registered_memo_type_registry(metaclass)
+    for owner in metaclass.__mro__:
+        if owner is object:
+            break
+        registry = (
+            metaclass_registry
+            if owner is metaclass
+            else _registered_memo_type_registry(owner)
+        )
+        if registry is not None and registry.key_fn is not None:
+            return _canonicalize_registered_memo_key(
+                cls, owner, registry, state, state_methods
+            )
+
+    cls_registry = (
+        metaclass_registry if cls is metaclass else _registered_memo_type_registry(cls)
+    )
+    return (
+        "hook",
+        *_CLASS_OBJECT_OWNER_IDENTITY,
+        # This synthesized identity is already canonical; do not re-enter memo-key
+        # dispatch, where a registration on ``object`` could intercept it.
+        ("seq", _type_identity_parts(cls, cls_registry, is_class_object=True)),
+    )
+
+
 def _is_dataclass_instance(obj: object) -> bool:
     """Check if obj is a dataclass instance (not a class)."""
     return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
@@ -130,7 +311,8 @@ def _is_pydantic_model(obj: object) -> bool:
 
 def _canonicalize_dataclass(
     obj: object,
-    _seen: dict[int, int],
+    registry: _MemoTypeRegistry | None,
+    state: _CanonicalizeState,
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     """Canonicalize a dataclass instance.
@@ -142,10 +324,9 @@ def _canonicalize_dataclass(
     fields = dataclasses.fields(obj)  # type: ignore[arg-type]
     return (
         "dataclass",
-        canonical_module_name(typ),
-        typ.__qualname__,
+        *_type_identity_parts(typ, registry),
         tuple(
-            (field.name, _canonicalize(getattr(obj, field.name), _seen, state_methods))
+            (field.name, _canonicalize(getattr(obj, field.name), state, state_methods))
             for field in fields
         ),
     )
@@ -153,7 +334,8 @@ def _canonicalize_dataclass(
 
 def _canonicalize_pydantic(
     obj: object,
-    _seen: dict[int, int],
+    registry: _MemoTypeRegistry | None,
+    state: _CanonicalizeState,
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     """Canonicalize a Pydantic v2 model instance.
@@ -165,10 +347,9 @@ def _canonicalize_pydantic(
     field_names = obj.__pydantic_fields__.keys()  # type: ignore[attr-defined]
     return (
         "pydantic",
-        canonical_module_name(typ),
-        typ.__qualname__,
+        *_type_identity_parts(typ, registry),
         tuple(
-            (name, _canonicalize(getattr(obj, name), _seen, state_methods))
+            (name, _canonicalize(getattr(obj, name), state, state_methods))
             for name in field_names
         ),
     )
@@ -193,32 +374,112 @@ class NotMemoKeyable:
         )
 
 
-def register_memo_key_function(
-    typ: type, key_fn: _KeyFn, *, state_fn: _StateFn | None = None
+@typing.overload
+def register_memo_type(
+    typ: type,
+    key_fn: _KeyFn,
+    *,
+    state_fn: _StateFn | None = None,
+    stable_type_id: str | None = None,
+) -> None: ...
+
+
+@typing.overload
+def register_memo_type(
+    typ: type,
+    key_fn: None = None,
+    *,
+    state_fn: None = None,
+    stable_type_id: str,
+) -> None: ...
+
+
+def register_memo_type(
+    typ: type,
+    key_fn: _KeyFn | None = None,
+    *,
+    state_fn: _StateFn | None = None,
+    stable_type_id: str | None = None,
 ) -> None:
-    """Register a memo key function for a type.
+    """Register a memo key function, state function, and/or stable type ID for a type.
 
-    Resolution is MRO-aware: the most specific registered base type wins.
+    Key-function and stable-type-ID resolutions are MRO-aware: the most specific
+    registered base type wins. Each call replaces the full registration for
+    ``typ``: omitting ``stable_type_id`` clears any previous registered stable
+    type ID, and omitting ``key_fn`` or passing ``None`` clears any previous
+    key/state functions.
 
-    If *state_fn* is provided it is stored separately and used for memo state
-    validation (see ``_canonicalize``).
+    When a registered stable type ID should affect a value used in ``deps=``,
+    call this before the corresponding ``@coco.fn`` / ``@coco.fn.as_async``
+    decorator is applied because ``deps`` fingerprints are computed at
+    decoration time.
     """
 
-    _memo_fns[typ] = _MemoFns(key_fn, state_fn)
+    if not isinstance(typ, type):
+        raise TypeError(
+            f"register_memo_type() expects typ to be a type, got {type(typ).__name__}"
+        )
+    if key_fn is None:
+        if state_fn is not None:
+            raise TypeError(
+                "register_memo_type() state_fn requires a memo key function"
+            )
+        if stable_type_id is None:
+            raise TypeError("register_memo_type() requires a key_fn or stable_type_id")
+    elif not callable(key_fn):
+        raise TypeError(
+            f"register_memo_type() key_fn must be callable, got {type(key_fn).__name__}"
+        )
+    if state_fn is not None and not callable(state_fn):
+        raise TypeError(
+            "register_memo_type() state_fn must be callable, "
+            f"got {type(state_fn).__name__}"
+        )
+    if stable_type_id is not None and not isinstance(stable_type_id, str):
+        raise TypeError(
+            "register_memo_type() stable_type_id must be a str, "
+            f"got {type(stable_type_id).__name__}"
+        )
+
+    _register_memo_type_registry(
+        typ,
+        _MemoTypeRegistry(
+            key_fn=key_fn,
+            state_fn=state_fn,
+            stable_type_id=stable_type_id,
+        ),
+    )
+
+
+def register_memo_key_function(
+    typ: type,
+    key_fn: _KeyFn,
+    *,
+    state_fn: _StateFn | None = None,
+) -> None:
+    """Register a memo key function for a type, preserving any registered stable type ID."""
+    existing = _registered_memo_type_registry(typ) if isinstance(typ, type) else None
+    stable_type_id = existing.stable_type_id if existing is not None else None
+    register_memo_type(
+        typ, key_fn=key_fn, state_fn=state_fn, stable_type_id=stable_type_id
+    )
 
 
 def register_not_memo_keyable(typ: type) -> None:
     """Register a type as not memo-keyable.
 
-    Use this for third-party types that maintain internal state incompatible
-    with memoization, but which you cannot modify to inherit from `NotMemoKeyable`.
-
-    Example:
-        import cocoindex as coco
-        from some_library import StatefulGenerator
-
-        coco.register_not_memo_keyable(StatefulGenerator)
+    Internal helper for tests and internal registrations. It is intentionally
+    not exported through the public ``cocoindex`` namespace until registered
+    not-memo-keyable precedence is fixed for types that define
+    ``__coco_memo_key__`` or otherwise supply memo-key behavior. Public code
+    should inherit from ``coco.NotMemoKeyable`` when the type is user-owned.
     """
+
+    if not isinstance(typ, type):
+        raise TypeError(
+            "register_not_memo_keyable() expects typ to be a type, "
+            f"got {type(typ).__name__}"
+        )
 
     def _raise_not_memo_keyable(obj: object) -> typing.NoReturn:
         raise TypeError(
@@ -226,13 +487,28 @@ def register_not_memo_keyable(typ: type) -> None:
             "This type maintains internal state that is incompatible with memoization."
         )
 
-    _memo_fns[typ] = _MemoFns(_raise_not_memo_keyable)
+    _register_memo_type_registry(typ, _MemoTypeRegistry(key_fn=_raise_not_memo_keyable))
+
+
+def unregister_memo_type(typ: type) -> None:
+    """Remove registered memo configuration for a type."""
+
+    if isinstance(typ, type):
+        _unregister_memo_type_registry(typ)
 
 
 def unregister_memo_key_function(typ: type) -> None:
-    """Remove a previously registered memo key function (best-effort)."""
+    """Remove a registered memo key function, preserving any registered stable type ID."""
 
-    _memo_fns.pop(typ, None)
+    if not isinstance(typ, type):
+        return
+    reg = _registered_memo_type_registry(typ)
+    if reg is None:
+        return
+    if reg.stable_type_id is not None:
+        register_memo_type(typ, stable_type_id=reg.stable_type_id)
+    else:
+        _unregister_memo_type_registry(typ)
 
 
 def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
@@ -267,12 +543,11 @@ def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
 
 def _canonicalize(
     obj: object,
-    _seen: dict[int, int] | None,
+    state: _CanonicalizeState | None,
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
-    # 0) Cycle / shared-reference tracking for containers
-    if _seen is None:
-        _seen = {}
+    if state is None:
+        state = _CanonicalizeState()
 
     # 1) Primitives
     if obj is None:
@@ -283,86 +558,81 @@ def _canonicalize(
     if isinstance(obj, (bytearray, memoryview)):
         return bytes(obj)
 
-    # 2) Hook / registry (apply once, then recurse on returned key fragment)
-    hook = getattr(obj, "__coco_memo_key__", None)
+    # 2) Memo key dispatch. Raw class objects skip memo attributes but honor
+    # explicit key registrations on their metaclass MRO.
+    if isinstance(obj, type):
+        return _canonicalize_class_object(obj, state, state_methods)
+
+    typ = type(obj)
+    hook = getattr(obj, _MEMO_KEY_ATTR, None)
+    registry = _registered_memo_type_registry(typ)
     if hook is not None and callable(hook):
         k = hook()
-        typ = type(obj)
         tag = "hook"
-        state_hook = getattr(obj, "__coco_memo_state__", None)
+        state_hook = getattr(obj, _MEMO_STATE_ATTR, None)
         if state_hook is not None and callable(state_hook):
             tag = "shook"
             # raw function for type hint extraction (unbound method on class)
-            raw_fn = getattr(typ, "__coco_memo_state__")
+            raw_fn = getattr(typ, _MEMO_STATE_ATTR)
             state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
-            canonical_module_name(typ),
-            typ.__qualname__,
-            _canonicalize(k, _seen, state_methods),
+            *_type_identity_parts(typ, registry),
+            _canonicalize(k, state, state_methods),
         )
 
-    for base in type(obj).__mro__:
-        memo = _memo_fns.get(base)
-        if memo is not None:
-            k = memo.key_fn(obj)
-            tag = "hook"
-            if memo.state_fn is not None:
-                tag = "shook"
-                bound = functools.partial(memo.state_fn, obj)
-                state_methods.append(_make_state_fn_entry(bound, memo.state_fn))
-            return (
-                tag,
-                canonical_module_name(base),
-                base.__qualname__,
-                _canonicalize(k, _seen, state_methods),
+    for owner in typ.__mro__:
+        owner_registry = (
+            registry if owner is typ else _registered_memo_type_registry(owner)
+        )
+        if owner_registry is not None and owner_registry.key_fn is not None:
+            return _canonicalize_registered_memo_key(
+                obj, owner, owner_registry, state, state_methods
             )
 
     # 3) Cycle / shared-reference tracking
     #
     # Note: we intentionally do this before branching on container types, so the
     # logic is shared and we support cyclic/self-referential structures.
-    oid = id(obj)
-    ordinal = _seen.get(oid)
+    ordinal = state.remember(obj)
     if ordinal is not None:
         return ("ref", ordinal)
-    _seen[oid] = len(_seen)
 
     # 4) Containers
     if isinstance(obj, typing.Sequence):
-        return ("seq", tuple(_canonicalize(e, _seen, state_methods) for e in obj))
+        return ("seq", tuple(_canonicalize(e, state, state_methods) for e in obj))
 
     if isinstance(obj, typing.Mapping):
         items: list[tuple[Fingerprintable, Fingerprintable]] = []
         for k, v in obj.items():
             items.append(
                 (
-                    _canonicalize(k, _seen, state_methods),
-                    _canonicalize(v, _seen, state_methods),
+                    _canonicalize(k, state, state_methods),
+                    _canonicalize(v, state, state_methods),
                 )
             )
         items.sort(key=lambda kv: (_stable_sort_key(kv[0]), _stable_sort_key(kv[1])))
         return ("map", tuple(items))
 
     if isinstance(obj, (set, frozenset)):
-        elts = [_canonicalize(e, _seen, state_methods) for e in obj]
+        elts = [_canonicalize(e, state, state_methods) for e in obj]
         elts.sort(key=_stable_sort_key)
         return ("set", tuple(elts))
 
     # 5) Dataclass instances
     if _is_dataclass_instance(obj):
-        return _canonicalize_dataclass(obj, _seen, state_methods)
+        return _canonicalize_dataclass(obj, registry, state, state_methods)
 
     # 6) Pydantic v2 models
     if _is_pydantic_model(obj):
-        return _canonicalize_pydantic(obj, _seen, state_methods)
+        return _canonicalize_pydantic(obj, registry, state, state_methods)
 
     # 7) Fallback
     try:
         payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
         # Tag to avoid colliding with user-provided raw bytes.
         return ("pickle", payload)
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise TypeError(
             f"Unsupported type for memoization key: {type(obj)!r}. "
             "Provide __coco_memo_key__() or register a memo key function."
@@ -383,13 +653,13 @@ def _make_call_canonical(
         getattr(func, "__qualname__", None),
     )
     canonical_args = tuple(
-        _canonicalize(a, _seen=None, state_methods=state_methods) for a in prefix_args
+        _canonicalize(a, state=None, state_methods=state_methods) for a in prefix_args
     )
     canonical_args = canonical_args + tuple(
-        _canonicalize(a, _seen=None, state_methods=state_methods) for a in args
+        _canonicalize(a, state=None, state_methods=state_methods) for a in args
     )
     canonical_kwargs = tuple(
-        (k, _canonicalize(v, _seen=None, state_methods=state_methods))
+        (k, _canonicalize(v, state=None, state_methods=state_methods))
         for k, v in sorted(kwargs.items())
     )
     return (
@@ -405,7 +675,7 @@ def memo_fingerprint(obj: object) -> core.Fingerprint:
     # State methods are meaningless for an object-only fingerprint; collect
     # into a throwaway list so the canonicalizer signature stays uniform.
     return core.fingerprint_simple_object(
-        _canonicalize(obj, _seen=None, state_methods=[])
+        _canonicalize(obj, state=None, state_methods=[])
     )
 
 
@@ -440,18 +710,14 @@ def fingerprint_call(
     return core.fingerprint_simple_object(call_key_obj)
 
 
-# Register memo key for class types.
-register_memo_key_function(
-    type,
-    lambda cls: (canonical_module_name(cls), getattr(cls, "__qualname__", None)),
-)
-
-
 __all__ = [
     "NotMemoKeyable",
-    "register_memo_key_function",
-    "register_not_memo_keyable",
-    "unregister_memo_key_function",
     "fingerprint_call",
     "memo_fingerprint",
+    "prev_type_id",
+    "register_memo_key_function",
+    "register_memo_type",
+    "register_not_memo_keyable",
+    "unregister_memo_key_function",
+    "unregister_memo_type",
 ]
