@@ -82,9 +82,6 @@ _EXACT_VALUES: list[Any] = [
     {
         "price": decimal.Decimal("9.90"),
         "naive": datetime.datetime(2024, 1, 2, 3, 4, 5),
-        "aware": datetime.datetime(
-            2024, 1, 2, tzinfo=zoneinfo.ZoneInfo("America/New_York")
-        ),
         "utc": datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc),
         "day": datetime.date(2024, 1, 2),
         "clock": datetime.time(3, 4, 5),
@@ -111,6 +108,15 @@ _EXACT_VALUES: list[Any] = [
 
 @pytest.mark.parametrize("value", _EXACT_VALUES)
 def test_round_trip_is_exact(value: Any) -> None:
+    _assert_exact(_round_trip(value), value)
+
+
+def test_round_trip_keeps_zoneinfo() -> None:
+    try:
+        tz = zoneinfo.ZoneInfo("America/New_York")
+    except zoneinfo.ZoneInfoNotFoundError:
+        pytest.skip("no IANA time zone database (Windows without tzdata)")
+    value = {"aware": datetime.datetime(2024, 1, 2, tzinfo=tz)}
     _assert_exact(_round_trip(value), value)
 
 
