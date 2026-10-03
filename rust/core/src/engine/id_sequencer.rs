@@ -113,8 +113,8 @@ impl IdSequencerManager {
             let app_store = app_store.clone();
             let key = key.clone();
             // `reserve_id_range_in_txn` is idempotent under retry: each
-            // attempt reads the current counter, computes `start_id`,
-            // writes `start_id + batch_size`.
+            // attempt reads the current counter, computes `start_id`, writes
+            // `start_id + batch_size`.
             let start_id = storage
                 .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
