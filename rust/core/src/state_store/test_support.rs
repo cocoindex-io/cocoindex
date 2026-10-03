@@ -1,7 +1,7 @@
 //! Shared test-only helpers for constructing in-process stores and steering
 //! their write batches.
 
-use super::{AppStore, Storage};
+use super::{AppStore, AppStoreHandle, Storage};
 use crate::prelude::*;
 use tempfile::TempDir;
 use tokio::sync::Notify;
@@ -25,7 +25,15 @@ pub(crate) async fn make_test_store() -> (AppStore, TempDir) {
     let db = env.create_database(&mut wtxn, Some("test_app")).unwrap();
     wtxn.commit().unwrap();
     let storage = Storage::from_env(env.clone());
-    (AppStore::new(db, env, storage), dir)
+    let handle = AppStoreHandle::Lmdb {
+        db,
+        env: env.clone(),
+    };
+    let backend = std::sync::Arc::new(super::LmdbBackend::new(
+        env.clone(),
+        storage.txn_coordinator(),
+    )) as std::sync::Arc<dyn super::StorageBackend>;
+    (AppStore::new(handle, backend, storage), dir)
 }
 
 /// A write batch held open by [`hold_write_batch`].

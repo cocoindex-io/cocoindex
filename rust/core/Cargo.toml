@@ -24,6 +24,7 @@ rmp = { workspace = true }
 rmp-serde = { workspace = true }
 rpds = { workspace = true }
 serde_with = { workspace = true }
+sqlx = { version = "0.8", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "postgres"] }
 uuid = { workspace = true }
 indexmap = { workspace = true }
 
@@ -36,6 +37,8 @@ parking_lot = { workspace = true }
 rand = { workspace = true }
 
 [features]
+default = []
+postgres = ["dep:sqlx"]
 # Extra store hooks for the state-store read benchmarks (see the SDK crate's
 # `state_store_read` bench). Never enabled by production dependents.
 bench-support = []

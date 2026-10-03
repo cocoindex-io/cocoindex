@@ -4,9 +4,8 @@ access that pre-date the `db_settings` encapsulation."""
 
 import pathlib
 
-import pytest
-
 import cocoindex as coco
+import pytest
 from cocoindex._internal.setting import LmdbSettings, Settings
 
 
@@ -107,3 +106,28 @@ def test_from_env_falls_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_lmdb_settings_re_exported_from_top_level() -> None:
     assert coco.LmdbSettings is LmdbSettings
+
+
+def test_postgres_url_is_preserved_in_engine_wire_format() -> None:
+    url = "postgresql://user:secret@db.example/cocoindex"
+    settings = Settings(db_path=url)
+    wire = settings._to_engine_dict()
+    assert wire["db_path"] == url
+
+
+def test_postgres_url_is_redacted_in_repr() -> None:
+    url = "postgres://user:secret@db.example/cocoindex?sslmode=require&password=query-secret"
+    text = repr(Settings(db_path=url))
+    assert "secret" not in text
+    assert "***@db.example" in text
+    assert "password=***" in text
+
+
+def test_default_db_path_preserves_postgres_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cocoindex._internal import setting
+
+    url = "POSTGRESQL://user:secret@db.example/cocoindex"
+    monkeypatch.setenv("COCOINDEX_DB", url)
+    assert setting.get_default_db_path() == url

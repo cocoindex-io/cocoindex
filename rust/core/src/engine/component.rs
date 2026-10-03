@@ -2222,8 +2222,8 @@ mod tests {
                 let value = vec![0u8; 16 * 1024];
                 for i in 0..64 {
                     overflow_store
-                        .db()
-                        .put(wtxn, format!("key_{i:02}").as_bytes(), &value)?;
+                        .put_raw_in_txn(wtxn, format!("key_{i:02}").as_bytes(), &value)
+                        .await?;
                 }
                 Ok(())
             })

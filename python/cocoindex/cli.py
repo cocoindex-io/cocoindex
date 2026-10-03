@@ -21,7 +21,7 @@ from cocoindex._internal.environment import (
     default_env_lazy,
     get_registered_environment_infos,
 )
-from cocoindex._internal.setting import get_default_db_path
+from cocoindex._internal.setting import get_default_db_path, redact_db_url
 from cocoindex.inspect import (
     iter_stable_paths,
     iter_stable_paths_by_name,
@@ -182,15 +182,17 @@ def _format_db_path(env: Environment) -> str:
     """Format the database path for display."""
     if not env.settings.db_path:
         return "(unknown)"
-    path = env.settings.db_path
+    path = str(env.settings.db_path)
+    if "://" in path:
+        return redact_db_url(path)
     try:
         cwd = os.getcwd()
-        abs_path = os.path.abspath(str(path))
+        abs_path = os.path.abspath(path)
         if abs_path.startswith(cwd + os.sep):
             return "./" + os.path.relpath(abs_path, cwd)
-        return str(path)
+        return path
     except Exception:
-        return str(path)
+        return path
 
 
 def _confirm_yes(prompt: str) -> bool:
@@ -287,9 +289,13 @@ async def _ls_from_module_async(module_ref: str) -> None:
 
 async def _ls_from_database_async(db_path: str) -> None:
     """List all persisted apps from a specific database. Passes the running loop explicitly so the CLI never starts the background loop."""
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
+    db_path_obj: str | pathlib.Path
+    if "://" in db_path:
+        db_path_obj = db_path
+    else:
+        db_path_obj = pathlib.Path(db_path)
+        if not db_path_obj.exists():
+            raise click.ClickException(f"Database path does not exist: {db_path}")
 
     try:
         from cocoindex._internal.setting import Settings
@@ -813,9 +819,13 @@ async def _show_from_database(
     parents: bool = False,
     fingerprints: bool = False,
 ) -> None:
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
+    db_path_obj: str | pathlib.Path
+    if "://" in db_path:
+        db_path_obj = db_path
+    else:
+        db_path_obj = pathlib.Path(db_path)
+        if not db_path_obj.exists():
+            raise click.ClickException(f"Database path does not exist: {db_path}")
 
     from cocoindex._internal.setting import Settings
 
@@ -871,9 +881,13 @@ async def _show_target_states_from_database(
     tree: bool = False,
     fingerprints: bool = False,
 ) -> None:
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
+    db_path_obj: str | pathlib.Path
+    if "://" in db_path:
+        db_path_obj = db_path
+    else:
+        db_path_obj = pathlib.Path(db_path)
+        if not db_path_obj.exists():
+            raise click.ClickException(f"Database path does not exist: {db_path}")
 
     from cocoindex._internal.setting import Settings
 
@@ -1074,7 +1088,7 @@ def update(
             env = await app._environment._get_env()
             if not quiet:
                 print(
-                    f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+                    f"Running app '{app._name}' from environment '{env.name}' (db path: {_format_db_path(env)})"
                 )
 
             if preview:
@@ -1156,7 +1170,7 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
 
             if not quiet:
                 click.echo(
-                    f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+                    f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {_format_db_path(env)})"
                 )
 
             if app._name not in persisted_names:
