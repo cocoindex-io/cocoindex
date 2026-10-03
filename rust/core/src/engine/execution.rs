@@ -1025,30 +1025,24 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 }
             };
 
-            // Compute prev_states and prev_may_be_missing uniformly from prev_item.
+            // Compute prev_may_be_missing uniformly from prev_item.
             // A `Deleted` entry among the states means the sink may be absent —
             // e.g. a prior delete whose sink_apply succeeded but whose commit
             // didn't finish (crash, or a `rollback_pending_tokens` after a later
             // failure). Multi-state on its own does NOT imply missing: every
-            // value the sink could hold is already among `prev_states`, so the
-            // handler's own `all(prev == desired)` check decides whether to act.
-            let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
-                let schema_version_mismatch = match parent_provider_gen {
-                    Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
-                    None => false,
-                };
-                let prev_may_be_missing = full_reprocess
-                    || schema_version_mismatch
-                    || prev_item.states.iter().any(|(_, s)| s.is_deleted());
-                let prev_states = prev_item
-                    .states
-                    .iter()
-                    .filter_map(|(_, s)| s.as_ref())
-                    .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
-                    .collect::<Result<Vec<_>>>()?;
-                (prev_states, prev_may_be_missing)
-            } else {
-                (vec![], true)
+            // value the sink could hold is already among the previous records, so
+            // the `all(prev == desired)` check decides whether to act.
+            let prev_may_be_missing = match &prev_item {
+                Some(prev_item) => {
+                    let schema_version_mismatch = match parent_provider_gen {
+                        Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
+                        None => false,
+                    };
+                    full_reprocess
+                        || schema_version_mismatch
+                        || prev_item.states.iter().any(|(_, s)| s.is_deleted())
+                }
+                None => true,
             };
 
             // Lock the shared map to run `reconcile` against `&decl.value`,
@@ -1063,21 +1057,40 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 })?;
                 let target_state_key_bytes = storekey::encode_vec(&decl.item_key)
                     .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
-                let recon_output = decl
-                    .provider
-                    .handler()
-                    .ok_or_else(|| {
-                        internal_error!(
-                            "provider not ready for target state with key {:?}",
-                            decl.item_key
-                        )
-                    })?
-                    .reconcile(
+                let handler = decl.provider.handler().ok_or_else(|| {
+                    internal_error!(
+                        "provider not ready for target state with key {:?}",
+                        decl.item_key
+                    )
+                })?;
+                let prev_states = prev_item.as_ref().map_or(&[][..], |item| &item.states);
+                // A handler that tracks the fingerprint of the declared value
+                // has nothing to do for a state that is surely present with
+                // every previous record equal to that fingerprint, so
+                // `reconcile` is not called for it.
+                let unchanged = !prev_may_be_missing
+                    && !prev_states.is_empty()
+                    && match handler.value_fingerprint_record(&decl.value)? {
+                        Some(record) => prev_states
+                            .iter()
+                            .all(|(_, s)| s.as_ref() == Some(record.as_ref())),
+                        None => false,
+                    };
+                let recon_output = if unchanged {
+                    None
+                } else {
+                    let prev_records = prev_states
+                        .iter()
+                        .filter_map(|(_, s)| s.as_ref())
+                        .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                        .collect::<Result<Vec<_>>>()?;
+                    handler.reconcile(
                         decl.item_key.clone(),
                         Some(&decl.value),
-                        &prev_states,
+                        &prev_records,
                         prev_may_be_missing,
-                    )?;
+                    )?
+                };
                 (
                     target_state_key_bytes,
                     recon_output,

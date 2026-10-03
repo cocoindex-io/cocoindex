@@ -792,6 +792,8 @@ class _UnnestUpsert(NamedTuple):
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
+    tracks_value_fingerprint = True
+
     _pool: asyncpg.Pool
     _table_name: str
     _schema_name: str | None

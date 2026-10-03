@@ -398,6 +398,8 @@ def _count_prunable_old_versions(versions: Sequence[dict[str, Any]]) -> int:
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
+    tracks_value_fingerprint = True
+
     _conn: LanceAsyncConnection
     _table_name: str
     _table_schema: TableSchema
