@@ -8,6 +8,9 @@ Run with:
 
 from __future__ import annotations
 
+import datetime
+import decimal
+import ipaddress
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
@@ -21,6 +24,7 @@ import pytest_asyncio
 from numpy.typing import NDArray
 
 import cocoindex as coco
+from cocoindex.connectorkits.target import ManagedBy
 from cocoindex.resources.schema import VectorSchema
 
 from tests import common
@@ -1153,6 +1157,277 @@ async def test_postgres_delete_rows_with_composite_key(pg_env: _PgEnv) -> None:
             (r["repo"], r["sha"], tuple(r["path"])) for r in kept_rows
         }
 
+    finally:
+        await _drop_table(pool, table_name)
+
+
+def _row_handler(
+    pool: "asyncpg.Pool", table_name: str, schema: "postgres.TableSchema[Any]"
+) -> Any:
+    return postgres._target._RowHandler(
+        pool=pool, table_name=table_name, pg_schema_name=None, table_schema=schema
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgres_upsert_builtin_types_through_unnest(pg_env: _PgEnv) -> None:
+    """A table of builtin scalar and array columns is upserted through `unnest`:
+    every value round-trips (NULLs, NULL elements, strings needing array-literal
+    escaping, nested arrays), across several statements, and a second run
+    updates rows in place."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_unnest")
+
+    schema: postgres.TableSchema[dict[str, Any]] = postgres.TableSchema(
+        columns={
+            "id": postgres.ColumnDef("bigint", nullable=False),
+            "part": postgres.ColumnDef("bytea", nullable=False),
+            "flag": postgres.ColumnDef("boolean"),
+            "small": postgres.ColumnDef("smallint"),
+            "num": postgres.ColumnDef("integer"),
+            "ratio": postgres.ColumnDef("double precision"),
+            "single": postgres.ColumnDef("real"),
+            "amount": postgres.ColumnDef("numeric(12, 2)"),
+            "name": postgres.ColumnDef("text"),
+            "code": postgres.ColumnDef("varchar(20)"),
+            "uid": postgres.ColumnDef("uuid"),
+            "day": postgres.ColumnDef("date"),
+            "at_time": postgres.ColumnDef("time"),
+            "at_timetz": postgres.ColumnDef("time with time zone"),
+            "ts": postgres.ColumnDef("timestamp"),
+            "tstz": postgres.ColumnDef("timestamp with time zone"),
+            "span": postgres.ColumnDef("interval"),
+            "doc": postgres.ColumnDef("jsonb"),
+            "raw_doc": postgres.ColumnDef("json"),
+            "addr": postgres.ColumnDef("inet"),
+            "net": postgres.ColumnDef("cidr"),
+            "tags": postgres.ColumnDef("text[]"),
+            "codes": postgres.ColumnDef("varchar(8)[]"),
+            "lines": postgres.ColumnDef("integer[]"),
+            "ids": postgres.ColumnDef("bigint[]"),
+            "smalls": postgres.ColumnDef("smallint[]"),
+            "flags": postgres.ColumnDef("boolean[]"),
+            "ratios": postgres.ColumnDef("double precision[]"),
+            "singles": postgres.ColumnDef("real[]"),
+            "amounts": postgres.ColumnDef("numeric[]"),
+            "uids": postgres.ColumnDef("uuid[]"),
+            "grid": postgres.ColumnDef("integer[]"),
+        },
+        primary_key=["id", "part"],
+    )
+    utc = datetime.timezone.utc
+    uid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+    def _full_row(i: int, name: str) -> dict[str, Any]:
+        return {
+            "id": i,
+            "part": bytes([i % 256, 0, 255]),
+            "flag": i % 2 == 0,
+            "small": -3,
+            "num": i,
+            "ratio": 0.1,
+            "single": 1.5,
+            "amount": decimal.Decimal("12345.67"),
+            "name": name,
+            "code": "abc",
+            "uid": uid,
+            "day": datetime.date(2024, 2, 29),
+            "at_time": datetime.time(1, 2, 3),
+            "at_timetz": datetime.time(1, 2, 3, tzinfo=utc),
+            "ts": datetime.datetime(2024, 1, 2, 3, 4, 5),
+            "tstz": datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=utc),
+            "span": datetime.timedelta(days=1, seconds=2),
+            "doc": '{"k": [1, "x"]}',
+            "raw_doc": '{"k": 1}',
+            "addr": ipaddress.IPv4Address("10.0.0.1"),
+            "net": ipaddress.IPv4Network("10.0.0.0/8"),
+            "tags": [
+                "plain",
+                "",
+                'q"uote',
+                "back\\slash",
+                "a,b",
+                "{x}",
+                " sp ",
+                "NULL",
+            ],
+            "codes": ["ab", None],
+            "lines": [1, None, -3, True],
+            "ids": [2**40, None],
+            "smalls": [1, 2],
+            "flags": [True, False, None],
+            "ratios": [0.1, float("inf"), 1e300],
+            "singles": [1.5, -0.25],
+            "amounts": [decimal.Decimal("1.10"), decimal.Decimal("-2")],
+            "uids": [uid, None],
+            "grid": [[1, 2], [3, 4]],
+        }
+
+    def _null_row(i: int) -> dict[str, Any]:
+        row: dict[str, Any] = dict.fromkeys(schema.columns)
+        row["id"] = i
+        row["part"] = b""
+        row["tags"] = []
+        return row
+
+    # More rows than one `unnest` statement carries.
+    num_rows = postgres._target._UNNEST_UPSERT_ROWS * 2 + 5
+    rows = [
+        _null_row(i) if i % 3 == 0 else _full_row(i, f"name{i}")
+        for i in range(num_rows)
+    ]
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                schema,
+            )
+            for row in rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_unnest_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+
+        assert (
+            await _row_handler(pool, table_name, schema)._resolve_unnest_upsert()
+            is not None
+        )
+
+        async def _stored() -> dict[int, dict[str, Any]]:
+            async with pool.acquire() as conn:
+                records = await conn.fetch(f'SELECT * FROM "{table_name}"')
+            return {r["id"]: dict(r) for r in records}
+
+        stored = await _stored()
+        assert len(stored) == num_rows
+        expected = _full_row(1, "name1")
+        assert stored[1] == expected
+        assert stored[0] == _null_row(0)
+
+        # Second run: one changed row, updated in place through ON CONFLICT.
+        rows[1] = {**_full_row(1, "renamed"), "tags": None, "lines": [7]}
+        await app.update()
+        stored = await _stored()
+        assert len(stored) == num_rows
+        assert stored[1]["name"] == "renamed"
+        assert stored[1]["tags"] is None
+        assert stored[1]["lines"] == [7]
+        assert stored[2] == _full_row(2, "name2")
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_upsert_uses_table_column_types(pg_env: _PgEnv) -> None:
+    """Upserts take their parameter types from the table, not from the declared
+    schema: on a user-managed table whose columns differ from the declared types,
+    values are stored as the table's types say."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_user_types")
+
+    # Declared as the default mapping of `str` / `datetime` / `int` would.
+    schema: postgres.TableSchema[dict[str, Any]] = postgres.TableSchema(
+        columns={
+            "id": postgres.ColumnDef("text", nullable=False),
+            "created_at": postgres.ColumnDef("timestamp with time zone"),
+            "count": postgres.ColumnDef("bigint"),
+        },
+        primary_key=["id"],
+    )
+    uid = "12345678-1234-5678-1234-567812345678"
+    naive = datetime.datetime(2024, 1, 2, 3, 4, 5)
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f'CREATE TABLE "{table_name}" '
+            '("id" uuid PRIMARY KEY, "created_at" timestamp, "count" integer)'
+        )
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                schema,
+                managed_by=ManagedBy.USER,
+            )
+            table.declare_row(row={"id": uid, "created_at": naive, "count": 7})
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_user_types_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+
+        async with pool.acquire() as conn:
+            # A session time zone away from UTC would shift the value if it
+            # travelled as `timestamptz`.
+            await conn.execute("SET TIME ZONE 'Asia/Tokyo'")
+            try:
+                row = await conn.fetchrow(f'SELECT * FROM "{table_name}"')
+            finally:
+                await conn.execute("RESET TIME ZONE")
+        assert row is not None
+        assert dict(row) == {"id": uuid.UUID(uid), "created_at": naive, "count": 7}
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_upsert_falls_back_to_values(pg_env: _PgEnv) -> None:
+    """Tables with a column `unnest` doesn't cover keep the VALUES statement."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_values_fb")
+    handler_mod = postgres._target
+
+    async with pool.acquire() as conn:
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        await conn.execute(
+            f'CREATE TABLE "{table_name}" '
+            '("id" text PRIMARY KEY, "embedding" vector(4), "stamps" timestamptz[])'
+        )
+    try:
+        for columns in (
+            {"id": "text", "embedding": "vector(4)"},
+            {"id": "text", "stamps": "timestamptz[]"},
+            {"id": "text", "missing": "text"},
+        ):
+            schema: postgres.TableSchema[dict[str, Any]] = postgres.TableSchema(
+                columns={n: postgres.ColumnDef(t) for n, t in columns.items()},
+                primary_key=["id"],
+            )
+            handler = _row_handler(pool, table_name, schema)
+            assert await handler._resolve_unnest_upsert() is None, columns
+
+        only_id: postgres.TableSchema[dict[str, Any]] = postgres.TableSchema(
+            columns={"id": postgres.ColumnDef("text")}, primary_key=["id"]
+        )
+        assert (
+            await _row_handler(pool, table_name, only_id)._resolve_unnest_upsert()
+            is not None
+        )
+        missing_table = _row_handler(pool, _unique_name("no_such_table"), only_id)
+        assert await missing_table._resolve_unnest_upsert() is None
+        assert handler_mod._array_literal([["a"], [None]]) == '{{"a"},{NULL}}'
+        with pytest.raises(TypeError):
+            handler_mod._array_literal([b"bytes"])
+        with pytest.raises(TypeError):
+            handler_mod._array_literal("not a list")
     finally:
         await _drop_table(pool, table_name)
 

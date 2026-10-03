@@ -14,6 +14,7 @@ import decimal
 import ipaddress
 import json
 import logging
+import numbers
 import re
 import uuid
 from dataclasses import dataclass
@@ -682,6 +683,112 @@ class _SqlCommandHandler:
         )
 
 
+# Rows per `unnest` upsert statement. Its parameter count doesn't grow with the
+# row count, so the bind limit doesn't apply; throughput is flat from about
+# 1,000 to 8,000 rows per statement, and smaller statements spread a large
+# batch over more connections.
+_UNNEST_UPSERT_ROWS: int = 2000
+
+# Builtin scalar types (`pg_type.typname`) upserted through `unnest`, each as
+# one array parameter of that type: asyncpg encodes the elements with the same
+# codec it uses for a single value of the column.
+_UNNEST_SCALAR_TYPES: frozenset[str] = frozenset(
+    {
+        "bool",
+        "int2",
+        "int4",
+        "int8",
+        "float4",
+        "float8",
+        "numeric",
+        "text",
+        "varchar",
+        "bytea",
+        "uuid",
+        "date",
+        "time",
+        "timetz",
+        "timestamp",
+        "timestamptz",
+        "interval",
+        "json",
+        "jsonb",
+        "inet",
+        "cidr",
+    }
+)
+
+# Element types of the array columns upserted through `unnest`. `unnest` would
+# flatten an array-of-arrays parameter, so such a column is passed as `text[]`
+# of array literals (see `_array_literal`) and cast back in the select list.
+_UNNEST_ARRAY_ELEMENT_TYPES: frozenset[str] = frozenset(
+    {
+        "bool",
+        "int2",
+        "int4",
+        "int8",
+        "float4",
+        "float8",
+        "numeric",
+        "text",
+        "varchar",
+        "uuid",
+    }
+)
+
+# Types of a table's columns, with an array column reported by its element type.
+_COLUMN_TYPES_SQL = """
+SELECT a.attname AS name,
+       n.nspname AS type_schema,
+       coalesce(e.typname, t.typname) AS type_name,
+       e.oid IS NOT NULL AS is_array
+FROM pg_catalog.pg_attribute a
+JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+LEFT JOIN pg_catalog.pg_type e ON t.typcategory = 'A' AND e.oid = t.typelem
+JOIN pg_catalog.pg_namespace n ON n.oid = coalesce(e.typnamespace, t.typnamespace)
+WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped
+"""
+
+
+def _array_literal(value: Any) -> str:
+    """Render a (possibly nested) list as a PostgreSQL array literal.
+
+    Covers the Python values of `_UNNEST_ARRAY_ELEMENT_TYPES` elements.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(
+            f"a list is expected for an array column, got {type(value).__name__!r}"
+        )
+    parts: list[str] = []
+    for v in value:
+        if v is None:
+            parts.append("NULL")
+        elif isinstance(v, str):
+            escaped = v.replace("\\", "\\\\").replace('"', '\\"')
+            parts.append(f'"{escaped}"')
+        elif isinstance(v, bool):
+            # `1` / `0` parse as both boolean and numeric elements; asyncpg
+            # likewise takes a bool for an integer.
+            parts.append("1" if v else "0")
+        elif isinstance(v, (numbers.Real, decimal.Decimal, uuid.UUID)):
+            parts.append(str(v))
+        elif isinstance(v, (list, tuple)):
+            parts.append(_array_literal(v))
+        else:
+            raise TypeError(
+                f"unsupported array element of type {type(v).__name__!r}: {v!r}"
+            )
+    return "{" + ",".join(parts) + "}"
+
+
+class _UnnestUpsert(NamedTuple):
+    """An upsert statement taking one array parameter per column."""
+
+    sql: str
+    # Indexes of the columns whose values are passed as array literals.
+    literal_columns: tuple[int, ...]
+
+
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
@@ -690,6 +797,14 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _schema_name: str | None
     _table_schema: TableSchema
     _sink: coco.TargetActionSink[_RowAction]
+    _col_names: list[str]
+    _col_list: str
+    _insert_into: str  # `INSERT INTO <table> (<columns>)`
+    _conflict_clause: str
+    # Resolved from the table's column types on the first upsert; None once
+    # resolved means the table is upserted through multi-row VALUES.
+    _unnest_upsert: _UnnestUpsert | None
+    _unnest_upsert_resolved: bool
 
     def __init__(
         self,
@@ -704,6 +819,25 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_schema = table_schema
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
+        pk_cols = table_schema.primary_key
+        self._col_names = list(table_schema.columns.keys())
+        self._col_list = ", ".join(f'"{c}"' for c in self._col_names)
+        pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+        self._insert_into = (
+            f"INSERT INTO {_qualified_table_name(table_name, pg_schema_name)} "
+            f"({self._col_list})"
+        )
+        non_pk_cols = [c for c in self._col_names if c not in pk_cols]
+        if non_pk_cols:
+            update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk_cols)
+            self._conflict_clause = (
+                f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
+            )
+        else:
+            self._conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
+        self._unnest_upsert = None
+        self._unnest_upsert_resolved = False
+
     async def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
     ) -> None:
@@ -712,84 +846,118 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         if not actions:
             return
 
-        upserts: list[_RowAction] = []
+        upserts: list[_RowValue] = []
         deletes: list[_RowAction] = []
 
         for action in actions:
             if action.value is None:
                 deletes.append(action)
             else:
-                upserts.append(action)
+                upserts.append(action.value)
+
+        if upserts and not self._unnest_upsert_resolved:
+            self._unnest_upsert = await self._resolve_unnest_upsert()
+            self._unnest_upsert_resolved = True
 
         async with asyncio.TaskGroup() as tg:
             self._schedule_upserts(tg, upserts)
             self._schedule_deletes(tg, deletes)
 
+    async def _resolve_unnest_upsert(self) -> _UnnestUpsert | None:
+        """Build the `unnest` upsert statement, if every column's type allows it.
+
+        `INSERT ... SELECT ... FROM unnest(<one array per column>)` costs about
+        half of the multi-row VALUES statement for large batches: its text and
+        parameter count don't grow with the row count. The array types come from
+        the table itself, like the parameter types Postgres infers for VALUES, so
+        both statements accept the same Python values.
+
+        Returns None for a table with any other column type (e.g. pgvector's,
+        where parsing the vectors dominates either statement).
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                _COLUMN_TYPES_SQL,
+                _qualified_table_name(self._table_name, self._schema_name),
+            )
+        types = {
+            row["name"]: (row["type_name"], row["is_array"])
+            for row in rows
+            if row["type_schema"] == "pg_catalog"
+        }
+        params: list[str] = []
+        exprs: list[str] = []
+        literal_columns: list[int] = []
+        for i, col_name in enumerate(self._col_names):
+            type_name, is_array = types.get(col_name, (None, False))
+            if is_array and type_name in _UNNEST_ARRAY_ELEMENT_TYPES:
+                params.append(f"${i + 1}::pg_catalog.text[]")
+                exprs.append(f'r."{col_name}"::pg_catalog."{type_name}"[]')
+                literal_columns.append(i)
+            elif not is_array and type_name in _UNNEST_SCALAR_TYPES:
+                params.append(f'${i + 1}::pg_catalog."{type_name}"[]')
+                exprs.append(f'r."{col_name}"')
+            else:
+                return None
+        return _UnnestUpsert(
+            sql=(
+                f"{self._insert_into} SELECT {', '.join(exprs)} "
+                f"FROM unnest({', '.join(params)}) AS r({self._col_list}) "
+                f"{self._conflict_clause}"
+            ),
+            literal_columns=tuple(literal_columns),
+        )
+
     def _schedule_upserts(
         self,
         tg: asyncio.TaskGroup,
-        upserts: list[_RowAction],
+        upserts: list[_RowValue],
     ) -> None:
         """Schedule upsert chunks as parallel tasks."""
-        if not upserts:
+        if not upserts or not self._col_names:
             return
 
-        table_name = _qualified_table_name(self._table_name, self._schema_name)
-        columns = self._table_schema.columns
-        pk_cols = self._table_schema.primary_key
-        all_col_names = list(columns.keys())
-        non_pk_cols = [c for c in all_col_names if c not in pk_cols]
-
-        col_list = ", ".join(f'"{c}"' for c in all_col_names)
-        pk_list = ", ".join(f'"{c}"' for c in pk_cols)
-
-        if non_pk_cols:
-            update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk_cols)
-            conflict_clause = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
-        else:
-            conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
-
-        num_parameters = len(all_col_names)
-        if num_parameters == 0:
-            return
-
-        chunk_size = max(1, _BIND_LIMIT // num_parameters)
+        unnest = self._unnest_upsert
+        chunk_size = (
+            _UNNEST_UPSERT_ROWS
+            if unnest is not None
+            else max(1, _BIND_LIMIT // len(self._col_names))
+        )
         for i in range(0, len(upserts), chunk_size):
             chunk = upserts[i : i + chunk_size]
             tg.create_task(
-                self._execute_upsert_chunk(
-                    table_name,
-                    col_list,
-                    conflict_clause,
-                    all_col_names,
-                    num_parameters,
-                    chunk,
-                )
+                self._execute_values_upsert_chunk(chunk)
+                if unnest is None
+                else self._execute_unnest_upsert_chunk(unnest, chunk)
             )
 
-    async def _execute_upsert_chunk(
-        self,
-        table_name: str,
-        col_list: str,
-        conflict_clause: str,
-        all_col_names: list[str],
-        num_parameters: int,
-        chunk: list[_RowAction],
-    ) -> None:
-        """Execute a single upsert chunk."""
+    async def _execute_values_upsert_chunk(self, chunk: list[_RowValue]) -> None:
+        """Upsert a chunk of rows through one multi-row VALUES statement."""
+        num_parameters = len(self._col_names)
         values_sql_parts: list[str] = []
         params: list[Any] = []
-        for row_idx, action in enumerate(chunk):
-            assert action.value is not None
+        for row_idx, row in enumerate(chunk):
             base = row_idx * num_parameters
             placeholders = ", ".join(f"${base + j + 1}" for j in range(num_parameters))
             values_sql_parts.append(f"({placeholders})")
-            params.extend(action.value.get(col_name) for col_name in all_col_names)
+            params.extend(row.get(col_name) for col_name in self._col_names)
 
         values_sql = ", ".join(values_sql_parts)
-        sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+        sql = f"{self._insert_into} VALUES {values_sql} {self._conflict_clause}"
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
+
+    async def _execute_unnest_upsert_chunk(
+        self, unnest: _UnnestUpsert, chunk: list[_RowValue]
+    ) -> None:
+        """Upsert a chunk of rows through the `unnest` statement."""
+        columns: list[list[Any]] = [
+            [row.get(col_name) for row in chunk] for col_name in self._col_names
+        ]
+        for i in unnest.literal_columns:
+            columns[i] = [None if v is None else _array_literal(v) for v in columns[i]]
+        async with self._pool.acquire() as conn:
+            await conn.execute(unnest.sql, *columns)
 
     def _schedule_deletes(
         self,
