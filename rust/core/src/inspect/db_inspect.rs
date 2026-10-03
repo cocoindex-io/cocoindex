@@ -442,7 +442,9 @@ pub async fn get_stable_path_detail_from_store(
     provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
-    let db = store.db();
+    let Some(db) = store.db() else {
+        client_bail!("stable-path inspection is not yet supported by the Postgres state backend");
+    };
     let txn = store.read_txn().await?;
     let mut resolver = TargetKeyResolver::new(provider_keys);
     Ok(Some(read_detail_in_txn(&db, &*txn, &mut resolver, path)?))
@@ -577,7 +579,9 @@ async fn query_details_from_store(
     recursive: bool,
     include_parents: bool,
 ) -> Result<Vec<StablePathDetail>> {
-    let db = store.db();
+    let Some(db) = store.db() else {
+        client_bail!("stable-path inspection is not yet supported by the Postgres state backend");
+    };
     let txn = store.read_txn().await?;
     let mut resolver = TargetKeyResolver::new(provider_keys);
 
@@ -890,7 +894,7 @@ mod tests {
         let path = TargetStatePath::new(Fingerprint::from(&"root_target").unwrap(), None)
             .concat(&StableKey::Str(Arc::from("file.md")));
 
-        let db = store.db();
+        let db = store.db().expect("test store is LMDB-backed");
         let txn = store.read_txn().await.unwrap();
         let mut resolver = TargetKeyResolver::new(Default::default());
         let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
@@ -917,7 +921,7 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
+        let db = store.db().expect("test store is LMDB-backed");
         let txn = store.read_txn().await.unwrap();
         // Seed the root provider's key, as provider_key_seed does from the
         // live registry (root providers are never persisted).
@@ -1042,7 +1046,7 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
+        let db = store.db().expect("test store is LMDB-backed");
         let txn = store.read_txn().await.unwrap();
         let mut resolver = TargetKeyResolver::new(Default::default());
         let rendered = resolver.render_path(&db, &txn, &idx_path, None).unwrap();
@@ -1077,7 +1081,7 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
+        let db = store.db().expect("test store is LMDB-backed");
         let txn = store.read_txn().await.unwrap();
         let mut resolver = TargetKeyResolver::new(Default::default());
         let entries = collect_target_states(&db, &txn, &mut resolver);
@@ -1108,7 +1112,7 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
+        let db = store.db().expect("test store is LMDB-backed");
         let txn = store.read_txn().await.unwrap();
         let mut resolver = TargetKeyResolver::new(Default::default());
         let entries = collect_target_states(&db, &txn, &mut resolver);
@@ -1160,7 +1164,7 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
+        let db = store.db().expect("test store is LMDB-backed");
         let txn = store.read_txn().await.unwrap();
 
         let root_seg = root_path.to_string();
@@ -1253,7 +1257,7 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
+        let db = store.db().expect("test store is LMDB-backed");
         let txn = store.read_txn().await.unwrap();
         let mut resolver = TargetKeyResolver::new(Default::default());
         let entries = collect_target_states(&db, &txn, &mut resolver);

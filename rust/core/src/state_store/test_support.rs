@@ -1,6 +1,6 @@
 //! Shared test-only helpers for constructing in-process stores.
 
-use super::AppStore;
+use super::{AppStore, AppStoreHandle};
 use tempfile::TempDir;
 
 /// Open a fresh in-process LMDB environment and return an `AppStore`
@@ -22,5 +22,13 @@ pub(crate) async fn make_test_store() -> (AppStore, TempDir) {
     let db = env.create_database(&mut wtxn, Some("test_app")).unwrap();
     wtxn.commit().unwrap();
     let storage = super::Storage::from_env(env.clone());
-    (AppStore::new(db, env, storage), dir)
+    let handle = AppStoreHandle::Lmdb {
+        db,
+        env: env.clone(),
+    };
+    let backend = std::sync::Arc::new(super::LmdbBackend::new(
+        env.clone(),
+        storage.txn_coordinator(),
+    )) as std::sync::Arc<dyn super::StorageBackend>;
+    (AppStore::new(handle, backend, storage), dir)
 }

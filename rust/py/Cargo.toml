@@ -9,8 +9,9 @@ license = { workspace = true }
 crate-type = ["cdylib"]
 
 [features]
-default = ["abi3"]
+default = ["abi3", "postgres"]
 abi3 = ["pyo3/abi3-py311"]
+postgres = ["cocoindex_core/postgres"]
 
 [dependencies]
 cocoindex_core = { path = "../core" }
