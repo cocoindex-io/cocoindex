@@ -185,7 +185,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 pub(crate) struct DeclaredTargetState<Prof: EngineProfile> {
     pub provider: TargetStateProvider<Prof>,
-    pub item_key: StableKey,
+    /// The item key, `storekey`-encoded: the form pre-commit records it in,
+    /// at a fraction of the size of the decoded key's tree of `Arc`s.
+    pub item_key_bytes: Box<[u8]>,
     pub value: Prof::TargetStateValue,
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }

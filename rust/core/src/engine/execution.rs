@@ -271,7 +271,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     let provider_dep = target_provider_dep(&provider);
     let declared_target_state = DeclaredTargetState {
         provider,
-        item_key: key,
+        item_key_bytes: encode_item_key(&key)?,
         value,
         child_provider: None,
     };
@@ -281,11 +281,8 @@ pub fn declare_target_state<Prof: EngineProfile>(
             .declared_target_states
             .entry(target_state_path.clone())
         {
-            btree_map::Entry::Occupied(entry) => {
-                client_bail!(
-                    "Target state already declared with key: {:?}",
-                    entry.get().item_key
-                );
+            btree_map::Entry::Occupied(_) => {
+                client_bail!("Target state already declared with key: {key:?}");
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_target_state);
@@ -300,6 +297,12 @@ pub fn declare_target_state<Prof: EngineProfile>(
         }
     });
     Ok(())
+}
+
+fn encode_item_key(key: &StableKey) -> Result<Box<[u8]>> {
+    Ok(storekey::encode_vec(key)
+        .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?
+        .into_boxed_slice())
 }
 
 /// Whether every recorded target-provider dependency still matches the live
@@ -357,6 +360,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
     let provider_dep = target_provider_dep(&provider);
+    let item_key_bytes = encode_item_key(&key)?;
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
             .target_states
@@ -364,7 +368,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             .register_lazy(&provider, key.clone())?;
         let declared_target_state = DeclaredTargetState {
             provider,
-            item_key: key,
+            item_key_bytes,
             value,
             child_provider: Some(child_provider.clone()),
         };
@@ -373,11 +377,8 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             .declared_target_states
             .entry(child_provider.target_state_path().clone())
         {
-            btree_map::Entry::Occupied(entry) => {
-                client_bail!(
-                    "Target state already declared with key: {:?}",
-                    entry.get().item_key
-                );
+            btree_map::Entry::Occupied(_) => {
+                client_bail!("Target state already declared with key: {key:?}");
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_target_state);
@@ -1061,25 +1062,21 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 let decl = guard.get(&target_state_path).ok_or_else(|| {
                     internal_error!("declared entry vanished mid-pre_commit: {target_state_path}")
                 })?;
-                let target_state_key_bytes = storekey::encode_vec(&decl.item_key)
-                    .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
+                let item_key: StableKey = storekey::decode(decl.item_key_bytes.as_ref())?;
                 let recon_output = decl
                     .provider
                     .handler()
                     .ok_or_else(|| {
-                        internal_error!(
-                            "provider not ready for target state with key {:?}",
-                            decl.item_key
-                        )
+                        internal_error!("provider not ready for target state with key {item_key:?}")
                     })?
                     .reconcile(
-                        decl.item_key.clone(),
+                        item_key,
                         Some(&decl.value),
                         &prev_states,
                         prev_may_be_missing,
                     )?;
                 (
-                    target_state_key_bytes,
+                    decl.item_key_bytes.to_vec(),
                     recon_output,
                     decl.child_provider.clone(),
                 )
@@ -1602,11 +1599,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let contained_target_state_paths = Arc::new(contained_target_state_paths);
     // `declared_target_states` is shared across retries via
     // `Arc<tokio::sync::Mutex<…>>`. The mutex is necessary (not just an
-    // `Arc<BTreeMap<…>>`) because for some profiles `TargetStateValue`
-    // is `!Sync` (e.g. Python's `Py<PyAny>`); `tokio::sync::Mutex<T>:
-    // Sync` holds whenever `T: Send`. There's no contention — only the
-    // outer submit task ever locks — so the mutex is purely a `Sync`
-    // marker.
+    // `Arc<BTreeMap<…>>`) because `TargetStateValue` is only required to be
+    // `Send`; `tokio::sync::Mutex<T>: Sync` holds whenever `T: Send`. There's
+    // no contention — only the outer submit task ever locks — so the mutex is
+    // purely a `Sync` marker.
     let declared_target_states = Arc::new(tokio::sync::Mutex::new(declared_target_states));
 
     // Open the precommit txn via `AppStore::precommit` and drive
@@ -1746,6 +1742,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             }
         }
     };
+
+    // Pre-commit was the last reader of the declared target states: the
+    // actions carry what the sinks need. Release them now instead of holding
+    // every declared value through sink apply and commit, so each sink's
+    // actions are the only copy left and go once it has applied them.
+    drop(declared_target_states);
 
     if let Some(ref name) = pre_commit_out.processor_name_for_del {
         collect_processor_name_name_for_del(name);
