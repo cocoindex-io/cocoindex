@@ -7,6 +7,7 @@ use pyo3::types::{
     PyTuple,
 };
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use utils::fingerprint::Fingerprinter;
 
 fn write_none(fp: &mut Fingerprinter) {
@@ -280,19 +281,39 @@ fn write_plain(
     Ok(false)
 }
 
+/// Whether a memo key function is registered for a plain container type or a
+/// base of one, replacing the default canonical form the native walker
+/// reproduces. Mirrors the Python registry (`_memo_fns` in
+/// `memo_fingerprint.py`), which updates it on every change.
+static PLAIN_CANONICAL_FORM_OVERRIDDEN: AtomicBool = AtomicBool::new(false);
+
+#[pyfunction]
+pub fn set_plain_canonical_form_overridden(overridden: bool) {
+    PLAIN_CANONICAL_FORM_OVERRIDDEN.store(overridden, Ordering::Relaxed);
+}
+
 /// Fingerprints `obj` without going through the Python canonicalizer, when `obj`
 /// is plain data (see `write_plain`). The result equals
 /// `fingerprint_simple_object` of the Python canonical form of `obj`.
 ///
-/// Returns `None` when `obj` is not plain data.
+/// Returns `None` when `obj` is not plain data, or when plain data does not
+/// have its default canonical form (see `PLAIN_CANONICAL_FORM_OVERRIDDEN`).
+pub fn plain_fingerprint(
+    obj: &Bound<'_, PyAny>,
+) -> PyResult<Option<utils::fingerprint::Fingerprint>> {
+    if PLAIN_CANONICAL_FORM_OVERRIDDEN.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let mut fp = Fingerprinter::default();
+    let mut seen = HashSet::new();
+    Ok(write_plain(&mut fp, obj, &mut seen, 0)?.then(|| fp.into_fingerprint()))
+}
+
 #[pyfunction]
 pub fn fingerprint_plain_object(
     obj: &Bound<'_, PyAny>,
 ) -> PyResult<Option<crate::fingerprint::PyFingerprint>> {
-    let mut fp = Fingerprinter::default();
-    let mut seen = HashSet::new();
-    Ok(write_plain(&mut fp, obj, &mut seen, 0)?
-        .then(|| crate::fingerprint::PyFingerprint(fp.into_fingerprint())))
+    Ok(plain_fingerprint(obj)?.map(crate::fingerprint::PyFingerprint))
 }
 
 #[pyfunction]
