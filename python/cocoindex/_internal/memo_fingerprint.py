@@ -401,7 +401,18 @@ def _make_call_canonical(
     )
 
 
+# The container types the native plain-data walker handles. A memo key function
+# registered for any type in their MROs overrides their default canonical form.
+_PLAIN_CONTAINER_BASES = frozenset({dict, list, tuple, object})
+
+
 def memo_fingerprint(obj: object) -> core.Fingerprint:
+    # Plain data is fingerprinted natively, to the same result as the canonical
+    # form below; anything else goes through the Python canonicalizer.
+    if _memo_fns.keys().isdisjoint(_PLAIN_CONTAINER_BASES):
+        fp = core.fingerprint_plain_object(obj)
+        if fp is not None:
+            return fp
     # State methods are meaningless for an object-only fingerprint; collect
     # into a throwaway list so the canonicalizer signature stays uniform.
     return core.fingerprint_simple_object(
