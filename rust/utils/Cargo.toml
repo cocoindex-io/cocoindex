@@ -31,6 +31,9 @@ reqwest = { workspace = true, optional = true }
 serde_with = { workspace = true, features = ["base64"] }
 storekey = { workspace = true }
 
+[dev-dependencies]
+temp-env = "0.3"
+
 [features]
 default = []
 reqwest = ["dep:reqwest"]

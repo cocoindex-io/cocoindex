@@ -443,7 +443,6 @@ pub(crate) struct TargetStateProviderInner<Prof: EngineProfile> {
     /// need no persisted segment-name entry.
     backed_by_target_state: bool,
     handler: OnceLock<Prof::TargetHdl>,
-    orphaned: OnceLock<()>,
     provider_generation: OnceLock<TargetStateProviderGeneration>,
     attachments: Mutex<HashMap<Arc<str>, TargetStateProvider<Prof>>>,
 }
@@ -524,10 +523,6 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         }
     }
 
-    pub fn is_orphaned(&self) -> bool {
-        self.inner.orphaned.get().is_some()
-    }
-
     pub fn provider_generation(&self) -> Option<&TargetStateProviderGeneration> {
         self.inner.provider_generation.get()
     }
@@ -569,7 +564,6 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                     target_state_path: target_state_path.clone(),
                     backed_by_target_state: false,
                     handler: OnceLock::from(att_handler),
-                    orphaned: OnceLock::new(),
                     provider_generation: OnceLock::from(provider_generation.clone()),
                     attachments: Mutex::new(HashMap::new()),
                 }),
@@ -623,7 +617,6 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                 target_state_path: target_state_path.clone(),
                 backed_by_target_state: false,
                 handler: OnceLock::from(att_handler),
-                orphaned: OnceLock::new(),
                 provider_generation: OnceLock::from(provider_generation),
                 attachments: Mutex::new(HashMap::new()),
             }),
@@ -688,7 +681,6 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 target_state_path: target_state_path.clone(),
                 backed_by_target_state: false,
                 handler: OnceLock::from(handler),
-                orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
                 attachments: Mutex::new(HashMap::new()),
             }),
@@ -711,7 +703,6 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 target_state_path: target_state_path.clone(),
                 backed_by_target_state: true,
                 handler: OnceLock::new(),
-                orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
                 attachments: Mutex::new(HashMap::new()),
             }),

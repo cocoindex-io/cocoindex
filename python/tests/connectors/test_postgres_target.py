@@ -1088,6 +1088,75 @@ async def test_postgres_strips_nul_in_array_columns(pg_env: _PgEnv) -> None:
         await _drop_table(pool, table_name)
 
 
+@pytest.mark.asyncio
+async def test_postgres_delete_rows_with_composite_key(pg_env: _PgEnv) -> None:
+    """Rows keyed by a multi-column primary key are deleted exactly, including
+    key columns whose types are only resolved via explicit casts (bytea, arrays)."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_composite_del")
+
+    schema: postgres.TableSchema[dict[str, Any]] = postgres.TableSchema(
+        columns={
+            "repo": postgres.ColumnDef("text", nullable=False),
+            "sha": postgres.ColumnDef("bytea", nullable=False),
+            "path": postgres.ColumnDef("text[]", nullable=False),
+            "content": postgres.ColumnDef("text"),
+        },
+        primary_key=["repo", "sha", "path"],
+    )
+
+    all_rows: list[dict[str, Any]] = [
+        {"repo": repo, "sha": bytes([i]), "path": ["src", f], "content": "x"}
+        for repo in ("a", "b")
+        for i in range(50)
+        for f in ("x", "y")
+    ]
+    # Delete only keys ("b", odd sha, ["src", "x"]): every row sharing a proper
+    # subset of a deleted key's columns is kept, so matching on any subset of
+    # the key columns would over-delete.
+    kept_rows = [
+        r
+        for r in all_rows
+        if r["repo"] == "a" or r["sha"][0] % 2 == 0 or r["path"][1] == "y"
+    ]
+    rows = all_rows
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                schema,
+            )
+            for row in rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_comp_del_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+        assert await _row_count(pool, table_name) == len(all_rows)
+
+        rows = kept_rows
+        await app.update()
+
+        async with pool.acquire() as conn:
+            remaining = await conn.fetch(
+                f'SELECT "repo", "sha", "path" FROM "{table_name}"'
+            )
+        assert {(r["repo"], bytes(r["sha"]), tuple(r["path"])) for r in remaining} == {
+            (r["repo"], r["sha"], tuple(r["path"])) for r in kept_rows
+        }
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
 def test_sanitize_nul_preserves_tuple() -> None:
     """``_sanitize_nul`` must return ``tuple`` when given ``tuple`` input.
 

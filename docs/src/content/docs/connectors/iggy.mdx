@@ -131,8 +131,9 @@ target = await iggy.mount_iggy_topic_target(
 target.declare_target_state(key="order-123", value=b'{"status":"ready"}')
 ```
 
-Deletes need an application-level delete payload because Iggy does not have
-Kafka-style tombstones:
+While the topic is still declared, a message target state that is no longer
+declared gets a deletion message. Deletes need an application-level delete
+payload because Iggy does not have Kafka-style tombstones:
 
 ```python
 target = await iggy.mount_iggy_topic_target(
@@ -142,6 +143,20 @@ target = await iggy.mount_iggy_topic_target(
     deletion_value_fn=lambda key: f'{{"id":{key!r},"deleted":true}}',
 )
 ```
+
+### Abandoning a topic
+
+Removing the topic declaration itself — or calling `App.drop()` — **abandons**
+the topic: CocoIndex stops producing to it and sends no deletion messages for
+the messages it produced earlier. Changing the stream, topic, or partition in
+code abandons the old one the same way. Avoid reusing an abandoned topic in a
+later declaration: its stale keys remain and never get a deletion message, and
+keys you declare again are republished as new even when their values are
+unchanged.
+
+To send deletion messages for everything before abandoning a topic, drain it
+first: keep the topic declared but declare no messages in it, run an update,
+then remove the declaration.
 
 ### Target APIs
 

@@ -370,6 +370,15 @@ class _DirHandler(coco.TargetHandler[_DirSpec, _DirTrackingRecord, _EntryHandler
         )
 ```
 
+### Deleting a container
+
+When a container target state is no longer declared, CocoIndex runs the container handler's non-existence action and does **not** reconcile the children individually. The container action is therefore responsible for its children, in one of two shapes:
+
+- **Destroy** — for a container CocoIndex owns, remove it together with its contents (`DROP TABLE`, `shutil.rmtree`, `drop_table`, …). The `_apply_dir_actions` sink in Step 2 below does this.
+- **Abandon** — for a user-managed container (a message topic, a table the user created), leave the contents untouched. Once the container is no longer declared, CocoIndex has released its claim on it and must not write to it again: another writer may now own those keys, writing to a topic the user has since deleted would recreate it on brokers that auto-create topics, and the deletion policy captured from the old declaration (such as a `deletion_value_fn` closure) no longer exists.
+
+The zvec connector (`python/cocoindex/connectors/zvec/_target.py`, `_apply_collection_actions`) implements both: it destroys system-managed collections and leaves user-managed ones alone. `App.drop()` applies the same shapes to every root container — it drops tables and abandons topics without visiting rows or messages — so document on your connector page which shape it uses. The user-facing contract is in [How CocoIndex syncs target states](../programming_guide/target_state#how-cocoindex-syncs-target-states).
+
 ### Step 1: Define parent and child handlers
 
 The parent handler reconciles the container itself. The child handler reconciles entries within it:

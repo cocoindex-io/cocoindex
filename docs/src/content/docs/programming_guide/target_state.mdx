@@ -132,10 +132,27 @@ Under the hood, CocoIndex compares your declared target states with the previous
       <td>Update the file</td>
       <td>Delete the file</td>
     </tr>
+    <tr>
+      <td>A user-managed message topic</td>
+      <td>Nothing (the topic is user-managed)</td>
+      <td>Nothing</td>
+      <td>Abandon the topic: stop producing to it; existing messages are left as-is</td>
+    </tr>
+    <tr>
+      <td>A message in a topic</td>
+      <td>Produce the message</td>
+      <td>Produce the message with its new value</td>
+      <td>Produce a deletion message (e.g. a tombstone)</td>
+    </tr>
   </tbody>
 </table>
 
-CocoIndex ensures containers exist before their contents are added, and properly cleans up contents when the container changes.
+CocoIndex ensures a container exists before its contents are added, and syncs the contents individually only while the container is still declared. Once a container is no longer declared, its contents are handled by the container's own removal, in one of two ways defined by the connector:
+
+- **Destroy** — CocoIndex owns the container and removes it together with its contents: dropping a table takes its rows with it, removing a directory takes its files.
+- **Abandon** — the container is user-managed (a Kafka or Iggy topic, or a table or collection declared with `managed_by="user"`). CocoIndex stops writing to it and leaves its contents untouched: no per-row deletes or per-message tombstones are issued.
+
+`App.drop()` follows the same rule: it destroys CocoIndex-owned containers and abandons user-managed ones. To remove the contents of a user-managed container, drain it first by keeping the container declared with no contents for one update — see [Kafka](../connectors/kafka#abandoning-a-topic) and [Iggy](../connectors/iggy#abandoning-a-topic) for the recipe.
 
 ### What happens when a target's schema changes
 
