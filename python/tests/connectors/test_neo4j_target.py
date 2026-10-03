@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -64,8 +64,85 @@ requires_neo4j_server = pytest.mark.skipif(
 
 if HAS_NEO4J:
     from cocoindex.connectors import neo4j as neo  # type: ignore[attr-defined]
+    from cocoindex.connectors.neo4j import _target as neo_target
 
     KG_DB: coco.ContextKey[Any] = coco.ContextKey("test_neo4j_kg")
+
+    class _RecordingTx:
+        """Capture Cypher calls and emulate commit/rollback for sink tests."""
+
+        def __init__(self, fail_on_call: int | None = None) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+            self.commit_count = 0
+            self.rollback_count = 0
+            self.fail_on_call = fail_on_call
+
+        async def run(self, cypher: str, **params: Any) -> None:
+            self.calls.append((cypher, params))
+            if self.fail_on_call == len(self.calls):
+                raise RuntimeError("injected write failure")
+
+        async def commit(self) -> None:
+            self.commit_count += 1
+
+        async def rollback(self) -> None:
+            self.rollback_count += 1
+
+    class _RecordingSession:
+        def __init__(self, tx: _RecordingTx) -> None:
+            self.tx = tx
+
+        async def __aenter__(self) -> _RecordingSession:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+        async def begin_transaction(self) -> _RecordingTx:
+            return self.tx
+
+    class _RecordingDriver:
+        def __init__(self, tx: _RecordingTx) -> None:
+            self.tx = tx
+
+        def session(self, *, database: str) -> _RecordingSession:
+            assert database == "neo4j"
+            return _RecordingSession(self.tx)
+
+    class _RecordingGraph:
+        def __init__(self, tx: _RecordingTx) -> None:
+            self._driver = _RecordingDriver(tx)
+            self.database = "neo4j"
+
+    def _record_action(
+        *,
+        table_name: str,
+        is_relation: bool,
+        record_id: Any,
+        value: dict[str, Any] | None,
+        delete_before_upsert: bool = False,
+        from_id: Any = None,
+        to_id: Any = None,
+    ) -> Any:
+        return neo_target._RecordAction(
+            table_name=table_name,
+            is_relation=is_relation,
+            pk_field="id",
+            record_id=record_id,
+            value=value,
+            from_label="Entity" if is_relation else None,
+            from_pk_field="id" if is_relation else None,
+            from_id=from_id,
+            to_label="Entity" if is_relation else None,
+            to_pk_field="id" if is_relation else None,
+            to_id=to_id,
+            delete_before_upsert=delete_before_upsert,
+        )
+
+    async def _apply_record_actions(tx: _RecordingTx, actions: list[Any]) -> None:
+        graph = cast(Any, _RecordingGraph(tx))
+        applier = neo_target._SharedRecordApplier(graph)
+        await applier._apply_actions(cast(Any, None), actions)
 
 
 # =============================================================================
@@ -198,6 +275,285 @@ class TestRelationshipDeleteCypher:
             build_relationship_delete("REL", [])
 
 
+@requires_neo4j
+class TestRecordMutationBatching:
+    """Capture the exact Cypher order emitted for one sink batch."""
+
+    @pytest.mark.asyncio
+    async def test_relationship_insert_skips_delete(self) -> None:
+        tx = _RecordingTx()
+        action = _record_action(
+            table_name="REL",
+            is_relation=True,
+            record_id="r1",
+            value={"id": "r1", "predicate": "connects"},
+            from_id="a",
+            to_id="b",
+        )
+
+        await _apply_record_actions(tx, [action])
+
+        queries = [cypher for cypher, _ in tx.calls]
+        assert len(queries) == 1
+        assert queries[0].startswith("MERGE (s:`Entity`")
+        assert not any("DELETE r" in query for query in queries)
+        assert tx.commit_count == 1
+
+    @pytest.mark.asyncio
+    async def test_relationship_update_keeps_delete_before_upsert(self) -> None:
+        tx = _RecordingTx()
+        action = _record_action(
+            table_name="REL",
+            is_relation=True,
+            record_id="r1",
+            value={"id": "r1", "predicate": "connects"},
+            delete_before_upsert=True,
+            from_id="a",
+            to_id="c",
+        )
+
+        await _apply_record_actions(tx, [action])
+
+        assert [cypher for cypher, _ in tx.calls] == [
+            build_relationship_delete("REL", ["id"]),
+            build_relationship_upsert(
+                "REL", "Entity", ["id"], "Entity", ["id"], ["id"], True
+            ),
+        ]
+        assert tx.commit_count == 1
+
+    @pytest.mark.asyncio
+    async def test_mixed_node_relationship_batch_keeps_ordering(self) -> None:
+        tx = _RecordingTx()
+        actions = [
+            _record_action(
+                table_name="Document",
+                is_relation=False,
+                record_id="d1",
+                value={"id": "d1", "title": "new"},
+            ),
+            _record_action(
+                table_name="REL",
+                is_relation=True,
+                record_id="r-insert",
+                value={"id": "r-insert", "predicate": "new"},
+                from_id="a",
+                to_id="b",
+            ),
+            _record_action(
+                table_name="REL",
+                is_relation=True,
+                record_id="r-update",
+                value={"id": "r-update", "predicate": "moved"},
+                delete_before_upsert=True,
+                from_id="a",
+                to_id="c",
+            ),
+            _record_action(
+                table_name="Document",
+                is_relation=False,
+                record_id="d2",
+                value={"id": "d2", "title": "updated"},
+            ),
+            _record_action(
+                table_name="REL",
+                is_relation=True,
+                record_id="r-delete",
+                value=None,
+            ),
+            _record_action(
+                table_name="Document",
+                is_relation=False,
+                record_id="d3",
+                value=None,
+            ),
+        ]
+
+        await _apply_record_actions(tx, actions)
+
+        queries = [cypher for cypher, _ in tx.calls]
+        assert queries[0] == build_relationship_delete("REL", ["id"])
+        assert queries[1].startswith("MERGE (n:`Document`")
+        assert queries[2].startswith("MERGE (n:`Document`")
+        assert queries[3].startswith("MERGE (s:`Entity`")
+        assert queries[4].startswith("MERGE (s:`Entity`")
+        assert queries[5] == build_relationship_delete("REL", ["id"])
+        assert queries[6] == build_node_delete("Document", ["id"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete_first", [False, True])
+    async def test_same_key_delete_and_upsert_is_one_update(
+        self, delete_first: bool
+    ) -> None:
+        tx = _RecordingTx()
+        upsert = _record_action(
+            table_name="REL",
+            is_relation=True,
+            record_id="r1",
+            value={"id": "r1", "predicate": "connects"},
+            from_id="a",
+            to_id="c",
+        )
+        delete = _record_action(
+            table_name="REL",
+            is_relation=True,
+            record_id="r1",
+            value=None,
+        )
+        actions = [delete, upsert] if delete_first else [upsert, delete]
+
+        await _apply_record_actions(tx, actions)
+
+        assert [cypher for cypher, _ in tx.calls] == [
+            build_relationship_delete("REL", ["id"]),
+            build_relationship_upsert(
+                "REL", "Entity", ["id"], "Entity", ["id"], ["id"], True
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_only_delete_still_deletes(self) -> None:
+        tx = _RecordingTx()
+        action = _record_action(
+            table_name="REL",
+            is_relation=True,
+            record_id="r1",
+            value=None,
+        )
+
+        await _apply_record_actions(tx, [action])
+
+        assert [cypher for cypher, _ in tx.calls] == [
+            build_relationship_delete("REL", ["id"])
+        ]
+        assert tx.commit_count == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicate_upserts_are_replayed_idempotently(self) -> None:
+        tx = _RecordingTx()
+        action = _record_action(
+            table_name="REL",
+            is_relation=True,
+            record_id="r1",
+            value={"id": "r1", "predicate": "connects"},
+            from_id="a",
+            to_id="b",
+        )
+
+        await _apply_record_actions(tx, [action, action])
+
+        queries = [cypher for cypher, _ in tx.calls]
+        assert (
+            queries
+            == [
+                build_relationship_upsert(
+                    "REL", "Entity", ["id"], "Entity", ["id"], ["id"], True
+                )
+            ]
+            * 2
+        )
+        assert not any("DELETE r" in query for query in queries)
+
+    @pytest.mark.asyncio
+    async def test_transaction_failure_rolls_back_and_replay_is_safe(self) -> None:
+        tx = _RecordingTx(fail_on_call=2)
+        actions = [
+            _record_action(
+                table_name="Document",
+                is_relation=False,
+                record_id="d1",
+                value={"id": "d1", "title": "A"},
+            ),
+            _record_action(
+                table_name="REL",
+                is_relation=True,
+                record_id="r1",
+                value={"id": "r1", "predicate": "connects"},
+                from_id="a",
+                to_id="b",
+            ),
+        ]
+
+        with pytest.raises(RuntimeError, match="injected write failure"):
+            await _apply_record_actions(tx, actions)
+
+        assert tx.rollback_count == 1
+        assert tx.commit_count == 0
+        first_attempt = list(tx.calls)
+
+        tx.fail_on_call = None
+        await _apply_record_actions(tx, actions)
+
+        assert tx.rollback_count == 1
+        assert tx.commit_count == 1
+        assert tx.calls[2:] == first_attempt
+
+    def test_reconcile_marks_relationship_updates_not_inserts(self) -> None:
+        handler = neo_target._RecordHandler(
+            table_name="REL",
+            is_relation=True,
+            pk_field="id",
+            table_schema=None,
+            graph=cast(Any, None),
+            sink=cast(Any, None),
+        )
+        desired_insert = neo_target._RelationRowValue(
+            from_label="Entity",
+            from_pk_field="id",
+            from_id="a",
+            to_label="Entity",
+            to_pk_field="id",
+            to_id="b",
+            fields={"predicate": "connects"},
+        )
+
+        insert = handler.reconcile(("r1",), desired_insert, [], True)
+        assert insert is not None
+        assert insert.action.delete_before_upsert is False
+        insert_tracking = insert.tracking_record
+        assert isinstance(insert_tracking, bytes)
+
+        desired_update = neo_target._RelationRowValue(
+            from_label="Entity",
+            from_pk_field="id",
+            from_id="a",
+            to_label="Entity",
+            to_pk_field="id",
+            to_id="c",
+            fields={"predicate": "moved"},
+        )
+        update = handler.reconcile(("r1",), desired_update, [insert_tracking], False)
+        assert update is not None
+        assert update.action.delete_before_upsert is True
+
+        forced_handler = neo_target._RecordHandler(
+            table_name="REL",
+            is_relation=True,
+            pk_field="id",
+            table_schema=None,
+            graph=cast(Any, None),
+            sink=cast(Any, None),
+            force_delete_before_upsert=True,
+        )
+        forced_insert = forced_handler.reconcile(("r1",), desired_insert, [], True)
+        assert forced_insert is not None
+        assert forced_insert.action.delete_before_upsert is True
+
+        node_handler = neo_target._RecordHandler(
+            table_name="Document",
+            is_relation=False,
+            pk_field="id",
+            table_schema=None,
+            graph=cast(Any, None),
+            sink=cast(Any, None),
+        )
+        node_update = node_handler.reconcile(
+            ("d1",), {"id": "d1", "title": "B"}, [b"previous"], False
+        )
+        assert node_update is not None
+        assert node_update.action.delete_before_upsert is False
+
+
 class TestIndexDdlCypher:
     def test_node_index_create_named_with_if_not_exists(self) -> None:
         # Neo4j 5 syntax: CREATE INDEX <name> IF NOT EXISTS FOR (n:L) ON (n.f)
@@ -315,8 +671,6 @@ class TestIdentifierValidationAtApiEntryPoints:
             neo.table_target(KG_DB, "bad-table")
 
     def test_relation_target_invalid_name(self) -> None:
-        from typing import cast
-
         with pytest.raises(ValueError, match="relation table name"):
             neo.relation_target(
                 KG_DB,
@@ -618,6 +972,7 @@ async def _read_relationships(
 # Module-level state shared with declare functions (mirrors falkordb pattern).
 _node_rows: list[Any] = []
 _rel_pairs: list[tuple[Any, Any]] = []
+_rel_record_id: str | None = None
 
 
 if HAS_NEO4J:
@@ -680,7 +1035,14 @@ if HAS_NEO4J:
             rel_table.declare_relation(
                 from_id=from_id,
                 to_id=to_id,
-                record=RelRow(id=f"{from_id}->{to_id}", predicate="connects"),
+                record=RelRow(
+                    id=(
+                        _rel_record_id
+                        if _rel_record_id is not None
+                        else f"{from_id}->{to_id}"
+                    ),
+                    predicate="connects",
+                ),
             )
 
 
@@ -813,6 +1175,41 @@ async def test_relationship_upsert_with_endpoint_merge(
     assert pairs == {("alice", "bob"), ("bob", "carol")}
     for _, _, rel in edges:
         assert rel["predicate"] == "connects"
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_relationship_update_moves_edge_with_stable_custom_key(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """A stable relationship PK must move the edge instead of duplicating it."""
+    global _rel_pairs, _rel_record_id
+    uri, auth = neo4j_clean
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_rel_update"),
+        _declare_entities_and_relationships,
+    )
+
+    try:
+        _rel_record_id = "stable-rel"
+        _rel_pairs = [("alice", "bob")]
+        await app.update()
+
+        _rel_pairs = [("alice", "carol")]
+        await app.update()
+
+        edges = await _read_relationships(uri, auth, "REL")
+        assert len(edges) == 1
+        source, target, relationship = edges[0]
+        assert source["value"] == "alice"
+        assert target["value"] == "carol"
+        assert relationship["id"] == "stable-rel"
+    finally:
+        _rel_pairs = []
+        _rel_record_id = None
 
 
 @requires_neo4j_server
