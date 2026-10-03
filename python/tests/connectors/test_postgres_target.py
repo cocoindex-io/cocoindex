@@ -1253,7 +1253,7 @@ async def test_postgres_upsert_builtin_types_through_unnest(pg_env: _PgEnv) -> N
                 "NULL",
             ],
             "codes": ["ab", None],
-            "lines": [1, None, -3],
+            "lines": [1, None, -3, True],
             "ids": [2**40, None],
             "smalls": [1, 2],
             "flags": [True, False, None],
@@ -1310,7 +1310,6 @@ async def test_postgres_upsert_builtin_types_through_unnest(pg_env: _PgEnv) -> N
         stored = await _stored()
         assert len(stored) == num_rows
         expected = _full_row(1, "name1")
-        expected["doc"] = '{"k": [1, "x"]}'
         assert stored[1] == expected
         assert stored[0] == _null_row(0)
 

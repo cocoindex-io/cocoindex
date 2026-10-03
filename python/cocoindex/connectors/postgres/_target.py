@@ -767,7 +767,9 @@ def _array_literal(value: Any) -> str:
             escaped = v.replace("\\", "\\\\").replace('"', '\\"')
             parts.append(f'"{escaped}"')
         elif isinstance(v, bool):
-            parts.append("true" if v else "false")
+            # `1` / `0` parse as both boolean and numeric elements; asyncpg
+            # likewise takes a bool for an integer.
+            parts.append("1" if v else "0")
         elif isinstance(v, (numbers.Real, decimal.Decimal, uuid.UUID)):
             parts.append(str(v))
         elif isinstance(v, (list, tuple)):
@@ -796,6 +798,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _table_schema: TableSchema
     _sink: coco.TargetActionSink[_RowAction]
     _col_names: list[str]
+    _col_list: str
     _insert_into: str  # `INSERT INTO <table> (<columns>)`
     _conflict_clause: str
     # Resolved from the table's column types on the first upsert; None once
@@ -818,11 +821,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
 
         pk_cols = table_schema.primary_key
         self._col_names = list(table_schema.columns.keys())
-        col_list = ", ".join(f'"{c}"' for c in self._col_names)
+        self._col_list = ", ".join(f'"{c}"' for c in self._col_names)
         pk_list = ", ".join(f'"{c}"' for c in pk_cols)
         self._insert_into = (
             f"INSERT INTO {_qualified_table_name(table_name, pg_schema_name)} "
-            f"({col_list})"
+            f"({self._col_list})"
         )
         non_pk_cols = [c for c in self._col_names if c not in pk_cols]
         if non_pk_cols:
@@ -896,11 +899,10 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 exprs.append(f'r."{col_name}"')
             else:
                 return None
-        col_list = ", ".join(f'"{c}"' for c in self._col_names)
         return _UnnestUpsert(
             sql=(
                 f"{self._insert_into} SELECT {', '.join(exprs)} "
-                f"FROM unnest({', '.join(params)}) AS r({col_list}) "
+                f"FROM unnest({', '.join(params)}) AS r({self._col_list}) "
                 f"{self._conflict_clause}"
             ),
             literal_columns=tuple(literal_columns),
