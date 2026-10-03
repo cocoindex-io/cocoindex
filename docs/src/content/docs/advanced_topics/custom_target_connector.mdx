@@ -725,6 +725,8 @@ Only set it when both hold:
 - The tracking record is `fingerprint_object(desired_target_state)` itself — not a fingerprint of a part of the value or of a derived value, and not wrapped in another type.
 - An unchanged fingerprint means there is nothing to do.
 
+The attribute has no effect on a container handler, whose `reconcile()` always runs so that its sink can fulfill the child slot.
+
 `reconcile()` must keep its own comparison: it is still called for values that aren't plain data (anything other than `None`, `bool`, `int`, `float`, `str`, `bytes`, and `list` / `tuple` / `dict`-with-`str`-keys of those), unchanged or not.
 
 ### Shared action sinks

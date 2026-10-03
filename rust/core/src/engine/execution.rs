@@ -1067,8 +1067,10 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 // A handler that tracks the fingerprint of the declared value
                 // has nothing to do for a state that is surely present with
                 // every previous record equal to that fingerprint, so
-                // `reconcile` is not called for it.
-                let unchanged = !prev_may_be_missing
+                // `reconcile` is not called for it. A container's `reconcile`
+                // always runs: its action is what fulfills the child slot.
+                let unchanged = decl.child_provider.is_none()
+                    && !prev_may_be_missing
                     && !prev_states.is_empty()
                     && match handler.value_fingerprint_record(&decl.value)? {
                         Some(record) => prev_states

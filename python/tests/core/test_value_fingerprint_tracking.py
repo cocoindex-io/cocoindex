@@ -97,8 +97,13 @@ class _UntrackedFingerprintStore(_FingerprintStore):
     tracks_value_fingerprint = False
 
 
-class _TableStore(coco.TargetHandler[None, None, _FingerprintStore]):
-    """A container whose child rows are tracked by `_FingerprintStore`."""
+class _TableStore(coco.TargetHandler[None, bytes, _FingerprintStore]):
+    """A container whose child rows are tracked by `_FingerprintStore`.
+
+    It opts in too, yet must be reconciled on every run to fulfill its child slot.
+    """
+
+    tracks_value_fingerprint = True
 
     rows: _FingerprintStore
     child_invalidation: Literal["lossy"] | None = None
@@ -121,16 +126,16 @@ class _TableStore(coco.TargetHandler[None, None, _FingerprintStore]):
         self,
         key: coco.StableKey,
         desired_state: None | coco.NonExistenceType,
-        prev_possible_records: Collection[None],
+        prev_possible_records: Collection[bytes],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[None, None, _FingerprintStore] | None:
+    ) -> coco.TargetReconcileOutput[None, bytes, _FingerprintStore] | None:
         return coco.TargetReconcileOutput(
             action=None,
             sink=self._sink,
             tracking_record=coco.NON_EXISTENCE
             if coco.is_non_existence(desired_state)
-            else None,
+            else fingerprint_object(desired_state),
             child_invalidation=self.child_invalidation,
         )
 
