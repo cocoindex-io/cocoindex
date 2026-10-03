@@ -270,7 +270,7 @@ def _canonicalize(
     _seen: dict[int, int] | None,
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
-    # 0) Cycle / shared-reference tracking for containers
+    # 0) Track objects on the current recursion path
     if _seen is None:
         _seen = {}
 
@@ -318,7 +318,7 @@ def _canonicalize(
                 _canonicalize(k, _seen, state_methods),
             )
 
-    # 3) Cycle / shared-reference tracking
+    # 3) Cycle tracking
     #
     # Note: we intentionally do this before branching on container types, so the
     # logic is shared and we support cyclic/self-referential structures.
@@ -328,11 +328,13 @@ def _canonicalize(
         return ("ref", ordinal)
     _seen[oid] = len(_seen)
 
+    result: Fingerprintable
+
     # 4) Containers
     if isinstance(obj, typing.Sequence):
-        return ("seq", tuple(_canonicalize(e, _seen, state_methods) for e in obj))
+        result = ("seq", tuple(_canonicalize(e, _seen, state_methods) for e in obj))
 
-    if isinstance(obj, typing.Mapping):
+    elif isinstance(obj, typing.Mapping):
         items: list[tuple[Fingerprintable, Fingerprintable]] = []
         for k, v in obj.items():
             items.append(
@@ -342,31 +344,36 @@ def _canonicalize(
                 )
             )
         items.sort(key=lambda kv: (_stable_sort_key(kv[0]), _stable_sort_key(kv[1])))
-        return ("map", tuple(items))
+        result = ("map", tuple(items))
 
-    if isinstance(obj, (set, frozenset)):
+    elif isinstance(obj, (set, frozenset)):
         elts = [_canonicalize(e, _seen, state_methods) for e in obj]
         elts.sort(key=_stable_sort_key)
-        return ("set", tuple(elts))
+        result = ("set", tuple(elts))
 
     # 5) Dataclass instances
-    if _is_dataclass_instance(obj):
-        return _canonicalize_dataclass(obj, _seen, state_methods)
+    elif _is_dataclass_instance(obj):
+        result = _canonicalize_dataclass(obj, _seen, state_methods)
 
     # 6) Pydantic v2 models
-    if _is_pydantic_model(obj):
-        return _canonicalize_pydantic(obj, _seen, state_methods)
+    elif _is_pydantic_model(obj):
+        result = _canonicalize_pydantic(obj, _seen, state_methods)
 
     # 7) Fallback
-    try:
-        payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
-        # Tag to avoid colliding with user-provided raw bytes.
-        return ("pickle", payload)
-    except Exception:
-        raise TypeError(
-            f"Unsupported type for memoization key: {type(obj)!r}. "
-            "Provide __coco_memo_key__() or register a memo key function."
-        ) from None
+    else:
+        try:
+            payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+            # Tag to avoid colliding with user-provided raw bytes.
+            result = ("pickle", payload)
+        except Exception:
+            raise TypeError(
+                f"Unsupported type for memoization key: {type(obj)!r}. "
+                "Provide __coco_memo_key__() or register a memo key function."
+            ) from None
+
+    # A completed object may be shared by a sibling without forming a cycle.
+    del _seen[oid]
+    return result
 
 
 def _make_call_canonical(
