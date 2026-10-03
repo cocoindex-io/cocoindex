@@ -13,6 +13,7 @@ from typing import (
     TypeVar,
 )
 import asyncio
+from types import ModuleType
 
 from cocoindex._internal.typing import Fingerprintable as Fingerprintable
 from cocoindex._internal.typing import StableKey as StableKey
@@ -420,6 +421,7 @@ def init_runtime(
     serialize_fn: Callable[[Any], bytes],
     child_slot_wrapper_fn: Callable[[ChildTargetSlot], Any],
     non_existence: Any,
+    target_state_codec: ModuleType,
 ) -> None: ...
 def shutdown_tokio_runtime() -> None: ...
 def cancel_all() -> None: ...
