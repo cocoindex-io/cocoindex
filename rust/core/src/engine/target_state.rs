@@ -402,6 +402,11 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     /// Reconcile the desired target state against the previously-tracked
     /// records, returning the action to take.
     ///
+    /// Runs inside the precommit txn, which may be retried, so it can be
+    /// called more than once for the same target state in one update; only
+    /// the output of the attempt that commits is applied. Implementations
+    /// must therefore be free of side effects.
+    ///
     /// `desired_target_state` is borrowed (not owned) because the engine
     /// holds it under a short-lived `tokio::sync::MutexGuard` for the
     /// duration of this call — see the lock-scoped call site in

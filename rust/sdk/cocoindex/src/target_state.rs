@@ -417,6 +417,12 @@ where
     type TrackingRecord: Serialize + DeserializeOwned + Send + Sync + 'static;
     type Action: Serialize + DeserializeOwned + Send + 'static;
 
+    /// Reconcile the desired target state against the previously-tracked
+    /// records, returning the action to take.
+    ///
+    /// May be called more than once for the same target state in one update;
+    /// only the output of the attempt that commits is applied, so it must be
+    /// free of side effects.
     fn reconcile(
         &self,
         key: StableKey,

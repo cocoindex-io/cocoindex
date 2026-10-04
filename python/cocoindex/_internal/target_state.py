@@ -433,6 +433,10 @@ class TargetReconcileOutput(
 class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co]):
     """Reconciles one kind of target state.
 
+    ``reconcile`` may be called more than once for the same target state in
+    one update; only the output of the attempt that commits is applied, so it
+    must be free of side effects.
+
     ``OptChildHandlerT_co`` is the handler type of the child target states this
     handler's sink fulfills, or ``None`` for a leaf target. A container handler
     declares it on the return type of ``reconcile``

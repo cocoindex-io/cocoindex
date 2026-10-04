@@ -39,7 +39,7 @@ Use this skill when creating a new target connector for any external system (dat
 ### Root Target States
 
 1. **Define types**: Key, Spec, TrackingRecord, Action
-2. **Implement TargetHandler**: The `reconcile()` method must be non-blocking
+2. **Implement TargetHandler**: The `reconcile()` method must be non-blocking and free of side effects
 3. **Create TargetActionSink**: Use `TargetActionSink.from_fn()` or `from_async_fn()`. The callback receives `context_provider: ContextProvider` as its first positional argument, followed by `actions`, and returns `None`. A container target's sink uses `from_fn_with_children()` / `from_async_fn_with_children()` instead (see below)
 4. **Register provider**: Call `register_root_target_states_provider(name, handler)`
 5. **Create user-facing API**: Wrap the provider in a user-friendly class
@@ -126,7 +126,7 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
 
 The optional `child_invalidation` field is only relevant for container targets — see [Child Invalidation](#child-invalidation).
 
-**Important:** The `reconcile()` method must be non-blocking. It should only compare states and return an action — actual I/O happens in the sink.
+**Important:** The `reconcile()` method must be non-blocking and free of side effects. It should only compare states and return an action — actual I/O happens in the sink. CocoIndex may call `reconcile()` more than once for the same target state when it retries a commit internally; only the output of the committed attempt is applied.
 
 ## Best Practices
 
