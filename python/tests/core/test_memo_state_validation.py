@@ -12,6 +12,8 @@ Tests cover:
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 import cocoindex as coco
 
 from tests import common
@@ -713,3 +715,115 @@ def test_state_changed_but_reusable_component_sync() -> None:
     )
     app.update_blocking()
     assert _metrics.collect() == {"call.declare_two_level": 1}
+
+
+# ============================================================================
+# State collected again after a re-run (`recollect_after_run`)
+# ============================================================================
+
+# What each key's function reads when it runs, and the version of each thing read.
+_reads: dict[str, list[str]] = {}
+_versions: dict[str, int] = {}
+
+
+class _Tracked:
+    """A key whose state is the set of things its function read, with versions.
+
+    The set is only known once the function has run, so a re-run triggered by
+    the state check must store the state collected after it.
+    """
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.observed: list[tuple[str, int]] = []
+
+    def __coco_memo_key__(self) -> object:
+        return self.key
+
+    def __coco_memo_state__(
+        self, prev_state: list[tuple[str, int]] | coco.NonExistenceType
+    ) -> coco.MemoStateOutcome:
+        if coco.is_non_existence(prev_state):
+            return coco.MemoStateOutcome(state=list(self.observed))
+        valid = all(_versions[name] == version for name, version in prev_state)
+        return coco.MemoStateOutcome(
+            state=prev_state, memo_valid=valid, recollect_after_run=True
+        )
+
+
+def _read_all(tracked: _Tracked) -> str:
+    tracked.observed = [(name, _versions[name]) for name in _reads[tracked.key]]
+    return ",".join(f"{name}@{version}" for name, version in tracked.observed)
+
+
+@coco.fn(memo=True)
+def _tracked_sync(tracked: _Tracked) -> str:
+    _metrics.increment("call.tracked")
+    return _read_all(tracked)
+
+
+@coco.fn.as_async(memo=True)
+def _tracked_async(tracked: _Tracked) -> str:
+    _metrics.increment("call.tracked")
+    return _read_all(tracked)
+
+
+@coco.fn
+def _process_tracked_sync() -> None:
+    for key in _reads:
+        coco.declare_target_state(
+            GlobalDictTarget.target_state(key, _tracked_sync(_Tracked(key)))
+        )
+
+
+@coco.fn
+async def _process_tracked_async() -> None:
+    for key in _reads:
+        value = await _tracked_async(_Tracked(key))
+        coco.declare_target_state(GlobalDictTarget.target_state(key, value))
+
+
+@pytest.mark.parametrize(
+    ("name", "main"),
+    [
+        ("test_recollect_after_run_sync", _process_tracked_sync),
+        ("test_recollect_after_run_async", _process_tracked_async),
+    ],
+)
+def test_recollect_after_run(name: str, main: Any) -> None:
+    GlobalDictTarget.store.clear()
+    _metrics.clear()
+    _reads.clear()
+    _versions.clear()
+    _reads["A"] = ["x"]
+    _versions.update(x=1, y=1)
+
+    app = coco.App(coco.AppConfig(name=name, environment=coco_env), main)
+
+    app.update_blocking()
+    assert _metrics.collect() == {"call.tracked": 1}
+    assert GlobalDictTarget.store.data["A"].data == "x@1"
+
+    # Nothing it read changed: reused.
+    app.update_blocking()
+    assert _metrics.collect() == {}
+
+    # `x` changed, and the re-run reads `y` instead.
+    _versions["x"] = 2
+    _reads["A"] = ["y"]
+    app.update_blocking()
+    assert _metrics.collect() == {"call.tracked": 1}
+    assert GlobalDictTarget.store.data["A"].data == "y@1"
+
+    # The stored state is the one collected after the re-run, so a change to
+    # `y` is seen. Without it the state would still name `x` and this run
+    # would reuse a stale result.
+    _versions["y"] = 2
+    app.update_blocking()
+    assert _metrics.collect() == {"call.tracked": 1}
+    assert GlobalDictTarget.store.data["A"].data == "y@2"
+
+    # A change to `x`, no longer read, does not re-run it.
+    _versions["x"] = 3
+    app.update_blocking()
+    assert _metrics.collect() == {}
