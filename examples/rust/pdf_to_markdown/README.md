@@ -11,7 +11,7 @@ automatically.
 
 | Concern          | Python                                   | Rust (this example)                       |
 | ---------------- | ---------------------------------------- | ----------------------------------------- |
-| Source           | `localfs.walk_dir` (`**/*.pdf`)          | `cocoindex::fs::walk` (`**/*.pdf`)        |
+| Source           | `localfs.walk_dir` (`**/*.pdf`)          | `cocoindex::resources::fs::walk` (`**/*.pdf`)        |
 | PDF → markdown   | `docling` (PDF → Markdown, ML pipeline)  | `lopdf` text extraction                   |
 | Per-file compute | `@coco.fn(memo=True) process_file`       | `#[cocoindex::function(memo)] convert_pdf` |
 | Output           | `localfs.declare_file` (`<stem>.md`)     | `DirTarget::declare_file` (`<stem>.md`)   |
