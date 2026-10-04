@@ -207,6 +207,35 @@ def path_state(p: Path, prev_state: tuple[int, int] | coco.NonExistenceType) -> 
 register_memo_key_function(Path, path_key, state_fn=path_state)
 ```
 
+### State that depends on what the function did
+
+By default the state stored after a re-run is the one the state function returned when it rejected the cached result, before the function ran. That fits a state read from the outside, such as a file's modification time.
+
+Some states are only known once the function has run, for example the set of things it read. Return `recollect_after_run=True` and CocoIndex calls the state function a second time after the function body, with `NON_EXISTENCE` as on a first run, and stores that state:
+
+```python
+class Tracked:
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.observed: list[tuple[str, int]] = []  # filled by the function
+
+    def __coco_memo_key__(self) -> object:
+        return self.key
+
+    def __coco_memo_state__(
+        self, prev_state: list[tuple[str, int]] | coco.NonExistenceType
+    ) -> coco.MemoStateOutcome:
+        if coco.is_non_existence(prev_state):
+            # After the function ran: report what it read.
+            return coco.MemoStateOutcome(state=list(self.observed))
+        valid = all(current_version(name) == version for name, version in prev_state)
+        return coco.MemoStateOutcome(
+            state=prev_state, memo_valid=valid, recollect_after_run=True
+        )
+```
+
+The flag is only read when the cached result is not reused. It applies to memoized functions; a memoized component that returns it raises an error.
+
 ### Async state methods
 
 A state method can return an `Awaitable`. CocoIndex handles this automatically:
