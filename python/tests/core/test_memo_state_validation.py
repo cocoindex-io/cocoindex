@@ -827,3 +827,42 @@ def test_recollect_after_run(name: str, main: Any) -> None:
     _versions["x"] = 3
     app.update_blocking()
     assert _metrics.collect() == {}
+
+
+@coco.fn(memo=True)
+def _tracked_component(tracked: _Tracked) -> None:
+    coco.declare_target_state(
+        GlobalDictTarget.target_state(tracked.key, _read_all(tracked))
+    )
+
+
+@coco.fn
+async def _mount_tracked() -> None:
+    for key in _reads:
+        # `use_mount` so the child's failure reaches the caller.
+        await coco.use_mount(
+            coco.component_subpath(key), _tracked_component, _Tracked(key)
+        )
+
+
+def test_recollect_after_run_rejected_for_component() -> None:
+    GlobalDictTarget.store.clear()
+    _reads.clear()
+    _versions.clear()
+    _reads["A"] = ["x"]
+    _versions["x"] = 1
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_recollect_after_run_rejected_for_component",
+            environment=coco_env,
+        ),
+        _mount_tracked,
+    )
+    app.update_blocking()
+
+    # The state check rejects the memo and asks for a recollect, which a
+    # memoized component cannot honor: it must fail, not store a stale state.
+    _versions["x"] = 2
+    with pytest.raises(Exception, match="recollect_after_run"):
+        app.update_blocking()

@@ -392,9 +392,7 @@ def _aggregate_state_results(
         can_reuse=can_reuse,
         states_changed=states_changed,
         recollect=tuple(
-            i
-            for i, r in enumerate(positional_results)
-            if getattr(r.outcome, "recollect_after_run", False)
+            i for i, r in enumerate(positional_results) if r.outcome.recollect_after_run
         ),
     )
 

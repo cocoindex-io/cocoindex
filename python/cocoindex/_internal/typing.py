@@ -85,4 +85,8 @@ class MemoStateOutcome(NamedTuple):
     a first run, and that second state is the one stored. Use it when the
     state depends on what the function did — for example the dependencies it
     discovered while running.
+
+    Supported for the state functions of a memoized function's arguments. A
+    memoized component raises an error for it, and state functions of
+    context values do not read it.
     """
