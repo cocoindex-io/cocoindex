@@ -63,8 +63,8 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
 - `TargetReconcileOutput` if an action is needed
 - `None` if no changes are required
 
-:::warning[Non-blocking]
-The `reconcile()` method must be **non-blocking**. It should only compare states and return an action — actual I/O operations happen later in the `TargetActionSink`.
+:::warning[Non-blocking and side-effect free]
+The `reconcile()` method must be **non-blocking** and **free of side effects**. It should only compare states and return an action — actual I/O operations happen later in the `TargetActionSink`. CocoIndex may call `reconcile()` more than once for the same target state when it retries a commit internally; only the output of the committed attempt is applied.
 :::
 
 :::info[Type annotations]
