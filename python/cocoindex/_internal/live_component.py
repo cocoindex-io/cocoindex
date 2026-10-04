@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
-import traceback
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from typing import (
@@ -116,16 +115,13 @@ async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) 
     `set(prev)` always works because we're mutating whatever the
     current Context is.
 
-    The ``operator._detach()`` in the same finally is the framework's
-    fix for a subtle live-mode leak: if user code in ``process_live``
-    catches an exception and retains it (``self.last_err = e`` /
-    re-raises later), the exception's traceback holds the calling
-    frame's locals, which include ``operator`` — and ``operator`` owns a
-    Rust ``Arc`` to the live component's ``Component``. Without
-    detach, ``App.update``'s ``wait_until_inactive`` poll never observes
-    the live component as inactive. After detach, the Rust controller
-    drops on schedule; later operator method calls raise. See
-    ``specs/core/error_handling.md`` §4.1.
+    The ``operator._detach()`` in the same finally scopes the operator to
+    this invocation: an operator that user code retains past it (for
+    example through a stored exception's traceback, which holds the
+    calling frame's locals) fails loudly on later method calls instead of
+    acting on a live component that has finished. Termination does not
+    depend on it — the engine tracks activity explicitly, so a retained
+    operator cannot keep the live component active.
     """
     prev = _in_process_live.get()
     _in_process_live.set(True)
@@ -226,18 +222,15 @@ class LiveComponentOperator:
 
     Lifecycle: the operator is **scoped to one invocation of process_live**.
     After process_live returns (normally or via exception), the wrapper that
-    invoked it calls :meth:`_detach` to release the Rust controller. This
-    matters because the Rust ``LiveComponentController`` holds a strong
-    ``Arc`` to the live component's ``Component``, and the framework's
-    ``wait_until_inactive`` poll (used by ``App.update`` in live mode to
-    detect "all done, safe to terminate") tracks that strong count.
+    invoked it calls :meth:`_detach` to release the Rust controller, so a
+    stale operator (for example one captured by a stored exception's
+    traceback) fails loudly instead of acting on a live component that has
+    finished.
 
-    Without detach, user code in ``process_live`` that catches an
-    exception and stores it (e.g. ``self.last_err = e``) would
-    accidentally pin the live component forever — Python exception
-    objects retain their traceback, which retains the caller's frame
-    locals, which retains ``operator``. See
-    ``specs/core/error_handling.md`` §4.1.
+    Holding the controller does not keep the live component alive: the
+    engine tracks activity explicitly — a component is active while one of
+    its processing tasks is in flight — rather than by counting references,
+    so live-mode termination is unaffected by what Python retains.
     """
 
     __slots__ = ("_controller", "_instance", "_env", "_path")
@@ -277,7 +270,9 @@ class LiveComponentOperator:
             )
         return ctrl
 
-    def _resolve_exception_handler(self) -> Callable[[str], Awaitable[None]]:
+    def _resolve_exception_handler(
+        self,
+    ) -> Callable[[BaseException], Awaitable[None]]:
         """Build a resolver for the parent's exception handler chain.
 
         Delegates to :meth:`ComponentContext.resolve_exception_handler`
@@ -285,7 +280,7 @@ class LiveComponentOperator:
         so component-failure logs go through one canonical Python
         fallback. Always non-None. Used both by :meth:`update_full`
         (passes to Rust as ``on_error``) and :meth:`report_exception`
-        (invokes directly with a stringified exception).
+        (invokes directly with the reported exception).
         """
         return get_context_from_ctx().resolve_exception_handler(
             stable_path=self._path.to_string(),
@@ -456,20 +451,19 @@ class LiveComponentOperator:
         cycle failures from initial build failures (``"mount"`` /
         ``"mount_each"``).
 
-        The exception is formatted via :func:`traceback.format_exception`
-        so handlers and the fallback log both see the full Python
-        traceback (when ``exc.__traceback__`` is set — i.e. when the
-        caller is reporting a caught exception). This matches the
-        text-with-trace shape that the Rust-side ``on_error`` path
-        produces for background ``mount`` / ``mount_each`` failures.
+        Handlers receive ``exc`` itself, so they can route by type and
+        recover the traceback via :func:`traceback.format_exception` (when
+        ``exc.__traceback__`` is set, i.e. when the caller is reporting a
+        caught exception). This matches what the Rust-side ``on_error``
+        path delivers for background ``mount`` / ``mount_each`` failures.
 
-        Falls back to ERROR-level logging if no handler is registered or
-        every handler re-raises. Intended for surfacing recoverable errors
-        (e.g. an external watcher emits a malformed event) without
-        tearing down the live component.
+        Falls back to ERROR-level logging if no handler is registered. If
+        every handler re-raises, the final handler's exception propagates
+        to the caller. Intended for surfacing recoverable errors (e.g. an
+        external watcher emits a malformed event) without tearing down the
+        live component.
         """
-        err_text = "".join(traceback.format_exception(exc))
-        await self._resolve_exception_handler()(err_text)
+        await self._resolve_exception_handler()(exc)
 
 
 @runtime_checkable

@@ -34,7 +34,7 @@ import os
 import pathlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import instructor
 import litellm
@@ -178,7 +178,10 @@ class DocTriples:
 
 @coco.fn(memo=True)
 async def extract_summary(content: str) -> DocumentSummary:
-    client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
+    client = cast(
+        instructor.AsyncInstructor,
+        instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON),
+    )
     result = await client.chat.completions.create(
         model=coco.use_context(LLM_MODEL),
         response_model=DocumentSummary,
@@ -193,7 +196,10 @@ async def extract_summary(content: str) -> DocumentSummary:
 
 @coco.fn(memo=True)
 async def extract_relationships(content: str) -> list[Triple]:
-    client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
+    client = cast(
+        instructor.AsyncInstructor,
+        instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON),
+    )
     result = await client.chat.completions.create(
         model=coco.use_context(LLM_MODEL),
         response_model=RelationshipList,

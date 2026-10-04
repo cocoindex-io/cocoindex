@@ -7,50 +7,20 @@ without a real Iggy server.
 from __future__ import annotations
 
 import asyncio
-import sys
-from collections import deque
-from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
+from tests.common.iggy_stub import MockIggyClient, MockIggyConsumer, MockReceiveMessage
 
-class MockAutoCommit:
-    class Disabled:
-        pass
-
-
-class MockPollingStrategy:
-    class Next:
-        pass
-
-
-class MockReceiveMessage:
-    def __init__(
-        self,
-        *,
-        payload: bytes,
-        offset: int,
-        partition_id: int = 0,
-    ) -> None:
-        self._payload = payload
-        self._offset = offset
-        self._partition_id = partition_id
-
-    def payload(self) -> bytes:
-        return self._payload
-
-    def offset(self) -> int:
-        return self._offset
-
-    def partition_id(self) -> int:
-        return self._partition_id
-
-
-class MockTopicDetails:
-    def __init__(self, *, messages_count: int, partitions_count: int = 1) -> None:
-        self.messages_count = messages_count
-        self.partitions_count = partitions_count
+# ``tests.common.iggy_stub`` must be imported before the connector so that the
+# connector binds the stub SDK.
+from cocoindex._internal.live_component import _IMMEDIATE_READY
+from cocoindex.connectors.iggy._source import (
+    TopicStream,
+    _PartitionState,
+    topic_as_map,
+    topic_as_stream,
+)
 
 
 class MockReadyHandle:
@@ -62,82 +32,6 @@ class MockReadyHandle:
 
     def set_ready(self) -> None:
         self._ready_event.set()
-
-
-class MockMessageIterator:
-    def __init__(self, messages: deque[MockReceiveMessage]) -> None:
-        self._messages = messages
-
-    def __aiter__(self) -> "MockMessageIterator":
-        return self
-
-    async def __anext__(self) -> MockReceiveMessage:
-        if self._messages:
-            return self._messages.popleft()
-        raise StopAsyncIteration
-
-
-class MockIggyConsumer:
-    def __init__(
-        self,
-        messages: list[MockReceiveMessage],
-        *,
-        stored_offset: int | None = None,
-    ) -> None:
-        self._messages = deque(messages)
-        self._stored_offset = stored_offset
-        self.stored_offsets: list[tuple[int, int | None]] = []
-
-    def get_last_stored_offset(self, partition_id: int) -> int | None:
-        return self._stored_offset
-
-    async def store_offset(self, offset: int, partition_id: int | None) -> None:
-        self._stored_offset = offset
-        self.stored_offsets.append((offset, partition_id))
-
-    def iter_messages(self) -> MockMessageIterator:
-        return MockMessageIterator(self._messages)
-
-
-class MockIggyClient:
-    def __init__(
-        self,
-        consumer: MockIggyConsumer,
-        *,
-        messages_count: int,
-        partitions_count: int = 1,
-    ) -> None:
-        self.consumer = consumer
-        self.topic = MockTopicDetails(
-            messages_count=messages_count,
-            partitions_count=partitions_count,
-        )
-        self.consumer_group_calls: list[dict[str, Any]] = []
-
-    async def get_topic(self, stream: str, topic: str) -> MockTopicDetails:
-        return self.topic
-
-    async def consumer_group(self, **kwargs: Any) -> MockIggyConsumer:
-        self.consumer_group_calls.append(kwargs)
-        return self.consumer
-
-
-_mock_module = MagicMock()
-_mock_module.AutoCommit = MockAutoCommit
-_mock_module.IggyClient = MockIggyClient
-_mock_module.IggyConsumer = MockIggyConsumer
-_mock_module.PollingStrategy = MockPollingStrategy
-_mock_module.ReceiveMessage = MockReceiveMessage
-_mock_module.SendMessage = MagicMock()
-sys.modules["apache_iggy"] = _mock_module
-
-from cocoindex._internal.live_component import _IMMEDIATE_READY  # noqa: E402
-from cocoindex.connectors.iggy._source import (  # noqa: E402
-    TopicStream,
-    _PartitionState,
-    topic_as_map,
-    topic_as_stream,
-)
 
 
 class MockStreamSubscriber:

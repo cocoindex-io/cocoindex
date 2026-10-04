@@ -1,12 +1,17 @@
+import collections
 import dataclasses
+import enum
 import math
 from typing import Any
 
 import pytest
 
+from cocoindex._internal import core
 from cocoindex._internal.function import _apply_memo_key, _normalize_memo_key
 from cocoindex._internal.memo_fingerprint import (
+    _canonicalize,
     fingerprint_call,
+    memo_fingerprint,
     register_memo_key_function,
     unregister_memo_key_function,
 )
@@ -757,3 +762,136 @@ def test_apply_memo_key_transforms_varkw() -> None:
 
     assert result_args == (1,)
     assert result_kwargs == {"count": 2}
+
+
+def test_fingerprint_dict_and_set_with_fingerprint_keys_order_independent() -> None:
+    fp1 = core.fingerprint_simple_object("alpha")
+    fp2 = core.fingerprint_simple_object("beta")
+
+    # Dict order independence with Fingerprint keys
+    d1 = {fp1: "val1", fp2: "val2"}
+    d2 = {fp2: "val2", fp1: "val1"}
+    assert memo_fingerprint(d1) == memo_fingerprint(d2)
+
+    # Set order independence with Fingerprint elements
+    s1 = {fp1, fp2}
+    s2 = {fp2, fp1}
+    assert memo_fingerprint(s1) == memo_fingerprint(s2)
+
+    # Nested container order independence with Fingerprint keys
+    nested1 = {"items": [{fp1: 1, fp2: 2}]}
+    nested2 = {"items": [{fp2: 2, fp1: 1}]}
+    assert memo_fingerprint(nested1) == memo_fingerprint(nested2)
+
+
+def _canonical_form_fingerprint(obj: object) -> core.Fingerprint:
+    return core.fingerprint_simple_object(
+        _canonicalize(obj, _seen=None, state_methods=[])
+    )
+
+
+class _ListSubclass(list[Any]):
+    pass
+
+
+class _StrSubclass(str):
+    pass
+
+
+class _IntEnum(enum.IntEnum):
+    A = 1
+
+
+_NamedTuple = collections.namedtuple("_NamedTuple", ["a"])
+
+_SHARED_LIST = [1, 2]
+_CYCLIC_LIST: list[Any] = []
+_CYCLIC_LIST.append(_CYCLIC_LIST)
+
+
+def _nested_list(depth: int) -> list[Any]:
+    outer: list[Any] = []
+    for _ in range(depth):
+        outer = [outer]
+    return outer
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        None,
+        True,
+        0,
+        -(2**63),
+        2**63,
+        -(2**70),
+        1.5,
+        -0.0,
+        math.nan,
+        math.inf,
+        "",
+        "\U0001f600",
+        b"\x00x",
+        [],
+        (),
+        {},
+        [1, "a", None, [2.0, (b"b", False)]],
+        # Keys whose UTF-16 and code point orders differ, declared unsorted.
+        {"\U0001f600": 1, "\uffff": 2, "b": 3, "": 4, "a": [5, {"z": 6, "y": ()}]},
+        _nested_list(63),
+    ],
+    ids=repr,
+)
+def test_plain_data_is_fingerprinted_natively_as_its_canonical_form(
+    obj: object,
+) -> None:
+    fp = core.fingerprint_plain_object(obj)
+    assert fp == _canonical_form_fingerprint(obj)
+    assert memo_fingerprint(obj) == fp
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        {1: "a", 2.0: "b", (1, 2): "c", None: "d"},
+        {"a": {1, 2}},
+        bytearray(b"x"),
+        [(), ()],
+        {"a": _SHARED_LIST, "b": _SHARED_LIST},
+        _CYCLIC_LIST,
+        _nested_list(64),
+        _ListSubclass([1]),
+        _StrSubclass("x"),
+        _IntEnum.A,
+        _NamedTuple(1),
+        [_PickleableZ],
+    ],
+    ids=repr,
+)
+def test_non_plain_data_is_fingerprinted_through_the_canonicalizer(
+    obj: object,
+) -> None:
+    assert core.fingerprint_plain_object(obj) is None
+    assert memo_fingerprint(obj) == _canonical_form_fingerprint(obj)
+
+
+def test_memo_fingerprint_of_plain_data_is_stable() -> None:
+    # Fingerprints are persisted (e.g. as target state tracking records), so the
+    # value for a given object must not change across versions.
+    row = {"id": 1, "name": "a", "score": 0.5, "tags": ["x", "y"], "extra": None}
+    assert memo_fingerprint(row).as_bytes().hex() == "ca5493129c7af70c360e6bfc6d4e0a4b"
+    mixed = [2**70, -5, float("nan"), b"b", True, {"k": (1,)}]
+    assert (
+        memo_fingerprint(mixed).as_bytes().hex() == "f5a39e4f0b6dbe16fe36856fba5fe012"
+    )
+
+
+def test_memo_fingerprint_honors_registry_for_plain_container_types() -> None:
+    register_memo_key_function(list, lambda obj: len(obj))
+    try:
+        fp = memo_fingerprint({"a": [1, 2]})
+        assert fp == memo_fingerprint({"a": [3, 4]})
+        assert fp == _canonical_form_fingerprint({"a": [1, 2]})
+    finally:
+        unregister_memo_key_function(list)
+    assert memo_fingerprint({"a": [1, 2]}) != fp

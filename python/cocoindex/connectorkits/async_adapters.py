@@ -9,6 +9,7 @@ import contextvars as _contextvars
 import queue as _queue
 import threading as _threading
 from typing import (
+    AsyncGenerator,
     AsyncIterator,
     Callable,
     Iterator,
@@ -24,7 +25,7 @@ async def sync_to_async_iter(
     sync_iter_fn: Callable[[], Iterator[_T]],
     *,
     max_queue_size: int = DEFAULT_QUEUE_SIZE,
-) -> AsyncIterator[_T]:
+) -> AsyncGenerator[_T, None]:
     """
     Adapt a synchronous iterator function to an asynchronous iterator.
 
@@ -93,7 +94,8 @@ async def sync_to_async_iter(
                 q.get_nowait()
         except _queue.Empty:
             pass
-        thread.join(timeout=1.0)
+        # Joining directly would block the event loop while the producer exits.
+        await loop.run_in_executor(None, thread.join, 1.0)
 
 
 def async_to_sync_iter(

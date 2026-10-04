@@ -1,5 +1,6 @@
 """Tests for logic change detection: memoized results are invalidated when function code changes."""
 
+import copy
 import gc
 import pathlib
 import sys
@@ -11,6 +12,7 @@ import pytest
 
 import cocoindex as coco
 from cocoindex._internal import core
+from cocoindex._internal.function import AsyncFunction, SyncFunction
 
 from tests import common
 from tests.common.environment import get_env_db_path
@@ -46,16 +48,23 @@ def _unload_module_functions(mod: ModuleType) -> None:
     """Unregister logic fingerprints for all coco functions in a module."""
     for attr_name in dir(mod):
         obj = getattr(mod, attr_name)
-        fp = getattr(obj, "_logic_fp", None)
-        if fp is not None:
-            core.unregister_logic_fingerprint(fp)
+        _release_logic_fp(obj)
         # Also scan class attributes for @coco.fn decorated methods.
         if isinstance(obj, type):
             for cls_attr_name in dir(obj):
-                cls_obj = getattr(obj, cls_attr_name, None)
-                cls_fp = getattr(cls_obj, "_logic_fp", None)
-                if cls_fp is not None:
-                    core.unregister_logic_fingerprint(cls_fp)
+                _release_logic_fp(getattr(obj, cls_attr_name, None))
+
+
+def _release_logic_fp(obj: object) -> None:
+    """Release a coco function's logic fingerprint registration now.
+
+    Clears ``_logic_fp`` so the object's ``__del__`` doesn't release it a second
+    time once the stale module is collected — that would drop the registration
+    held by an unchanged function in the next module version.
+    """
+    if isinstance(obj, (SyncFunction, AsyncFunction)) and obj._logic_fp is not None:
+        core.unregister_logic_fingerprint(obj._logic_fp)
+        obj._logic_fp = None
 
 
 def _load_module(
@@ -172,6 +181,124 @@ def test_component_memo_invalidated_on_logic_change() -> None:
     assert GlobalDictTarget.store.data["A"].data == "v2: value1"
 
     # v2: second run — component memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+# ============================================================================
+# Redefining a function with identical code keeps its memo — e.g. a notebook
+# cell or `importlib.reload` re-running a `@coco.fn` definition. The new object
+# registers the same logic fingerprint before the old object is dropped, so
+# dropping the old one must not unregister it from under the new one.
+# ============================================================================
+
+
+def _define_sync_memo_fn(metrics: Metrics) -> SyncFunction[[str], None]:
+    @coco.fn(memo=True)
+    def sync_memo_fn(key: str) -> None:
+        metrics.increment(f"sync_memo_fn({key})")
+
+    return sync_memo_fn
+
+
+def _define_async_memo_fn(metrics: Metrics) -> AsyncFunction[[str], None]:
+    @coco.fn(memo=True)
+    async def async_memo_fn(key: str) -> None:
+        metrics.increment(f"async_memo_fn({key})")
+
+    return async_memo_fn
+
+
+def test_memo_hit_survives_redefining_fn_with_identical_code() -> None:
+    """Rebinding a memoized function's name to an identical redefinition keeps
+    both its function memo and its component memo."""
+    metrics = Metrics()
+    sync_memo_fn = _define_sync_memo_fn(metrics)
+    async_memo_fn = _define_async_memo_fn(metrics)
+
+    @coco.fn
+    async def app_main() -> None:
+        sync_memo_fn("call")
+        await async_memo_fn("call")
+        await coco.use_mount(coco.component_subpath("sync"), sync_memo_fn, "mount")
+        await coco.use_mount(coco.component_subpath("async"), async_memo_fn, "mount")
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_hit_survives_redefining_fn_with_identical_code",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    app.update_blocking()
+    assert metrics.collect() == {
+        "sync_memo_fn(call)": 1,
+        "async_memo_fn(call)": 1,
+        "sync_memo_fn(mount)": 1,
+        "async_memo_fn(mount)": 1,
+    }
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # Each call below registers the new object's fingerprint before the
+    # rebinding drops the old object; collect so the old object's finalizer
+    # has run before the next update.
+    sync_memo_fn = _define_sync_memo_fn(metrics)
+    async_memo_fn = _define_async_memo_fn(metrics)
+    gc.collect()
+
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+# ============================================================================
+# Copying a function keeps its memo: dropping a copy must not release the logic
+# fingerprint registration held by the original.
+# ============================================================================
+
+
+def test_memo_hit_survives_dropping_copies_of_fn() -> None:
+    """Dropping a `copy.copy` or `copy.deepcopy` of a memoized function keeps
+    both its function memo and its component memo."""
+    metrics = Metrics()
+    sync_memo_fn = _define_sync_memo_fn(metrics)
+    async_memo_fn = _define_async_memo_fn(metrics)
+
+    @coco.fn
+    async def app_main() -> None:
+        sync_memo_fn("call")
+        await async_memo_fn("call")
+        await coco.use_mount(coco.component_subpath("sync"), sync_memo_fn, "mount")
+        await coco.use_mount(coco.component_subpath("async"), async_memo_fn, "mount")
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_hit_survives_dropping_copies_of_fn",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    app.update_blocking()
+    assert metrics.collect() == {
+        "sync_memo_fn(call)": 1,
+        "async_memo_fn(call)": 1,
+        "sync_memo_fn(mount)": 1,
+        "async_memo_fn(mount)": 1,
+    }
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    copies = [
+        copy.copy(sync_memo_fn),
+        copy.deepcopy(sync_memo_fn),
+        copy.copy(async_memo_fn),
+        copy.deepcopy(async_memo_fn),
+    ]
+    del copies
+    gc.collect()
+
     app.update_blocking()
     assert metrics.collect() == {}
 
@@ -1101,7 +1228,6 @@ def test_deps_fingerprint_contract() -> None:
     different deps differ, ``__coco_memo_key__()`` is honored, and ``deps``
     composes correctly with ``version``.
     """
-    from cocoindex._internal.function import SyncFunction
 
     def my_fn(x: str) -> str:
         return x + " done"
@@ -1229,3 +1355,65 @@ def test_deps_rejected_with_logic_tracking_none() -> None:
         @coco.fn.as_async(memo=True, deps="ignored", logic_tracking=None)
         async def _g(x: str) -> str:
             return x
+
+
+# ---------------------------------------------------------------------------
+# Fn-memo HIT must still report the fn's own logic fp to the caller — on both
+# the sync and async call paths. Regression: the sync path used to create its
+# FnCallContext only on a miss, so a caller's memo entry rebuilt during a run
+# where the inner fn hit lost the dep, and a later code change to the inner fn
+# went undetected. (The async path always created the ctx before the probe.)
+# ---------------------------------------------------------------------------
+
+_hit_dep_runs: list[str] = []
+_hit_dep_n: dict[str, int] = {"n": 1}
+
+
+@coco.fn(memo=True)
+def _hit_dep_leaf_sync() -> int:
+    _hit_dep_runs.append("leaf")
+    return 1
+
+
+@coco.fn(memo=True)
+async def _hit_dep_mid(n: int) -> int:
+    _hit_dep_runs.append(f"mid{n}")
+    return _hit_dep_leaf_sync() + n
+
+
+async def _hit_dep_main() -> None:
+    await coco.use_mount(coco.component_subpath("mid"), _hit_dep_mid, _hit_dep_n["n"])
+
+
+def test_sync_fn_hit_still_reports_logic_dep_to_rebuilt_caller() -> None:
+    _hit_dep_runs.clear()
+    _hit_dep_n["n"] = 1
+    app: coco.App[[], None] = coco.App(
+        coco.AppConfig(name="test_sync_fn_hit_logic_dep", environment=coco_env),
+        _hit_dep_main,
+    )
+
+    # Run 1: everything executes.
+    app.update_blocking()
+    assert _hit_dep_runs == ["mid1", "leaf"]
+
+    # Run 2: mid's memo key changes -> mid re-executes, leaf HITS. Mid's
+    # rebuilt entry must still record leaf's logic fp.
+    _hit_dep_runs.clear()
+    _hit_dep_n["n"] = 2
+    app.update_blocking()
+    assert _hit_dep_runs == ["mid2"]
+
+    # Run 3: simulate leaf's code changing — its old fp leaves the registry.
+    leaf_fp = _hit_dep_leaf_sync._logic_fp  # type: ignore[attr-defined]
+    assert leaf_fp is not None
+    core.unregister_logic_fingerprint(leaf_fp)
+    try:
+        _hit_dep_runs.clear()
+        app.update_blocking()
+        assert _hit_dep_runs == [
+            "mid2",
+            "leaf",
+        ], f"leaf logic change not detected after hit-rebuild: {_hit_dep_runs}"
+    finally:
+        core.register_logic_fingerprint(leaf_fp)

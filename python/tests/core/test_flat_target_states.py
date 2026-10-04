@@ -276,3 +276,45 @@ def test_global_dict_target_state_proceed_with_exception() -> None:
     app.update_blocking()
     assert GlobalDictTarget.store.data == {}
     assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "delete": 1}
+
+
+def test_global_dict_partial_sink_failure_then_undeclare() -> None:
+    """A fresh insert whose sink call applies but then fails, followed by
+    undeclaring the state: the next run must still delete it from the sink.
+
+    The failed lifecycle leaves the item's tracking in the fresh-insert
+    multi-state shape (a `Deleted` entry plus the attempted value), which
+    forces `prev_may_be_missing` — but the delete reconcile must still run,
+    because the sink may well hold the value (it does here). Skipping it
+    would permanently orphan the external state.
+    """
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_global_dict_partial_sink_failure_then_undeclare",
+            environment=coco_env,
+        ),
+        declare_global_dict_entries,
+    )
+
+    # Run 1: fresh insert of "a"; the write reaches the sink, but the sink
+    # call fails before the lifecycle finalizes.
+    _source_data["a"] = 1
+    try:
+        GlobalDictTarget.store.sink_exception_after_apply = True
+        with pytest.raises(Exception):
+            app.update_blocking()
+    finally:
+        GlobalDictTarget.store.sink_exception_after_apply = False
+    assert GlobalDictTarget.store.data == {
+        "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
+
+    # Run 2: "a" is no longer declared. Its delete must reach the sink.
+    del _source_data["a"]
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "delete": 1}

@@ -30,7 +30,7 @@ import os
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import instructor
 import litellm
@@ -189,7 +189,10 @@ Return only what is supported by the text. Use full names where available.
 @coco.fn(memo=True)
 async def extract_meeting(section_text: str) -> ExtractedMeeting:
     """Extract a structured Meeting from a Markdown section via LiteLLM + instructor."""
-    client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
+    client = cast(
+        instructor.AsyncInstructor,
+        instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON),
+    )
     result = await client.chat.completions.create(
         model=coco.use_context(LLM_MODEL),
         response_model=ExtractedMeeting,

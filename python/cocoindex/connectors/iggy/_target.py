@@ -9,7 +9,7 @@ This module provides a two-level target state system for Iggy:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Collection, Generic, NamedTuple, Sequence
+from typing import Callable, Collection, Generic, Mapping, NamedTuple, Sequence
 
 try:
     from apache_iggy import IggyClient  # type: ignore[import-not-found]
@@ -23,7 +23,6 @@ except ImportError as e:
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import TypeChecker
-from cocoindex._internal.target_state import AsyncTargetActionSinkFn
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes, fingerprint_str
 
 # --- Type aliases ---
@@ -78,7 +77,7 @@ class _MessageHandler(coco.TargetHandler[bytes | str, _MessageFingerprint, None]
     _stream: str
     _partition: int
     _deletion_value_fn: Callable[[bytes | str], bytes | str] | None
-    _sink: coco.TargetActionSink[_MessageAction, None]
+    _sink: coco.TargetActionSink[_MessageAction]
 
     def __init__(
         self,
@@ -162,35 +161,33 @@ class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
 
     __slots__ = ("_sink",)
 
-    _sink: coco.TargetActionSink[_TopicAction, _MessageHandler]
+    _sink: coco.TargetActionSink[_TopicAction]
 
     def __init__(self) -> None:
-        sink_fn: AsyncTargetActionSinkFn[_TopicAction, _MessageHandler] = (
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
             self._apply_actions
         )
-        self._sink = coco.TargetActionSink.from_async_fn(sink_fn)
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TopicAction],
+        child_slots: Mapping[int, coco.ChildSlot[_MessageHandler]],
         /,
-    ) -> list[coco.ChildTargetDef[_MessageHandler] | None]:
-        outputs: list[coco.ChildTargetDef[_MessageHandler] | None] = []
-        for action in actions:
+    ) -> None:
+        for i, action in enumerate(actions):
             if coco.is_non_existence(action.spec):
-                outputs.append(None)
-            else:
-                client = context_provider.get(action.key.client_key, IggyClient)
-                handler = _MessageHandler(
+                continue
+            client = context_provider.get(action.key.client_key, IggyClient)
+            child_slots[i].fulfill(
+                _MessageHandler(
                     client=client,
                     topic=action.key.topic,
                     stream=action.key.stream,
                     partition=action.key.partition,
                     deletion_value_fn=action.spec.deletion_value_fn,
                 )
-                outputs.append(coco.ChildTargetDef(handler=handler))
-        return outputs
+            )
 
     def reconcile(
         self,

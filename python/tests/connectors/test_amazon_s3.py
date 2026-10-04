@@ -183,6 +183,24 @@ class TestS3File:
         f = await amazon_s3.get_object(client, bucket_name, "data/nested.json")
         assert await f.read() == b'{"key": "value"}'
 
+    async def test_partial_read_zero_bytes(self, s3_client: tuple[Any, str]) -> None:
+        client, bucket_name = s3_client
+        f = await amazon_s3.get_object(client, bucket_name, "file1.txt")
+
+        assert await f.read(0) == b""
+        assert await f.read(2) == b"he"
+        assert await f.read() == b"hello"
+
+    async def test_partial_read_empty_object(self, s3_client: tuple[Any, str]) -> None:
+        client, bucket_name = s3_client
+        boto3.client("s3", region_name="us-east-1").put_object(
+            Bucket=bucket_name, Key="empty.bin", Body=b""
+        )
+        f = await amazon_s3.get_object(client, bucket_name, "empty.bin")
+
+        assert await f.read(2) == b""
+        assert await f.read() == b""
+
     async def test_read_text(self, s3_client: tuple[Any, str]) -> None:
         """await read_text() returns file content as text."""
         client, bucket_name = s3_client

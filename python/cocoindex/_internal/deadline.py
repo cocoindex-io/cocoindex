@@ -150,7 +150,8 @@ async def retry_transient(
     - Time limits are deadlines, and there is exactly one time concept:
       ``timeout`` is sugar for running the loop inside a
       ``coco.timeout(...)`` scope, merging with any ambient deadline by
-      min-nesting. Expiry raises ``DeadlineExceededError``.
+      min-nesting. Expiry raises ``DeadlineExceededError``, which is never
+      retried however broad ``retry_on`` is.
 
     Deadline enforcement is best-effort-or-better: no attempt starts past
     the deadline, no result is accepted past it (checked after each attempt
@@ -207,6 +208,11 @@ async def retry_transient(
                 # Deliberately Exception, not BaseException: cancellation,
                 # KeyboardInterrupt, and SystemExit always propagate
                 # untouched, regardless of how broad retry_on is.
+                if isinstance(error, DeadlineExceededError):
+                    # The loop never retries its own brake: a broad retry_on
+                    # would otherwise spend the rest of the budget re-running
+                    # work whose deadline has already passed.
+                    raise
                 if not _should_retry(retry_on, error):
                     raise
                 last_error = error

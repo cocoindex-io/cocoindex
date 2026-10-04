@@ -32,6 +32,7 @@ from typing import (
     Generic,
     Iterator,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -626,14 +627,12 @@ class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
 
     _db_key: str
     _collection_name: str
-    _sink: coco.TargetActionSink[_DocAction, None]
+    _sink: coco.TargetActionSink[_DocAction]
 
     def __init__(self, db_key: str, collection_name: str) -> None:
         self._db_key = db_key
         self._collection_name = collection_name
-        self._sink = coco.TargetActionSink[_DocAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_DocAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_DocAction]
@@ -762,19 +761,19 @@ class _CollectionAction(NamedTuple):
 
 
 def _apply_collection_actions(
-    context_provider: ContextProvider, actions: Sequence[_CollectionAction]
-) -> list[coco.ChildTargetDef[_DocHandler] | None]:
-    actions_list = list(actions)
-    outputs: list[coco.ChildTargetDef[_DocHandler] | None] = [None] * len(actions_list)
-
+    context_provider: ContextProvider,
+    actions: Sequence[_CollectionAction],
+    child_slots: Mapping[int, coco.ChildSlot[_DocHandler]],
+    /,
+) -> None:
     by_key: dict[_CollectionKey, list[int]] = {}
-    for i, action in enumerate(actions_list):
+    for i, action in enumerate(actions):
         by_key.setdefault(action.key, []).append(i)
 
     for key, idxs in by_key.items():
         conn = context_provider.get(key.db_key, ManagedConnection)
         for i in idxs:
-            action = actions_list[i]
+            action = actions[i]
 
             # A non-None main action implies a system-managed collection
             # (resolve_system_transition yields None for user-managed ones).
@@ -782,13 +781,10 @@ def _apply_collection_actions(
                 conn.destroy(key.collection_name)
 
             if coco.is_non_existence(action.spec):
-                outputs[i] = None
                 continue
 
             spec = action.spec
-            outputs[i] = coco.ChildTargetDef(
-                handler=_DocHandler(key.db_key, key.collection_name)
-            )
+            child_slots[i].fulfill(_DocHandler(key.db_key, key.collection_name))
 
             if action.main_action in ("insert", "upsert", "replace"):
                 conn.open_or_create(
@@ -796,12 +792,10 @@ def _apply_collection_actions(
                     _build_zvec_schema(key.collection_name, spec.schema),
                 )
 
-    return outputs
 
-
-_collection_action_sink = coco.TargetActionSink[_CollectionAction, _DocHandler].from_fn(
-    _apply_collection_actions
-)
+_collection_action_sink = coco.TargetActionSink[
+    _CollectionAction
+].from_fn_with_children(_apply_collection_actions)
 
 
 class _CollectionHandler(

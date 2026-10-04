@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy PDF 
 
 ## Flow overview
 
-![CocoIndex flow: walk a folder of PDF manuals, convert each to Markdown with docling, LLM-extract a typed ModuleInfo, and store a row per manual in Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/manuals-llm-extraction/flow-v1.png)
+![CocoIndex flow: walk a folder of PDF manuals, convert each to Markdown with docling, LLM-extract a typed ModuleInfo, and store a row per manual in Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/manuals-llm-extraction/flow-v1.svg)
 
 Per manual, two transforms and a row:
 

@@ -144,6 +144,29 @@ ExceptionHandler = Callable[
 ]
 ```
 
+### What `exc` is
+
+Handlers receive the same exception object that a foreground call such as `await coco.use_mount(...)` would raise for the same failure:
+
+- **Python-originated failures** (your component, or a target connector, raised) arrive as the original exception. `type(exc)` is what was raised, `exc.__traceback__` is intact, and `exc.__cause__` / `exc.__context__` are preserved. Route by type with `isinstance`; render the traceback with `traceback.format_exception(exc)` or `logger.error(..., exc_info=exc)`.
+- **Engine-native failures** map to Python types: client-side misuse becomes `ValueError`, cooperative deadline expiry becomes `coco.DeadlineExceededError`, and internal engine errors become `RuntimeError`. The engine never delivers cancellation of the component itself to handlers.
+
+An exception raised by a handler keeps its type as well: `await handle.ready()` raises exactly what the last handler in the chain raised, so `except MyDeadLetterError:` or `except coco.DeadlineExceededError:` work as expected on the awaiting side.
+
+Earlier releases handed every component failure to handlers as a `RuntimeError` whose message embedded the formatted traceback, and re-wrapped handler-raised exceptions the same way. A handler that checked `isinstance(exc, RuntimeError)` or parsed `str(exc)` for the traceback should switch to the checks above.
+
+```python
+import traceback
+
+def on_error(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+    if isinstance(exc, ConnectionError):
+        schedule_retry(ctx.stable_path)  # transient: swallow, retry later
+    elif isinstance(exc, ValueError):
+        dead_letter(ctx.stable_path, "".join(traceback.format_exception(exc)))
+    else:
+        raise exc  # propagate through handle.ready()
+```
+
 ### `ExceptionContext` fields
 
 Your handler receives an `ExceptionContext` dataclass with information about the failure:
@@ -165,7 +188,7 @@ Handlers are stacked: the most specific (innermost) handler runs first.
 
 If the innermost handler raises an exception, the next outer handler is called with that new exception. In this case `ctx.source` is `"handler"` and `ctx.original_exception` holds the original component error.
 
-This continues up the stack. If all handlers raise (or no handler is registered), CocoIndex falls back to the built-in behavior: logging the error at `ERROR` level, with no crash.
+This continues up the stack. If every handler raises, the last handler's exception propagates through `handle.ready()` (see [How to opt into propagation](#how-to-opt-into-propagation)). If no handler is registered, CocoIndex falls back to the built-in behavior: logging the error at `ERROR` level, with no crash.
 
 ```python
 @coco.lifespan

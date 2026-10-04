@@ -16,7 +16,7 @@ If you haven't read the base example yet, start there — it walks through the c
 
 ## Flow overview
 
-![CocoIndex Amazon S3 embedding flow: list Markdown objects from a bucket, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/amazon-s3-embedding/flow-v1.png)
+![CocoIndex Amazon S3 embedding flow: list Markdown objects from a bucket, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/amazon-s3-embedding/flow-v1.svg)
 
 From a high level, these are the steps:
 

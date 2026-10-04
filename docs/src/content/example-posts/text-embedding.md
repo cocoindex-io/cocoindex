@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex text embedding flow: read Markdown, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/flow-v1.png)
+![CocoIndex text embedding flow: read Markdown, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -97,7 +97,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process a file
 
-![One processing component per file: each file is chunked and embedded, producing DocEmbedding rows written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/stage-file-process.png)
+![One processing component per file: each file is chunked and embedded, producing DocEmbedding rows written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/stage-file-process.svg)
 
 `process_file` runs once per file. It reads the file, [splits the text](https://cocoindex.io/docs/ops/text/) into overlapping chunks, and maps each chunk to `process_chunk`.
 
@@ -147,7 +147,7 @@ We use [`SentenceTransformerEmbedder`](https://cocoindex.io/docs/ops/sentence_tr
 
 ## Define the main function
 
-![mount_each fans out one processing component per file, from the Markdown source to the Postgres target](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/stage-main-function.png)
+![mount_each fans out one processing component per file, from the Markdown source to the Postgres target](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/stage-main-function.svg)
 
 `app_main` wires the source to the target. It mounts the Postgres table (with a [vector index](https://cocoindex.io/docs/common_resources/vector_schema/)), walks the source directory, and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file.
 
@@ -176,7 +176,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
 
 ## Create the App
 
-![A CocoIndex App binds the source, the transform, and the target state into one runnable unit](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/stage-create-app.png)
+![A CocoIndex App binds the source, the transform, and the target state into one runnable unit](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/stage-create-app.svg)
 
 Bind `app_main` into a `coco.App` and point it at the folder of Markdown files.
 

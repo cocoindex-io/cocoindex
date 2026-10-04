@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python. Kafka is just a [source](https://
 
 ## Flow overview
 
-![CocoIndex Kafka → LanceDB flow: subscribe a topic as a keyed map, run one process_message component per message that parses the JSON and dispatches by shape, and declare each row on the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/flow-v1.png)
+![CocoIndex Kafka → LanceDB flow: subscribe a topic as a keyed map, run one process_message component per message that parses the JSON and dispatches by shape, and declare each row on the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -86,7 +86,7 @@ The dataclass *is* the schema. When we mount the table below, [`TableSchema.from
 
 ## Process a message
 
-![One process_message component per Kafka message, fanned out with mount_each: each message is parsed and dispatched by shape to the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/stage-file-process.png)
+![One process_message component per Kafka message, fanned out with mount_each: each message is parsed and dispatched by shape to the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/stage-file-process.svg)
 
 `process_message` runs once per message. It decodes the value, parses the JSON, and dispatches on shape — declaring a typed row on whichever table matches:
 

@@ -102,7 +102,7 @@ async def _drop_table(
 # Module-scoped: start the container once, share the DSN across all tests.
 @pytest.fixture(scope="module")
 def pg_dsn() -> Any:
-    from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
+    from testcontainers.community.postgres import PostgresContainer  # type: ignore[import-untyped]
 
     with PostgresContainer("postgres:16-alpine") as pg:
         dsn = pg.get_connection_url()

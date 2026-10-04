@@ -27,16 +27,18 @@ The `LiteLLMEmbedder` class is a wrapper around LiteLLM's embedding API that:
 - Implements `VectorSchemaProvider` for seamless integration with CocoIndex connectors
 - Supports 100+ embedding providers (OpenAI, Azure, Vertex AI, Cohere, Bedrock, etc.) through a unified API
 - Provides a simple async `embed()` method
-- Passes through all additional arguments to the LiteLLM embedding API
+- Passes through all additional arguments to the LiteLLM embedding API, except `timeout` and `max_inflight_requests`, which CocoIndex owns
 - Returns properly typed numpy arrays
 
 ## Basic usage
 
 ### Creating an embedder
 
-All extra keyword arguments are passed through to every `litellm.aembedding` call. See [Supported providers](#supported-providers) for provider-specific model strings and configuration.
+All extra keyword arguments are passed through to every `litellm.aembedding` call (`api_key`, `api_base`, `dimensions`, …) — except `timeout` and `max_inflight_requests`, which are CocoIndex's own knobs (see [Timeout](#timeout) and [Limiting concurrent requests](#limiting-concurrent-requests)). See [Supported providers](#supported-providers) for provider-specific model strings and configuration.
 
 ```python
+from datetime import timedelta
+
 from cocoindex.ops.litellm import LiteLLMEmbedder
 
 embedder = LiteLLMEmbedder("text-embedding-3-small")
@@ -47,8 +49,11 @@ embedder = LiteLLMEmbedder("text-embedding-3-small", api_key="sk-...", api_base=
 # With custom dimensions (OpenAI text-embedding-3 models)
 embedder = LiteLLMEmbedder("text-embedding-3-small", dimensions=512)
 
-# With a timeout (seconds)
-embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=30)
+# With a cap on concurrent requests to the backend
+embedder = LiteLLMEmbedder("text-embedding-3-small", max_inflight_requests=8)
+
+# With a longer timeout, for a slow self-hosted endpoint
+embedder = LiteLLMEmbedder("openai/bge-m3", api_base="http://localhost:7997", timeout=timedelta(minutes=30))
 ```
 
 ### Embedding text
@@ -62,6 +67,26 @@ embedding = await embedder.embed("Hello, world!")
 # Use the embedding in a dataclass row, store in a vector database, etc.
 table.declare_row(row=DocEmbedding(text="Hello, world!", embedding=embedding))
 ```
+
+### Limiting concurrent requests
+
+Concurrent `embed()` calls are batched: CocoIndex groups them into requests of
+up to 64 texts each, and sends as many such requests in parallel as there is
+work queued. `max_inflight_requests` caps how many requests this embedder keeps
+open against the backend at once — useful for a self-hosted endpoint (Infinity,
+TEI, Ollama, vLLM, …) that rejects bursts with 429s:
+
+```python
+embedder = LiteLLMEmbedder(
+    "openai/bge-m3",
+    api_base="http://localhost:7997",
+    max_inflight_requests=8,
+)
+```
+
+The default is `None` (no cap). The cap is per embedder instance: two
+embedders pointed at the same endpoint have independent limits, so share one
+instance when you want one limit.
 
 ### Using as a type annotation
 
@@ -107,9 +132,11 @@ The `LiteLLMTranscriber` class is a wrapper around LiteLLM's transcription API t
 
 ### Creating a transcriber
 
-All extra keyword arguments are passed through to every `litellm.atranscription` call (e.g., `api_key`, `api_base`, `language`, `extra_body`).
+All extra keyword arguments are passed through to every `litellm.atranscription` call (`api_key`, `api_base`, `language`, `extra_body`, …) — except `timeout`, which is CocoIndex's own bound on the whole request (see [Timeout](#timeout)).
 
 ```python
+from datetime import timedelta
+
 from cocoindex.ops.litellm import LiteLLMTranscriber
 
 transcriber = LiteLLMTranscriber("whisper-1")
@@ -119,11 +146,14 @@ transcriber = LiteLLMTranscriber("whisper-1", api_key="sk-...")
 
 # With a default language hint applied to every call
 transcriber = LiteLLMTranscriber("whisper-1", language="en")
+
+# With a longer timeout, for long audio or a slow endpoint
+transcriber = LiteLLMTranscriber("whisper-1", timeout=timedelta(minutes=30))
 ```
 
 ### Transcribing audio
 
-The `transcribe()` method takes a `FileLike` object (such as a `localfs.File`) containing audio data and returns the transcribed text as a `str`. It's an async method — use `await` when calling it. Per-call keyword arguments override the defaults provided at construction time:
+The `transcribe()` method takes a `FileLike` object (such as a `localfs.File`) containing audio data and returns the transcribed text as a `str`. It's an async method — use `await` when calling it. Per-call keyword arguments override the defaults provided at construction time — except `timeout`, which is settable only on the constructor (see [Timeout](#timeout)):
 
 ```python
 # In a CocoIndex function, `file` is a FileLike (e.g. localfs.File)
@@ -146,6 +176,50 @@ A complete pipeline that walks local audio files, transcribes each one, and stor
 | Groq Whisper Large V3 | `groq/whisper-large-v3` | `GROQ_API_KEY` |
 
 See the [LiteLLM audio transcription docs](https://docs.litellm.ai/docs/audio_transcription) for the full list of providers and model strings.
+
+## Shared behavior
+
+`LiteLLMEmbedder` and `LiteLLMTranscriber` reach their providers the same way: one retry loop, one clock, one memoization contract. Everything in this section applies to both.
+
+### Timeout
+
+`timeout` bounds each request end to end; the default is 10 minutes. Transient failures — HTTP 429, 5xx, a dropped connection, and [others below](#retries) — are retried with backoff inside that window; a request that times out fails with `DeadlineExceededError` and is not retried. It takes a `timedelta`, or seconds as a number.
+
+```python
+embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=timedelta(minutes=30))
+transcriber = LiteLLMTranscriber("whisper-1", timeout=timedelta(minutes=30))
+```
+
+`timeout` is CocoIndex's own clock and the only one on the request — litellm's per-request `timeout` is not forwarded. What to size it against is where the two differ:
+
+- **Embedding** — one request carries up to 64 texts, so raise it for an endpoint that needs longer than the default to embed a full batch.
+- **Transcription** — one request carries one whole audio file, so size it against the longest file you expect. It is settable only on the constructor: passing `timeout` to `transcribe()`, alongside the per-call provider arguments, raises `TypeError`.
+
+### Retries
+
+Within the `timeout` window a failed request is retried with exponential backoff — 1s, doubling, capped at 30s. There is no attempt cap; time is the only brake.
+
+| Failure | Retried? |
+| --- | --- |
+| HTTP 408, 409, 425, 429, or any 5xx | Yes |
+| A refused, reset, or dropped connection | Yes |
+| A timeout — CocoIndex's, litellm's, or the HTTP client's | No — terminal |
+| Bad credentials, unknown model, permission denied | No — terminal |
+
+The 408 row and the timeout row look contradictory and aren't: an HTTP 408 *response* arrives quickly, so nothing has spent the budget, while a timeout we observed ourselves has by definition already spent its duration. Retrying that inside the request's own bound just re-spends what is left, and against an overloaded backend it amplifies the load that caused it. The remedy for a genuine timeout is a longer `timeout`, not more requests.
+
+A surrounding [`coco.timeout()`](../advanced_topics/timeouts) merges with this one by taking whichever is shorter, so it can only cut retries short — raising `timeout` is the only way to give a request longer.
+
+### Memoization
+
+`embed()` and `transcribe()` are both memoized (`memo=True`): inside a processing component, each distinct input's result is cached across that component's runs, so a caller that re-executes doesn't re-pay the API call for unchanged input. `timeout` and `max_inflight_requests` are deliberately absent from the memo key — they bound and pace requests but cannot change a result, so retuning them invalidates nothing.
+
+Mind the [memoization placement rule](../programming_guide/function#when-to-memoize); it lands differently on the two:
+
+- **Embedding** — the memo holds one full vector per distinct text. That is what makes the common per-file-component pattern incremental, but it is redundant when your components are already keyed by the embedded content.
+- **Transcription** — the memo holds one transcript per file: small entries standing in for an expensive call, which is the opposite trade from embedding. It hits whenever the enclosing component re-runs for a reason other than the audio changing — its code edited, its `version` bumped, another of its inputs changed — so it is usually worth keeping even in the per-file-component pattern, where an unchanged file skips the component entirely.
+
+Callsite control over an op's memoization is tracked in [#2275](https://github.com/cocoindex-io/cocoindex/issues/2275).
 
 ## Supported providers
 

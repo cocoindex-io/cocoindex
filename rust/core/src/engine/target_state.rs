@@ -11,26 +11,116 @@ use crate::{
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use std::{
     collections::HashMap,
+    future::Future,
     hash::{Hash, Hasher},
+    ops::Range,
 };
 
-pub struct ChildTargetDef<Prof: EngineProfile> {
-    pub handler: Prof::TargetHdl,
+enum ChildTargetSlotState<H> {
+    Pending,
+    Fulfilled(H),
+    Consumed,
 }
+
+/// Fulfillment handle for the child target provider of one action.
+///
+/// The engine mints one slot per action whose target state was declared with
+/// `declare_target_state_with_child`, hands it to the sink alongside the action,
+/// and reads the handler back (via [`Self::take`]) once the sink call returns.
+/// A slot is fulfilled at most once per sink call; fulfilling it after the
+/// engine has read it back is an error too, so a sink that stashes a slot for
+/// later is caught. When a failed batch is re-applied in smaller batches, the
+/// slots of the re-applied actions are [reset](Self::reset) first.
+///
+/// Clones share one state: the engine keeps one clone, the sink gets the other.
+pub struct ChildTargetSlot<Prof: EngineProfile> {
+    state: Arc<Mutex<ChildTargetSlotState<Prof::TargetHdl>>>,
+}
+
+impl<Prof: EngineProfile> Clone for ChildTargetSlot<Prof> {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+}
+
+impl<Prof: EngineProfile> ChildTargetSlot<Prof> {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ChildTargetSlotState::Pending)),
+        }
+    }
+
+    /// Provide the handler for the child target states under this action.
+    pub fn fulfill(&self, handler: Prof::TargetHdl) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        match &*state {
+            ChildTargetSlotState::Pending => {
+                *state = ChildTargetSlotState::Fulfilled(handler);
+                Ok(())
+            }
+            ChildTargetSlotState::Fulfilled(_) => {
+                client_bail!("child target slot fulfilled more than once")
+            }
+            ChildTargetSlotState::Consumed => {
+                client_bail!("child target slot fulfilled after its sink call returned")
+            }
+        }
+    }
+
+    /// Forget a fulfillment from a failed sink call, so the action can be
+    /// applied again. Only the runner calls this, between attempts of one
+    /// batch; the engine reads the slot back only after the last attempt.
+    fn reset(&self) {
+        *self.state.lock().unwrap() = ChildTargetSlotState::Pending;
+    }
+
+    /// Take the handler out; `None` if the slot was never fulfilled. Consumes
+    /// the slot: a later `fulfill` fails, and a second `take` is an internal
+    /// error.
+    pub fn take(&self) -> Result<Option<Prof::TargetHdl>> {
+        let mut state = self.state.lock().unwrap();
+        match std::mem::replace(&mut *state, ChildTargetSlotState::Consumed) {
+            ChildTargetSlotState::Pending => Ok(None),
+            ChildTargetSlotState::Fulfilled(handler) => Ok(Some(handler)),
+            ChildTargetSlotState::Consumed => {
+                Err(internal_error!("child target slot taken more than once"))
+            }
+        }
+    }
+}
+
+/// One action for a sink call, with the slot for its child target provider
+/// when the declaring call was `declare_target_state_with_child`.
+pub type TargetActionWithChildSlot<Prof> = (
+    <Prof as EngineProfile>::TargetAction,
+    Option<ChildTargetSlot<Prof>>,
+);
 
 #[async_trait]
 pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    /// Run the logic to apply the action.
+    /// Apply `actions` to the external system as one unit. Every child slot
+    /// handed over must be fulfilled before this returns; the engine reads
+    /// them back afterwards.
+    ///
+    /// One call may carry the actions of several processing components: the
+    /// engine merges the actions of components that finish while an earlier
+    /// call is in flight. When a call fails, the engine re-applies subsets of
+    /// the same actions (with their child slots reset) to isolate the failure,
+    /// so an implementation must tolerate seeing actions of a failed call
+    /// again — which idempotent actions do by construction. The actions are
+    /// borrowed for that reason: the engine keeps them for the retry.
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     async fn apply(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        actions: Vec<Prof::TargetAction>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
+        actions: &[TargetActionWithChildSlot<Prof>],
+    ) -> Result<()>;
 }
 
 /// Cloneable handle to a target action sink and its per-sink batcher.
@@ -61,11 +151,13 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        actions: Vec<Prof::TargetAction>,
-    ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>> {
+        actions: Vec<TargetActionWithChildSlot<Prof>>,
+    ) -> Result<()> {
         if actions.is_empty() {
-            return Ok(None);
+            return Ok(());
         }
+        // The outer `Result` is the batcher's own failure (e.g. cancellation);
+        // the inner one is this input's outcome from the sink.
         self.inner
             .batcher
             .run(TargetActionRunnerInput {
@@ -73,7 +165,27 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
                 host_ctx,
                 actions,
             })
-            .await
+            .await?
+    }
+
+    pub fn downgrade(&self) -> WeakTargetActionSinkKeeper<Prof> {
+        WeakTargetActionSinkKeeper {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+}
+
+/// Weak counterpart of [`TargetActionSinkKeeper`], for registries that intern
+/// keepers without keeping an otherwise-idle sink (and its batcher) alive.
+pub struct WeakTargetActionSinkKeeper<Prof: EngineProfile> {
+    inner: std::sync::Weak<TargetActionSinkKeeperInner<Prof>>,
+}
+
+impl<Prof: EngineProfile> WeakTargetActionSinkKeeper<Prof> {
+    pub fn upgrade(&self) -> Option<TargetActionSinkKeeper<Prof>> {
+        self.inner
+            .upgrade()
+            .map(|inner| TargetActionSinkKeeper { inner })
     }
 }
 
@@ -94,7 +206,7 @@ impl<Prof: EngineProfile> Hash for TargetActionSinkKeeper<Prof> {
 struct TargetActionRunnerInput<Prof: EngineProfile> {
     host_runtime_ctx: Prof::HostRuntimeCtx,
     host_ctx: Arc<Prof::HostCtx>,
-    actions: Vec<Prof::TargetAction>,
+    actions: Vec<TargetActionWithChildSlot<Prof>>,
 }
 
 struct TargetActionRunnerContext<Prof: EngineProfile> {
@@ -118,6 +230,9 @@ impl<Prof: EngineProfile> Hash for TargetActionRunnerContext<Prof> {
     }
 }
 
+/// Runs a sink's batches. Each input is one processing component's reconciled
+/// actions for the sink; the batcher merges the inputs of components that
+/// finish while an earlier batch is in flight.
 struct TargetActionRunner<Prof: EngineProfile> {
     sink: Arc<Prof::TargetActionSink>,
 }
@@ -125,20 +240,21 @@ struct TargetActionRunner<Prof: EngineProfile> {
 #[async_trait]
 impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
     type Input = TargetActionRunnerInput<Prof>;
-    type Output = Option<Vec<Option<ChildTargetDef<Prof>>>>;
+    /// Per-input outcome. Merging inputs into one sink call is an
+    /// optimization that must not couple their fates, so a failure is
+    /// reported per input rather than as a batch-level `Err`, which the
+    /// batcher would fan out to every input of the batch.
+    type Output = Result<()>;
 
     async fn run(
         &self,
         inputs: Vec<Self::Input>,
     ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
         let num_inputs = inputs.len();
-        if num_inputs == 0 {
-            return Ok(Vec::new().into_iter());
-        }
-
-        let mut groups =
-            HashMap::<TargetActionRunnerContext<Prof>, Vec<(usize, Vec<Prof::TargetAction>)>>::new(
-            );
+        let mut groups = HashMap::<
+            TargetActionRunnerContext<Prof>,
+            Vec<(usize, Vec<TargetActionWithChildSlot<Prof>>)>,
+        >::new();
         for (input_idx, input) in inputs.into_iter().enumerate() {
             let context = TargetActionRunnerContext {
                 host_runtime_ctx: input.host_runtime_ctx,
@@ -150,44 +266,123 @@ impl<Prof: EngineProfile> Runner for TargetActionRunner<Prof> {
                 .push((input_idx, input.actions));
         }
 
-        let mut outputs: Vec<Option<Vec<Option<ChildTargetDef<Prof>>>>> =
+        let mut outputs: Vec<Option<Self::Output>> =
             std::iter::repeat_with(|| None).take(num_inputs).collect();
         for (context, inputs) in groups {
+            // The sink wants one flat action list per compatible host
+            // context. Remember each input's range within it so a failed
+            // call can be retried along input boundaries.
             let mut actions = Vec::new();
-            let mut action_counts = Vec::with_capacity(inputs.len());
             let mut input_indexes = Vec::with_capacity(inputs.len());
-
-            // Each input is one component's reconciled actions; the sink wants
-            // one flat action list per compatible host context.
+            let mut spans = Vec::with_capacity(inputs.len());
             for (input_idx, mut input_actions) in inputs {
-                input_indexes.push(input_idx);
-                action_counts.push(input_actions.len());
+                let start = actions.len();
                 actions.append(&mut input_actions);
+                input_indexes.push(input_idx);
+                spans.push(start..actions.len());
             }
 
-            let actions_len = actions.len();
-            let Some(handlers) = self
-                .sink
-                .apply(&context.host_runtime_ctx, context.host_ctx, actions)
-                .await?
-            else {
-                continue;
-            };
-            if handlers.len() != actions_len {
-                client_bail!(
-                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                    actions_len,
-                    handlers.len(),
-                );
-            }
-            let mut handlers = handlers.into_iter();
-            for (input_idx, count) in std::iter::zip(input_indexes, action_counts) {
-                outputs[input_idx] = Some(handlers.by_ref().take(count).collect());
+            let results = apply_isolating_failures(&spans, |range| {
+                // A retry re-applies actions whose slots the failed call may
+                // have fulfilled already; the last attempt's fulfillment is
+                // the one the engine reads back.
+                for (_, slot) in &actions[range.clone()] {
+                    if let Some(slot) = slot {
+                        slot.reset();
+                    }
+                }
+                self.sink.apply(
+                    &context.host_runtime_ctx,
+                    Arc::clone(&context.host_ctx),
+                    &actions[range],
+                )
+            })
+            .await;
+            for (input_idx, result) in std::iter::zip(input_indexes, results) {
+                outputs[input_idx] = Some(result);
             }
         }
 
-        Ok(outputs.into_iter())
+        Ok(outputs
+            .into_iter()
+            .map(|output| output.expect("every input is assigned an outcome")))
     }
+}
+
+/// Apply a batch merged from several components through `apply`, confining a
+/// failure to the components it belongs to.
+///
+/// `spans` locates each component's actions within one flat action list:
+/// contiguous, in component order. `apply(range)` makes one sink call over
+/// the actions in `range`.
+///
+/// The whole batch is applied first, so the happy path costs the single sink
+/// call it always did. When that call fails and the batch spans more than one
+/// component, the batch is bisected along component boundaries — never inside
+/// a component, whose actions stay one atomic unit — and each half is
+/// re-applied, recursively. A sub-batch's error thus reaches only the
+/// components in it, and a component that still fails on its own gets its own
+/// error. Worst case (every component failing) costs `2n - 1` sink calls for
+/// `n` components; a single bad component costs about `2·log2(n)`.
+///
+/// Cancellation and deadline errors are not caused by any particular
+/// component, so they are reported to every component of the failed batch
+/// without retrying.
+async fn apply_isolating_failures<Fut>(
+    spans: &[Range<usize>],
+    apply: impl Fn(Range<usize>) -> Fut,
+) -> Vec<Result<()>>
+where
+    Fut: Future<Output = Result<()>>,
+{
+    let mut results = Vec::with_capacity(spans.len());
+    // Sub-batches still to apply, as index ranges over `spans`. The second
+    // half of a split is pushed first, so sub-batches complete in component
+    // order and each one's results are simply appended.
+    let mut pending = vec![0..spans.len()];
+    while let Some(sub) = pending.pop() {
+        debug_assert_eq!(results.len(), sub.start);
+        let sub_spans = &spans[sub.clone()];
+        let Some(action_range) = sub_spans
+            .first()
+            .zip(sub_spans.last())
+            .map(|(first, last)| first.start..last.end)
+        else {
+            continue;
+        };
+        let err = match apply(action_range).await {
+            Ok(()) => {
+                results.extend(sub_spans.iter().map(|_| Ok(())));
+                continue;
+            }
+            Err(err) => {
+                if sub.len() > 1 && !err.is_cancelled() && !err.is_deadline_exceeded() {
+                    if sub.len() == spans.len() {
+                        warn!(
+                            "Target action sink failed on a batch merged from {} components; \
+                             retrying in smaller batches to isolate the failure: {err}",
+                            sub.len()
+                        );
+                    } else {
+                        debug!(
+                            "Retrying {} of the merged components in smaller batches: {err}",
+                            sub.len()
+                        );
+                    }
+                    let mid = sub.start + sub.len() / 2;
+                    pending.push(mid..sub.end);
+                    pending.push(sub.start..mid);
+                    continue;
+                }
+                err
+            }
+        };
+        // Every component of this sub-batch gets the error: a replica for
+        // all but one, the original for the last.
+        results.extend((1..sub_spans.len()).map(|_| Err(err.replica())));
+        results.push(Err(err));
+    }
+    results
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,13 +405,15 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     /// `desired_target_state` is borrowed (not owned) because the engine
     /// holds it under a short-lived `tokio::sync::MutexGuard` for the
     /// duration of this call — see the lock-scoped call site in
-    /// `submit()`'s `pre_commit`. Borrowing here lets the host-specific
-    /// implementation decide whether (and how) to clone:
+    /// `submit()`'s `pre_commit` — and may call again for the same value
+    /// when the pre-commit is retried. Borrowing here lets the host-specific
+    /// implementation decide whether (and how) to materialize it:
     ///
     /// * Native Rust profile (`Value: Clone`): typically `value.clone()`
     ///   when constructing the `Action`.
-    /// * Python profile (`Py<PyAny>: !Clone`): `value.clone_ref(py)`
-    ///   under the GIL.
+    /// * Python profile: the value is held encoded where it is plain data,
+    ///   decoded for each call, and the returned action is held encoded in
+    ///   turn (`rust/py/src/target_state_codec.rs`).
     ///
     /// Avoids forcing every call site to round-trip through an
     /// engine-level `clone_target_state_value` even when the impl
@@ -228,6 +425,20 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         prev_possible_records: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
+
+    /// For a handler whose tracking record is a fingerprint of the declared
+    /// value: the serialized tracking record `reconcile` would return for
+    /// `desired_target_state`. The engine then skips `reconcile` for a state
+    /// that is surely present and whose previous records all equal it.
+    ///
+    /// `None` (the default) means `reconcile` must decide — the handler tracks
+    /// something else, or cannot fingerprint this value without `reconcile`.
+    fn value_fingerprint_record(
+        &self,
+        _desired_target_state: &Prof::TargetStateValue,
+    ) -> Result<Option<bytes::Bytes>> {
+        Ok(None)
+    }
 
     /// Return all attachment types this handler supports, keyed by type name.
     /// The engine eagerly registers these as providers so that orphaned
@@ -248,7 +459,6 @@ pub(crate) struct TargetStateProviderInner<Prof: EngineProfile> {
     /// need no persisted segment-name entry.
     backed_by_target_state: bool,
     handler: OnceLock<Prof::TargetHdl>,
-    orphaned: OnceLock<()>,
     provider_generation: OnceLock<TargetStateProviderGeneration>,
     attachments: Mutex<HashMap<Arc<str>, TargetStateProvider<Prof>>>,
 }
@@ -329,10 +539,6 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         }
     }
 
-    pub fn is_orphaned(&self) -> bool {
-        self.inner.orphaned.get().is_some()
-    }
-
     pub fn provider_generation(&self) -> Option<&TargetStateProviderGeneration> {
         self.inner.provider_generation.get()
     }
@@ -374,7 +580,6 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                     target_state_path: target_state_path.clone(),
                     backed_by_target_state: false,
                     handler: OnceLock::from(att_handler),
-                    orphaned: OnceLock::new(),
                     provider_generation: OnceLock::from(provider_generation.clone()),
                     attachments: Mutex::new(HashMap::new()),
                 }),
@@ -428,7 +633,6 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                 target_state_path: target_state_path.clone(),
                 backed_by_target_state: false,
                 handler: OnceLock::from(att_handler),
-                orphaned: OnceLock::new(),
                 provider_generation: OnceLock::from(provider_generation),
                 attachments: Mutex::new(HashMap::new()),
             }),
@@ -493,7 +697,6 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 target_state_path: target_state_path.clone(),
                 backed_by_target_state: false,
                 handler: OnceLock::from(handler),
-                orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
                 attachments: Mutex::new(HashMap::new()),
             }),
@@ -516,12 +719,154 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 target_state_path: target_state_path.clone(),
                 backed_by_target_state: true,
                 handler: OnceLock::new(),
-                orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
                 attachments: Mutex::new(HashMap::new()),
             }),
         };
         self.add(target_state_path, provider.clone())?;
         Ok(provider)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sink stand-in over actions `0..n`: records each call's action range
+    /// and fails a call that includes a poisoned action.
+    struct FakeSink {
+        poisoned: Vec<usize>,
+        calls: Mutex<Vec<Range<usize>>>,
+    }
+
+    impl FakeSink {
+        fn new(poisoned: &[usize]) -> Self {
+            Self {
+                poisoned: poisoned.to_vec(),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn apply(&self, range: Range<usize>) -> Result<()> {
+            self.calls.lock().unwrap().push(range.clone());
+            if let Some(bad) = range.clone().find(|idx| self.poisoned.contains(idx)) {
+                return Err(client_error!("poisoned action {bad}"));
+            }
+            Ok(())
+        }
+
+        fn calls(&self) -> Vec<Range<usize>> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    /// Spans of consecutive components with the given action counts.
+    fn spans(sizes: &[usize]) -> Vec<Range<usize>> {
+        let mut start = 0;
+        sizes
+            .iter()
+            .map(|size| {
+                let span = start..start + size;
+                start += size;
+                span
+            })
+            .collect()
+    }
+
+    /// Per-component outcomes with errors rendered as their message.
+    fn summarize(results: Vec<Result<()>>) -> Vec<std::result::Result<(), String>> {
+        results
+            .into_iter()
+            .map(|result| result.map_err(|err| err.to_string()))
+            .collect()
+    }
+
+    fn poisoned(idx: usize) -> std::result::Result<(), String> {
+        Err(format!("Invalid Request: poisoned action {idx}"))
+    }
+
+    #[tokio::test]
+    async fn success_costs_a_single_call() {
+        let sink = FakeSink::new(&[]);
+        let results = apply_isolating_failures(&spans(&[2, 1, 3]), |r| sink.apply(r)).await;
+        assert_eq!(sink.calls(), vec![0..6]);
+        assert_eq!(summarize(results), vec![Ok(()), Ok(()), Ok(())]);
+    }
+
+    #[tokio::test]
+    async fn failure_is_confined_to_the_poisoned_component() {
+        let sink = FakeSink::new(&[2]);
+        let results = apply_isolating_failures(&spans(&[1, 1, 1, 1]), |r| sink.apply(r)).await;
+        // Whole batch, then bisection down to the poisoned component; the
+        // clean half and the clean sibling are applied once each.
+        assert_eq!(sink.calls(), vec![0..4, 0..2, 2..4, 2..3, 3..4]);
+        assert_eq!(
+            summarize(results),
+            vec![Ok(()), Ok(()), poisoned(2), Ok(())]
+        );
+    }
+
+    #[tokio::test]
+    async fn never_splits_inside_a_component() {
+        let sink = FakeSink::new(&[1]);
+        let results = apply_isolating_failures(&spans(&[3, 2]), |r| sink.apply(r)).await;
+        // The poisoned component's three actions stay one unit: it is retried
+        // whole and fails whole; its sibling still lands.
+        assert_eq!(sink.calls(), vec![0..5, 0..3, 3..5]);
+        assert_eq!(summarize(results), vec![poisoned(1), Ok(())]);
+    }
+
+    #[tokio::test]
+    async fn isolates_poisoned_components_in_both_halves() {
+        let sink = FakeSink::new(&[0, 3]);
+        let results = apply_isolating_failures(&spans(&[1, 1, 1, 1]), |r| sink.apply(r)).await;
+        assert_eq!(sink.calls(), vec![0..4, 0..2, 0..1, 1..2, 2..4, 2..3, 3..4]);
+        assert_eq!(
+            summarize(results),
+            vec![poisoned(0), Ok(()), Ok(()), poisoned(3)]
+        );
+    }
+
+    #[tokio::test]
+    async fn every_component_failing_costs_at_most_two_n_minus_one_calls() {
+        let sink = FakeSink::new(&[0, 1, 2, 3]);
+        let results = apply_isolating_failures(&spans(&[1, 1, 1, 1]), |r| sink.apply(r)).await;
+        assert_eq!(sink.calls().len(), 7);
+        assert_eq!(
+            summarize(results),
+            vec![poisoned(0), poisoned(1), poisoned(2), poisoned(3)]
+        );
+    }
+
+    #[tokio::test]
+    async fn single_component_batch_fails_without_retry() {
+        let sink = FakeSink::new(&[1]);
+        let results = apply_isolating_failures(&spans(&[2]), |r| sink.apply(r)).await;
+        assert_eq!(sink.calls(), vec![0..2]);
+        assert_eq!(summarize(results), vec![poisoned(1)]);
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_deadline_are_not_retried() {
+        for make_error in [
+            utils::error::Error::cancelled as fn() -> utils::error::Error,
+            utils::error::Error::deadline_exceeded,
+        ] {
+            let calls = Mutex::new(Vec::new());
+            let results = apply_isolating_failures(&spans(&[1, 2, 1]), |r| {
+                calls.lock().unwrap().push(r);
+                let err = make_error();
+                async move { Err::<(), _>(err) }
+            })
+            .await;
+            assert_eq!(*calls.lock().unwrap(), vec![0..4]);
+            assert_eq!(results.len(), 3);
+            let probe = make_error();
+            for result in &results {
+                let err = result.as_ref().unwrap_err();
+                assert_eq!(err.is_cancelled(), probe.is_cancelled());
+                assert_eq!(err.is_deadline_exceeded(), probe.is_deadline_exceeded());
+            }
+        }
     }
 }

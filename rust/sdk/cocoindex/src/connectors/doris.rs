@@ -40,7 +40,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -798,9 +798,14 @@ impl TargetHandler<TableSpec> for TableHandler {
                     MutualTrackingRecord::new(table_composite_record(&spec), spec.managed_by);
                 let resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
+                // `insert` / `replace` build the table from the desired schema, so
+                // every column is already correct. `upsert` means the table may or
+                // may not exist: `CREATE TABLE IF NOT EXISTS` can land on a table
+                // carrying the previous column set, so its columns still need
+                // reconciling.
                 let (main_action, column_transitions) = diff_composite(resolved.as_ref());
                 let mut column_actions = BTreeMap::new();
-                if main_action.is_none() {
+                if matches!(main_action, None | Some(DiffAction::Upsert)) {
                     for (sub_key, transition) in &column_transitions {
                         if let Some(action) = diff(Some(transition)) {
                             column_actions.insert(sub_key.clone(), action);
@@ -812,10 +817,9 @@ impl TargetHandler<TableSpec> for TableHandler {
                 // column change other than a pure add → may lose data → lossy.
                 let child_invalidation = if matches!(main_action, Some(DiffAction::Replace)) {
                     Some(TargetChildInvalidation::Destructive)
-                } else if main_action.is_none()
-                    && column_actions
-                        .values()
-                        .any(|a| !matches!(a, DiffAction::Insert))
+                } else if column_actions
+                    .values()
+                    .any(|a| !matches!(a, DiffAction::Insert))
                 {
                     Some(TargetChildInvalidation::Lossy)
                 } else {
@@ -862,28 +866,31 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let conn_key = self.conn_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let conn_key = conn_key.clone();
                 async move {
                     let conn = resolve_conn(&host_ctx, &conn_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         let a = match action {
                             TargetAction::Create(a)
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        out.push(apply_table_action(&conn, &conn_key, a).await?);
+                        let child = apply_table_action(&conn, &conn_key, a).await?;
+                        if let (Some(slot), Some(child)) = (child_slot, child) {
+                            slot.fulfill(child)?;
+                        }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )
     }
 }
 
-/// Apply one resolved table action and return the row child provider (or `None`
-/// for a drop). Mirrors Python's `_apply_table_actions`.
+/// Apply one resolved table action and return the row child handler
+/// definition (`None` for a drop), which the sink uses to fulfill the
+/// action's child slot. Mirrors Python's `_apply_table_actions`.
 async fn apply_table_action(
     conn: &DorisConnection,
     conn_key: &str,
@@ -913,15 +920,17 @@ async fn apply_table_action(
         return Ok(None);
     };
 
-    match main_action {
-        Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace) => {
-            create_table(conn, &spec).await?;
-        }
-        _ => {
-            if !column_actions.is_empty() {
-                apply_column_actions(conn, &spec, &column_actions).await?;
-            }
-        }
+    if matches!(
+        main_action,
+        Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace)
+    ) {
+        // `create_table` uses `IF NOT EXISTS`, so an `upsert` against an
+        // already-present table is a no-op — which is why an `upsert` still
+        // falls through to the column reconcile below.
+        create_table(conn, &spec).await?;
+    }
+    if matches!(main_action, None | Some(DiffAction::Upsert)) && !column_actions.is_empty() {
+        apply_column_actions(conn, &spec, &column_actions).await?;
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {

@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex Entire session search flow: walk a folder of checkpoints, route each file by name through process_file, embed transcripts, prompts, and context summaries, and store the vectors in Postgres with pgvector alongside a metadata table](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/flow-v1.png)
+![CocoIndex Entire session search flow: walk a folder of checkpoints, route each file by name through process_file, embed transcripts, prompts, and context summaries, and store the vectors in Postgres with pgvector alongside a metadata table](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -96,7 +96,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process a file
 
-![One processing component per checkpoint file: process_file routes by filename, embeds transcript, prompt, and context text into the embeddings table, and writes one metadata row](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-file-process.png)
+![One processing component per checkpoint file: process_file routes by filename, embeds transcript, prompt, and context text into the embeddings table, and writes one metadata row](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-file-process.svg)
 
 `process_file` runs once per checkpoint file and routes on its name. The checkpoint id and session index come straight from the file's path, and a fresh `IdGenerator` numbers the rows this file produces.
 
@@ -202,7 +202,7 @@ We use [`SentenceTransformerEmbedder`](https://cocoindex.io/docs/ops/sentence_tr
 
 ## Define the main function
 
-![mount_each fans out one process_file component per checkpoint file, from the Entire filesystem source to the two Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-main-function.png)
+![mount_each fans out one process_file component per checkpoint file, from the Entire filesystem source to the two Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-main-function.svg)
 
 `app_main` wires the source to the targets. It mounts both Postgres tables, walks the checkpoint directory for the four file types, and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file.
 

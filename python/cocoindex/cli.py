@@ -117,9 +117,22 @@ def _parse_app_target(specifier: str) -> AppSpecifier:
         './main.py:app2' -> AppSpecifier('./main.py', 'app2', None)
         './main.py:app2@alpha' -> AppSpecifier('./main.py', 'app2', 'alpha')
         'mymodule:my_app@default' -> AppSpecifier('mymodule', 'my_app', 'default')
+        'C:\\project\\main.py:app2' -> AppSpecifier('C:\\project\\main.py', 'app2', None)
     """
-    parts = specifier.split(":", 1)
-    module_ref = parts[0]
+    # A Windows absolute path starts with a drive-letter colon, which is part
+    # of the path rather than the app-name separator.
+    search_start = (
+        2
+        if len(specifier) > 2 and specifier[1] == ":" and specifier[2] in ("/", "\\")
+        else 0
+    )
+    separator_index = specifier.find(":", search_start)
+    if separator_index == -1:
+        module_ref = specifier
+        app_part = None
+    else:
+        module_ref = specifier[:separator_index]
+        app_part = specifier[separator_index + 1 :]
 
     if not module_ref:
         raise click.BadParameter(
@@ -128,10 +141,9 @@ def _parse_app_target(specifier: str) -> AppSpecifier:
             param_hint="APP_TARGET",
         )
 
-    if len(parts) == 1:
+    if app_part is None:
         return AppSpecifier(module_ref=module_ref)
 
-    app_part = parts[1]
     if not app_part:
         return AppSpecifier(module_ref=module_ref)
 
@@ -1012,7 +1024,12 @@ async def _stop_all_environments() -> None:
     is_flag=True,
     show_default=True,
     default=False,
-    help="Reprocess everything and invalidate existing caches.",
+    help=(
+        "Reprocess everything, bypassing all memoization caches: every "
+        "component and memoized function executes again (external calls such "
+        "as embeddings included). To force just one function's work to run "
+        "again, bump its version= instead."
+    ),
 )
 @click.option(
     "--live",

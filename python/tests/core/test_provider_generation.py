@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 import cocoindex as coco
 
@@ -291,4 +291,222 @@ def test_lossy_change_invalidates_memo() -> None:
     _inner_exec_count = 0
     app.update_blocking()
     assert _inner_exec_count == 0
+    assert DictsTarget.store.collect_child_metrics() == {}
+
+
+# The tests above pass the provider as an argument, so an invalidation reaches
+# the memoized code through the memo key. The ones below capture the provider
+# from an enclosing scope instead — it is *not* part of the memo key, so the
+# invalidation has to travel through the provider generations recorded with the
+# memo entry. Without that channel a memo hit silently skips re-declaring the
+# rows, leaving cocoindex convinced they are written while the target has lost
+# them, and no later run ever repairs it.
+
+_captured_provider: Any = None
+
+
+@coco.fn(memo=True)
+async def _insert_rows_memo_captured(data: dict[str, Any]) -> None:
+    global _inner_exec_count
+    _inner_exec_count += 1
+    for key, value in data.items():
+        coco.declare_target_state(_captured_provider.target_state(key, value))
+
+
+async def _declare_dicts_with_captured_provider() -> None:
+    global _captured_provider
+    with coco.component_subpath("dict"):
+        for name, data in _source_data.items():
+            with coco.component_subpath(name):
+                _captured_provider = await coco.use_mount(
+                    coco.component_subpath("setup"),
+                    DictsTarget.declare_dict_target,
+                    name,
+                )
+                await coco.use_mount(  # type: ignore[call-overload]
+                    coco.component_subpath("rows"),
+                    _insert_rows_memo_captured,
+                    data,
+                )
+
+
+@coco.fn(memo=True)
+async def _insert_rows_fn_memo_captured(data: dict[str, Any]) -> None:
+    global _inner_exec_count
+    _inner_exec_count += 1
+    for key, value in data.items():
+        coco.declare_target_state(_captured_provider.target_state(key, value))
+
+
+async def _declare_dicts_with_captured_provider_fn_memo() -> None:
+    """Same, but the memoized function is *called*, not mounted — so it goes
+    through the function-call memo cache rather than the component memo."""
+    global _captured_provider
+    with coco.component_subpath("dict"):
+        for name, data in _source_data.items():
+            with coco.component_subpath(name):
+                _captured_provider = await coco.use_mount(
+                    coco.component_subpath("setup"),
+                    DictsTarget.declare_dict_target,
+                    name,
+                )
+                await _insert_rows_fn_memo_captured(data)
+
+
+def _new_captured_provider_app(
+    name: str, main: Any = _declare_dicts_with_captured_provider
+) -> coco.App[[], None]:
+    global _inner_exec_count, _captured_provider
+    DictsTarget.store.clear()
+    _source_data.clear()
+    DictsTarget.store.child_invalidation = None
+    _inner_exec_count = 0
+    _captured_provider = None
+    return coco.App(coco.AppConfig(name=name, environment=coco_env), main)
+
+
+def _assert_invalidates_memo_without_provider_arg(
+    app: coco.App[[], None], invalidation: Literal["destructive", "lossy"]
+) -> None:
+    global _inner_exec_count
+    _source_data["D1"] = {"a": 1}
+
+    # Run 1: initial insert — the memoized function executes.
+    app.update_blocking()
+    assert _inner_exec_count == 1
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
+
+    # Run 2: same data, no invalidation — memo hit.
+    _inner_exec_count = 0
+    app.update_blocking()
+    assert _inner_exec_count == 0
+    assert DictsTarget.store.collect_child_metrics() == {}
+
+    # Run 3: the provider generation moves. The provider is not in the memo key,
+    # so only the recorded generation dep can force the re-execution.
+    DictsTarget.store.child_invalidation = invalidation
+    _inner_exec_count = 0
+    try:
+        app.update_blocking()
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert _inner_exec_count == 1
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 1}
+
+    # Run 4: the generation is stable again — back to a memo hit. An invalidation
+    # must not leave the entry permanently unmemoizable.
+    _inner_exec_count = 0
+    app.update_blocking()
+    assert _inner_exec_count == 0
+    assert DictsTarget.store.collect_child_metrics() == {}
+
+
+def test_destructive_change_invalidates_memo_without_provider_arg() -> None:
+    _assert_invalidates_memo_without_provider_arg(
+        _new_captured_provider_app(
+            "test_destructive_change_invalidates_memo_without_provider_arg"
+        ),
+        "destructive",
+    )
+
+
+def test_lossy_change_invalidates_memo_without_provider_arg() -> None:
+    _assert_invalidates_memo_without_provider_arg(
+        _new_captured_provider_app(
+            "test_lossy_change_invalidates_memo_without_provider_arg"
+        ),
+        "lossy",
+    )
+
+
+def test_lossy_change_invalidates_fn_memo_without_provider_arg() -> None:
+    _assert_invalidates_memo_without_provider_arg(
+        _new_captured_provider_app(
+            "test_lossy_change_invalidates_fn_memo_without_provider_arg",
+            _declare_dicts_with_captured_provider_fn_memo,
+        ),
+        "lossy",
+    )
+
+
+# --- Composed scenario: a memoized intermediate component re-executes while an
+# inner memoized fn HITS. The hit skips the fn's declarations, so its provider
+# deps must be merged from the stored entry into the intermediate's rebuilt
+# memo (via FnCallMemoGuard.join_cached_target_provider_deps) — otherwise the
+# intermediate's new entry loses the dep and a later lossy/destructive change
+# is silently ignored.
+
+_leaf_runs: list[str] = []
+
+
+@coco.fn(memo=True)
+async def _composed_leaf() -> None:
+    _leaf_runs.append("leaf")
+    coco.declare_target_state(_captured_provider.target_state("a", 1))
+
+
+@coco.fn(memo=True)
+async def _composed_mid(n: int) -> None:
+    _leaf_runs.append(f"mid{n}")
+    await _composed_leaf()
+
+
+_composed_n: dict[str, int] = {"n": 1}
+
+
+async def _declare_composed() -> None:
+    global _captured_provider
+    with coco.component_subpath("dict"):
+        _captured_provider = await coco.use_mount(
+            coco.component_subpath("setup"), DictsTarget.declare_dict_target, "D1"
+        )
+        await coco.use_mount(
+            coco.component_subpath("rows"), _composed_mid, _composed_n["n"]
+        )
+
+
+def test_lossy_change_after_intermediate_rebuild_with_fn_hit() -> None:
+    global _captured_provider
+    DictsTarget.store.clear()
+    DictsTarget.store.child_invalidation = None
+    _leaf_runs.clear()
+    _captured_provider = None
+    _composed_n["n"] = 1
+    app: coco.App[[], None] = coco.App(
+        coco.AppConfig(
+            name="test_lossy_composed_fn_hit",
+            environment=coco_env,
+        ),
+        _declare_composed,
+    )
+
+    # Run 1: everything executes; deps recorded everywhere.
+    app.update_blocking()
+    assert _leaf_runs == ["mid1", "leaf"]
+    DictsTarget.store.collect_child_metrics()
+
+    # Run 2: mid's memo key changes -> mid re-executes, leaf HITS. Mid's
+    # rebuilt entry must retain leaf's provider dep via the stored-entry merge.
+    _leaf_runs.clear()
+    _composed_n["n"] = 2
+    app.update_blocking()
+    assert _leaf_runs == ["mid2"]
+    DictsTarget.store.collect_child_metrics()
+
+    # Run 3: lossy provider change. Both mid and leaf must re-execute so the
+    # row is re-upserted.
+    _leaf_runs.clear()
+    DictsTarget.store.child_invalidation = "lossy"
+    try:
+        app.update_blocking()
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert _leaf_runs == ["mid2", "leaf"]
+    metrics = DictsTarget.store.collect_child_metrics()
+    assert metrics.get("upsert", 0) == 1
+
+    # Run 4: stable again — memo hits all the way down.
+    _leaf_runs.clear()
+    app.update_blocking()
+    assert _leaf_runs == []
     assert DictsTarget.store.collect_child_metrics() == {}

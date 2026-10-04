@@ -933,6 +933,64 @@ class Point {
     }
 
     #[test]
+    fn test_split_with_lua_language() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        // One line, so line/whitespace separators give the fallback path no
+        // function boundaries at all. Only the grammar can find them.
+        let text = "local function f(a) return a+1 end \
+                    local function g(b) return b*2 end \
+                    local function h(c) return c-3 end";
+        let config = RecursiveChunkConfig {
+            chunk_size: 45,
+            min_chunk_size: Some(10),
+            chunk_overlap: Some(0),
+        };
+        let chunks = chunker.split(&CodeSource::with_language(text, "lua"), config);
+        assert!(
+            chunks.len() > 1,
+            "sample must split for the check below to mean anything"
+        );
+        for chunk in &chunks {
+            let chunk_text = text[chunk.range.start..chunk.range.end].trim();
+            assert!(
+                chunk_text.starts_with("local function") && chunk_text.ends_with("end"),
+                "chunk straddles a function boundary: {chunk_text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_lua_keeps_table_constructor_whole() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        // Asserts one thing: the argument list of `setmetatable` stays whole.
+        // Separator fallback cuts it at the comma between `x = x` and `y = y`,
+        // because a comma is a separator to it and a table field to the
+        // grammar. A constructor longer than `chunk_size` is still split, here
+        // as in every other grammar-backed language.
+        let text = "local function clamp(v, lo, hi) return math.min(math.max(v, lo), hi) end\n\
+                    local Point = {}\n\
+                    Point.__index = Point\n\
+                    function Point.new(x, y) return setmetatable({ x = x, y = y }, Point) end\n\
+                    function Point:norm() return math.sqrt(self.x * self.x + self.y * self.y) end\n\
+                    return Point\n";
+        let config = RecursiveChunkConfig {
+            chunk_size: 60,
+            min_chunk_size: Some(10),
+            chunk_overlap: Some(0),
+        };
+        let chunks = chunker.split(&CodeSource::with_language(text, "lua"), config);
+        assert!(
+            chunks.len() > 1,
+            "sample must split for the check below to mean anything"
+        );
+        assert!(
+            chunks.iter().any(|c| text[c.range.start..c.range.end]
+                .contains("setmetatable({ x = x, y = y }, Point)")),
+            "table constructor was severed across chunks"
+        );
+    }
+
+    #[test]
     fn test_split_positions() {
         let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
         let text = "Chunk1\n\nChunk2";

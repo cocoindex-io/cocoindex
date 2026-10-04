@@ -15,7 +15,9 @@ use crate::state::stable_path::StableKey;
 pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
     LazyLock::new(|| StableKey::Symbol("cocoindex/_internal/target_id".into()));
 use crate::state::stable_path_set::ChildStablePathSet;
-use crate::state::target_state_path::TargetStatePath;
+use crate::state::target_state_path::{
+    TargetProviderDeps, TargetStatePath, TargetStateProviderGeneration,
+};
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
@@ -36,6 +38,9 @@ struct AppContextInner<Prof: EngineProfile> {
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    /// Source of operation generations; see
+    /// [`ComponentProcessorContext::operation_generation`].
+    operation_generation: std::sync::atomic::AtomicU64,
     /// Cancellation token for in-flight app operations. Wrapped in a `Mutex` so
     /// it can be replaced with a fresh child of the global token after a
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
@@ -76,6 +81,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
+                operation_generation: std::sync::atomic::AtomicU64::new(0),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
@@ -135,6 +141,15 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         self.inner.inflight_semaphore.as_ref()
     }
 
+    /// Mint the generation of a new operation; see
+    /// [`ComponentProcessorContext::operation_generation`].
+    fn next_operation_generation(&self) -> u64 {
+        self.inner
+            .operation_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
     /// Returns a clone of the current app-level cancellation token.
     ///
     /// The clone stays valid even if the slot is later refreshed via
@@ -170,7 +185,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 pub(crate) struct DeclaredTargetState<Prof: EngineProfile> {
     pub provider: TargetStateProvider<Prof>,
-    pub item_key: StableKey,
+    /// The item key, `storekey`-encoded: the form pre-commit records it in,
+    /// at a fraction of the size of the decoded key's tree of `Arc`s.
+    pub item_key_bytes: Box<[u8]>,
     pub value: Prof::TargetStateValue,
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }
@@ -183,6 +200,7 @@ pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
+    pub(crate) target_provider_deps: TargetProviderDeps,
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
     pub(crate) logic_deps: HashSet<Fingerprint>,
     pub memo_states: Vec<Prof::FunctionData>,
@@ -359,6 +377,8 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                         )),
                         child_components: vec![],
                         target_state_paths: memo.target_state_paths,
+                        // Already sorted — `TargetProviderDeps` is a `BTreeMap`.
+                        target_provider_deps: memo.target_provider_deps.into_iter().collect(),
                         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
                         logic_deps: memo.logic_deps.into_iter().collect(),
                         memo_states: memo_states_serialized,
@@ -411,6 +431,12 @@ impl<Prof: EngineProfile> Default for FnMemoCache<Prof> {
 /// legacy form with `child_components`, the result is `Ready(None)` so
 /// the entry is treated as a deletion at flush time.
 ///
+/// Target-provider generation deps are deliberately NOT checked here — the
+/// finalize dep walk also decodes entries to collect their contained target
+/// state paths, and invalidating on a generation mismatch there would drop
+/// live paths from the contained set. That check lives in
+/// `reserve_memoization`, the probe path proper.
+///
 /// This helper is shared between `reserve_memoization` (probe path) and
 /// the finalize dep walk; both call it under the per-entry write lock.
 ///
@@ -444,6 +470,7 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
     *entry = FnCallMemoEntry::Ready(Some(FnCallMemo {
         ret,
         target_state_paths: decoded.target_state_paths,
+        target_provider_deps: decoded.target_provider_deps.into_iter().collect(),
         dependency_memo_entries: decoded.dependency_memo_entries.into_iter().collect(),
         logic_deps: decoded.logic_deps.into_iter().collect(),
         memo_states,
@@ -673,11 +700,18 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
+    /// See [`ComponentProcessorContext::operation_generation`].
+    operation_generation: u64,
 
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
+
+    /// Target-state provider generations this component declared against,
+    /// accumulated from its own declarations and from child components. Stored
+    /// with this component's memo entry and re-checked on the next probe.
+    target_provider_deps: Mutex<TargetProviderDeps>,
 
     /// Opaque per-operation context (e.g. ContextProvider on the Python side).
     host_ctx: Arc<Prof::HostCtx>,
@@ -709,13 +743,19 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
+        let operation_generation = match &parent_context {
+            Some(parent) => parent.operation_generation(),
+            None => component.app_ctx().next_operation_generation(),
+        };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
+                operation_generation,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
+                target_provider_deps: Mutex::new(TargetProviderDeps::new()),
                 host_ctx,
             }),
             processing_stats,
@@ -741,10 +781,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    /// Register a freshly-mounted child as an active member of every enclosing
-    /// stats group, so each group's liveness tracking sees it (and, via the
-    /// strong parent-chain, its whole subtree). No-op when not in a group.
-    pub fn push_active_member(&self, child: &Component<Prof>) {
+    /// Register a child whose processing task is starting as a member of every
+    /// enclosing stats group, so each group's liveness tracking sees it (and,
+    /// since activity propagates up the parent chain, its whole subtree).
+    /// No-op when not in a group.
+    pub(crate) fn push_active_member(&self, child: &Component<Prof>) {
         for group in self.stats_groups.iter() {
             group.push_member(child);
         }
@@ -833,6 +874,21 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.parent_context.as_ref()
     }
 
+    /// The target-state providers visible to this component: everything
+    /// inherited from ancestors at mount time plus anything its own subtree has
+    /// built so far. Cloning is O(1) — the map is structurally shared.
+    pub(crate) fn target_states_providers(
+        &self,
+    ) -> Result<rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>> {
+        self.update_building_state(|building_state| {
+            Ok(building_state
+                .target_states
+                .provider_registry
+                .providers
+                .clone())
+        })
+    }
+
     /// Access the building state under a single lock acquisition.
     /// Callers should access all needed fields within `f` rather than wrapping
     /// this in convenience methods — the caller decides the lock granularity.
@@ -916,15 +972,37 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let (fn_logic_deps, context_change_deps) = fn_ctx.update(|inner| {
+        let (fn_logic_deps, context_change_deps, target_provider_deps) = fn_ctx.update(|inner| {
             (
                 inner.fn_logic_deps.clone(),
                 inner.context_change_deps.clone(),
+                inner.target_provider_deps.clone(),
             )
         });
         let mut deps = self.inner.logic_deps.lock().unwrap();
         deps.extend(fn_logic_deps);
         deps.extend(context_change_deps);
+        drop(deps);
+        self.merge_target_provider_deps(target_provider_deps);
+    }
+
+    /// Merge target-provider generation deps (from this component's own
+    /// declarations, or propagated up from a mounted child) into this
+    /// component's set.
+    pub(crate) fn merge_target_provider_deps(
+        &self,
+        deps: impl IntoIterator<Item = (TargetStatePath, TargetStateProviderGeneration)>,
+    ) {
+        self.inner.target_provider_deps.lock().unwrap().extend(deps);
+    }
+
+    /// Take the accumulated target-provider deps out of this context. Like
+    /// [`take_logic_deps`](Self::take_logic_deps), the single set serves both
+    /// this component's own memo entry and the `ComponentRunOutcome` reported
+    /// to the parent — a parent that memo-hits never mounts its children, so it
+    /// must carry their provider deps to catch an invalidation on their behalf.
+    pub(crate) fn take_target_provider_deps(&self) -> TargetProviderDeps {
+        std::mem::take(&mut *self.inner.target_provider_deps.lock().unwrap())
     }
 
     /// Merge additional logic deps (e.g. from child components) into this component's set.
@@ -978,6 +1056,18 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
+    /// Generation of the operation this context belongs to. A context created
+    /// without a parent — the root of an `App::update` or `App::drop_app`, or
+    /// a live component's own cycle — starts a new operation; children inherit
+    /// their parent's. So two runs of one component share a generation exactly
+    /// when the same operation started both, which is how `full_reprocess`
+    /// tells a memo stored earlier in the same operation (that operation's own
+    /// execution) from one left behind by a previous run (a cache it must
+    /// ignore). See `Component::execute_once`.
+    pub(crate) fn operation_generation(&self) -> u64 {
+        self.inner.operation_generation
+    }
+
     pub fn preview(&self) -> bool {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.is_some(),
@@ -1004,6 +1094,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 pub struct FnCallContextInner {
     /// Target states that are declared by the function.
     pub target_state_paths: Vec<TargetStatePath>,
+    /// Generations of the providers those target states were declared against.
+    /// Re-checked when this call's memo entry is probed — see
+    /// [`TargetProviderDeps`].
+    pub target_provider_deps: TargetProviderDeps,
     /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (target states / dependency entries with side effects).
     pub dependency_memo_entries: HashSet<Fingerprint>,
 
@@ -1052,6 +1146,9 @@ impl FnCallContext {
             inner
                 .target_state_paths
                 .extend(child_inner.target_state_paths);
+            inner
+                .target_provider_deps
+                .extend(child_inner.target_provider_deps);
             inner
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
@@ -1246,8 +1343,7 @@ mod tests {
         path: &StablePath,
         cache: UserStateCache<TestData>,
     ) {
-        use crate::state_store::{CommitPlan, ExistenceReconciler};
-        use futures::future::BoxFuture;
+        use crate::state_store::CommitPlan;
 
         let plan_data = cache.into_flush_plan().unwrap();
         let plan = CommitPlan {
@@ -1261,13 +1357,8 @@ mod tests {
             user_state_writes: plan_data.writes,
             user_state_deletes: plan_data.deletes,
             user_state_clear_live: false,
-            child_path_set: None,
         };
-        let reconciler: ExistenceReconciler =
-            Box::new(|_wtxn| -> BoxFuture<'_, crate::prelude::Result<()>> {
-                Box::pin(async { Ok(()) })
-            });
-        store.commit(path, plan, reconciler).await.unwrap();
+        store.commit(path, plan, None).await.unwrap();
     }
 
     #[tokio::test]

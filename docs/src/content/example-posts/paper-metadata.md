@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex paper metadata flow: walk a folder of PDFs, read the first page, LLM-extract title/authors/abstract into a typed model, embed the title and abstract chunks, and store metadata, authors, and embeddings in three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/flow-v1.png)
+![CocoIndex paper metadata flow: walk a folder of PDFs, read the first page, LLM-extract title/authors/abstract into a typed model, embed the title and abstract chunks, and store metadata, authors, and embeddings in three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/flow-v1.svg)
 
 From a high level, these are the steps:
 
@@ -157,7 +157,7 @@ Only the first page is read, and the prompt is capped at `markdown[:4000]` chara
 
 ## Process a file
 
-![One processing component per PDF: read the first page, LLM-extract metadata, embed the title and abstract chunks, and declare rows into three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/stage-file-process.png)
+![One processing component per PDF: read the first page, LLM-extract metadata, embed the title and abstract chunks, and declare rows into three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/stage-file-process.svg)
 
 `process_file` runs once per PDF and ties the steps together. It extracts the metadata, then declares the rows: one metadata row, one author-index row per author, and one embedding row for the title plus one for each abstract chunk.
 

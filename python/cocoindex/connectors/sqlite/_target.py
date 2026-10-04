@@ -27,6 +27,7 @@ from typing import (
     Generic,
     Iterator,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -372,9 +373,11 @@ class TableSchema(Generic[RowT]):
         record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
 
-        for field in record_info.fields:
-            override = column_overrides.get(field.name) if column_overrides else None
-            type_info = analyze_type_info(field.type_hint)
+        for rec_field in record_info.fields:
+            override = (
+                column_overrides.get(rec_field.name) if column_overrides else None
+            )
+            type_info = analyze_type_info(rec_field.type_hint)
 
             all_annotations = []
             if override is not None:
@@ -401,10 +404,10 @@ class TableSchema(Generic[RowT]):
                 )
             else:
                 type_mapping = await _get_type_mapping(
-                    field.type_hint, vector_schema=vector_schema
+                    rec_field.type_hint, vector_schema=vector_schema
                 )
 
-            columns[field.name] = ColumnDef(
+            columns[rec_field.name] = ColumnDef(
                 type=type_mapping.sqlite_type.strip(),
                 nullable=type_info.nullable,
                 encoder=type_mapping.encoder,
@@ -424,11 +427,13 @@ class _RowAction(NamedTuple):
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
+    tracks_value_fingerprint = True
+
     _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]
     _is_virtual_table: bool
-    _sink: coco.TargetActionSink[_RowAction, None]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -441,9 +446,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_name = table_name
         self._table_schema = table_schema
         self._is_virtual_table = is_virtual_table
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_RowAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -838,38 +841,49 @@ def _apply_column_actions(
                     f"ALTER TABLE {qualified_name} "
                     f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
                 )
-            except sqlite3.OperationalError:
-                # Column might already exist (upsert case)
-                pass
+            except sqlite3.OperationalError as e:
+                # Only ignore if column already exists (e.g. upsert / idempotent re-run)
+                if "duplicate column name" in str(e).lower():
+                    pass
+                else:
+                    raise RuntimeError(
+                        f"Failed to add column {col_name!r} to SQLite table {table_name!r}: {e}"
+                    ) from e
             continue
 
         if action == "replace":
             # SQLite doesn't support ALTER COLUMN TYPE directly.
-            # For type changes, we'd need to recreate the table.
-            # For now, we'll drop and re-add if possible.
+            # For type changes, attempt to drop and re-add column.
             try:
                 conn.execute(f'ALTER TABLE {qualified_name} DROP COLUMN "{col_name}"')
-                nullable = "" if desired_col.nullable else " NOT NULL"
+            except sqlite3.OperationalError:
+                pass
+            nullable = "" if desired_col.nullable else " NOT NULL"
+            try:
                 conn.execute(
                     f"ALTER TABLE {qualified_name} "
                     f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
                 )
-            except sqlite3.OperationalError:
-                # Can't modify column - skip
-                pass
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e).lower():
+                    pass
+                else:
+                    raise RuntimeError(
+                        f"Failed to replace column {col_name!r} in SQLite table {table_name!r}: {e}"
+                    ) from e
+            continue
 
 
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-) -> list[coco.ChildTargetDef["_RowHandler"] | None]:
-    """Apply table actions (DDL) and return child row handlers."""
-    actions_list = list(actions)
-    outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(actions_list)
-
+    child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
+    /,
+) -> None:
+    """Apply table actions (DDL) and fulfill the child row handlers."""
     # Group actions by table key so we can apply all DDL for the same table
     by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions_list):
+    for i, action in enumerate(actions):
         by_key.setdefault(action.key, []).append(i)
 
     for key, idxs in by_key.items():
@@ -878,7 +892,7 @@ def _apply_table_actions(
 
         with managed_conn.transaction() as conn:
             for i in idxs:
-                action = actions_list[i]
+                action = actions[i]
                 assert action.key == key
 
                 # Check if this is a virtual table (for special handling)
@@ -888,7 +902,11 @@ def _apply_table_actions(
                 )
 
                 # Virtual tables can't use ALTER TABLE - force DROP+CREATE for column changes
-                if is_virtual and action.column_actions and action.main_action is None:
+                if (
+                    is_virtual
+                    and action.column_actions
+                    and action.main_action in (None, "upsert")
+                ):
                     # Upgrade to replace action
                     action = _TableAction(
                         key=action.key,
@@ -901,12 +919,11 @@ def _apply_table_actions(
                     _drop_table(conn, key.table_name)
 
                 if coco.is_non_existence(action.spec):
-                    outputs[i] = None
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_RowHandler(
+                child_slots[i].fulfill(
+                    _RowHandler(
                         managed_conn=managed_conn,
                         table_name=key.table_name,
                         table_schema=spec.table_schema,
@@ -932,9 +949,14 @@ def _apply_table_actions(
                             if_not_exists=(action.main_action == "upsert"),
                             has_vec_extension=has_vec,
                         )
-                    continue
+                    # "insert" / "replace" just built the table from the desired
+                    # schema, so its columns already match. "upsert" may have found
+                    # a pre-existing table with an older column set — fall through
+                    # and reconcile it.
+                    if action.main_action != "upsert":
+                        continue
 
-                # No main change: reconcile non-PK columns incrementally.
+                # Reconcile non-PK columns incrementally.
                 # (Virtual tables never reach here - they're forced to replace above)
                 if action.column_actions:
                     _apply_column_actions(
@@ -944,11 +966,9 @@ def _apply_table_actions(
                         action.column_actions,
                     )
 
-    return outputs
-
 
 # Shared action sink for table-level actions
-_table_action_sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
     _apply_table_actions
 )
 
@@ -989,8 +1009,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: `CREATE TABLE IF
+        # NOT EXISTS` can land on a table carrying the previous column set, so its
+        # columns still need reconciling. "insert" / "replace" build the table from
+        # the desired schema, so there is nothing left to reconcile.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in column_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -1001,9 +1025,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         if main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif main_action is None and any(
-            a != "insert" for a in column_actions.values()
-        ):
+        elif any(a != "insert" for a in column_actions.values()):
             # Column schema changes (other than adding new columns) may lose data.
             child_invalidation = "lossy"
 

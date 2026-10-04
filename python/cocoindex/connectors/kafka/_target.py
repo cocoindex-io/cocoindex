@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Callable, Collection, Generic, NamedTuple, Sequence
+from typing import Callable, Collection, Generic, Mapping, NamedTuple, Sequence
 
 try:
     from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]
@@ -58,7 +58,7 @@ class _MessageAction(NamedTuple):
 # --- Message handler (child level) ---
 
 
-class _MessageHandler:
+class _MessageHandler(coco.TargetHandler[bytes | str, _MessageFingerprint, None]):
     """Handler for message-level target states within a topic."""
 
     __slots__ = ("_producer", "_topic", "_deletion_value_fn", "_sink")
@@ -142,35 +142,36 @@ class _MessageHandler:
 # --- Topic handler (root level) ---
 
 
-class _TopicHandler:
+class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
     """Handler for topic-level target states. Always returns output for generation tracking."""
 
     __slots__ = ("_sink",)
 
-    _sink: coco.TargetActionSink[_TopicAction, _MessageHandler]
+    _sink: coco.TargetActionSink[_TopicAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
+            self._apply_actions
+        )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TopicAction],
+        child_slots: Mapping[int, coco.ChildSlot[_MessageHandler]],
         /,
-    ) -> list[coco.ChildTargetDef[_MessageHandler] | None]:
-        outputs: list[coco.ChildTargetDef[_MessageHandler] | None] = []
-        for action in actions:
+    ) -> None:
+        for i, action in enumerate(actions):
             if coco.is_non_existence(action.spec):
-                outputs.append(None)
-            else:
-                producer = context_provider.get(action.key.producer_key, AIOProducer)
-                handler = _MessageHandler(
+                continue
+            producer = context_provider.get(action.key.producer_key, AIOProducer)
+            child_slots[i].fulfill(
+                _MessageHandler(
                     producer=producer,
                     topic=action.key.topic,
                     deletion_value_fn=action.spec.deletion_value_fn,
                 )
-                outputs.append(coco.ChildTargetDef(handler=handler))
-        return outputs
+            )
 
     def reconcile(
         self,
@@ -216,15 +217,11 @@ class KafkaTopicTarget(
     Messages are produced for upserts and deletes of declared target states.
     """
 
-    _provider: coco.TargetStateProvider[
-        bytes | str | coco.NonExistenceType, None, coco.MaybePendingS
-    ]
+    _provider: coco.TargetStateProvider[bytes | str, None, coco.MaybePendingS]
 
     def __init__(
         self,
-        provider: coco.TargetStateProvider[
-            bytes | str | coco.NonExistenceType, None, coco.MaybePendingS
-        ],
+        provider: coco.TargetStateProvider[bytes | str, None, coco.MaybePendingS],
     ) -> None:
         self._provider = provider
 

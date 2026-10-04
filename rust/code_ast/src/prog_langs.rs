@@ -328,7 +328,7 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<HashMap<UniCase<String>, &'static Program
                 ".rockspec",
                 ".wlua",
             ],
-            None,
+            Some(TreeSitterLanguageInfo::new(tree_sitter_lua::LANGUAGE, [])),
         );
         add("luau", &[".luau"], None);
         add("magik", &[".magik"], None);
@@ -620,6 +620,13 @@ mod tests {
         let dart = get_language_info(".dart").unwrap();
         assert_eq!(dart.name.as_ref(), "dart");
         assert!(dart.treesitter_info.is_some());
+    }
+
+    #[test]
+    fn test_lua_has_treesitter() {
+        let lua = get_language_info(".lua").unwrap();
+        assert_eq!(lua.name.as_ref(), "lua");
+        assert!(lua.treesitter_info.is_some());
     }
 
     #[test]

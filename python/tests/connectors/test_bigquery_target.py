@@ -15,6 +15,7 @@ import cocoindex as coco
 from cocoindex.connectorkits import target
 from cocoindex.connectors import bigquery
 from cocoindex.connectors.bigquery import _target
+from tests.common.target_states import RecordingChildSlot
 
 BIGQUERY_DB = coco.ContextKey[bigquery.ConnectionConfig]("bigquery_test_db")
 
@@ -344,12 +345,12 @@ def test_table_handler_creates_dataset_and_table(
         column_actions={},
     )
 
-    children = _target._TableHandler()._apply_actions(
-        cast(Any, FakeContextProvider(_connection_config())), [action]
+    slot = RecordingChildSlot()
+    _target._TableHandler()._apply_actions(
+        cast(Any, FakeContextProvider(_connection_config())), [action], {0: slot}
     )
 
-    assert len(children) == 1
-    assert children[0] is not None
+    assert isinstance(slot.handler, _target._RowHandler)
     assert client.calls == [
         ("CREATE SCHEMA IF NOT EXISTS `demo-project.analytics`", ()),
         (
@@ -409,6 +410,7 @@ def test_live_bigquery_upsert_and_delete() -> None:
                     column_actions={},
                 )
             ],
+            {0: RecordingChildSlot()},
         )
         _target._RowHandler(
             db_key=BIGQUERY_DB.key,

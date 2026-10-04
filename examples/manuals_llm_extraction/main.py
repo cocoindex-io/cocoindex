@@ -20,6 +20,7 @@ import os
 import pathlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import cast
 
 import asyncpg
 import instructor
@@ -102,7 +103,10 @@ EXTRACT_PROMPT = (
 
 @coco.fn(memo=True)
 async def extract_module(markdown: str) -> ModuleInfo:
-    client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
+    client = cast(
+        instructor.AsyncInstructor,
+        instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON),
+    )
     result = await client.chat.completions.create(
         model=coco.use_context(LLM_MODEL),
         response_model=ModuleInfo,

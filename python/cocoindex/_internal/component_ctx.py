@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import inspect
 import logging
@@ -132,10 +133,15 @@ class ComponentContext:
         stable_path: str,
         processor_name: str | None,
         mount_kind: MountKind,
-    ) -> Callable[[str], Awaitable[None]]:
+    ) -> Callable[[BaseException], Awaitable[None]]:
         """Build the exception-handler resolver for a child mounted under this context.
 
-        Returns a callable that takes a stringified error and:
+        Returns a callable that takes the failure as a Python exception
+        (a Python-originated failure arrives as its original exception
+        object with traceback intact; engine-native failures arrive as
+        ``RuntimeError`` / ``ValueError`` / ``DeadlineExceededError``, the
+        same mapping ``use_mount`` uses; the engine filters cancellation
+        before calling this) and:
         - walks this context's handler chain (innermost first);
         - if a handler raises, calls the next outer handler with the
           new exception;
@@ -158,18 +164,18 @@ class ComponentContext:
         # captured implicitly. `self._core_path.to_string()` in particular
         # is a PyO3 → Rust → string allocation we don't want to pay on
         # every mount.
-        async def _run(err_str: str) -> None:
+        async def _run(exc: BaseException) -> None:
             node = self._exception_handler_chain
             if node is None:
                 # No handlers registered — log directly without building
                 # the ExceptionContext metadata at all. Don't propagate.
-                _logger.error("component build failed:\n%s", err_str)
+                _logger.error("component build failed: %s", exc, exc_info=exc)
                 return
 
             env_name = self._env.name
             parent_stable_path = self._core_path.to_string()
-            original_exc: BaseException = RuntimeError(err_str)
-            current_exc: BaseException = original_exc
+            original_exc = exc
+            current_exc = exc
             source: Literal["component", "handler"] = "component"
             while node is not None:
                 ctx = ExceptionContext(
@@ -187,6 +193,10 @@ class ComponentContext:
                     if inspect.isawaitable(ret):
                         await ret
                     return  # Handler swallowed → don't propagate.
+                except asyncio.CancelledError:
+                    # Cancellation is not a handler failure: never feed it
+                    # to outer handlers (which could swallow it).
+                    raise
                 except BaseException as handler_exc:
                     current_exc = handler_exc
                     source = "handler"

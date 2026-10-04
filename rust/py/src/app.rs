@@ -13,7 +13,7 @@ use tokio::sync::watch;
 
 use crate::{
     component::PyComponentProcessor, deadline::PyDeadlineContext, environment::PyEnvironment,
-    value::PyStoredValue,
+    target_state_codec::PyTargetAction, value::PyStoredValue,
 };
 
 fn snapshot_to_py<'py>(
@@ -34,7 +34,18 @@ fn snapshot_to_py<'py>(
     Ok(dict)
 }
 
-type PyPreviewCollector = Arc<std::sync::Mutex<Vec<Py<PyAny>>>>;
+type PyPreviewCollector = Arc<std::sync::Mutex<Vec<PyTargetAction>>>;
+
+fn preview_actions_to_list<'py>(
+    py: Python<'py>,
+    actions: &[PyTargetAction],
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    let objects = actions
+        .iter()
+        .map(|action| action.to_object(py))
+        .collect::<PyResult<Vec<_>>>()?;
+    pyo3::types::PyList::new(py, objects)
+}
 
 #[pyclass(name = "UpdateHandle")]
 pub struct PyUpdateHandle {
@@ -112,7 +123,7 @@ impl PyUpdateHandle {
             .as_ref()
             .map(|c| std::mem::take(&mut *c.lock().unwrap()))
             .unwrap_or_default();
-        pyo3::types::PyList::new(py, actions.iter().map(|a| a.bind(py))).map_err(|e| e.into())
+        preview_actions_to_list(py, &actions)
     }
 }
 
@@ -316,9 +327,7 @@ impl PyApp {
                         .map(|c| std::mem::take(&mut *c.lock().unwrap()))
                         .unwrap_or_default();
                     Python::attach(|py| {
-                        let list =
-                            pyo3::types::PyList::new(py, actions.iter().map(|a| a.bind(py)))?;
-                        Ok(list.unbind().into_any())
+                        Ok(preview_actions_to_list(py, &actions)?.unbind().into_any())
                     })
                 } else if report_to_stdout {
                     let ret: PyStoredValue = rust_show_progress(

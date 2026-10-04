@@ -29,7 +29,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -542,11 +542,14 @@ impl TargetHandler<TableSpec> for TableHandler {
                 let resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
                 // Split the diff into a structural (main) action plus per-column
-                // transitions. Per-column actions only apply when the table
-                // itself is unchanged — a main rewrite recreates every column.
+                // transitions. `insert` / `replace` build the table from the
+                // desired schema, so every column is already correct. `upsert`
+                // means the table may or may not exist: `CREATE TABLE IF NOT
+                // EXISTS` can land on a table carrying the previous column set,
+                // so its columns still need reconciling.
                 let (main_action, column_transitions) = diff_composite(resolved.as_ref());
                 let mut column_actions = BTreeMap::new();
-                if main_action.is_none() {
+                if matches!(main_action, None | Some(DiffAction::Upsert)) {
                     for (sub_key, transition) in &column_transitions {
                         if let Some(action) = diff(Some(transition)) {
                             column_actions.insert(sub_key.clone(), action);
@@ -559,10 +562,9 @@ impl TargetHandler<TableSpec> for TableHandler {
                 //   - column change other than a pure add → may lose data → lossy.
                 let child_invalidation = if matches!(main_action, Some(DiffAction::Replace)) {
                     Some(TargetChildInvalidation::Destructive)
-                } else if main_action.is_none()
-                    && column_actions
-                        .values()
-                        .any(|a| !matches!(a, DiffAction::Insert))
+                } else if column_actions
+                    .values()
+                    .any(|a| !matches!(a, DiffAction::Insert))
                 {
                     Some(TargetChildInvalidation::Lossy)
                 } else {
@@ -609,20 +611,22 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let db_key = self.db_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let db_key = db_key.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         let a = match action {
                             TargetAction::Create(a)
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        out.push(apply_table_action(&db, &db_key, a).await?);
+                        let child = apply_table_action(&db, &db_key, a).await?;
+                        if let (Some(slot), Some(child)) = (child_slot, child) {
+                            slot.fulfill(child)?;
+                        }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )
@@ -643,8 +647,9 @@ fn resolve_db(
     })
 }
 
-/// Apply one resolved table action and return the row child provider (or
-/// `None` for a drop). Mirrors Python's `_apply_table_actions` decision tree.
+/// Apply one resolved table action and return the row child handler
+/// definition (`None` for a drop), which the sink uses to fulfill the
+/// action's child slot. Mirrors Python's `_apply_table_actions` decision tree.
 async fn apply_table_action(
     db: &Database,
     db_key: &str,
@@ -660,7 +665,10 @@ async fn apply_table_action(
     // Virtual (vec0) tables can't use ALTER TABLE — any column change is
     // upgraded to a full DROP+CREATE, matching Python.
     let is_virtual = spec.as_ref().is_some_and(|s| s.virtual_table_def.is_some());
-    if is_virtual && main_action.is_none() && !column_actions.is_empty() {
+    if is_virtual
+        && matches!(main_action, None | Some(DiffAction::Upsert))
+        && !column_actions.is_empty()
+    {
         main_action = Some(DiffAction::Replace);
         column_actions.clear();
     }
@@ -683,19 +691,20 @@ async fn apply_table_action(
         return Ok(None);
     };
 
-    match main_action {
-        Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace) => {
-            // (Re)create the whole table. `create_table` uses `IF NOT EXISTS`,
-            // so an `upsert` against an already-present table is a no-op.
-            create_table(db, &spec).await?;
-        }
-        _ => {
-            // No structural change: reconcile non-PK columns incrementally,
-            // preserving existing rows. (Virtual tables never reach here.)
-            if !column_actions.is_empty() {
-                apply_column_actions(db, &spec, &column_actions).await?;
-            }
-        }
+    if matches!(
+        main_action,
+        Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace)
+    ) {
+        // (Re)create the whole table. `create_table` uses `IF NOT EXISTS`,
+        // so an `upsert` against an already-present table is a no-op — which
+        // is exactly why an `upsert` still falls through to the column
+        // reconcile below.
+        create_table(db, &spec).await?;
+    }
+    if matches!(main_action, None | Some(DiffAction::Upsert)) && !column_actions.is_empty() {
+        // Reconcile non-PK columns incrementally, preserving existing rows.
+        // (Virtual tables never reach here — upgraded to Replace above.)
+        apply_column_actions(db, &spec, &column_actions).await?;
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {

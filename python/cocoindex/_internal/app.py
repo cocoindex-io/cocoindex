@@ -379,6 +379,8 @@ class App(Generic[P, R]):
 
         This will:
         - Delete all target states created by the app (e.g., drop tables, delete rows)
+        - Abandon user-managed containers (e.g., message topics): CocoIndex stops
+          writing to them and leaves their contents as-is. See the connector's docs.
         - Clear the app's internal state database
         """
         env, core_app = await self._get_core_env_app()
@@ -391,6 +393,8 @@ class App(Generic[P, R]):
 
         This will:
         - Delete all target states created by the app (e.g., drop tables, delete rows)
+        - Abandon user-managed containers (e.g., message topics): CocoIndex stops
+          writing to them and leaves their contents as-is. See the connector's docs.
         - Clear the app's internal state database
 
         Args:
