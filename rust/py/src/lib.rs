@@ -20,6 +20,7 @@ mod runtime;
 mod rwlock;
 mod stable_path;
 mod target_state;
+mod target_state_codec;
 mod value;
 
 #[pyo3::pymodule]

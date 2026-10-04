@@ -405,13 +405,15 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     /// `desired_target_state` is borrowed (not owned) because the engine
     /// holds it under a short-lived `tokio::sync::MutexGuard` for the
     /// duration of this call — see the lock-scoped call site in
-    /// `submit()`'s `pre_commit`. Borrowing here lets the host-specific
-    /// implementation decide whether (and how) to clone:
+    /// `submit()`'s `pre_commit` — and may call again for the same value
+    /// when the pre-commit is retried. Borrowing here lets the host-specific
+    /// implementation decide whether (and how) to materialize it:
     ///
     /// * Native Rust profile (`Value: Clone`): typically `value.clone()`
     ///   when constructing the `Action`.
-    /// * Python profile (`Py<PyAny>: !Clone`): `value.clone_ref(py)`
-    ///   under the GIL.
+    /// * Python profile: the value is held encoded where it is plain data,
+    ///   decoded for each call, and the returned action is held encoded in
+    ///   turn (`rust/py/src/target_state_codec.rs`).
     ///
     /// Avoids forcing every call site to round-trip through an
     /// engine-level `clone_target_state_value` even when the impl

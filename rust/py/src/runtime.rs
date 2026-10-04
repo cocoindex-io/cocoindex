@@ -19,6 +19,7 @@ pub struct PythonObjects {
     /// `ChildSlot(core_slot)`: wraps a `ChildTargetSlot` for a container sink.
     pub child_slot_wrapper_fn: Py<PyAny>,
     pub non_existence: Py<PyAny>,
+    pub target_state_codec: crate::target_state_codec::TargetStateCodec,
 }
 
 impl PythonObjects {
@@ -46,7 +47,9 @@ pub fn init_runtime(
     serialize_fn: Py<PyAny>,
     child_slot_wrapper_fn: Py<PyAny>,
     non_existence: Py<PyAny>,
+    target_state_codec: Bound<'_, PyAny>,
 ) -> PyResult<()> {
+    let target_state_codec = crate::target_state_codec::TargetStateCodec::new(&target_state_codec)?;
     if let Err(_) = pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()) {
         return Err(PyException::new_err(
             "Failed to initialize Tokio runtime: already initialized",
@@ -58,6 +61,7 @@ pub fn init_runtime(
             serialize_fn,
             child_slot_wrapper_fn,
             non_existence,
+            target_state_codec,
         }))
         .map_err(|_| PyException::new_err("Failed to set Python objects: already initialized"))?;
     Ok(())

@@ -71,6 +71,12 @@ The `reconcile()` method must be **non-blocking**. It should only compare states
 Annotate the `prev_possible_records` parameter with `Collection[YourTrackingRecord]` so CocoIndex can properly reconstruct stored tracking records during deserialization. See [Serialization](../programming_guide/serialization) for details on supported types.
 :::
 
+:::info[Values and actions are equal copies]
+CocoIndex holds every declared target state until its processing component commits, and every action until its sink has applied it. To keep that cheap, a value made of plain data — builtin containers and scalars, date and time types, `Decimal`, `UUID`, `ipaddress` and `pathlib` objects, numpy arrays and scalars, enum members, and NamedTuples — is held in a compact encoded form from the moment it's declared. `reconcile()` then receives an equal copy of the value, with the same types (a tuple stays a tuple), rather than the declared object itself, and the sink receives equal copies of the actions `reconcile()` returned. A value holding anything else, such as a dataclass, a pydantic model, or a client handle, reaches `reconcile()` as the declared object.
+
+So don't rely on the identity of a declared value or an action, or pass mutable state through them; and since the copy is taken at declaration, changes made to a value after it was declared are not seen.
+:::
+
 ### Tracking record *(you define)*
 
 A **tracking record** captures the essential information needed to detect changes. Good tracking records:

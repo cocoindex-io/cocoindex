@@ -7,6 +7,7 @@ import sysconfig as _sysconfig
 
 from . import core as _core
 from . import serde as _serde
+from . import target_state_codec as _target_state_codec
 from . import typing as _typing
 from .._version import __version__ as _package_version
 from .memo_fingerprint import register_memo_key_function as _register_memo_key_function
@@ -23,6 +24,7 @@ _core.init_runtime(
     serialize_fn=_serde.serialize,
     child_slot_wrapper_fn=_ChildSlot,
     non_existence=_typing.NON_EXISTENCE,
+    target_state_codec=_target_state_codec,
 )
 
 # Make core stable-path objects usable in memo key fingerprints.
