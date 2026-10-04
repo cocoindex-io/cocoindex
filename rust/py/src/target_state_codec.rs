@@ -53,6 +53,16 @@ impl PyTargetStateValue {
             encoded.cast_bound::<PyBytes>(py)?.as_bytes(),
         )))
     }
+
+    /// The value as an object: a new decoding each time when held encoded.
+    pub fn to_object(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            Self::Object(object) => Ok(object.clone_ref(py)),
+            Self::Encoded(encoding) => codec()
+                .decode_value
+                .call1(py, (PyBytes::new(py, encoding),)),
+        }
+    }
 }
 
 /// A target action `reconcile()` returned.
@@ -89,18 +99,13 @@ pub struct DesiredForReconcile {
 impl DesiredForReconcile {
     /// `value` as an object: a new decoding when held encoded.
     pub fn new(py: Python<'_>, value: &PyTargetStateValue) -> PyResult<Self> {
-        match value {
-            PyTargetStateValue::Object(object) => Ok(Self {
-                object: object.clone_ref(py),
-                encoding: None,
-            }),
-            PyTargetStateValue::Encoded(encoding) => Ok(Self {
-                object: codec()
-                    .decode_value
-                    .call1(py, (PyBytes::new(py, encoding),))?,
-                encoding: Some(encoding.clone()),
-            }),
-        }
+        Ok(Self {
+            object: value.to_object(py)?,
+            encoding: match value {
+                PyTargetStateValue::Object(_) => None,
+                PyTargetStateValue::Encoded(encoding) => Some(encoding.clone()),
+            },
+        })
     }
 
     pub fn non_existence(py: Python<'_>) -> Self {

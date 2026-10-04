@@ -15,6 +15,7 @@ use pyo3::exceptions::PyDeprecationWarning;
 use pyo3::types::{PyDict, PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
+use crate::memo_fingerprint::plain_fingerprint;
 use crate::prelude::*;
 
 use crate::stable_path::PyStableKey;
@@ -322,13 +323,36 @@ pub struct PyChildTargetSlot(ChildTargetSlot<PyEngineProfile>);
 
 #[pymethods]
 impl PyChildTargetSlot {
-    fn fulfill(&self, handler: Py<PyAny>) -> PyResult<()> {
-        self.0.fulfill(PyTargetHandler(handler)).into_py_result()
+    fn fulfill(&self, py: Python<'_>, handler: Py<PyAny>) -> PyResult<()> {
+        self.0
+            .fulfill(PyTargetHandler::new(handler.into_bound(py))?)
+            .into_py_result()
     }
 }
 
 #[pyclass(name = "TargetHandler")]
-pub struct PyTargetHandler(Py<PyAny>);
+pub struct PyTargetHandler {
+    handler: Py<PyAny>,
+    /// The handler's `tracks_value_fingerprint` opt-in: its tracking record
+    /// for a declared value is `fingerprint_object(value)`.
+    tracks_value_fingerprint: bool,
+}
+
+impl PyTargetHandler {
+    fn new(handler: Bound<'_, PyAny>) -> PyResult<Self> {
+        let tracks_value_fingerprint = handler
+            .getattr(pyo3::intern!(handler.py(), "tracks_value_fingerprint"))?
+            .extract()?;
+        Ok(Self {
+            handler: handler.unbind(),
+            tracks_value_fingerprint,
+        })
+    }
+}
+
+/// `serde.serialize(fingerprint_object(value))` for plain data: the msgspec
+/// routing byte, then the 16-byte digest as a msgpack `bin 8`.
+const FINGERPRINT_RECORD_HEADER: [u8; 3] = [0x01, 0xc4, 16];
 
 impl TargetHandler<PyEngineProfile> for PyTargetHandler {
     fn reconcile(
@@ -351,7 +375,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                 Some(value) => DesiredForReconcile::new(py, value)?,
                 None => DesiredForReconcile::non_existence(py),
             };
-            let py_output = self.0.call_method(
+            let py_output = self.handler.call_method(
                 py,
                 "reconcile",
                 (
@@ -401,9 +425,30 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         .from_py_result()
     }
 
+    fn value_fingerprint_record(
+        &self,
+        desired_target_state: &PyTargetStateValue,
+    ) -> Result<Option<bytes::Bytes>> {
+        if !self.tracks_value_fingerprint {
+            return Ok(None);
+        }
+        Python::attach(|py| -> PyResult<_> {
+            // A value held encoded is fingerprinted as its decoding: an exact
+            // copy, so it has the declared object's fingerprint.
+            let value = desired_target_state.to_object(py)?;
+            Ok(plain_fingerprint(value.bind(py))?.map(|fp| {
+                let mut record = Vec::with_capacity(FINGERPRINT_RECORD_HEADER.len() + 16);
+                record.extend_from_slice(&FINGERPRINT_RECORD_HEADER);
+                record.extend_from_slice(fp.as_slice());
+                record.into()
+            }))
+        })
+        .from_py_result()
+    }
+
     fn attachments(&self) -> Result<Vec<(Arc<str>, PyTargetHandler)>> {
         Python::attach(|py| -> PyResult<_> {
-            let obj = self.0.bind(py);
+            let obj = self.handler.bind(py);
             if !obj.hasattr("attachments")? {
                 return Ok(vec![]);
             }
@@ -412,7 +457,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
             let mut entries = Vec::with_capacity(dict.len());
             for (key, value) in dict.iter() {
                 let att_type: String = key.extract()?;
-                entries.push((Arc::from(att_type), PyTargetHandler(value.unbind())));
+                entries.push((Arc::from(att_type), PyTargetHandler::new(value)?));
             }
             Ok(entries)
         })
@@ -508,12 +553,12 @@ pub fn root_target_states_provider_registry()
 #[pyfunction]
 pub fn register_root_target_states_provider(
     name: String,
-    handler: Py<PyAny>,
+    handler: Bound<'_, PyAny>,
 ) -> PyResult<PyTargetStateProvider> {
     let provider = root_target_states_provider_registry()
         .lock()
         .unwrap()
-        .register_root(name, PyTargetHandler(handler))
+        .register_root(name, PyTargetHandler::new(handler)?)
         .into_py_result()?;
     Ok(PyTargetStateProvider(provider))
 }

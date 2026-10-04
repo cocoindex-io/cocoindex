@@ -701,6 +701,40 @@ Choose tracking records that enable efficient change detection without storing f
 | Schema/structure | Schema definition |
 | Directory existence | `None` (presence is enough) |
 
+### Skip reconciling unchanged values
+
+When a handler's tracking record is exactly the fingerprint of the declared value, set `tracks_value_fingerprint = True` on the handler class:
+
+```python
+from cocoindex.connectorkits.fingerprint import fingerprint_object
+
+class RowHandler(coco.TargetHandler[dict[str, Any], bytes]):
+    tracks_value_fingerprint = True
+
+    def reconcile(self, key, desired_target_state, prev_possible_records, prev_may_be_missing, /):
+        if coco.is_non_existence(desired_target_state):
+            ...
+        target_fp = fingerprint_object(desired_target_state)
+        if not prev_may_be_missing and all(
+            prev == target_fp for prev in prev_possible_records
+        ):
+            return None
+        return coco.TargetReconcileOutput(
+            action=..., sink=self._sink, tracking_record=target_fp
+        )
+```
+
+CocoIndex then doesn't call `reconcile()` for a declared value that is unchanged — one that `reconcile()` above would return `None` for — so an update where most values are unchanged costs almost nothing per value. `reconcile()` is still called for new, changed, and removed target states, and whenever `prev_may_be_missing` is `True`.
+
+Only set it when both hold:
+
+- The tracking record is `fingerprint_object(desired_target_state)` itself — not a fingerprint of a part of the value or of a derived value, and not wrapped in another type.
+- An unchanged fingerprint means there is nothing to do.
+
+The attribute has no effect on a container handler, whose `reconcile()` always runs so that its sink can fulfill the child slot.
+
+`reconcile()` must keep its own comparison: it is still called for values that aren't plain data (anything other than `None`, `bool`, `int`, `float`, `str`, `bytes`, and `list` / `tuple` / `dict`-with-`str`-keys of those), unchanged or not.
+
 ### Shared action sinks
 
 If all instances of a handler use the same action logic, create a shared sink. The action function must accept `context_provider` as its first argument:

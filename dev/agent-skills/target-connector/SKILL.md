@@ -203,6 +203,8 @@ fp = fingerprint_str(text)
 fp = fingerprint_object(obj)
 ```
 
+When the tracking record is exactly `fingerprint_object(desired_target_state)` (the usual row handler), set `tracks_value_fingerprint = True` on the handler class. The engine then skips `reconcile()` for unchanged plain-data values. Keep the comparison in `reconcile()` — it still runs for values that aren't plain data. Don't set it when the record is a fingerprint of a derived value or is wrapped in another type.
+
 ### Shared Action Sinks
 
 Create module-level shared sinks when all handler instances use the same action logic. The callback must accept `context_provider: ContextProvider` as its first positional argument:

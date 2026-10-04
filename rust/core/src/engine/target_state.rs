@@ -426,6 +426,20 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
 
+    /// For a handler whose tracking record is a fingerprint of the declared
+    /// value: the serialized tracking record `reconcile` would return for
+    /// `desired_target_state`. The engine then skips `reconcile` for a state
+    /// that is surely present and whose previous records all equal it.
+    ///
+    /// `None` (the default) means `reconcile` must decide — the handler tracks
+    /// something else, or cannot fingerprint this value without `reconcile`.
+    fn value_fingerprint_record(
+        &self,
+        _desired_target_state: &Prof::TargetStateValue,
+    ) -> Result<Option<bytes::Bytes>> {
+        Ok(None)
+    }
+
     /// Return all attachment types this handler supports, keyed by type name.
     /// The engine eagerly registers these as providers so that orphaned
     /// attachments can be cleaned up even when not declared in the current run.
