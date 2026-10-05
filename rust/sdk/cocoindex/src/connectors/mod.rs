@@ -1,0 +1,32 @@
+//! External-system connectors for CocoIndex pipelines.
+
+#[cfg(feature = "amazon_s3")]
+pub mod amazon_s3;
+#[cfg(feature = "doris")]
+pub mod doris;
+#[cfg(feature = "falkordb")]
+pub mod falkordb;
+#[cfg(feature = "google_drive")]
+pub mod gdrive;
+#[cfg(feature = "iggy")]
+pub mod iggy;
+#[cfg(feature = "kafka")]
+pub mod kafka;
+#[cfg(feature = "lancedb")]
+pub mod lancedb;
+#[cfg(feature = "neo4j")]
+pub mod neo4j;
+#[cfg(feature = "oci_object_storage")]
+pub mod oci_object_storage;
+#[cfg(feature = "postgres")]
+pub mod postgres;
+#[cfg(feature = "qdrant")]
+pub mod qdrant;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+#[cfg(feature = "surrealdb")]
+pub mod surrealdb;
+#[cfg(feature = "turbopuffer")]
+pub mod turbopuffer;
+#[cfg(feature = "valkey")]
+pub mod valkey;

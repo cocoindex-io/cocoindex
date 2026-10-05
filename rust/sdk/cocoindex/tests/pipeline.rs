@@ -1,8 +1,7 @@
 //! Integration tests for the pipeline: App::update, memo::cached, sync API.
 
-use cocoindex::{
-    App, ContextKey, Environment, IdGenerator, UuidGenerator, generate_id, generate_uuid,
-};
+use cocoindex::resources::id::{IdGenerator, UuidGenerator, generate_id, generate_uuid};
+use cocoindex::{App, ContextKey, Environment};
 use tokio::time::{Duration, sleep};
 
 /// Helper: create an App with a temp LMDB directory (async tests).
@@ -676,90 +675,126 @@ async fn no_detect_change_context_key_does_not_invalidate_memo() {
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
 }
 
-/// `ContextKey::new_with_state` drives memo invalidation from a derived state,
-/// not the whole value. Here the resource is non-serializable and only its
-/// `version` is tracked:
-///   - changing a non-state field (`_tag`) must NOT invalidate the memo,
-///   - changing the state field (`version`) MUST invalidate it.
+/// A tracked context uses the value type's `MemoInput` implementation for both
+/// stable identity and external-state validation.
 #[tokio::test]
-async fn state_fn_context_key_invalidates_on_state_change_only() {
+async fn type_owned_context_memo_state_invalidates_cached_function() {
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Deliberately NOT `Serialize` — proves new_with_state works for resources
-    // that cannot be fingerprinted directly.
     struct Resource {
+        id: &'static str,
         version: u64,
-        _tag: &'static str,
+    }
+
+    #[cocoindex::async_trait]
+    impl cocoindex::MemoInput for Resource {
+        fn write_memo_key(
+            &self,
+            writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+        ) -> cocoindex::Result<()> {
+            writer.write(&self.id)
+        }
+
+        async fn memo_state(
+            &self,
+            previous: Option<&cocoindex::memo::MemoStateValue>,
+        ) -> cocoindex::Result<Option<cocoindex::memo::MemoStateDecision>> {
+            let previous_version = previous.and_then(|state| state.deserialize::<u64>().ok());
+            Ok(Some(cocoindex::memo::MemoStateDecision::new(
+                &self.version,
+                previous_version == Some(self.version),
+            )?))
+        }
     }
 
     static KEY: OnceLock<ContextKey<Resource>> = OnceLock::new();
-    let key = KEY
-        .get_or_init(|| ContextKey::new_with_state("pipeline/state_fn", |r: &Resource| r.version));
-
+    let key = KEY.get_or_init(|| ContextKey::new_detect_change("pipeline/type_owned_state"));
     let dir = tempfile::tempdir().unwrap();
-    let call_count = std::sync::Arc::new(AtomicUsize::new(0));
+    let function_calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let component_calls = std::sync::Arc::new(AtomicUsize::new(0));
 
     async fn run(
         path: std::path::PathBuf,
         key: ContextKey<Resource>,
         version: u64,
-        tag: &'static str,
-        call_count: std::sync::Arc<AtomicUsize>,
-    ) -> u64 {
+        function_calls: std::sync::Arc<AtomicUsize>,
+        component_calls: std::sync::Arc<AtomicUsize>,
+    ) {
         let app = Environment::builder()
             .db_path(path)
-            .provide_key(&key, Resource { version, _tag: tag })
+            .provide_key(
+                &key,
+                Resource {
+                    id: "resource",
+                    version,
+                },
+            )
             .build()
             .await
             .unwrap()
-            .app("state_fn_context_key")
+            .app("type_owned_context_state")
             .await
             .unwrap();
-        let count = call_count.clone();
         app.update(move |ctx| async move {
-            let v: u64 = ctx
-                .memo(&"stable", move |ctx| {
-                    let count = count.clone();
-                    async move {
-                        count.fetch_add(1, Ordering::SeqCst);
-                        Ok(ctx.get_key(&key)?.version)
-                    }
-                })
-                .await?;
-            Ok::<_, cocoindex::Error>(v)
+            let function_key = key.clone();
+            ctx.memo(&"stable", move |ctx| {
+                let function_calls = function_calls.clone();
+                async move {
+                    function_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(ctx.get_key(&function_key)?.version)
+                }
+            })
+            .await?;
+
+            let memo_fp = cocoindex_utils::fingerprint::Fingerprint::from(
+                &"type_owned_context_state_component",
+            )
+            .unwrap();
+            ctx.__use_mount_fp(
+                "stateful_child".to_string(),
+                Some(memo_fp),
+                move |child_ctx| async move {
+                    component_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(child_ctx.get_key(&key)?.version)
+                },
+            )
+            .await?;
+            Ok(())
         })
         .await
-        .unwrap()
+        .unwrap();
     }
 
-    let path = dir.path().join("lmdb");
-
-    // Run 1: version=1, tag="a" -> miss (executes).
-    assert_eq!(
-        run(path.clone(), key.clone(), 1, "a", call_count.clone()).await,
-        1
-    );
-    assert_eq!(call_count.load(Ordering::SeqCst), 1);
-
-    // Run 2: version=1, tag="b" -> state (version) unchanged -> cache HIT.
-    assert_eq!(
-        run(path.clone(), key.clone(), 1, "b", call_count.clone()).await,
-        1
-    );
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
+    run(
+        dir.path().join("lmdb"),
+        key.clone(),
         1,
-        "changing a non-state field must not invalidate the memo"
-    );
+        function_calls.clone(),
+        component_calls.clone(),
+    )
+    .await;
+    run(
+        dir.path().join("lmdb"),
+        key.clone(),
+        1,
+        function_calls.clone(),
+        component_calls.clone(),
+    )
+    .await;
+    assert_eq!(function_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(component_calls.load(Ordering::SeqCst), 1);
 
-    // Run 3: version=2 -> state changed -> cache MISS (re-executes).
-    assert_eq!(run(path, key.clone(), 2, "b", call_count.clone()).await, 2);
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
+    run(
+        dir.path().join("lmdb"),
+        key.clone(),
         2,
-        "changing the tracked state must invalidate the memo"
-    );
+        function_calls.clone(),
+        component_calls.clone(),
+    )
+    .await;
+    assert_eq!(function_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(component_calls.load(Ordering::SeqCst), 2);
 }
 
 /// Regression test: two memo bodies running concurrently, each reading a
@@ -1603,8 +1638,10 @@ async fn memo_with_function_dep_caches_when_unchanged() {
 
 mod batched_test {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, LazyLock};
+    use tokio::sync::Notify;
 
     static ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
@@ -1664,6 +1701,217 @@ mod batched_test {
             ITEMS_PROCESSED.load(Ordering::SeqCst),
             3,
             "run 2 should be all cache hits; batch impl must not reprocess items"
+        );
+    }
+
+    type RecordedBatch = (i64, Vec<i64>);
+    static UNMEMOIZED_BATCHES: LazyLock<Mutex<Vec<RecordedBatch>>> =
+        LazyLock::new(|| Mutex::new(Vec::new()));
+
+    #[cocoindex::function(batching, max_batch_size = 2)]
+    async fn macro_unmemoized_batch(
+        _ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+        factor: i64,
+    ) -> cocoindex::Result<Vec<i64>> {
+        UNMEMOIZED_BATCHES
+            .lock()
+            .unwrap()
+            .push((factor, items.clone()));
+        if items == [0] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    #[tokio::test]
+    async fn function_batching_is_item_shaped_unmemoized_and_capped() {
+        UNMEMOIZED_BATCHES.lock().unwrap().clear();
+        let (app, _dir) = temp_app("function_batching_unmemoized").await;
+
+        for _ in 0..2 {
+            app.update(|ctx| async move {
+                let calls = (0..6).map(|item| macro_unmemoized_batch(&ctx, item, 3));
+                let outputs = futures::future::join_all(calls).await;
+                let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+                assert_eq!(outputs, vec![0, 3, 6, 9, 12, 15]);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        let batches = UNMEMOIZED_BATCHES.lock().unwrap();
+        assert_eq!(
+            batches.iter().map(|(_, items)| items.len()).sum::<usize>(),
+            12
+        );
+        assert!(batches.iter().any(|(_, items)| items.len() > 1));
+        assert!(batches.iter().all(|(_, items)| items.len() <= 2));
+    }
+
+    static DEADLINE_BLOCKER_STARTED: Notify = Notify::const_new();
+    static DEADLINE_BLOCKER_RELEASE: Notify = Notify::const_new();
+
+    #[cocoindex::function(batching, max_batch_size = 2)]
+    async fn deadline_isolated_batch(
+        ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+    ) -> cocoindex::Result<Vec<i64>> {
+        if items == [0] {
+            DEADLINE_BLOCKER_STARTED.notify_one();
+            DEADLINE_BLOCKER_RELEASE.notified().await;
+        } else {
+            ctx.check_cancellation()?;
+            assert!(
+                !ctx.has_deadline(),
+                "a shared batch body must not inherit one caller's deadline"
+            );
+        }
+        Ok(items)
+    }
+
+    #[tokio::test]
+    async fn scheduled_batch_body_does_not_inherit_first_callers_deadline() {
+        let (app, _dir) = temp_app("batching_deadline_isolation").await;
+
+        app.update(|ctx| async move {
+            let blocker_ctx = ctx.clone();
+            let blocker =
+                tokio::spawn(async move { deadline_isolated_batch(&blocker_ctx, 0).await });
+            DEADLINE_BLOCKER_STARTED.notified().await;
+
+            // Queue a call whose deadline expires while the first physical
+            // batch is blocked, then fill the pending batch with an ordinary
+            // caller. The shared body must use neither caller's deadline.
+            let expiring_ctx = ctx.with_timeout(Duration::from_millis(10));
+            let expiring =
+                tokio::spawn(async move { deadline_isolated_batch(&expiring_ctx, 1).await });
+            sleep(Duration::from_millis(30)).await;
+            let ordinary = deadline_isolated_batch(&ctx, 2).await;
+            let expired = expiring.await.unwrap();
+
+            DEADLINE_BLOCKER_RELEASE.notify_one();
+            let blocked = blocker.await.unwrap();
+
+            assert_eq!(expired?, 1);
+            assert_eq!(ordinary?, 2);
+            assert_eq!(blocked?, 0);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    static MEMOIZED_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo, batching, max_batch_size = 8)]
+    async fn macro_memoized_batch(
+        _ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+        factor: i64,
+    ) -> cocoindex::Result<Vec<i64>> {
+        MEMOIZED_ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
+        if items == [1] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    async fn run_memoized_batch(app: &App, factor: i64) {
+        app.update(move |ctx| async move {
+            let calls = [1, 2, 3]
+                .into_iter()
+                .map(|item| macro_memoized_batch(&ctx, item, factor));
+            let outputs = futures::future::join_all(calls).await;
+            let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+            assert_eq!(outputs, vec![factor, factor * 2, factor * 3]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn function_memo_batching_caches_items_and_keys_extra_params() {
+        MEMOIZED_ITEMS_PROCESSED.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("function_memo_batching").await;
+
+        run_memoized_batch(&app, 2).await;
+        assert_eq!(MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst), 3);
+
+        run_memoized_batch(&app, 2).await;
+        assert_eq!(
+            MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            3,
+            "unchanged items should all hit their per-item memo entries"
+        );
+
+        run_memoized_batch(&app, 3).await;
+        assert_eq!(
+            MEMOIZED_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            6,
+            "changing an extra parameter must invalidate every item's memo key"
+        );
+    }
+
+    static CONTEXT_ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    cocoindex::context_key!(
+        static BATCH_FACTOR: i64, key = "pipeline/function_batching_context_factor",
+        detect_change
+    );
+
+    #[cocoindex::function(memo, batching)]
+    async fn macro_context_batch(
+        ctx: &cocoindex::Ctx,
+        items: Vec<i64>,
+    ) -> cocoindex::Result<Vec<i64>> {
+        let factor = *ctx.get_key(&BATCH_FACTOR)?;
+        CONTEXT_ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
+        if items == [1] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        Ok(items.into_iter().map(|item| item * factor).collect())
+    }
+
+    async fn run_context_batch(db_path: &std::path::Path, factor: i64) {
+        let app = Environment::builder()
+            .db_path(db_path)
+            .provide_key(&BATCH_FACTOR, factor)
+            .build()
+            .await
+            .unwrap()
+            .app("function_context_batch")
+            .await
+            .unwrap();
+        app.update(move |ctx| async move {
+            let calls = [1, 2, 3]
+                .into_iter()
+                .map(|item| macro_context_batch(&ctx, item));
+            let outputs = futures::future::join_all(calls).await;
+            let outputs = outputs.into_iter().collect::<cocoindex::Result<Vec<_>>>()?;
+            assert_eq!(outputs, vec![factor, factor * 2, factor * 3]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn function_memo_batching_shares_context_dependencies_with_every_item() {
+        CONTEXT_ITEMS_PROCESSED.store(0, Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("lmdb");
+
+        run_context_batch(&db_path, 2).await;
+        assert_eq!(CONTEXT_ITEMS_PROCESSED.load(Ordering::SeqCst), 3);
+
+        run_context_batch(&db_path, 3).await;
+        assert_eq!(
+            CONTEXT_ITEMS_PROCESSED.load(Ordering::SeqCst),
+            6,
+            "every cached item must inherit the batch body's context-key dependency"
         );
     }
 }
@@ -1780,6 +2028,128 @@ mod memo_test_borrowed_str {
     }
 }
 
+mod memo_test_nested_inputs {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    #[derive(Clone)]
+    struct TrackedResource {
+        id: &'static str,
+        version: u64,
+    }
+
+    #[cocoindex::async_trait]
+    impl cocoindex::MemoInput for TrackedResource {
+        fn write_memo_key(
+            &self,
+            writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+        ) -> cocoindex::Result<()> {
+            writer.write(&self.id)
+        }
+
+        async fn memo_state(
+            &self,
+            previous: Option<&cocoindex::memo::MemoStateValue>,
+        ) -> cocoindex::Result<Option<cocoindex::memo::MemoStateDecision>> {
+            let previous_version = previous.and_then(|state| state.deserialize::<u64>().ok());
+            Ok(Some(cocoindex::memo::MemoStateDecision::new(
+                &self.version,
+                previous_version == Some(self.version),
+            )?))
+        }
+    }
+
+    #[derive(Clone, cocoindex::MemoInput)]
+    struct NestedInput {
+        resources: Vec<Arc<TrackedResource>>,
+    }
+
+    static ARG_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static CONTEXT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo)]
+    async fn read_argument(_ctx: &cocoindex::Ctx, input: &NestedInput) -> cocoindex::Result<u64> {
+        ARG_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(input.resources.iter().map(|item| item.version).sum())
+    }
+
+    fn resources_key() -> &'static ContextKey<Vec<Arc<TrackedResource>>> {
+        static KEY: OnceLock<ContextKey<Vec<Arc<TrackedResource>>>> = OnceLock::new();
+        KEY.get_or_init(|| ContextKey::new_detect_change("pipeline/nested_memo_input_context"))
+    }
+
+    #[cocoindex::function(memo)]
+    async fn read_context(ctx: &cocoindex::Ctx) -> cocoindex::Result<u64> {
+        CONTEXT_CALLS.fetch_add(1, Ordering::SeqCst);
+        read_context_helper(&ctx).await
+    }
+
+    #[cocoindex::function]
+    async fn read_context_helper(ctx: &cocoindex::Ctx) -> cocoindex::Result<u64> {
+        Ok(ctx
+            .get_key(resources_key())?
+            .iter()
+            .map(|item| item.version)
+            .sum())
+    }
+
+    fn nested(version: u64) -> NestedInput {
+        NestedInput {
+            resources: vec![Arc::new(TrackedResource {
+                id: "resource",
+                version,
+            })],
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_argument_state_controls_real_function_memo_reuse() {
+        ARG_CALLS.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("nested_argument_memo_state").await;
+
+        for (version, expected_calls) in [(1, 1), (1, 1), (2, 2)] {
+            app.update(move |ctx| async move {
+                assert_eq!(read_argument(&ctx, &nested(version)).await?, version);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(ARG_CALLS.load(Ordering::SeqCst), expected_calls);
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_context_state_controls_real_function_memo_reuse() {
+        CONTEXT_CALLS.store(0, Ordering::SeqCst);
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("lmdb");
+
+        async fn run(path: PathBuf, version: u64) -> u64 {
+            let app = Environment::builder()
+                .db_path(path)
+                .provide_key(resources_key(), nested(version).resources)
+                .build()
+                .await
+                .unwrap()
+                .app("nested_context_memo_state")
+                .await
+                .unwrap();
+            app.update(|ctx| async move { read_context(&ctx).await })
+                .await
+                .unwrap()
+        }
+
+        assert_eq!(run(db_path.clone(), 1).await, 1);
+        assert_eq!(CONTEXT_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(run(db_path.clone(), 1).await, 1);
+        assert_eq!(CONTEXT_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(run(db_path, 2).await, 2);
+        assert_eq!(CONTEXT_CALLS.load(Ordering::SeqCst), 2);
+    }
+}
+
 mod memo_test_file_state {
     use super::*;
     use std::path::{Path, PathBuf};
@@ -1787,8 +2157,9 @@ mod memo_test_file_state {
     use std::sync::{Arc, OnceLock};
     use std::time::Duration;
 
-    use cocoindex::fs::{FileEntry, FilePath, walk_dir};
-    use cocoindex::{ContextKey, Ctx, FileLike, Result};
+    use cocoindex::resources::file::FileLike;
+    use cocoindex::resources::fs::{FileEntry, FilePath, walk_dir};
+    use cocoindex::{ContextKey, Ctx, Result};
 
     fn calls_key() -> &'static ContextKey<Arc<AtomicUsize>> {
         static KEY: OnceLock<ContextKey<Arc<AtomicUsize>>> = OnceLock::new();
@@ -1809,10 +2180,48 @@ mod memo_test_file_state {
         .unwrap()
     }
 
+    fn read_source_files(root: &Path) -> Vec<FileEntry> {
+        let mut files = walk_dir(FilePath::with_base_dir(
+            "docs",
+            root.to_path_buf(),
+            PathBuf::new(),
+        ))
+        .recursive(true)
+        .walk()
+        .unwrap();
+        files.sort_by_key(FileEntry::key);
+        files
+    }
+
     #[cocoindex::function(memo)]
     async fn read_file(ctx: &Ctx, file: &FileEntry) -> Result<String> {
         ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
         file.read_text().await
+    }
+
+    #[cocoindex::function(memo)]
+    async fn read_files(ctx: &Ctx, files: &Vec<FileEntry>) -> Result<Vec<String>> {
+        ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
+        let mut result = Vec::with_capacity(files.len());
+        for file in files {
+            result.push(format!("{}={}", file.key(), file.read_text().await?));
+        }
+        Ok(result)
+    }
+
+    async fn assert_file_list(app: &cocoindex::App, root: &Path, reverse: bool, expected: &[&str]) {
+        let root = root.to_path_buf();
+        let actual = app
+            .update(move |ctx| async move {
+                let mut files = read_source_files(&root);
+                if reverse {
+                    files.reverse();
+                }
+                read_files(&ctx, &files).await
+            })
+            .await
+            .unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
@@ -1881,6 +2290,60 @@ mod memo_test_file_state {
             2,
             "changed content must invalidate the memoized result"
         );
+    }
+
+    #[tokio::test]
+    async fn file_container_tracks_unchanged_content_add_remove_and_reorder() {
+        let source = tempfile::tempdir().unwrap();
+        let root = source.path();
+        std::fs::write(root.join("a.txt"), "A").unwrap();
+        std::fs::write(root.join("b.txt"), "B").unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap()
+            .app("file_container_memo_state")
+            .await
+            .unwrap();
+
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B"]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B"]).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "unchanged input should hit"
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(root.join("b.txt"), "B2").unwrap();
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B2"]).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "changed content should miss"
+        );
+
+        std::fs::write(root.join("c.txt"), "C").unwrap();
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B2", "c.txt=C"]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "added file should miss");
+
+        assert_file_list(&app, root, true, &["c.txt=C", "b.txt=B2", "a.txt=A"]).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "reordered files should miss"
+        );
+
+        std::fs::remove_file(root.join("c.txt")).unwrap();
+        assert_file_list(&app, root, false, &["a.txt=A", "b.txt=B2"]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 5, "removed file should miss");
     }
 }
 
@@ -2691,18 +3154,17 @@ mod mock_bare {
 mod mock_memo {
     use super::*;
 
-    /// Memo function: cached by args. The body is a `'static` closure,
-    /// so `ctx` is NOT available inside. Clone the API before the body,
-    /// then use bare `#[cocoindex::function]` + manual `ctx.memo()`.
-    ///
-    /// This is the realistic pattern for memoizing an API call.
-    #[cocoindex::function]
-    async fn analyze(ctx: &cocoindex::Ctx, input: &str) -> cocoindex::Result<String> {
-        let api = ctx.get_or_err::<MockApi>().unwrap().clone();
-        let key = (__COCO_FN_HASH_ANALYZE, input.to_owned());
-        let input = input.to_owned();
-        ctx.memo(&key, move |_ctx| async move { api.call(&input).await })
-            .await
+    /// Whole-function memoization should use the attribute. Its body receives
+    /// the owned memo-scoped `Ctx`, so non-serializable resources remain
+    /// available through normal context lookup. A skipped argument needs only
+    /// `Clone`; `MockApi` intentionally does not implement `Serialize`.
+    #[cocoindex::function(memo, memo_key(_client = skip))]
+    async fn analyze(
+        ctx: &cocoindex::Ctx,
+        input: String,
+        _client: &MockApi,
+    ) -> cocoindex::Result<String> {
+        ctx.get_or_err::<MockApi>()?.call(&input).await
     }
 
     #[tokio::test]
@@ -2720,8 +3182,9 @@ mod mock_memo {
             .unwrap();
 
         // First run — cache miss, API called.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "hello").await?;
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
             assert_eq!(result, "api:hello");
             Ok(())
         })
@@ -2730,8 +3193,9 @@ mod mock_memo {
         assert_eq!(api.call_count(), 1);
 
         // Second run — same input, cache hit, API NOT called.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "hello").await?;
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
             assert_eq!(result, "api:hello");
             Ok(())
         })
@@ -2739,9 +3203,23 @@ mod mock_memo {
         .unwrap();
         assert_eq!(api.call_count(), 1, "memo should return cached result");
 
-        // Third run — different input, cache miss, API called again.
-        app.update(|ctx| async move {
-            let result = analyze(&ctx, "world").await?;
+        // A distinct non-serializable skipped client does not alter the key.
+        let skipped_client = MockApi::new();
+        let client = skipped_client.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "hello".to_string(), &client).await?;
+            assert_eq!(result, "api:hello");
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(api.call_count(), 1, "skipped client should not invalidate");
+        assert_eq!(skipped_client.call_count(), 0);
+
+        // A keyed argument change still misses the cache.
+        let client = api.clone();
+        app.update(move |ctx| async move {
+            let result = analyze(&ctx, "world".to_string(), &client).await?;
             assert_eq!(result, "api:world");
             Ok(())
         })
@@ -2762,7 +3240,7 @@ fn fs_walk_integration() {
     std::fs::write(dir.path().join("lib.rs"), "pub mod foo;").unwrap();
     std::fs::write(dir.path().join("readme.md"), "# Hello").unwrap();
 
-    let files = cocoindex::fs::walk(dir.path(), &["**/*.rs"]).unwrap();
+    let files = cocoindex::resources::fs::walk(dir.path(), &["**/*.rs"]).unwrap();
     assert_eq!(files.len(), 2);
 
     let file = &files[0]; // lib.rs (sorted)
@@ -2807,7 +3285,7 @@ async fn ctx_mount_each_rejects_duplicate_keys() {
 
 #[tokio::test]
 async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
-    use cocoindex::DirTarget;
+    use cocoindex::resources::fs::DirTarget;
     use std::fs;
     use std::time::Duration;
 
@@ -2882,7 +3360,7 @@ async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
 
 #[tokio::test]
 async fn dir_target_deletes_file_when_source_disappears_via_mount_each() {
-    use cocoindex::DirTarget;
+    use cocoindex::resources::fs::DirTarget;
 
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("lmdb");

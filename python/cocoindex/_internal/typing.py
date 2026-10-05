@@ -76,3 +76,17 @@ class MemoStateOutcome(NamedTuple):
 
     memo_valid: bool = False
     """Whether the cached result is still valid."""
+
+    recollect_after_run: bool = False
+    """Ask for this state to be collected again once the function has re-run.
+
+    Only read when the cached result is not reused. The state function is then
+    called a second time after the function body, with ``NON_EXISTENCE`` as on
+    a first run, and that second state is the one stored. Use it when the
+    state depends on what the function did — for example the dependencies it
+    discovered while running.
+
+    Supported for the state functions of a memoized function's arguments. A
+    memoized component raises an error for it, and state functions of
+    context values do not read it.
+    """

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 /// Re-export of the upstream [`iggy`] crate prelude. Streams and topics are
 /// user-managed, so callers use this to create/manage them and to poll messages
 /// back — without having to depend on the `iggy` crate directly. e.g.
-/// `cocoindex::iggy::prelude::{StreamClient, TopicClient}`.
+/// `cocoindex::connectors::iggy::prelude::{StreamClient, TopicClient}`.
 pub use ::iggy::prelude;
 
 use crate::ctx::Ctx;

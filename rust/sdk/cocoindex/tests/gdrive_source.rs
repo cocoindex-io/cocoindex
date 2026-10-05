@@ -1,7 +1,9 @@
 #![cfg(feature = "google_drive")]
 
-use cocoindex::FileSourceItem;
-use cocoindex::gdrive::{DriveFile, DriveFileInfo, GoogleDriveClient, GoogleDriveSource};
+use cocoindex::connectors::gdrive::{
+    DriveFile, DriveFileInfo, GoogleDriveClient, GoogleDriveSource,
+};
+use cocoindex::resources::file::FileSourceItem;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

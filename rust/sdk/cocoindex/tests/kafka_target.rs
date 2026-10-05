@@ -18,7 +18,8 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::{App, Result, kafka};
+use cocoindex::connectors::kafka;
+use cocoindex::{App, Result};
 use rskafka::client::partition::UnknownTopicHandling;
 use rskafka::client::{Client, ClientBuilder};
 

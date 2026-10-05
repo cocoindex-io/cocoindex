@@ -3,9 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
+use cocoindex::connectors::surrealdb;
 use cocoindex::entity_resolution;
 use cocoindex::prelude::*;
-use cocoindex::surrealdb;
 use serde::Deserialize;
 
 use crate::clients::{EMBEDDER, Embedder, GRAPH, LLM, LlmClient, RESOLVER_LLM};

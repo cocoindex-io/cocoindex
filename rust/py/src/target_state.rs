@@ -15,11 +15,13 @@ use pyo3::exceptions::PyDeprecationWarning;
 use pyo3::types::{PyDict, PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
+use crate::memo_fingerprint::plain_fingerprint;
 use crate::prelude::*;
 
 use crate::stable_path::PyStableKey;
 
 use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
+use crate::target_state_codec::{DesiredForReconcile, PyTargetStateValue};
 use crate::value::PyStoredValue;
 
 #[pyclass(name = "TargetActionSink", from_py_object)]
@@ -171,18 +173,16 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
             // Split the child slots off while building the action list, so a
             // leaf-only batch costs nothing beyond the list itself. The engine
             // keeps the actions (to retry subsets of a failed batch), hence
-            // the borrow.
+            // the borrow; an encoded action is decoded anew for each call.
             let mut child_slots = Vec::new();
-            let actions = PyList::new(
-                py,
-                actions.iter().enumerate().map(|(idx, (action, slot))| {
-                    if let Some(slot) = slot {
-                        child_slots.push((idx, slot.clone()));
-                    }
-                    action.bind(py)
-                }),
-            )
-            .from_py_result()?;
+            let mut objects = Vec::with_capacity(actions.len());
+            for (idx, (action, slot)) in actions.iter().enumerate() {
+                if let Some(slot) = slot {
+                    child_slots.push((idx, slot.clone()));
+                }
+                objects.push(action.to_object(py).from_py_result()?);
+            }
+            let actions = PyList::new(py, objects).from_py_result()?;
             if self.with_children {
                 let slots = PyDict::new(py);
                 let wrap = &python_objects().child_slot_wrapper_fn;
@@ -323,19 +323,42 @@ pub struct PyChildTargetSlot(ChildTargetSlot<PyEngineProfile>);
 
 #[pymethods]
 impl PyChildTargetSlot {
-    fn fulfill(&self, handler: Py<PyAny>) -> PyResult<()> {
-        self.0.fulfill(PyTargetHandler(handler)).into_py_result()
+    fn fulfill(&self, py: Python<'_>, handler: Py<PyAny>) -> PyResult<()> {
+        self.0
+            .fulfill(PyTargetHandler::new(handler.into_bound(py))?)
+            .into_py_result()
     }
 }
 
 #[pyclass(name = "TargetHandler")]
-pub struct PyTargetHandler(Py<PyAny>);
+pub struct PyTargetHandler {
+    handler: Py<PyAny>,
+    /// The handler's `tracks_value_fingerprint` opt-in: its tracking record
+    /// for a declared value is `fingerprint_object(value)`.
+    tracks_value_fingerprint: bool,
+}
+
+impl PyTargetHandler {
+    fn new(handler: Bound<'_, PyAny>) -> PyResult<Self> {
+        let tracks_value_fingerprint = handler
+            .getattr(pyo3::intern!(handler.py(), "tracks_value_fingerprint"))?
+            .extract()?;
+        Ok(Self {
+            handler: handler.unbind(),
+            tracks_value_fingerprint,
+        })
+    }
+}
+
+/// `serde.serialize(fingerprint_object(value))` for plain data: the msgspec
+/// routing byte, then the 16-byte digest as a msgpack `bin 8`.
+const FINGERPRINT_RECORD_HEADER: [u8; 3] = [0x01, 0xc4, 16];
 
 impl TargetHandler<PyEngineProfile> for PyTargetHandler {
     fn reconcile(
         &self,
         key: cocoindex_core::state::stable_path::StableKey,
-        desired_effect: Option<&Py<PyAny>>,
+        desired_target_state: Option<&PyTargetStateValue>,
         prev_possible_records: &[PyStoredValue],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<PyEngineProfile>>> {
@@ -346,17 +369,18 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                     .iter()
                     .map(|s| Py::new(py, s.clone()).unwrap()),
             )?;
-            let non_existence = &python_objects().non_existence;
-            // `desired_effect` is a borrow from the engine's MutexGuard;
-            // PyO3's `.bind(py)` takes a reference, so no clone needed
-            // here. If Python retains the object across the call, its
-            // own refcounting handles the lifetime.
-            let py_output = self.0.call_method(
+            // A value held encoded is decoded for this call only: the action
+            // returned is held encoded too (see `DesiredForReconcile::hold_action`).
+            let desired = match desired_target_state {
+                Some(value) => DesiredForReconcile::new(py, value)?,
+                None => DesiredForReconcile::non_existence(py),
+            };
+            let py_output = self.handler.call_method(
                 py,
                 "reconcile",
                 (
                     PyStableKey(key),
-                    desired_effect.unwrap_or(non_existence).bind(py),
+                    desired.object.bind(py),
                     prev_possible_records,
                     prev_may_be_missing,
                 ),
@@ -381,16 +405,18 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                         }
                     }
                 };
+                let sink = get_core_field(py, sink)?
+                    .extract::<PyTargetActionSink>(py)?
+                    .keeper;
+                let tracking_record = if python_objects().non_existence.is(&state) {
+                    None
+                } else {
+                    Some(PyStoredValue::new(state))
+                };
                 Some(TargetReconcileOutput {
-                    action,
-                    sink: get_core_field(py, sink)?
-                        .extract::<PyTargetActionSink>(py)?
-                        .keeper,
-                    tracking_record: if non_existence.is(&state) {
-                        None
-                    } else {
-                        Some(PyStoredValue::new(state))
-                    },
+                    action: desired.hold_action(py, action)?,
+                    sink,
+                    tracking_record,
                     child_invalidation,
                 })
             };
@@ -399,9 +425,30 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         .from_py_result()
     }
 
+    fn value_fingerprint_record(
+        &self,
+        desired_target_state: &PyTargetStateValue,
+    ) -> Result<Option<bytes::Bytes>> {
+        if !self.tracks_value_fingerprint {
+            return Ok(None);
+        }
+        Python::attach(|py| -> PyResult<_> {
+            // A value held encoded is fingerprinted as its decoding: an exact
+            // copy, so it has the declared object's fingerprint.
+            let value = desired_target_state.to_object(py)?;
+            Ok(plain_fingerprint(value.bind(py))?.map(|fp| {
+                let mut record = Vec::with_capacity(FINGERPRINT_RECORD_HEADER.len() + 16);
+                record.extend_from_slice(&FINGERPRINT_RECORD_HEADER);
+                record.extend_from_slice(fp.as_slice());
+                record.into()
+            }))
+        })
+        .from_py_result()
+    }
+
     fn attachments(&self) -> Result<Vec<(Arc<str>, PyTargetHandler)>> {
         Python::attach(|py| -> PyResult<_> {
-            let obj = self.0.bind(py);
+            let obj = self.handler.bind(py);
             if !obj.hasattr("attachments")? {
                 return Ok(vec![]);
             }
@@ -410,7 +457,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
             let mut entries = Vec::with_capacity(dict.len());
             for (key, value) in dict.iter() {
                 let att_type: String = key.extract()?;
-                entries.push((Arc::from(att_type), PyTargetHandler(value.unbind())));
+                entries.push((Arc::from(att_type), PyTargetHandler::new(value)?));
             }
             Ok(entries)
         })
@@ -455,6 +502,7 @@ impl PyTargetStateProvider {
 
 #[pyfunction]
 pub fn declare_target_state<'py>(
+    py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
     provider: &PyTargetStateProvider,
@@ -466,7 +514,7 @@ pub fn declare_target_state<'py>(
         &fn_ctx.0,
         provider.0.clone(),
         key.0,
-        value,
+        PyTargetStateValue::new(py, value)?,
     )
     .into_py_result()?;
     Ok(())
@@ -480,12 +528,14 @@ pub fn declare_target_state_with_child<'py>(
     key: PyStableKey,
     value: Py<PyAny>,
 ) -> PyResult<PyTargetStateProvider> {
+    // A container's value (its spec) is held as is: there are few of them,
+    // and their actions go on to fulfill child slots.
     let output = cocoindex_core::engine::execution::declare_target_state_with_child(
         &comp_ctx.0,
         &fn_ctx.0,
         provider.0.clone(),
         key.0,
-        value,
+        PyTargetStateValue::Object(value),
     )
     .into_py_result()?;
     Ok(PyTargetStateProvider(output))
@@ -503,12 +553,12 @@ pub fn root_target_states_provider_registry()
 #[pyfunction]
 pub fn register_root_target_states_provider(
     name: String,
-    handler: Py<PyAny>,
+    handler: Bound<'_, PyAny>,
 ) -> PyResult<PyTargetStateProvider> {
     let provider = root_target_states_provider_registry()
         .lock()
         .unwrap()
-        .register_root(name, PyTargetHandler(handler))
+        .register_root(name, PyTargetHandler::new(handler)?)
         .into_py_result()?;
     Ok(PyTargetStateProvider(provider))
 }
