@@ -497,7 +497,9 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # LiveComponent class) is dispatched through `mount()` / `operator.update()`
         # inside `_MountEachLiveComponent`, both of which already handle live
         # component classes — so no special-casing of `fn` is needed here.
-        instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
+        instance = _MountEachLiveComponent(
+            items, fn, extra_args, kwargs, parent_ctx._exception_handler_chain
+        )
         return await _mount_live_component(parent_ctx, child_path, instance)
 
     # Static data source: mount one component per item. When `fn` is a
