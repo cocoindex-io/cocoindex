@@ -22,6 +22,7 @@ from typing import (
 from . import core
 from .component_ctx import (
     ComponentSubpath,
+    ExceptionHandlerChain,
     get_context_from_ctx,
 )
 from .deadline import without_deadline as _without_deadline
@@ -559,7 +560,15 @@ class LiveMapSubscriber(Generic[_K, _V]):
 
 
 class _MountEachLiveComponent:
-    """Internal LiveComponent created by mount_each() for LiveMapFeed/LiveMapView items."""
+    """Internal LiveComponent created by mount_each() for LiveMapFeed/LiveMapView items.
+
+    The per-item components are the ``mount_each`` caller's children in all but
+    their path, so their failures route through the caller's exception handler
+    chain, captured at ``mount_each`` time. This component's own context would
+    not do: like every component's, it starts from the environment's handler
+    alone, so a handler scoped around the ``mount_each`` call would never see
+    the items mounted by a full scan.
+    """
 
     def __init__(
         self,
@@ -567,11 +576,13 @@ class _MountEachLiveComponent:
         fn: Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        exception_handler_chain: ExceptionHandlerChain | None,
     ) -> None:
         self._items = items
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._exception_handler_chain = exception_handler_chain
 
     async def process(self) -> None:
         if not isinstance(self._items, LiveMapView):
@@ -582,10 +593,17 @@ class _MountEachLiveComponent:
             )
         from .api import mount
 
-        async for key, value in self._items:
-            await mount(
-                ComponentSubpath(key), self._fn, value, *self._args, **self._kwargs
-            )  # type: ignore[arg-type]
+        # Live items (e.g. `auto_refresh`) inherit this context too: their
+        # `process_live` tasks start from it, and their cycles resolve the
+        # handler chain there.
+        ctx = get_context_from_ctx()._with_exception_handler_chain(
+            self._exception_handler_chain
+        )
+        with ctx.attach():
+            async for key, value in self._items:
+                await mount(
+                    ComponentSubpath(key), self._fn, value, *self._args, **self._kwargs
+                )  # type: ignore[arg-type]
 
     async def process_live(self, operator: LiveComponentOperator) -> None:
         subscriber: LiveMapSubscriber[Any, Any] = LiveMapSubscriber(

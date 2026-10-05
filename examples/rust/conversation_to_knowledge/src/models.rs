@@ -36,14 +36,14 @@ pub fn entity_guidance(kind: &str) -> (&'static str, &'static str) {
 // Transcript / source
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 pub struct Utterance {
     /// Diarization label (e.g. "A", "B") or a resolved speaker name.
     pub speaker: String,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 pub struct SessionTranscript {
     pub utterances: Vec<Utterance>,
     pub yt_channel: String,
@@ -54,7 +54,7 @@ pub struct SessionTranscript {
 
 /// A unit of input: either a YouTube video to fetch+transcribe, or a
 /// pre-transcribed local session (cheap, audio-free — for testing/demo).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 pub enum SessionSource {
     YouTube {
         youtube_id: String,

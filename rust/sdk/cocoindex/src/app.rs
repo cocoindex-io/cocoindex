@@ -180,7 +180,7 @@ impl EnvironmentBuilder {
     ///
     /// Returns an error if the LMDB database environment fails to initialize
     /// (e.g., due to permissions, disk space, or a corrupted state directory).
-    pub async fn build(self) -> Result<Environment> {
+    pub async fn build(mut self) -> Result<Environment> {
         // Register every `#[coco::function]`'s logic fingerprint into the engine's
         // logic set, so memo entries that depend on them validate correctly
         // (see `crate::logic`). Idempotent across builds.
@@ -202,6 +202,7 @@ impl EnvironmentBuilder {
             .await
             .map_err(|e| Error::engine(format!("failed to open LMDB: {e}")))?;
         self.context.register_logic(&core_env);
+        self.context.register_initial_states(&core_env).await?;
 
         Ok(Environment {
             inner: Arc::new(EnvironmentInner {

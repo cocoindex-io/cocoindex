@@ -13,6 +13,7 @@ from typing import (
     TypeVar,
 )
 import asyncio
+from types import ModuleType
 
 from cocoindex._internal.typing import Fingerprintable as Fingerprintable
 from cocoindex._internal.typing import StableKey as StableKey
@@ -420,6 +421,7 @@ def init_runtime(
     serialize_fn: Callable[[Any], bytes],
     child_slot_wrapper_fn: Callable[[ChildTargetSlot], Any],
     non_existence: Any,
+    target_state_codec: ModuleType,
 ) -> None: ...
 def shutdown_tokio_runtime() -> None: ...
 def cancel_all() -> None: ...
@@ -456,6 +458,8 @@ def register_root_target_states_provider(
     name: str, handler: Any
 ) -> TargetStateProvider: ...
 def fingerprint_simple_object(obj: Fingerprintable) -> Fingerprint: ...
+def fingerprint_plain_object(obj: object) -> Fingerprint | None: ...
+def set_plain_canonical_form_overridden(overridden: bool) -> None: ...
 def fingerprint_bytes(data: bytes) -> Fingerprint: ...
 def fingerprint_str(s: str) -> Fingerprint: ...
 def register_logic_fingerprint(fp: Fingerprint) -> None: ...
@@ -738,3 +742,36 @@ class RateLimiter:
         cls, max_rows_per_second: float, burst_window_secs: float = 1.0
     ) -> "RateLimiter": ...
     def acquire(self, n: int = 1) -> Coroutine[Any, Any, None]: ...
+
+########################################################
+# GPU pool
+########################################################
+
+class GPUPool:
+    def __init__(self, num_gpus: int) -> None: ...
+
+    @property
+    def num_gpus(self) -> int: ...
+
+    async def acquire(self, fraction: float) -> int:
+        """
+        Acquires a fraction of a GPU and returns the GPU ID.
+        """
+        ...
+
+    async def acquire_full(self, gpu_count: int) -> list[int]:
+        """
+        Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.
+
+        The gpu_count should be greater or equal to 1 and less than or equal to the number of GPUs in the pool.
+        """
+        ...
+
+    def release(self, gpu_id: int, fraction: float) -> None:
+        """
+        Releases a fraction of capacity back to the specified GPU ID.
+        """
+        ...
+
+    @staticmethod
+    def default() -> "GPUPool": ...

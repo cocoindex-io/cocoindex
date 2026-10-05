@@ -27,6 +27,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'getting_started/overview', label: 'Overview' },
       { type: 'doc', slug: 'getting_started/installation', label: 'Installation' },
       { type: 'doc', slug: 'getting_started/quickstart', label: 'Quickstart' },
+      { type: 'doc', slug: 'getting_started/rust_quickstart', label: 'Rust SDK quickstart' },
       { type: 'doc', slug: 'getting_started/ai_coding_agents', label: 'Use with AI coding agents' },
     ],
   },

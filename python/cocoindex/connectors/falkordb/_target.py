@@ -695,6 +695,8 @@ class _VectorIndexHandler:
 class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for record-level target states within a FalkorDB table."""
 
+    tracks_value_fingerprint = True
+
     _table_name: str
     _is_relation: bool
     _pk_field: str

@@ -45,7 +45,7 @@ try:
     from glide.async_commands import ft
 except ImportError as e:
     raise ImportError(
-        "valkey-glide>=2.4.0 is required to use the Valkey connector. "
+        "valkey-glide>=2.5.2 is required to use the Valkey connector. "
         "Please install cocoindex[valkey]."
     ) from e
 
@@ -405,16 +405,18 @@ class _IndexHandler(
                 action = actions[i]
 
                 if action.main_action in ("replace", "delete"):
-                    # Drop the index first; on "replace" we also purge all
-                    # prefixed document keys before re-creating the index.
+                    # Drop the index, then purge the document hashes under its
+                    # prefix. Once the index is reconciled away the engine no
+                    # longer reconciles its documents, so this action owns
+                    # their removal; on "replace" the index is re-created
+                    # below and the documents are re-declared from scratch.
                     try:
                         await ft.dropindex(client, key.index_name)
                     except RequestError:
                         # Index was already removed externally — nothing to do.
                         logger.debug("dropindex %s: index not found", key.index_name)
 
-                    if action.main_action == "replace":
-                        await self._delete_prefix_keys(client, key.index_name)
+                    await self._delete_prefix_keys(client, key.index_name)
 
                 if coco.is_non_existence(action.spec):
                     continue
@@ -741,6 +743,7 @@ def create_client_config(
         client_name: Client name for the connection, visible in CLIENT LIST
             and monitoring dashboards. Pass ``None`` to disable.
         **kwargs: Additional keyword arguments passed to GlideClientConfiguration.
+            ``client_info_tag`` defaults to ``"cocoindex"``.
 
     Returns:
         GlideClientConfiguration instance.
@@ -749,6 +752,8 @@ def create_client_config(
 
     addresses = [NodeAddress(host=host, port=port)]
     config_kwargs: dict[str, Any] = dict(kwargs)
+
+    config_kwargs.setdefault("client_info_tag", "cocoindex")
 
     # Explicit parameters take precedence over **kwargs to prevent
     # accidental override of security-sensitive settings.

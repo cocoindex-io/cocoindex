@@ -63,12 +63,18 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
 - `TargetReconcileOutput` if an action is needed
 - `None` if no changes are required
 
-:::warning[Non-blocking]
-The `reconcile()` method must be **non-blocking**. It should only compare states and return an action — actual I/O operations happen later in the `TargetActionSink`.
+:::warning[Non-blocking and side-effect free]
+The `reconcile()` method must be **non-blocking** and **free of side effects**. It should only compare states and return an action — actual I/O operations happen later in the `TargetActionSink`. CocoIndex may call `reconcile()` more than once for the same target state when it retries a commit internally; only the output of the committed attempt is applied.
 :::
 
 :::info[Type annotations]
 Annotate the `prev_possible_records` parameter with `Collection[YourTrackingRecord]` so CocoIndex can properly reconstruct stored tracking records during deserialization. See [Serialization](../programming_guide/serialization) for details on supported types.
+:::
+
+:::info[Values and actions are equal copies]
+CocoIndex holds every declared target state until its processing component commits, and every action until its sink has applied it. To keep that cheap, a value made of plain data — builtin containers and scalars, date and time types, `Decimal`, `UUID`, `ipaddress` and `pathlib` objects, numpy arrays and scalars, enum members, and NamedTuples — is held in a compact encoded form from the moment it's declared. `reconcile()` then receives an equal copy of the value, with the same types (a tuple stays a tuple), rather than the declared object itself, and the sink receives equal copies of the actions `reconcile()` returned. A value holding anything else, such as a dataclass, a pydantic model, or a client handle, reaches `reconcile()` as the declared object.
+
+So don't rely on the identity of a declared value or an action, or pass mutable state through them; and since the copy is taken at declaration, changes made to a value after it was declared are not seen.
 :::
 
 ### Tracking record *(you define)*
@@ -694,6 +700,40 @@ Choose tracking records that enable efficient change detection without storing f
 | Database row | Row data hash |
 | Schema/structure | Schema definition |
 | Directory existence | `None` (presence is enough) |
+
+### Skip reconciling unchanged values
+
+When a handler's tracking record is exactly the fingerprint of the declared value, set `tracks_value_fingerprint = True` on the handler class:
+
+```python
+from cocoindex.connectorkits.fingerprint import fingerprint_object
+
+class RowHandler(coco.TargetHandler[dict[str, Any], bytes]):
+    tracks_value_fingerprint = True
+
+    def reconcile(self, key, desired_target_state, prev_possible_records, prev_may_be_missing, /):
+        if coco.is_non_existence(desired_target_state):
+            ...
+        target_fp = fingerprint_object(desired_target_state)
+        if not prev_may_be_missing and all(
+            prev == target_fp for prev in prev_possible_records
+        ):
+            return None
+        return coco.TargetReconcileOutput(
+            action=..., sink=self._sink, tracking_record=target_fp
+        )
+```
+
+CocoIndex then doesn't call `reconcile()` for a declared value that is unchanged — one that `reconcile()` above would return `None` for — so an update where most values are unchanged costs almost nothing per value. `reconcile()` is still called for new, changed, and removed target states, and whenever `prev_may_be_missing` is `True`.
+
+Only set it when both hold:
+
+- The tracking record is `fingerprint_object(desired_target_state)` itself — not a fingerprint of a part of the value or of a derived value, and not wrapped in another type.
+- An unchanged fingerprint means there is nothing to do.
+
+The attribute has no effect on a container handler, whose `reconcile()` always runs so that its sink can fulfill the child slot.
+
+`reconcile()` must keep its own comparison: it is still called for values that aren't plain data (anything other than `None`, `bool`, `int`, `float`, `str`, `bytes`, and `list` / `tuple` / `dict`-with-`str`-keys of those), unchanged or not.
 
 ### Shared action sinks
 
