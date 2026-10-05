@@ -42,7 +42,7 @@ pub fn nix() -> LangConfig {
             regex_rule(r"^(?:\./|\.\./|/|~/)[A-Za-z0-9._+\-/]+", TokKind::Str),
             regex_rule(r"^<[A-Za-z0-9._+\-/]+>", TokKind::Str),
             regex_rule(
-                r"^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9%/?@&=+$,_.!~*'\-]+",
+                r"^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9%/?:@&=+$,_.!~*'\-]+",
                 TokKind::Str,
             ),
         ];
@@ -100,6 +100,7 @@ mod tests {
                 "https://example.com/source",
                 "{ src = https://example.com/source; }",
             ),
+            ("http://h:8080/x", "{ u = http://h:8080/x; }"),
         ] {
             assert!(!matches(nix(), lit, ctx).is_empty(), "Nix `{lit}`");
         }
