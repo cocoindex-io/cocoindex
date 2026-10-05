@@ -14,14 +14,13 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Collection
+from typing import Collection, Mapping, Sequence
 
 import cocoindex as coco
 
 from tests import common
 
 _NUM_ITEMS = 16
-_POISON_ITEM = 7
 
 _failed_paths: list[str] = []
 
@@ -32,48 +31,83 @@ def _record_failure(exc: BaseException, ctx: coco.ExceptionContext) -> None:
 
 coco_env = common.create_test_env(__file__, exception_handler=_record_failure)
 
+# (item, value)
+_Action = tuple[int, str]
+
 
 class _RunState:
-    """Per-run input and observations, shared across threads (``reconcile``
-    runs on an engine thread)."""
+    """Per-run input and observations, shared across threads."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        # The item whose actions the sink rejects in this run, if any.
+        # Whether the sink merges and poisons a batch in this run: it holds its
+        # first batch until every other item is queued behind it, and poisons
+        # an item of the first merged batch.
+        self.poison_merged_batch = False
         self.poison_item: int | None = None
         self.store: dict[int, str] = {}
-        self.batches: list[list[tuple[int, str]]] = []
-        self.num_reconciled = 0
+        self.batches: list[list[_Action]] = []
+        # Each item's child provider, with its memo key when declared.
+        self.child_providers: dict[
+            int, tuple[coco.PendingTargetStateProvider[None, None], str]
+        ] = {}
         self.gate_taken = False
 
-    def reset_run(self, poison_item: int | None) -> None:
+    def reset_run(self, poison_merged_batch: bool) -> None:
         with self.lock:
-            self.poison_item = poison_item
+            self.poison_merged_batch = poison_merged_batch
+            self.poison_item = None
             self.batches.clear()
-            self.num_reconciled = 0
+            self.child_providers.clear()
             self.gate_taken = False
 
 
 _run = _RunState()
 
 
-async def _wait_until_all_reconciled() -> None:
-    """Hold the batcher until every component has reconciled its target state.
+def _committed_items() -> set[int]:
+    """Items whose action the engine has handed to the sink.
 
-    A component reconciles right before handing its actions to the sink, so
-    once every component has reconciled (plus a drain period for the last
-    precommit to land), every other component's actions are queued behind this
-    sink call and will merge into the next batch.
+    The engine assigns an item's child provider its generation, which shows in
+    the provider's memo key, only once the precommit that declared the item
+    has committed, and queues the item's action for its sink right after, with
+    nothing to await in between. The state store may retry a precommit (LMDB
+    re-runs a whole write batch after growing its map), and each attempt runs
+    ``reconcile``, so counting ``reconcile`` calls can run ahead of the commit;
+    this can't.
     """
+    with _run.lock:
+        watched = list(_run.child_providers.items())
+    return {
+        item
+        for item, (provider, declared_key) in watched
+        if provider.memo_key != declared_key
+    }
+
+
+async def _wait_until_others_committed(holder: int) -> None:
+    """Hold the first batch until every other item's action is queued behind
+    it, so they all merge into the next sink call."""
+    others = set(range(_NUM_ITEMS)) - {holder}
     deadline = time.monotonic() + 10
-    while True:
-        with _run.lock:
-            if _run.num_reconciled >= _NUM_ITEMS:
-                break
+    while not others <= _committed_items():
         if time.monotonic() > deadline:
-            raise TimeoutError("components did not all reconcile in time")
+            raise TimeoutError("items did not all commit in time")
         await asyncio.sleep(0.01)
-    await asyncio.sleep(0.3)
+
+
+class _ChildHandler(coco.TargetHandler[None, None, None]):
+    """Handler for the target states under an item; the test declares none."""
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_target_state: None | coco.NonExistenceType,
+        prev_possible_records: Collection[None],
+        prev_may_be_missing: bool,
+        /,
+    ) -> None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -85,61 +119,74 @@ class _TransactionalSink:
     async def __call__(
         self,
         context_provider: coco.ContextProvider,
-        actions: Collection[tuple[int, str]],
+        actions: Sequence[_Action],
+        child_slots: Mapping[int, coco.ChildSlot[_ChildHandler]],
         /,
     ) -> None:
         batch = list(actions)
+        items = [item for item, _ in batch]
         with _run.lock:
             _run.batches.append(batch)
-            takes_gate = not _run.gate_taken
+            takes_gate = _run.poison_merged_batch and not _run.gate_taken
             _run.gate_taken = True
+            if _run.poison_merged_batch and _run.poison_item is None and len(items) > 1:
+                # Choosing the poisoned item from a merged batch, rather than up
+                # front, merges its actions with other components' whatever
+                # order the items commit in.
+                _run.poison_item = items[-1]
+            poisoned = _run.poison_item in items
         if takes_gate:
-            await _wait_until_all_reconciled()
-        if any(value == "poison" for _, value in batch):
+            await _wait_until_others_committed(items[0])
+        if poisoned:
             raise ValueError("poisoned batch")
+        for slot in child_slots.values():
+            slot.fulfill(_ChildHandler())
         with _run.lock:
-            for key, value in batch:
-                _run.store[key] = value
+            for item, value in batch:
+                _run.store[item] = value
 
 
-class _Handler:
+class _ItemHandler(coco.TargetHandler[str, str, _ChildHandler]):
     def reconcile(
         self,
-        key: Any,
-        desired_state: Any | coco.NonExistenceType,
-        prev_possible_records: Collection[Any],
+        key: coco.StableKey,
+        desired_target_state: str | coco.NonExistenceType,
+        prev_possible_records: Collection[str],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[tuple[int, str], Any] | None:
-        with _run.lock:
-            _run.num_reconciled += 1
-        if coco.is_non_existence(desired_state):
+    ) -> coco.TargetReconcileOutput[_Action, str, _ChildHandler] | None:
+        assert isinstance(key, int)
+        if coco.is_non_existence(desired_target_state):
             return None
+        # Nothing is declared under an item, so an unchanged item needs no
+        # action to fulfill its child provider.
         if not prev_may_be_missing and all(
-            prev == desired_state for prev in prev_possible_records
+            prev == desired_target_state for prev in prev_possible_records
         ):
             return None
         return coco.TargetReconcileOutput(
-            action=(key, desired_state),
-            sink=coco.TargetActionSink.from_async_fn(_TransactionalSink("db")),
-            tracking_record=desired_state,
+            action=(key, desired_target_state),
+            sink=coco.TargetActionSink.from_async_fn_with_children(
+                _TransactionalSink("db")
+            ),
+            tracking_record=desired_target_state,
         )
 
 
 _provider = coco.register_root_target_states_provider(
-    "test_target_sink_failure_isolation/rows", _Handler()
+    "test_target_sink_failure_isolation/items", _ItemHandler()
 )
 
 
 @coco.fn
-async def _process_item(item: int) -> None:
-    poisoned = item == _run.poison_item
-    if poisoned:
-        # Finish last, so the poisoned actions never take the gated first sink
-        # call but always land in the merged batch queued behind it.
-        await asyncio.sleep(0.1)
-    value = "poison" if poisoned else f"v{item}"
-    coco.declare_target_state(_provider.target_state(item, value))
+def _process_item(item: int) -> None:
+    # An item carries a child provider only for its generation, the signal the
+    # sink's gate waits for (see `_committed_items`).
+    children = coco.declare_target_state_with_child(
+        _provider.target_state(item, f"v{item}")
+    )
+    with _run.lock:
+        _run.child_providers[item] = (children, children.memo_key)
 
 
 async def _root() -> None:
@@ -159,23 +206,26 @@ def test_merged_batch_failure_is_confined_to_the_failing_component() -> None:
         _root,
     )
 
-    _run.reset_run(poison_item=_POISON_ITEM)
+    _run.reset_run(poison_merged_batch=True)
     _failed_paths.clear()
     app.update_blocking()
 
+    # The sink poisons an item only in a merged batch, so there was one.
+    poison = _run.poison_item
+    assert poison is not None, _run.batches
     # Every other component's actions landed, and only the poisoned component
     # failed, even though its actions were merged into a batch with others.
-    assert _run.store == {i: f"v{i}" for i in range(_NUM_ITEMS) if i != _POISON_ITEM}
-    assert _failed_paths == [str(coco.ROOT_PATH / "item" / _POISON_ITEM)]
-    merged = [b for b in _run.batches if len(b) > 1 and (_POISON_ITEM, "poison") in b]
-    assert merged, _run.batches
+    assert _run.store == {i: f"v{i}" for i in range(_NUM_ITEMS) if i != poison}
+    assert _failed_paths == [str(coco.ROOT_PATH / "item" / poison)]
 
-    _run.reset_run(poison_item=None)
+    _run.reset_run(poison_merged_batch=False)
     _failed_paths.clear()
     app.update_blocking()
 
     assert _run.store == {i: f"v{i}" for i in range(_NUM_ITEMS)}
     assert _failed_paths == []
     # Only the previously failed component had anything left to apply: the
-    # others' target states were committed by the first run.
-    assert _run.batches == [[(_POISON_ITEM, f"v{_POISON_ITEM}")]]
+    # others' target states were committed by the first run. Its value is
+    # unchanged, so it re-applies only because the engine recorded that its
+    # failed apply may not have landed.
+    assert _run.batches == [[(poison, f"v{poison}")]]
