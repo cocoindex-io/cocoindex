@@ -29,7 +29,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -124,7 +124,11 @@ impl TableSchema {
             let name = name.into();
             validate_ident(&name, "column name")?;
             validate_sqlite_type(&def.sqlite_type)?;
-            out.insert(name, def);
+            if out.insert(name.clone(), def).is_some() {
+                return Err(Error::engine(format!(
+                    "SQLite table schema contains duplicate column {name:?}"
+                )));
+            }
         }
         let primary_key: Vec<String> = primary_key.into_iter().map(Into::into).collect();
         if primary_key.is_empty() {
@@ -164,6 +168,35 @@ impl TableSchema {
             .into_iter()
             .map(|f| (f.name.clone(), sqlite_column_def(&f)));
         Self::new(columns, primary_key)
+    }
+
+    /// Resolve or override the dimension of a vector field derived from a row.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        if dim == 0 {
+            return Err(crate::row_schema::zero_vector_dimension_error(
+                "SQLite", field_name,
+            ));
+        }
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_vector_field_error("SQLite", field_name))?;
+        if !(def.sqlite_type.starts_with("float[") && def.sqlite_type.ends_with(']')) {
+            return Err(crate::row_schema::not_vector_field_error(
+                "SQLite", field_name,
+            ));
+        }
+        def.sqlite_type = format!("float[{dim}]");
+        Ok(self)
+    }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            if def.sqlite_type == "float[0]" {
+                crate::row_schema::require_resolved_vector_dimension("SQLite", name)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -252,6 +285,7 @@ pub fn table_target_with_options(
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
+    table_schema.validate_vector_dimensions()?;
     if let Some(def) = &options.virtual_table_def {
         validate_vec0(&table_name, &table_schema, def)?;
     }
@@ -577,20 +611,22 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let db_key = self.db_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let db_key = db_key.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         let a = match action {
                             TargetAction::Create(a)
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        out.push(apply_table_action(&db, &db_key, a).await?);
+                        let child = apply_table_action(&db, &db_key, a).await?;
+                        if let (Some(slot), Some(child)) = (child_slot, child) {
+                            slot.fulfill(child)?;
+                        }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )
@@ -611,8 +647,9 @@ fn resolve_db(
     })
 }
 
-/// Apply one resolved table action and return the row child provider (or
-/// `None` for a drop). Mirrors Python's `_apply_table_actions` decision tree.
+/// Apply one resolved table action and return the row child handler
+/// definition (`None` for a drop), which the sink uses to fulfill the
+/// action's child slot. Mirrors Python's `_apply_table_actions` decision tree.
 async fn apply_table_action(
     db: &Database,
     db_key: &str,
@@ -1150,6 +1187,9 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         };
     }
     if is_real_type(&t) {
+        if let Some((secs, nanos)) = crate::row_schema::serialized_duration_parts(value) {
+            return Ok(format!("{secs}.{nanos:09}"));
+        }
         return match value {
             JsonValue::Number(n) => Ok(n.to_string()),
             _ => Err(Error::engine(format!(
@@ -1161,6 +1201,9 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
     if is_text_type(&t) {
         return Ok(quote_string(value_to_string(value)));
     }
+    if is_blob_type(&t) {
+        return blob_literal(value);
+    }
     // Fallback (BLOB / unknown): store scalars directly, complex as JSON text.
     match value {
         JsonValue::String(s) => Ok(quote_string(s)),
@@ -1168,6 +1211,33 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         JsonValue::Bool(b) => Ok(if *b { "1" } else { "0" }.to_string()),
         other => Ok(quote_string(other.to_string())),
     }
+}
+
+fn blob_literal(value: &JsonValue) -> Result<String> {
+    let bytes: Vec<u8> = match value {
+        JsonValue::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_u64()
+                    .filter(|value| *value <= 255)
+                    .map(|value| value as u8)
+                    .ok_or_else(|| Error::engine("BLOB array elements must be integers 0..=255"))
+            })
+            .collect::<Result<_>>()?,
+        JsonValue::String(value) => value.as_bytes().to_vec(),
+        _ => {
+            return Err(Error::engine(
+                "BLOB column requires a byte array or string JSON value",
+            ));
+        }
+    };
+    let mut literal = String::with_capacity(3 + bytes.len() * 2);
+    literal.push_str("X'");
+    for byte in bytes {
+        literal.push_str(&format!("{byte:02x}"));
+    }
+    literal.push('\'');
+    Ok(literal)
 }
 
 fn value_to_string(value: &JsonValue) -> String {
@@ -1216,6 +1286,10 @@ fn is_real_type(t: &str) -> bool {
 
 fn is_text_type(t: &str) -> bool {
     ["char", "text", "clob"].iter().any(|k| t.contains(k))
+}
+
+fn is_blob_type(t: &str) -> bool {
+    t.contains("blob")
 }
 
 fn validate_sqlite_type(value: &str) -> Result<()> {
@@ -1356,6 +1430,12 @@ mod tests {
         assert_eq!(sql_literal(&JsonValue::from(true), &col).unwrap(), "1");
         // A fractional number must be rejected, not stored as REAL in an INTEGER column.
         assert!(sql_literal(&JsonValue::from(1.5), &col).is_err());
+    }
+
+    #[test]
+    fn blob_literal_rejects_out_of_range_bytes() {
+        let col = ColumnDef::new("BLOB");
+        assert!(sql_literal(&serde_json::json!([256]), &col).is_err());
     }
 
     #[test]

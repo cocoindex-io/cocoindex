@@ -18,6 +18,7 @@ from typing import (
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -378,20 +379,21 @@ class _NamespaceAction(NamedTuple):
 class _NamespaceHandler(
     coco.TargetHandler[_NamespaceSpec, _NamespaceTrackingRecord, _RowHandler]
 ):
-    _sink: coco.TargetActionSink[_NamespaceAction, _RowHandler]
+    _sink: coco.TargetActionSink[_NamespaceAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_NamespaceAction]
-    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
-            actions_list
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
+            self._apply_actions
         )
 
-        for i, action in enumerate(actions_list):
+    async def _apply_actions(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_NamespaceAction],
+        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
+        /,
+    ) -> None:
+        for i, action in enumerate(actions):
             client = context_provider.get(action.key.db_key, AsyncTurbopuffer)
 
             if action.main_action in ("replace", "delete"):
@@ -403,19 +405,16 @@ class _NamespaceHandler(
                     pass
 
             if coco.is_non_existence(action.spec):
-                outputs[i] = None
                 continue
 
             spec = action.spec
-            outputs[i] = coco.ChildTargetDef(
-                handler=_RowHandler(
+            child_slots[i].fulfill(
+                _RowHandler(
                     client=client,
                     namespace_name=action.key.namespace_name,
                     schema=spec.schema,
                 )
             )
-
-        return outputs
 
     def reconcile(
         self,

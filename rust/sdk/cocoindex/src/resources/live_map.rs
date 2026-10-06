@@ -32,7 +32,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetStateProvider, declare_target_state, mount_target,
     register_root_target_states_provider,
 };
@@ -242,25 +242,25 @@ impl<V: LiveMapValue> ContainerHandler<V> {
     fn sink(&self) -> TargetActionSink<ContainerAction> {
         let inner = self.inner.clone();
         TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<ContainerAction>>| {
+            move |actions: Vec<(TargetAction<ContainerAction>, Option<ChildSlot>)>| {
                 let inner = inner.clone();
                 async move {
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         let a = match action {
                             TargetAction::Create(a)
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
                         if a.deleted {
-                            out.push(None);
-                        } else {
-                            out.push(Some(ChildTargetDef::new::<V, _>(EntryHandler {
+                            continue;
+                        }
+                        if let Some(slot) = child_slot {
+                            slot.fulfill(ChildTargetDef::new::<V, _>(EntryHandler {
                                 inner: inner.clone(),
-                            })));
+                            }))?;
                         }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )

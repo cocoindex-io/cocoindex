@@ -14,6 +14,8 @@
 //! function (whose fingerprint changes on recompile) leaves the old, now-absent
 //! fingerprint in a stale entry — correctly invalidating it.
 
+use std::sync::Once;
+
 use cocoindex_core::engine::logic_registry;
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -38,12 +40,16 @@ fn entry_fingerprint(e: &FnLogicEntry) -> Option<Fingerprint> {
 }
 
 /// Register every `#[coco::function]`'s logic fingerprint into the engine's
-/// logic set. Idempotent (the set is a `HashSet`), so it is safe to call on
-/// every app/environment build.
+/// logic set. The slice is fixed at link time and these registrations are held
+/// for the life of the process, so only the first call registers; later calls
+/// (one per app/environment build) are no-ops.
 pub(crate) fn register_all_fn_logic() {
-    for entry in COCO_FN_LOGIC {
-        if let Some(fp) = entry_fingerprint(entry) {
-            logic_registry::register(fp);
+    static REGISTERED: Once = Once::new();
+    REGISTERED.call_once(|| {
+        for entry in COCO_FN_LOGIC {
+            if let Some(fp) = entry_fingerprint(entry) {
+                logic_registry::register(fp);
+            }
         }
-    }
+    });
 }

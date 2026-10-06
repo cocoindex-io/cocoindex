@@ -367,6 +367,173 @@ class TestTableSchemaFromClass:
 
 
 # =============================================================================
+# Table reconciliation unit tests (no DB needed)
+# =============================================================================
+
+
+@requires_neo4j
+class TestTableReconcile:
+    def test_schema_evolution_under_full_reprocess(self) -> None:
+        """Schema evolution during full reprocess must compute column actions and mark lossy."""
+        from cocoindex.connectorkits import statediff, target
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        handler = neo_target._TableHandler()
+        schema_v1 = neo.TableSchema(
+            columns={
+                "id": neo.ColumnDef("STRING"),
+                "a": neo.ColumnDef("STRING"),
+                "b": neo.ColumnDef("STRING"),
+            },
+            primary_key="id",
+        )
+        spec_v1 = neo_target._TableSpec(
+            table_schema=schema_v1,
+            primary_key="id",
+            is_relation=False,
+            from_label=None,
+            from_pk_field=None,
+            to_label=None,
+            to_pk_field=None,
+            managed_by=target.ManagedBy.SYSTEM,
+        )
+
+        out_v1 = handler.reconcile(
+            neo_target._TableKey("db", "Doc"), spec_v1, [], False
+        )
+        assert out_v1 is not None
+        assert out_v1.action.main_action is None
+        assert isinstance(out_v1.tracking_record, statediff.MutualTrackingRecord)
+        tracking_v1 = out_v1.tracking_record
+
+        # Evolve schema: drop 'b', add 'c'
+        schema_v2 = neo.TableSchema(
+            columns={
+                "id": neo.ColumnDef("STRING"),
+                "a": neo.ColumnDef("STRING"),
+                "c": neo.ColumnDef("STRING"),
+            },
+            primary_key="id",
+        )
+        spec_v2 = neo_target._TableSpec(
+            table_schema=schema_v2,
+            primary_key="id",
+            is_relation=False,
+            from_label=None,
+            from_pk_field=None,
+            to_label=None,
+            to_pk_field=None,
+            managed_by=target.ManagedBy.SYSTEM,
+        )
+
+        # Incremental run
+        out_inc = handler.reconcile(
+            neo_target._TableKey("db", "Doc"),
+            spec_v2,
+            [tracking_v1],
+            False,
+        )
+        assert out_inc is not None
+        assert out_inc.action.main_action is None
+        assert out_inc.action.column_actions == {
+            "field:b": "delete",
+            "field:c": "insert",
+        }
+        assert out_inc.child_invalidation == "lossy"
+
+        # Full reprocess run (prev_may_be_missing=True)
+        out_reproc = handler.reconcile(
+            neo_target._TableKey("db", "Doc"),
+            spec_v2,
+            [tracking_v1],
+            True,
+        )
+        assert out_reproc is not None
+        assert out_reproc.action.main_action == "upsert"
+        assert out_reproc.action.column_actions == {
+            "field:a": "upsert",
+            "field:b": "delete",
+            "field:c": "insert",
+        }
+        assert out_reproc.child_invalidation == "lossy"
+
+    def test_column_addition_only_not_lossy_on_incremental(self) -> None:
+        """Adding a column on incremental update is not lossy, but under full reprocess re-upserts."""
+        from cocoindex.connectorkits import statediff, target
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        handler = neo_target._TableHandler()
+        schema_v1 = neo.TableSchema(
+            columns={
+                "id": neo.ColumnDef("STRING"),
+                "a": neo.ColumnDef("STRING"),
+            },
+            primary_key="id",
+        )
+        spec_v1 = neo_target._TableSpec(
+            table_schema=schema_v1,
+            primary_key="id",
+            is_relation=False,
+            from_label=None,
+            from_pk_field=None,
+            to_label=None,
+            to_pk_field=None,
+            managed_by=target.ManagedBy.SYSTEM,
+        )
+
+        out_v1 = handler.reconcile(
+            neo_target._TableKey("db", "Doc"), spec_v1, [], False
+        )
+        assert out_v1 is not None
+        assert isinstance(out_v1.tracking_record, statediff.MutualTrackingRecord)
+        tracking_v1 = out_v1.tracking_record
+
+        schema_v2 = neo.TableSchema(
+            columns={
+                "id": neo.ColumnDef("STRING"),
+                "a": neo.ColumnDef("STRING"),
+                "b": neo.ColumnDef("STRING"),
+            },
+            primary_key="id",
+        )
+        spec_v2 = neo_target._TableSpec(
+            table_schema=schema_v2,
+            primary_key="id",
+            is_relation=False,
+            from_label=None,
+            from_pk_field=None,
+            to_label=None,
+            to_pk_field=None,
+            managed_by=target.ManagedBy.SYSTEM,
+        )
+
+        out_inc = handler.reconcile(
+            neo_target._TableKey("db", "Doc"),
+            spec_v2,
+            [tracking_v1],
+            False,
+        )
+        assert out_inc is not None
+        assert out_inc.action.main_action is None
+        assert out_inc.action.column_actions == {"field:b": "insert"}
+        assert out_inc.child_invalidation is None
+
+        out_reproc = handler.reconcile(
+            neo_target._TableKey("db", "Doc"),
+            spec_v2,
+            [tracking_v1],
+            True,
+        )
+        assert out_reproc is not None
+        assert out_reproc.action.main_action == "upsert"
+        assert out_reproc.action.column_actions == {
+            "field:a": "upsert",
+            "field:b": "insert",
+        }
+        assert out_reproc.child_invalidation == "lossy"
+
+
+# =============================================================================
 # Integration tests — require running Neo4j (testcontainers spins one up)
 # =============================================================================
 
@@ -705,3 +872,71 @@ async def test_vector_index_attached(
             found = True
             break
     assert found, f"Expected vector index on VecDoc.summary; got {rows}"
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_neo4j_table_schema_evolution_under_full_reprocess(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """A schema change must still be applied and child records re-upserted when running with full_reprocess=True."""
+
+    @dataclass
+    class _DocV1:
+        filename: str
+        title: str
+        extra: str
+
+    @dataclass
+    class _DocV2:
+        filename: str
+        title: str
+        summary: str
+
+    doc_type: type[Any] = _DocV1
+    docs: list[Any] = [
+        _DocV1(filename="doc1.md", title="Title 1", extra="extra 1"),
+        _DocV1(filename="doc2.md", title="Title 2", extra="extra 2"),
+    ]
+
+    async def _declare_docs() -> None:
+        schema = await neo.TableSchema.from_class(doc_type, primary_key="filename")
+        table: Any = await coco.use_mount(
+            coco.component_subpath("setup", "doc_table"),
+            neo.mount_table_target,
+            KG_DB,
+            "DocEvolve",
+            schema,
+            primary_key="filename",
+        )
+        for doc in docs:
+            table.declare_record(row=doc)
+
+    uri, auth = neo4j_clean
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_schema_reprocess", environment=coco_env),
+        _declare_docs,
+    )
+    await app.update()
+
+    nodes_v1 = await _read_nodes(uri, auth, "DocEvolve")
+    assert len(nodes_v1) == 2
+    by_fn = {r["filename"]: r for r in nodes_v1}
+    assert by_fn["doc1.md"]["extra"] == "extra 1"
+
+    # Evolve schema to V2: drop 'extra', add 'summary' and run under full_reprocess=True
+    doc_type = _DocV2
+    docs = [
+        _DocV2(filename="doc1.md", title="Title 1", summary="summary 1"),
+        _DocV2(filename="doc2.md", title="Title 2", summary="summary 2"),
+    ]
+    await app.update(full_reprocess=True)
+
+    nodes_v2 = await _read_nodes(uri, auth, "DocEvolve")
+    assert len(nodes_v2) == 2
+    by_fn2 = {r["filename"]: r for r in nodes_v2}
+    assert by_fn2["doc1.md"]["summary"] == "summary 1"
+    assert by_fn2["doc2.md"]["summary"] == "summary 2"

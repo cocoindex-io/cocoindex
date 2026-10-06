@@ -29,7 +29,7 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -826,10 +826,12 @@ class _RowAction(NamedTuple):
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a Doris table."""
 
+    tracks_value_fingerprint = True
+
     _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]
-    _sink: coco.TargetActionSink[_RowAction, None]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -840,9 +842,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._managed_conn = managed_conn
         self._table_name = table_name
         self._table_schema = table_schema
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_RowAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -1031,15 +1031,82 @@ class _TableAction(NamedTuple):
     column_actions: dict[str, statediff.DiffAction]
 
 
+def _is_benign_column_ddl_error(e: Exception, *, expect_exists: bool) -> bool:
+    """True if `e` reports the column DDL is already a no-op for the
+    direction being applied (e.g. ADD COLUMN on a column that is already
+    there, or DROP COLUMN on one that is already gone): a benign race or
+    an idempotent re-run. False for a genuine failure, which the caller
+    must re-raise rather than silently swallow.
+    """
+    msg = str(e).lower()
+    if expect_exists:
+        return "already exist" in msg or "duplicate column" in msg
+    return "not exist" in msg or "unknown column" in msg
+
+
+def _apply_column_actions(
+    config: DorisConnectionConfig,
+    table_name: str,
+    table_schema: TableSchema[Any],
+    column_actions: dict[str, statediff.DiffAction],
+) -> None:
+    """Apply non-PK column ALTER TABLE actions for one table.
+
+    A benign no-op (per `_is_benign_column_ddl_error`) is ignored. Any other
+    DDL failure is logged and re-raised, so the caller's reconcile() does
+    not commit a tracking record for a schema change that never actually
+    happened: mirrors the sqlite connector's own handling of the same bug
+    class.
+    """
+    for sub_key, col_action in column_actions.items():
+        if not sub_key.startswith(_COL_SUBKEY_PREFIX):
+            continue
+        col_name = sub_key[len(_COL_SUBKEY_PREFIX) :]
+        if col_name in table_schema.primary_key:
+            continue
+
+        col_def = table_schema.columns.get(col_name)
+        if col_action == "delete":
+            ddl = f"ALTER TABLE `{config.database}`.`{table_name}` DROP COLUMN `{col_name}`"
+            try:
+                _execute_ddl_sync(config, ddl)
+            except Exception as e:
+                if not _is_benign_column_ddl_error(e, expect_exists=False):
+                    _logger.warning(
+                        "Failed to drop column %s from table %s: %s",
+                        col_name,
+                        table_name,
+                        e,
+                    )
+                    raise
+        elif col_action in ("insert", "upsert") and col_def is not None:
+            nullable = "NULL" if col_def.nullable else "NOT NULL"
+            ddl = (
+                f"ALTER TABLE `{config.database}`.`{table_name}` "
+                f"ADD COLUMN `{col_name}` {col_def.type} {nullable}"
+            )
+            try:
+                _execute_ddl_sync(config, ddl)
+            except Exception as e:
+                if not _is_benign_column_ddl_error(e, expect_exists=True):
+                    _logger.warning(
+                        "Failed to add column %s to table %s: %s",
+                        col_name,
+                        table_name,
+                        e,
+                    )
+                    raise
+
+
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-) -> list[coco.ChildTargetDef["_RowHandler"] | None]:
-    actions_list = list(actions)
-    outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(actions_list)
-
+    child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
+    /,
+) -> None:
+    """Apply table actions (DDL) and fulfill the child row handlers."""
     by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions_list):
+    for i, action in enumerate(actions):
         by_key.setdefault(action.key, []).append(i)
 
     for key, idxs in by_key.items():
@@ -1047,7 +1114,7 @@ def _apply_table_actions(
         config = managed_conn.config
 
         for i in idxs:
-            action = actions_list[i]
+            action = actions[i]
             assert action.key == key
 
             if action.main_action in ("replace", "delete"):
@@ -1061,12 +1128,11 @@ def _apply_table_actions(
                     _logger.warning("Failed to drop table %s: %s", key.table_name, e)
 
             if coco.is_non_existence(action.spec):
-                outputs[i] = None
                 continue
 
             spec = action.spec
-            outputs[i] = coco.ChildTargetDef(
-                handler=_RowHandler(
+            child_slots[i].fulfill(
+                _RowHandler(
                     managed_conn=managed_conn,
                     table_name=key.table_name,
                     table_schema=spec.table_schema,
@@ -1093,37 +1159,15 @@ def _apply_table_actions(
 
             # Reconcile non-PK columns incrementally
             if action.column_actions:
-                for sub_key, col_action in action.column_actions.items():
-                    if not sub_key.startswith(_COL_SUBKEY_PREFIX):
-                        continue
-                    col_name = sub_key[len(_COL_SUBKEY_PREFIX) :]
-                    if col_name in spec.table_schema.primary_key:
-                        continue
-
-                    col_def = spec.table_schema.columns.get(col_name)
-                    if col_action == "delete":
-                        try:
-                            _execute_ddl_sync(
-                                config,
-                                f"ALTER TABLE `{config.database}`.`{key.table_name}` DROP COLUMN `{col_name}`",
-                            )
-                        except Exception:
-                            pass
-                    elif col_action in ("insert", "upsert") and col_def is not None:
-                        nullable = "NULL" if col_def.nullable else "NOT NULL"
-                        try:
-                            _execute_ddl_sync(
-                                config,
-                                f"ALTER TABLE `{config.database}`.`{key.table_name}` "
-                                f"ADD COLUMN `{col_name}` {col_def.type} {nullable}",
-                            )
-                        except Exception:
-                            pass
-
-    return outputs
+                _apply_column_actions(
+                    config,
+                    key.table_name,
+                    spec.table_schema,
+                    action.column_actions,
+                )
 
 
-_table_action_sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
     _apply_table_actions
 )
 

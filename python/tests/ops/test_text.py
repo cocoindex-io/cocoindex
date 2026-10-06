@@ -19,6 +19,7 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="App.vue") == "vue"
     assert detect_code_language(filename="script.jl") == "julia"
     assert detect_code_language(filename="main.dart") == "dart"
+    assert detect_code_language(filename="init.lua") == "lua"
     assert detect_code_language(filename="Main.elm") == "elm"
     assert detect_code_language(filename="index.astro") == "astro"
     assert detect_code_language(filename="deploy.sh") == "bash"
@@ -227,6 +228,54 @@ def test_recursive_splitter_with_dart() -> None:
 
     assert len(chunks) >= 1
     assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_lua() -> None:
+    """Lua splitting is syntax-aware, not separator-based.
+
+    The sample is one line, so separators give the fallback path no function
+    boundaries at all. Only the grammar can find them.
+    """
+    splitter = RecursiveSplitter()
+    code = (
+        "local function f(a) return a+1 end "
+        "local function g(b) return b*2 end "
+        "local function h(c) return c-3 end"
+    )
+    chunks = splitter.split(code, chunk_size=45, min_chunk_size=10, language="lua")
+
+    assert len(chunks) > 1, "sample must split for the check below to mean anything"
+    assert all(isinstance(c, Chunk) for c in chunks)
+    for chunk in chunks:
+        text = chunk.text.strip()
+        assert text.startswith("local function") and text.endswith("end"), (
+            f"chunk straddles a function boundary: {text!r}"
+        )
+
+
+def test_recursive_splitter_lua_keeps_table_constructor_whole() -> None:
+    """A Lua table constructor is not severed at a comma between its fields.
+
+    Separator fallback cuts `{ x = x, y = y }` at the comma, because a comma is
+    a separator to it and a table field to the grammar. A constructor longer
+    than `chunk_size` is still split, here as in every other grammar-backed
+    language.
+    """
+    splitter = RecursiveSplitter()
+    code = (
+        "local function clamp(v, lo, hi) return math.min(math.max(v, lo), hi) end\n"
+        "local Point = {}\n"
+        "Point.__index = Point\n"
+        "function Point.new(x, y) return setmetatable({ x = x, y = y }, Point) end\n"
+        "function Point:norm() return math.sqrt(self.x * self.x + self.y * self.y) end\n"
+        "return Point\n"
+    )
+    chunks = splitter.split(code, chunk_size=60, min_chunk_size=10, language="lua")
+
+    assert len(chunks) > 1, "sample must split for the check below to mean anything"
+    assert any("setmetatable({ x = x, y = y }, Point)" in c.text for c in chunks), (
+        "table constructor was severed across chunks"
+    )
 
 
 def test_recursive_splitter_with_vue() -> None:

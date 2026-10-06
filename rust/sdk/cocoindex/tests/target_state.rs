@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use cocoindex::{
-    App, ChildTargetDef, Result, StableKey, TargetAction, TargetActionSink,
+    App, ChildSlot, ChildTargetDef, Result, StableKey, TargetAction, TargetActionSink,
     TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetStateProvider,
     declare_target_state, mount_target, register_root_target_states_provider,
 };
@@ -398,35 +398,88 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-/// Build a container sink that fulfills each create/update with a fresh child row
-/// handler (recording into `row_log`) and emits no child for deletes.
+/// Build a container sink that fulfills each create/update's child slot with a
+/// fresh child row handler (recording into `row_log`); deletes carry no slot.
 fn table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children(move |actions: Vec<TargetAction<TableAction>>| {
-        let table_log = table_log.clone();
-        let row_log = row_log.clone();
-        async move {
-            let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-            for action in actions {
-                match action {
-                    TargetAction::Create(t) | TargetAction::Update(t) => {
-                        table_log.lock().unwrap().push(format!("ensure {}", t.name));
-                        out.push(Some(ChildTargetDef::new::<String, _>(RowHandler {
-                            sink: recording_sink(row_log.clone()),
-                        })));
-                    }
-                    TargetAction::Delete(t) => {
-                        table_log.lock().unwrap().push(format!("drop {}", t.name));
-                        out.push(None);
+    TargetActionSink::from_async_fn_with_children(
+        move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
+            let table_log = table_log.clone();
+            let row_log = row_log.clone();
+            async move {
+                for (action, child_slot) in actions {
+                    match action {
+                        TargetAction::Create(t) | TargetAction::Update(t) => {
+                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                            if let Some(slot) = child_slot {
+                                slot.fulfill(ChildTargetDef::new::<String, _>(RowHandler {
+                                    sink: recording_sink(row_log.clone()),
+                                }))?;
+                            }
+                        }
+                        TargetAction::Delete(t) => {
+                            table_log.lock().unwrap().push(format!("drop {}", t.name));
+                        }
                     }
                 }
+                Ok(())
             }
-            Ok(out)
-        }
-    })
+        },
+    )
+}
+
+/// [`table_sink`] written against the deprecated pre-slot closure shape: the
+/// closure returns the child definitions index-aligned with the actions.
+#[allow(deprecated)]
+fn legacy_table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_defs(
+        move |actions: Vec<TargetAction<TableAction>>| {
+            let table_log = table_log.clone();
+            let row_log = row_log.clone();
+            async move {
+                let mut out = Vec::with_capacity(actions.len());
+                for action in actions {
+                    match action {
+                        TargetAction::Create(t) | TargetAction::Update(t) => {
+                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                            out.push(Some(ChildTargetDef::new::<String, _>(RowHandler {
+                                sink: recording_sink(row_log.clone()),
+                            })));
+                        }
+                        TargetAction::Delete(t) => {
+                            table_log.lock().unwrap().push(format!("drop {}", t.name));
+                            out.push(None);
+                        }
+                    }
+                }
+                Ok(out)
+            }
+        },
+    )
 }
 
 async fn run_table(
     app: &App,
+    table_log: Log,
+    row_log: Log,
+    generation: &'static str,
+    invalidation: Option<TargetChildInvalidation>,
+    rows: Vec<(&'static str, &'static str)>,
+) {
+    run_table_with(
+        app,
+        table_sink,
+        table_log,
+        row_log,
+        generation,
+        invalidation,
+        rows,
+    )
+    .await
+}
+
+async fn run_table_with(
+    app: &App,
+    make_sink: fn(Log, Log) -> TargetActionSink<TableAction>,
     table_log: Log,
     row_log: Log,
     generation: &'static str,
@@ -442,7 +495,7 @@ async fn run_table(
                 &ctx,
                 "test/table",
                 TableHandler {
-                    sink: table_sink(table_log, row_log),
+                    sink: make_sink(table_log, row_log),
                     invalidation,
                 },
             )?;
@@ -469,6 +522,40 @@ async fn run_table(
 // ---------------------------------------------------------------------------
 // Test 3: mount_target child rows — insert / delete
 // ---------------------------------------------------------------------------
+
+/// The deprecated pre-slot closure shape still fulfills the child provider.
+#[tokio::test]
+async fn legacy_child_defs_sink_fulfills_children() {
+    let (app, _dir) = temp_app("legacy_child_defs").await;
+    let table_log = new_log();
+    let row_log = new_log();
+
+    run_table_with(
+        &app,
+        legacy_table_sink,
+        table_log.clone(),
+        row_log.clone(),
+        "g1",
+        None,
+        vec![("r1", "v1"), ("r2", "v1")],
+    )
+    .await;
+    assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
+    assert_eq!(drain_sorted(&row_log), vec!["create r1=v1", "create r2=v1"]);
+
+    run_table_with(
+        &app,
+        legacy_table_sink,
+        table_log.clone(),
+        row_log.clone(),
+        "g1",
+        None,
+        vec![("r1", "v1")],
+    )
+    .await;
+    assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
+    assert_eq!(drain_sorted(&row_log), vec!["delete r2"]);
+}
 
 #[tokio::test]
 async fn mount_target_child_rows_insert_and_delete() {
@@ -1008,30 +1095,32 @@ fn partitioned_table_sink(
     part_log: Log,
     row_log: Log,
 ) -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children(move |actions: Vec<TargetAction<TableAction>>| {
-        let table_log = table_log.clone();
-        let part_log = part_log.clone();
-        let row_log = row_log.clone();
-        async move {
-            let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-            for action in actions {
-                match action {
-                    TargetAction::Create(t) | TargetAction::Update(t) => {
-                        table_log.lock().unwrap().push(format!("ensure {}", t.name));
-                        out.push(Some(ChildTargetDef::new::<TableSpec, _>(TableHandler {
-                            sink: table_sink(part_log.clone(), row_log.clone()),
-                            invalidation: Some(TargetChildInvalidation::Destructive),
-                        })));
-                    }
-                    TargetAction::Delete(t) => {
-                        table_log.lock().unwrap().push(format!("drop {}", t.name));
-                        out.push(None);
+    TargetActionSink::from_async_fn_with_children(
+        move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
+            let table_log = table_log.clone();
+            let part_log = part_log.clone();
+            let row_log = row_log.clone();
+            async move {
+                for (action, child_slot) in actions {
+                    match action {
+                        TargetAction::Create(t) | TargetAction::Update(t) => {
+                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                            if let Some(slot) = child_slot {
+                                slot.fulfill(ChildTargetDef::new::<TableSpec, _>(TableHandler {
+                                    sink: table_sink(part_log.clone(), row_log.clone()),
+                                    invalidation: Some(TargetChildInvalidation::Destructive),
+                                }))?;
+                            }
+                        }
+                        TargetAction::Delete(t) => {
+                            table_log.lock().unwrap().push(format!("drop {}", t.name));
+                        }
                     }
                 }
+                Ok(())
             }
-            Ok(out)
-        }
-    })
+        },
+    )
 }
 
 async fn run_partitioned_table(

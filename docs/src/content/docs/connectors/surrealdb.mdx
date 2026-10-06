@@ -3,8 +3,8 @@ title: "*SurrealDB* connector"
 toc_max_heading_level: 4
 description: >
   Write to SurrealDB with support for normal and relation (graph edge) tables,
-  atomic cross-table transactions, and vector indexes with cosine / euclidean /
-  manhattan distances over mtree or hnsw methods.
+  typed values, array record IDs, bounded transactions, and HNSW vector indexes
+  with cosine / euclidean / manhattan distances.
 ---
 The `surrealdb` connector provides utilities for writing records to SurrealDB databases, with support for normal tables, relation (graph edge) tables, optional schema enforcement, and vector indexes.
 
@@ -23,7 +23,7 @@ pip install cocoindex[surrealdb]
 
 ## Connection setup
 
-Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connection parameters and creates authenticated connections on demand.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connection parameters and opens one authenticated connection per event loop, shared by all tables and batches. Call `await factory.close()` at shutdown to close it.
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -53,7 +53,15 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 The `surrealdb` connector provides target state APIs for writing records to normal tables and relation tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
 
-All tables within the same database share a single transaction sink, so changes across related tables and relations are applied atomically.
+Writes are sent as typed parameters (`datetime`, `date`, `Decimal`, `UUID`, `bytes`, `timedelta`, lists and dicts arrive as native SurrealDB types, not strings).
+
+**Transactions and errors.** The changes of each table are applied in chunks of at most 500 actions, each chunk one transaction (`Transaction conflict` errors are retried with backoff). Atomicity is per chunk, not across tables. Any statement error rolls the chunk back and raises, so the update fails and the affected components are retried on the next run.
+
+**Record IDs** may be a string, an integer, or a tuple/list, which becomes an array ID (`person:['sap', '0001']`). Relation endpoints (`from_id`, `to_id`) take the same forms.
+
+**Ownership.** `declare_record` writes with `UPSERT ... MERGE`, never `CONTENT`: fields written by other owners survive, and fields you stop declaring are unset. Use `declare_fields` when a pipeline contributes only some fields of a record that another pipeline owns. Relation records are single-owner and are replaced whole.
+
+**DDL.** Table and field definitions use `OVERWRITE`, so they are idempotent. With `managed_by="user"` CocoIndex never runs DDL on tables (indexes declared with `declare_vector_index` are still created).
 
 ### Declaring target states
 
@@ -97,6 +105,18 @@ def TableTarget.declare_record(
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include an `id` field.
 
 `declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
+
+```python
+def TableTarget.declare_fields(
+    self,
+    *,
+    id: Any,
+    group: str,
+    fields: dict[str, Any],
+) -> None
+```
+
+Declares the fields one owner (`group`) contributes to a record. It runs `UPDATE $id MERGE {fields}` and touches nothing else. When the declaration goes away, or a field is dropped from it, those fields are unset. If the record does not exist, the write raises and is retried on the next run, so declare the base record in the same or another pipeline.
 
 #### Relation tables (parent state)
 
@@ -159,7 +179,7 @@ def TableTarget.declare_vector_index(
     name: str | None = None,
     field: str,
     metric: Literal["cosine", "euclidean", "manhattan"] = "cosine",
-    method: Literal["mtree", "hnsw"] = "mtree",
+    method: Literal["hnsw"] = "hnsw",
     dimension: int | None = None,
     vector_type: Literal["f32", "f64", "i16", "i32", "i64"] = "f32",
 ) -> None
@@ -170,7 +190,7 @@ def TableTarget.declare_vector_index(
 - `name` — Index name (defaults to `idx_{table}__{field}`).
 - `field` — Field to index (must be a vector/array field).
 - `metric` — Distance metric: `"cosine"`, `"euclidean"`, or `"manhattan"`.
-- `method` — Index method: `"mtree"` or `"hnsw"`.
+- `method` — Index method: `"hnsw"` (SurrealDB 3 removed `MTREE`).
 - `dimension` — Vector dimension (required).
 - `vector_type` — Vector element type: `"f32"`, `"f64"`, `"i16"`, `"i32"`, or `"i64"`.
 

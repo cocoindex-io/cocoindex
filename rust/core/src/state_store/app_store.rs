@@ -41,27 +41,30 @@ use crate::state_store::txn::{ReadTxn, WriteTxn};
 /// key/value schemas live in [`crate::state::db_schema`].
 pub(crate) type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
 
-/// Per-app handle within a `Storage`. Carries the `Database`, a clone
-/// of the parent `Env` (so standalone read methods can open their own
-/// `RoTxn` without the caller having to do so), and a clone of the
-/// parent `Storage` (so the session backend can route writes through
-/// `Storage::run_txn_boxed`'s single-writer batcher — bypassing it
-/// would serialize every per-session write through heed's writer
-/// mutex with no amortization).
+/// Per-app handle within a `Storage`. Carries the `Database` and a clone
+/// of the parent `Storage`, which owns the env (so standalone read methods
+/// can open their own `RoTxn` without the caller having to do so) and
+/// whose single-writer batcher the session backend routes writes through
+/// (bypassing it would serialize every per-session write through heed's
+/// writer mutex with no amortization).
 #[derive(Clone)]
 pub struct AppStore {
     pub(crate) db: Database,
-    pub(crate) env: heed::Env<heed::WithoutTls>,
     pub(crate) storage: super::storage::Storage,
 }
 
 impl AppStore {
-    pub(crate) fn new(
-        db: Database,
-        env: heed::Env<heed::WithoutTls>,
-        storage: super::storage::Storage,
-    ) -> Self {
-        Self { db, env, storage }
+    pub(crate) fn new(db: Database, storage: super::storage::Storage) -> Self {
+        Self { db, storage }
+    }
+
+    /// A clone of the parent env, for tests that open LMDB transactions
+    /// directly. Panics if the storage is closed or a resize is pending.
+    #[cfg(test)]
+    pub(crate) fn env(&self) -> super::txn::Env {
+        let slot = self.storage.txn_coordinator();
+        let guard = slot.try_read().expect("coordinator is free");
+        super::txn::opened_env(&guard).unwrap().clone()
     }
 
     /// Internal accessor for cursor-iteration code (e.g.
@@ -85,24 +88,6 @@ impl AppStore {
             + Sync
             + 'static,
     {
-        // Call `body(wtxn)` directly (borrowing `body` via its `Fn` impl) rather
-        // than capturing it in an `async move` block. This keeps the outer closure
-        // `Fn` (retryable) instead of `FnOnce`.
-        self.run_in_batcher_typed::<(), _>(move |wtxn| body(wtxn))
-            .await
-    }
-
-    /// Generic variant of [`Self::run_in_batcher`] that returns a
-    /// typed value out of the batched body. Used by methods like
-    /// `reserve_id_range` whose batched work computes a fresh value.
-    pub(super) async fn run_in_batcher_typed<T, F>(&self, body: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
-            + Send
-            + Sync
-            + 'static,
-    {
         self.storage.run_txn(body).await
     }
 
@@ -113,11 +98,11 @@ impl AppStore {
     ///
     /// The returned [`ReadTxn`] holds a coordinator read guard until it is
     /// dropped, so callers must not keep it open longer than needed.
-    pub async fn read_txn<'a>(&'a self) -> Result<ReadTxn<'a>> {
+    pub async fn read_txn(&self) -> Result<ReadTxn> {
         let guard = self.storage.txn_coordinator().read_owned().await;
-        let env = &self.env;
+        let env = super::txn::opened_env(&guard)?;
         let try_open = || async {
-            match env.read_txn() {
+            match env.clone().static_read_txn() {
                 Ok(txn) => cocoindex_utils::retryable::Ok(txn),
                 Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
                     warn!("LMDB readers full, retrying");
@@ -426,20 +411,6 @@ impl AppStore {
         };
         let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
         Ok(Some(info.node_type))
-    }
-
-    /// Reserve an ID range outside a caller-supplied txn. Routed
-    /// through the single-writer batcher so concurrent callers
-    /// coalesce. Returns the first reserved ID.
-    pub async fn reserve_id_range(&self, key: &StableKey, count: u64) -> Result<u64> {
-        let app_store = self.clone();
-        let key = key.clone();
-        self.run_in_batcher_typed(move |wtxn| {
-            let app_store = app_store.clone();
-            let key = key.clone();
-            Box::pin(async move { app_store.reserve_id_range_in_txn(wtxn, &key, count).await })
-        })
-        .await
     }
 }
 
@@ -1041,7 +1012,8 @@ mod tests {
         let mut info = StablePathEntryTrackingInfo::new(Cow::Borrowed("test"));
         info.pending_process_token = token;
         let bytes = rmp_serde::to_vec_named(&info).unwrap();
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_tracking_info_raw(&mut wtxn, path, &bytes)
             .await
@@ -1110,7 +1082,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("count"), b"42")
             .await
@@ -1137,14 +1110,15 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"v1")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"v2")
             .await
@@ -1165,7 +1139,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"old_a")
             .await
@@ -1181,7 +1156,7 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         // write and delete are atomic within the same txn.
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"new_a")
             .await
@@ -1208,7 +1183,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"old_a")
             .await
@@ -1224,7 +1200,7 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         // delete_all and subsequent writes are atomic within the same txn.
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Regular)
             .await
@@ -1255,7 +1231,8 @@ mod tests {
         let p1 = comp_path("comp_a");
         let p2 = comp_path("comp_b");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p1, StateKind::Regular, &sym("k"), b"from_a")
             .await
@@ -1285,7 +1262,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"reg")
             .await
@@ -1329,7 +1307,7 @@ mod tests {
 
         // Clearing the Regular keyspace must not touch Live (the live
         // bootstrap state survives a component's regular flush).
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Regular)
             .await
@@ -1347,7 +1325,7 @@ mod tests {
         );
 
         // Clearing Live too leaves the component with no user state.
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Live)
             .await

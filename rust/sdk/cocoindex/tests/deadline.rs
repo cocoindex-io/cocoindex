@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -16,12 +16,21 @@ use tokio::sync::Notify;
 
 static MEMO_CHILD_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-struct TestClockGuard;
+// The deadline test clock is process-global and tests in this binary run on
+// parallel threads, so each `TestClockGuard` holds this lock for its lifetime.
+static TEST_CLOCK_LOCK: Mutex<()> = Mutex::new(());
+
+struct TestClockGuard {
+    _guard: MutexGuard<'static, ()>,
+}
 
 impl TestClockGuard {
     fn new() -> Self {
+        let guard = TEST_CLOCK_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         testing_reset_deadline_clock();
-        Self
+        Self { _guard: guard }
     }
 
     fn reset(&self) {

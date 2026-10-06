@@ -114,14 +114,23 @@ struct ComponentInner<Prof: EngineProfile> {
     /// this child's Weak entry from the parent's active_children.
     parent: Option<Component<Prof>>,
 
-    /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
+    /// Serializes runs of this component. A run holds the permit from before
+    /// its body starts until its memo is stored (see `execute_once`), so two
+    /// runs never overlap, and the memo one run stores is in place before the
+    /// next decides whether to execute its body.
     build_semaphore: tokio::sync::Semaphore,
-    last_memo_fp: Mutex<Option<Fingerprint>>,
+    /// The memo most recently stored under `build_semaphore`, if any. A run
+    /// that finds its own key here on acquiring the permit knows a same-key
+    /// run just completed and stored its result, so it re-checks the memo
+    /// instead of executing again — under `full_reprocess` only when that run
+    /// belonged to the same operation (see `execute_once`).
+    last_stored_memo: Mutex<Option<StoredMemo>>,
 
-    /// Active child components, keyed by their full StablePath.
-    /// Uses Weak references — children are kept alive by their spawned tasks
-    /// and LiveComponentController references, not by this map. When a child's
-    /// last strong reference is dropped, its Drop impl removes the entry here.
+    /// Identity registry of child components, keyed by their full StablePath,
+    /// so a re-mount of a path whose component is still referenced shares the
+    /// same `ComponentInner` (and thus its `build_semaphore`). Weak: entries
+    /// are removed by the child's Drop impl. This map says nothing about
+    /// activity — see `active_ops`.
     ///
     /// `parking_lot::Mutex` (non-poisoning): the Drop impl below acquires this
     /// lock, and a poisoned `std::sync::Mutex` would cascade panics through
@@ -133,6 +142,64 @@ struct ComponentInner<Prof: EngineProfile> {
     /// since cancel/drain paths can lock this from `Drop` as well.
     live_state:
         parking_lot::Mutex<Option<Arc<crate::engine::live_component::LiveComponentState<Prof>>>>,
+
+    /// Number of processing tasks in flight in this component's subtree
+    /// (itself and every descendant), maintained by [`ActivityGuard`]. This —
+    /// not the reference count of `inner` — is what "active" means: anything
+    /// may hold a `Component` or a processor context for as long as it likes
+    /// (a host-language exception traceback, a stored handle) without keeping
+    /// the component active.
+    active_ops: std::sync::atomic::AtomicUsize,
+    /// Signaled when `active_ops` drops to zero (see `wait_until_inactive`).
+    inactive: tokio::sync::Notify,
+}
+
+/// Marks a processing task as in flight on a component for the guard's
+/// lifetime. A task's entry point creates it before spawning the task and drops
+/// it when the task ends — on every exit path, including cancellation and
+/// panics — so activity is accounted for deterministically, independent of who
+/// else holds the component.
+///
+/// Counts on the component and each of its ancestors, so a component is active
+/// while anything in its subtree runs (`wait_until_inactive`, [`StatsGroup`]
+/// member liveness).
+pub(crate) struct ActivityGuard<Prof: EngineProfile> {
+    component: Component<Prof>,
+}
+
+impl<Prof: EngineProfile> ActivityGuard<Prof> {
+    pub(crate) fn new(component: Component<Prof>) -> Self {
+        for inner in component.self_and_ancestors() {
+            inner
+                .active_ops
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Self { component }
+    }
+}
+
+/// What a processing task holds from its entry point until it ends
+/// (see [`Component::start_task`]).
+struct StartedTask<Prof: EngineProfile> {
+    /// Keeps the component and its ancestors active; the task drops it right
+    /// before resolving child readiness.
+    activity: ActivityGuard<Prof>,
+    /// Registration with the parent's readiness accumulator; `None` for the root.
+    child_readiness: Option<ComponentBgChildReadinessChildGuard>,
+}
+
+impl<Prof: EngineProfile> Drop for ActivityGuard<Prof> {
+    fn drop(&mut self) {
+        for inner in self.component.self_and_ancestors() {
+            if inner
+                .active_ops
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                inner.inactive.notify_waiters();
+            }
+        }
+    }
 }
 
 impl<Prof: EngineProfile> Drop for ComponentInner<Prof> {
@@ -319,27 +386,12 @@ impl ComponentBgChildReadiness {
     }
 }
 
-/// "Is any member still active?" — pops dead `Weak`s off the back until the
-/// first live one (or empty). Each entry is removed at most once over the
-/// collection's lifetime ⇒ amortized O(1) per inserted member, no full scan.
-/// Used by [`StatsGroup`] for live-mode termination (the group's unkeyed,
-/// drop-hookless analogue of `active_children`).
-fn any_active<T>(members: &mut Vec<Weak<T>>) -> bool {
-    while let Some(last) = members.last() {
-        if last.strong_count() > 0 {
-            return true;
-        }
-        members.pop();
-    }
-    false
-}
-
 /// A named, separate stats aggregation scope created by `coco.stats_group(...)`.
 /// Components mounted within the scope report into `stats` (split out of the
 /// enclosing aggregate), register their initial readiness into `readiness`, and
 /// are tracked for liveness in `active_members`. Shared (`Arc`) between the
 /// substituted context view (which pushes members) and the spawned
-/// group-lifecycle task (which awaits readiness and polls liveness).
+/// group-lifecycle task (which awaits readiness, then the members' inactivity).
 pub(crate) struct StatsGroup<Prof: EngineProfile> {
     stats: ProcessingStats,
     readiness: ComponentBgChildReadiness,
@@ -363,15 +415,36 @@ impl<Prof: EngineProfile> StatsGroup<Prof> {
         &self.readiness
     }
 
-    /// Register a direct member's `ComponentInner` for liveness tracking.
+    /// Register a direct member for liveness tracking.
     pub(crate) fn push_member(&self, child: &Component<Prof>) {
         self.active_members.lock().push(child.downgrade_inner());
     }
 
-    /// True while any member (or anything in its subtree, via the strong
-    /// parent-chain) is still alive. Prunes dead entries as it scans.
-    pub(crate) fn any_active(&self) -> bool {
-        any_active(&mut self.active_members.lock())
+    /// The most recently registered member that is still active, pruning
+    /// finished members (inactive, or dropped) off the back as it scans. A
+    /// member only becomes active again by being mounted again, which
+    /// registers it again, so pruning is safe; each entry is removed at most
+    /// once ⇒ amortized O(1) per registered member.
+    fn last_active_member(&self) -> Option<Component<Prof>> {
+        let mut members = self.active_members.lock();
+        while let Some(last) = members.last() {
+            if let Some(inner) = last.upgrade()
+                && inner.active_ops.load(std::sync::atomic::Ordering::SeqCst) > 0
+            {
+                return Some(Component { inner });
+            }
+            members.pop();
+        }
+        None
+    }
+
+    /// Wait until no member (nor anything in a member's subtree) has a
+    /// processing task in flight — the group's analogue of
+    /// `Component::wait_until_inactive`.
+    pub(crate) async fn wait_until_members_inactive(&self) {
+        while let Some(member) = self.last_active_member() {
+            member.wait_until_inactive().await;
+        }
     }
 }
 
@@ -410,16 +483,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             parent_guard.resolve_result(outcome);
 
             if live && !cancel_token.is_cancelled() {
-                // Cancel-aware inactivity poll, scoped to this group's members
-                // (the group's analogue of `wait_until_inactive`).
-                let mut delay = std::time::Duration::from_millis(1);
-                let max_delay = std::time::Duration::from_secs(10);
-                while lifecycle_group.any_active() {
-                    tokio::select! {
-                        () = tokio::time::sleep(delay) => {}
-                        () = cancel_token.cancelled() => break,
-                    }
-                    delay = (delay * 2).min(max_delay);
+                // Cancel-aware wait for the group's members to finish (the
+                // group's analogue of `wait_until_inactive`).
+                tokio::select! {
+                    () = lifecycle_group.wait_until_members_inactive() => {}
+                    () = cancel_token.cancelled() => {}
                 }
             }
             lifecycle_group.stats().notify_terminated();
@@ -475,12 +543,10 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
                         );
                         continue;
                     };
-                    if !provider.is_orphaned() {
-                        building_state
-                            .target_states
-                            .provider_registry
-                            .add(target_state_path, provider.clone())?;
-                    }
+                    building_state
+                        .target_states
+                        .provider_registry
+                        .add(target_state_path, provider.clone())?;
                 }
                 Ok(())
             })?;
@@ -509,6 +575,94 @@ struct ComponentBuildOutput<Prof: EngineProfile> {
     built_target_states_providers: TargetStateProviderRegistry<Prof>,
 }
 
+/// A memo stored by a run of a component under its `build_semaphore`: the
+/// operation that stored it and the key it was stored under.
+#[derive(Clone, Copy)]
+struct StoredMemo {
+    operation_generation: u64,
+    memo_fp: Fingerprint,
+}
+
+/// Result of looking up a component's memo for the processor about to run.
+enum MemoLookup<Prof: EngineProfile> {
+    /// A valid memo stands in for a run: report the stored run's outcome and
+    /// output.
+    Reuse(ComponentRunOutcome, ComponentBuildOutput<Prof>),
+    /// No usable memo. `revalidated_states` is `Some` when a memo matched the
+    /// key but its memo states no longer validate: the states collected during
+    /// validation are then stored with the new memo, instead of being
+    /// collected again once the body has run.
+    Miss {
+        revalidated_states: Option<MemoStatesPayload<Prof>>,
+    },
+}
+
+/// How the permit-guarded part of `execute_once` ended.
+enum GuardedRun<Prof: EngineProfile> {
+    /// The body did not run: a run with the same memo key completed under the
+    /// permit while this one waited for it, and its memo was reused.
+    Reused(ComponentRunOutcome, ComponentBuildOutput<Prof>),
+    /// The body ran (build mode), or the component was deleted (delete mode).
+    Executed {
+        children_outcome: ComponentRunOutcome,
+        build_output: Option<ComponentBuildOutput<Prof>>,
+        touched_previous_states: bool,
+    },
+}
+
+/// Look up the memo stored for `comp_ctx`'s component and, when `processor`
+/// has a memo state handler, validate the stored memo states through it. A
+/// stored memo whose key is not `memo_fp` — or any stored memo, when the
+/// processor is not memoized (`memo_fp` is `None`) — is invalidated. A failure
+/// to read or decode the memo is logged and counts as a miss; a failure in the
+/// state handler propagates.
+async fn lookup_component_memo<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    processor: &Prof::ComponentProc,
+    memo_fp: Option<Fingerprint>,
+) -> Result<MemoLookup<Prof>> {
+    let memo = match use_or_invalidate_component_memoization(comp_ctx, memo_fp).await {
+        Ok(memo) => memo,
+        Err(err) => {
+            error!("component memoization restore failed: {err:?}");
+            None
+        }
+    };
+    let Some((ret, memo_states, stored_logic_deps, stored_provider_deps)) = memo else {
+        return Ok(MemoLookup::Miss {
+            revalidated_states: None,
+        });
+    };
+    if processor.has_memo_state_handler() && !memo_states.is_empty() {
+        let fut = processor.handle_memo_states(
+            comp_ctx.app_ctx().env().host_runtime_ctx(),
+            comp_ctx,
+            Some(memo_states),
+        )?;
+        let (new_states, can_reuse, states_changed) = fut.await?;
+        if !can_reuse {
+            return Ok(MemoLookup::Miss {
+                revalidated_states: Some(new_states),
+            });
+        }
+        // Reusable, but the states themselves moved (e.g. an mtime changed
+        // while the content hash did not): refresh them in the stored memo.
+        if states_changed {
+            update_component_memo_states(comp_ctx, &new_states).await?;
+        }
+    }
+    // Report the stored dependency sets upward even on a memo hit, so a
+    // mounting parent's memo depends on this whole subtree (see
+    // `merge_logic_deps` in `execute_once`).
+    Ok(MemoLookup::Reuse(
+        ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps),
+        ComponentBuildOutput {
+            ret,
+            built_target_states_providers: Default::default(),
+        },
+    ))
+}
+
 impl<Prof: EngineProfile> Component<Prof> {
     pub(crate) fn new(
         app_ctx: AppContext<Prof>,
@@ -521,10 +675,37 @@ impl<Prof: EngineProfile> Component<Prof> {
                 stable_path,
                 parent,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
-                last_memo_fp: Mutex::new(None),
+                last_stored_memo: Mutex::new(None),
                 active_children: parking_lot::Mutex::new(HashMap::new()),
                 live_state: parking_lot::Mutex::new(None),
+                active_ops: std::sync::atomic::AtomicUsize::new(0),
+                inactive: tokio::sync::Notify::new(),
             }),
+        }
+    }
+
+    fn self_and_ancestors(&self) -> impl Iterator<Item = &ComponentInner<Prof>> {
+        std::iter::successors(Some(&*self.inner), |inner| {
+            inner.parent.as_ref().map(|parent| &*parent.inner)
+        })
+    }
+
+    /// Begin a processing task on this component: count it as in flight, then
+    /// register it with the parent view — as a pending child for readiness and
+    /// as a member of every enclosing stats group. Activity is counted first,
+    /// so a member is never registered inactive (a concurrent group scan would
+    /// prune it before its task had started); readiness and membership are
+    /// registered together, so a group can never see a member become ready
+    /// without also tracking its activity.
+    fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> StartedTask<Prof> {
+        let activity = ActivityGuard::new(self.clone());
+        let child_readiness = context.parent_context().map(|parent_ctx| {
+            parent_ctx.push_active_member(self);
+            parent_ctx.components_readiness().clone().add_child()
+        });
+        StartedTask {
+            activity,
+            child_readiness,
         }
     }
 
@@ -617,8 +798,8 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.stable_path
     }
 
-    /// A `Weak` to this component's inner, for liveness tracking by a
-    /// [`StatsGroup`] (alive iff this component or any descendant is alive).
+    /// A `Weak` to this component's inner, for membership tracking by a
+    /// [`StatsGroup`]; the member counts as active while `active_ops > 0`.
     fn downgrade_inner(&self) -> Weak<ComponentInner<Prof>> {
         Arc::downgrade(&self.inner)
     }
@@ -636,20 +817,28 @@ impl<Prof: EngineProfile> Component<Prof> {
         self.inner.live_state.lock().clone()
     }
 
-    /// Returns true if this component has no active children (all Weak refs are dead).
-    pub fn has_active_children(&self) -> bool {
-        let children = self.inner.active_children.lock();
-        children.values().any(|w| w.strong_count() > 0)
+    /// True while a processing task is in flight on this component or any
+    /// descendant (see [`ActivityGuard`]).
+    pub fn is_active(&self) -> bool {
+        self.inner
+            .active_ops
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
     }
 
-    /// Wait until all descendants are inactive (active_children is empty).
-    /// Uses exponential backoff polling: 1ms → 2ms → 4ms → ... → 10s cap.
+    /// Wait until no processing task is in flight in this component's
+    /// subtree. Event-driven: returns as soon as the last [`ActivityGuard`]
+    /// in the subtree drops.
     pub async fn wait_until_inactive(&self) {
-        let mut delay = std::time::Duration::from_millis(1);
-        let max_delay = std::time::Duration::from_secs(10);
-        while self.has_active_children() {
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(max_delay);
+        loop {
+            // Create the future before checking: a `Notified` receives
+            // `notify_waiters` from the moment it exists, so a guard dropped
+            // between the check and the await still wakes us.
+            let inactive = self.inner.inactive.notified();
+            if !self.is_active() {
+                return;
+            }
+            inactive.await;
         }
     }
 
@@ -678,6 +867,11 @@ impl<Prof: EngineProfile> Component<Prof> {
         deadline: DeadlineContext,
         caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
+
         // Release parent's inflight permit (deadlock prevention).
         // On a component's first child mount, the parent gives up its slot
         // so children can make progress.
@@ -696,9 +890,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
 
         let relative_path = self.relative_path()?;
-        let child_readiness_guard = context
-            .parent_context()
-            .map(|c| c.components_readiness().clone().add_child());
         let span = info_span!("component.run", component_path = %relative_path);
         let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(
@@ -718,6 +909,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                 drop(processor);
                 drop(context);
                 drop(self);
+                // Mark the task over before readiness resolves, so whoever
+                // observes readiness also observes the component as inactive.
+                drop(activity);
                 child_readiness_guard.map(|guard| guard.resolve(outcome));
                 output?
                     .ok_or_else(|| internal_error!("component deletion can only run in background"))
@@ -738,6 +932,10 @@ impl<Prof: EngineProfile> Component<Prof> {
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
 
         // Release parent's inflight permit (deadlock prevention).
         if let Some(parent_ctx) = context.parent_context() {
@@ -754,9 +952,6 @@ impl<Prof: EngineProfile> Component<Prof> {
             context.set_inflight_permit(permit);
         }
 
-        let child_readiness_guard = context
-            .parent_context()
-            .map(|c| c.components_readiness().clone().add_child());
         let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(async move {
             // Check if this task has been superseded before executing.
@@ -767,6 +962,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     drop(processor);
                     drop(context);
                     drop(self);
+                    drop(activity);
                     if let Some(guard) = child_readiness_guard {
                         guard.resolve(ComponentRunOutcome::default());
                     }
@@ -815,6 +1011,8 @@ impl<Prof: EngineProfile> Component<Prof> {
             drop(processor);
             drop(context);
             drop(self);
+            // See `run` for why this precedes readiness resolution.
+            drop(activity);
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
             }
@@ -832,9 +1030,10 @@ impl<Prof: EngineProfile> Component<Prof> {
         context: ComponentProcessorContext<Prof>,
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
-        let child_readiness_guard = context
-            .parent_context()
-            .map(|c| c.components_readiness().clone().add_child());
+        let StartedTask {
+            activity,
+            child_readiness: child_readiness_guard,
+        } = self.start_task(&context);
         // Pull on_error out of the delete context so the spawned task
         // can invoke it. The context still carries the same handler for
         // descendant GC sweeps to read and cascade.
@@ -845,6 +1044,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     if !check() {
                         drop(context);
                         drop(self);
+                        drop(activity);
                         if let Some(guard) = child_readiness_guard {
                             guard.resolve(ComponentRunOutcome::default());
                         }
@@ -882,6 +1082,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // See run_in_background for the rationale (PyGILState finalization fix).
                 drop(context);
                 drop(self);
+                // See `run` for why this precedes readiness resolution.
+                drop(activity);
                 if let Some(guard) = child_readiness_guard {
                     guard.resolve(outcome);
                 }
@@ -914,158 +1116,138 @@ impl<Prof: EngineProfile> Component<Prof> {
 
             // Fast-path: component memoization check does not require acquiring the build permit.
             // If it hits, we can immediately return without processing/submitting/waiting.
-
-            match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store).await
-            {
-                Ok(Some((ret, memo_states, stored_logic_deps, stored_provider_deps))) => {
-                    // If processor has state handler and there are stored states, validate them.
-                    if processor.has_memo_state_handler() && !memo_states.is_empty() {
-                        let fut = processor.handle_memo_states(
-                            processor_context.app_ctx().env().host_runtime_ctx(),
-                            processor_context,
-                            Some(memo_states),
-                        )?;
-                        let (new_states, can_reuse, states_changed) = fut.await?;
-                        if can_reuse {
-                            // Memo is reusable — update stored states if they changed
-                            if states_changed {
-                                update_component_memo_states(processor_context, &new_states)
-                                    .await?;
-                            }
-                            processing_stats.update(processor_name.as_ref(), |stats| {
-                                stats.num_execution_starts += 1;
-                                stats.num_unchanged += 1;
-                            });
-                            // Report the stored dependency set upward even on a
-                            // memo hit, so a mounting parent's memo depends on
-                            // this whole subtree (see `merge_logic_deps` below).
-                            return Ok((
-                                ComponentRunOutcome::reused(
-                                    stored_logic_deps,
-                                    stored_provider_deps,
-                                ),
-                                Some(ComponentBuildOutput {
-                                    ret,
-                                    built_target_states_providers: Default::default(),
-                                }),
-                            ));
-                        }
-                        // Not reusable — fall through to re-execution
-                        memo_states_for_store = Some(new_states);
-                    } else {
-                        // No state handler or no states — use cached result directly
-                        processing_stats.update(processor_name.as_ref(), |stats| {
+            // Under `full_reprocess` a stored memo may only be reused when this very
+            // operation stored it, which only the permit-holding re-check below can
+            // tell, so the fast-path is skipped.
+            if !processor_context.full_reprocess() {
+                match lookup_component_memo(processor_context, processor, memo_fp_to_store).await? {
+                    MemoLookup::Reuse(outcome, output) => {
+                        processing_stats.update(processor_name, |stats| {
                             stats.num_execution_starts += 1;
                             stats.num_unchanged += 1;
                         });
-                        return Ok((
-                            ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps),
-                            Some(ComponentBuildOutput {
-                                ret,
-                                built_target_states_providers: Default::default(),
-                            }),
-                        ));
+                        return Ok((outcome, Some(output)));
+                    }
+                    MemoLookup::Miss { revalidated_states } => {
+                        memo_states_for_store = revalidated_states;
                     }
                 }
-                Err(err) => {
-                    error!("component memoization restore failed: {err:?}");
-                }
-                Ok(None) => {}
             }
 
-            processor_context
-                .processing_stats()
-                .update(processor_name.as_ref(), |stats| {
-                    stats.num_execution_starts += 1;
-                });
-            reported_processor_name = Some(Cow::Borrowed(processor.processor_info().name.as_str()));
+            processing_stats.update(processor_name, |stats| {
+                stats.num_execution_starts += 1;
+            });
+            reported_processor_name = Some(Cow::Borrowed(processor_name));
         }
 
         let result = {
             let reported_processor_name = &mut reported_processor_name;
             async move {
-                // Acquire the semaphore to ensure `process()` and `submit()` cannot overlap
-                // with another execution of the same component.
-                let (ret, submit_output, mut children_outcome) = {
-                    let _permit = self.inner.build_semaphore.acquire().await?;
+                // The permit is held until the memo is stored (or, in delete
+                // mode, the tombstone cleaned up), not only across `process()`
+                // and `submit()`: a run queued behind this one must find the
+                // stored memo once it gets the permit, so it can reuse it
+                // instead of executing again.
+                let _permit = self.inner.build_semaphore.acquire().await?;
 
-                    // Build mode only: write the component's own existence bit
-                    // (and ancestor chain) into the parent in its own txn,
-                    // before the user processor runs. Maintains the invariant
-                    // that existence ⊇ tracked state and eliminates the
-                    // dual-writer conflict with the parent's commit-time
-                    // existence reconciliation. See `internal_states.md` §3.1.
-                    if processor_context.mode() == ComponentProcessingMode::Build
-                        && !processor_context.preview()
+                // A run with the same memo key completed under the permit while
+                // this one waited for it — e.g. two `App::update` calls on one
+                // app that both missed the fast-path above before either had
+                // stored a memo. Re-check the memo now; a failed run stores
+                // none (and records none), so a miss falls through to
+                // executing. Under `full_reprocess` only a memo stored by this
+                // same operation qualifies: that is the operation's own
+                // execution of the component, not a cache from a previous run.
+                let last_stored_memo = *self.inner.last_stored_memo.lock().unwrap();
+                if let Some(processor) = processor
+                    && let Some(memo_fp) = memo_fp_to_store
+                    && let Some(stored) = last_stored_memo
+                    && stored.memo_fp == memo_fp
+                    && (!processor_context.full_reprocess()
+                        || stored.operation_generation == processor_context.operation_generation())
+                {
+                    match lookup_component_memo(processor_context, processor, memo_fp_to_store)
+                        .await?
                     {
-                        eager_existence_upsert(processor_context).await?;
-                    }
-
-                    // Eagerly load all function-memo and user-state entries for
-                    // this component into the per-build cache (one read txn), so
-                    // every subsequent fn-call probe and `use_state` serves from
-                    // memory. Skipped under `full_reprocess` and in delete mode
-                    // (no `ComponentBuildingState`); see the cache flush logic
-                    // for how those cases are handled at commit time.
-                    processor_context.prefetch_states().await?;
-
-                    if memo_fp_to_store.is_some() {
-                        *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
-                        // TODO: when matching, it means there're ongoing processing for the same memoization key pending on children.
-                        // We can piggyback on the same processing to avoid duplicating the work.
-                    }
-
-                    // The earlier deadline check guards memo lookup. A component can still
-                    // spend time waiting for the build semaphore, existence upsert, or state
-                    // prefetch before the user body starts, so check again at the actual
-                    // processor-entry boundary.
-                    deadline.check()?;
-
-                    let ret: Result<Option<Prof::FunctionData>> = match &processor {
-                        Some(processor) => processor
-                            .process(
-                                processor_context.app_ctx().env().host_runtime_ctx(),
-                                &processor_context,
-                            )?
-                            .await
-                            .map(Some),
-                        None => Ok(None),
-                    };
-
-                    // Wait until children components ready before submitting this
-                    // component's target states and child-existence reconciliation.
-                    let components_readiness = processor_context.components_readiness();
-                    components_readiness.set_build_done();
-                    let mut children_outcome = components_readiness
-                        .readiness()
-                        .wait()
-                        .await
-                        .clone()
-                        .into_result()?;
-
-                    // Merge children's logic deps into this component's context. The
-                    // full set (own fp ∪ all descendants) is taken once after
-                    // memo-state collection below and used for both this component's
-                    // own memo and the outcome reported to its parent.
-                    processor_context
-                        .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
-                    processor_context.merge_target_provider_deps(std::mem::take(
-                        &mut children_outcome.target_provider_deps,
-                    ));
-
-                    let ret = ret?;
-                    deadline.check()?;
-                    let submit_output = submit(processor_context, processor, |name| {
-                        if reported_processor_name.is_none() {
-                            processing_stats.update(&name, |stats| {
-                                stats.num_execution_starts += 1;
-                            });
-                            *reported_processor_name = Some(Cow::Owned(name.to_string()));
+                        MemoLookup::Reuse(outcome, output) => {
+                            return Ok(GuardedRun::Reused(outcome, output));
                         }
-                    })
-                    .await?;
-                    Ok::<_, Error>((ret, submit_output, children_outcome))
-                }?;
+                        MemoLookup::Miss { revalidated_states } => {
+                            memo_states_for_store = revalidated_states;
+                        }
+                    }
+                }
+
+                // Build mode only: write the component's own existence bit
+                // (and ancestor chain) into the parent in its own txn,
+                // before the user processor runs. Maintains the invariant
+                // that existence ⊇ tracked state and eliminates the
+                // dual-writer conflict with the parent's commit-time
+                // existence reconciliation. See `internal_states.md` §3.1.
+                if processor_context.mode() == ComponentProcessingMode::Build
+                    && !processor_context.preview()
+                {
+                    eager_existence_upsert(processor_context).await?;
+                }
+
+                // Eagerly load all function-memo and user-state entries for
+                // this component into the per-build cache (one read txn), so
+                // every subsequent fn-call probe and `use_state` serves from
+                // memory. Skipped under `full_reprocess` and in delete mode
+                // (no `ComponentBuildingState`); see the cache flush logic
+                // for how those cases are handled at commit time.
+                processor_context.prefetch_states().await?;
+
+                // The earlier deadline check guards memo lookup. A component can still
+                // spend time waiting for the build semaphore, existence upsert, or state
+                // prefetch before the user body starts, so check again at the actual
+                // processor-entry boundary.
+                deadline.check()?;
+
+                let ret: Result<Option<Prof::FunctionData>> = match &processor {
+                    Some(processor) => processor
+                        .process(
+                            processor_context.app_ctx().env().host_runtime_ctx(),
+                            &processor_context,
+                        )?
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                };
+
+                // Wait until children components ready before submitting this
+                // component's target states and child-existence reconciliation.
+                let components_readiness = processor_context.components_readiness();
+                components_readiness.set_build_done();
+                let mut children_outcome = components_readiness
+                    .readiness()
+                    .wait()
+                    .await
+                    .clone()
+                    .into_result()?;
+
+                // Merge children's logic deps into this component's context. The
+                // full set (own fp ∪ all descendants) is taken once after
+                // memo-state collection below and used for both this component's
+                // own memo and the outcome reported to its parent.
+                processor_context
+                    .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
+                processor_context.merge_target_provider_deps(std::mem::take(
+                    &mut children_outcome.target_provider_deps,
+                ));
+
+                let ret = ret?;
+                deadline.check()?;
+                let submit_output = submit(processor_context, processor, |name| {
+                    if reported_processor_name.is_none() {
+                        processing_stats.update(&name, |stats| {
+                            stats.num_execution_starts += 1;
+                        });
+                        *reported_processor_name = Some(Cow::Owned(name.to_string()));
+                    }
+                })
+                .await?;
+
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {
@@ -1091,19 +1273,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 MemoStatesPayload::default()
                             };
 
-                            let comp_memo = if let Some(fp) = memo_fp_to_store
-                                && let last_memo_fp = processor_context
-                                    .component()
-                                    .inner
-                                    .last_memo_fp
-                                    .lock()
-                                    .unwrap()
-                                && *last_memo_fp == memo_fp_to_store
-                            {
-                                Some((fp, &ret, &memo_states))
-                            } else {
-                                None
-                            };
+                            let comp_memo = memo_fp_to_store.map(|fp| (fp, &ret, &memo_states));
                             // Take the full dependency set once (O(1) move). It
                             // must run after the memo-state collection above, which
                             // reads the set via `collect_context_initial_states`.
@@ -1122,6 +1292,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 &target_provider_deps,
                             )
                             .await?;
+                            // Record the store for a run queued on the permit
+                            // (see the re-check above). Still under the permit,
+                            // so this is the component's latest memo.
+                            if let Some(memo_fp) = memo_fp_to_store {
+                                *self.inner.last_stored_memo.lock().unwrap() = Some(StoredMemo {
+                                    operation_generation: processor_context.operation_generation(),
+                                    memo_fp,
+                                });
+                            }
                             children_outcome.logic_deps = logic_deps;
                             children_outcome.target_provider_deps = target_provider_deps;
                         }
@@ -1154,11 +1333,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                         None
                     }
                 };
-                Ok::<_, Error>((
+                Ok::<_, Error>(GuardedRun::Executed {
                     children_outcome,
                     build_output,
-                    submit_output.touched_previous_states,
-                ))
+                    touched_previous_states: submit_output.touched_previous_states,
+                })
             }
             .await
         };
@@ -1168,7 +1347,19 @@ impl<Prof: EngineProfile> Component<Prof> {
             .map(|s| s.as_ref())
             .unwrap_or(db_schema::UNKNOWN_PROCESSOR_NAME);
         match result {
-            Ok((children_outcome, build_output, touched_previous_states)) => {
+            Ok(GuardedRun::Reused(outcome, output)) => {
+                // The execution start was counted before the permit; the run
+                // ends like a fast-path memo hit.
+                processing_stats.update(final_processor_name, |stats| {
+                    stats.num_unchanged += 1;
+                });
+                Ok((outcome, Some(output)))
+            }
+            Ok(GuardedRun::Executed {
+                children_outcome,
+                build_output,
+                touched_previous_states,
+            }) => {
                 processing_stats.update(final_processor_name, |stats| {
                     if reported_processor_name.is_none() {
                         stats.num_execution_starts += 1;
@@ -1272,52 +1463,92 @@ impl<Prof: EngineProfile> Component<Prof> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComponentProcessor, ComponentProcessorInfo, any_active};
+    use super::{ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, StatsGroup};
     use crate::engine::app::{App, AppUpdateOptions};
-    use crate::engine::context::{ComponentProcessorContext, MemoStatesPayload};
+    use crate::engine::context::{
+        ComponentProcessingAction, ComponentProcessorContext, FnCallContext, MemoStatesPayload,
+        PreviewActionCollector,
+    };
     use crate::engine::deadline::{
         DeadlineContext, testing_advance_deadline_clock, testing_deadline_clock_lock,
         testing_disable_deadline_clock, testing_reset_deadline_clock,
     };
     use crate::engine::environment::Environment;
-    use crate::engine::profile::{EngineProfile, Persist};
-    use crate::engine::target_state::{
-        ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
-        TargetStateProviderRegistry,
+    use crate::engine::execution::{
+        declare_target_state, register_root_target_state_provider, submit,
     };
-    use crate::state::stable_path::StableKey;
+    use crate::engine::profile::{EngineProfile, Persist};
+    use crate::engine::stats::ProcessingStats;
+    use crate::engine::target_state::{
+        TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot, TargetHandler,
+        TargetReconcileOutput, TargetStateProviderRegistry,
+    };
+    use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
+    use crate::state_store::test_support::hold_write_batch;
     use async_trait::async_trait;
     use cocoindex_utils::fingerprint::Fingerprint;
     use std::hash::{Hash, Hasher};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex, Weak};
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    #[test]
-    fn test_any_active_pop_prune() {
-        // Empty → inactive.
-        let mut members: Vec<Weak<()>> = Vec::new();
-        assert!(!any_active(&mut members));
+    fn key_path(parent: &Component<TestProfile>, key: &str) -> StablePath {
+        parent
+            .stable_path()
+            .concat_part(StableKey::Str(Arc::from(key)))
+    }
 
-        // One live entry → active, not pruned.
-        let live = Arc::new(());
-        members.push(Arc::downgrade(&live));
-        assert!(any_active(&mut members));
-        assert_eq!(members.len(), 1);
+    /// Activity is explicit: a task's `ActivityGuard` counts on the component
+    /// and its ancestors, and dropping it wakes `wait_until_inactive`. Holding
+    /// `Component`s has no effect on either.
+    #[tokio::test]
+    async fn activity_propagates_up_the_parent_chain_and_wakes_waiters() {
+        let (app, _dir) = test_app("activity_guard").await;
+        let root = Component::new(app.app_ctx().clone(), StablePath::root(), None);
+        let child = root.get_child(key_path(&root, "child"));
+        let grandchild = child.get_child(key_path(&child, "grandchild"));
+        let chain = [&root, &child, &grandchild];
+        assert!(!chain.iter().any(|c| c.is_active()));
 
-        // Trailing dead entries are popped off the back until the first live
-        // one; the live entry at the front is preserved.
-        let dead = Arc::new(());
-        members.push(Arc::downgrade(&dead));
-        drop(dead);
-        assert!(any_active(&mut members)); // pops the dead tail, finds `live`
-        assert_eq!(members.len(), 1);
+        let activity = ActivityGuard::new(grandchild.clone());
+        assert!(chain.iter().all(|c| c.is_active()));
 
-        // All dead → inactive and emptied.
-        drop(live);
-        assert!(!any_active(&mut members));
-        assert!(members.is_empty());
+        let waiter = tokio::spawn({
+            let root = root.clone();
+            async move { root.wait_until_inactive().await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !waiter.is_finished(),
+            "must keep waiting while the grandchild's task is in flight"
+        );
+        drop(activity);
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("wait_until_inactive must wake when the last task ends")
+            .unwrap();
+        assert!(!chain.iter().any(|c| c.is_active()));
+    }
+
+    #[tokio::test]
+    async fn stats_group_prunes_finished_members_even_while_still_referenced() {
+        let (app, _dir) = test_app("stats_group_members").await;
+        let root = Component::new(app.app_ctx().clone(), StablePath::root(), None);
+        let member = root.get_child(key_path(&root, "member"));
+        let group = StatsGroup::<TestProfile>::new();
+
+        let activity = ActivityGuard::new(member.clone());
+        group.push_member(&member);
+        assert!(group.last_active_member().is_some());
+
+        drop(activity);
+        // `member` is still held (as a retained host-language context would
+        // hold it), yet it is finished: pruned, nothing left to wait for.
+        assert!(group.last_active_member().is_none());
+        assert!(group.active_members.lock().is_empty());
+        group.wait_until_members_inactive().await;
     }
 
     #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -1344,23 +1575,40 @@ mod tests {
             &self,
             _host_runtime_ctx: &(),
             _host_ctx: Arc<()>,
-            _actions: Vec<()>,
-        ) -> crate::prelude::Result<Option<Vec<Option<ChildTargetDef<TestProfile>>>>> {
-            Ok(None)
+            _actions: &[TargetActionWithChildSlot<TestProfile>],
+        ) -> crate::prelude::Result<()> {
+            Ok(())
         }
     }
 
-    struct NoopHandler;
+    /// Plans an action for every desired target state (none for a deletion)
+    /// and counts its `reconcile` calls. With `reject`, it rejects every
+    /// desired target state instead, as a connector rejecting a declared
+    /// value does.
+    struct CountingHandler {
+        reconcile_calls: Arc<AtomicUsize>,
+        sink: TargetActionSinkKeeper<TestProfile>,
+        reject: bool,
+    }
 
-    impl TargetHandler<TestProfile> for NoopHandler {
+    impl TargetHandler<TestProfile> for CountingHandler {
         fn reconcile(
             &self,
-            _key: StableKey,
-            _desired_target_state: Option<&()>,
+            key: StableKey,
+            desired_target_state: Option<&()>,
             _prev_possible_records: &[TestData],
             _prev_may_be_missing: bool,
         ) -> crate::prelude::Result<Option<TargetReconcileOutput<TestProfile>>> {
-            Ok(None)
+            self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+            if self.reject && desired_target_state.is_some() {
+                cocoindex_utils::client_bail!("target state {key:?} rejected");
+            }
+            Ok(desired_target_state.map(|_| TargetReconcileOutput {
+                action: (),
+                sink: self.sink.clone(),
+                tracking_record: Some(TestData(Vec::new())),
+                child_invalidation: None,
+            }))
         }
     }
 
@@ -1383,18 +1631,31 @@ mod tests {
         type HostCtx = ();
         type ComponentProc = TestProcessor;
         type FunctionData = TestData;
-        type TargetHdl = NoopHandler;
+        type TargetHdl = CountingHandler;
         type TargetStateTrackingRecord = TestData;
         type TargetAction = ();
         type TargetActionSink = NoopSink;
         type TargetStateValue = ();
     }
 
+    /// Optional processor body, given the component's processor context.
+    type ProcessHook = Arc<
+        dyn Fn(
+                ComponentProcessorContext<TestProfile>,
+            )
+                -> Pin<Box<dyn Future<Output = crate::prelude::Result<TestData>> + Send>>
+            + Send
+            + Sync,
+    >;
+
     struct TestProcessor {
         info: ComponentProcessorInfo,
         memo_fp: Fingerprint,
         body_started: Arc<AtomicBool>,
         advance_clock_in_state_handler: bool,
+        /// What the memo state handler reports as `can_reuse` on a memo hit.
+        memo_states_reusable: bool,
+        on_process: Option<ProcessHook>,
     }
 
     impl TestProcessor {
@@ -1409,7 +1670,19 @@ mod tests {
                 memo_fp,
                 body_started,
                 advance_clock_in_state_handler,
+                memo_states_reusable: false,
+                on_process: None,
             }
+        }
+
+        fn with_reusable_memo_states(mut self) -> Self {
+            self.memo_states_reusable = true;
+            self
+        }
+
+        fn with_on_process(mut self, hook: ProcessHook) -> Self {
+            self.on_process = Some(hook);
+            self
         }
     }
 
@@ -1417,14 +1690,21 @@ mod tests {
         fn process(
             &self,
             _host_runtime_ctx: &(),
-            _comp_ctx: &ComponentProcessorContext<TestProfile>,
+            comp_ctx: &ComponentProcessorContext<TestProfile>,
         ) -> crate::prelude::Result<
             impl Future<Output = crate::prelude::Result<TestData>> + Send + 'static,
         > {
             let body_started = self.body_started.clone();
+            let hook = self
+                .on_process
+                .as_ref()
+                .map(|hook| (hook.clone(), comp_ctx.clone()));
             Ok(async move {
                 body_started.store(true, Ordering::SeqCst);
-                Ok(TestData(b"ret".to_vec()))
+                match hook {
+                    Some((hook, comp_ctx)) => hook(comp_ctx).await,
+                    None => Ok(TestData(b"ret".to_vec())),
+                }
             })
         }
 
@@ -1451,6 +1731,7 @@ mod tests {
             + 'static,
         > {
             let advance_clock = self.advance_clock_in_state_handler;
+            let reusable = self.memo_states_reusable;
             Ok(async move {
                 if advance_clock {
                     testing_advance_deadline_clock(Duration::from_secs(2));
@@ -1460,7 +1741,7 @@ mod tests {
                         positional: vec![TestData(b"state".to_vec())],
                         by_context_fp: Vec::new(),
                     },
-                    false,
+                    reusable,
                     false,
                 ))
             })
@@ -1486,11 +1767,18 @@ mod tests {
     }
 
     async fn test_app(name: &str) -> (App<TestProfile>, tempfile::TempDir) {
+        test_app_with_map_size(name, 1 << 24).await
+    }
+
+    async fn test_app_with_map_size(
+        name: &str,
+        lmdb_map_size: usize,
+    ) -> (App<TestProfile>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let settings = StorageSettings {
             db_path: dir.path().join("lmdb"),
             lmdb_max_dbs: 64,
-            lmdb_map_size: 1 << 24,
+            lmdb_map_size,
         };
         let providers = Arc::new(Mutex::new(TargetStateProviderRegistry::new(
             Default::default(),
@@ -1550,6 +1838,486 @@ mod tests {
         assert!(
             !second_body_started.load(Ordering::SeqCst),
             "processor body must not start after memo-state validation expires the deadline"
+        );
+    }
+
+    /// A processor context retained after its component's processing task
+    /// ends — in the host language, an exception traceback keeping a frame
+    /// that holds it, or a stored handle — keeps the component's identity
+    /// alive but not active, so live-mode termination is unaffected.
+    #[tokio::test]
+    async fn retained_context_does_not_keep_component_active() {
+        let (app, _dir) = test_app("retained_ctx").await;
+        let child_path = StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+
+        let retained_child_ctx: Arc<Mutex<Option<ComponentProcessorContext<TestProfile>>>> =
+            Default::default();
+        let root_component: Arc<Mutex<Option<Component<TestProfile>>>> = Default::default();
+
+        let child_processor = {
+            let retained = retained_child_ctx.clone();
+            TestProcessor::new(
+                "child",
+                Fingerprint::from(&"retained_ctx/child").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                *retained.lock().unwrap() = Some(ctx);
+                Box::pin(async { Ok(TestData(b"child".to_vec())) })
+            }))
+        };
+        let root_processor = {
+            let root_component = root_component.clone();
+            let child_path = child_path.clone();
+            let child_processor = Mutex::new(Some(child_processor));
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"retained_ctx/root").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                let root_component = root_component.clone();
+                let child_path = child_path.clone();
+                let child_processor = child_processor.lock().unwrap().take().unwrap();
+                Box::pin(async move {
+                    let component = ctx.component().clone();
+                    *root_component.lock().unwrap() = Some(component.clone());
+                    // Same steps as the host bindings' `use_mount`.
+                    let handle = component
+                        .mount_child(&FnCallContext::new(true), child_path)?
+                        .use_mount(&ctx, child_processor, DeadlineContext::NONE)
+                        .await?;
+                    handle.result(Some(&ctx)).await?;
+                    Ok(TestData(b"root".to_vec()))
+                })
+            }))
+        };
+
+        let (handle, _) = app
+            .update(
+                root_processor,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+
+        let root = root_component
+            .lock()
+            .unwrap()
+            .take()
+            .expect("root processor ran");
+        let child_ctx = retained_child_ctx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("child processor ran");
+        let child = child_ctx.component();
+        assert_eq!(child.stable_path(), &child_path);
+        // The retained context keeps the child's identity registered (a
+        // re-mount would share it)...
+        assert!(root.inner.active_children.lock().contains_key(&child_path));
+        // ...but nothing is active, immediately and without polling.
+        assert!(!child.is_active());
+        assert!(!root.is_active());
+    }
+
+    /// A processor body that counts its runs and then holds the build for
+    /// `hold`, long enough for a concurrent same-key run to miss the memo
+    /// fast-path and queue on the permit.
+    fn counting_body(body_runs: Arc<AtomicUsize>, hold: Duration) -> ProcessHook {
+        Arc::new(move |_ctx| {
+            let body_runs = body_runs.clone();
+            Box::pin(async move {
+                body_runs.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(hold).await;
+                Ok(TestData(b"ret".to_vec()))
+            })
+        })
+    }
+
+    /// Start two updates of `app` back to back — the second before the first
+    /// has stored its memo — with memoizable root processors sharing `body`.
+    /// Returns both updates' results in start order.
+    async fn update_twice_concurrently(
+        app: &App<TestProfile>,
+        name: &str,
+        body: ProcessHook,
+    ) -> [crate::prelude::Result<TestData>; 2] {
+        let memo_fp = Fingerprint::from(&name).unwrap();
+        let processor = || {
+            TestProcessor::new(name, memo_fp, Arc::new(AtomicBool::new(false)), false)
+                .with_reusable_memo_states()
+                .with_on_process(body.clone())
+        };
+        let (first, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        let (second, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        [first.result().await, second.result().await]
+    }
+
+    /// Two runs of one component with the same memo key that both start before
+    /// either has stored a memo execute the body once: the run that loses the
+    /// race for the build permit finds the winner's memo under the permit and
+    /// reuses it — same result, no second execution.
+    #[tokio::test]
+    async fn concurrent_same_key_runs_execute_body_once() {
+        let (app, _dir) = test_app("memo_piggyback").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::from_millis(100));
+        let [first, second] = update_twice_concurrently(&app, "memo_piggyback", body).await;
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// The re-check under the permit consults the memo store, not only the
+    /// key marker: a run that fails stores no memo, so the run queued behind
+    /// it executes the body itself instead of reusing a stale result.
+    #[tokio::test]
+    async fn queued_run_executes_after_a_failed_same_key_run() {
+        let (app, _dir) = test_app("memo_after_failure").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body: ProcessHook = {
+            let body_runs = body_runs.clone();
+            Arc::new(move |_ctx| {
+                let body_runs = body_runs.clone();
+                Box::pin(async move {
+                    let run = body_runs.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    if run == 0 {
+                        return Err(cocoindex_utils::internal_error!("first run fails"));
+                    }
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            })
+        };
+        let results = update_twice_concurrently(&app, "memo_after_failure", body).await;
+        assert_eq!(body_runs.load(Ordering::SeqCst), 2);
+        let (failed, succeeded): (Vec<_>, Vec<_>) =
+            results.into_iter().partition(|result| result.is_err());
+        assert_eq!(failed.len(), 1, "exactly the first run to execute fails");
+        assert_eq!(
+            succeeded.into_iter().next().unwrap().unwrap(),
+            TestData(b"ret".to_vec())
+        );
+    }
+
+    /// Run one update whose root runs the same memoizable child component
+    /// twice concurrently — the second run started before the first has
+    /// stored its memo — with child processors sharing `body`. A path can be
+    /// mounted only once per parent, so the second run gets a build context
+    /// built directly. Returns both results in start order.
+    async fn run_same_child_twice_in_one_update(
+        app: &App<TestProfile>,
+        name: &str,
+        full_reprocess: bool,
+        body: ProcessHook,
+    ) -> [crate::prelude::Result<TestData>; 2] {
+        let child_path = StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+        let child_memo_fp = Fingerprint::from(&format!("{name}/child")).unwrap();
+        let child_processor = || {
+            TestProcessor::new(
+                "child",
+                child_memo_fp,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_reusable_memo_states()
+            .with_on_process(body.clone())
+        };
+        let child_processors = Mutex::new(Some((child_processor(), child_processor())));
+        let results: Arc<Mutex<Option<[crate::prelude::Result<TestData>; 2]>>> = Default::default();
+        let root_processor = {
+            let results = results.clone();
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&format!("{name}/root")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                let (first, second) = child_processors.lock().unwrap().take().unwrap();
+                let child_path = child_path.clone();
+                let results = results.clone();
+                Box::pin(async move {
+                    let child = ctx
+                        .component()
+                        .mount_child(&FnCallContext::new(true), child_path)?;
+                    let first = child
+                        .clone()
+                        .use_mount(&ctx, first, DeadlineContext::NONE)
+                        .await?;
+                    let second_ctx = ComponentProcessorContext::new(
+                        child.clone(),
+                        Some(ctx.clone()),
+                        ctx.processing_stats().clone(),
+                        ctx.host_ctx().clone(),
+                        ComponentProcessingAction::new_build(
+                            ctx.target_states_providers()?,
+                            ctx.full_reprocess(),
+                            ctx.live(),
+                            None,
+                            None,
+                        ),
+                    );
+                    let second = child
+                        .run(
+                            second,
+                            second_ctx,
+                            DeadlineContext::NONE,
+                            DeadlineContext::NONE,
+                        )
+                        .await?;
+                    let first = first.result(Some(&ctx)).await;
+                    let second = second.result(Some(&ctx)).await;
+                    *results.lock().unwrap() = Some([first, second]);
+                    Ok(TestData(b"root".to_vec()))
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(
+                root_processor,
+                AppUpdateOptions {
+                    full_reprocess,
+                    ..AppUpdateOptions::default()
+                },
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        results.lock().unwrap().take().expect("root processor ran")
+    }
+
+    /// `full_reprocess` ignores memos from previous runs, not this operation's
+    /// own executions: two concurrent runs of one component in one
+    /// `full_reprocess` update execute the body once, the second reusing the
+    /// memo the first stored — the re-check under the permit sees that this
+    /// operation stored it.
+    #[tokio::test]
+    async fn concurrent_same_key_runs_execute_body_once_under_full_reprocess() {
+        let (app, _dir) = test_app("memo_piggyback_full_reprocess").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::from_millis(100));
+        let [first, second] =
+            run_same_child_twice_in_one_update(&app, "memo_piggyback_full_reprocess", true, body)
+                .await;
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// A memo stored by a previous operation is a cache: a later
+    /// `full_reprocess` update executes the body again even though the
+    /// component's last stored memo carries its key.
+    #[tokio::test]
+    async fn full_reprocess_reexecutes_a_memo_stored_by_a_previous_operation() {
+        let (app, _dir) = test_app("memo_full_reprocess_generation").await;
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::ZERO);
+        let memo_fp = Fingerprint::from(&"memo_full_reprocess_generation").unwrap();
+        let processor = || {
+            TestProcessor::new(
+                "memo_full_reprocess_generation",
+                memo_fp,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_reusable_memo_states()
+            .with_on_process(body.clone())
+        };
+        for full_reprocess in [false, true] {
+            let (handle, _) = app
+                .update(
+                    processor(),
+                    AppUpdateOptions {
+                        full_reprocess,
+                        ..AppUpdateOptions::default()
+                    },
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(handle.result().await.unwrap(), TestData(b"ret".to_vec()));
+        }
+        assert_eq!(
+            body_runs.load(Ordering::SeqCst),
+            2,
+            "the full_reprocess update must not reuse the previous update's memo"
+        );
+    }
+
+    /// A write batch that hits `MDB_MAP_FULL` is re-run in full once the map
+    /// has grown, so a preview's precommit body can run more than once per
+    /// call. Queue it into one batch just ahead of a write that overflows the
+    /// map: every run re-plans the preview's actions, and each action must
+    /// still be collected once.
+    #[tokio::test]
+    async fn preview_collects_actions_once_when_its_write_batch_reruns() {
+        const NUM_TARGET_STATES: usize = 3;
+        let (app, _dir) =
+            test_app_with_map_size("preview_batch_rerun", page_size::get() * 16).await;
+        let env = app.app_ctx().env().clone();
+        // Created before the batch below is held: `create_app_store` opens a
+        // write txn of its own, which would wait on that batch's writer lock.
+        let overflow_store = env.create_app_store("overflow").await.unwrap();
+
+        let batch = hold_write_batch(env.storage()).await;
+
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+            .new_processor_context_for_build(
+                None,
+                ProcessingStats::new(),
+                false,
+                false,
+                Some(collector.clone()),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let reconcile_calls = Arc::new(AtomicUsize::new(0));
+        let provider = register_root_target_state_provider(
+            &ctx,
+            "preview_batch_rerun".to_string(),
+            CountingHandler {
+                reconcile_calls: reconcile_calls.clone(),
+                sink: TargetActionSinkKeeper::new(NoopSink),
+                reject: false,
+            },
+        )
+        .unwrap();
+        for i in 0..NUM_TARGET_STATES {
+            declare_target_state(
+                &ctx,
+                &FnCallContext::default(),
+                provider.clone(),
+                StableKey::Int(i as i64),
+                (),
+            )
+            .unwrap();
+        }
+        let processor = TestProcessor::new(
+            "preview_batch_rerun",
+            Fingerprint::from(&"preview_batch_rerun").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+
+        // Polling each future once runs it up to queuing its body: the
+        // preview's precommit first, then a write that overflows the map.
+        let mut preview = std::pin::pin!(submit(&ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(preview.as_mut()).is_pending());
+        let mut overflow = std::pin::pin!(env.run_txn(move |wtxn| {
+            let overflow_store = overflow_store.clone();
+            Box::pin(async move {
+                let value = vec![0u8; 16 * 1024];
+                for i in 0..64 {
+                    overflow_store
+                        .db()
+                        .put(wtxn, format!("key_{i:02}").as_bytes(), &value)?;
+                }
+                Ok(())
+            })
+        }));
+        assert!(futures::poll!(overflow.as_mut()).is_pending());
+
+        batch.release().await;
+        overflow.await.unwrap();
+        preview.await.unwrap();
+
+        assert!(
+            reconcile_calls.load(Ordering::SeqCst) >= 2 * NUM_TARGET_STATES,
+            "the overflowing write must make the batch re-run the preview's precommit"
+        );
+        assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
+    }
+
+    /// Precommits that share a write batch fail independently, even across
+    /// apps sharing the environment: a target handler rejecting one
+    /// component's target state fails that component's submit alone.
+    #[tokio::test]
+    async fn rejected_target_state_fails_only_its_own_components_submit() {
+        let (accepting_app, _dir) = test_app("accepting_app").await;
+        let env = accepting_app.app_ctx().env().clone();
+        let rejecting_app = App::new("rejecting_app", env.clone(), None).await.unwrap();
+
+        let batch = hold_write_batch(env.storage()).await;
+
+        // Each app's root component declares one target state, through a
+        // handler that accepts it or rejects it.
+        let root_ctx = |app: &App<TestProfile>, reject: bool| {
+            let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+                .new_processor_context_for_build(
+                    None,
+                    ProcessingStats::new(),
+                    false,
+                    false,
+                    None,
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            let reconcile_calls = Arc::new(AtomicUsize::new(0));
+            let provider = register_root_target_state_provider(
+                &ctx,
+                "target".to_string(),
+                CountingHandler {
+                    reconcile_calls: reconcile_calls.clone(),
+                    sink: TargetActionSinkKeeper::new(NoopSink),
+                    reject,
+                },
+            )
+            .unwrap();
+            declare_target_state(
+                &ctx,
+                &FnCallContext::default(),
+                provider,
+                StableKey::Int(0),
+                (),
+            )
+            .unwrap();
+            (ctx, reconcile_calls)
+        };
+        let (accepting_ctx, accepting_reconcile_calls) = root_ctx(&accepting_app, false);
+        let (rejecting_ctx, _) = root_ctx(&rejecting_app, true);
+        let processor = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"rejected_target_state").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+
+        // Polling each submit once runs it up to queuing its precommit: the
+        // accepting one first, so the rejection aborts a txn it ran in.
+        let mut accepting = std::pin::pin!(submit(&accepting_ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(accepting.as_mut()).is_pending());
+        let mut rejecting = std::pin::pin!(submit(&rejecting_ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(rejecting.as_mut()).is_pending());
+
+        batch.release().await;
+        let Err(err) = rejecting.await else {
+            panic!("the rejecting component's submit must fail");
+        };
+        assert!(
+            err.to_string().contains("rejected"),
+            "unexpected error: {err}"
+        );
+        accepting
+            .await
+            .expect("the accepting component's submit must not fail with the rejecting one");
+        assert_eq!(
+            accepting_reconcile_calls.load(Ordering::SeqCst),
+            2,
+            "the accepting precommit runs again to commit without the rejected one"
         );
     }
 }

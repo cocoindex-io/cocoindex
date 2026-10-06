@@ -11,7 +11,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::WriteTxn;
+use crate::state_store::txn::{Env, EnvSlot, WriteTxn, opened_env};
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -29,9 +29,7 @@ const MAP_SIZE_GROWTH_FACTOR: usize = 2;
 /// for use inside `spawn_blocking` where the async retry helper isn't
 /// reachable. Same two-phase policy. Caller must already hold a coordinator
 /// read guard before opening the LMDB read transaction.
-fn open_read_txn_on_env_with_retry(
-    env: &heed::Env<heed::WithoutTls>,
-) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+fn open_read_txn_on_env_with_retry(env: &Env) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
     use std::time::{Duration, Instant};
 
     const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
@@ -120,8 +118,7 @@ pub struct Storage {
 }
 
 struct StorageInner {
-    db_env: heed::Env<heed::WithoutTls>,
-    coord: Arc<tokio::sync::RwLock<()>>,
+    env: Arc<EnvSlot>,
     batcher: Batcher<TxnRunner>,
 }
 
@@ -129,21 +126,29 @@ struct StorageInner {
 /// future that runs against the shared `WriteTxn` and resolves to a boxed
 /// output. The future is bound to the borrow of the txn (`'a`).
 ///
-/// `Fn + Sync` (not `FnOnce`) so the batcher can retry the entire batch on
-/// `MDB_MAP_FULL`: the env is resized between attempts, then every body is
-/// called again with a fresh write transaction. Callers must therefore
-/// ensure their closures are side-effect–free on the captured state (i.e.
-/// they may be invoked more than once). In practice all callers clone `Arc`
-/// handles inside the closure and do not move-out of captures, so this is
-/// already satisfied.
-///
-/// `Sync` is required because `try_run_once` holds `&[TxnBody]` across
-/// `await` points; for `&T` to be `Send`, `T` must be `Sync`.
+/// `Fn` (not `FnOnce`) because the runner may call a body again, with a
+/// fresh write transaction, after aborting the txn it ran in — on
+/// `MDB_MAP_FULL`, once the env is resized, or when another body sharing
+/// the txn fails (see [`TxnRunner::run_isolating_failures`]) — and returns
+/// only the last call's output. Callers must therefore ensure their
+/// closures are side-effect–free on the captured state (i.e. they may be
+/// invoked more than once): clone captures inside the closure rather than
+/// moving them out, and never accumulate into shared state from inside the
+/// body — a body that reports through a shared slot overwrites it on each
+/// run, and the caller acts on it after `run_txn` returns.
 type TxnBody = Box<
     dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
-        + Send
-        + Sync,
+        + Send,
 >;
+
+/// Outcome of one write-txn pass over a sub-batch of bodies.
+enum TxnPass {
+    /// Every body succeeded and the txn committed: one output per body.
+    Committed(Vec<Box<dyn Any + Send>>),
+    /// The body at `index` failed with `err`. The txn was aborted, and the
+    /// bodies after it did not run.
+    BodyFailed { index: usize, err: Error },
+}
 
 /// Returns `true` if `err` is an LMDB `MDB_MAP_FULL` error.
 fn is_map_full(err: &Error) -> bool {
@@ -160,36 +165,122 @@ fn is_map_full(err: &Error) -> bool {
 /// When a `MDB_MAP_FULL` error occurs (either from a put inside a body or
 /// from the final commit), the write txn and its coordinator read guard are
 /// dropped, the coordinator write guard is acquired, the map size is doubled
-/// via `env.resize`, and the whole batch is retried.
+/// via `env.resize`, and every body of that txn is run again.
 ///
 /// Safety: `resize` is only called while holding the coordinator write guard,
 /// which guarantees no read or write LMDB transaction opened through this
 /// coordinator is active in the current process.
+#[derive(Clone)]
 struct TxnRunner {
-    db_env: heed::Env<heed::WithoutTls>,
-    coord: Arc<tokio::sync::RwLock<()>>,
+    env: Arc<EnvSlot>,
 }
 
 impl TxnRunner {
-    /// Attempts one write-txn pass over `inputs`. If any body or the final
-    /// commit returns an error the write txn and coordinator read guard are
-    /// dropped before the error propagates. On `MapFull` the caller should
-    /// resize (under the coordinator write guard) and retry.
-    async fn try_run_once(&self, inputs: &[TxnBody]) -> Result<Vec<Box<dyn Any + Send>>> {
-        let _read_guard = self.coord.read().await;
-        let mut outputs = Vec::with_capacity(inputs.len());
-        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
-        for body in inputs {
-            outputs.push(body(&mut wtxn).await?);
+    /// Runs `bodies` in order and returns each body's own outcome, so a body
+    /// that fails fails only its own caller. Must be polled on a single OS
+    /// thread from start to finish — see [`Runner::run`].
+    ///
+    /// The bodies share one write txn unless one of them fails. LMDB has no
+    /// savepoints, so the writes a failing body made before it failed can
+    /// only be dropped by aborting the txn, which drops the writes of the
+    /// bodies ahead of it too. Those bodies ran cleanly: they run again and
+    /// commit in a txn of their own, then the bodies behind the failing one
+    /// continue in the next txn, so the bodies still commit in input order.
+    /// Committing the bodies ahead on their own, rather than running them
+    /// again with the rest, keeps each body to at most two runs however many
+    /// of its batch mates fail — barring `MDB_MAP_FULL` retries, and bodies
+    /// that fail only when run again.
+    ///
+    /// A failure that is no one body's doing — opening the txn, growing the
+    /// map, committing — goes to every body of that txn.
+    async fn run_isolating_failures(&self, bodies: &[TxnBody]) -> Vec<Result<Box<dyn Any + Send>>> {
+        let mut outcomes: Vec<Option<Result<Box<dyn Any + Send>>>> =
+            std::iter::repeat_with(|| None).take(bodies.len()).collect();
+        // Sub-batches still to run, as index ranges over `bodies`. The
+        // earliest one is on top, so they run (and commit) in input order.
+        let mut pending = vec![0..bodies.len()];
+        while let Some(sub) = pending.pop() {
+            if sub.is_empty() {
+                continue;
+            }
+            match self.run_with_resize_retry(&bodies[sub.clone()]).await {
+                Ok(TxnPass::Committed(outputs)) => {
+                    for (outcome, output) in outcomes[sub].iter_mut().zip(outputs) {
+                        *outcome = Some(Ok(output));
+                    }
+                }
+                Ok(TxnPass::BodyFailed { index, err }) => {
+                    if sub.len() > 1 {
+                        debug!(
+                            "Body {} of a {}-body write txn failed; committing the others \
+                             without it: {err}",
+                            index + 1,
+                            sub.len()
+                        );
+                    }
+                    let failed = sub.start + index;
+                    outcomes[failed] = Some(Err(err));
+                    pending.push(failed + 1..sub.end);
+                    pending.push(sub.start..failed);
+                }
+                Err(err) => {
+                    let (last, rest) = outcomes[sub]
+                        .split_last_mut()
+                        .expect("an empty sub-batch is skipped above");
+                    for outcome in rest {
+                        *outcome = Some(Err(err.replica()));
+                    }
+                    *last = Some(Err(err));
+                }
+            }
+        }
+        outcomes
+            .into_iter()
+            .map(|outcome| outcome.expect("every body is assigned an outcome"))
+            .collect()
+    }
+
+    /// Runs `bodies` in one write txn, resizing the map and running them all
+    /// again on `MDB_MAP_FULL`.
+    async fn run_with_resize_retry(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
+        loop {
+            match self.try_run_once(bodies).await {
+                Err(e) if is_map_full(&e) => {
+                    self.resize_on_map_full().await?;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// Attempts one write-txn pass over `bodies`, committing only if every
+    /// body succeeds. A body's own failure is reported as
+    /// [`TxnPass::BodyFailed`], any other failure (`MapFull` from a body
+    /// included) as `Err`; either way the write txn and coordinator read guard
+    /// are dropped before this returns. On `MapFull` the caller should resize
+    /// (under the coordinator write guard) and retry.
+    async fn try_run_once(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
+        let env_guard = self.env.read().await;
+        let env = opened_env(&env_guard)?;
+        let mut outputs = Vec::with_capacity(bodies.len());
+        let mut wtxn = WriteTxn::new(env.write_txn()?);
+        for (index, body) in bodies.iter().enumerate() {
+            match body(&mut wtxn).await {
+                Ok(output) => outputs.push(output),
+                // The map filled up under the txn's writes as a whole, not
+                // this body's alone.
+                Err(err) if is_map_full(&err) => return Err(err),
+                Err(err) => return Ok(TxnPass::BodyFailed { index, err }),
+            }
         }
         wtxn.into_inner().commit()?;
-        Ok(outputs)
+        Ok(TxnPass::Committed(outputs))
     }
 
     /// Doubles the env's current map size (aligned to page). Caller must hold
     /// the coordinator write guard before calling `Env::resize`.
-    fn next_map_size(db_env: &heed::Env<heed::WithoutTls>) -> Result<usize> {
-        let current = db_env.info().map_size;
+    fn next_map_size(env: &Env) -> Result<usize> {
+        let current = env.info().map_size;
         let doubled = current.checked_mul(MAP_SIZE_GROWTH_FACTOR).ok_or_else(|| {
             internal_error!("LMDB map size overflow while doubling: current={current} bytes")
         })?;
@@ -197,8 +288,9 @@ impl TxnRunner {
     }
 
     async fn resize_on_map_full(&self) -> Result<usize> {
-        let resize_guard = self.coord.write().await;
-        let new_size = Self::next_map_size(&self.db_env)?;
+        let resize_guard = self.env.write().await;
+        let env = opened_env(&resize_guard)?;
+        let new_size = Self::next_map_size(env)?;
         warn!(
             "LMDB map full, auto-resizing to {} bytes and retrying",
             new_size
@@ -207,7 +299,7 @@ impl TxnRunner {
         // transactions in this process; the failed write txn and its read
         // guard were dropped before this path runs.
         unsafe {
-            self.db_env.resize(new_size)?;
+            env.resize(new_size)?;
         }
         drop(resize_guard);
         Ok(new_size)
@@ -217,21 +309,33 @@ impl TxnRunner {
 #[async_trait]
 impl Runner for TxnRunner {
     type Input = TxnBody;
-    type Output = Box<dyn Any + Send>;
+    /// Per-body outcome. Sharing a write txn is an optimization that must not
+    /// couple the bodies' fates, so a body's failure is reported to its own
+    /// caller rather than as a batch-level `Err`, which the batcher would fan
+    /// out to every caller of the batch.
+    type Output = Result<Box<dyn Any + Send>>;
 
+    /// LMDB ties a write transaction to the OS thread that began it: only that
+    /// thread can release the writer lock, and LMDB ignores a failed release.
+    /// A write txn that begins on one runtime worker and commits or aborts on
+    /// another — which work-stealing allows at any `.await` that suspends —
+    /// leaves the lock held for good and blocks every later writer.
+    ///
+    /// So the whole batch — every write txn it takes — runs on one
+    /// blocking-pool thread, where `block_on` polls the bodies instead of the
+    /// runtime's workers.
     async fn run(
         &self,
         inputs: Vec<TxnBody>,
-    ) -> Result<impl ExactSizeIterator<Item = Box<dyn Any + Send>>> {
-        loop {
-            match self.try_run_once(&inputs).await {
-                Ok(outputs) => return Ok(outputs.into_iter()),
-                Err(e) if is_map_full(&e) => {
-                    self.resize_on_map_full().await?;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
+        let runner = self.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let span = Span::current();
+        let outcomes = tokio::task::spawn_blocking(move || {
+            runtime.block_on(runner.run_isolating_failures(&inputs).instrument(span))
+        })
+        .await?;
+        Ok(outcomes.into_iter())
     }
 }
 
@@ -267,48 +371,45 @@ impl Storage {
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
         }
-        let coord = Arc::new(tokio::sync::RwLock::new(()));
-        let batcher = Batcher::new(
-            TxnRunner {
-                db_env: db_env.clone(),
-                coord: coord.clone(),
-            },
-            Arc::new(BatchQueue::new()),
-            BatchingOptions::default(),
-        );
-        Ok(Self {
-            inner: Arc::new(StorageInner {
-                db_env,
-                coord,
-                batcher,
-            }),
-        })
+        Ok(Self::from_env(db_env))
     }
 
-    /// Construct a `Storage` from an already-open `heed::Env`. Used in unit
-    /// tests that open an env directly without going through `StorageSettings`.
-    #[cfg(test)]
-    pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
-        let coord = Arc::new(tokio::sync::RwLock::new(()));
+    /// Construct a `Storage` that takes ownership of an already-open
+    /// `heed::Env`. Unit tests use it directly to open an env without going
+    /// through `StorageSettings`; no other clone of `db_env` may outlive the
+    /// call, or [`Self::close`] can't close it.
+    pub(crate) fn from_env(db_env: Env) -> Self {
+        let env = Arc::new(EnvSlot::new(Some(db_env)));
         let batcher = Batcher::new(
-            TxnRunner {
-                db_env: db_env.clone(),
-                coord: coord.clone(),
-            },
+            TxnRunner { env: env.clone() },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
         );
         Self {
-            inner: Arc::new(StorageInner {
-                db_env,
-                coord,
-                batcher,
-            }),
+            inner: Arc::new(StorageInner { env, batcher }),
         }
     }
 
-    pub(crate) fn txn_coordinator(&self) -> Arc<tokio::sync::RwLock<()>> {
-        self.inner.coord.clone()
+    pub(crate) fn txn_coordinator(&self) -> Arc<EnvSlot> {
+        self.inner.env.clone()
+    }
+
+    /// Close the LMDB env once the transactions in flight finish, so the same
+    /// db path can be opened again in this process even while clones of this
+    /// `Storage` are still alive. Every later operation fails with a client
+    /// error. Idempotent.
+    pub async fn close(&self) {
+        let Some(env) = self.inner.env.write().await.take() else {
+            return;
+        };
+        // Only the slot owns the env: transactions borrow it, or own a clone
+        // only while they hold a coordinator read guard, which the write
+        // guard above has excluded. So this drop closes it.
+        let closing = env.prepare_for_closing();
+        debug_assert!(
+            closing.wait_timeout(std::time::Duration::ZERO),
+            "LMDB env still referenced after close"
+        );
     }
 
     /// Migrate legacy files from the old layout (directly in `base_path`)
@@ -341,10 +442,29 @@ impl Storage {
     /// coalesced into a single underlying write txn for throughput. FIFO:
     /// the first caller executes inline; concurrent callers queue up and are
     /// flushed together once the current batch commits. Bodies within a
-    /// batch are awaited sequentially against the same txn. If any body
-    /// resolves to `Err`, the whole batch is rolled back (the `WriteTxn` is
-    /// dropped without committing) and every caller in the batch receives
-    /// an error.
+    /// batch are awaited sequentially against the same txn, in call order.
+    ///
+    /// A failing body fails only its own caller: if `body` resolves to `Err`,
+    /// this call returns that error and none of the body's writes commit,
+    /// while every other caller in the batch still gets its own body's
+    /// result. LMDB can only drop a body's writes by aborting the whole txn,
+    /// so the bodies that ran ahead of a failing one run again in a new txn.
+    /// A failure that no body caused, such as a failed commit, still reaches
+    /// every caller whose body was in that txn.
+    ///
+    /// That re-run, and the one after `MDB_MAP_FULL` from any body or the
+    /// commit (the map is grown and the txn's bodies re-run on a fresh txn),
+    /// mean `body` may run more than once per call, with only its last run's
+    /// output returned, so it must be replay-safe. `Fn` rules out moving out
+    /// of captures, but nothing checks for side effects outside the txn,
+    /// which an aborted run doesn't roll back: hand results out through the
+    /// return value (or a shared slot each run overwrites), never by
+    /// accumulating into shared state.
+    ///
+    /// A batch — opening each txn, every body, each commit or rollback — runs
+    /// on one blocking-pool thread, because LMDB requires a write txn to begin
+    /// and end on the same OS thread. The writer lock is held throughout, so
+    /// a body should only await work that belongs inside the txn.
     ///
     /// The future must be boxed (`BoxFuture<'a, _>` = `Pin<Box<dyn Future +
     /// Send + 'a>>`) because stable Rust can't yet express a `Send` bound on
@@ -361,7 +481,7 @@ impl Storage {
         // The latter would move `body` into the async block, making the outer closure
         // `FnOnce`. By calling `body(wtxn)` directly we borrow `body` (via its `Fn`
         // impl) and only move the returned `future` into the mapping async block,
-        // keeping the outer closure `Fn` (retryable on `MDB_MAP_FULL`).
+        // keeping the outer closure `Fn` (re-runnable, see `TxnBody`).
         let erased: TxnBody = Box::new(move |wtxn| {
             let future = body(wtxn);
             Box::pin(async move {
@@ -369,7 +489,9 @@ impl Storage {
                 Ok(Box::new(value) as Box<dyn Any + Send>)
             })
         });
-        let output = self.inner.batcher.run(erased).await?;
+        // The outer `Result` is the batcher's own failure (e.g. a body that
+        // panicked); the inner one is this body's outcome.
+        let output = self.inner.batcher.run(erased).await??;
         output
             .downcast::<T>()
             .map(|b| *b)
@@ -378,30 +500,27 @@ impl Storage {
 
     /// Create the per-app sub-database and wrap it in an `AppStore`.
     pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
-        let _guard = self.inner.coord.read().await;
-        let mut wtxn = self.inner.db_env.write_txn()?;
-        let db = self
-            .inner
-            .db_env
-            .create_database(&mut wtxn, Some(app_name))?;
+        let env_guard = self.inner.env.read().await;
+        let env = opened_env(&env_guard)?;
+        let mut wtxn = env.write_txn()?;
+        let db = env.create_database(&mut wtxn, Some(app_name))?;
         wtxn.commit()?;
-        Ok(AppStore::new(db, self.inner.db_env.clone(), self.clone()))
+        Ok(AppStore::new(db, self.clone()))
     }
 
     /// Open the per-app sub-database by name, or `None` if it doesn't exist.
     /// Opens an internal read transaction for the lookup.
     pub async fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
-        let _guard = self.inner.coord.read().await;
-        let rtxn = self.inner.db_env.read_txn()?;
-        let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
+        let env_guard = self.inner.env.read().await;
+        let env = opened_env(&env_guard)?;
+        let rtxn = env.read_txn()?;
+        let db: Option<Database> = env.open_database(&rtxn, Some(app_name))?;
         // The dbi handle opened in a read txn only becomes usable by other
         // transactions after this txn commits; dropping (aborting) it instead
         // leaves the handle invalid and later reads fail with EINVAL when the
         // sub-database was created by another process.
         rtxn.commit()?;
-        let env = self.inner.db_env.clone();
-        let storage = self.clone();
-        Ok(db.map(|db| AppStore::new(db, env, storage.clone())))
+        Ok(db.map(|db| AppStore::new(db, self.clone())))
     }
 
     /// Drop an app's data from this LMDB environment. heed 0.22 doesn't
@@ -410,23 +529,18 @@ impl Storage {
     /// empty sub-databases, so the app is effectively gone.
     /// Idempotent: dropping a non-existent app is a no-op.
     pub async fn drop_app(&self, app_name: &str) -> Result<()> {
-        let db = {
-            let _guard = self.inner.coord.read().await;
-            let rtxn = self.inner.db_env.read_txn()?;
-            let db = self
-                .inner
-                .db_env
-                .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?;
-            // See `open_app_store_by_name`: commit so the dbi handle stays
-            // valid for the write txn below.
-            rtxn.commit()?;
-            db
-        };
+        let env_guard = self.inner.env.read().await;
+        let env = opened_env(&env_guard)?;
+        let rtxn = env.read_txn()?;
+        let db =
+            env.open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?;
+        // See `open_app_store_by_name`: commit so the dbi handle stays
+        // valid for the write txn below.
+        rtxn.commit()?;
         let Some(db) = db else {
             return Ok(());
         };
-        let _guard = self.inner.coord.read().await;
-        let mut wtxn = self.inner.db_env.write_txn()?;
+        let mut wtxn = env.write_txn()?;
         db.clear(&mut wtxn)?;
         wtxn.commit()?;
         Ok(())
@@ -458,11 +572,11 @@ impl Storage {
     {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
-        let coord = self.inner.coord.clone();
+        let env_slot = self.inner.env.clone();
         tokio::task::spawn_blocking(move || {
             let result: Result<()> = (|| {
-                let _guard = coord.blocking_read();
-                let txn = open_read_txn_on_env_with_retry(&app_store.env)?;
+                let env_guard = env_slot.blocking_read();
+                let txn = open_read_txn_on_env_with_retry(opened_env(&env_guard)?)?;
                 let db = app_store.db();
                 f(&db, &txn, &tx)
             })();
@@ -565,8 +679,8 @@ impl Storage {
     /// List every non-empty named app sub-store in this storage environment.
     /// The "unnamed database" is LMDB's catalog of named sub-databases.
     pub async fn list_app_names(&self) -> Result<Vec<String>> {
-        let db_env = &self.inner.db_env;
-        let _guard = self.inner.coord.read().await;
+        let env_guard = self.inner.env.read().await;
+        let db_env = opened_env(&env_guard)?;
         let rtxn = db_env.read_txn()?;
         let unnamed: heed::Database<heed::types::Str, heed::types::DecodeIgnore> = db_env
             .open_database(&rtxn, None)?
@@ -589,6 +703,8 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state_store::test_support::{hold_write_batch, make_test_store};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     #[test]
@@ -628,6 +744,59 @@ mod tests {
         Storage::new(&settings).await.unwrap();
     }
 
+    /// `close` releases the env while clones of the `Storage` and its
+    /// `AppStore`s are still alive: the same path opens again, and the old
+    /// handles fail cleanly instead of touching a closed env.
+    #[tokio::test]
+    async fn close_lets_the_same_path_open_again() {
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+        let app_store = storage.create_app_store("app").await.unwrap();
+        let db = app_store.db();
+        storage
+            .run_txn(move |wtxn| {
+                Box::pin(async move {
+                    db.put(wtxn, b"key", b"value")?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+
+        let error = Storage::new(&settings).await.err().expect("still open");
+        assert!(format!("{error:?}").contains("already open"), "{error:?}");
+
+        storage.close().await;
+        storage.close().await;
+
+        let closed = |error: Error| format!("{error}").contains("environment is closed");
+        assert!(closed(app_store.read_txn().await.err().unwrap()));
+        assert!(closed(storage.list_app_names().await.unwrap_err()));
+        assert!(closed(
+            storage
+                .run_txn(|_wtxn| Box::pin(async { Ok(()) }))
+                .await
+                .unwrap_err()
+        ));
+
+        let reopened = Storage::new(&settings).await.unwrap();
+        let app_store = reopened
+            .open_app_store_by_name("app")
+            .await
+            .unwrap()
+            .unwrap();
+        let rtxn = app_store.read_txn().await.unwrap();
+        assert_eq!(
+            app_store.db().get(&rtxn, b"key").unwrap(),
+            Some(&b"value"[..])
+        );
+    }
+
     /// Integration test for `MDB_MAP_FULL` auto-resize on the `Storage::run_txn`
     /// path: one batched write txn is filled past the map limit, the runner
     /// doubles the map, retries the same body, and commits.
@@ -647,7 +816,7 @@ mod tests {
         let storage = Storage::new(&settings).await.unwrap();
         let app_store = storage.create_app_store("resize_test").await.unwrap();
         assert_eq!(
-            app_store.env.info().map_size,
+            app_store.env().info().map_size,
             initial_map_size,
             "initial map size should match configured value"
         );
@@ -679,7 +848,7 @@ mod tests {
             .await
             .expect("single run_txn should succeed after MapFull resize-and-retry");
 
-        let final_map_size = app_store.env.info().map_size;
+        let final_map_size = app_store.env().info().map_size;
         let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
@@ -798,7 +967,7 @@ mod tests {
             .expect("write task panicked")
             .expect("write should succeed after reader released");
 
-        let final_map_size = app_store.env.info().map_size;
+        let final_map_size = app_store.env().info().map_size;
         let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
@@ -827,6 +996,140 @@ mod tests {
                 payload.as_slice(),
                 "{key} payload should match what was written"
             );
+        }
+    }
+
+    /// Bodies that share a write batch fail independently: a failing body
+    /// fails only its own caller and none of its writes commit, while every
+    /// other body commits, in call order, without seeing the failed bodies'
+    /// writes.
+    #[tokio::test]
+    async fn failing_bodies_fail_only_their_own_callers() {
+        const KEYS: [&str; 5] = ["ok_0", "fail_1", "ok_2", "fail_3", "ok_4"];
+        let (app_store, _dir) = make_test_store().await;
+        let storage = app_store.storage.clone();
+        let batch = hold_write_batch(&storage).await;
+
+        // Queue one call per key into the next batch. Each body writes its
+        // key, then fails if the key says so, or else returns the keys it
+        // found already written.
+        let runs: [Arc<AtomicUsize>; KEYS.len()] = Default::default();
+        let mut calls: Vec<_> = std::iter::zip(KEYS, &runs)
+            .map(|(key, runs)| {
+                let (app_store, runs) = (app_store.clone(), runs.clone());
+                Box::pin(storage.run_txn(move |wtxn| {
+                    let (app_store, runs) = (app_store.clone(), runs.clone());
+                    Box::pin(async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        let mut written = Vec::new();
+                        for other in KEYS {
+                            if app_store.db().get(&**wtxn, other.as_bytes())?.is_some() {
+                                written.push(other);
+                            }
+                        }
+                        app_store.db().put(wtxn, key.as_bytes(), b"")?;
+                        if key.starts_with("fail") {
+                            client_bail!("{key} rejected");
+                        }
+                        Ok(written)
+                    })
+                }))
+            })
+            .collect();
+        for call in &mut calls {
+            assert!(futures::poll!(call.as_mut()).is_pending());
+        }
+        batch.release().await;
+
+        let [ok_0, fail_1, ok_2, fail_3, ok_4] =
+            futures::future::join_all(calls).await.try_into().unwrap();
+        assert_eq!(ok_0.unwrap(), Vec::<&str>::new());
+        assert_eq!(ok_2.unwrap(), ["ok_0"]);
+        assert_eq!(ok_4.unwrap(), ["ok_0", "ok_2"]);
+        for (outcome, key) in [(fail_1, "fail_1"), (fail_3, "fail_3")] {
+            let err = outcome.expect_err("a failing body fails its own caller");
+            assert!(
+                err.to_string().contains(&format!("{key} rejected")),
+                "{key}'s caller got another body's error: {err}"
+            );
+        }
+
+        let rtxn = app_store.read_txn().await.unwrap();
+        for key in KEYS {
+            assert_eq!(
+                app_store
+                    .db()
+                    .get(&*rtxn, key.as_bytes())
+                    .unwrap()
+                    .is_some(),
+                key.starts_with("ok"),
+                "{key} must commit iff its body succeeded"
+            );
+        }
+        // `ok_0` and `ok_2` ran ahead of a failing body, so they ran again to
+        // commit without it: once more each, although `ok_0` was batched with
+        // two failing bodies.
+        let runs = runs.map(|runs| runs.load(Ordering::SeqCst));
+        assert_eq!(runs, [2, 1, 2, 1, 1], "runs per body of {KEYS:?}");
+    }
+
+    /// Regression test for #2424. LMDB's writer lock belongs to the OS thread
+    /// that began the write txn; on Linux a release from any other thread
+    /// fails silently and wedges every later writer. A body that really
+    /// suspends lets a multi-thread runtime resume its task on another
+    /// worker, so the runner has to keep the whole txn on one thread.
+    #[test]
+    fn write_txn_stays_on_one_thread_when_a_body_suspends() {
+        use std::time::Duration;
+
+        const ROUNDS: usize = 8;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_time()
+            .build()
+            .unwrap();
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            lmdb_map_size: 4 * 1024 * 1024,
+        };
+
+        let rounds = rt.block_on(async {
+            let storage = Storage::new(&settings).await.unwrap();
+            let mut rounds = Vec::new();
+            for _ in 0..ROUNDS {
+                // A txn that ended on the wrong thread leaves the writer lock
+                // held, so the next round would block forever rather than fail.
+                let round = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    storage.run_txn(|_wtxn| {
+                        Box::pin(async {
+                            let before = std::thread::current().id();
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                            Ok((before, std::thread::current().id()))
+                        })
+                    }),
+                )
+                .await;
+                let timed_out = round.is_err();
+                rounds.push(round);
+                if timed_out {
+                    break;
+                }
+            }
+            rounds
+        });
+        // A wedged writer blocks its thread for good; dropping the runtime
+        // would wait on it and turn the failure below into a hang.
+        rt.shutdown_background();
+
+        for round in rounds {
+            let (before, after) = round
+                .expect("write txn blocked on a writer lock leaked by an earlier txn")
+                .unwrap();
+            assert_eq!(before, after, "write txn resumed on a different thread");
         }
     }
 }

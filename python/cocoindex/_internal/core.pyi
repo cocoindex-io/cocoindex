@@ -13,6 +13,7 @@ from typing import (
     TypeVar,
 )
 import asyncio
+from types import ModuleType
 
 from cocoindex._internal.typing import Fingerprintable as Fingerprintable
 from cocoindex._internal.typing import StableKey as StableKey
@@ -180,6 +181,7 @@ class AsyncContext:
 # --- Environment ---
 class Environment:
     def __new__(cls, settings: Any, async_context: AsyncContext) -> "Environment": ...
+    def close(self) -> None: ...
     def register_logic(self, fp: Fingerprint) -> None: ...
     def unregister_logic(self, fp: Fingerprint) -> None: ...
     def register_context_initial_states(
@@ -349,18 +351,18 @@ class LiveComponentController:
     def update_full_async(
         self,
         processor: ComponentProcessor[Any],
-        handler_callback: Callable[[str], Awaitable[None]] | None = None,
+        handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, None]: ...
     def update_async(
         self,
         stable_path: StablePath,
         processor: ComponentProcessor[Any],
-        handler_callback: Callable[[str], Awaitable[None]] | None = None,
+        handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
     def delete_async(
         self,
         stable_path: StablePath,
-        handler_callback: Callable[[str], Awaitable[None]] | None = None,
+        handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
     def mark_ready_async(self) -> Coroutine[Any, Any, None]: ...
     def read_committed_state_async(
@@ -386,11 +388,19 @@ def mount_live_async(
 # --- TargetActionSink ---
 class TargetActionSink:
     @staticmethod
-    def new_sync(callback: Callable[..., Any]) -> TargetActionSink: ...
+    def new_sync(
+        callback: Callable[..., Any], with_children: bool
+    ) -> TargetActionSink: ...
     @staticmethod
     def new_async(
-        callback: Callable[..., Coroutine[Any, Any, Any]],
+        callback: Callable[..., Coroutine[Any, Any, Any]], with_children: bool
     ) -> TargetActionSink: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+# --- ChildTargetSlot ---
+class ChildTargetSlot:
+    def fulfill(self, handler: Any, /) -> None: ...
 
 # --- TargetHandler (marker class, used for typing) ---
 class TargetHandler: ...
@@ -410,9 +420,9 @@ def init_runtime(
     package_id: str,
     lang: str,
     serialize_fn: Callable[[Any], bytes],
-    handler_wrapper_fn: Callable[[Any], Any],
+    child_slot_wrapper_fn: Callable[[ChildTargetSlot], Any],
     non_existence: Any,
-    not_set: Any,
+    target_state_codec: ModuleType,
 ) -> None: ...
 def shutdown_tokio_runtime() -> None: ...
 def cancel_all() -> None: ...
@@ -422,7 +432,7 @@ async def mount_async(
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
-    handler_callback: Any | None = None,
+    handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
 ) -> ComponentMountHandle: ...
 async def use_mount_async(
     processor: ComponentProcessor[T_co],
@@ -449,6 +459,8 @@ def register_root_target_states_provider(
     name: str, handler: Any
 ) -> TargetStateProvider: ...
 def fingerprint_simple_object(obj: Fingerprintable) -> Fingerprint: ...
+def fingerprint_plain_object(obj: object) -> Fingerprint | None: ...
+def set_plain_canonical_form_overridden(overridden: bool) -> None: ...
 def fingerprint_bytes(data: bytes) -> Fingerprint: ...
 def fingerprint_str(s: str) -> Fingerprint: ...
 def register_logic_fingerprint(fp: Fingerprint) -> None: ...
@@ -731,3 +743,36 @@ class RateLimiter:
         cls, max_rows_per_second: float, burst_window_secs: float = 1.0
     ) -> "RateLimiter": ...
     def acquire(self, n: int = 1) -> Coroutine[Any, Any, None]: ...
+
+########################################################
+# GPU pool
+########################################################
+
+class GPUPool:
+    def __init__(self, num_gpus: int) -> None: ...
+
+    @property
+    def num_gpus(self) -> int: ...
+
+    async def acquire(self, fraction: float) -> int:
+        """
+        Acquires a fraction of a GPU and returns the GPU ID.
+        """
+        ...
+
+    async def acquire_full(self, gpu_count: int) -> list[int]:
+        """
+        Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.
+
+        The gpu_count should be greater or equal to 1 and less than or equal to the number of GPUs in the pool.
+        """
+        ...
+
+    def release(self, gpu_id: int, fraction: float) -> None:
+        """
+        Releases a fraction of capacity back to the specified GPU ID.
+        """
+        ...
+
+    @staticmethod
+    def default() -> "GPUPool": ...

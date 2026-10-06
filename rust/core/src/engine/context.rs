@@ -38,6 +38,9 @@ struct AppContextInner<Prof: EngineProfile> {
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    /// Source of operation generations; see
+    /// [`ComponentProcessorContext::operation_generation`].
+    operation_generation: std::sync::atomic::AtomicU64,
     /// Cancellation token for in-flight app operations. Wrapped in a `Mutex` so
     /// it can be replaced with a fresh child of the global token after a
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
@@ -78,6 +81,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
+                operation_generation: std::sync::atomic::AtomicU64::new(0),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
@@ -137,6 +141,15 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         self.inner.inflight_semaphore.as_ref()
     }
 
+    /// Mint the generation of a new operation; see
+    /// [`ComponentProcessorContext::operation_generation`].
+    fn next_operation_generation(&self) -> u64 {
+        self.inner
+            .operation_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
     /// Returns a clone of the current app-level cancellation token.
     ///
     /// The clone stays valid even if the slot is later refreshed via
@@ -172,7 +185,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 pub(crate) struct DeclaredTargetState<Prof: EngineProfile> {
     pub provider: TargetStateProvider<Prof>,
-    pub item_key: StableKey,
+    /// The item key, `storekey`-encoded: the form pre-commit records it in,
+    /// at a fraction of the size of the decoded key's tree of `Arc`s.
+    pub item_key_bytes: Box<[u8]>,
     pub value: Prof::TargetStateValue,
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }
@@ -685,6 +700,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
+    /// See [`ComponentProcessorContext::operation_generation`].
+    operation_generation: u64,
 
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 
@@ -726,11 +743,16 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
+        let operation_generation = match &parent_context {
+            Some(parent) => parent.operation_generation(),
+            None => component.app_ctx().next_operation_generation(),
+        };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
+                operation_generation,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
@@ -759,10 +781,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    /// Register a freshly-mounted child as an active member of every enclosing
-    /// stats group, so each group's liveness tracking sees it (and, via the
-    /// strong parent-chain, its whole subtree). No-op when not in a group.
-    pub fn push_active_member(&self, child: &Component<Prof>) {
+    /// Register a child whose processing task is starting as a member of every
+    /// enclosing stats group, so each group's liveness tracking sees it (and,
+    /// since activity propagates up the parent chain, its whole subtree).
+    /// No-op when not in a group.
+    pub(crate) fn push_active_member(&self, child: &Component<Prof>) {
         for group in self.stats_groups.iter() {
             group.push_member(child);
         }
@@ -1033,6 +1056,18 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
+    /// Generation of the operation this context belongs to. A context created
+    /// without a parent — the root of an `App::update` or `App::drop_app`, or
+    /// a live component's own cycle — starts a new operation; children inherit
+    /// their parent's. So two runs of one component share a generation exactly
+    /// when the same operation started both, which is how `full_reprocess`
+    /// tells a memo stored earlier in the same operation (that operation's own
+    /// execution) from one left behind by a previous run (a cache it must
+    /// ignore). See `Component::execute_once`.
+    pub(crate) fn operation_generation(&self) -> u64 {
+        self.inner.operation_generation
+    }
+
     pub fn preview(&self) -> bool {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.is_some(),
@@ -1055,7 +1090,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FnCallContextInner {
     /// Target states that are declared by the function.
     pub target_state_paths: Vec<TargetStatePath>,
@@ -1103,6 +1138,10 @@ impl FnCallContext {
     pub fn join_child(&self, child_fn_ctx: &FnCallContext) {
         // Take the child's inner first to keep lock scope small (and avoid deadlock).
         let child_inner = child_fn_ctx.update(std::mem::take);
+        self.merge_child_inner(child_inner);
+    }
+
+    fn merge_child_inner(&self, child_inner: FnCallContextInner) {
         self.update(|inner| {
             inner
                 .target_state_paths
@@ -1123,6 +1162,16 @@ impl FnCallContext {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
             }
         });
+    }
+
+    /// Merge a snapshot of `child_fn_ctx` without consuming it.
+    ///
+    /// Batched SDK functions execute one shared body for several per-item
+    /// function-call contexts. Each item must inherit the same dependencies,
+    /// so the shared context needs to be joined more than once.
+    pub fn join_child_shared(&self, child_fn_ctx: &FnCallContext) {
+        let child_inner = child_fn_ctx.update(|inner| inner.clone());
+        self.merge_child_inner(child_inner);
     }
 
     pub fn add_fn_logic_dep(&self, fp: Fingerprint) {
@@ -1216,8 +1265,8 @@ mod tests {
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
-        let storage = crate::state_store::Storage::from_env(env.clone());
-        (AppStore::new(db, env, storage), dir)
+        let storage = crate::state_store::Storage::from_env(env);
+        (AppStore::new(db, storage), dir)
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
@@ -1294,8 +1343,7 @@ mod tests {
         path: &StablePath,
         cache: UserStateCache<TestData>,
     ) {
-        use crate::state_store::{CommitPlan, ExistenceReconciler};
-        use futures::future::BoxFuture;
+        use crate::state_store::CommitPlan;
 
         let plan_data = cache.into_flush_plan().unwrap();
         let plan = CommitPlan {
@@ -1309,13 +1357,8 @@ mod tests {
             user_state_writes: plan_data.writes,
             user_state_deletes: plan_data.deletes,
             user_state_clear_live: false,
-            child_path_set: None,
         };
-        let reconciler: ExistenceReconciler =
-            Box::new(|_wtxn| -> BoxFuture<'_, crate::prelude::Result<()>> {
-                Box::pin(async { Ok(()) })
-            });
-        store.commit(path, plan, reconciler).await.unwrap();
+        store.commit(path, plan, None).await.unwrap();
     }
 
     #[tokio::test]
@@ -1324,7 +1367,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
             .await
@@ -1367,7 +1411,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
             .await
@@ -1391,7 +1436,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1417,7 +1463,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
             .await
@@ -1441,7 +1488,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1470,7 +1518,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
             .await

@@ -214,6 +214,12 @@ impl Serializer for &mut Fingerprinter {
         Ok(())
     }
 
+    fn serialize_i128(self, v: i128) -> std::result::Result<(), Self::Error> {
+        self.write_type_tag("i16");
+        self.hasher.update(v.to_le_bytes());
+        Ok(())
+    }
+
     fn serialize_u8(self, v: u8) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("u1");
         self.hasher.update(v.to_le_bytes());
@@ -234,6 +240,12 @@ impl Serializer for &mut Fingerprinter {
 
     fn serialize_u64(self, v: u64) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("u8");
+        self.hasher.update(v.to_le_bytes());
+        Ok(())
+    }
+
+    fn serialize_u128(self, v: u128) -> std::result::Result<(), Self::Error> {
+        self.write_type_tag("u16");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }

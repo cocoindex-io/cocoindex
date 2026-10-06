@@ -24,6 +24,7 @@ from typing import (
     NamedTuple,
     ParamSpec,
     Protocol,
+    Self,
     TypeAlias,
     TypeVar,
     cast,
@@ -198,6 +199,9 @@ class StateMethodsResult(NamedTuple):
     new_context_states: dict[core.Fingerprint, list[Any]]
     can_reuse: bool
     states_changed: bool
+    # Indices into `new_states` whose state function asked to be called again
+    # after the function body (`MemoStateOutcome.recollect_after_run`).
+    recollect: tuple[int, ...] = ()
 
 
 class _StateCallResult(NamedTuple):
@@ -387,7 +391,39 @@ def _aggregate_state_results(
         new_context_states=new_context,
         can_reuse=can_reuse,
         states_changed=states_changed,
+        recollect=tuple(
+            i for i, r in enumerate(positional_results) if r.outcome.recollect_after_run
+        ),
     )
+
+
+def _recollect_states_sync(
+    entries: list[StateFnEntry], states: list[Any], indices: tuple[int, ...]
+) -> list[Any]:
+    """Call the state functions at *indices* again, as on a first run, and
+    return *states* with their results substituted."""
+    if not indices:
+        return states
+    fresh = _call_state_methods_sync([entries[i] for i in indices], None).new_states
+    states = list(states)
+    for i, state in zip(indices, fresh):
+        states[i] = state
+    return states
+
+
+async def _recollect_states_async(
+    entries: list[StateFnEntry], states: list[Any], indices: tuple[int, ...]
+) -> list[Any]:
+    """Async variant of :func:`_recollect_states_sync`."""
+    if not indices:
+        return states
+    fresh = (
+        await _call_state_methods_async([entries[i] for i in indices], None)
+    ).new_states
+    states = list(states)
+    for i, state in zip(indices, fresh):
+        states[i] = state
+    return states
 
 
 def _collect_context_entries_from_stored(
@@ -745,6 +781,15 @@ class SyncFunction(Function[P, R_co]):
         if fp is not None:
             core.unregister_logic_fingerprint(fp)
 
+    # Copying returns this same object, as `copy` does for plain functions. A
+    # distinct copy would share `_logic_fp` without having registered it, so its
+    # `__del__` would release the registration this object holds.
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        return self
+
     @overload
     def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
     @overload
@@ -818,6 +863,7 @@ class SyncFunction(Function[P, R_co]):
                     # Check if cached result is still valid
                     use_cache = False
                     memo_states_for_resolve: list[Any] | None = None
+                    recollect: tuple[int, ...] = ()
                     context_states_for_resolve: (
                         dict[core.Fingerprint, list[Any]] | None
                     ) = None
@@ -840,6 +886,7 @@ class SyncFunction(Function[P, R_co]):
                                 # (same across runs), so the validation result is
                                 # safe to reuse on the re-execution path.
                                 memo_states_for_resolve = state_result.new_states
+                                recollect = state_result.recollect
                                 # Context state is re-collected fresh from fn_ctx
                                 # below — re-execution may observe a different set
                                 # of change-detection context fps than the stored entry,
@@ -876,6 +923,10 @@ class SyncFunction(Function[P, R_co]):
                     if memo_states_for_resolve is None and state_methods:
                         initial = _call_state_methods_sync(state_methods, None)
                         memo_states_for_resolve = initial.new_states
+                    elif memo_states_for_resolve is not None:
+                        memo_states_for_resolve = _recollect_states_sync(
+                            state_methods, memo_states_for_resolve, recollect
+                        )
                     fresh_context_states = fn_ctx.initial_context_memo_states(
                         env._core_env
                     )
@@ -974,12 +1025,18 @@ class SyncFunction(Function[P, R_co]):
                         context_entries = _collect_context_entries_from_stored(
                             env, context_stored
                         )
-                        return await _call_state_methods_async(
+                        validated = await _call_state_methods_async(
                             captured,
                             positional_stored,
                             context_entries=context_entries,
                             context_stored=context_stored,
                         )
+                        if validated.recollect and not validated.can_reuse:
+                            raise ValueError(
+                                "MemoStateOutcome.recollect_after_run is supported "
+                                "for memoized functions, not for memoized components"
+                            )
+                        return validated
                     # Cache miss: look up the eager initial states for the
                     # context fps observed during function execution, in a
                     # single Rust call — no Python-side iteration over the
@@ -1291,6 +1348,16 @@ class AsyncFunction(Function[P, R_co]):
         if fp is not None:
             core.unregister_logic_fingerprint(fp)
 
+    # Same as `SyncFunction.__copy__`. Without these, `copy` would fall back to
+    # `__reduce__`, whose module/qualname lookup fails for a function defined in
+    # a local scope and returns the undecorated function when it was decorated
+    # under another name.
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        return self
+
     @property
     def _any_fn(self) -> AnyCallable[P, R_co]:
         if self._orig_async_fn is not None:
@@ -1349,6 +1416,7 @@ class AsyncFunction(Function[P, R_co]):
         try:
             # Check memo (when enabled and context available)
             memo_states_for_resolve: list[Any] | None = None
+            recollect: tuple[int, ...] = ()
             context_states_for_resolve: dict[core.Fingerprint, list[Any]] | None = None
             if self._memo and parent_ctx is not None:
                 env = parent_ctx._env
@@ -1386,6 +1454,7 @@ class AsyncFunction(Function[P, R_co]):
                             # Positional states are stable across runs (same
                             # args ⇒ same state method list) — safe to reuse.
                             memo_states_for_resolve = state_result.new_states
+                            recollect = state_result.recollect
                             # Context states are re-collected fresh from fn_ctx
                             # below: re-execution may observe a different set
                             # of change-detection context fps than the stored entry.
@@ -1437,6 +1506,10 @@ class AsyncFunction(Function[P, R_co]):
                 if memo_states_for_resolve is None and state_methods:
                     initial = await _call_state_methods_async(state_methods, None)
                     memo_states_for_resolve = initial.new_states
+                elif memo_states_for_resolve is not None:
+                    memo_states_for_resolve = await _recollect_states_async(
+                        state_methods, memo_states_for_resolve, recollect
+                    )
                 fresh_context_states = fn_ctx.initial_context_memo_states(env._core_env)
                 if fresh_context_states:
                     context_states_for_resolve = fresh_context_states
@@ -1744,12 +1817,18 @@ class AsyncFunction(Function[P, R_co]):
                         context_entries = _collect_context_entries_from_stored(
                             env, context_stored
                         )
-                        return await _call_state_methods_async(
+                        validated = await _call_state_methods_async(
                             captured,
                             positional_stored,
                             context_entries=context_entries,
                             context_stored=context_stored,
                         )
+                        if validated.recollect and not validated.can_reuse:
+                            raise ValueError(
+                                "MemoStateOutcome.recollect_after_run is supported "
+                                "for memoized functions, not for memoized components"
+                            )
+                        return validated
                     # TODO(future simplification): this branch is pure data
                     # collection; should move out of the handler.
                     new_context = comp_ctx.initial_context_memo_states()

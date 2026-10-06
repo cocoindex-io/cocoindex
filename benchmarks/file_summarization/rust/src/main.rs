@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use cocoindex::fs::{FileEntry, walk};
+use cocoindex::resources::fs::{FileEntry, walk};
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -146,7 +146,7 @@ struct OutputSyncStats {
     output_hash: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 struct SectionInput {
     stable_id: String,
     file_path: String,
@@ -155,7 +155,7 @@ struct SectionInput {
     text: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 struct SectionAnalysis {
     stable_id: String,
     file_path: String,

@@ -47,6 +47,17 @@ app = coco.App(
 
 Apps that don't specify an environment use the default environment (configured via `@coco.lifespan` or the `COCOINDEX_DB` environment variable).
 
+## Closing an Environment
+
+An environment holds its database open. A process can't open the same `db_path` again until the environment is closed. Call `env.close()` once you're done with it:
+
+```python
+env.close()
+env = coco.Environment(coco.Settings.from_env(db_path=pathlib.Path("./my_db.db")))
+```
+
+`close()` waits for in-flight writes to finish. After that, using the environment raises an error, and so does updating the apps that use it. Context values provided to the environment stay open: whoever provided them closes them. Stopping the default environment (leaving `coco.runtime()`, or calling `coco.stop()`) closes it for you.
+
 ## Example: Multiple Environments
 
 This example creates two apps in different environments, each with its own database:

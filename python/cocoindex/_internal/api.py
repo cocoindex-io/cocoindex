@@ -79,6 +79,7 @@ from cocoindex.connectorkits import default_subpath_name as _default_subpath_nam
 from .context_keys import ContextKey, ContextProvider
 
 from .target_state import (
+    ChildSlot,
     ChildTargetDef,
     TargetReconcileOutput,
     TargetActionSink,
@@ -90,9 +91,10 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
+from .core import GPUPool
+
 from .runner import (
     GPU,
-    GPUPool,
     GPURunner,
     Runner,
     configure_gpu_pool,
@@ -495,7 +497,9 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # LiveComponent class) is dispatched through `mount()` / `operator.update()`
         # inside `_MountEachLiveComponent`, both of which already handle live
         # component classes — so no special-casing of `fn` is needed here.
-        instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
+        instance = _MountEachLiveComponent(
+            items, fn, extra_args, kwargs, parent_ctx._exception_handler_chain
+        )
         return await _mount_live_component(parent_ctx, child_path, instance)
 
     # Static data source: mount one component per item. When `fn` is a
@@ -804,9 +808,9 @@ def use_state(
 
     The value is serialized lazily, once, when the component commits — not at
     assignment. Two consequences: (1) if the value is not serializable, the
-    error surfaces at commit (identifying the state key) rather than at the
-    `handle.value = ...` line; (2) the persisted value reflects the object as it
-    is at commit, so mutating it in place after assignment is captured.
+    error surfaces at commit rather than at the `handle.value = ...` line;
+    (2) the persisted value reflects the object as it is at commit, so
+    mutating it in place after assignment is captured.
 
     Args:
         key: Unique StableKey within this component (None, bool, int, str,
@@ -914,6 +918,7 @@ __all__ = [
     "ContextKey",
     "ContextProvider",
     # .target_state
+    "ChildSlot",
     "ChildTargetDef",
     "TargetState",
     "TargetStateProvider",

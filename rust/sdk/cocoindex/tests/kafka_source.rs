@@ -17,7 +17,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cocoindex::{App, Result, UpdateOptions, kafka};
+use cocoindex::connectors::kafka;
+use cocoindex::{App, Result, UpdateOptions};
 use rskafka::client::ClientBuilder;
 use rskafka::client::partition::{Compression, UnknownTopicHandling};
 use rskafka::record::Record;

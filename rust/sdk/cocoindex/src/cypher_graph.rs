@@ -961,44 +961,45 @@ fn table_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<TableAction> {
     TargetActionSink::from_async_fn_with_children(move |actions| {
         let graph = graph.clone();
         async move {
-            let mut out = Vec::with_capacity(actions.len());
-            for action in actions {
-                match action {
+            for (action, child_slot) in actions {
+                // The spec of the table that exists after the action, i.e. the
+                // one the child record handler should target.
+                let spec = match action {
                     TargetAction::Create(TableAction::Ensure(spec))
                     | TargetAction::Update(TableAction::Ensure(spec)) => {
                         ensure_table(&graph, &spec).await?;
-                        out.push(Some(ChildTargetDef::new::<RecordState, _>(RecordHandler {
-                            graph: graph.clone(),
-                            spec,
-                        })));
+                        Some(spec)
                     }
                     TargetAction::Update(TableAction::Replace { prev, next })
                     | TargetAction::Create(TableAction::Replace { prev, next }) => {
                         drop_table(&graph, &prev).await?;
                         ensure_table(&graph, &next).await?;
-                        out.push(Some(ChildTargetDef::new::<RecordState, _>(RecordHandler {
-                            graph: graph.clone(),
-                            spec: next,
-                        })));
+                        Some(next)
                     }
                     TargetAction::Delete(TableAction::Ensure(spec)) => {
                         drop_table(&graph, &spec).await?;
-                        out.push(None);
+                        None
                     }
                     TargetAction::Delete(TableAction::Replace { prev, next }) => {
                         drop_table(&graph, &prev).await?;
                         drop_table(&graph, &next).await?;
-                        out.push(None);
+                        None
                     }
                     TargetAction::Delete(TableAction::Drop(spec))
                     | TargetAction::Update(TableAction::Drop(spec))
                     | TargetAction::Create(TableAction::Drop(spec)) => {
                         drop_table(&graph, &spec).await?;
-                        out.push(None);
+                        None
                     }
+                };
+                if let (Some(slot), Some(spec)) = (child_slot, spec) {
+                    slot.fulfill(ChildTargetDef::new::<RecordState, _>(RecordHandler {
+                        graph: graph.clone(),
+                        spec,
+                    }))?;
                 }
             }
-            Ok(out)
+            Ok(())
         }
     })
 }
@@ -2052,7 +2053,7 @@ mod tests {
             Some(crate::target_state::TargetChildInvalidation::Destructive)
         );
         let children = out.sink.apply_for_test(vec![out.action]).await.unwrap();
-        assert_eq!(children.unwrap().len(), 1);
+        assert!(children[0].is_some());
 
         assert_eq!(
             graph.statements(),
@@ -2158,7 +2159,7 @@ mod tests {
             Some(crate::target_state::TargetChildInvalidation::Destructive)
         );
         let children = out.sink.apply_for_test(vec![out.action]).await.unwrap();
-        assert_eq!(children.unwrap().len(), 1);
+        assert!(children[0].is_some());
 
         assert_eq!(
             graph.statements(),

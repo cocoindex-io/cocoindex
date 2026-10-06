@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use crate::engine::component::{
-    Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle, OnError,
+    ActivityGuard, Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle,
+    OnError,
 };
 use crate::engine::context::{ComponentProcessingAction, ComponentProcessorContext, FnCallContext};
 use crate::engine::profile::EngineProfile;
@@ -726,7 +727,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let full_reprocess = self.full_reprocess;
         let live = self.live;
 
+        // Queued ops keep the live component active until the drain task
+        // exits, whether or not `process_live` is still running.
+        let activity = ActivityGuard::new(component.clone());
         let handle = crate::engine::runtime::get_runtime().spawn(async move {
+            let _activity = activity;
             drain_task_body(
                 state,
                 component,
@@ -788,7 +793,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     {
         let token = self.state.cancellation_token.clone();
         let state = self.state.clone();
+        // The live component is active while `process_live` runs; its
+        // subpath drain tasks account for themselves.
+        let activity = ActivityGuard::new(self.component.clone());
         let handle = crate::engine::runtime::get_runtime().spawn(async move {
+            let _activity = activity;
             let result = tokio::select! {
                 biased;
                 _ = token.cancelled() => Ok(()),

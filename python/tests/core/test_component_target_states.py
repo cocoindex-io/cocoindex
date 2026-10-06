@@ -5,14 +5,19 @@ import cocoindex.inspect as coco_inspect
 import pytest
 
 import dataclasses
+import gc
 from typing import Any, Collection, Generic
 
 from tests import common
 from tests.common.target_states import (
+    BYTES_SEGMENT,
+    TUPLE_SEGMENT,
     DictsTarget,
     DictDataWithPrev,
     AsyncDictsTarget,
     AtMost,
+    GlobalDictTarget,
+    Metrics,
 )
 
 coco_env = common.create_test_env(__file__)
@@ -1441,3 +1446,214 @@ def test_directory_to_component_transition() -> None:
     assert coco.ROOT_PATH / "transition_test" in paths
     assert coco.ROOT_PATH / "transition_test" / "D1" in paths
     assert coco.ROOT_PATH / "transition_test" / "D1" / "a" not in paths
+
+
+##################################################################################
+# Test: Component -> Directory transition child existence reconciliation
+##################################################################################
+
+_transition_to_directory_mode = False
+
+
+def _declare_dict_entries(
+    provider: coco.TargetStateProvider[Any], entries: dict[str, Any]
+) -> None:
+    for key, value in entries.items():
+        coco.declare_target_state(provider.target_state(key, value))
+
+
+async def _declare_transition_to_directory() -> None:
+    provider = await coco.mount_target(DictsTarget.dict_target("D1"))
+    with coco.component_subpath("transition_test"):
+        if not _transition_to_directory_mode:
+            await coco.mount(
+                coco.component_subpath("D1"),
+                _declare_dict_entries,
+                provider,
+                {"a": 1, "b": 2},
+            )
+        else:
+            await coco.mount(
+                coco.component_subpath("D1", "child"),
+                _declare_dict_entries,
+                provider,
+                {"c": 3},
+            )
+
+
+def test_component_to_directory_transition() -> None:
+    global _transition_to_directory_mode
+    DictsTarget.store.clear()
+    _transition_to_directory_mode = False
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_component_to_directory_transition", environment=coco_env
+        ),
+        _declare_transition_to_directory,
+    )
+
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    container_owner = (
+        coco.ROOT_PATH
+        / coco.Symbol("cocoindex/mount_target")
+        / (coco.Symbol("test_target_state/dicts"), "D1")
+    )
+    old_component = coco.ROOT_PATH / "transition_test" / "D1"
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': container_owner,
+        '/@test_target_state/dicts/"D1"/"a"': old_component,
+        '/@test_target_state/dicts/"D1"/"b"': old_component,
+    }
+
+    # Transition from Component to Directory: the component at
+    # transition_test/D1 is no longer mounted; instead a deeper component is
+    # mounted under it, so D1 stays in the child-existence tree as a
+    # Directory node whose only child is the new component.
+    _transition_to_directory_mode = True
+    app.update_blocking()
+
+    # D1's own target states are gone, while the deeper component's target
+    # states -- written in this same update -- must survive D1's demotion.
+    deeper_component = old_component / "child"
+    assert DictsTarget.store.data == {
+        "D1": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': container_owner,
+        '/@test_target_state/dicts/"D1"/"c"': deeper_component,
+    }
+
+    # D1 is still present (now as a Directory node) with the deeper component
+    # below it.
+    paths = coco_inspect.list_stable_paths_sync(app)
+    assert old_component in paths
+    assert deeper_component in paths
+
+    # Transition back from Directory to Component at the same path: D1 is a
+    # component again, so its former child -- and that child's target
+    # states -- are gone.
+    _transition_to_directory_mode = False
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        '/@test_target_state/dicts/"D1"': container_owner,
+        '/@test_target_state/dicts/"D1"/"a"': old_component,
+        '/@test_target_state/dicts/"D1"/"b"': old_component,
+    }
+    paths = coco_inspect.list_stable_paths_sync(app)
+    assert old_component in paths
+    assert deeper_component not in paths
+
+
+##################################################################################
+# Component paths whose segments are TUPLE_SEGMENT / BYTES_SEGMENT rather than
+# strings. The old codec broke the delete-time ownership guard for them, leaking
+# owner rows after the component was unmounted.
+
+# Maps a component subpath segment to the (target-state key, value) it declares.
+_typed_path_entry: dict[coco.StableKey, tuple[str, str]] = {}
+
+
+def _typed_path_owner(segment: coco.StableKey) -> coco.StablePath:
+    return coco.ROOT_PATH / "dict" / segment
+
+
+def _build_typed_path_app(db_name: str, calls: Metrics) -> coco.App[Any, Any]:
+    """Build an app over a fresh Environment on ``db_name``'s persisted store.
+
+    Returned so callers can drop it (and the env) to let LMDB reopen.
+    """
+
+    @coco.fn(memo=True)
+    def _process(key: str, value: str) -> None:
+        calls.increment(key)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, value))
+
+    @coco.fn
+    async def _app_main() -> None:
+        with coco.component_subpath("dict"):
+            for segment, (key, value) in _typed_path_entry.items():
+                await coco.mount(coco.component_subpath(segment), _process, key, value)
+
+    # Same `suffix` on every call means the same db_path, so a later call
+    # reopens the store the previous app persisted.
+    env = common.create_test_env(__file__, suffix=db_name)
+    return coco.App(coco.AppConfig(name=db_name, environment=env), _app_main)
+
+
+def test_typed_component_path_create_update_unmount() -> None:
+    """Create, unchanged re-run (memo hit), reopen, then unmount."""
+    GlobalDictTarget.store.clear()
+    _typed_path_entry.clear()
+    calls = Metrics()
+    db_name = "test_typed_component_path"
+
+    _typed_path_entry[TUPLE_SEGMENT] = ("from_tuple", "v1")
+    _typed_path_entry[BYTES_SEGMENT] = ("from_bytes", "v2")
+
+    expected_owners = {
+        '/@test_target_state/global_dict/"from_tuple"': _typed_path_owner(
+            TUPLE_SEGMENT
+        ),
+        '/@test_target_state/global_dict/"from_bytes"': _typed_path_owner(
+            BYTES_SEGMENT
+        ),
+    }
+    expected_paths = sorted(
+        [
+            coco.ROOT_PATH,
+            coco.ROOT_PATH / "dict",
+            _typed_path_owner(TUPLE_SEGMENT),
+            _typed_path_owner(BYTES_SEGMENT),
+        ],
+        key=str,
+    )
+
+    def stable_paths(app: coco.App[Any, Any]) -> list[coco.StablePath]:
+        return sorted(coco_inspect.list_stable_paths_sync(app), key=str)
+
+    # Run 1: create.
+    app = _build_typed_path_app(db_name, calls)
+    app.update_blocking()
+    assert GlobalDictTarget.store.data["from_tuple"].data == "v1"
+    assert GlobalDictTarget.store.data["from_bytes"].data == "v2"
+    assert calls.collect() == {"from_tuple": 1, "from_bytes": 1}
+    assert stable_paths(app) == expected_paths
+    assert common.list_target_state_owners_sync(app) == expected_owners
+
+    # Run 2: unchanged. Memo must hit, and ownership must not churn.
+    app.update_blocking()
+    assert calls.collect() == {}
+    assert common.list_target_state_owners_sync(app) == expected_owners
+    del app
+    gc.collect()
+
+    # Run 3: reopen the persisted store in a fresh Environment. Still a memo
+    # hit, and the owner rows must read back with their segment types intact.
+    app = _build_typed_path_app(db_name, calls)
+    app.update_blocking()
+    assert calls.collect() == {}
+    assert stable_paths(app) == expected_paths
+    assert common.list_target_state_owners_sync(app) == expected_owners
+
+    # Run 4: unmount both components. Target data, tracking paths and owner
+    # rows must all go.
+    _typed_path_entry.clear()
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
+    assert common.list_target_state_owners_sync(app) == {}

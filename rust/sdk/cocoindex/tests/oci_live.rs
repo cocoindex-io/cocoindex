@@ -16,10 +16,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cocoindex::oci_object_storage::{
+use cocoindex::connectors::oci_object_storage::{
     ListOptions, OciClient, OciConfig, OciFile, list_objects_live,
 };
-use cocoindex::{App, LiveMapView, PatternFilePathMatcher, Result, UpdateOptions};
+use cocoindex::resources::file::PatternFilePathMatcher;
+use cocoindex::{App, LiveMapView, Result, UpdateOptions};
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use serde_json::json;

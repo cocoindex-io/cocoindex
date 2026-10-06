@@ -1925,6 +1925,7 @@ dependencies = [
  "futures",
  "glob",
  "globset",
+ "half",
  "iggy",
  "lancedb",
  "linkme",
@@ -1937,6 +1938,7 @@ dependencies = [
  "rmp-serde",
  "rsa",
  "rskafka",
+ "rust_decimal",
  "rustc-hash",
  "serde",
  "serde_json",
@@ -1978,6 +1980,7 @@ dependencies = [
  "tree-sitter-julia",
  "tree-sitter-kotlin-ng",
  "tree-sitter-language",
+ "tree-sitter-lua",
  "tree-sitter-md",
  "tree-sitter-pascal",
  "tree-sitter-php",
@@ -2031,7 +2034,6 @@ dependencies = [
  "rmp-serde",
  "rpds",
  "serde",
- "serde_bytes",
  "serde_json",
  "serde_with",
  "storekey 0.9.0",
@@ -2124,6 +2126,7 @@ dependencies = [
  "serde_path_to_error",
  "serde_with",
  "storekey 0.9.0",
+ "temp-env",
  "tokio",
  "tokio-util",
  "tracing",
@@ -9992,16 +9995,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_bytes"
-version = "0.11.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
-dependencies = [
- "serde",
- "serde_core",
-]
-
-[[package]]
 name = "serde_core"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11249,6 +11242,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
+name = "temp-env"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96374855068f47402c3121c6eed88d29cb1de8f3ab27090e273e420bdabcf050"
+dependencies = [
+ "parking_lot",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12001,6 +12003,16 @@ name = "tree-sitter-language"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
+
+[[package]]
+name = "tree-sitter-lua"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8daaf5f4235188a58603c39760d5fa5d4b920d36a299c934adddae757f32a10c"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
 
 [[package]]
 name = "tree-sitter-md"

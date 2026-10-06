@@ -130,6 +130,9 @@ class S3File(file.FileLike[str]):
 
     async def _read_impl(self, size: int = -1) -> bytes:
         """Asynchronously read file content from S3."""
+        if size == 0 or (size > 0 and await self.size() == 0):
+            return b""
+
         bucket_name: str = self._file_path.bucket_name
         object_key: str = self._file_path.resolve()
         if size >= 0:

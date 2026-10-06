@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -39,7 +40,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
@@ -303,7 +304,11 @@ impl TableSchema {
             let name = name.into();
             validate_ident(&name, "column name")?;
             validate_doris_type(&def.doris_type)?;
-            out.insert(name, def);
+            if out.insert(name.clone(), def).is_some() {
+                return Err(Error::engine(format!(
+                    "Doris table schema contains duplicate column {name:?}"
+                )));
+            }
         }
         let primary_key: Vec<String> = primary_key.into_iter().map(Into::into).collect();
         if primary_key.is_empty() {
@@ -341,6 +346,45 @@ impl TableSchema {
             .into_iter()
             .map(|f| (f.name.clone(), doris_column_def(&f)));
         Self::new(columns, primary_key)
+    }
+
+    /// Resolve or override the dimension of a vector field derived from a row.
+    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+        let dim = u32::try_from(dim).map_err(|_| {
+            crate::row_schema::vector_dimension_error(
+                "Doris",
+                field_name,
+                "dimension does not fit u32",
+            )
+        })?;
+        if dim == 0 {
+            return Err(crate::row_schema::zero_vector_dimension_error(
+                "Doris", field_name,
+            ));
+        }
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Doris", field_name))?;
+        if !def.is_vector {
+            return Err(crate::row_schema::not_vector_field_error(
+                "Doris", field_name,
+            ));
+        }
+        def.vector_dimension = Some(dim);
+        Ok(self)
+    }
+
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            if def.is_vector {
+                let dim = def.vector_dimension.unwrap_or(0) as usize;
+                if dim == 0 {
+                    crate::row_schema::require_resolved_vector_dimension("Doris", name)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -492,6 +536,7 @@ pub fn table_target_with_options(
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
+    table_schema.validate_vector_dimensions()?;
     validate_indexes(&table_schema, &options)?;
     let provider = register_root_target_states_provider(
         ctx,
@@ -821,28 +866,31 @@ impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
         let conn_key = self.conn_key.clone();
         TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
                 let conn_key = conn_key.clone();
                 async move {
                     let conn = resolve_conn(&host_ctx, &conn_key)?;
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
+                    for (action, child_slot) in actions {
                         let a = match action {
                             TargetAction::Create(a)
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        out.push(apply_table_action(&conn, &conn_key, a).await?);
+                        let child = apply_table_action(&conn, &conn_key, a).await?;
+                        if let (Some(slot), Some(child)) = (child_slot, child) {
+                            slot.fulfill(child)?;
+                        }
                     }
-                    Ok(out)
+                    Ok(())
                 }
             },
         )
     }
 }
 
-/// Apply one resolved table action and return the row child provider (or `None`
-/// for a drop). Mirrors Python's `_apply_table_actions`.
+/// Apply one resolved table action and return the row child handler
+/// definition (`None` for a drop), which the sink uses to fulfill the
+/// action's child slot. Mirrors Python's `_apply_table_actions`.
 async fn apply_table_action(
     conn: &DorisConnection,
     conn_key: &str,
@@ -1462,10 +1510,50 @@ fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, 
         ));
     };
     fields.retain(|name, _| schema.columns().contains_key(name));
-    for name in schema.columns().keys() {
-        fields.entry(name.clone()).or_insert(JsonValue::Null);
+    for (name, column) in schema.columns() {
+        let value = fields.entry(name.clone()).or_insert(JsonValue::Null);
+        let column_type = column.doris_type.to_ascii_uppercase();
+        if is_string_type(&column_type)
+            && let Some(bytes) = json_byte_array(value)
+        {
+            *value = JsonValue::String(base64::engine::general_purpose::STANDARD.encode(bytes));
+        } else if is_integer_doris_type(&column_type)
+            && let Some((secs, nanos)) = crate::row_schema::serialized_duration_parts(value)
+        {
+            let micros = u128::from(secs) * 1_000_000 + u128::from(nanos / 1_000);
+            let micros = i64::try_from(micros).map_err(|_| {
+                Error::engine(format!("Doris duration field {name:?} overflows BIGINT"))
+            })?;
+            *value = JsonValue::from(micros);
+        }
     }
     Ok(fields)
+}
+
+fn json_byte_array(value: &JsonValue) -> Option<Vec<u8>> {
+    let JsonValue::Array(items) = value else {
+        return None;
+    };
+    let mut bytes = Vec::with_capacity(items.len());
+    for item in items {
+        let byte = item.as_u64().filter(|byte| *byte <= 255)?;
+        bytes.push(byte as u8);
+    }
+    Some(bytes)
+}
+
+fn is_string_type(doris_type: &str) -> bool {
+    doris_type == "STRING"
+        || doris_type == "TEXT"
+        || doris_type.starts_with("VARCHAR(")
+        || doris_type.starts_with("CHAR(")
+}
+
+fn is_integer_doris_type(doris_type: &str) -> bool {
+    matches!(
+        doris_type,
+        "TINYINT" | "SMALLINT" | "INT" | "BIGINT" | "LARGEINT"
+    )
 }
 
 fn pk_values(fields: &Map<String, JsonValue>, pk_cols: &[String]) -> Result<Vec<JsonValue>> {
@@ -1633,6 +1721,50 @@ mod tests {
             "{sql}"
         );
         assert!(sql.contains("\"replication_num\" = \"1\""), "{sql}");
+    }
+
+    #[test]
+    fn row_state_encodes_bytes_and_duration_for_stream_load() {
+        #[derive(Serialize)]
+        struct Row {
+            id: i64,
+            data: Vec<u8>,
+            elapsed: std::time::Duration,
+        }
+
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new("BIGINT")),
+                ("data", ColumnDef::new("STRING")),
+                ("elapsed", ColumnDef::new("BIGINT")),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        let fields = row_state(
+            &Row {
+                id: 1,
+                data: b"hi".to_vec(),
+                elapsed: std::time::Duration::new(2, 345_678_000),
+            },
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(fields["data"], JsonValue::String("aGk=".to_string()));
+        assert_eq!(fields["elapsed"], JsonValue::from(2_345_678));
+    }
+
+    #[test]
+    fn table_schema_rejects_duplicate_columns() {
+        let error = TableSchema::new(
+            [
+                ("id", ColumnDef::new("BIGINT")),
+                ("id", ColumnDef::new("TEXT")),
+            ],
+            ["id"],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate column \"id\""));
     }
 
     #[test]

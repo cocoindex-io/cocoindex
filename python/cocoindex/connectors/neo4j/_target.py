@@ -24,14 +24,15 @@ import re
 import uuid as uuid_mod
 from dataclasses import dataclass
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Collection,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     Sequence,
+    TYPE_CHECKING,
 )
 
 from typing_extensions import TypeVar
@@ -490,7 +491,7 @@ class _SharedRecordApplier:
     """
 
     _graph: _GraphHandle
-    sink: coco.TargetActionSink[_RecordAction, None]
+    sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(self, graph: _GraphHandle) -> None:
         self._graph = graph
@@ -637,7 +638,7 @@ class _VectorIndexHandler:
 
     _graph: _GraphHandle
     _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction, None]
+    _sink: coco.TargetActionSink[_VectorIndexAction]
 
     def __init__(self, graph: _GraphHandle, table_name: str) -> None:
         self._graph = graph
@@ -691,7 +692,7 @@ class _VectorIndexHandler:
         prev_may_be_missing: bool,
         /,
     ) -> (
-        coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexTrackingRecord, None]
+        coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexTrackingRecord]
         | None
     ):
         assert isinstance(key, str)
@@ -745,12 +746,14 @@ class _VectorIndexHandler:
 class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for record-level target states within a Neo4j table."""
 
+    tracks_value_fingerprint = True
+
     _table_name: str
     _is_relation: bool
     _pk_field: str
     _table_schema: TableSchema[Any] | None
     _graph: _GraphHandle
-    _sink: coco.TargetActionSink[_RecordAction, None]
+    _sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(
         self,
@@ -759,7 +762,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         pk_field: str,
         table_schema: TableSchema[Any] | None,
         graph: _GraphHandle,
-        sink: coco.TargetActionSink[_RecordAction, None],
+        sink: coco.TargetActionSink[_RecordAction],
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
@@ -794,7 +797,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         prev_possible_records: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_RecordAction, _RowFingerprint, None] | None:
+    ) -> coco.TargetReconcileOutput[_RecordAction, _RowFingerprint] | None:
         key = _ROW_KEY_CHECKER.check(key)
 
         if coco.is_non_existence(desired_state):
@@ -976,10 +979,12 @@ class _TableHandler(
 ):
     """Handler for table-level state — Cypher index DDL + uniqueness constraints."""
 
-    _sink: coco.TargetActionSink[_TableAction, _RecordHandler]
+    _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn_with_children(
+            self._apply_actions
+        )
 
     def reconcile(
         self,
@@ -1015,8 +1020,12 @@ class _TableHandler(
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
 
+        # "upsert" means the table may or may not already exist: the DDL can
+        # land on a table carrying the previous column set, so its columns still
+        # need reconciling. "insert" / "replace" define the table from the
+        # desired schema, so there is nothing left to reconcile.
         column_actions: dict[str, statediff.DiffAction] = {}
-        if main_action is None:
+        if main_action is None or main_action == "upsert":
             for sub_key, t in column_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
@@ -1043,9 +1052,7 @@ class _TableHandler(
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if main_action == "replace":
             child_invalidation = "destructive"
-        elif main_action is None and any(
-            a != "insert" for a in column_actions.values()
-        ):
+        elif any(a != "insert" for a in column_actions.values()):
             # No incremental property DDL emitted in v1; treat column
             # changes as lossy so dependents re-upsert defensively.
             child_invalidation = "lossy"
@@ -1066,16 +1073,15 @@ class _TableHandler(
         )
 
     async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Sequence[_TableAction]
-    ) -> list[coco.ChildTargetDef[_RecordHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RecordHandler] | None] = [None] * len(
-            actions_list
-        )
-
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_TableAction],
+        child_slots: Mapping[int, coco.ChildSlot[_RecordHandler]],
+        /,
+    ) -> None:
         # Group by db_key so each Neo4j driver is acquired once per batch.
         by_db: dict[str, list[int]] = {}
-        for i, action in enumerate(actions_list):
+        for i, action in enumerate(actions):
             by_db.setdefault(action.key.db_key, []).append(i)
 
         for db_key, idxs in by_db.items():
@@ -1090,7 +1096,7 @@ class _TableHandler(
             remove_normal: list[int] = []
 
             for i in idxs:
-                action = actions_list[i]
+                action = actions[i]
                 if coco.is_non_existence(action.spec):
                     if action.is_relation:
                         remove_relation.append(i)
@@ -1105,14 +1111,13 @@ class _TableHandler(
             ordered = create_normal + create_relation + remove_relation + remove_normal
 
             for i in ordered:
-                action = actions_list[i]
+                action = actions[i]
                 spec = action.spec
 
                 if action.main_action in ("replace", "delete"):
                     await self._drop_table_artifacts(graph, action.key, action)
 
                 if coco.is_non_existence(spec):
-                    outputs[i] = None
                     continue
 
                 if action.main_action in ("insert", "upsert", "replace"):
@@ -1120,8 +1125,8 @@ class _TableHandler(
                 # No incremental column DDL — column_actions are tracked
                 # for fingerprint stability but not applied here.
 
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_RecordHandler(
+                child_slots[i].fulfill(
+                    _RecordHandler(
                         table_name=action.key.table_name,
                         is_relation=spec.is_relation,
                         pk_field=spec.primary_key,
@@ -1130,8 +1135,6 @@ class _TableHandler(
                         sink=shared_applier.sink,
                     )
                 )
-
-        return outputs
 
     @staticmethod
     async def _create_table(

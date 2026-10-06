@@ -348,31 +348,28 @@ pub struct CommitPlan {
     /// removes the live-machinery committed state alongside the regular
     /// state (the regular flush above never clears `Live`).
     pub user_state_clear_live: bool,
-    /// In-memory child tree after this build. AppStore feeds it to
-    /// `existence_reconciler` (see [`AppStore::commit`]) inside its
-    /// commit txn, so the children-`__cex` read + tombstone writes
-    /// happen atomically with the other commit writes. `None` skips
-    /// existence reconciliation (e.g. `demote_component_only`).
-    pub child_path_set: Option<Arc<ChildStablePathSet>>,
 }
 
 /// Callback the AppStore invokes inside its commit txn to run the
 /// child-existence diff. Engine constructs this closure with all
 /// captures it needs (component path, child_path_set, an `AppStore`
-/// clone) and passes it to [`AppStore::commit`]. The closure receives
-/// the open `WriteTxn` and walks the in-memory tree, reads `__cex` per
-/// parent, writes deltas + tombstones — see
-/// [`reconcile_child_existence`].
+/// clone) and passes it to [`AppStore::commit`] — or passes `None`
+/// there to leave the `__cex` subtree untouched (a demote-only delete:
+/// the component became a Directory node whose children belong to the
+/// parent's current build). The closure receives the open `WriteTxn`
+/// and walks the in-memory tree, reads `__cex` per parent, writes
+/// deltas + tombstones — see [`reconcile_child_existence`].
 ///
 /// Lifetime: the closure runs strictly inside the commit txn, so the
 /// `&'a mut WriteTxn<'env>` borrow is bounded by the callback's await
 /// suspension scope. The body's future is `'a`-tied so it can't outlive
 /// the borrow.
 ///
-/// `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
-/// invoke the reconciler more than once; it therefore clones or
-/// `Arc`-shares its captures rather than moving them in. The LMDB
-/// AppStore invokes it exactly once.
+/// `Fn` (not `FnOnce`) because the LMDB AppStore can invoke it more
+/// than once: the batcher re-runs this commit's body against a fresh txn
+/// after growing the map on `MDB_MAP_FULL`, or after another body in its
+/// write batch fails. It therefore clones or `Arc`-shares its captures
+/// rather than moving them in.
 pub type ExistenceReconciler =
     Box<dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send + Sync>;
 
@@ -392,11 +389,18 @@ impl AppStore {
     /// AGENTS.md "LMDB write paths"). LMDB has no savepoints — to
     /// "abort" on PendingRetry, the body contributes no writes.
     ///
-    /// The callback is `Fn` (not `FnOnce`) for shape parity with
-    /// retry-capable backends; LMDB's batcher never retries the body,
-    /// so it's invoked at most once per call here. Captures consumed by
-    /// the body must be cloned inside the closure (typically a few
-    /// `Arc::clone`s).
+    /// The callback is `Fn` (not `FnOnce`) because it can run more than
+    /// once per call: the batcher re-runs a body against a fresh txn after
+    /// growing the map on `MDB_MAP_FULL`, or after another body in its
+    /// write batch fails, keeping only the last run's output. So the
+    /// callback must be side-effect-free on its captures: clone what the
+    /// body consumes inside the closure (typically a few `Arc::clone`s)
+    /// rather than moving it out. A result handed out through a captured
+    /// slot rather than the return value (as the preview path does) must
+    /// overwrite the slot on each run, never accumulate into it.
+    ///
+    /// A callback error fails only this call: none of its writes commit,
+    /// while the other bodies of the batch commit without it.
     pub async fn precommit<T, F>(
         &self,
         component_path: &StablePath,
@@ -460,19 +464,21 @@ impl AppStore {
     }
 
     /// Phase 4 success: open commit txn, apply finalized writes, invoke
-    /// `existence_reconciler` for the child-existence diff — all in one
-    /// write txn so the reconciler's per-parent `__cex` reads see the
-    /// same snapshot as the plan writes that just happened.
+    /// `existence_reconciler` (when given) for the child-existence diff —
+    /// all in one write txn so the reconciler's per-parent `__cex` reads
+    /// see the same snapshot as the plan writes that just happened.
+    /// `None` skips child-existence reconciliation entirely, leaving the
+    /// `__cex` subtree under `component_path` as it is.
     pub async fn commit(
         &self,
         component_path: &StablePath,
         plan: CommitPlan,
-        existence_reconciler: ExistenceReconciler,
+        existence_reconciler: Option<ExistenceReconciler>,
     ) -> Result<()> {
         let app_store = self.clone();
         let component_path = component_path.clone();
-        // Wrap non-Clone values in `Arc` so the closure stays `Fn` (retryable on
-        // `MDB_MAP_FULL`). `CommitPlan` and `ExistenceReconciler` are read-only inside
+        // Wrap non-Clone values in `Arc` so the closure stays `Fn` (the batcher may
+        // re-run it). `CommitPlan` and `ExistenceReconciler` are read-only inside
         // the body, so `Arc`-sharing is safe.
         let plan = Arc::new(plan);
         let existence_reconciler = Arc::new(existence_reconciler);
@@ -543,7 +549,9 @@ impl AppStore {
                             .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
                             .await?;
                     }
-                    existence_reconciler(wtxn).await?;
+                    if let Some(reconcile) = existence_reconciler.as_ref() {
+                        reconcile(wtxn).await?;
+                    }
                     Ok(())
                 })
             })
@@ -580,6 +588,10 @@ impl AppStore {
 ///
 /// Sibling-by-sibling sorted-merge per level so each `__cex` read is
 /// O(N children) per parent and the writes are bounded by changes.
+///
+/// `child_path_set == None` means the component declares no children
+/// at all (whole-component delete): every on-disk child is removed and
+/// every Component leaf below it tombstoned, cascading the delete.
 ///
 /// Used by [`AppStore::commit`]: the AppStore opens the commit txn,
 /// then invokes the engine-supplied [`ExistenceReconciler`] which in
