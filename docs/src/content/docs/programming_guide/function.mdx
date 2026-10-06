@@ -129,7 +129,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)).
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). A fourth tool, [`coco.tunnel`](#callbacks-tunnel), is for callbacks that cross a `"self"` boundary.
 
 #### `logic_tracking`
 
@@ -189,6 +189,38 @@ The value is canonicalized through the [memoization-key pipeline](../advanced_to
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
+#### Callbacks: `tunnel`
+
+`logic_tracking` is per function, so `"self"` hides the logic of *everything* a function calls — including callbacks it merely received as arguments. A library function such as `traverse(fn)` declared with `logic_tracking="self"` therefore hides *your* `fn`: editing `fn` invalidates nothing, even though `fn` is your input, not the library's implementation detail.
+
+`coco.tunnel(fn)` lets the **owner** of a callback — the function that creates it — track its logic through such layers:
+
+```python
+@coco.fn
+async def app_main(repo: Repo) -> None:
+    visitor = MyVisitor()
+    visit_file = coco.tunnel(visitor.visit_file)  # owner: app_main
+    await walk(repo, visit_file)  # walk's "self" layers can no longer hide it
+```
+
+Calling the returned wrapper runs `fn` as usual. Afterwards, the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame, whatever their `logic_tracking`. At the owner the tracked logic becomes an ordinary dependency and the owner's own mode applies: a `"self"` function *above* `app_main` sees nothing extra.
+
+- Decorate the callback with `@coco.fn` for its own code to be tracked. An undecorated callable contributes only the `@coco.fn` functions it calls, as always.
+- The wrapper is valid only inside the call that created it. Calling it after the owner has returned raises `RuntimeError` instead of silently running untracked.
+- The wrapper is transparent for memoization keys: passing `tunnel(fn)` where you used to pass `fn` keys the same callback (the key changes once, when you adopt the tunnel).
+- If the owner itself is memoized with `"self"`, its own entry still follows its mode. Use `"full"` on the owner (the default) for it to re-run on callback edits too.
+
+:::tip[Library authors: `record_callee_logic`]
+At call sites you know are callbacks, wrap the call in `with coco.record_callee_logic():`. It records the callees' logic in your `"self"` function's **own** memo entry even when the caller forgot to tunnel, offers nothing extra to your callers, and is a no-op under `"full"`.
+
+```python
+@coco.fn(memo=True, logic_tracking="self", version=1)
+async def accept(self, visitor: RepoVisitor) -> None:
+    with coco.record_callee_logic():
+        await visitor.visit_file(self)
+```
+:::
+
 #### Common patterns
 
 :::tip[`@coco.fn` on non-memoized helpers]
@@ -246,6 +278,7 @@ Conversely, if a memo is hitting when you expect invalidation, common causes are
 - A logic change in a helper that is **not** decorated with `@coco.fn`. Add `@coco.fn` to it (no `memo=` needed) so its logic participates in propagation — see [Common patterns](#common-patterns).
 - A `deps` value that you changed at runtime: `deps` is [snapshotted at decoration time](#deps), so per-instance or per-request values must be passed as regular arguments instead.
 - The function uses [`logic_tracking=None`](#logic_tracking), which opts it out of code-change detection entirely.
+- The change is in a callback that passes through a `logic_tracking="self"` function. Wrap it with [`coco.tunnel`](#callbacks-tunnel) where you create it.
 
 ### Customizing data fingerprinting
 

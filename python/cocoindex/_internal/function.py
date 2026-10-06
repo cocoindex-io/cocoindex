@@ -790,6 +790,17 @@ class SyncFunction(Function[P, R_co]):
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
         return self
 
+    # Pickles by name, like a plain function (and like `AsyncFunction`), so a
+    # `@coco.fn` function can be passed as an argument to a memoized function:
+    # the memo-key pipeline's fallback pickles argument values.
+    def __reduce__(self) -> tuple[Any, ...]:
+        return SyncFunction._unpickle, (self._fn.__module__, self._fn.__qualname__)
+
+    @staticmethod
+    def _unpickle(module_name: str, qualname: str) -> SyncFunction[P, R_co]:
+        module = importlib.import_module(module_name)
+        return functools.reduce(getattr, qualname.split("."), module)  # type: ignore[arg-type]
+
     @overload
     def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
     @overload
@@ -1088,6 +1099,11 @@ class _BoundSyncMethod(Generic[SelfT]):
     ):
         self._func = func
         self._instance = instance
+
+    # Picklable (function by name, instance by value) like `_BoundAsyncMethod`,
+    # so a bound `@coco.fn` method can be a memoized function's argument.
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _BoundSyncMethod, (self._func, self._instance)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(self._instance, *args, **kwargs)

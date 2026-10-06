@@ -164,6 +164,32 @@ impl PyFnCallContext {
         Ok(())
     }
 
+    /// Join a tunneled callback's collector frame; what it offered is addressed
+    /// to `owner`, the frame that created the tunnel. See
+    /// `FnCallContext::join_tunneled_child`.
+    pub fn join_tunneled_child(
+        &self,
+        child_fn_ctx: &PyFnCallContext,
+        owner: &PyFnCallContext,
+    ) -> PyResult<()> {
+        self.0.join_tunneled_child(&child_fn_ctx.0, owner.0.id());
+        Ok(())
+    }
+
+    /// Join a record-only collector frame; what its callees offered goes into
+    /// this frame's own memo entry only. See `FnCallContext::join_recorded_child`.
+    pub fn join_recorded_child(&self, child_fn_ctx: &PyFnCallContext) -> PyResult<()> {
+        self.0.join_recorded_child(&child_fn_ctx.0);
+        Ok(())
+    }
+
+    /// Whether this frame has been joined into its parent or component, i.e.
+    /// its call has returned. A tunnel created in a closed frame is invalid.
+    #[getter]
+    pub fn closed(&self) -> bool {
+        self.0.is_closed()
+    }
+
     pub fn join_child_memo(&self, memo_fp: PyFingerprint) -> PyResult<()> {
         self.0.update(|inner| {
             inner.dependency_memo_entries.insert(memo_fp.0);
