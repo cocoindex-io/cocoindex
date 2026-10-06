@@ -1507,9 +1507,9 @@ def test_component_to_directory_transition() -> None:
     )
     old_component = coco.ROOT_PATH / "transition_test" / "D1"
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': container_owner,
-        '/@test_target_state/dicts/"D1"/"a"': old_component,
-        '/@test_target_state/dicts/"D1"/"b"': old_component,
+        '/@"test_target_state/dicts"/"D1"': container_owner,
+        '/@"test_target_state/dicts"/"D1"/"a"': old_component,
+        '/@"test_target_state/dicts"/"D1"/"b"': old_component,
     }
 
     # Transition from Component to Directory: the component at
@@ -1528,8 +1528,8 @@ def test_component_to_directory_transition() -> None:
         },
     }
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': container_owner,
-        '/@test_target_state/dicts/"D1"/"c"': deeper_component,
+        '/@"test_target_state/dicts"/"D1"': container_owner,
+        '/@"test_target_state/dicts"/"D1"/"c"': deeper_component,
     }
 
     # D1 is still present (now as a Directory node) with the deeper component
@@ -1550,9 +1550,9 @@ def test_component_to_directory_transition() -> None:
         },
     }
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': container_owner,
-        '/@test_target_state/dicts/"D1"/"a"': old_component,
-        '/@test_target_state/dicts/"D1"/"b"': old_component,
+        '/@"test_target_state/dicts"/"D1"': container_owner,
+        '/@"test_target_state/dicts"/"D1"/"a"': old_component,
+        '/@"test_target_state/dicts"/"D1"/"b"': old_component,
     }
     paths = coco_inspect.list_stable_paths_sync(app)
     assert old_component in paths
@@ -1606,10 +1606,10 @@ def test_typed_component_path_create_update_unmount() -> None:
     _typed_path_entry[BYTES_SEGMENT] = ("from_bytes", "v2")
 
     expected_owners = {
-        '/@test_target_state/global_dict/"from_tuple"': _typed_path_owner(
+        '/@"test_target_state/global_dict"/"from_tuple"': _typed_path_owner(
             TUPLE_SEGMENT
         ),
-        '/@test_target_state/global_dict/"from_bytes"': _typed_path_owner(
+        '/@"test_target_state/global_dict"/"from_bytes"': _typed_path_owner(
             BYTES_SEGMENT
         ),
     }
