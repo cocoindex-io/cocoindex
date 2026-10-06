@@ -1106,8 +1106,8 @@ class TestShowTargetStatesTypedKeys:
 
     @staticmethod
     def _assert_typed_keys_rendered(stdout: str) -> None:
-        assert "@test_cli/typed_keys/[1,2]" in stdout
-        assert '@test_cli/typed_keys/b"abc"' in stdout
+        assert '@"test_cli/typed_keys"/[1,2]' in stdout
+        assert '@"test_cli/typed_keys"/b"abc"' in stdout
         # Owners render with their own tuple/bytes component segments.
         assert 'owner:/"process"/[1,2]' in stdout
         assert 'owner:/"process"/b"abc"' in stdout
