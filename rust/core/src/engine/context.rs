@@ -1265,8 +1265,8 @@ mod tests {
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
-        let storage = crate::state_store::Storage::from_env(env.clone());
-        (AppStore::new(db, env, storage), dir)
+        let storage = crate::state_store::Storage::from_env(env);
+        (AppStore::new(db, storage), dir)
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
@@ -1367,7 +1367,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
             .await
@@ -1410,7 +1411,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
             .await
@@ -1434,7 +1436,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1460,7 +1463,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
             .await
@@ -1484,7 +1488,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1513,7 +1518,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
             .await

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 from inspect import isasyncgenfunction
 import threading
 import warnings
@@ -68,7 +69,10 @@ class _LoopRunner:
             loop.run_forever()
 
         self._thread = threading.Thread(target=_runner, args=(self._loop,), daemon=True)
-        self._thread.start()
+        # Start it from an empty context: where threads inherit the starter's context
+        # (free-threaded 3.14+), a start inside a component would otherwise keep that
+        # component's context, and with it the environment, alive for good.
+        contextvars.Context().run(self._thread.start)
 
     @classmethod
     def from_running_loop(cls, loop: asyncio.AbstractEventLoop) -> "_LoopRunner":
@@ -276,6 +280,17 @@ class Environment:
         """
         return self._context_provider.get(key)
 
+    def close(self) -> None:
+        """Close the environment's internal database once in-flight writes finish.
+
+        This releases the database at `settings.db_path`, so it can be opened again in
+        this process, without waiting for every reference to the environment to be
+        garbage collected. Later operations on the environment, including updates of
+        its apps, fail. Context values are not closed; they belong to whoever provided
+        them. Calling it again does nothing.
+        """
+        self._core_env.close()
+
     async def _get_env(self) -> "Environment":
         return self
 
@@ -343,6 +358,11 @@ class LazyEnvironment:
         """
         Start the default environment (executes on the default environment's event loop).
         """
+        # Apps resolve the environment on every update, from whichever loop they run
+        # on. The lock is bound to one loop once contended, so don't touch it when the
+        # environment already exists.
+        if self._env is not None:
+            return self._env
         async with self._get_start_stop_lock():
             if self._env is not None:
                 return self._env
@@ -434,11 +454,16 @@ class LazyEnvironment:
         """
         async with self._get_start_stop_lock():
             exit_stack = self._exit_stack
+            env = self._env
             self._exit_stack = None
             self._env = None
 
-        if exit_stack is not None:
-            await exit_stack.aclose()
+        try:
+            if exit_stack is not None:
+                await exit_stack.aclose()
+        finally:
+            if env is not None:
+                env.close()
 
 
 _default_env = LazyEnvironment()
