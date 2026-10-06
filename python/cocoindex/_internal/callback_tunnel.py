@@ -2,10 +2,10 @@
 
 ``logic_tracking="self"`` / ``None`` hide the logic of everything a function
 calls, including callbacks it merely received. ``tunnel(fn)`` lets the owner of
-a callback (the frame that creates it) track the callback's logic into every
-memo entry between the call site and the owner, regardless of their modes.
-``record_callee_logic()`` lets a library record its callbacks' logic in its own
-entry when the owner forgot to tunnel.
+a callback (the frame that hands it down, typically a library's entry point)
+track the callback's logic into every memo entry between the call site and the
+owner, regardless of their modes. ``record_callee_logic()`` lets a ``"self"``
+function record, in its own entry, the logic of a callback it calls itself.
 
 See ``specs/logic_change_detection/callback_tunnel.md``.
 """
@@ -135,28 +135,40 @@ def tunnel(fn: Callable[P, R]) -> Callable[P, R]: ...
 def tunnel(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Track a callback's logic through ``logic_tracking="self"`` / ``None`` layers.
 
-    Call this in the function that creates the callback (the **owner**). The
-    returned wrapper runs ``fn`` as usual; afterwards the logic ``fn`` offered
-    (its own fingerprint and its callees', per ``fn``'s own ``logic_tracking``)
-    is recorded in **every** memo entry between the call site and the owner's
-    frame, regardless of their ``logic_tracking``. At the owner the deps become
-    ordinary child deps and the owner's own mode applies: a ``"self"`` ancestor
-    of the owner sees nothing extra.
+    Call this in the function that hands the callback down (the **owner**):
+    typically the library entry point that receives it, or your own code when
+    the library does not tunnel. The returned wrapper runs ``fn`` as usual;
+    afterwards the logic ``fn`` offered (its own fingerprint and its callees',
+    per ``fn``'s own ``logic_tracking``) is recorded in **every** memo entry
+    between the call site and the owner's frame, regardless of their
+    ``logic_tracking``. At the owner the deps become ordinary child deps and
+    the owner's own mode applies: ``"full"`` offers them to its callers,
+    ``"self"`` stops there.
 
     - Decorate the callback with ``@coco.fn`` for its own code to be tracked;
       an undecorated callable contributes only the ``@coco.fn`` functions it
       calls, as always.
-    - The wrapper is valid only inside the dynamic extent of the owner's call.
-      Calling it after the owner returned raises ``RuntimeError``.
+    - The wrapper is valid only while the owner's call is running. Calling it
+      after the owner returned raises ``RuntimeError``; mount the components
+      that call it with ``use_mount``, or ``await handle.ready()`` inside the
+      owner.
     - The wrapper is transparent for memoization keys (it keys as ``fn``).
+    - A ``"self"`` function cannot tunnel a callback it calls *itself* into its
+      own entry (the tag resolves in the same frame); use
+      :func:`record_callee_logic` for that.
 
-    Example::
+    Example (library entry point)::
 
         @coco.fn
-        async def app_main(repo: Repo) -> None:
-            visitor = MyVisitor()
-            visit_file = coco.tunnel(visitor.visit_file)  # owner: app_main
-            await walk(repo, visit_file)  # walk's "self" layers can't hide it
+        async def walk(repo: Repo, visitor: RepoVisitor) -> None:
+            visit_file = coco.tunnel(visitor.visit_file)  # walk owns it
+            for file in repo.files():
+                await coco.use_mount(
+                    coco.component_subpath(file.path), accept, file, visit_file
+                )
+
+    Every memo entry below ``walk`` — e.g. a ``"self"`` ``accept`` — records
+    the logic of ``visit_file``; the user only decorates it with ``@coco.fn``.
 
     Raises:
         RuntimeError: when called outside an active component context.
@@ -172,19 +184,20 @@ def record_callee_logic() -> Generator[None, None, None]:
     """Record the logic of the callees in this block into the enclosing
     function's own memo entry, whatever its ``logic_tracking``.
 
-    For library code: at call sites you know are callbacks, this closes the hole
-    left when the callback's owner forgot to ``tunnel`` it — the library's
-    ``"self"`` function would otherwise serve a stale memo after the callback is
-    edited. Nothing extra is offered to the enclosing function's callers; under
-    ``logic_tracking="full"`` the block is a no-op.
+    For a ``"self"`` function that calls a callback *itself*: it cannot
+    :func:`tunnel` the callback into its own entry (the tag would resolve in
+    the same frame and its mode would drop it), so it records the callees'
+    logic here instead. Nothing extra is offered to the enclosing function's
+    callers; under ``logic_tracking="full"`` the block is a no-op. Use
+    :func:`tunnel` for callbacks you pass down and this for callbacks you call.
 
     A plain (synchronous) ``with`` block — like ``component_subpath`` — even
     though the body typically ``await``s::
 
         @coco.fn(memo=True, logic_tracking="self", version=1)
-        async def accept(self, visitor: RepoVisitor) -> None:
+        async def accept(file: File, visit_file: Callable[[File], Awaitable[None]]) -> None:
             with coco.record_callee_logic():
-                await visitor.visit_file(self)
+                await visit_file(file)
     """
     parent_ctx = get_context_from_ctx()
     collector = core.FnCallContext(propagate_children_fn_logic=True)
