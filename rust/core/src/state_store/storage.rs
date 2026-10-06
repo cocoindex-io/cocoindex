@@ -11,7 +11,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::WriteTxn;
+use crate::state_store::txn::{Env, EnvSlot, WriteTxn, opened_env};
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -29,9 +29,7 @@ const MAP_SIZE_GROWTH_FACTOR: usize = 2;
 /// for use inside `spawn_blocking` where the async retry helper isn't
 /// reachable. Same two-phase policy. Caller must already hold a coordinator
 /// read guard before opening the LMDB read transaction.
-fn open_read_txn_on_env_with_retry(
-    env: &heed::Env<heed::WithoutTls>,
-) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+fn open_read_txn_on_env_with_retry(env: &Env) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
     use std::time::{Duration, Instant};
 
     const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
@@ -120,8 +118,7 @@ pub struct Storage {
 }
 
 struct StorageInner {
-    db_env: heed::Env<heed::WithoutTls>,
-    coord: Arc<tokio::sync::RwLock<()>>,
+    env: Arc<EnvSlot>,
     batcher: Batcher<TxnRunner>,
 }
 
@@ -175,8 +172,7 @@ fn is_map_full(err: &Error) -> bool {
 /// coordinator is active in the current process.
 #[derive(Clone)]
 struct TxnRunner {
-    db_env: heed::Env<heed::WithoutTls>,
-    coord: Arc<tokio::sync::RwLock<()>>,
+    env: Arc<EnvSlot>,
 }
 
 impl TxnRunner {
@@ -264,9 +260,10 @@ impl TxnRunner {
     /// are dropped before this returns. On `MapFull` the caller should resize
     /// (under the coordinator write guard) and retry.
     async fn try_run_once(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
-        let _read_guard = self.coord.read().await;
+        let env_guard = self.env.read().await;
+        let env = opened_env(&env_guard)?;
         let mut outputs = Vec::with_capacity(bodies.len());
-        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
+        let mut wtxn = WriteTxn::new(env.write_txn()?);
         for (index, body) in bodies.iter().enumerate() {
             match body(&mut wtxn).await {
                 Ok(output) => outputs.push(output),
@@ -282,8 +279,8 @@ impl TxnRunner {
 
     /// Doubles the env's current map size (aligned to page). Caller must hold
     /// the coordinator write guard before calling `Env::resize`.
-    fn next_map_size(db_env: &heed::Env<heed::WithoutTls>) -> Result<usize> {
-        let current = db_env.info().map_size;
+    fn next_map_size(env: &Env) -> Result<usize> {
+        let current = env.info().map_size;
         let doubled = current.checked_mul(MAP_SIZE_GROWTH_FACTOR).ok_or_else(|| {
             internal_error!("LMDB map size overflow while doubling: current={current} bytes")
         })?;
@@ -291,8 +288,9 @@ impl TxnRunner {
     }
 
     async fn resize_on_map_full(&self) -> Result<usize> {
-        let resize_guard = self.coord.write().await;
-        let new_size = Self::next_map_size(&self.db_env)?;
+        let resize_guard = self.env.write().await;
+        let env = opened_env(&resize_guard)?;
+        let new_size = Self::next_map_size(env)?;
         warn!(
             "LMDB map full, auto-resizing to {} bytes and retrying",
             new_size
@@ -301,7 +299,7 @@ impl TxnRunner {
         // transactions in this process; the failed write txn and its read
         // guard were dropped before this path runs.
         unsafe {
-            self.db_env.resize(new_size)?;
+            env.resize(new_size)?;
         }
         drop(resize_guard);
         Ok(new_size)
@@ -373,48 +371,45 @@ impl Storage {
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
         }
-        let coord = Arc::new(tokio::sync::RwLock::new(()));
-        let batcher = Batcher::new(
-            TxnRunner {
-                db_env: db_env.clone(),
-                coord: coord.clone(),
-            },
-            Arc::new(BatchQueue::new()),
-            BatchingOptions::default(),
-        );
-        Ok(Self {
-            inner: Arc::new(StorageInner {
-                db_env,
-                coord,
-                batcher,
-            }),
-        })
+        Ok(Self::from_env(db_env))
     }
 
-    /// Construct a `Storage` from an already-open `heed::Env`. Used in unit
-    /// tests that open an env directly without going through `StorageSettings`.
-    #[cfg(test)]
-    pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
-        let coord = Arc::new(tokio::sync::RwLock::new(()));
+    /// Construct a `Storage` that takes ownership of an already-open
+    /// `heed::Env`. Unit tests use it directly to open an env without going
+    /// through `StorageSettings`; no other clone of `db_env` may outlive the
+    /// call, or [`Self::close`] can't close it.
+    pub(crate) fn from_env(db_env: Env) -> Self {
+        let env = Arc::new(EnvSlot::new(Some(db_env)));
         let batcher = Batcher::new(
-            TxnRunner {
-                db_env: db_env.clone(),
-                coord: coord.clone(),
-            },
+            TxnRunner { env: env.clone() },
             Arc::new(BatchQueue::new()),
             BatchingOptions::default(),
         );
         Self {
-            inner: Arc::new(StorageInner {
-                db_env,
-                coord,
-                batcher,
-            }),
+            inner: Arc::new(StorageInner { env, batcher }),
         }
     }
 
-    pub(crate) fn txn_coordinator(&self) -> Arc<tokio::sync::RwLock<()>> {
-        self.inner.coord.clone()
+    pub(crate) fn txn_coordinator(&self) -> Arc<EnvSlot> {
+        self.inner.env.clone()
+    }
+
+    /// Close the LMDB env once the transactions in flight finish, so the same
+    /// db path can be opened again in this process even while clones of this
+    /// `Storage` are still alive. Every later operation fails with a client
+    /// error. Idempotent.
+    pub async fn close(&self) {
+        let Some(env) = self.inner.env.write().await.take() else {
+            return;
+        };
+        // Only the slot owns the env: transactions borrow it, or own a clone
+        // only while they hold a coordinator read guard, which the write
+        // guard above has excluded. So this drop closes it.
+        let closing = env.prepare_for_closing();
+        debug_assert!(
+            closing.wait_timeout(std::time::Duration::ZERO),
+            "LMDB env still referenced after close"
+        );
     }
 
     /// Migrate legacy files from the old layout (directly in `base_path`)
@@ -505,30 +500,27 @@ impl Storage {
 
     /// Create the per-app sub-database and wrap it in an `AppStore`.
     pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
-        let _guard = self.inner.coord.read().await;
-        let mut wtxn = self.inner.db_env.write_txn()?;
-        let db = self
-            .inner
-            .db_env
-            .create_database(&mut wtxn, Some(app_name))?;
+        let env_guard = self.inner.env.read().await;
+        let env = opened_env(&env_guard)?;
+        let mut wtxn = env.write_txn()?;
+        let db = env.create_database(&mut wtxn, Some(app_name))?;
         wtxn.commit()?;
-        Ok(AppStore::new(db, self.inner.db_env.clone(), self.clone()))
+        Ok(AppStore::new(db, self.clone()))
     }
 
     /// Open the per-app sub-database by name, or `None` if it doesn't exist.
     /// Opens an internal read transaction for the lookup.
     pub async fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
-        let _guard = self.inner.coord.read().await;
-        let rtxn = self.inner.db_env.read_txn()?;
-        let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
+        let env_guard = self.inner.env.read().await;
+        let env = opened_env(&env_guard)?;
+        let rtxn = env.read_txn()?;
+        let db: Option<Database> = env.open_database(&rtxn, Some(app_name))?;
         // The dbi handle opened in a read txn only becomes usable by other
         // transactions after this txn commits; dropping (aborting) it instead
         // leaves the handle invalid and later reads fail with EINVAL when the
         // sub-database was created by another process.
         rtxn.commit()?;
-        let env = self.inner.db_env.clone();
-        let storage = self.clone();
-        Ok(db.map(|db| AppStore::new(db, env, storage.clone())))
+        Ok(db.map(|db| AppStore::new(db, self.clone())))
     }
 
     /// Drop an app's data from this LMDB environment. heed 0.22 doesn't
@@ -537,23 +529,18 @@ impl Storage {
     /// empty sub-databases, so the app is effectively gone.
     /// Idempotent: dropping a non-existent app is a no-op.
     pub async fn drop_app(&self, app_name: &str) -> Result<()> {
-        let db = {
-            let _guard = self.inner.coord.read().await;
-            let rtxn = self.inner.db_env.read_txn()?;
-            let db = self
-                .inner
-                .db_env
-                .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?;
-            // See `open_app_store_by_name`: commit so the dbi handle stays
-            // valid for the write txn below.
-            rtxn.commit()?;
-            db
-        };
+        let env_guard = self.inner.env.read().await;
+        let env = opened_env(&env_guard)?;
+        let rtxn = env.read_txn()?;
+        let db =
+            env.open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?;
+        // See `open_app_store_by_name`: commit so the dbi handle stays
+        // valid for the write txn below.
+        rtxn.commit()?;
         let Some(db) = db else {
             return Ok(());
         };
-        let _guard = self.inner.coord.read().await;
-        let mut wtxn = self.inner.db_env.write_txn()?;
+        let mut wtxn = env.write_txn()?;
         db.clear(&mut wtxn)?;
         wtxn.commit()?;
         Ok(())
@@ -585,11 +572,11 @@ impl Storage {
     {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
-        let coord = self.inner.coord.clone();
+        let env_slot = self.inner.env.clone();
         tokio::task::spawn_blocking(move || {
             let result: Result<()> = (|| {
-                let _guard = coord.blocking_read();
-                let txn = open_read_txn_on_env_with_retry(&app_store.env)?;
+                let env_guard = env_slot.blocking_read();
+                let txn = open_read_txn_on_env_with_retry(opened_env(&env_guard)?)?;
                 let db = app_store.db();
                 f(&db, &txn, &tx)
             })();
@@ -692,8 +679,8 @@ impl Storage {
     /// List every non-empty named app sub-store in this storage environment.
     /// The "unnamed database" is LMDB's catalog of named sub-databases.
     pub async fn list_app_names(&self) -> Result<Vec<String>> {
-        let db_env = &self.inner.db_env;
-        let _guard = self.inner.coord.read().await;
+        let env_guard = self.inner.env.read().await;
+        let db_env = opened_env(&env_guard)?;
         let rtxn = db_env.read_txn()?;
         let unnamed: heed::Database<heed::types::Str, heed::types::DecodeIgnore> = db_env
             .open_database(&rtxn, None)?
@@ -757,6 +744,59 @@ mod tests {
         Storage::new(&settings).await.unwrap();
     }
 
+    /// `close` releases the env while clones of the `Storage` and its
+    /// `AppStore`s are still alive: the same path opens again, and the old
+    /// handles fail cleanly instead of touching a closed env.
+    #[tokio::test]
+    async fn close_lets_the_same_path_open_again() {
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+        let app_store = storage.create_app_store("app").await.unwrap();
+        let db = app_store.db();
+        storage
+            .run_txn(move |wtxn| {
+                Box::pin(async move {
+                    db.put(wtxn, b"key", b"value")?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+
+        let error = Storage::new(&settings).await.err().expect("still open");
+        assert!(format!("{error:?}").contains("already open"), "{error:?}");
+
+        storage.close().await;
+        storage.close().await;
+
+        let closed = |error: Error| format!("{error}").contains("environment is closed");
+        assert!(closed(app_store.read_txn().await.err().unwrap()));
+        assert!(closed(storage.list_app_names().await.unwrap_err()));
+        assert!(closed(
+            storage
+                .run_txn(|_wtxn| Box::pin(async { Ok(()) }))
+                .await
+                .unwrap_err()
+        ));
+
+        let reopened = Storage::new(&settings).await.unwrap();
+        let app_store = reopened
+            .open_app_store_by_name("app")
+            .await
+            .unwrap()
+            .unwrap();
+        let rtxn = app_store.read_txn().await.unwrap();
+        assert_eq!(
+            app_store.db().get(&rtxn, b"key").unwrap(),
+            Some(&b"value"[..])
+        );
+    }
+
     /// Integration test for `MDB_MAP_FULL` auto-resize on the `Storage::run_txn`
     /// path: one batched write txn is filled past the map limit, the runner
     /// doubles the map, retries the same body, and commits.
@@ -776,7 +816,7 @@ mod tests {
         let storage = Storage::new(&settings).await.unwrap();
         let app_store = storage.create_app_store("resize_test").await.unwrap();
         assert_eq!(
-            app_store.env.info().map_size,
+            app_store.env().info().map_size,
             initial_map_size,
             "initial map size should match configured value"
         );
@@ -808,7 +848,7 @@ mod tests {
             .await
             .expect("single run_txn should succeed after MapFull resize-and-retry");
 
-        let final_map_size = app_store.env.info().map_size;
+        let final_map_size = app_store.env().info().map_size;
         let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
@@ -927,7 +967,7 @@ mod tests {
             .expect("write task panicked")
             .expect("write should succeed after reader released");
 
-        let final_map_size = app_store.env.info().map_size;
+        let final_map_size = app_store.env().info().map_size;
         let expected_min_final = align_map_size_to_page(initial_map_size * MAP_SIZE_GROWTH_FACTOR);
         assert!(
             final_map_size > initial_map_size,
