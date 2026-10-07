@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -971,18 +972,25 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
+    /// Join a function frame that ran directly under this component (its
+    /// top-level function, or a state handler's frame) into the component.
+    ///
+    /// The component boundary flattens every kind of logic dep the frame holds
+    /// into the component's single `logic_deps` set — including tunneled sets
+    /// still addressed to an owner. Component-tree propagation applies no
+    /// `logic_tracking` mode, and the function frames that could resolve a
+    /// tunneled set are all closed before child outcomes reach a parent
+    /// component, so a tagged set at this level could never be resolved and
+    /// would be observably identical to the flattened one.
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let (fn_logic_deps, context_change_deps, target_provider_deps) = fn_ctx.update(|inner| {
+        let (logic_deps, target_provider_deps) = fn_ctx.update(|inner| {
             (
-                inner.fn_logic_deps.clone(),
-                inner.context_change_deps.clone(),
+                inner.entry_logic_deps().collect::<Vec<_>>(),
                 inner.target_provider_deps.clone(),
             )
         });
-        let mut deps = self.inner.logic_deps.lock().unwrap();
-        deps.extend(fn_logic_deps);
-        deps.extend(context_change_deps);
-        drop(deps);
+        fn_ctx.close();
+        self.inner.logic_deps.lock().unwrap().extend(logic_deps);
         self.merge_target_provider_deps(target_provider_deps);
     }
 
@@ -1109,6 +1117,44 @@ pub struct FnCallContextInner {
     pub fn_logic_deps: HashSet<Fingerprint>,
     /// Context key fingerprints (always propagate regardless of logic_tracking mode).
     pub context_change_deps: HashSet<Fingerprint>,
+
+    /// Logic fingerprints offered by tunneled callbacks, keyed by the frame that
+    /// created the tunnel (the owner). They ride through `join_child` regardless
+    /// of `propagate_children_fn_logic`, are stored in every memo entry on the
+    /// way, and are resolved into ordinary child deps when they reach the owner.
+    /// See [`FnCallContext::join_tunneled_child`].
+    pub tunneled_fn_logic_deps: HashMap<FnFrameId, HashSet<Fingerprint>>,
+    /// Logic fingerprints recorded into this frame's memo entry only, never
+    /// offered to the parent: tunneled deps that resolved at this frame as
+    /// their owner while its `propagate_children_fn_logic` is false.
+    pub entry_only_fn_logic_deps: HashSet<Fingerprint>,
+}
+
+impl FnCallContextInner {
+    /// Every logic dependency this frame's memo entry records: own and
+    /// propagated function logic, entry-only recordings, tunneled sets still
+    /// in transit, and context-change deps.
+    pub fn entry_logic_deps(&self) -> impl Iterator<Item = Fingerprint> + '_ {
+        self.fn_logic_deps
+            .iter()
+            .chain(self.entry_only_fn_logic_deps.iter())
+            .chain(self.tunneled_fn_logic_deps.values().flatten())
+            .chain(self.context_change_deps.iter())
+            .copied()
+    }
+}
+
+/// Process-unique identity of one [`FnCallContext`]. A tunneled callback's
+/// logic is addressed to the id of the frame that created the tunnel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FnFrameId(u64);
+
+static NEXT_FN_FRAME_ID: AtomicU64 = AtomicU64::new(1);
+
+impl FnFrameId {
+    fn next() -> Self {
+        Self(NEXT_FN_FRAME_ID.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 pub struct FnCallContext {
@@ -1116,14 +1162,16 @@ pub struct FnCallContext {
     /// Whether to merge children's `fn_logic_deps` into this context.
     /// `true` for "full" mode, `false` for "self" or `None` mode.
     propagate_children_fn_logic: bool,
+    id: FnFrameId,
+    /// Set once this frame has been joined into its parent or component, i.e.
+    /// its call has returned. A tunnel created in this frame is only valid
+    /// while it is open.
+    closed: AtomicBool,
 }
 
 impl Default for FnCallContext {
     fn default() -> Self {
-        Self {
-            inner: Mutex::new(FnCallContextInner::default()),
-            propagate_children_fn_logic: true,
-        }
+        Self::new(true)
     }
 }
 
@@ -1132,12 +1180,48 @@ impl FnCallContext {
         Self {
             inner: Mutex::new(FnCallContextInner::default()),
             propagate_children_fn_logic,
+            id: FnFrameId::next(),
+            closed: AtomicBool::new(false),
         }
+    }
+
+    pub fn id(&self) -> FnFrameId {
+        self.id
+    }
+
+    /// Whether this frame has been joined into its parent or component.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
     }
 
     pub fn join_child(&self, child_fn_ctx: &FnCallContext) {
         // Take the child's inner first to keep lock scope small (and avoid deadlock).
         let child_inner = child_fn_ctx.update(std::mem::take);
+        child_fn_ctx.close();
+        self.merge_child_inner(child_inner);
+    }
+
+    /// Join a tunneled callback's collector frame.
+    ///
+    /// What the callback offered (the collector's `fn_logic_deps`) is addressed
+    /// to `owner`, the frame that created the tunnel, and rides upward tagged
+    /// until it gets there — through frames that would otherwise drop it. If
+    /// this frame *is* the owner, it is resolved right here: recorded in this
+    /// frame's entry, and offered upward only under this frame's flag.
+    /// Everything else the collector gathered merges as for `join_child`.
+    pub fn join_tunneled_child(&self, child_fn_ctx: &FnCallContext, owner: FnFrameId) {
+        let mut child_inner = child_fn_ctx.update(std::mem::take);
+        child_fn_ctx.close();
+        let offered = std::mem::take(&mut child_inner.fn_logic_deps);
+        child_inner
+            .tunneled_fn_logic_deps
+            .entry(owner)
+            .or_default()
+            .extend(offered);
         self.merge_child_inner(child_inner);
     }
 
@@ -1161,6 +1245,26 @@ impl FnCallContext {
             if self.propagate_children_fn_logic {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
             }
+            // Tunneled deps ride through every frame until they reach the
+            // owner that created the tunnel. The owner's entry always records
+            // them; its flag only decides whether they are offered upward.
+            for (owner, fps) in child_inner.tunneled_fn_logic_deps {
+                if owner == self.id {
+                    if self.propagate_children_fn_logic {
+                        inner.fn_logic_deps.extend(fps);
+                    } else {
+                        inner.entry_only_fn_logic_deps.extend(fps);
+                    }
+                } else {
+                    inner
+                        .tunneled_fn_logic_deps
+                        .entry(owner)
+                        .or_default()
+                        .extend(fps);
+                }
+            }
+            // `entry_only_fn_logic_deps` belongs to the child's own memo entry
+            // and is deliberately not propagated.
         });
     }
 
@@ -1171,6 +1275,7 @@ impl FnCallContext {
     /// so the shared context needs to be joined more than once.
     pub fn join_child_shared(&self, child_fn_ctx: &FnCallContext) {
         let child_inner = child_fn_ctx.update(|inner| inner.clone());
+        child_fn_ctx.close();
         self.merge_child_inner(child_inner);
     }
 
@@ -1531,5 +1636,123 @@ mod tests {
         apply_plan_via_commit(&store, &p, cache).await;
 
         assert!(read_regular_states(&store, &p).await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fn_call_context_tests {
+    use super::FnCallContext;
+    use cocoindex_utils::fingerprint::Fingerprint;
+    use std::collections::HashSet;
+
+    fn fp(name: &str) -> Fingerprint {
+        Fingerprint::from(name).unwrap()
+    }
+
+    fn fn_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {
+        ctx.update(|inner| inner.fn_logic_deps.clone())
+    }
+
+    fn entry_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {
+        ctx.update(|inner| inner.entry_logic_deps().collect())
+    }
+
+    /// A tunneled wrapper owned by `owner` was called from `caller`; the
+    /// callback offered `offered`.
+    fn tunneled_call(caller: &FnCallContext, owner: &FnCallContext, offered: &[Fingerprint]) {
+        let collector = FnCallContext::new(true);
+        for f in offered {
+            collector.add_fn_logic_dep(*f);
+        }
+        caller.join_tunneled_child(&collector, owner.id());
+    }
+
+    #[test]
+    fn tunneled_deps_pass_self_frames_and_resolve_at_a_full_owner() {
+        let owner = FnCallContext::new(true);
+        let h = FnCallContext::new(false);
+        let t = FnCallContext::new(false);
+        t.add_fn_logic_dep(fp("T"));
+        tunneled_call(&t, &owner, &[fp("cb")]);
+        // T's entry records the callback though T is "self"; T offers only itself.
+        assert_eq!(entry_logic_deps(&t), [fp("T"), fp("cb")].into());
+        assert_eq!(fn_logic_deps(&t), [fp("T")].into());
+        h.join_child(&t);
+        // H ("self") drops T's own logic but passes the tagged set through.
+        assert_eq!(entry_logic_deps(&h), [fp("cb")].into());
+        assert!(fn_logic_deps(&h).is_empty());
+        owner.join_child(&h);
+        // At the owner the set resolves into ordinary deps under its flag.
+        assert_eq!(fn_logic_deps(&owner), [fp("cb")].into());
+        assert!(owner.update(|inner| inner.tunneled_fn_logic_deps.is_empty()));
+    }
+
+    #[test]
+    fn self_owner_records_in_its_entry_and_offers_nothing_upward() {
+        let above = FnCallContext::new(true);
+        let owner = FnCallContext::new(false);
+        let t = FnCallContext::new(false);
+        tunneled_call(&t, &owner, &[fp("cb")]);
+        owner.join_child(&t);
+        assert_eq!(entry_logic_deps(&owner), [fp("cb")].into());
+        assert!(fn_logic_deps(&owner).is_empty());
+        above.join_child(&owner);
+        assert!(entry_logic_deps(&above).is_empty());
+    }
+
+    #[test]
+    fn self_ancestor_above_a_full_owner_sees_nothing() {
+        let s = FnCallContext::new(false);
+        let owner = FnCallContext::new(true);
+        let t = FnCallContext::new(false);
+        tunneled_call(&t, &owner, &[fp("cb")]);
+        owner.join_child(&t);
+        assert_eq!(fn_logic_deps(&owner), [fp("cb")].into());
+        s.join_child(&owner);
+        assert!(entry_logic_deps(&s).is_empty());
+    }
+
+    #[test]
+    fn tunneled_call_directly_in_the_owner_frame_resolves_at_once() {
+        let full_owner = FnCallContext::new(true);
+        tunneled_call(&full_owner, &full_owner, &[fp("cb")]);
+        assert_eq!(fn_logic_deps(&full_owner), [fp("cb")].into());
+
+        let parent = FnCallContext::new(true);
+        let self_owner = FnCallContext::new(false);
+        tunneled_call(&self_owner, &self_owner, &[fp("cb")]);
+        assert_eq!(entry_logic_deps(&self_owner), [fp("cb")].into());
+        parent.join_child(&self_owner);
+        assert!(entry_logic_deps(&parent).is_empty());
+    }
+
+    #[test]
+    fn distinct_owners_resolve_independently() {
+        let o = FnCallContext::new(true);
+        let h = FnCallContext::new(false);
+        let t = FnCallContext::new(false);
+        tunneled_call(&t, &o, &[fp("cb1")]);
+        tunneled_call(&t, &h, &[fp("cb2")]);
+        assert_eq!(entry_logic_deps(&t), [fp("cb1"), fp("cb2")].into());
+        h.join_child(&t);
+        // cb2 resolves at H: recorded in H's entry, not offered (H is "self");
+        // cb1 rides on.
+        assert_eq!(entry_logic_deps(&h), [fp("cb1"), fp("cb2")].into());
+        o.join_child(&h);
+        assert_eq!(fn_logic_deps(&o), [fp("cb1")].into());
+    }
+
+    #[test]
+    fn joins_close_the_child_frame() {
+        let parent = FnCallContext::new(true);
+        let a = FnCallContext::new(true);
+        let b = FnCallContext::new(true);
+        let c = FnCallContext::new(true);
+        assert!(!a.is_closed());
+        parent.join_child(&a);
+        parent.join_child_shared(&b);
+        parent.join_tunneled_child(&c, parent.id());
+        assert!([&a, &b, &c].iter().all(|ctx| ctx.is_closed()));
+        assert!(!parent.is_closed());
     }
 }

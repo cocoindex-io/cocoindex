@@ -44,6 +44,7 @@ from .component_ctx import (
 
 from .stable_path import StableKey
 from .batching import RetryWithSmallerBatch
+from .logic_tracked import logic_tracked
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -909,6 +910,7 @@ __all__ = [
     # .function
     "fn",
     "LogicTracking",
+    "logic_tracked",
     "timeout",
     "check_cancellation",
     "DeadlineExceededError",

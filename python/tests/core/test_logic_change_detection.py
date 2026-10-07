@@ -17,7 +17,7 @@ from cocoindex._internal.function import AsyncFunction, SyncFunction
 from tests import common
 from tests.common.environment import get_env_db_path
 from tests.common.target_states import GlobalDictTarget, Metrics
-from tests.common.module_utils import load_module_as
+from tests.common.module_utils import load_module_as, unload_module_functions
 
 
 coco_env = common.create_test_env(__file__)
@@ -44,29 +44,6 @@ _METHOD_V2_PATH = str(_TEST_DIR / "mod_logic_method_v2.py")
 _FAKE_MODULE = "tests.core._dynamic_logic_change_module"
 
 
-def _unload_module_functions(mod: ModuleType) -> None:
-    """Unregister logic fingerprints for all coco functions in a module."""
-    for attr_name in dir(mod):
-        obj = getattr(mod, attr_name)
-        _release_logic_fp(obj)
-        # Also scan class attributes for @coco.fn decorated methods.
-        if isinstance(obj, type):
-            for cls_attr_name in dir(obj):
-                _release_logic_fp(getattr(obj, cls_attr_name, None))
-
-
-def _release_logic_fp(obj: object) -> None:
-    """Release a coco function's logic fingerprint registration now.
-
-    Clears ``_logic_fp`` so the object's ``__del__`` doesn't release it a second
-    time once the stale module is collected — that would drop the registration
-    held by an unchanged function in the next module version.
-    """
-    if isinstance(obj, (SyncFunction, AsyncFunction)) and obj._logic_fp is not None:
-        core.unregister_logic_fingerprint(obj._logic_fp)
-        obj._logic_fp = None
-
-
 def _load_module(
     module_path: str,
     metrics: Metrics,
@@ -75,7 +52,7 @@ def _load_module(
 ) -> ModuleType:
     """Load a module version, unregistering the old module's fingerprints first."""
     if old_module is not None:
-        _unload_module_functions(old_module)
+        unload_module_functions(old_module)
     current_module.clear()
     mod = load_module_as(module_path, _FAKE_MODULE)
     mod.set_metrics(metrics)
@@ -90,7 +67,7 @@ def _cleanup_dynamic_module() -> Iterator[None]:
     yield
     mod = sys.modules.get(_FAKE_MODULE)
     if mod is not None:
-        _unload_module_functions(mod)
+        unload_module_functions(mod)
         del sys.modules[_FAKE_MODULE]
 
 
