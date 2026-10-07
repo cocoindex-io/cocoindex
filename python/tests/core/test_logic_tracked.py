@@ -1,4 +1,4 @@
-"""End-to-end tests for the callback tunnel (``coco.tunnel``).
+"""End-to-end tests for ``coco.logic_tracked`` (the callback tunnel).
 
 Case numbers refer to the matrix in
 ``specs/logic_change_detection/callback_tunnel.md``.
@@ -9,8 +9,9 @@ Roles (names from the spec):
   ``logic_tracking="self"`` that call a callback they received.
 - ``H`` — ``higher_level*``: ``"self"`` layers that forward (or create)
   callbacks.
-- ``O`` — the owner: a ``"full"`` frame that creates the callback and tunnels
-  it. Either a memoized module-level ``owner*`` function (so its own entry is
+- ``O`` — the owner: a ``"full"`` frame that creates the callback and wraps it
+  with ``coco.logic_tracked``. Either a memoized module-level ``owner*``
+  function (so its own entry is
   observable) or the test's ``app_main`` (a *root owner*, whose body always
   runs, which isolates what the entries below it recorded).
 
@@ -38,10 +39,10 @@ from tests.common.target_states import GlobalDictTarget, Metrics
 coco_env = common.create_test_env(__file__)
 
 _TEST_DIR = pathlib.Path(__file__).parent
-_V1_PATH = str(_TEST_DIR / "mod_logic_tunnel_v1.py")
-_V2_PATH = str(_TEST_DIR / "mod_logic_tunnel_v2.py")
-_V3_PATH = str(_TEST_DIR / "mod_logic_tunnel_v3.py")
-_FAKE_MODULE = "tests.core._dynamic_callback_tunnel_module"
+_V1_PATH = str(_TEST_DIR / "mod_logic_tracked_v1.py")
+_V2_PATH = str(_TEST_DIR / "mod_logic_tracked_v2.py")
+_V3_PATH = str(_TEST_DIR / "mod_logic_tracked_v3.py")
+_FAKE_MODULE = "tests.core._dynamic_logic_tracked_module"
 
 # Per-test state read by the module-level T/H/O functions below.
 _metrics: list[Metrics] = []
@@ -104,11 +105,11 @@ def traverse(fn: Callable[[str], str], value: str) -> str:
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
-def traverse_self_tunnel(fn: Callable[[str], str], value: str) -> str:
-    """T that is itself the owner: a "self" entry point calling an untunneled
-    callback records it in its own entry by tunneling in its own frame."""
-    _m().increment("traverse_self_tunnel")
-    return coco.tunnel(fn)(value)
+def traverse_wraps_own_callback(fn: Callable[[str], str], value: str) -> str:
+    """T that is itself the owner: a "self" entry point calling an unwrapped
+    callback records it in its own entry by wrapping it in its own frame."""
+    _m().increment("traverse_wraps_own_callback")
+    return coco.logic_tracked(fn)(value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
@@ -131,7 +132,7 @@ async def traverse_gather(
     fn2: Callable[[str], Awaitable[str]],
     value: str,
 ) -> str:
-    """T calling two tunneled callbacks concurrently under one frame."""
+    """T calling two logic-tracked callbacks concurrently under one frame."""
     _m().increment("traverse_gather")
     results = await asyncio.gather(fn1(value + "a"), fn2(value + "b"), fn1(value + "c"))
     return " | ".join(results)
@@ -170,30 +171,30 @@ def higher_level_outer(fn: Callable[[str], str], value: str) -> str:
 
 @coco.fn(logic_tracking="self", version=1)
 def higher_level_internal_cb2(value: str) -> str:
-    """H that creates its own callback and does NOT tunnel it."""
+    """H that creates its own callback and does NOT wrap it."""
     _m().increment("higher_level")
     return traverse(_mod().cb2, value)
 
 
 @coco.fn(logic_tracking="self", version=1)
-def higher_level_internal_cb2_self_tunnel(value: str) -> str:
-    """Same, but T tunnels the callback in its own frame."""
+def higher_level_internal_cb2_traverse_wraps(value: str) -> str:
+    """Same, but T wraps the callback in its own frame."""
     _m().increment("higher_level")
-    return traverse_self_tunnel(_mod().cb2, value)
+    return traverse_wraps_own_callback(_mod().cb2, value)
 
 
 @coco.fn(logic_tracking="self", version=1)
 def higher_level_two(fn1: Callable[[str], str], value: str, which: str) -> str:
-    """H receives ``fn1`` from above and creates ``cb2``, tunneled to itself."""
+    """H receives ``fn1`` from above and creates ``cb2``, wrapped by itself."""
     _m().increment("higher_level")
-    return traverse2(fn1, coco.tunnel(_mod().cb2), value, which)
+    return traverse2(fn1, coco.logic_tracked(_mod().cb2), value, which)
 
 
 @coco.fn(logic_tracking="self", version=1)
 async def higher_level_gather(fn1: Callable[[str], Awaitable[str]], value: str) -> str:
-    """H tunnels ``acb2`` to itself and runs two T calls concurrently."""
+    """H wraps ``acb2`` itself and runs two T calls concurrently."""
     _m().increment("higher_level")
-    fn2 = coco.tunnel(_mod().acb2)
+    fn2 = coco.logic_tracked(_mod().acb2)
     r1, r2 = await asyncio.gather(
         traverse_gather(fn1, fn2, value + "1"),
         traverse_gather(fn1, fn2, value + "2"),
@@ -208,14 +209,14 @@ async def higher_level_mounts(fn: Callable[[str], str], key: str, value: str) ->
 
 
 # ============================================================================
-# O: owners. "full" frames that create a callback and tunnel it.
+# O: owners. "full" frames that create a callback and wrap it.
 # ============================================================================
 
 
 @coco.fn(memo=True)
 def owner(key: str, value: str) -> str:
     _m().increment("owner")
-    return higher_level(coco.tunnel(_mod().cb), value)
+    return higher_level(coco.logic_tracked(_mod().cb), value)
 
 
 @coco.fn(memo=True)
@@ -227,27 +228,27 @@ def owner_internal(key: str, value: str) -> str:
 @coco.fn(memo=True)
 def owner_two(key: str, value: str, which: str) -> str:
     _m().increment("owner")
-    return higher_level_two(coco.tunnel(_mod().cb), value, which)
+    return higher_level_two(coco.logic_tracked(_mod().cb), value, which)
 
 
 @coco.fn(memo=True)
 def owner_forwarding(key: str, value: str) -> str:
     _m().increment("owner")
-    return higher_level_outer(coco.tunnel(_mod().cb), value)
+    return higher_level_outer(coco.logic_tracked(_mod().cb), value)
 
 
 @coco.fn
 def owner_plain(value: str) -> str:
     """A "full" owner that is not memoized (so a "self" ancestor is observable)."""
     _m().increment("owner")
-    return traverse(coco.tunnel(_mod().cb), value)
+    return traverse(coco.logic_tracked(_mod().cb), value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
 def owner_self_memo(key: str, value: str) -> str:
-    """A memoized "self" owner: its own entry records what it tunneled."""
+    """A memoized "self" owner: its own entry records what it wrapped."""
     _m().increment("owner")
-    return higher_level(coco.tunnel(_mod().cb), value)
+    return higher_level(coco.logic_tracked(_mod().cb), value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
@@ -259,14 +260,14 @@ def self_ancestor(key: str, value: str) -> str:
 @coco.fn(memo=True)
 async def owner_gather(key: str, value: str) -> str:
     _m().increment("owner")
-    return await higher_level_gather(coco.tunnel(_mod().acb), value)
+    return await higher_level_gather(coco.logic_tracked(_mod().acb), value)
 
 
 @coco.fn
 async def owner_mounting(key: str, value: str) -> None:
     """A "full" owner inside component P's body; mounts, so cannot be memoized."""
     _m().increment("owner")
-    await higher_level_mounts(coco.tunnel(_mod().cb), key, value)
+    await higher_level_mounts(coco.logic_tracked(_mod().cb), key, value)
 
 
 @coco.fn(memo=True)
@@ -282,12 +283,12 @@ async def parent_comp_plain(key: str, value: str) -> None:
 
 
 # ============================================================================
-# Case 1 — every entry on the path records the tunneled callback.
+# Case 1 — every entry on the path records the logic-tracked callback.
 # ============================================================================
 
 
-def test_tunneled_callback_recorded_in_every_entry_on_the_path() -> None:
-    """O (memo, full) tunnels cb; H (self) forwards it; T (memo, self) calls it.
+def test_logic_tracked_callback_recorded_in_every_entry_on_the_path() -> None:
+    """O (memo, full) wraps cb; H (self) forwards it; T (memo, self) calls it.
     Editing cb must miss both T's and O's entries."""
     metrics = _reset()
 
@@ -296,7 +297,9 @@ def test_tunneled_callback_recorded_in_every_entry_on_the_path() -> None:
         _declare("A", owner("A", "value1"))
 
     app = coco.App(
-        coco.AppConfig(name="test_tunnel_every_entry_on_path", environment=coco_env),
+        coco.AppConfig(
+            name="test_logic_tracked_every_entry_on_path", environment=coco_env
+        ),
         app_main,
     )
 
@@ -326,16 +329,18 @@ def test_tunneled_callback_recorded_in_every_entry_on_the_path() -> None:
 
 
 def test_intermediate_memo_misses_after_callback_edit_under_root_owner() -> None:
-    """The owner is app_main, whose body always runs. Without the tunnel T
+    """The owner is app_main, whose body always runs. Without the wrapper T
     would hit and serve the v1 result after cb is edited."""
     metrics = _reset()
 
     @coco.fn
     def app_main() -> None:
-        _declare("A", higher_level(coco.tunnel(_mod().cb), "value1"))
+        _declare("A", higher_level(coco.logic_tracked(_mod().cb), "value1"))
 
     app = coco.App(
-        coco.AppConfig(name="test_tunnel_stale_intermediate", environment=coco_env),
+        coco.AppConfig(
+            name="test_logic_tracked_stale_intermediate", environment=coco_env
+        ),
         app_main,
     )
 
@@ -353,12 +358,12 @@ def test_intermediate_memo_misses_after_callback_edit_under_root_owner() -> None
 
 
 # ============================================================================
-# Case 2 — an untunneled callback created inside H is H's own detail.
+# Case 2 — an unwrapped callback created inside H is H's own detail.
 # ============================================================================
 
 
-def test_untunneled_callback_is_invisible_above_traverse() -> None:
-    """H creates cb2 and passes it to T without tunneling. Editing cb2 changes
+def test_unwrapped_callback_is_invisible_above_traverse() -> None:
+    """H creates cb2 and passes it to T unwrapped. Editing cb2 changes
     nothing above T: O's entry never saw it (H is "self")."""
     metrics = _reset()
 
@@ -367,7 +372,7 @@ def test_untunneled_callback_is_invisible_above_traverse() -> None:
         _declare("A", owner_internal("A", "value1"))
 
     app = coco.App(
-        coco.AppConfig(name="test_untunneled_invisible_above_T", environment=coco_env),
+        coco.AppConfig(name="test_unwrapped_invisible_above_T", environment=coco_env),
         app_main,
     )
 
@@ -381,9 +386,9 @@ def test_untunneled_callback_is_invisible_above_traverse() -> None:
     assert _stored("A") == "cb2_v1: value1"
 
 
-def test_untunneled_callback_leaves_traverse_stale_unless_it_tunnels() -> None:
+def test_unwrapped_callback_leaves_traverse_stale_unless_traverse_wraps_it() -> None:
     """With a root owner, T's own entry is what matters. A plain "self" T
-    misses the edit (documented hole); a T that tunnels the callback in its
+    misses the edit (documented hole); a T that wraps the callback in its
     own frame records it in its own entry and offers nothing upward."""
     metrics = _reset()
 
@@ -392,37 +397,47 @@ def test_untunneled_callback_leaves_traverse_stale_unless_it_tunnels() -> None:
         _declare("A", higher_level_internal_cb2("value1"))
 
     @coco.fn
-    def app_main_self_tunnel() -> None:
-        _declare("B", higher_level_internal_cb2_self_tunnel("value1"))
+    def app_main_traverse_wraps() -> None:
+        _declare("B", higher_level_internal_cb2_traverse_wraps("value1"))
 
     app_plain = coco.App(
-        coco.AppConfig(name="test_untunneled_stale_plain", environment=coco_env),
+        coco.AppConfig(name="test_unwrapped_stale_plain", environment=coco_env),
         app_main_plain,
     )
-    app_self_tunnel = coco.App(
-        coco.AppConfig(name="test_untunneled_stale_self_tunnel", environment=coco_env),
-        app_main_self_tunnel,
+    app_traverse_wraps = coco.App(
+        coco.AppConfig(
+            name="test_unwrapped_stale_traverse_wraps", environment=coco_env
+        ),
+        app_main_traverse_wraps,
     )
 
     mod = _load_module(_V1_PATH)
     app_plain.update_blocking()
     assert metrics.collect() == {"higher_level": 1, "traverse": 1, "cb2": 1}
-    app_self_tunnel.update_blocking()
-    assert metrics.collect() == {"higher_level": 1, "traverse_self_tunnel": 1, "cb2": 1}
+    app_traverse_wraps.update_blocking()
+    assert metrics.collect() == {
+        "higher_level": 1,
+        "traverse_wraps_own_callback": 1,
+        "cb2": 1,
+    }
 
     app_plain.update_blocking()
     assert metrics.collect() == {"higher_level": 1}
-    app_self_tunnel.update_blocking()
+    app_traverse_wraps.update_blocking()
     assert metrics.collect() == {"higher_level": 1}
 
     mod = _load_module(_V3_PATH, old_module=mod)
-    # Hole: T is "self" and nobody tunneled cb2 — T hits with the old callback.
+    # Hole: T is "self" and nobody wrapped cb2 — T hits with the old callback.
     app_plain.update_blocking()
     assert metrics.collect() == {"higher_level": 1}
     assert _stored("A") == "cb2_v1: value1"
-    # T tunneled cb2 in its own frame: its own entry recorded cb2.
-    app_self_tunnel.update_blocking()
-    assert metrics.collect() == {"higher_level": 1, "traverse_self_tunnel": 1, "cb2": 1}
+    # T wrapped cb2 in its own frame: its own entry recorded cb2.
+    app_traverse_wraps.update_blocking()
+    assert metrics.collect() == {
+        "higher_level": 1,
+        "traverse_wraps_own_callback": 1,
+        "cb2": 1,
+    }
     assert _stored("B") == "cb2_v3: value1"
 
 
@@ -432,7 +447,7 @@ def test_untunneled_callback_leaves_traverse_stale_unless_it_tunnels() -> None:
 
 
 def test_two_owners_edit_of_outer_callback_reaches_everything() -> None:
-    """O tunnels cb; H tunnels cb2 to itself; T calls both. Editing cb misses
+    """O wraps cb; H wraps cb2 itself; T calls both. Editing cb misses
     T and O."""
     metrics = _reset()
 
@@ -472,7 +487,7 @@ def test_two_owners_edit_of_outer_callback_reaches_everything() -> None:
 
 
 def test_callback_owned_by_self_layer_reaches_traverse_and_stops_there() -> None:
-    """cb2 is tunneled by H ("self"): T's entry records it, but at H the tag
+    """cb2 is wrapped by H ("self"): T's entry records it, but at H the tag
     resolves and H's mode drops it, so O above sees nothing."""
     metrics = _reset()
 
@@ -482,7 +497,7 @@ def test_callback_owned_by_self_layer_reaches_traverse_and_stops_there() -> None
 
     @coco.fn
     def app_main_root_owner() -> None:
-        _declare("B", higher_level_two(coco.tunnel(_mod().cb), "value1", "12"))
+        _declare("B", higher_level_two(coco.logic_tracked(_mod().cb), "value1", "12"))
 
     app_memo = coco.App(
         coco.AppConfig(name="test_self_owner_stops_memo", environment=coco_env),
@@ -516,13 +531,13 @@ def test_callback_owned_by_self_layer_reaches_traverse_and_stops_there() -> None
 
 
 def test_only_callbacks_that_ran_are_recorded() -> None:
-    """T received two tunneled callbacks but called only fn1. Editing the one
+    """T received two logic-tracked callbacks but called only fn1. Editing the one
     that never ran leaves T a hit; editing the one that ran misses."""
     metrics = _reset()
 
     @coco.fn
     def app_main() -> None:
-        _declare("A", higher_level_two(coco.tunnel(_mod().cb), "value1", "1"))
+        _declare("A", higher_level_two(coco.logic_tracked(_mod().cb), "value1", "1"))
 
     app = coco.App(
         coco.AppConfig(name="test_only_ran_callbacks_recorded", environment=coco_env),
@@ -549,7 +564,7 @@ def test_only_callbacks_that_ran_are_recorded() -> None:
 # ============================================================================
 
 
-def test_tunnel_forwards_through_two_self_layers() -> None:
+def test_logic_tracked_forwards_through_two_self_layers() -> None:
     metrics = _reset()
 
     @coco.fn
@@ -558,7 +573,7 @@ def test_tunnel_forwards_through_two_self_layers() -> None:
 
     @coco.fn
     def app_main_root_owner() -> None:
-        _declare("B", higher_level_outer(coco.tunnel(_mod().cb), "value1"))
+        _declare("B", higher_level_outer(coco.logic_tracked(_mod().cb), "value1"))
 
     app_memo = coco.App(
         coco.AppConfig(name="test_forward_two_layers_memo", environment=coco_env),
@@ -618,7 +633,7 @@ def test_tunnel_forwards_through_two_self_layers() -> None:
 
 
 def test_self_ancestor_above_owner_sees_nothing() -> None:
-    """S (memo, self) -> O (full) which tunnels cb into T. The tag resolves at
+    """S (memo, self) -> O (full) which wraps cb for T. The tag resolves at
     O; S's entry does not depend on cb, so S hits after cb is edited."""
     metrics = _reset()
 
@@ -642,7 +657,7 @@ def test_self_ancestor_above_owner_sees_nothing() -> None:
 
 
 def test_self_owner_records_its_callback_but_offers_nothing_upward() -> None:
-    """O (memo, self) tunnels cb. O's own entry records cb, so an edit to cb
+    """O (memo, self) wraps cb. O's own entry records cb, so an edit to cb
     misses O. A memoized "self" ancestor above O still sees nothing."""
     metrics = _reset()
 
@@ -674,7 +689,7 @@ def test_self_owner_records_its_callback_but_offers_nothing_upward() -> None:
 
 
 def test_mounted_component_on_the_path_records_the_callback() -> None:
-    """P -> O (full, tunnels cb) -> H (self) -> use_mount(T_comp, cb) -> cb.
+    """P -> O (full, wraps cb) -> H (self) -> use_mount(T_comp, cb) -> cb.
     T_comp's component memo records cb (the tagged set is flattened at the
     component boundary); a memoized P records it through the component tree."""
     metrics = _reset()
@@ -728,25 +743,27 @@ def test_mounted_component_on_the_path_records_the_callback() -> None:
 # ============================================================================
 
 
-def test_tunnel_extent_violations_raise() -> None:
+def test_logic_tracked_extent_violations_raise() -> None:
     metrics = _reset()
     escaped: list[Callable[[str], str]] = []
     checked: list[str] = []
 
     @coco.fn
-    def owner_leaks_tunnel(value: str) -> None:
-        escaped.append(coco.tunnel(_mod().cb))
+    def owner_leaks_wrapper(value: str) -> None:
+        escaped.append(coco.logic_tracked(_mod().cb))
 
     @coco.fn
     def app_main() -> None:
-        owner_leaks_tunnel("x")
+        owner_leaks_wrapper("x")
         # The owner's frame has closed; the call site is a sibling, not a descendant.
-        with pytest.raises(RuntimeError, match="after the function that created"):
+        with pytest.raises(RuntimeError, match="after the function that wrapped it"):
             escaped[0]("y")
         checked.append("inside")
 
     app = coco.App(
-        coco.AppConfig(name="test_tunnel_extent_violation", environment=coco_env),
+        coco.AppConfig(
+            name="test_logic_tracked_extent_violation", environment=coco_env
+        ),
         app_main,
     )
     _load_module(_V1_PATH)
@@ -758,18 +775,18 @@ def test_tunnel_extent_violations_raise() -> None:
     with pytest.raises(RuntimeError, match="no active component context"):
         escaped[0]("y")
 
-    # Creating a tunnel needs a frame to own it.
+    # Wrapping needs a frame to own the callback.
     with pytest.raises(RuntimeError, match="No ComponentContext available"):
-        coco.tunnel(_mod().cb)
+        coco.logic_tracked(_mod().cb)
 
 
 # ============================================================================
-# Case 9 — concurrency: gathered tunneled callbacks under one frame.
+# Case 9 — concurrency: gathered logic-tracked callbacks under one frame.
 # ============================================================================
 
 
-def test_gathered_tunneled_callbacks_tag_without_cross_talk() -> None:
-    """O tunnels acb; H tunnels acb2 and gathers two T calls; each T gathers
+def test_gathered_logic_tracked_callbacks_tag_without_cross_talk() -> None:
+    """O wraps acb; H wraps acb2 and gathers two T calls; each T gathers
     acb, acb2, acb. Editing acb misses O and both T entries."""
     metrics = _reset()
 
@@ -778,7 +795,9 @@ def test_gathered_tunneled_callbacks_tag_without_cross_talk() -> None:
         _declare("A", await owner_gather("A", "v"))
 
     app = coco.App(
-        coco.AppConfig(name="test_gather_tunnels_outer_edit", environment=coco_env),
+        coco.AppConfig(
+            name="test_gather_logic_tracked_outer_edit", environment=coco_env
+        ),
         app_main,
     )
     all_ran = {"owner": 1, "higher_level": 1, "traverse_gather": 2, "acb": 4, "acb2": 2}
@@ -804,7 +823,7 @@ def test_gathered_tunneled_callbacks_tag_without_cross_talk() -> None:
 
 
 def test_gathered_callback_owned_by_self_layer_stops_there() -> None:
-    """Editing acb2 (tunneled by "self" H): O's entry is untouched, while both
+    """Editing acb2 (wrapped by "self" H): O's entry is untouched, while both
     T entries recorded it."""
     metrics = _reset()
 
@@ -814,7 +833,7 @@ def test_gathered_callback_owned_by_self_layer_stops_there() -> None:
 
     @coco.fn
     async def app_main_root_owner() -> None:
-        _declare("B", await higher_level_gather(coco.tunnel(_mod().acb), "v"))
+        _declare("B", await higher_level_gather(coco.logic_tracked(_mod().acb), "v"))
 
     app_memo = coco.App(
         coco.AppConfig(name="test_gather_self_owner_memo", environment=coco_env),

@@ -1,7 +1,7 @@
-"""Module v1 for callback-tunnel tests.
+"""Module v1 for ``coco.logic_tracked`` tests.
 
 Only the callbacks live here; the traverse / higher-level / owner functions are
-defined in ``test_callback_tunnel.py`` and never change. Across versions:
+defined in ``test_logic_tracked.py`` and never change. Across versions:
 v2 edits ``cb`` and ``acb``; v3 edits ``cb2`` and ``acb2``. Everything else is
 identical.
 """

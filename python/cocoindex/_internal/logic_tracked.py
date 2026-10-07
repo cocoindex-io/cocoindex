@@ -1,10 +1,12 @@
-"""Callback tunnel for logic change tracking.
+"""``logic_tracked(fn)``: a callback whose logic changes are tracked through
+``logic_tracking="self"`` / ``None`` layers.
 
-``logic_tracking="self"`` / ``None`` hide the logic of everything a function
-calls, including callbacks it merely received. ``tunnel(fn)`` lets the owner of
-a callback (the frame that hands it down, typically a library's entry point)
-track the callback's logic into every memo entry between the call site and the
-owner, regardless of their modes.
+Those modes hide the logic of everything a function calls, including callbacks
+it merely received. ``logic_tracked(fn)`` lets the owner of a callback (the
+frame that hands it down, typically a library's entry point) have the
+callback's logic recorded in every memo entry between the call site and the
+owner, regardless of their modes. The engine calls the mechanism a "callback
+tunnel": the deps ride through frames that would otherwise drop them.
 
 See ``specs/logic_change_detection/callback_tunnel.md``.
 """
@@ -38,11 +40,11 @@ def _is_async_callable(fn: Callable[..., Any]) -> bool:
     )
 
 
-class _Tunnel:
-    """Shared half of the two tunnel wrappers.
+class _LogicTracked:
+    """Shared half of the two wrappers.
 
     Transparent for memoization keys: the key is the wrapped callable's, so a
-    tunneled callback keys the same memo entries as the bare callback would.
+    logic-tracked callback keys the same memo entries as the bare one would.
     """
 
     __slots__ = ("_fn", "_owner_fn_ctx")
@@ -60,7 +62,7 @@ class _Tunnel:
         return self._fn
 
     def __repr__(self) -> str:
-        return f"coco.tunnel({self._fn!r})"
+        return f"coco.logic_tracked({self._fn!r})"
 
     def _enter(
         self,
@@ -68,21 +70,21 @@ class _Tunnel:
         """Open the collector frame under the dynamic parent.
 
         Raises on an extent violation rather than running the callback
-        untracked: a silently untracked callback is the trap the tunnel exists
+        untracked: a silently untracked callback is the trap this API exists
         to remove.
         """
         parent_ctx = _context_var.get(None)
         if parent_ctx is None:
             raise RuntimeError(
                 f"{self!r} was called with no active component context. A "
-                "tunneled callback must run inside the component that created "
-                "it (use ComponentContext.attach() in worker threads)."
+                "logic-tracked callback must run inside the component that "
+                "wrapped it (use ComponentContext.attach() in worker threads)."
             )
         if self._owner_fn_ctx.closed:
             raise RuntimeError(
-                f"{self!r} was called after the function that created the tunnel "
-                "returned. A tunneled callback is only valid inside the dynamic "
-                "extent of that call; create the tunnel in a frame that encloses "
+                f"{self!r} was called after the function that wrapped it "
+                "returned. A logic-tracked callback is only valid inside the "
+                "dynamic extent of that call; wrap it in a frame that encloses "
                 "every call site."
             )
         # The collector propagates everything, so its fn_logic_deps is exactly
@@ -101,7 +103,7 @@ class _Tunnel:
         parent_ctx._core_fn_call_ctx.join_tunneled_child(collector, self._owner_fn_ctx)
 
 
-class _SyncTunnel(_Tunnel):
+class _SyncLogicTracked(_LogicTracked):
     __slots__ = ()
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -112,7 +114,7 @@ class _SyncTunnel(_Tunnel):
             self._exit(parent_ctx, collector, tok)
 
 
-class _AsyncTunnel(_Tunnel):
+class _AsyncLogicTracked(_LogicTracked):
     __slots__ = ()
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -124,17 +126,18 @@ class _AsyncTunnel(_Tunnel):
 
 
 @overload
-def tunnel(  # type: ignore[overload-overlap]
+def logic_tracked(  # type: ignore[overload-overlap]
     fn: Callable[P, Awaitable[R]],
 ) -> Callable[P, Coroutine[Any, Any, R]]: ...
 @overload
-def tunnel(fn: Callable[P, R]) -> Callable[P, R]: ...
-def tunnel(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Track a callback's logic through ``logic_tracking="self"`` / ``None`` layers.
+def logic_tracked(fn: Callable[P, R]) -> Callable[P, R]: ...
+def logic_tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Return ``fn`` with its logic tracked through ``logic_tracking="self"`` /
+    ``None`` layers.
 
     Call this in the function that hands the callback down (the **owner**):
     typically the library entry point that receives it, or your own code when
-    the library does not tunnel. The returned wrapper runs ``fn`` as usual;
+    the library does not. The returned wrapper runs ``fn`` as usual;
     afterwards the logic ``fn`` offered (its own fingerprint and its callees',
     per ``fn``'s own ``logic_tracking``) is recorded in **every** memo entry
     between the call site and the owner's frame, regardless of their
@@ -155,7 +158,7 @@ def tunnel(fn: Callable[..., Any]) -> Callable[..., Any]:
 
         @coco.fn
         async def walk(repo: Repo, visitor: RepoVisitor) -> None:
-            visit_file = coco.tunnel(visitor.visit_file)  # walk owns it
+            visit_file = coco.logic_tracked(visitor.visit_file)  # walk owns it
             for file in repo.files():
                 await coco.use_mount(
                     coco.component_subpath(file.path), accept, file, visit_file
@@ -169,5 +172,5 @@ def tunnel(fn: Callable[..., Any]) -> Callable[..., Any]:
     """
     owner_fn_ctx = get_context_from_ctx()._core_fn_call_ctx
     if _is_async_callable(fn):
-        return _AsyncTunnel(fn, owner_fn_ctx)
-    return _SyncTunnel(fn, owner_fn_ctx)
+        return _AsyncLogicTracked(fn, owner_fn_ctx)
+    return _SyncLogicTracked(fn, owner_fn_ctx)
