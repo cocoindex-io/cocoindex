@@ -11,9 +11,9 @@ Roles (names from the spec):
   callbacks.
 - ``O`` — the owner: a ``"full"`` frame that creates the callback and wraps it
   with ``coco.logic_tracked``. Either a memoized module-level ``owner*``
-  function (so its own entry is
-  observable) or the test's ``app_main`` (a *root owner*, whose body always
-  runs, which isolates what the entries below it recorded).
+  function (so its own entry is observable) or the test's ``app_main`` (a
+  *root owner*, whose body always runs, which isolates what the entries below
+  it recorded).
 
 T, H and O are defined here and never change. Only the callbacks (``cb``,
 ``cb2``, ``acb``, ``acb2``) live in the versioned fixture modules: v2 edits
@@ -21,7 +21,9 @@ T, H and O are defined here and never change. Only the callbacks (``cb``,
 """
 
 import asyncio
+import functools
 import gc
+import inspect
 import pathlib
 import sys
 from collections.abc import Awaitable, Callable, Iterator
@@ -778,6 +780,59 @@ def test_logic_tracked_extent_violations_raise() -> None:
     # Wrapping needs a frame to own the callback.
     with pytest.raises(RuntimeError, match="No ComponentContext available"):
         coco.logic_tracked(_mod().cb)
+
+
+def test_sync_callable_returning_awaitable_is_rejected() -> None:
+    """A plain function that returns a coroutine would run its body after the
+    collector frame closed, untracked. The wrapper refuses it instead."""
+    metrics = _reset()
+    checked: list[str] = []
+
+    @coco.fn
+    async def app_main() -> None:
+        acb: Callable[[str], Awaitable[str]] = _mod().acb
+
+        def make(s: str) -> Awaitable[str]:
+            return acb(s)
+
+        wrapped = coco.logic_tracked(make)
+        with pytest.raises(TypeError, match="returned an awaitable"):
+            _ = wrapped("x")
+        checked.append("rejected")
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_logic_tracked_rejects_sync_awaitable", environment=coco_env
+        ),
+        app_main,
+    )
+    _load_module(_V1_PATH)
+    app.update_blocking()
+    assert checked == ["rejected"]
+    assert metrics.collect() == {}  # the coroutine was closed, never run
+
+
+def test_partial_of_async_callback_gets_an_async_wrapper() -> None:
+    """A ``functools.partial`` of an async ``@coco.fn`` is still recognized as
+    a coroutine function, so its body runs inside the tracked frame."""
+    metrics = _reset()
+
+    @coco.fn
+    async def app_main() -> None:
+        acb: Callable[[str], Awaitable[str]] = _mod().acb
+        wrapped = coco.logic_tracked(functools.partial(acb, "p"))
+        coro = wrapped()
+        assert inspect.iscoroutine(coro)
+        _declare("A", await coro)
+
+    app = coco.App(
+        coco.AppConfig(name="test_logic_tracked_partial_async", environment=coco_env),
+        app_main,
+    )
+    _load_module(_V1_PATH)
+    app.update_blocking()
+    assert metrics.collect() == {"acb": 1}
+    assert _stored("A") == "acb_v1: p"
 
 
 # ============================================================================

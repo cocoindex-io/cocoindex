@@ -13,28 +13,33 @@ See ``specs/logic_change_detection/callback_tunnel.md``.
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import inspect
-from contextvars import Token
 from typing import (
     Any,
     Awaitable,
     Callable,
     Coroutine,
+    Iterator,
     ParamSpec,
     TypeVar,
     overload,
 )
 
 from . import core
-from .component_ctx import ComponentContext, _context_var, get_context_from_ctx
+from .component_ctx import _context_var, get_context_from_ctx
 
 P = ParamSpec("P")
 R = TypeVar("R")
 
 
 def _is_async_callable(fn: Callable[..., Any]) -> bool:
-    # Covers plain coroutine functions (and partials of them) as well as
-    # callable objects with an ``async def __call__`` such as ``AsyncFunction``.
+    # `inspect` unwraps partials of plain functions only; unwrap them here so a
+    # partial of a callable object with an ``async def __call__`` (such as an
+    # ``AsyncFunction``) is recognized too.
+    while isinstance(fn, functools.partial):
+        fn = fn.func
     return inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(
         getattr(fn, "__call__", None)
     )
@@ -64,14 +69,13 @@ class _LogicTracked:
     def __repr__(self) -> str:
         return f"coco.logic_tracked({self._fn!r})"
 
-    def _enter(
-        self,
-    ) -> tuple[ComponentContext, core.FnCallContext, Token[ComponentContext]]:
-        """Open the collector frame under the dynamic parent.
+    @contextlib.contextmanager
+    def _collecting(self) -> Iterator[None]:
+        """Run the body under a fresh collector frame; on exit hand what it
+        gathered to the dynamic parent, tagged for the owner.
 
-        Raises on an extent violation rather than running the callback
-        untracked: a silently untracked callback is the trap this API exists
-        to remove.
+        Raises on an extent violation rather than running the body untracked:
+        a silently untracked callback is the trap this API exists to remove.
         """
         parent_ctx = _context_var.get(None)
         if parent_ctx is None:
@@ -90,39 +94,45 @@ class _LogicTracked:
         # The collector propagates everything, so its fn_logic_deps is exactly
         # what the callback offers under the callback's own logic_tracking.
         collector = core.FnCallContext(propagate_children_fn_logic=True)
-        ctx = parent_ctx._with_fn_call_ctx(collector, in_memo_fn=parent_ctx._in_memo_fn)
-        return parent_ctx, collector, _context_var.set(ctx)
-
-    def _exit(
-        self,
-        parent_ctx: ComponentContext,
-        collector: core.FnCallContext,
-        tok: Token[ComponentContext],
-    ) -> None:
-        _context_var.reset(tok)
-        parent_ctx._core_fn_call_ctx.join_tunneled_child(collector, self._owner_fn_ctx)
+        tok = _context_var.set(
+            parent_ctx._with_fn_call_ctx(collector, in_memo_fn=parent_ctx._in_memo_fn)
+        )
+        try:
+            yield
+        finally:
+            _context_var.reset(tok)
+            parent_ctx._core_fn_call_ctx.join_tunneled_child(
+                collector, self._owner_fn_ctx
+            )
 
 
 class _SyncLogicTracked(_LogicTracked):
     __slots__ = ()
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        parent_ctx, collector, tok = self._enter()
-        try:
-            return self._fn(*args, **kwargs)
-        finally:
-            self._exit(parent_ctx, collector, tok)
+        with self._collecting():
+            result = self._fn(*args, **kwargs)
+        if inspect.isawaitable(result):
+            # A plain function that returns a coroutine would run its body
+            # only when awaited, after the collector frame above has closed:
+            # the callback's logic would be silently untracked.
+            if inspect.iscoroutine(result):
+                result.close()
+            raise TypeError(
+                f"{self!r} wraps a plain callable that returned an awaitable, "
+                "whose body would run after the tracked frame closed. Wrap the "
+                "coroutine function itself (an `async def`, or an object whose "
+                "`__call__` is one) instead."
+            )
+        return result
 
 
 class _AsyncLogicTracked(_LogicTracked):
     __slots__ = ()
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        parent_ctx, collector, tok = self._enter()
-        try:
+        with self._collecting():
             return await self._fn(*args, **kwargs)
-        finally:
-            self._exit(parent_ctx, collector, tok)
 
 
 @overload
@@ -152,6 +162,10 @@ def logic_tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
       after the owner returned raises ``RuntimeError``; mount the components
       that call it with ``use_mount``, or ``await handle.ready()`` inside the
       owner.
+    - A coroutine function (or an object whose ``__call__`` is one) gets an
+      async wrapper; anything else a sync one. A plain callable that merely
+      *returns* an awaitable is rejected with ``TypeError`` when called, since
+      its body would run after the tracked frame closed.
     - The wrapper is transparent for memoization keys (it keys as ``fn``).
 
     Example (library entry point)::
