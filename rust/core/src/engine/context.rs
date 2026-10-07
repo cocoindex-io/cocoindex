@@ -1125,7 +1125,8 @@ pub struct FnCallContextInner {
     /// See [`FnCallContext::join_tunneled_child`].
     pub tunneled_fn_logic_deps: HashMap<FnFrameId, HashSet<Fingerprint>>,
     /// Logic fingerprints recorded into this frame's memo entry only, never
-    /// offered to the parent. See [`FnCallContext::join_recorded_child`].
+    /// offered to the parent: tunneled deps that resolved at this frame as
+    /// their owner while its `propagate_children_fn_logic` is false.
     pub entry_only_fn_logic_deps: HashSet<Fingerprint>,
 }
 
@@ -1209,8 +1210,9 @@ impl FnCallContext {
     /// What the callback offered (the collector's `fn_logic_deps`) is addressed
     /// to `owner`, the frame that created the tunnel, and rides upward tagged
     /// until it gets there — through frames that would otherwise drop it. If
-    /// this frame *is* the owner, it is resolved right here under this frame's
-    /// flag. Everything else the collector gathered merges as for `join_child`.
+    /// this frame *is* the owner, it is resolved right here: recorded in this
+    /// frame's entry, and offered upward only under this frame's flag.
+    /// Everything else the collector gathered merges as for `join_child`.
     pub fn join_tunneled_child(&self, child_fn_ctx: &FnCallContext, owner: FnFrameId) {
         let mut child_inner = child_fn_ctx.update(std::mem::take);
         child_fn_ctx.close();
@@ -1220,21 +1222,6 @@ impl FnCallContext {
             .entry(owner)
             .or_default()
             .extend(offered);
-        self.merge_child_inner(child_inner);
-    }
-
-    /// Join a record-only collector frame.
-    ///
-    /// What its callees offered is recorded into this frame's own memo entry
-    /// but not offered to this frame's parent. When this frame propagates
-    /// children's logic anyway, this is a plain `join_child`.
-    pub fn join_recorded_child(&self, child_fn_ctx: &FnCallContext) {
-        let mut child_inner = child_fn_ctx.update(std::mem::take);
-        child_fn_ctx.close();
-        if !self.propagate_children_fn_logic {
-            let offered = std::mem::take(&mut child_inner.fn_logic_deps);
-            self.update(|inner| inner.entry_only_fn_logic_deps.extend(offered));
-        }
         self.merge_child_inner(child_inner);
     }
 
@@ -1259,12 +1246,14 @@ impl FnCallContext {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
             }
             // Tunneled deps ride through every frame until they reach the
-            // owner that created the tunnel; there they become ordinary child
-            // deps and this frame's flag applies.
+            // owner that created the tunnel. The owner's entry always records
+            // them; its flag only decides whether they are offered upward.
             for (owner, fps) in child_inner.tunneled_fn_logic_deps {
                 if owner == self.id {
                     if self.propagate_children_fn_logic {
                         inner.fn_logic_deps.extend(fps);
+                    } else {
+                        inner.entry_only_fn_logic_deps.extend(fps);
                     }
                 } else {
                     inner
@@ -1699,13 +1688,14 @@ mod fn_call_context_tests {
     }
 
     #[test]
-    fn tunneled_deps_are_dropped_by_a_self_owner_and_invisible_above_it() {
+    fn self_owner_records_in_its_entry_and_offers_nothing_upward() {
         let above = FnCallContext::new(true);
         let owner = FnCallContext::new(false);
         let t = FnCallContext::new(false);
         tunneled_call(&t, &owner, &[fp("cb")]);
         owner.join_child(&t);
-        assert!(entry_logic_deps(&owner).is_empty());
+        assert_eq!(entry_logic_deps(&owner), [fp("cb")].into());
+        assert!(fn_logic_deps(&owner).is_empty());
         above.join_child(&owner);
         assert!(entry_logic_deps(&above).is_empty());
     }
@@ -1723,14 +1713,17 @@ mod fn_call_context_tests {
     }
 
     #[test]
-    fn tunneled_call_directly_in_the_owner_frame_is_an_ordinary_callee() {
+    fn tunneled_call_directly_in_the_owner_frame_resolves_at_once() {
         let full_owner = FnCallContext::new(true);
         tunneled_call(&full_owner, &full_owner, &[fp("cb")]);
         assert_eq!(fn_logic_deps(&full_owner), [fp("cb")].into());
 
+        let parent = FnCallContext::new(true);
         let self_owner = FnCallContext::new(false);
         tunneled_call(&self_owner, &self_owner, &[fp("cb")]);
-        assert!(entry_logic_deps(&self_owner).is_empty());
+        assert_eq!(entry_logic_deps(&self_owner), [fp("cb")].into());
+        parent.join_child(&self_owner);
+        assert!(entry_logic_deps(&parent).is_empty());
     }
 
     #[test]
@@ -1742,33 +1735,11 @@ mod fn_call_context_tests {
         tunneled_call(&t, &h, &[fp("cb2")]);
         assert_eq!(entry_logic_deps(&t), [fp("cb1"), fp("cb2")].into());
         h.join_child(&t);
-        // cb2 resolves at H and is dropped (H is "self"); cb1 rides on.
-        assert_eq!(entry_logic_deps(&h), [fp("cb1")].into());
+        // cb2 resolves at H: recorded in H's entry, not offered (H is "self");
+        // cb1 rides on.
+        assert_eq!(entry_logic_deps(&h), [fp("cb1"), fp("cb2")].into());
         o.join_child(&h);
         assert_eq!(fn_logic_deps(&o), [fp("cb1")].into());
-    }
-
-    #[test]
-    fn recorded_deps_stay_in_the_recording_frames_entry() {
-        let parent = FnCallContext::new(true);
-        let t = FnCallContext::new(false);
-        t.add_fn_logic_dep(fp("T"));
-        let collector = FnCallContext::new(true);
-        collector.add_fn_logic_dep(fp("cb"));
-        t.join_recorded_child(&collector);
-        assert_eq!(entry_logic_deps(&t), [fp("T"), fp("cb")].into());
-        parent.join_child(&t);
-        assert_eq!(fn_logic_deps(&parent), [fp("T")].into());
-    }
-
-    #[test]
-    fn recorded_join_is_a_plain_join_under_full() {
-        let t = FnCallContext::new(true);
-        let collector = FnCallContext::new(true);
-        collector.add_fn_logic_dep(fp("cb"));
-        t.join_recorded_child(&collector);
-        assert_eq!(fn_logic_deps(&t), [fp("cb")].into());
-        assert!(t.update(|inner| inner.entry_only_fn_logic_deps.is_empty()));
     }
 
     #[test]
@@ -1777,13 +1748,11 @@ mod fn_call_context_tests {
         let a = FnCallContext::new(true);
         let b = FnCallContext::new(true);
         let c = FnCallContext::new(true);
-        let d = FnCallContext::new(true);
         assert!(!a.is_closed());
         parent.join_child(&a);
         parent.join_child_shared(&b);
         parent.join_tunneled_child(&c, parent.id());
-        parent.join_recorded_child(&d);
-        assert!([&a, &b, &c, &d].iter().all(|ctx| ctx.is_closed()));
+        assert!([&a, &b, &c].iter().all(|ctx| ctx.is_closed()));
         assert!(!parent.is_closed());
     }
 }

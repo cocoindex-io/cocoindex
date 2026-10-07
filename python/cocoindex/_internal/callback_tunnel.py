@@ -4,15 +4,13 @@
 calls, including callbacks it merely received. ``tunnel(fn)`` lets the owner of
 a callback (the frame that hands it down, typically a library's entry point)
 track the callback's logic into every memo entry between the call site and the
-owner, regardless of their modes. ``record_callee_logic()`` lets a ``"self"``
-function record, in its own entry, the logic of a callback it calls itself.
+owner, regardless of their modes.
 
 See ``specs/logic_change_detection/callback_tunnel.md``.
 """
 
 from __future__ import annotations
 
-import contextlib
 import inspect
 from contextvars import Token
 from typing import (
@@ -20,7 +18,6 @@ from typing import (
     Awaitable,
     Callable,
     Coroutine,
-    Generator,
     ParamSpec,
     TypeVar,
     overload,
@@ -141,9 +138,9 @@ def tunnel(fn: Callable[..., Any]) -> Callable[..., Any]:
     afterwards the logic ``fn`` offered (its own fingerprint and its callees',
     per ``fn``'s own ``logic_tracking``) is recorded in **every** memo entry
     between the call site and the owner's frame, regardless of their
-    ``logic_tracking``. At the owner the deps become ordinary child deps and
-    the owner's own mode applies: ``"full"`` offers them to its callers,
-    ``"self"`` stops there.
+    ``logic_tracking``. The owner's own entry records them too; the owner's
+    mode only decides whether they are offered to its callers (``"full"``) or
+    stop there (``"self"`` / ``None``).
 
     - Decorate the callback with ``@coco.fn`` for its own code to be tracked;
       an undecorated callable contributes only the ``@coco.fn`` functions it
@@ -153,9 +150,6 @@ def tunnel(fn: Callable[..., Any]) -> Callable[..., Any]:
       that call it with ``use_mount``, or ``await handle.ready()`` inside the
       owner.
     - The wrapper is transparent for memoization keys (it keys as ``fn``).
-    - A ``"self"`` function cannot tunnel a callback it calls *itself* into its
-      own entry (the tag resolves in the same frame); use
-      :func:`record_callee_logic` for that.
 
     Example (library entry point)::
 
@@ -177,34 +171,3 @@ def tunnel(fn: Callable[..., Any]) -> Callable[..., Any]:
     if _is_async_callable(fn):
         return _AsyncTunnel(fn, owner_fn_ctx)
     return _SyncTunnel(fn, owner_fn_ctx)
-
-
-@contextlib.contextmanager
-def record_callee_logic() -> Generator[None, None, None]:
-    """Record the logic of the callees in this block into the enclosing
-    function's own memo entry, whatever its ``logic_tracking``.
-
-    For a ``"self"`` function that calls a callback *itself*: it cannot
-    :func:`tunnel` the callback into its own entry (the tag would resolve in
-    the same frame and its mode would drop it), so it records the callees'
-    logic here instead. Nothing extra is offered to the enclosing function's
-    callers; under ``logic_tracking="full"`` the block is a no-op. Use
-    :func:`tunnel` for callbacks you pass down and this for callbacks you call.
-
-    A plain (synchronous) ``with`` block — like ``component_subpath`` — even
-    though the body typically ``await``s::
-
-        @coco.fn(memo=True, logic_tracking="self", version=1)
-        async def accept(file: File, visit_file: Callable[[File], Awaitable[None]]) -> None:
-            with coco.record_callee_logic():
-                await visit_file(file)
-    """
-    parent_ctx = get_context_from_ctx()
-    collector = core.FnCallContext(propagate_children_fn_logic=True)
-    ctx = parent_ctx._with_fn_call_ctx(collector, in_memo_fn=parent_ctx._in_memo_fn)
-    tok = _context_var.set(ctx)
-    try:
-        yield
-    finally:
-        _context_var.reset(tok)
-        parent_ctx._core_fn_call_ctx.join_recorded_child(collector)

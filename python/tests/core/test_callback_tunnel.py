@@ -1,5 +1,4 @@
-"""End-to-end tests for the callback tunnel (``coco.tunnel``) and the
-record-only marker (``coco.record_callee_logic``).
+"""End-to-end tests for the callback tunnel (``coco.tunnel``).
 
 Case numbers refer to the matrix in
 ``specs/logic_change_detection/callback_tunnel.md``.
@@ -105,11 +104,11 @@ def traverse(fn: Callable[[str], str], value: str) -> str:
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
-def traverse_recording(fn: Callable[[str], str], value: str) -> str:
-    """T that records its callback's logic in its own entry (library marker)."""
-    _m().increment("traverse_recording")
-    with coco.record_callee_logic():
-        return fn(value)
+def traverse_self_tunnel(fn: Callable[[str], str], value: str) -> str:
+    """T that is itself the owner: a "self" entry point calling an untunneled
+    callback records it in its own entry by tunneling in its own frame."""
+    _m().increment("traverse_self_tunnel")
+    return coco.tunnel(fn)(value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
@@ -177,10 +176,10 @@ def higher_level_internal_cb2(value: str) -> str:
 
 
 @coco.fn(logic_tracking="self", version=1)
-def higher_level_internal_cb2_recording(value: str) -> str:
-    """Same, but T records its callees' logic itself."""
+def higher_level_internal_cb2_self_tunnel(value: str) -> str:
+    """Same, but T tunnels the callback in its own frame."""
     _m().increment("higher_level")
-    return traverse_recording(_mod().cb2, value)
+    return traverse_self_tunnel(_mod().cb2, value)
 
 
 @coco.fn(logic_tracking="self", version=1)
@@ -242,6 +241,13 @@ def owner_plain(value: str) -> str:
     """A "full" owner that is not memoized (so a "self" ancestor is observable)."""
     _m().increment("owner")
     return traverse(coco.tunnel(_mod().cb), value)
+
+
+@coco.fn(memo=True, logic_tracking="self", version=1)
+def owner_self_memo(key: str, value: str) -> str:
+    """A memoized "self" owner: its own entry records what it tunneled."""
+    _m().increment("owner")
+    return higher_level(coco.tunnel(_mod().cb), value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
@@ -375,10 +381,10 @@ def test_untunneled_callback_is_invisible_above_traverse() -> None:
     assert _stored("A") == "cb2_v1: value1"
 
 
-def test_untunneled_callback_leaves_traverse_stale_unless_recorded() -> None:
+def test_untunneled_callback_leaves_traverse_stale_unless_it_tunnels() -> None:
     """With a root owner, T's own entry is what matters. A plain "self" T
-    misses the edit (documented hole); a T using ``record_callee_logic`` does
-    not."""
+    misses the edit (documented hole); a T that tunnels the callback in its
+    own frame records it in its own entry and offers nothing upward."""
     metrics = _reset()
 
     @coco.fn
@@ -386,27 +392,27 @@ def test_untunneled_callback_leaves_traverse_stale_unless_recorded() -> None:
         _declare("A", higher_level_internal_cb2("value1"))
 
     @coco.fn
-    def app_main_recording() -> None:
-        _declare("B", higher_level_internal_cb2_recording("value1"))
+    def app_main_self_tunnel() -> None:
+        _declare("B", higher_level_internal_cb2_self_tunnel("value1"))
 
     app_plain = coco.App(
         coco.AppConfig(name="test_untunneled_stale_plain", environment=coco_env),
         app_main_plain,
     )
-    app_recording = coco.App(
-        coco.AppConfig(name="test_untunneled_stale_recording", environment=coco_env),
-        app_main_recording,
+    app_self_tunnel = coco.App(
+        coco.AppConfig(name="test_untunneled_stale_self_tunnel", environment=coco_env),
+        app_main_self_tunnel,
     )
 
     mod = _load_module(_V1_PATH)
     app_plain.update_blocking()
     assert metrics.collect() == {"higher_level": 1, "traverse": 1, "cb2": 1}
-    app_recording.update_blocking()
-    assert metrics.collect() == {"higher_level": 1, "traverse_recording": 1, "cb2": 1}
+    app_self_tunnel.update_blocking()
+    assert metrics.collect() == {"higher_level": 1, "traverse_self_tunnel": 1, "cb2": 1}
 
     app_plain.update_blocking()
     assert metrics.collect() == {"higher_level": 1}
-    app_recording.update_blocking()
+    app_self_tunnel.update_blocking()
     assert metrics.collect() == {"higher_level": 1}
 
     mod = _load_module(_V3_PATH, old_module=mod)
@@ -414,9 +420,9 @@ def test_untunneled_callback_leaves_traverse_stale_unless_recorded() -> None:
     app_plain.update_blocking()
     assert metrics.collect() == {"higher_level": 1}
     assert _stored("A") == "cb2_v1: value1"
-    # Closed by the marker: T's own entry recorded cb2.
-    app_recording.update_blocking()
-    assert metrics.collect() == {"higher_level": 1, "traverse_recording": 1, "cb2": 1}
+    # T tunneled cb2 in its own frame: its own entry recorded cb2.
+    app_self_tunnel.update_blocking()
+    assert metrics.collect() == {"higher_level": 1, "traverse_self_tunnel": 1, "cb2": 1}
     assert _stored("B") == "cb2_v3: value1"
 
 
@@ -633,6 +639,33 @@ def test_self_ancestor_above_owner_sees_nothing() -> None:
     app.update_blocking()
     assert metrics.collect() == {}
     assert _stored("A") == "cb_v1: value1"
+
+
+def test_self_owner_records_its_callback_but_offers_nothing_upward() -> None:
+    """O (memo, self) tunnels cb. O's own entry records cb, so an edit to cb
+    misses O. A memoized "self" ancestor above O still sees nothing."""
+    metrics = _reset()
+
+    @coco.fn
+    def app_main() -> None:
+        _declare("A", owner_self_memo("A", "value1"))
+
+    app = coco.App(
+        coco.AppConfig(name="test_self_owner_records", environment=coco_env),
+        app_main,
+    )
+
+    mod = _load_module(_V1_PATH)
+    app.update_blocking()
+    assert metrics.collect() == {"owner": 1, "higher_level": 1, "traverse": 1, "cb": 1}
+
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    mod = _load_module(_V2_PATH, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {"owner": 1, "higher_level": 1, "traverse": 1, "cb": 1}
+    assert _stored("A") == "cb_v2: value1"
 
 
 # ============================================================================

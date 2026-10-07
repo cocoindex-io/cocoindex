@@ -44,7 +44,7 @@ from .component_ctx import (
 
 from .stable_path import StableKey
 from .batching import RetryWithSmallerBatch
-from .callback_tunnel import record_callee_logic, tunnel
+from .callback_tunnel import tunnel
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -911,7 +911,6 @@ __all__ = [
     "fn",
     "LogicTracking",
     "tunnel",
-    "record_callee_logic",
     "timeout",
     "check_cancellation",
     "DeadlineExceededError",

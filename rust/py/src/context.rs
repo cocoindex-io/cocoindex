@@ -176,13 +176,6 @@ impl PyFnCallContext {
         Ok(())
     }
 
-    /// Join a record-only collector frame; what its callees offered goes into
-    /// this frame's own memo entry only. See `FnCallContext::join_recorded_child`.
-    pub fn join_recorded_child(&self, child_fn_ctx: &PyFnCallContext) -> PyResult<()> {
-        self.0.join_recorded_child(&child_fn_ctx.0);
-        Ok(())
-    }
-
     /// Whether this frame has been joined into its parent or component, i.e.
     /// its call has returned. A tunnel created in a closed frame is invalid.
     #[getter]

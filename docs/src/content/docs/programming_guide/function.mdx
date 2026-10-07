@@ -129,7 +129,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). Two more tools, [`coco.tunnel` and `coco.record_callee_logic`](#callbacks-tunnel-and-record_callee_logic), are for callbacks that cross a `"self"` boundary.
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). A fourth tool, [`coco.tunnel`](#callbacks-tunnel), is for callbacks that cross a `"self"` boundary.
 
 #### `logic_tracking`
 
@@ -189,13 +189,13 @@ The value is canonicalized through the [memoization-key pipeline](../advanced_to
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
-#### Callbacks: `tunnel` and `record_callee_logic`
+#### Callbacks: `tunnel`
 
 `logic_tracking` is per function, so `"self"` hides the logic of *everything* a function calls — including callbacks it received as arguments. A library whose `accept` is `logic_tracking="self"` therefore hides the user's `visit_file`: an edit to `visit_file` invalidates nothing, even though it is the user's input, not the library's implementation detail.
 
-Two functions let a library close this gap. Both are library-side; the user only puts `@coco.fn` on the callback.
+`coco.tunnel(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback.
 
-**`coco.tunnel(fn)` — at the entry point that hands a callback down.** The function that calls `tunnel` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame, whatever their `logic_tracking`. At the owner the owner's own mode applies: with `"full"` (the default) it offers the callback's logic to its callers like any other dependency; with `"self"` it stops there.
+Call it at the entry point that hands a callback down. The function that calls `tunnel` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame — the owner's own entry included — whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
 
 ```python
 # Library
@@ -224,20 +224,9 @@ async def app_main(repo: Repo) -> None:
     await walk(repo, MyVisitor())
 ```
 
-The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees the tunnel.
+The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees the tunnel. `accept` needs no code of its own: the wrapper it receives already carries the owner.
 
-**`coco.record_callee_logic()` — around a callback your `"self"` function calls itself.** A `"self"` function cannot tunnel its own callee into its own entry: the tag resolves in the same frame and the mode drops it. The context manager records the callees' logic in the enclosing function's **own** memo entry, offers nothing extra upward, and is a no-op under `"full"`.
-
-```python
-@coco.fn(memo=True, logic_tracking="self", version=1)
-async def accept(file: File, visit_file: Callable[[File], Awaitable[None]]) -> None:
-    with coco.record_callee_logic():
-        await visit_file(file)
-```
-
-Use `tunnel` for callbacks you pass down and `record_callee_logic` for callbacks you call. With both, a library is covered whether a callback is forwarded or called directly.
-
-**When a library does neither**, tunnel in your own code. Your function becomes the owner:
+**When a library does not tunnel**, tunnel in your own code. Your function becomes the owner:
 
 ```python
 @coco.fn(memo=True)
@@ -250,7 +239,6 @@ Rules, for whoever calls `tunnel`:
 - Decorate the callback with `@coco.fn` for its own code to be tracked. An undecorated callable contributes only the `@coco.fn` functions it calls, as always.
 - The wrapper is valid only while the owner's call is running. A call after the owner has returned raises `RuntimeError` instead of silently running untracked. Mount the components that call it with `use_mount`, or `await handle.ready()` inside the owner.
 - The wrapper is transparent for memoization keys: passing `tunnel(fn)` where `fn` was passed before keys the same callback (the key changes once, when the tunnel is adopted).
-- If the owner itself is memoized with `"self"`, its own entry still follows its mode.
 
 #### Common patterns
 
@@ -309,7 +297,7 @@ Conversely, if a memo is hitting when you expect invalidation, common causes are
 - A logic change in a helper that is **not** decorated with `@coco.fn`. Add `@coco.fn` to it (no `memo=` needed) so its logic participates in propagation — see [Common patterns](#common-patterns).
 - A `deps` value that you changed at runtime: `deps` is [snapshotted at decoration time](#deps), so per-instance or per-request values must be passed as regular arguments instead.
 - The function uses [`logic_tracking=None`](#logic_tracking), which opts it out of code-change detection entirely.
-- The change is in a callback that passes through a `logic_tracking="self"` function that neither tunnels nor records it. See [Callbacks](#callbacks-tunnel-and-record_callee_logic).
+- The change is in a callback that passes through a `logic_tracking="self"` function and nobody tunneled it. See [Callbacks](#callbacks-tunnel).
 
 ### Customizing data fingerprinting
 
