@@ -205,14 +205,11 @@ app = coco.App(
 If you need to access context values outside of CocoIndex processing components — for example, in query/serving logic that shares resources with your indexing pipeline — use `env.get_context()`:
 
 ```python
-# Sync API
-db = coco.default_env().get_context(PG_DB)
+env = await coco.default_env()
+db = env.get_context(PG_DB)
 ```
 
-```python
-# Async API
-db = (await coco.default_env()).get_context(PG_DB)
-```
+`default_env()` is async. From synchronous code, start the environment with `coco.start_blocking()` and then read the value with `asyncio.run(coco.default_env()).get_context(PG_DB)`, or keep the pool yourself outside the lifespan (see the query section of `examples/text_embedding/main.py`).
 
 This is useful when your application runs both indexing and serving in the same process and you want to initialize shared resources (like database connection pools or configuration) once in the lifespan.
 

@@ -1,9 +1,10 @@
 """
 Persistent memoization fingerprinting (implementation).
 
-This module implements the Python-side canonicalization described in
-`docs/docs/dev/memo_key.md`, and relies on a single Rust call to hash the final
-canonical form into a fixed-size fingerprint.
+This module implements the Python-side canonicalization behind memoization
+keys (user-facing behavior: docs/src/content/docs/advanced_topics/memoization_keys.mdx),
+and relies on a single Rust call to hash the final canonical form into a
+fixed-size fingerprint.
 """
 
 from __future__ import annotations
