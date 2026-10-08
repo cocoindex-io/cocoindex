@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
+use crate::engine::admission::{Admission, AdmissionPool, Lender};
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
@@ -38,7 +39,9 @@ struct AppContextInner<Prof: EngineProfile> {
     app_store: AppStore,
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
-    inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    /// The pool of in-flight tokens component runs are admitted to; see
+    /// [`crate::engine::admission`].
+    admission_pool: AdmissionPool,
     /// Source of operation generations; see
     /// [`ComponentProcessorContext::operation_generation`].
     operation_generation: std::sync::atomic::AtomicU64,
@@ -73,15 +76,13 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         app_reg: AppRegistration<Prof>,
         max_inflight_components: Option<usize>,
     ) -> Self {
-        let inflight_semaphore =
-            max_inflight_components.map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
         Self {
             inner: Arc::new(AppContextInner {
                 env,
                 app_store,
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
-                inflight_semaphore,
+                admission_pool: AdmissionPool::new(max_inflight_components),
                 operation_generation: std::sync::atomic::AtomicU64::new(0),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
@@ -138,8 +139,8 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         &self.inner.app_reg
     }
 
-    pub fn inflight_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
-        self.inner.inflight_semaphore.as_ref()
+    pub fn admission_pool(&self) -> &AdmissionPool {
+        &self.inner.admission_pool
     }
 
     /// Mint the generation of a new operation; see
@@ -695,6 +696,16 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             preview_collector,
         })
     }
+
+    pub fn new_delete(
+        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+        on_error: Option<crate::engine::component::OnError>,
+    ) -> Self {
+        Self::Delete(ComponentDeleteContext {
+            providers,
+            on_error,
+        })
+    }
 }
 
 struct ComponentProcessorContextInner<Prof: EngineProfile> {
@@ -704,7 +715,9 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
 
-    inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    /// This run's in-flight token and the lender its children borrow from;
+    /// see [`crate::engine::admission`].
+    admission: Admission,
 
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
@@ -719,7 +732,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
 }
 
 /// A `ComponentProcessorContext` is a thin view over a shared `inner`
-/// (component identity, building state, providers — never forked) plus three
+/// (component identity, building state, providers, admission — never forked)
+/// plus three
 /// **per-view** fields that a `stats_group` substitutes: the stats bucket, the
 /// child-readiness accumulator, and the enclosing-group list for liveness.
 /// `Clone` shares everything (all `Arc`-based handles), so an unscoped clone is
@@ -737,9 +751,36 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
+    /// A context whose run borrows its in-flight token from `parent_context`'s
+    /// run, if any.
     pub(crate) fn new(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        processing_action: ComponentProcessingAction<Prof>,
+    ) -> Self {
+        let lender = parent_context
+            .as_ref()
+            .map(|parent| parent.admission().lender().clone());
+        Self::new_borrowing_from(
+            component,
+            parent_context,
+            lender,
+            processing_stats,
+            host_ctx,
+            processing_action,
+        )
+    }
+
+    /// A context whose run borrows its in-flight token from `lender`, which
+    /// need not belong to `parent_context`: a live component's runs have no
+    /// parent context but borrow from the run that mounted the live
+    /// component, for as long as that run lasts.
+    pub(crate) fn new_borrowing_from(
+        component: Component<Prof>,
+        parent_context: Option<ComponentProcessorContext<Prof>>,
+        lender: Option<Lender>,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
@@ -748,13 +789,14 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
         };
+        let admission = Admission::new(component.app_ctx().admission_pool().clone(), lender);
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
                 operation_generation,
-                inflight_permit: Mutex::new(None),
+                admission,
                 logic_deps: Mutex::new(HashSet::new()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
                 host_ctx,
@@ -768,8 +810,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// Derive a sibling view that reports into `group`'s stats, registers child
     /// readiness into `group`'s readiness, and appends `group` to the
     /// enclosing-group list (for live-member liveness). Shares `inner` — so
-    /// component identity, building state, providers, and the inflight permit
-    /// are unchanged.
+    /// component identity, building state, providers, and admission are
+    /// unchanged.
     pub(crate) fn with_stats_group(&self, group: &Arc<StatsGroup<Prof>>) -> Self {
         let mut stats_groups = Vec::with_capacity(self.stats_groups.len() + 1);
         stats_groups.extend(self.stats_groups.iter().cloned());
@@ -1044,13 +1086,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             .collect_context_initial_states(deps.iter())
     }
 
-    pub(crate) fn set_inflight_permit(&self, permit: tokio::sync::OwnedSemaphorePermit) {
-        *self.inner.inflight_permit.lock().unwrap() = Some(permit);
-    }
-
-    /// Release the inflight permit if held. No-op after first call.
-    pub(crate) fn release_inflight_permit(&self) {
-        *self.inner.inflight_permit.lock().unwrap() = None;
+    /// This run's admission: its in-flight token and the lender its children
+    /// borrow from.
+    pub(crate) fn admission(&self) -> &Admission {
+        &self.inner.admission
     }
 
     pub fn processing_stats(&self) -> &ProcessingStats {
