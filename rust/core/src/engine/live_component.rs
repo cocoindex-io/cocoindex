@@ -164,7 +164,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.full_reprocess(),
             live,
             providers,
-            Some(parent_ctx.admission().lender().clone()),
+            parent_ctx.admission().lender().clone(),
         );
 
         // 9. Create readiness handle that resolves when mark_ready is called.
@@ -459,7 +459,7 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// context, but they borrow that run's in-flight token while it lasts —
     /// it waits for this component's readiness, so without the loan a full
     /// pool would deadlock them. Once it ends, they take pool tokens.
-    lender: Option<Lender>,
+    lender: Lender,
 }
 
 impl<Prof: EngineProfile> LiveComponentController<Prof> {
@@ -471,7 +471,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         full_reprocess: bool,
         live: bool,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
-        lender: Option<Lender>,
+        lender: Lender,
     ) -> Self {
         Self {
             component,
@@ -575,7 +575,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let context = ComponentProcessorContext::new_borrowing_from(
             self.component.clone(),
             None,
-            self.lender.clone(),
+            Some(self.lender.clone()),
             self.processing_stats.clone(),
             self.host_ctx.clone(),
             // Mirror `Component::mount`: store the same on_error on the
@@ -1060,7 +1060,7 @@ async fn drain_task_body<Prof: EngineProfile>(
     providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     full_reprocess: bool,
     live: bool,
-    lender: Option<Lender>,
+    lender: Lender,
 ) {
     loop {
         // ── Step 1: take queued op (or gate / exit) ──
@@ -1127,7 +1127,7 @@ async fn drain_task_body<Prof: EngineProfile>(
             &providers,
             full_reprocess,
             live,
-            lender.as_ref(),
+            &lender,
         )
         .await;
 
@@ -1183,7 +1183,7 @@ async fn run_op<Prof: EngineProfile>(
     providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     full_reprocess: bool,
     live: bool,
-    lender: Option<&Lender>,
+    lender: &Lender,
 ) -> Result<()> {
     let _ = state; // kept for symmetry / future use
     let child = component.get_child(subpath.clone());
@@ -1195,7 +1195,7 @@ async fn run_op<Prof: EngineProfile>(
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
                 None,
-                lender.cloned(),
+                Some(lender.clone()),
                 processing_stats.clone(),
                 host_ctx.clone(),
                 // Mirror `Component::mount`: same on_error stored on the
@@ -1218,7 +1218,7 @@ async fn run_op<Prof: EngineProfile>(
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
                 None,
-                lender.cloned(),
+                Some(lender.clone()),
                 processing_stats.clone(),
                 host_ctx.clone(),
                 ComponentProcessingAction::new_delete(providers.clone(), on_error),
