@@ -815,7 +815,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_ctx: &ComponentProcessorContext<Prof>,
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
-        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // Store `on_error` on the child's build context too, so the
         // commit-phase GC sweep can cascade it to orphan deletes. The
@@ -830,8 +829,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.host_ctx().clone(),
             on_error.clone(),
         )?;
-        self.run_in_background(processor, child_ctx, on_error, pre_execute_check)
-            .await
+        self.run_in_background(processor, child_ctx, on_error).await
     }
 
     pub fn get_child(&self, stable_path: StablePath) -> Self {
@@ -978,7 +976,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
         on_error: Option<OnError>,
-        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
         let started = self.start_task(&context);
@@ -991,22 +988,6 @@ impl<Prof: EngineProfile> Component<Prof> {
 
         let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(async move {
-            // Check if this task has been superseded before executing.
-            if let Some(check) = pre_execute_check {
-                if !check() {
-                    // Superseded — skip execution, resolve as success.
-                    context.admission().finish();
-                    drop(processor);
-                    drop(context);
-                    drop(self);
-                    drop(run);
-                    drop(activity);
-                    if let Some(guard) = child_readiness_guard {
-                        guard.resolve(ComponentRunOutcome::default());
-                    }
-                    return Ok(());
-                }
-            }
             // Race the work against app-level cancellation. On cancel, the
             // work future is dropped, which cascades drop into from_py_future
             // → CancelOnDropPy and cancels the underlying Python task.
@@ -1067,7 +1048,6 @@ impl<Prof: EngineProfile> Component<Prof> {
     pub fn delete(
         self,
         context: ComponentProcessorContext<Prof>,
-        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // A delete run is admitted to the in-flight pool inside its task
         // (`execute_once`), not here: `delete` is synchronous, and a parent
@@ -1084,18 +1064,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         let on_error = context.delete_action_on_error();
         let join_handle: tokio::task::JoinHandle<SharedResult<()>> =
             get_runtime().spawn(async move {
-                if let Some(check) = pre_execute_check {
-                    if !check() {
-                        drop(context);
-                        drop(self);
-                        drop(run);
-                        drop(activity);
-                        if let Some(guard) = child_readiness_guard {
-                            guard.resolve(ComponentRunOutcome::default());
-                        }
-                        return Ok(());
-                    }
-                }
                 trace!("deleting component at {}", self.stable_path());
                 // Delete/GC runs must never be deadline-bounded.
                 let result = self
