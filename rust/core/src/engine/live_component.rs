@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 
+use crate::engine::admission::Lender;
 use crate::engine::component::{
     ActivityGuard, Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle,
     OnError,
@@ -163,6 +164,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.full_reprocess(),
             live,
             providers,
+            Some(parent_ctx.admission().lender().clone()),
         );
 
         // 9. Create readiness handle that resolves when mark_ready is called.
@@ -451,6 +453,13 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// Providers inherited from the parent component context at creation time.
     /// Immutable — process() may not call use_mount(), so no new providers are created.
     providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+
+    /// Lender of the run that mounted this live component. The component's
+    /// own runs (`update_full` cycles, per-subpath ops) have no parent
+    /// context, but they borrow that run's in-flight token while it lasts —
+    /// it waits for this component's readiness, so without the loan a full
+    /// pool would deadlock them. Once it ends, they take pool tokens.
+    lender: Option<Lender>,
 }
 
 impl<Prof: EngineProfile> LiveComponentController<Prof> {
@@ -462,6 +471,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         full_reprocess: bool,
         live: bool,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+        lender: Option<Lender>,
     ) -> Self {
         Self {
             component,
@@ -471,6 +481,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             full_reprocess,
             live,
             providers,
+            lender,
         }
     }
 
@@ -561,9 +572,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // the behavior of background `mount()` calls. Without on_error wired
         // here, periodic-refresh patterns (e.g. `coco.auto_refresh`) would
         // silently swallow cycle failures.
-        let context = ComponentProcessorContext::new(
+        let context = ComponentProcessorContext::new_borrowing_from(
             self.component.clone(),
             None,
+            self.lender.clone(),
             self.processing_stats.clone(),
             self.host_ctx.clone(),
             // Mirror `Component::mount`: store the same on_error on the
@@ -726,6 +738,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let providers = self.providers.clone();
         let full_reprocess = self.full_reprocess;
         let live = self.live;
+        let lender = self.lender.clone();
 
         // Queued ops keep the live component active until the drain task
         // exits, whether or not `process_live` is still running.
@@ -741,6 +754,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 providers,
                 full_reprocess,
                 live,
+                lender,
             )
             .await;
         });
@@ -1046,6 +1060,7 @@ async fn drain_task_body<Prof: EngineProfile>(
     providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     full_reprocess: bool,
     live: bool,
+    lender: Option<Lender>,
 ) {
     loop {
         // ── Step 1: take queued op (or gate / exit) ──
@@ -1112,6 +1127,7 @@ async fn drain_task_body<Prof: EngineProfile>(
             &providers,
             full_reprocess,
             live,
+            lender.as_ref(),
         )
         .await;
 
@@ -1167,6 +1183,7 @@ async fn run_op<Prof: EngineProfile>(
     providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     full_reprocess: bool,
     live: bool,
+    lender: Option<&Lender>,
 ) -> Result<()> {
     let _ = state; // kept for symmetry / future use
     let child = component.get_child(subpath.clone());
@@ -1175,9 +1192,10 @@ async fn run_op<Prof: EngineProfile>(
             processor,
             on_error,
         } => {
-            let context = ComponentProcessorContext::new(
+            let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
                 None,
+                lender.cloned(),
                 processing_stats.clone(),
                 host_ctx.clone(),
                 // Mirror `Component::mount`: same on_error stored on the
@@ -1197,12 +1215,13 @@ async fn run_op<Prof: EngineProfile>(
             inner_handle.ready().await
         }
         Op::Delete { on_error } => {
-            let context = child.new_processor_context_for_delete(
-                providers.clone(),
+            let context = ComponentProcessorContext::new_borrowing_from(
+                child.clone(),
                 None,
+                lender.cloned(),
                 processing_stats.clone(),
                 host_ctx.clone(),
-                on_error,
+                ComponentProcessingAction::new_delete(providers.clone(), on_error),
             );
             let inner_handle = child.delete(context, None)?;
             inner_handle.ready().await
