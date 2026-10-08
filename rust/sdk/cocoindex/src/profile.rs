@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorInfo};
 use cocoindex_core::engine::context::{ComponentProcessorContext, MemoStatesPayload};
 use cocoindex_core::engine::profile::{EngineProfile, Persist};
+use cocoindex_core::engine::spill::Spillable;
 use cocoindex_core::engine::target_state::{
     TargetActionSink, TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput,
 };
@@ -78,6 +79,21 @@ impl Persist for Value {
 
     fn from_bytes(data: &[u8]) -> cocoindex_utils::error::Result<Self> {
         Ok(Self(bytes::Bytes::copy_from_slice(data)))
+    }
+}
+
+/// A value is its serialized bytes already, so it spills as is.
+impl Spillable for Value {
+    fn resident_size(&self) -> usize {
+        self.0.len()
+    }
+
+    fn to_spill_bytes(&self) -> cocoindex_utils::error::Result<Option<std::borrow::Cow<'_, [u8]>>> {
+        Ok(Some(std::borrow::Cow::Borrowed(&self.0)))
+    }
+
+    fn from_spill_bytes(bytes: &[u8]) -> cocoindex_utils::error::Result<Self> {
+        Ok(Self(bytes::Bytes::copy_from_slice(bytes)))
     }
 }
 
@@ -211,6 +227,50 @@ pub(crate) enum Action {
     Create(Value),
     Update(Value),
     Delete(Value),
+}
+
+/// An action spills as a kind byte followed by its value's bytes.
+impl Spillable for Action {
+    fn resident_size(&self) -> usize {
+        self.value().0.len()
+    }
+
+    fn to_spill_bytes(&self) -> cocoindex_utils::error::Result<Option<std::borrow::Cow<'_, [u8]>>> {
+        let (kind, value) = match self {
+            Self::Create(value) => (0u8, value),
+            Self::Update(value) => (1u8, value),
+            Self::Delete(value) => (2u8, value),
+        };
+        let mut bytes = Vec::with_capacity(1 + value.0.len());
+        bytes.push(kind);
+        bytes.extend_from_slice(&value.0);
+        Ok(Some(std::borrow::Cow::Owned(bytes)))
+    }
+
+    fn from_spill_bytes(bytes: &[u8]) -> cocoindex_utils::error::Result<Self> {
+        let (kind, value) = bytes.split_first().ok_or_else(|| {
+            cocoindex_utils::error::Error::internal_msg("empty spilled target action")
+        })?;
+        let value = Value(bytes::Bytes::copy_from_slice(value));
+        Ok(match kind {
+            0 => Self::Create(value),
+            1 => Self::Update(value),
+            2 => Self::Delete(value),
+            kind => {
+                return Err(cocoindex_utils::error::Error::internal_msg(format!(
+                    "unknown spilled target action kind {kind}"
+                )));
+            }
+        })
+    }
+}
+
+impl Action {
+    fn value(&self) -> &Value {
+        match self {
+            Self::Create(value) | Self::Update(value) | Self::Delete(value) => value,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,11 @@ What a handler or sink observes: an equal copy of the declared value, taken at
 declaration, instead of the declared object, and an equal copy of the action
 it returned. Each value is encoded on its own, so an object that many declared
 values share is copied into each of their encodings.
+
+Past what a component keeps in memory, the engine spills declared values and
+actions to disk. A value or action held as the object is then encoded for the
+spill if it is plain data, whatever its size, scalars included (`*_for_spill`);
+once read back, it is held encoded like any other.
 """
 
 from __future__ import annotations
@@ -51,9 +56,10 @@ import numpy as np
 
 _PROTOCOL = 5
 
-# An encoding larger than this is not held: such a value is mostly payload
-# (text, vectors) that is compact as an object already, and an object shared
-# by many declared values would be copied into each of their encodings.
+# An encoding larger than this is not held in memory: such a value is mostly
+# payload (text, vectors) that is compact as an object already, and an object
+# shared by many declared values would be copied into each of their encodings.
+# Encoding stops as soon as it passes this size.
 _MAX_ENCODED_SIZE = 64 * 1024
 
 # First byte of a value's encoding.
@@ -137,8 +143,26 @@ class _Pickler(pickle.Pickler):
         raise _Unencodable
 
 
-def _dump(header: bytes, obj: Any) -> bytes:
-    buf = io.BytesIO()
+class _OverSize(Exception):
+    """Raised while pickling a value whose encoding passes `_MAX_ENCODED_SIZE`."""
+
+
+class _BoundedBuffer(io.BytesIO):
+    """A buffer that refuses to grow past a size, so pickling a large value
+    stops early instead of producing an encoding that won't be held."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self._limit = limit
+
+    def write(self, data: Any, /) -> int:
+        if self.tell() + memoryview(data).nbytes > self._limit:
+            raise _OverSize
+        return super().write(data)
+
+
+def _dump(header: bytes, obj: Any, limit: int | None) -> bytes:
+    buf = io.BytesIO() if limit is None else _BoundedBuffer(limit)
     buf.write(header)
     _Pickler(buf, _PROTOCOL).dump(obj)
     return buf.getvalue()
@@ -215,33 +239,42 @@ def _is_row(values: tuple[Any, ...]) -> bool:
     return True
 
 
-def _encode_dict(value: dict[Any, Any]) -> bytes:
+def _encode(value: Any, limit: int | None) -> bytes:
+    if type(value) is not dict:
+        return _dump(bytes((_PICKLED,)), value, limit)
     keys = tuple(value)
     values = tuple(value.values())
     schema_id = _KEY_SCHEMAS.id_of(keys) if _is_row(values) else None
     if schema_id is None:
-        return _dump(bytes((_PICKLED,)), value)
+        return _dump(bytes((_PICKLED,)), value, limit)
     header = bytes((_ROW,)) + schema_id.to_bytes(_ROW_SCHEMA_ID_SIZE, "little")
-    return _dump(header, values)
+    return _dump(header, values, limit)
 
 
-def encode_value(value: Any) -> bytes | None:
-    """The encoding the engine holds for a declared value, or `None` to hold the
-    object itself."""
-    cls = type(value)
-    if cls in _SCALAR_TYPES:
+def encode_value(value: Any) -> bytes | int | None:
+    """The encoding the engine holds for a declared value; `None` to hold the
+    object itself (a scalar, already compact, or not plain data); or, for plain
+    data whose encoding passes `_MAX_ENCODED_SIZE`, that size: the engine holds
+    the object, accounting it for at least that much when deciding to spill."""
+    if type(value) in _SCALAR_TYPES:
         return None
     try:
-        if cls is dict:
-            data = _encode_dict(value)
-        else:
-            data = _dump(bytes((_PICKLED,)), value)
+        return _encode(value, _MAX_ENCODED_SIZE)
+    except _OverSize:
+        return _MAX_ENCODED_SIZE
     except Exception:
         # Not plain data (or not picklable at all): hold the object.
         return None
-    if len(data) > _MAX_ENCODED_SIZE:
+
+
+def encode_value_for_spill(value: Any) -> bytes | None:
+    """The encoding of a declared value held as the object that the engine
+    spills — a scalar or plain data, of any size — or `None` when it is not
+    plain data. `decode_value` restores it."""
+    try:
+        return _encode(value, None)
+    except Exception:
         return None
-    return data
 
 
 def decode_value(data: bytes) -> Any:
@@ -288,6 +321,18 @@ def encode_action(action: Any, desired: Any) -> tuple[bytes, bool] | None:
     if len(data) > _MAX_ENCODED_SIZE:
         return None
     return data, pickler.refers_to_value
+
+
+def encode_action_for_spill(action: Any) -> bytes | None:
+    """The encoding of an action held as the object that the engine spills,
+    standing alone, or `None` when it is not plain data. `decode_action(data,
+    None)` restores it."""
+    buf = io.BytesIO()
+    try:
+        _Pickler(buf, _PROTOCOL).dump(action)
+    except Exception:
+        return None
+    return buf.getvalue()
 
 
 _NOT_DECODED = object()

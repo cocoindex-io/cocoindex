@@ -68,7 +68,7 @@ def _assert_exact(actual: Any, expected: Any) -> None:
 
 def _round_trip(value: Any) -> Any:
     encoded = codec.encode_value(value)
-    assert encoded is not None, value
+    assert isinstance(encoded, bytes), value
     return codec.decode_value(encoded)
 
 
@@ -124,7 +124,7 @@ def test_row_is_encoded_without_its_keys() -> None:
     keys = [f"column_{i}" for i in range(15)]
     row = {key: i * 1000 for i, key in enumerate(keys)}
     encoded = codec.encode_value(row)
-    assert encoded is not None
+    assert isinstance(encoded, bytes)
     assert not any(key.encode() in encoded for key in keys)
     decoded = codec.decode_value(encoded)
     _assert_exact(decoded, row)
@@ -164,13 +164,51 @@ _HELD_AS_OBJECTS: list[Any] = [
     collections.OrderedDict(a=1),
     {_Str("a"): 1},
     [object()],
-    {"text": "x" * (codec._MAX_ENCODED_SIZE + 1)},
 ]
+
+_OVERSIZED: dict[str, Any] = {"text": "x" * (codec._MAX_ENCODED_SIZE + 1)}
 
 
 @pytest.mark.parametrize("value", _HELD_AS_OBJECTS)
 def test_values_left_as_objects(value: Any) -> None:
     assert codec.encode_value(value) is None
+
+
+def test_oversized_value_is_left_as_object_with_the_size_reached() -> None:
+    assert codec.encode_value(_OVERSIZED) == codec._MAX_ENCODED_SIZE
+
+
+_SPILLED: list[Any] = [*_EXACT_VALUES, _OVERSIZED, None, 1, 1.5, True, "text", b"bytes"]
+
+
+@pytest.mark.parametrize("value", _SPILLED)
+def test_spill_encoding_is_exact_for_scalars_and_any_size(value: Any) -> None:
+    encoded = codec.encode_value_for_spill(value)
+    assert encoded is not None
+    _assert_exact(codec.decode_value(encoded), value)
+
+
+_NOT_SPILLED: list[Any] = [
+    _Record(1),
+    {"record": _Record(1)},
+    _Spec(1),
+    {"fn": lambda: 1},
+    collections.OrderedDict(a=1),
+    [object()],
+]
+
+
+@pytest.mark.parametrize("value", _NOT_SPILLED)
+def test_other_than_plain_data_does_not_spill(value: Any) -> None:
+    assert codec.encode_value_for_spill(value) is None
+
+
+def test_action_spills_standing_alone() -> None:
+    action = _RowAction(key=("k", 1), value={"x": [1, (2, 3)], "big": "y" * 100_000})
+    encoded = codec.encode_action_for_spill(action)
+    assert encoded is not None
+    _assert_exact(codec.decode_action(encoded, None), action)
+    assert codec.encode_action_for_spill((_Record(1), {"x": 1})) is None
 
 
 def test_key_of_a_str_subclass_is_not_taken_for_its_schema() -> None:
@@ -181,7 +219,7 @@ def test_key_of_a_str_subclass_is_not_taken_for_its_schema() -> None:
 def test_action_refers_to_the_declared_value() -> None:
     value = {"id": 1, "tags": ["distinctive-tag"]}
     value_data = codec.encode_value(value)
-    assert value_data is not None
+    assert isinstance(value_data, bytes)
     decoded_value = codec.decode_value(value_data)
     action = _RowAction(key=("k", 1), value=decoded_value)
 

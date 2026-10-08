@@ -2,6 +2,7 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 
 use crate::engine::{
     component::ComponentProcessor,
+    spill::Spillable,
     target_state::{TargetActionSink, TargetHandler},
 };
 use crate::prelude::*;
@@ -41,7 +42,13 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
 
     type TargetHdl: TargetHandler<Self>;
     type TargetStateTrackingRecord: Send + Persist + 'static;
-    type TargetAction: Send + Sync + 'static;
+    /// What `reconcile` returns for a sink to apply. [`Spillable`] so a
+    /// component with more actions than it keeps in memory can move them to
+    /// disk until its sinks run (see `engine::spill`).
+    type TargetAction: Send + Sync + Spillable + 'static;
     type TargetActionSink: TargetActionSink<Self>;
-    type TargetStateValue: Send + 'static;
+    /// A declared target state's value. [`Spillable`] so a component with
+    /// more declared values than it keeps in memory can move them to disk
+    /// until its pre-commit reconciles them (see `engine::spill`).
+    type TargetStateValue: Send + Spillable + 'static;
 }

@@ -535,7 +535,7 @@ pub fn declare_target_state_with_child<'py>(
         &fn_ctx.0,
         provider.0.clone(),
         key.0,
-        PyTargetStateValue::Object(value),
+        PyTargetStateValue::object(value),
     )
     .into_py_result()?;
     Ok(PyTargetStateProvider(output))

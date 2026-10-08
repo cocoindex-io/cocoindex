@@ -77,6 +77,12 @@ CocoIndex holds every declared target state until its processing component commi
 So don't rely on the identity of a declared value or an action, or pass mutable state through them; and since the copy is taken at declaration, changes made to a value after it was declared are not seen.
 :::
 
+### Large components spill to disk
+
+A processing component keeps its declared values in memory only up to a bound — `COCOINDEX_TARGET_STATE_SPILL_THRESHOLD` bytes, 32 MiB by default. Values declared past it are written to a temporary file next to the [internal storage](./internal_storage#spill-files) as they are declared, keeping in memory just what planning the commit needs (the key, the target it belongs to, and the value's fingerprint when the handler tracks one), and are read back in chunks of at most 8 MiB when `reconcile()` runs. The actions `reconcile()` returns spill the same way until the sinks run, and a sink then receives the component's actions over several calls, each a chunk of at most 8 MiB in `reconcile()` order, rather than one call. A component that stayed under the bound is applied exactly as before, in one call per sink; either way the component pre-commits and commits as one unit.
+
+What spills is what can be encoded: plain data of any size, scalars included. A value or action holding anything else stays in memory, as the declared object. Set the variable to a larger number of bytes to keep more in memory, or to `0` to spill everything that can be.
+
 ### Tracking record *(you define)*
 
 A **tracking record** captures the essential information needed to detect changes. Good tracking records:
@@ -131,7 +137,7 @@ sink = coco.TargetActionSink.from_fn(apply_actions)
 sink = coco.TargetActionSink.from_async_fn(apply_actions_async)
 ```
 
-The sink function receives `context_provider` as its first argument (for looking up connections from the environment), followed by a sequence of actions, and returns nothing:
+The sink function receives `context_provider` as its first argument (for looking up connections from the environment), followed by a sequence of actions, and returns nothing. One call may carry the actions of several processing components that finished around the same time, and a component with more actions than it keeps in memory hands them over in several calls (see [Large components spill to disk](#large-components-spill-to-disk)), so a sink must not assume that one call is one component:
 
 ```python
 import cocoindex as coco

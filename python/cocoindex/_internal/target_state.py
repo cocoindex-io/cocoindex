@@ -210,6 +210,11 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     The callback must support weak references, so an idle identity can be
     released; a tuple/NamedTuple callback is rejected with ``TypeError``.
 
+    One call may carry the actions of several processing components, and a
+    component with more actions than it keeps in memory (see
+    ``COCOINDEX_TARGET_STATE_SPILL_THRESHOLD``) hands them over in several
+    calls, each a chunk of them in ``reconcile()`` order.
+
     A sink built with :meth:`from_fn` / :meth:`from_async_fn` serves leaf
     target states (or, deprecated, a container whose callback returns
     ``ChildTargetDef`` entries). A sink whose actions may carry child target

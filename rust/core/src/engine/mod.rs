@@ -11,5 +11,6 @@ pub mod logic_registry;
 pub mod profile;
 pub mod progress_display;
 pub mod runtime;
+pub mod spill;
 pub mod stats;
 pub mod target_state;

@@ -1,0 +1,14 @@
+[project]
+name = "target_state_spill_bench"
+version = "0.1.0"
+description = "Memory benchmark for a component declaring many target states"
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+cocoindex = {path = "../../", editable = true}

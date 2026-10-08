@@ -830,6 +830,7 @@ dependencies = [
  "serde",
  "serde_with",
  "storekey 0.9.0",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-util",

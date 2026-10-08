@@ -108,11 +108,14 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     ///
     /// One call may carry the actions of several processing components: the
     /// engine merges the actions of components that finish while an earlier
-    /// call is in flight. When a call fails, the engine re-applies subsets of
-    /// the same actions (with their child slots reset) to isolate the failure,
-    /// so an implementation must tolerate seeing actions of a failed call
-    /// again — which idempotent actions do by construction. The actions are
-    /// borrowed for that reason: the engine keeps them for the retry.
+    /// call is in flight. Conversely, a component with more actions than it
+    /// keeps in memory hands them over in a sequence of calls, each a chunk
+    /// of them in reconcile order (see `engine::spill`). When a call fails,
+    /// the engine re-applies subsets of the same actions (with their child
+    /// slots reset) to isolate the failure, so an implementation must
+    /// tolerate seeing actions of a failed call again — which idempotent
+    /// actions do by construction. The actions are borrowed for that reason:
+    /// the engine keeps them for the retry.
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     async fn apply(

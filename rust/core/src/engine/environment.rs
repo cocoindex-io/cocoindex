@@ -1,5 +1,6 @@
 use crate::{
     engine::profile::EngineProfile,
+    engine::spill::{DEFAULT_SPILL_THRESHOLD_BYTES, TargetStateSpillSettings},
     engine::target_state::TargetStateProviderRegistry,
     prelude::*,
     state_store::{AppStore, Storage, StorageSettings, WriteTxn},
@@ -14,8 +15,31 @@ use std::sync::RwLock;
 /// re-exported as a type alias so existing call sites continue to work.
 pub type EnvironmentSettings = StorageSettings;
 
+/// Overrides [`DEFAULT_SPILL_THRESHOLD_BYTES`]: the bytes of declared
+/// target-state values (and, separately, of target actions) a processing
+/// component keeps in memory before spilling the rest to disk. See
+/// `engine::spill`.
+pub const TARGET_STATE_SPILL_THRESHOLD_ENV: &str = "COCOINDEX_TARGET_STATE_SPILL_THRESHOLD";
+
+fn target_state_spill_threshold_from_env() -> Result<usize> {
+    match std::env::var(TARGET_STATE_SPILL_THRESHOLD_ENV) {
+        Ok(value) => value.trim().parse::<usize>().map_err(|e| {
+            client_error!(
+                "Failed to parse {TARGET_STATE_SPILL_THRESHOLD_ENV}={value:?} as a number of bytes: {e}"
+            )
+        }),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_SPILL_THRESHOLD_BYTES),
+        Err(e) => Err(client_error!(
+            "Failed to read {TARGET_STATE_SPILL_THRESHOLD_ENV}: {e}"
+        )),
+    }
+}
+
 struct EnvironmentInner<Prof: EngineProfile> {
     storage: Storage,
+    /// How processing components spill declared target states past what
+    /// they keep in memory. The spill files go next to the state store.
+    target_state_spill: Arc<TargetStateSpillSettings>,
     app_names: Mutex<BTreeSet<String>>,
     target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
@@ -45,9 +69,14 @@ impl<Prof: EngineProfile> Environment<Prof> {
         target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
         host_runtime_ctx: Prof::HostRuntimeCtx,
     ) -> Result<Self> {
+        let target_state_spill = Arc::new(TargetStateSpillSettings::new(
+            target_state_spill_threshold_from_env()?,
+            settings.db_path.clone(),
+        ));
         let storage = Storage::new(&settings).await?;
         let state = Arc::new(EnvironmentInner {
             storage,
+            target_state_spill,
             app_names: Mutex::new(BTreeSet::new()),
             target_states_providers,
             host_runtime_ctx,
@@ -65,6 +94,12 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
     pub fn storage(&self) -> &Storage {
         &self.inner.storage
+    }
+
+    /// How processing components spill their declared target states. See
+    /// `engine::spill`.
+    pub fn target_state_spill(&self) -> &Arc<TargetStateSpillSettings> {
+        &self.inner.target_state_spill
     }
 
     /// Close the environment's storage. See [`Storage::close`].

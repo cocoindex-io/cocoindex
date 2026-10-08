@@ -97,3 +97,13 @@ When using `Settings.from_env()`, the LMDB settings are automatically loaded fro
 :::note[Legacy keyword arguments]
 For backward compatibility, `Settings` still accepts `lmdb_max_dbs` and `lmdb_map_size` as keyword arguments, and exposes them as attributes (e.g., `settings.lmdb_map_size = ...`). These read and write the same underlying values as `settings.db_settings.max_dbs` / `settings.db_settings.map_size`. Passing both `db_settings=` and the legacy keywords in the same `Settings(...)` call raises `ValueError`.
 :::
+
+## Spill files
+
+A processing component keeps the target states it declares in memory until it commits. Past `COCOINDEX_TARGET_STATE_SPILL_THRESHOLD` bytes of declared values (32 MiB by default), it writes the rest to temporary *spill files* in the `db_path` directory, next to the LMDB database, and reads them back in chunks of at most 8 MiB when it commits; the actions its sinks will apply spill the same way. The files are anonymous — unlinked as soon as they are created, so they never show up in a listing and never outlive the process — and each lasts only while its component commits. They are not part of the database and need no cleanup, but the volume holding `db_path` must have room for them: a component declaring 3 GiB of target states spills about that much, twice over (values, then actions), while it commits.
+
+```bash
+export COCOINDEX_TARGET_STATE_SPILL_THRESHOLD=134217728   # 128 MiB
+```
+
+See [Large components spill to disk](./custom_target_connector#large-components-spill-to-disk) for what spilling means to a connector.

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -7,8 +7,13 @@ use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup}
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
+use crate::engine::spill::{
+    SpillBudget, SpillReader, SpillRef, SpillWriter, Spillable, TargetStateSpillSettings,
+};
 use crate::engine::stats::ProcessingStats;
-use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
+use crate::engine::target_state::{
+    TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
+};
 use crate::prelude::*;
 
 use crate::state::stable_path::StableKey;
@@ -184,17 +189,152 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     }
 }
 
+/// A declared target state's value, as the component holds it until its
+/// pre-commit reconciles it.
+pub(crate) enum DeclaredValue<Prof: EngineProfile> {
+    Resident(Prof::TargetStateValue),
+    /// In the component's spill file (see `engine::spill`), with the record
+    /// its handler tracks for it when that is the value's fingerprint
+    /// (`TargetHandler::value_fingerprint_record`): a value whose previous
+    /// records all equal it is then known unchanged without reading it back.
+    Spilled {
+        at: SpillRef,
+        fingerprint_record: Option<Box<[u8]>>,
+    },
+}
+
+impl<Prof: EngineProfile> DeclaredValue<Prof> {
+    pub fn spill_ref(&self) -> Option<SpillRef> {
+        match self {
+            Self::Resident(_) => None,
+            Self::Spilled { at, .. } => Some(*at),
+        }
+    }
+}
+
 pub(crate) struct DeclaredTargetState<Prof: EngineProfile> {
+    pub path: TargetStatePath,
     pub provider: TargetStateProvider<Prof>,
     /// The item key, `storekey`-encoded: the form pre-commit records it in,
     /// at a fraction of the size of the decoded key's tree of `Arc`s.
     pub item_key_bytes: Box<[u8]>,
-    pub value: Prof::TargetStateValue,
+    pub value: DeclaredValue<Prof>,
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }
 
+/// The target states a component has declared so far, in declaration order.
+///
+/// Values stay in memory up to the spill threshold; the ones declared after
+/// that are written to the component's spill file as they come, so that what
+/// stays per declaration is what pre-commit's planning needs — the path, the
+/// key, the provider, and the value's fingerprint record when its handler
+/// tracks one.
+pub(crate) struct DeclaredTargetStates<Prof: EngineProfile> {
+    entries: Vec<DeclaredTargetState<Prof>>,
+    paths: HashSet<TargetStatePath>,
+    budget: Option<SpillBudget>,
+    spill: Option<SpillWriter>,
+}
+
+impl<Prof: EngineProfile> Default for DeclaredTargetStates<Prof> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            paths: HashSet::new(),
+            budget: None,
+            spill: None,
+        }
+    }
+}
+
+impl<Prof: EngineProfile> DeclaredTargetStates<Prof> {
+    pub fn contains(&self, path: &TargetStatePath) -> bool {
+        self.paths.contains(path)
+    }
+
+    /// Record a declaration at a path not declared yet (see [`Self::contains`]).
+    ///
+    /// A container's value (one declared with a child provider) always stays
+    /// in memory: there are few of them, and their actions go on to fulfill
+    /// child slots.
+    pub fn push(
+        &mut self,
+        path: TargetStatePath,
+        provider: TargetStateProvider<Prof>,
+        item_key_bytes: Box<[u8]>,
+        value: Prof::TargetStateValue,
+        child_provider: Option<TargetStateProvider<Prof>>,
+        settings: &TargetStateSpillSettings,
+    ) -> Result<()> {
+        if !self.paths.insert(path.clone()) {
+            internal_bail!("target state declared twice at {path}");
+        }
+        let budget = self
+            .budget
+            .get_or_insert_with(|| SpillBudget::new(settings.threshold_bytes));
+        let resident = budget.admit(value.resident_size()) || child_provider.is_some();
+        let value = if resident {
+            DeclaredValue::Resident(value)
+        } else {
+            match value.to_spill_bytes()? {
+                None => DeclaredValue::Resident(value),
+                Some(bytes) => {
+                    let spill = match &mut self.spill {
+                        Some(spill) => spill,
+                        None => self.spill.insert(SpillWriter::new(&settings.dir)?),
+                    };
+                    let at = spill.append(&bytes)?;
+                    drop(bytes);
+                    let fingerprint_record = match provider.handler() {
+                        Some(handler) => handler
+                            .value_fingerprint_record(&value)?
+                            .map(|record| Box::from(record.as_ref())),
+                        None => None,
+                    };
+                    DeclaredValue::Spilled {
+                        at,
+                        fingerprint_record,
+                    }
+                }
+            }
+        };
+        self.entries.push(DeclaredTargetState {
+            path,
+            provider,
+            item_key_bytes,
+            value,
+            child_provider,
+        });
+        Ok(())
+    }
+
+    /// Close the declarations for pre-commit.
+    pub fn finish(self) -> Result<ReconcileInput<Prof>> {
+        Ok(ReconcileInput {
+            entries: self.entries,
+            spill: self.spill.map(SpillWriter::finish).transpose()?,
+        })
+    }
+}
+
+/// The declared target states as pre-commit reconciles them: in declaration
+/// order, with the reader of the values that were spilled.
+pub(crate) struct ReconcileInput<Prof: EngineProfile> {
+    pub entries: Vec<DeclaredTargetState<Prof>>,
+    pub spill: Option<SpillReader>,
+}
+
+impl<Prof: EngineProfile> Default for ReconcileInput<Prof> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            spill: None,
+        }
+    }
+}
+
 pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
-    pub declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
+    pub declared_target_states: DeclaredTargetStates<Prof>,
     pub provider_registry: TargetStateProviderRegistry<Prof>,
 }
 

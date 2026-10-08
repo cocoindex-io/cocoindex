@@ -99,7 +99,9 @@ Targets like `DirTarget` and `TableTarget` have two statuses: **pending** (just 
 
 ## How CocoIndex syncs target states
 
-Under the hood, CocoIndex compares your declared target states with the previous run and applies the minimal changes needed — the same create/update/delete sync the [change-scenario diagrams in Core Concepts](./core_concepts#processing-component) walk through, viewed per target state:
+Under the hood, CocoIndex compares your declared target states with the previous run and applies the minimal changes needed — the same create/update/delete sync the [change-scenario diagrams in Core Concepts](./core_concepts#processing-component) walk through, viewed per target state. A processing component's declarations are held until it finishes, in memory up to a bound and on disk past it, so a component may declare as many target states as its target can take — see [Large components spill to disk](../advanced_topics/custom_target_connector#large-components-spill-to-disk).
+
+The sync, per target state:
 
 <table>
   <thead>

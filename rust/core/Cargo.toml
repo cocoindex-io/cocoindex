@@ -34,6 +34,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
+tempfile = "3"
 
 [features]
 # Extra store hooks for the state-store read benchmarks (see the SDK crate's
@@ -43,4 +44,3 @@ bench-support = []
 [dev-dependencies]
 serde_json = { workspace = true }
 axum = { workspace = true }
-tempfile = "3"

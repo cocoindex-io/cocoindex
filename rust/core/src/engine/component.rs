@@ -1478,6 +1478,7 @@ mod tests {
         declare_target_state, register_root_target_state_provider, submit,
     };
     use crate::engine::profile::{EngineProfile, Persist};
+    use crate::engine::spill::Spillable;
     use crate::engine::stats::ProcessingStats;
     use crate::engine::target_state::{
         TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot, TargetHandler,
@@ -1564,6 +1565,21 @@ mod tests {
 
         fn from_bytes(data: &[u8]) -> crate::prelude::Result<Self> {
             Ok(Self(data.to_vec()))
+        }
+    }
+
+    /// The unit value and action of this profile spill as nothing.
+    impl Spillable for () {
+        fn resident_size(&self) -> usize {
+            0
+        }
+
+        fn to_spill_bytes(&self) -> crate::prelude::Result<Option<std::borrow::Cow<'_, [u8]>>> {
+            Ok(Some(std::borrow::Cow::Borrowed(&[])))
+        }
+
+        fn from_spill_bytes(_bytes: &[u8]) -> crate::prelude::Result<Self> {
+            Ok(())
         }
     }
 
