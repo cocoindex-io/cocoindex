@@ -676,7 +676,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.component_ctx.host_ctx().clone(),
                 cascaded_on_error.clone(),
             );
-            handles.push(component.delete(delete_ctx, None)?);
+            handles.push(component.delete(delete_ctx)?);
         }
         // Await each handle so descendant failures (when on_error
         // propagates) reach our own task_result, which the parent

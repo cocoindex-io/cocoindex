@@ -593,7 +593,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let handle = self
             .component
             .clone()
-            .run_in_background(processor, context, on_error, None)
+            .run_in_background(processor, context, on_error)
             .await?;
 
         handle.ready().await?;
@@ -1210,7 +1210,7 @@ async fn run_op<Prof: EngineProfile>(
                 ),
             );
             let inner_handle = child
-                .run_in_background(processor, context, on_error, None)
+                .run_in_background(processor, context, on_error)
                 .await?;
             inner_handle.ready().await
         }
@@ -1223,7 +1223,7 @@ async fn run_op<Prof: EngineProfile>(
                 host_ctx.clone(),
                 ComponentProcessingAction::new_delete(providers.clone(), on_error),
             );
-            let inner_handle = child.delete(context, None)?;
+            let inner_handle = child.delete(context)?;
             inner_handle.ready().await
         }
     }
