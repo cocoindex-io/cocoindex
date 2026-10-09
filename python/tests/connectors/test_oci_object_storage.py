@@ -163,6 +163,8 @@ class MockObjectStorageClient:
         if rng:
             assert rng.startswith("bytes=0-")
             end = int(rng[len("bytes=0-") :])
+            if end < 0 or len(body) == 0:
+                raise _MockServiceError(416, "Requested Range Not Satisfiable")
             body = body[: end + 1]
         return _MockGetObjectResponse(body)
 
@@ -1022,6 +1024,58 @@ def test_oci_file_path_memo_key() -> None:
     assert fp.bucket_name == "b"
     assert fp.object_name == "prefix/rel/x.txt"
     assert fp.resolve() == "prefix/rel/x.txt"
+
+
+# ===========================================================================
+# OCIFile and read() coverage
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_oci_file_read_full_and_partial(
+    oci_client: MockObjectStorageClient,
+) -> None:
+    _stage_basic_bucket(oci_client)
+    f = await get_object(oci_client, "ns", "bucket", "file1.txt")
+
+    assert await f.read() == b"hello"
+    assert await f.read_text() == "hello"
+    assert await f.read(2) == b"he"
+
+
+@pytest.mark.asyncio
+async def test_oci_file_partial_read_zero_bytes(
+    oci_client: MockObjectStorageClient,
+) -> None:
+    _stage_basic_bucket(oci_client)
+    f = await get_object(oci_client, "ns", "bucket", "file1.txt")
+
+    assert await f.read(0) == b""
+    assert await f.read(2) == b"he"
+    assert await f.read() == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_oci_file_partial_read_empty_object(
+    oci_client: MockObjectStorageClient,
+) -> None:
+    oci_client.put("empty.bin", b"")
+    f = await get_object(oci_client, "ns", "bucket", "empty.bin")
+
+    assert await f.read(2) == b""
+    assert await f.read(0) == b""
+    assert await f.read() == b""
+
+
+@pytest.mark.asyncio
+async def test_oci_read_helper_full_and_partial(
+    oci_client: MockObjectStorageClient,
+) -> None:
+    _stage_basic_bucket(oci_client)
+
+    assert await read(oci_client, "ns", "bucket", "file1.txt") == b"hello"
+    assert await read(oci_client, "ns", "bucket", "file1.txt", size=2) == b"he"
+    assert await read(oci_client, "ns", "bucket", "file1.txt", size=0) == b""
 
 
 # ===========================================================================
