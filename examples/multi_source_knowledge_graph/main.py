@@ -1,8 +1,9 @@
 """
 Multi-Source Knowledge Graph (v1) — CocoIndex pipeline example, Neo4j.
 
-Many kinds of source, one pipeline, one graph. A source is a name plus an
-async generator of keyed records; everything after that point is shared:
+Many kinds of source, one pipeline, one graph. A source is a name plus two
+methods — ``refs()`` lists its items cheaply, ``fetch(ref)`` loads one — and
+everything after that point is shared:
 
   Document sources — a docs folder, GitHub issues, pull requests, releases
       -> Document record -> process_document(): resolve mentions, declare the
@@ -12,9 +13,14 @@ async generator of keyed records; everything after that point is shared:
          DEPENDS_ON edges
 
 The component tree has two layers. Each source is a processing component at
-/source/<name> that enumerates its records, and every record is a memoized
-child component below it. Adding a source means adding one adapter to the
-registry; removing one unmounts its subtree and the nodes and edges it owned.
+/source/<name> that lists its refs, and every ref is a memoized child
+component below it. A ref is identity plus a change token — a file's size
+and mtime, a row's xmin, an issue's updated_at — so an unchanged item is a
+memo hit and its content is never fetched; ``fetch`` runs only on a miss, and
+a source that can load several items at once declares it with batching so
+concurrent misses become one request. Adding a source means adding one
+adapter to the registry; removing one unmounts its subtree and the nodes and
+edges it owned.
 
 Every node label is shared across sources: a Document is a docs page, an
 issue, a pull request, or a release, and any Document can MENTIONS any Entity.
@@ -32,14 +38,13 @@ Index (one-shot catch-up):
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import os
 import pathlib
 import re
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol, TypeVar
 
 import aiohttp
 import asyncpg
@@ -81,7 +86,7 @@ DOCS_DIR = coco.ContextKey[pathlib.Path]("docs_dir")
 
 
 # ---------------------------------------------------------------------------
-# Shared records — what every source produces
+# Shared records and the source contract
 # ---------------------------------------------------------------------------
 
 
@@ -114,18 +119,27 @@ class Entity:
     depends_on: tuple[str, ...] = ()
 
 
-class DocumentSource(Protocol):
+RefT = TypeVar("RefT")
+
+
+class DocumentSource(Protocol[RefT]):
+    """``refs`` lists items with a change token; ``fetch`` loads one on a memo miss."""
+
     @property
     def name(self) -> str: ...
 
-    def documents(self) -> AsyncIterable[tuple[coco.StableKey, Document]]: ...
+    def refs(self) -> AsyncIterable[tuple[coco.StableKey, RefT]]: ...
+
+    async def fetch(self, ref: RefT) -> Document: ...
 
 
-class EntitySource(Protocol):
+class EntitySource(Protocol[RefT]):
     @property
     def name(self) -> str: ...
 
-    def entities(self) -> AsyncIterable[tuple[coco.StableKey, Entity]]: ...
+    def refs(self) -> AsyncIterable[tuple[coco.StableKey, RefT]]: ...
+
+    async def fetch(self, ref: RefT) -> Entity: ...
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +149,7 @@ class EntitySource(Protocol):
 
 @dataclass
 class CatalogRow:
-    """A row of the component catalog table (the Postgres source)."""
+    """A full row of the component catalog table."""
 
     key: str
     name: str
@@ -242,7 +256,9 @@ class MarkdownDocs:
     name: str
     root: coco.ContextKey[pathlib.Path]
 
-    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
+    def refs(self) -> AsyncIterable[tuple[coco.StableKey, localfs.File]]:
+        # The ref is the File itself: it carries size and mtime and is
+        # fingerprinted on them, so an unchanged file is never read.
         files = localfs.walk_dir(
             self.root,
             recursive=True,
@@ -250,22 +266,41 @@ class MarkdownDocs:
                 included_patterns=["**/*.md", "**/*.mdx"]
             ),
         )
-        async for path, file in files.items():
-            text = await file.read_text()
-            yield (
-                path,
-                Document(
-                    source=self.name,
-                    key=path,
-                    kind="doc",
-                    title=_doc_title(text, path),
-                    text=text,
-                    url="",
-                    author="",
-                    status="",
-                    updated_at="",
-                ),
-            )
+        return files.items()
+
+    @coco.fn
+    async def fetch(self, file: localfs.File) -> Document:
+        text = await file.read_text()
+        path = file.file_path.path.as_posix()
+        return Document(
+            source=self.name,
+            key=path,
+            kind="doc",
+            title=_doc_title(text, path),
+            text=text,
+            url="",
+            author="",
+            status="",
+            updated_at="",
+        )
+
+
+@dataclass(frozen=True)
+class GitHubRef:
+    """A GitHub listing entry.
+
+    REST listings carry the whole item, so the payload rides along for
+    ``fetch``; only the key and version take part in memoization, so an
+    unchanged item is a memo hit (and the search relevance score, which varies
+    between runs, is ignored).
+    """
+
+    key: str
+    version: str
+    payload: dict[str, Any] = field(compare=False, hash=False, repr=False)
+
+    def __coco_memo_key__(self) -> object:
+        return (self.key, self.version)
 
 
 def _github_session() -> aiohttp.ClientSession:
@@ -288,38 +323,43 @@ async def _github_json(resp: aiohttp.ClientResponse) -> Any:
 
 
 async def _github_search(
-    session: aiohttp.ClientSession, repo: str, qualifier: str, max_items: int
-) -> AsyncIterator[dict[str, Any]]:
+    repo: str, qualifier: str, max_items: int
+) -> AsyncIterator[tuple[coco.StableKey, GitHubRef]]:
     """Issues or pull requests of ``repo`` via the search endpoint, newest update
     first. The plain issues listing mixes both in; search filters server-side."""
     fetched = 0
-    for page in range(1, max_items // _GITHUB_PAGE_SIZE + 2):
-        params: dict[str, str | int] = {
-            "q": f"repo:{repo} {qualifier}",
-            "sort": "updated",
-            "order": "desc",
-            "per_page": _GITHUB_PAGE_SIZE,
-            "page": page,
-        }
-        async with session.get(
-            f"{GITHUB_API_URL}/search/issues", params=params
-        ) as resp:
-            items = (await _github_json(resp))["items"]
-        for item in items:
-            if fetched >= max_items:
+    async with _github_session() as session:
+        for page in range(1, max_items // _GITHUB_PAGE_SIZE + 2):
+            params: dict[str, str | int] = {
+                "q": f"repo:{repo} {qualifier}",
+                "sort": "updated",
+                "order": "desc",
+                "per_page": _GITHUB_PAGE_SIZE,
+                "page": page,
+            }
+            async with session.get(
+                f"{GITHUB_API_URL}/search/issues", params=params
+            ) as resp:
+                items = (await _github_json(resp))["items"]
+            for item in items:
+                if fetched >= max_items:
+                    return
+                fetched += 1
+                yield (
+                    item["number"],
+                    GitHubRef(str(item["number"]), item["updated_at"], item),
+                )
+            if len(items) < _GITHUB_PAGE_SIZE:
                 return
-            fetched += 1
-            yield item
-        if len(items) < _GITHUB_PAGE_SIZE:
-            return
 
 
 def _github_item_document(
-    source: str, kind: str, item: dict[str, Any], refs: tuple[str, ...] = ()
+    source: str, kind: str, ref: GitHubRef, refs: tuple[str, ...] = ()
 ) -> Document:
+    item = ref.payload
     return Document(
         source=source,
-        key=str(item["number"]),
+        key=ref.key,
         kind=kind,
         title=item["title"],
         text=item.get("body") or "",
@@ -337,12 +377,12 @@ class GitHubIssues:
     repo: str
     max_items: int = GITHUB_MAX_ISSUES
 
-    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
-        async with _github_session() as session:
-            async for item in _github_search(
-                session, self.repo, "is:issue", self.max_items
-            ):
-                yield item["number"], _github_item_document(self.name, "issue", item)
+    def refs(self) -> AsyncIterable[tuple[coco.StableKey, GitHubRef]]:
+        return _github_search(self.repo, "is:issue", self.max_items)
+
+    @coco.fn
+    async def fetch(self, ref: GitHubRef) -> Document:
+        return _github_item_document(self.name, "issue", ref)
 
 
 _CONVENTIONAL_SCOPE_RE = re.compile(r"^\w+\(([^)]+)\)!?:")
@@ -354,19 +394,16 @@ class GitHubPullRequests:
     repo: str
     max_items: int = GITHUB_MAX_PULL_REQUESTS
 
-    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
-        async with _github_session() as session:
-            async for item in _github_search(
-                session, self.repo, "is:pr", self.max_items
-            ):
-                # Source-specific extraction: a conventional-commit title such
-                # as "fix(neo4j): ..." names the entity it touches outright.
-                scope = _CONVENTIONAL_SCOPE_RE.match(item["title"])
-                refs = (scope.group(1).strip().lower(),) if scope else ()
-                yield (
-                    item["number"],
-                    _github_item_document(self.name, "pull_request", item, refs),
-                )
+    def refs(self) -> AsyncIterable[tuple[coco.StableKey, GitHubRef]]:
+        return _github_search(self.repo, "is:pr", self.max_items)
+
+    @coco.fn
+    async def fetch(self, ref: GitHubRef) -> Document:
+        # Source-specific extraction: a conventional-commit title such as
+        # "fix(neo4j): ..." names the entity it touches outright.
+        scope = _CONVENTIONAL_SCOPE_RE.match(ref.payload["title"])
+        refs = (scope.group(1).strip().lower(),) if scope else ()
+        return _github_item_document(self.name, "pull_request", ref, refs)
 
 
 @dataclass(frozen=True)
@@ -374,7 +411,7 @@ class GitHubReleases:
     name: str
     repo: str
 
-    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
+    async def refs(self) -> AsyncIterator[tuple[coco.StableKey, GitHubRef]]:
         async with _github_session() as session:
             async with session.get(
                 f"{GITHUB_API_URL}/repos/{self.repo}/releases",
@@ -382,22 +419,32 @@ class GitHubReleases:
             ) as resp:
                 releases = await _github_json(resp)
         for release in releases:
-            if release["draft"]:
-                continue
-            yield (
-                release["tag_name"],
-                Document(
-                    source=self.name,
-                    key=release["tag_name"],
-                    kind="release",
-                    title=release["name"] or release["tag_name"],
-                    text=release.get("body") or "",
-                    url=release["html_url"],
-                    author=release["author"]["login"],
-                    status="prerelease" if release["prerelease"] else "published",
-                    updated_at=release["published_at"] or "",
-                ),
-            )
+            if not release["draft"]:
+                tag = release["tag_name"]
+                yield tag, GitHubRef(tag, release["published_at"] or "", release)
+
+    @coco.fn
+    async def fetch(self, ref: GitHubRef) -> Document:
+        release = ref.payload
+        return Document(
+            source=self.name,
+            key=ref.key,
+            kind="release",
+            title=release["name"] or ref.key,
+            text=release.get("body") or "",
+            url=release["html_url"],
+            author=release["author"]["login"],
+            status="prerelease" if release["prerelease"] else "published",
+            updated_at=ref.version,
+        )
+
+
+@dataclass
+class CatalogRef:
+    """A catalog listing entry: the key and the row's last-writer transaction id."""
+
+    key: str
+    xmin: int
 
 
 @dataclass(frozen=True)
@@ -405,36 +452,46 @@ class PostgresCatalog:
     """Rows of a catalog table, each an entity with its dependencies."""
 
     name: str
-    db: coco.ContextKey[asyncpg.Pool]
+    pool: asyncpg.Pool
     table: str
 
-    async def entities(self) -> AsyncIterator[tuple[coco.StableKey, Entity]]:
+    def __coco_memo_key__(self) -> object:
+        # The pool is a connection, not an input: memoize on what names the source.
+        return (self.name, self.table)
+
+    def refs(self) -> AsyncIterable[tuple[coco.StableKey, CatalogRef]]:
+        # Two columns per row. xmin changes whenever the row is updated, so it
+        # is a free change token: no updated_at column to maintain.
         rows = postgres.PgTableSource(
-            coco.use_context(self.db), table_name=self.table, row_type=CatalogRow
+            self.pool,
+            table_name=self.table,
+            columns=["key", "xmin"],
+            row_type=CatalogRef,
         )
-        async for row in rows.fetch_rows():
-            yield (
-                row.key,
-                Entity(
-                    key=row.key,
-                    name=row.name,
-                    kind=row.kind,
-                    area=row.area,
-                    depends_on=tuple(row.depends_on),
-                ),
+        return rows.fetch_rows().items(lambda ref: ref.key)
+
+    @coco.fn.as_async(batching=True, max_batch_size=100)
+    async def fetch(self, refs: list[CatalogRef]) -> list[Entity]:
+        # Called with one ref at a time; concurrent misses across refs are
+        # batched into one query. Results line up with the input order. The
+        # batched body runs outside any component context, which is why the
+        # pool lives on the adapter rather than being looked up here.
+        rows = await self.pool.fetch(
+            f"SELECT key, name, kind, area, depends_on FROM {self.table}"
+            " WHERE key = ANY($1)",
+            [ref.key for ref in refs],
+        )
+        by_key = {row["key"]: row for row in rows}
+        return [
+            Entity(
+                key=ref.key,
+                name=by_key[ref.key]["name"],
+                kind=by_key[ref.key]["kind"],
+                area=by_key[ref.key]["area"],
+                depends_on=tuple(by_key[ref.key]["depends_on"]),
             )
-
-
-# The registry. Adding a source to the graph is adding one line here.
-DOCUMENT_SOURCES: list[DocumentSource] = [
-    MarkdownDocs("docs", DOCS_DIR),
-    GitHubIssues("github_issues", GITHUB_REPO),
-    GitHubPullRequests("github_pull_requests", GITHUB_REPO),
-    GitHubReleases("github_releases", GITHUB_REPO),
-]
-ENTITY_SOURCES: list[EntitySource] = [
-    PostgresCatalog("catalog", CATALOG_DB, CATALOG_TABLE),
-]
+            for ref in refs
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -473,10 +530,14 @@ class EntityNode:
 
 @coco.fn(memo=True)
 async def process_document(
-    doc: Document,
+    ref: RefT,
+    source: DocumentSource[RefT],
     document_table: neo4j.TableTarget[DocumentNode],
     mentions_rel: neo4j.RelationTarget[Any],
 ) -> None:
+    # Memoized on the ref's change token: on a hit this body does not run and
+    # nothing is fetched.
+    doc = await source.fetch(ref)
     doc_id = f"{doc.source}:{doc.key}"
     document_table.declare_record(
         row=DocumentNode(
@@ -499,10 +560,12 @@ async def process_document(
 
 @coco.fn(memo=True)
 async def process_entity(
-    entity: Entity,
+    ref: RefT,
+    source: EntitySource[RefT],
     entity_table: neo4j.TableTarget[EntityNode],
     depends_on_rel: neo4j.RelationTarget[Any],
 ) -> None:
+    entity = await source.fetch(ref)
     entity_table.declare_record(
         row=EntityNode(
             key=entity.key, name=entity.name, kind=entity.kind, area=entity.area
@@ -513,29 +576,29 @@ async def process_entity(
 
 
 # ---------------------------------------------------------------------------
-# The source layer — one processing component per source, one child per record
+# The source layer — one processing component per source, one child per ref
 # ---------------------------------------------------------------------------
 
 
 @coco.fn
 async def ingest_documents(
-    source: DocumentSource,
+    source: DocumentSource[Any],
     document_table: neo4j.TableTarget[DocumentNode],
     mentions_rel: neo4j.RelationTarget[Any],
 ) -> None:
     await coco.mount_each(
-        process_document, source.documents(), document_table, mentions_rel
+        process_document, source.refs(), source, document_table, mentions_rel
     )
 
 
 @coco.fn
 async def ingest_entities(
-    source: EntitySource,
+    source: EntitySource[Any],
     entity_table: neo4j.TableTarget[EntityNode],
     depends_on_rel: neo4j.RelationTarget[Any],
 ) -> None:
     await coco.mount_each(
-        process_entity, source.entities(), entity_table, depends_on_rel
+        process_entity, source.refs(), source, entity_table, depends_on_rel
     )
 
 
@@ -546,6 +609,17 @@ async def ingest_entities(
 
 @coco.fn
 async def app_main() -> None:
+    # --- The registry. Adding a source to the graph is adding one line here ---
+    document_sources: list[DocumentSource[Any]] = [
+        MarkdownDocs("docs", DOCS_DIR),
+        GitHubIssues("github_issues", GITHUB_REPO),
+        GitHubPullRequests("github_pull_requests", GITHUB_REPO),
+        GitHubReleases("github_releases", GITHUB_REPO),
+    ]
+    entity_sources: list[EntitySource[Any]] = [
+        PostgresCatalog("catalog", coco.use_context(CATALOG_DB), CATALOG_TABLE),
+    ]
+
     # --- Node tables and relation targets, shared by every source ---
     entity_table = await neo4j.mount_table_target(
         KG_DB,
@@ -568,7 +642,7 @@ async def app_main() -> None:
 
     # --- One processing component per source, under /source/<name> ---
     with coco.component_subpath("source"):
-        for entity_source in ENTITY_SOURCES:
+        for entity_source in entity_sources:
             await coco.mount(
                 coco.component_subpath(entity_source.name),
                 ingest_entities,
@@ -576,7 +650,7 @@ async def app_main() -> None:
                 entity_table,
                 depends_on_rel,
             )
-        for document_source in DOCUMENT_SOURCES:
+        for document_source in document_sources:
             await coco.mount(
                 coco.component_subpath(document_source.name),
                 ingest_documents,
