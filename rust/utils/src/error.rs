@@ -77,7 +77,12 @@ impl Display for Error {
             Error::HostLang(e) => write!(f, "{}", e),
             Error::DeadlineExceeded { .. } => f.write_str("CocoIndex timeout deadline exceeded"),
             Error::Client { msg, .. } => write!(f, "Invalid Request: {}", msg),
-            Error::Internal(e) => write!(f, "{}", e),
+            // The whole cause chain, not just the outermost message: a wrapped
+            // library error often says nothing on its own (tokio-postgres
+            // renders every server error as "db error" and keeps the
+            // server's message in its source), and so does an `anyhow`
+            // context layered over the cause.
+            Error::Internal(e) => write!(f, "{e:#}"),
         }
     }
 }
@@ -631,6 +636,34 @@ mod tests {
         let err = Error::internal_msg("something went wrong");
         assert!(matches!(err, Error::Internal { .. }));
         assert_eq!(err.to_string(), "something went wrong");
+    }
+
+    /// A wrapped error's message alone can be useless ("db error"); the
+    /// Display text carries its whole cause chain.
+    #[test]
+    fn internal_error_displays_its_cause_chain() {
+        #[derive(Debug)]
+        struct Opaque(io::Error);
+        impl Display for Opaque {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("db error")
+            }
+        }
+        impl StdError for Opaque {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let cause = io::Error::other("ERROR: deadlock detected");
+        let err = Error::internal(Opaque(cause));
+        assert_eq!(err.to_string(), "db error: ERROR: deadlock detected");
+
+        let err = Error::internal(
+            anyhow::Error::new(io::Error::new(io::ErrorKind::NotFound, "file not found"))
+                .context("opening the index"),
+        );
+        assert_eq!(err.to_string(), "opening the index: file not found");
     }
 
     #[test]
