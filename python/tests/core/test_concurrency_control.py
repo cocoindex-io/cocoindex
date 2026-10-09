@@ -268,6 +268,11 @@ _FAN_OUT = 3000
 
 
 @pytest.mark.parametrize("main", [_main_gather, _main_map], ids=["gather", "map"])
+# Three thousand components take ~3 s on LMDB but 15-30 s on a backend that
+# pays a network round trip per statement (cocoindex-plus's Postgres store,
+# a dozen-odd statements per component), more on a loaded CI runner: the
+# suite's 30 s default is too tight there.
+@pytest.mark.timeout(120)
 def test_fan_out_peaks_at_the_pool_size(
     main: Callable[[int, int], Awaitable[None]],
 ) -> None:
