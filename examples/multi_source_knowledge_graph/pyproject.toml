@@ -1,7 +1,7 @@
 [project]
 name = "multi-source-knowledge-graph"
 version = "0.1.0"
-description = "CocoIndex example: one Neo4j knowledge graph from a Postgres component catalog, a folder of Markdown docs, and GitHub issues."
+description = "CocoIndex example: one Neo4j knowledge graph from a Postgres component catalog, a folder of Markdown docs, and GitHub issues, pull requests, and releases."
 requires-python = ">=3.11"
 dependencies = [
     "cocoindex[neo4j]>=1.0.7",
@@ -10,4 +10,5 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "records", "resolver", "graph"]
+packages = ["sources"]
