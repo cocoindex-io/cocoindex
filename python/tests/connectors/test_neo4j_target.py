@@ -534,6 +534,111 @@ class TestTableReconcile:
 
 
 # =============================================================================
+# Apply-batch retry on transient errors — fake driver, no server
+# =============================================================================
+
+
+class _FakeTx:
+    """Transaction whose runs raise a deadlock while ``failures[0] > 0``."""
+
+    def __init__(self, log: list[str], failures: list[int]) -> None:
+        self._log = log
+        self._failures = failures
+
+    async def run(self, cypher: str, **params: Any) -> None:
+        self._log.append("run")
+        if self._failures[0] > 0:
+            self._failures[0] -= 1
+            raise _neo4j.exceptions.TransientError(
+                "Neo.TransientError.Transaction.DeadlockDetected"
+            )
+
+    async def commit(self) -> None:
+        self._log.append("commit")
+
+    async def rollback(self) -> None:
+        self._log.append("rollback")
+
+
+class _FakeSession:
+    def __init__(self, log: list[str], failures: list[int]) -> None:
+        self._log = log
+        self._failures = failures
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def begin_transaction(self) -> _FakeTx:
+        self._log.append("begin")
+        return _FakeTx(self._log, self._failures)
+
+
+class _FakeDriver:
+    def __init__(self, log: list[str], failures: list[int]) -> None:
+        self._log = log
+        self._failures = failures
+
+    def session(self, database: str) -> _FakeSession:
+        return _FakeSession(self._log, self._failures)
+
+
+@requires_neo4j
+class TestApplyBatchRetry:
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_TXN_RETRY_INITIAL_BACKOFF_SECONDS", 0.0)
+        monkeypatch.setattr(neo_target, "_TXN_RETRY_MAX_BACKOFF_SECONDS", 0.0)
+
+    @staticmethod
+    def _applier(log: list[str], failures: int) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        graph = neo_target._GraphHandle(_FakeDriver(log, [failures]), "neo4j")
+        return neo_target._SharedRecordApplier(graph)
+
+    @staticmethod
+    def _node_upsert() -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        return neo_target._RecordAction(
+            table_name="Doc",
+            is_relation=False,
+            pk_field="id",
+            record_id="d1",
+            value={"id": "d1", "title": "t"},
+            from_label=None,
+            from_pk_field=None,
+            from_id=None,
+            to_label=None,
+            to_pk_field=None,
+            to_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_deadlock_is_rolled_back_and_retried(self) -> None:
+        log: list[str] = []
+        applier = self._applier(log, failures=2)
+        await applier._apply_actions(None, [self._node_upsert()])
+        assert log == ["begin", "run", "rollback"] * 2 + ["begin", "run", "commit"]
+
+    @pytest.mark.asyncio
+    async def test_persistent_deadlock_raises_after_max_attempts(self) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        log: list[str] = []
+        applier = self._applier(log, failures=10**6)
+        with pytest.raises(_neo4j.exceptions.TransientError):
+            await applier._apply_actions(None, [self._node_upsert()])
+        assert log.count("begin") == neo_target._TXN_MAX_ATTEMPTS
+        assert "commit" not in log
+
+
+# =============================================================================
 # Integration tests — require running Neo4j (testcontainers spins one up)
 # =============================================================================
 
