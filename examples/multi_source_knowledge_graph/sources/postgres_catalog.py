@@ -11,6 +11,7 @@ import cocoindex as coco
 from cocoindex.connectors import postgres
 
 from records import Entity
+from sources.base import EntitySource
 
 
 @dataclass
@@ -22,8 +23,7 @@ class CatalogRef:
 
 
 @dataclass(frozen=True)
-class PostgresCatalog:
-    name: str
+class PostgresCatalog(EntitySource[CatalogRef]):
     pool: asyncpg.Pool
     table: str
 

@@ -12,6 +12,7 @@ from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 
 from records import Document
+from sources.base import DocumentSource
 
 _FRONT_MATTER_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
 _HEADING_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
@@ -25,8 +26,7 @@ def _title(text: str, path: str) -> str:
 
 
 @dataclass(frozen=True)
-class MarkdownDocs:
-    name: str
+class MarkdownDocs(DocumentSource[localfs.File]):
     root: coco.ContextKey[pathlib.Path]
 
     def refs(self) -> AsyncIterable[tuple[coco.StableKey, localfs.File]]:

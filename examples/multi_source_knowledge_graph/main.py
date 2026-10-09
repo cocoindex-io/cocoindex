@@ -4,19 +4,21 @@ Multi-Source Knowledge Graph (v1) — CocoIndex pipeline example, Neo4j.
 Many kinds of source, one shared back half, one graph. The pipeline has two
 phases:
 
-  Per source type (sources/*.py): list items cheaply as refs, fetch one into
-      a record on a memo miss, with whatever extraction that source needs.
+  Per source (sources/*.py): list items cheaply as refs, fetch one into a
+      record on a memo miss, with whatever extraction that source needs. The
+      source family's base class (sources/base.py) supplies the default
+      processing; a source overrides it only when its records need more.
   Shared (resolver.py, graph.py): resolve the record's references to entity
       keys and declare its node and edges into the targets every source
       writes to — the ``KnowledgeGraph``.
 
 The component tree has two layers. Each source is a processing component at
-/source/<name> that lists its refs, and every ref is a memoized child
-component below it. A ref is identity plus a change token — a file's size
-and mtime, a row's xmin, an issue's updated_at — so an unchanged item is a
-memo hit and its content is never fetched. Adding a source means one adapter
-in sources/ and one line in the registry; removing one unmounts its subtree
-and the nodes and edges it owned.
+/source/<name>, and every ref is a memoized child component below it. A ref
+is identity plus a change token — a file's size and mtime, a row's xmin, an
+issue's updated_at — so an unchanged item is a memo hit and its content is
+never fetched. Adding a source means one adapter in sources/ and one line in
+the registry; removing one unmounts its subtree and the nodes and edges it
+owned.
 
 Every node label is shared across sources: a Document is a docs page, an
 issue, a pull request, or a release, and any Document can MENTIONS any Entity.
@@ -35,7 +37,6 @@ from __future__ import annotations
 import os
 import pathlib
 from collections.abc import AsyncIterator
-from typing import Any
 
 import asyncpg
 
@@ -43,8 +44,8 @@ import cocoindex as coco
 from cocoindex.connectors import neo4j
 
 from graph import KnowledgeGraph
-from records import DocumentSource, EntitySource, RefT
 from resolver import CATALOG, Catalog, CatalogRow
+from sources.base import Source
 from sources.github import GitHubIssues, GitHubPullRequests, GitHubReleases
 from sources.markdown_docs import MarkdownDocs
 from sources.postgres_catalog import PostgresCatalog
@@ -94,43 +95,6 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 
 # ---------------------------------------------------------------------------
-# Per-ref processing: fetch, then hand the record to the shared phase
-# ---------------------------------------------------------------------------
-
-
-@coco.fn(memo=True)
-async def process_document(
-    ref: RefT, source: DocumentSource[RefT], graph: KnowledgeGraph
-) -> None:
-    # Memoized on the ref's change token: on a hit this body does not run and
-    # nothing is fetched. A source type that needs more than fetch-then-add
-    # gets its own processor and still ends in graph.add_document.
-    graph.add_document(await source.fetch(ref))
-
-
-@coco.fn(memo=True)
-async def process_entity(
-    ref: RefT, source: EntitySource[RefT], graph: KnowledgeGraph
-) -> None:
-    graph.add_entity(await source.fetch(ref))
-
-
-# ---------------------------------------------------------------------------
-# The source layer — one processing component per source, one child per ref
-# ---------------------------------------------------------------------------
-
-
-@coco.fn
-async def ingest_documents(source: DocumentSource[Any], graph: KnowledgeGraph) -> None:
-    await coco.mount_each(process_document, source.refs(), source, graph)
-
-
-@coco.fn
-async def ingest_entities(source: EntitySource[Any], graph: KnowledgeGraph) -> None:
-    await coco.mount_each(process_entity, source.refs(), source, graph)
-
-
-# ---------------------------------------------------------------------------
 # App main
 # ---------------------------------------------------------------------------
 
@@ -138,7 +102,8 @@ async def ingest_entities(source: EntitySource[Any], graph: KnowledgeGraph) -> N
 @coco.fn
 async def app_main() -> None:
     # --- The registry. Adding a source to the graph is adding one line here ---
-    document_sources: list[DocumentSource[Any]] = [
+    sources: list[Source] = [
+        PostgresCatalog("catalog", coco.use_context(CATALOG_DB), CATALOG_TABLE),
         MarkdownDocs("docs", DOCS_DIR),
         GitHubIssues("github_issues", GITHUB_REPO, GITHUB_MAX_ISSUES),
         GitHubPullRequests(
@@ -146,29 +111,14 @@ async def app_main() -> None:
         ),
         GitHubReleases("github_releases", GITHUB_REPO),
     ]
-    entity_sources: list[EntitySource[Any]] = [
-        PostgresCatalog("catalog", coco.use_context(CATALOG_DB), CATALOG_TABLE),
-    ]
 
     # --- The shared phase: targets and steps every source writes through ---
     graph = await KnowledgeGraph.mount(KG_DB)
 
     # --- One processing component per source, under /source/<name> ---
     with coco.component_subpath("source"):
-        for entity_source in entity_sources:
-            await coco.mount(
-                coco.component_subpath(entity_source.name),
-                ingest_entities,
-                entity_source,
-                graph,
-            )
-        for document_source in document_sources:
-            await coco.mount(
-                coco.component_subpath(document_source.name),
-                ingest_documents,
-                document_source,
-                graph,
-            )
+        for source in sources:
+            await coco.mount(coco.component_subpath(source.name), source.ingest, graph)
 
 
 app = coco.App(

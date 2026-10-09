@@ -18,6 +18,7 @@ import aiohttp
 import cocoindex as coco
 
 from records import Document
+from sources.base import DocumentSource
 
 GITHUB_API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -107,8 +108,7 @@ def _item_document(
 
 
 @dataclass(frozen=True)
-class GitHubIssues:
-    name: str
+class GitHubIssues(DocumentSource[GitHubRef]):
     repo: str
     max_items: int
 
@@ -124,8 +124,7 @@ _CONVENTIONAL_SCOPE_RE = re.compile(r"^\w+\(([^)]+)\)!?:")
 
 
 @dataclass(frozen=True)
-class GitHubPullRequests:
-    name: str
+class GitHubPullRequests(DocumentSource[GitHubRef]):
     repo: str
     max_items: int
 
@@ -142,8 +141,7 @@ class GitHubPullRequests:
 
 
 @dataclass(frozen=True)
-class GitHubReleases:
-    name: str
+class GitHubReleases(DocumentSource[GitHubRef]):
     repo: str
 
     async def refs(self) -> AsyncIterator[tuple[coco.StableKey, GitHubRef]]:

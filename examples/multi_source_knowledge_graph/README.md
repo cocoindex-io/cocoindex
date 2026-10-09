@@ -32,25 +32,24 @@ The pipeline has a per-source front half and a shared back half, and the files f
 
 | Phase | Shared? | Where |
 |---|---|---|
-| List refs, fetch one, extract into a record | per source type | `sources/markdown_docs.py`, `sources/github.py`, `sources/postgres_catalog.py` |
-| The record contract and source protocols | shared | `records.py` |
+| List refs, fetch one, extract into a record | per source | `sources/markdown_docs.py`, `sources/github.py`, `sources/postgres_catalog.py` |
+| Default processing per source family: one memoized child per ref, fetch on a miss, hand the record to the graph | per family, overridable per source | `sources/base.py` |
+| The records a source produces | shared | `records.py` |
 | Resolve references to entity keys | shared | `resolver.py` |
 | Write the node and its edges into the shared targets | shared | `graph.py`, the `KnowledgeGraph` class |
-| Memoized processors, the source layer, the registry, the app | glue | `main.py` |
+| Registry, lifespan, app | glue | `main.py` |
 
 **Two record types are the contract between sources and the pipeline.** A `Document` carries source, key, kind, title, text, url, author, status, and `refs` — entity keys the source already knows structurally. An `Entity` carries key, name, kind, area, and dependencies. Everything a source does is produce these.
 
 **One adapter per source, in two halves.** Each adapter is a small frozen dataclass, one module per source type under `sources/`, with `refs()`, which lists the source's items cheaply, and `fetch(ref)`, which loads one item into a record. A ref is identity plus a change token — the `File` handle with its size and mtime, a catalog row's key and `xmin`, an issue number and its `updated_at` — and the shared processor is memoized on it, so an unchanged item is a memo hit and `fetch` never runs for it. `fetch` is a `@coco.fn`, so editing one adapter re-processes only that source's records. The GitHub adapters share one search helper and differ only in the qualifier and the field mapping; the pull-request adapter adds one line of source-specific extraction, reading the entity out of a conventional-commit title such as `fix(neo4j): …`. The registry is a list:
 
 ```python
-document_sources: list[DocumentSource[Any]] = [
-    MarkdownDocs("docs", DOCS_DIR),
-    GitHubIssues("github_issues", GITHUB_REPO),
-    GitHubPullRequests("github_pull_requests", GITHUB_REPO),
-    GitHubReleases("github_releases", GITHUB_REPO),
-]
-entity_sources: list[EntitySource[Any]] = [
+sources: list[Source] = [
     PostgresCatalog("catalog", coco.use_context(CATALOG_DB), CATALOG_TABLE),
+    MarkdownDocs("docs", DOCS_DIR),
+    GitHubIssues("github_issues", GITHUB_REPO, GITHUB_MAX_ISSUES),
+    GitHubPullRequests("github_pull_requests", GITHUB_REPO, GITHUB_MAX_PULL_REQUESTS),
+    GitHubReleases("github_releases", GITHUB_REPO),
 ]
 ```
 
@@ -79,42 +78,46 @@ class KnowledgeGraph:
             self._mentions_rel.declare_relation(from_id=doc_id, to_id=key)
 ```
 
-**The processors are glue.** One memoized function per record type fetches on a miss and hands the record to the graph. They are the generic path, not the only one: a source type that needs more, say one that mounts a child per section of a long page, writes its own processor and still ends by calling `add_document`. The catalog already takes its own route to `add_entity`, with its own protocol, fetch, and batching.
+**Processing lives on the source.** The two family base classes in `sources/base.py` supply the default: `process` is one memoized child component per ref that fetches on a miss and hands the record to the graph, and `ingest` is the source's own processing component, which mounts those children. A source module writes `refs()` and `fetch()` and inherits the rest. A source whose records need more than fetch-then-add, say one that mounts a child per section of a long page, overrides `process` in its own module and still ends by calling `add_document`, so the targets and the write logic stay shared. The catalog already takes its own route to `add_entity`, with its own family, fetch, and batching.
 
 ```python
-@coco.fn(memo=True)
-async def process_document(ref: RefT, source: DocumentSource[RefT], graph: KnowledgeGraph) -> None:
-    graph.add_document(await source.fetch(ref))   # fetch only runs on a memo miss
+@dataclass(frozen=True)
+class DocumentSource(ABC, Generic[RefT]):
+    name: str
 
-@coco.fn(memo=True)
-async def process_entity(ref: RefT, source: EntitySource[RefT], graph: KnowledgeGraph) -> None:
-    graph.add_entity(await source.fetch(ref))
+    @abstractmethod
+    def refs(self) -> AsyncIterable[tuple[coco.StableKey, RefT]]: ...
+
+    @abstractmethod
+    async def fetch(self, ref: RefT) -> Document: ...
+
+    @coco.fn(memo=True)
+    async def process(self, ref: RefT, graph: KnowledgeGraph) -> None:
+        graph.add_document(await self.fetch(ref))   # fetch only runs on a memo miss
+
+    @coco.fn
+    async def ingest(self, graph: KnowledgeGraph) -> None:
+        await coco.mount_each(coco.component_subpath("record"), self.process, self.refs(), graph)
 ```
 
-**Two layers of processing components.** Each source is a [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) at `/source/<name>` that lists its refs, and every ref is a memoized child below it:
+**Two layers of processing components.** Each source's `ingest` is a [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) at `/source/<name>` that lists its refs, and every ref is a memoized child below it:
 
 ```
-/source/"catalog"/process_entity/"neo4j"
-/source/"docs"/process_document/"connectors/neo4j.mdx"
-/source/"github_issues"/process_document/2460
-/source/"github_pull_requests"/process_document/2491
-/source/"github_releases"/process_document/"v1.0.25"
+/source/"catalog"/"record"/"neo4j"
+/source/"docs"/"record"/"connectors/neo4j.mdx"
+/source/"github_issues"/"record"/2460
+/source/"github_pull_requests"/"record"/2491
+/source/"github_releases"/"record"/"v1.0.25"
 ```
 
 ```python
-@coco.fn
-async def ingest_documents(source: DocumentSource[Any], graph: KnowledgeGraph) -> None:
-    await coco.mount_each(process_document, source.refs(), source, graph)
-
 @coco.fn
 async def app_main() -> None:
-    ...  # the registry above
+    sources: list[Source] = [...]   # the registry above
     graph = await KnowledgeGraph.mount(KG_DB)
     with coco.component_subpath("source"):
-        for entity_source in entity_sources:
-            await coco.mount(coco.component_subpath(entity_source.name), ingest_entities, entity_source, graph)
-        for document_source in document_sources:
-            await coco.mount(coco.component_subpath(document_source.name), ingest_documents, document_source, graph)
+        for source in sources:
+            await coco.mount(coco.component_subpath(source.name), source.ingest, graph)
 ```
 
 The source layer is what makes many sources manageable: sources enumerate in parallel, a source that fails (a rate limit, an unreachable API) fails in its own component while the others finish, and removing a source from the registry unmounts its subtree, taking every node and edge it owned with it.
@@ -207,9 +210,9 @@ ORDER BY size(entities) DESC LIMIT 10
 
 ## Make it yours
 
-- **Add a source.** Write a module under `sources/` with a dataclass whose `refs()` yields `(key, ref)` pairs where the ref carries a change token, and whose `@coco.fn` `fetch(ref)` returns a `Document`, then append it to `document_sources` in `app_main`. A Jira project or a Confluence space is the same shape, and both list items with version numbers and can fetch several per request, so their `fetch` can batch like the catalog's. A source with its own extraction step (an LLM prompt per source type, a parser for its format) does that work inside `fetch` and still returns a `Document`.
-- **Add an entity source.** A service catalog, a service mesh export, or an HR directory yields refs and fetches `Entity` records, and goes in `entity_sources`. Each entity should come from exactly one source.
-- **Give a source type its own processor.** When fetch-then-add is not enough, write a memoized processor for that type and mount it from its own ingest function. It still receives the `KnowledgeGraph` and ends with `add_document` or `add_entity`, so the targets and the write logic stay shared.
+- **Add a source.** Write a module under `sources/` with a `DocumentSource` subclass whose `refs()` yields `(key, ref)` pairs where the ref carries a change token, and whose `@coco.fn` `fetch(ref)` returns a `Document`, then append it to `sources` in `app_main`. A Jira project or a Confluence space is the same shape, and both list items with version numbers and can fetch several per request, so their `fetch` can batch like the catalog's. A source with its own extraction step (an LLM prompt per source type, a parser for its format) does that work inside `fetch` and still returns a `Document`.
+- **Add an entity source.** A service catalog, a service mesh export, or an HR directory is an `EntitySource` subclass that yields refs and fetches `Entity` records. Each entity should come from exactly one source.
+- **Give a source its own processing.** When fetch-then-add is not enough, override `process` in that source's module. It still receives the `KnowledgeGraph` and ends with `add_document` or `add_entity`, so the targets and the write logic stay shared.
 - **Point it at your data.** `DOCS_DIR` for any Markdown or MDX tree; `GITHUB_REPO`, `GITHUB_TOKEN`, and for GitHub Enterprise `GITHUB_API_URL=https://<host>/api/v3`; `prepare_source_data.sql` for your catalog, keeping a key, an `aliases` array, and a `depends_on` array.
 - **Swap the resolver.** `Catalog.resolve` is where whole-word matching becomes an embedding search, an LLM call, or a lookup against your own entity-resolution service.
 

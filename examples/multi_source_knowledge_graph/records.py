@@ -1,17 +1,11 @@
-"""The contract between sources and the shared pipeline.
+"""The records a source produces: the contract with the shared phase (graph.py).
 
-A source lists its items as refs and fetches one into a record; everything
-downstream of a record is shared (see graph.py). Two record types, two source
-protocols: documents mention entities, entities are what they mention.
+Documents mention entities; entities are what they mention.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterable
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
-
-import cocoindex as coco
 
 
 @dataclass(frozen=True)
@@ -41,26 +35,3 @@ class Entity:
     kind: str
     area: str
     depends_on: tuple[str, ...] = ()
-
-
-RefT = TypeVar("RefT")
-
-
-class DocumentSource(Protocol[RefT]):
-    """``refs`` lists items with a change token; ``fetch`` loads one on a memo miss."""
-
-    @property
-    def name(self) -> str: ...
-
-    def refs(self) -> AsyncIterable[tuple[coco.StableKey, RefT]]: ...
-
-    async def fetch(self, ref: RefT) -> Document: ...
-
-
-class EntitySource(Protocol[RefT]):
-    @property
-    def name(self) -> str: ...
-
-    def refs(self) -> AsyncIterable[tuple[coco.StableKey, RefT]]: ...
-
-    async def fetch(self, ref: RefT) -> Entity: ...
