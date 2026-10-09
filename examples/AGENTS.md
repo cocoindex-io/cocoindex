@@ -133,6 +133,7 @@ A walkthrough URL means there's a step-by-step guide at
 - `product_recommendation` — product catalog → LLM taxonomy extraction → Neo4j recommendation graph. *(walkthrough: product-recommendation)*
 - `meeting_notes_graph_neo4j` / `meeting_notes_graph_falkordb` — Google Drive meeting notes → Neo4j / FalkorDB graph.
 - `meeting_notes_graph_surrealdb` — local Markdown meeting notes → SurrealDB graph.
+- `multi_source_knowledge_graph` — Postgres component catalog + Markdown docs + GitHub issues → one Neo4j graph with no merge step; sources share keys, no LLM.
 
 ### Custom sources / targets / streaming
 - `pdf_to_markdown` — incremental PDF → Markdown with docling (local, no services). *(walkthrough: pdf-to-markdown)*

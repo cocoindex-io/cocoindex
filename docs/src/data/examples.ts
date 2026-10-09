@@ -696,6 +696,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     entries: [
       { dir: 'meeting_notes_graph_falkordb', title: 'Meeting Notes → Knowledge Graph · FalkorDB', description: 'Extract structured info from Google Drive meeting notes into a FalkorDB knowledge graph.' },
       { dir: 'product_recommendation', docs: 'product-recommendation', title: 'Product Recommendation Graph', description: 'LLM-extract what each product is and what pairs with it from product docs, into a Neo4j graph of products and taxonomies that powers recommendations.', run: RUN_MAIN },
+      { dir: 'multi_source_knowledge_graph', title: 'Multi-source Knowledge Graph', description: 'Combine a Postgres component catalog, a folder of Markdown docs, and GitHub issues into one Neo4j graph with no merge step: each row, doc, and issue owns its node and edges, linked by shared keys. No LLM.', run: RUN_MAIN },
     ],
   },
   {
