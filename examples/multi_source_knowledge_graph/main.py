@@ -1,29 +1,30 @@
 """
 Multi-Source Knowledge Graph (v1) — CocoIndex pipeline example, Neo4j.
 
-Build one knowledge graph of a software project from three kinds of source —
-a component catalog in Postgres, a folder of Markdown docs, and the issues of
-a GitHub repository — with no global merge step. Every catalog row, doc, and
-issue is its own processing component that owns one node plus the edges it
-discovers:
+Many kinds of source, one pipeline, one graph. A source is a name plus an
+async generator of keyed records; everything after that point is shared:
 
-  Component nodes — one per catalog row (key, name, kind, area)
-  Doc       nodes — one per Markdown file
-  Issue     nodes — one per GitHub issue
+  Document sources — a docs folder, GitHub issues, pull requests, releases
+      -> Document record -> process_document(): resolve mentions, declare the
+         Document node and its MENTIONS edges
+  Entity sources   — a component catalog in Postgres
+      -> Entity record   -> process_entity(): declare the Entity node and its
+         DEPENDS_ON edges
 
-  DEPENDS_ON  Component -> Component   (declared by the catalog row)
-  DOCUMENTS   Doc       -> Component   (the doc names the component)
-  MENTIONS    Issue     -> Component   (the issue names the component)
+The component tree has two layers. Each source is a processing component at
+/source/<name> that enumerates its records, and every record is a memoized
+child component below it. Adding a source means adding one adapter to the
+registry; removing one unmounts its subtree and the nodes and edges it owned.
 
-Each node label has exactly one source that owns it; the other sources only
-declare edges into it, keyed by the component key. Mentions are matched by a
-deliberately simple resolver — whole-word alias lookup against the catalog —
-which is the one place to plug in a smarter resolver later.
+Every node label is shared across sources: a Document is a docs page, an
+issue, a pull request, or a release, and any Document can MENTIONS any Entity.
+Mentions are matched by a deliberately simple resolver — whole-word alias
+lookup against the catalog — which is the one place to plug in a smarter one.
 
-By default the catalog describes CocoIndex itself and the docs and issues are
-CocoIndex's own, so the result is an engineering knowledge graph of this
-repository. Point the three settings at your own catalog, docs folder, and
-GitHub (or GitHub Enterprise) repo to build yours.
+By default the catalog describes CocoIndex itself and the docs, issues, pull
+requests, and releases are CocoIndex's own, so the result is an engineering
+knowledge graph of this repository. Point the settings at your own catalog,
+docs folder, and GitHub (or GitHub Enterprise) repo to build yours.
 
 Index (one-shot catch-up):
     cocoindex update main
@@ -31,13 +32,14 @@ Index (one-shot catch-up):
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import pathlib
 import re
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import aiohttp
 import asyncpg
@@ -60,11 +62,74 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO", "cocoindex-io/cocoindex")
 GITHUB_API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_MAX_ISSUES = int(os.environ.get("GITHUB_MAX_ISSUES", "1000"))
+GITHUB_MAX_PULL_REQUESTS = int(os.environ.get("GITHUB_MAX_PULL_REQUESTS", "300"))
 _GITHUB_PAGE_SIZE = 100
 
 
 # ---------------------------------------------------------------------------
-# Catalog rows and the mention resolver
+# Context keys
+# ---------------------------------------------------------------------------
+
+KG_DB = coco.ContextKey[neo4j.ConnectionFactory]("kg_db")
+CATALOG_DB = coco.ContextKey[asyncpg.Pool]("catalog_db")
+# detect_change=True: when the catalog's aliases change, every document that
+# resolved mentions against it is re-processed.
+CATALOG = coco.ContextKey["Catalog"]("catalog", detect_change=True)
+# Passing the docs folder as a ContextKey keeps file paths relative to it (the
+# Document key) and memoization stable if the folder moves.
+DOCS_DIR = coco.ContextKey[pathlib.Path]("docs_dir")
+
+
+# ---------------------------------------------------------------------------
+# Shared records — what every source produces
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Document:
+    """One item of any document source, in the shape the shared pipeline reads."""
+
+    source: str
+    key: str  # stable within the source
+    kind: str  # "doc" | "issue" | "pull_request" | "release"
+    title: str
+    text: str
+    url: str
+    author: str
+    status: str
+    updated_at: str
+    # Entity keys the source already knows structurally, on top of what the
+    # resolver finds in the text (e.g. the scope of a conventional-commit title).
+    refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Entity:
+    """One item of any entity source."""
+
+    key: str
+    name: str
+    kind: str
+    area: str
+    depends_on: tuple[str, ...] = ()
+
+
+class DocumentSource(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    def documents(self) -> AsyncIterable[tuple[coco.StableKey, Document]]: ...
+
+
+class EntitySource(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    def entities(self) -> AsyncIterable[tuple[coco.StableKey, Entity]]: ...
+
+
+# ---------------------------------------------------------------------------
+# The mention resolver
 # ---------------------------------------------------------------------------
 
 
@@ -82,15 +147,15 @@ class CatalogRow:
 
 @dataclass(frozen=True)
 class Catalog:
-    """Every way a component may be written, mapped to its key.
+    """Every way an entity may be written, mapped to its key.
 
     ``resolve`` is the entity-resolution step of this pipeline: whole-word,
     case-insensitive alias matching. Replace it with an embedding or LLM
     resolver — or a call to an external oracle — without touching anything
-    else; only the memo of the components that call it is invalidated.
+    else; only the memo of the documents that call it is invalidated.
     """
 
-    aliases: tuple[tuple[str, str], ...]  # (alias, component key), sorted
+    aliases: tuple[tuple[str, str], ...]  # (alias, entity key), sorted
 
     @classmethod
     def from_rows(cls, rows: Iterable[CatalogRow]) -> Catalog:
@@ -109,6 +174,10 @@ class Catalog:
         return dict(self.aliases)
 
     @functools.cached_property
+    def keys(self) -> frozenset[str]:
+        return frozenset(self._lookup.values())
+
+    @functools.cached_property
     def _pattern(self) -> re.Pattern[str]:
         # Longest alias first so "oci object storage" wins over "oci".
         alternatives = "|".join(
@@ -119,22 +188,13 @@ class Catalog:
         return re.compile(rf"(?<![a-z0-9])(?:{alternatives})(?![a-z0-9])")
 
     def resolve(self, text: str) -> set[str]:
-        """Component keys mentioned in ``text``."""
+        """Entity keys mentioned in ``text``."""
         return {self._lookup[m.group(0)] for m in self._pattern.finditer(text.lower())}
 
 
 # ---------------------------------------------------------------------------
-# Context keys and lifespan
+# Lifespan
 # ---------------------------------------------------------------------------
-
-KG_DB = coco.ContextKey[neo4j.ConnectionFactory]("kg_db")
-CATALOG_DB = coco.ContextKey[asyncpg.Pool]("catalog_db")
-# detect_change=True: when the catalog's aliases change, every doc and issue
-# that resolved mentions against it is re-processed.
-CATALOG = coco.ContextKey[Catalog]("catalog", detect_change=True)
-# Passing the docs folder as a ContextKey keeps file paths relative to it (the
-# Doc primary key) and memoization stable if the folder moves.
-DOCS_DIR = coco.ContextKey[pathlib.Path]("docs_dir")
 
 
 @coco.lifespan
@@ -150,137 +210,19 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
             database=os.environ.get("NEO4J_DATABASE", "neo4j"),
         ),
     )
+    builder.provide(DOCS_DIR, DOCS_DIR_PATH)
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(CATALOG_DB, pool)
         rows = await pool.fetch(
             f"SELECT key, name, kind, area, aliases, depends_on FROM {CATALOG_TABLE}"
         )
         builder.provide(CATALOG, Catalog.from_rows(CatalogRow(**dict(r)) for r in rows))
-        builder.provide(DOCS_DIR, DOCS_DIR_PATH)
         yield
 
 
 # ---------------------------------------------------------------------------
-# Neo4j node schemas (dataclasses for declare_record)
+# Sources — one small adapter each; this is the only per-source code
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class Component:
-    key: str  # primary key
-    name: str
-    kind: str
-    area: str
-
-
-@dataclass
-class Doc:
-    path: str  # primary key — path relative to the docs folder
-    title: str
-
-
-@dataclass
-class Issue:
-    number: int  # primary key
-    title: str
-    state: str
-    url: str
-    author: str
-    updated_at: str
-
-
-# DEPENDS_ON, DOCUMENTS and MENTIONS carry no payload — declared without a
-# schema, so the connector derives each edge's identity from its endpoints.
-
-
-# ---------------------------------------------------------------------------
-# GitHub issues source
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class GitHubIssue:
-    """The parts of a GitHub issue the pipeline looks at."""
-
-    number: int
-    title: str
-    body: str
-    state: str
-    url: str
-    author: str
-    updated_at: str
-
-
-async def fetch_issues() -> AsyncIterator[tuple[int, GitHubIssue]]:
-    """Yield ``(issue number, issue)`` for the repo's issues, newest update first.
-
-    Uses the search endpoint so pull requests are excluded server-side (the
-    plain issues listing mixes both in). Unauthenticated search allows ten
-    requests per minute, enough for the 1,000-issue search cap.
-    """
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-
-    fetched = 0
-    async with aiohttp.ClientSession(headers=headers) as session:
-        for page in range(1, 1 + GITHUB_MAX_ISSUES // _GITHUB_PAGE_SIZE + 1):
-            params: dict[str, str | int] = {
-                "q": f"repo:{GITHUB_REPO} is:issue",
-                "sort": "updated",
-                "order": "desc",
-                "per_page": _GITHUB_PAGE_SIZE,
-                "page": page,
-            }
-            async with session.get(
-                f"{GITHUB_API_URL}/search/issues", params=params
-            ) as resp:
-                payload = await resp.json()
-                if resp.status != 200:
-                    raise RuntimeError(
-                        f"GitHub search failed ({resp.status}): {payload.get('message')}"
-                    )
-            items = payload["items"]
-            for item in items:
-                if fetched >= GITHUB_MAX_ISSUES:
-                    return
-                fetched += 1
-                yield (
-                    item["number"],
-                    GitHubIssue(
-                        number=item["number"],
-                        title=item["title"],
-                        body=item.get("body") or "",
-                        state=item["state"],
-                        url=item["html_url"],
-                        author=item["user"]["login"],
-                        updated_at=item["updated_at"],
-                    ),
-                )
-            if len(items) < _GITHUB_PAGE_SIZE:
-                return
-
-
-# ---------------------------------------------------------------------------
-# Per-item processing — one component per catalog row / doc / issue
-# ---------------------------------------------------------------------------
-
-
-@coco.fn(memo=True)
-async def process_component(
-    row: CatalogRow,
-    component_table: neo4j.TableTarget[Component],
-    depends_on_rel: neo4j.RelationTarget[Any],
-) -> None:
-    component_table.declare_record(
-        row=Component(key=row.key, name=row.name, kind=row.kind, area=row.area)
-    )
-    for dep in row.depends_on:
-        depends_on_rel.declare_relation(from_id=row.key, to_id=dep)
-
 
 _FRONT_MATTER_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
 _HEADING_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
@@ -293,37 +235,308 @@ def _doc_title(text: str, path: str) -> str:
     return pathlib.PurePosixPath(path).stem
 
 
-@coco.fn(memo=True)
-async def process_doc(
-    file: localfs.File,
-    doc_table: neo4j.TableTarget[Doc],
-    documents_rel: neo4j.RelationTarget[Any],
-) -> None:
-    text = await file.read_text()
-    path = file.file_path.path.as_posix()
-    doc_table.declare_record(row=Doc(path=path, title=_doc_title(text, path)))
-    for key in coco.use_context(CATALOG).resolve(text):
-        documents_rel.declare_relation(from_id=path, to_id=key)
+@dataclass(frozen=True)
+class MarkdownDocs:
+    """Markdown / MDX files under a folder."""
+
+    name: str
+    root: coco.ContextKey[pathlib.Path]
+
+    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
+        files = localfs.walk_dir(
+            self.root,
+            recursive=True,
+            path_matcher=PatternFilePathMatcher(
+                included_patterns=["**/*.md", "**/*.mdx"]
+            ),
+        )
+        async for path, file in files.items():
+            text = await file.read_text()
+            yield (
+                path,
+                Document(
+                    source=self.name,
+                    key=path,
+                    kind="doc",
+                    title=_doc_title(text, path),
+                    text=text,
+                    url="",
+                    author="",
+                    status="",
+                    updated_at="",
+                ),
+            )
+
+
+def _github_session() -> aiohttp.ClientSession:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return aiohttp.ClientSession(headers=headers)
+
+
+async def _github_json(resp: aiohttp.ClientResponse) -> Any:
+    payload = await resp.json()
+    if resp.status != 200:
+        raise RuntimeError(
+            f"GitHub request failed ({resp.status}): {payload.get('message')}"
+        )
+    return payload
+
+
+async def _github_search(
+    session: aiohttp.ClientSession, repo: str, qualifier: str, max_items: int
+) -> AsyncIterator[dict[str, Any]]:
+    """Issues or pull requests of ``repo`` via the search endpoint, newest update
+    first. The plain issues listing mixes both in; search filters server-side."""
+    fetched = 0
+    for page in range(1, max_items // _GITHUB_PAGE_SIZE + 2):
+        params: dict[str, str | int] = {
+            "q": f"repo:{repo} {qualifier}",
+            "sort": "updated",
+            "order": "desc",
+            "per_page": _GITHUB_PAGE_SIZE,
+            "page": page,
+        }
+        async with session.get(
+            f"{GITHUB_API_URL}/search/issues", params=params
+        ) as resp:
+            items = (await _github_json(resp))["items"]
+        for item in items:
+            if fetched >= max_items:
+                return
+            fetched += 1
+            yield item
+        if len(items) < _GITHUB_PAGE_SIZE:
+            return
+
+
+def _github_item_document(
+    source: str, kind: str, item: dict[str, Any], refs: tuple[str, ...] = ()
+) -> Document:
+    return Document(
+        source=source,
+        key=str(item["number"]),
+        kind=kind,
+        title=item["title"],
+        text=item.get("body") or "",
+        url=item["html_url"],
+        author=item["user"]["login"],
+        status=item["state"],
+        updated_at=item["updated_at"],
+        refs=refs,
+    )
+
+
+@dataclass(frozen=True)
+class GitHubIssues:
+    name: str
+    repo: str
+    max_items: int = GITHUB_MAX_ISSUES
+
+    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
+        async with _github_session() as session:
+            async for item in _github_search(
+                session, self.repo, "is:issue", self.max_items
+            ):
+                yield item["number"], _github_item_document(self.name, "issue", item)
+
+
+_CONVENTIONAL_SCOPE_RE = re.compile(r"^\w+\(([^)]+)\)!?:")
+
+
+@dataclass(frozen=True)
+class GitHubPullRequests:
+    name: str
+    repo: str
+    max_items: int = GITHUB_MAX_PULL_REQUESTS
+
+    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
+        async with _github_session() as session:
+            async for item in _github_search(
+                session, self.repo, "is:pr", self.max_items
+            ):
+                # Source-specific extraction: a conventional-commit title such
+                # as "fix(neo4j): ..." names the entity it touches outright.
+                scope = _CONVENTIONAL_SCOPE_RE.match(item["title"])
+                refs = (scope.group(1).strip().lower(),) if scope else ()
+                yield (
+                    item["number"],
+                    _github_item_document(self.name, "pull_request", item, refs),
+                )
+
+
+@dataclass(frozen=True)
+class GitHubReleases:
+    name: str
+    repo: str
+
+    async def documents(self) -> AsyncIterator[tuple[coco.StableKey, Document]]:
+        async with _github_session() as session:
+            async with session.get(
+                f"{GITHUB_API_URL}/repos/{self.repo}/releases",
+                params={"per_page": _GITHUB_PAGE_SIZE},
+            ) as resp:
+                releases = await _github_json(resp)
+        for release in releases:
+            if release["draft"]:
+                continue
+            yield (
+                release["tag_name"],
+                Document(
+                    source=self.name,
+                    key=release["tag_name"],
+                    kind="release",
+                    title=release["name"] or release["tag_name"],
+                    text=release.get("body") or "",
+                    url=release["html_url"],
+                    author=release["author"]["login"],
+                    status="prerelease" if release["prerelease"] else "published",
+                    updated_at=release["published_at"] or "",
+                ),
+            )
+
+
+@dataclass(frozen=True)
+class PostgresCatalog:
+    """Rows of a catalog table, each an entity with its dependencies."""
+
+    name: str
+    db: coco.ContextKey[asyncpg.Pool]
+    table: str
+
+    async def entities(self) -> AsyncIterator[tuple[coco.StableKey, Entity]]:
+        rows = postgres.PgTableSource(
+            coco.use_context(self.db), table_name=self.table, row_type=CatalogRow
+        )
+        async for row in rows.fetch_rows():
+            yield (
+                row.key,
+                Entity(
+                    key=row.key,
+                    name=row.name,
+                    kind=row.kind,
+                    area=row.area,
+                    depends_on=tuple(row.depends_on),
+                ),
+            )
+
+
+# The registry. Adding a source to the graph is adding one line here.
+DOCUMENT_SOURCES: list[DocumentSource] = [
+    MarkdownDocs("docs", DOCS_DIR),
+    GitHubIssues("github_issues", GITHUB_REPO),
+    GitHubPullRequests("github_pull_requests", GITHUB_REPO),
+    GitHubReleases("github_releases", GITHUB_REPO),
+]
+ENTITY_SOURCES: list[EntitySource] = [
+    PostgresCatalog("catalog", CATALOG_DB, CATALOG_TABLE),
+]
+
+
+# ---------------------------------------------------------------------------
+# Neo4j node schemas (dataclasses for declare_record)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DocumentNode:
+    id: str  # primary key — "<source>:<key>"
+    source: str
+    kind: str
+    title: str
+    url: str
+    author: str
+    status: str
+    updated_at: str
+
+
+@dataclass
+class EntityNode:
+    key: str  # primary key
+    name: str
+    kind: str
+    area: str
+
+
+# DEPENDS_ON and MENTIONS carry no payload — declared without a schema, so the
+# connector derives each edge's identity from its endpoints.
+
+
+# ---------------------------------------------------------------------------
+# Shared processing — the same two functions for every source
+# ---------------------------------------------------------------------------
 
 
 @coco.fn(memo=True)
-async def process_issue(
-    issue: GitHubIssue,
-    issue_table: neo4j.TableTarget[Issue],
+async def process_document(
+    doc: Document,
+    document_table: neo4j.TableTarget[DocumentNode],
     mentions_rel: neo4j.RelationTarget[Any],
 ) -> None:
-    issue_table.declare_record(
-        row=Issue(
-            number=issue.number,
-            title=issue.title,
-            state=issue.state,
-            url=issue.url,
-            author=issue.author,
-            updated_at=issue.updated_at,
+    doc_id = f"{doc.source}:{doc.key}"
+    document_table.declare_record(
+        row=DocumentNode(
+            id=doc_id,
+            source=doc.source,
+            kind=doc.kind,
+            title=doc.title,
+            url=doc.url,
+            author=doc.author,
+            status=doc.status,
+            updated_at=doc.updated_at,
         )
     )
-    for key in coco.use_context(CATALOG).resolve(f"{issue.title}\n{issue.body}"):
-        mentions_rel.declare_relation(from_id=issue.number, to_id=key)
+    catalog = coco.use_context(CATALOG)
+    mentioned = catalog.resolve(f"{doc.title}\n{doc.text}")
+    mentioned.update(ref for ref in doc.refs if ref in catalog.keys)
+    for key in mentioned:
+        mentions_rel.declare_relation(from_id=doc_id, to_id=key)
+
+
+@coco.fn(memo=True)
+async def process_entity(
+    entity: Entity,
+    entity_table: neo4j.TableTarget[EntityNode],
+    depends_on_rel: neo4j.RelationTarget[Any],
+) -> None:
+    entity_table.declare_record(
+        row=EntityNode(
+            key=entity.key, name=entity.name, kind=entity.kind, area=entity.area
+        )
+    )
+    for dep in entity.depends_on:
+        depends_on_rel.declare_relation(from_id=entity.key, to_id=dep)
+
+
+# ---------------------------------------------------------------------------
+# The source layer — one processing component per source, one child per record
+# ---------------------------------------------------------------------------
+
+
+@coco.fn
+async def ingest_documents(
+    source: DocumentSource,
+    document_table: neo4j.TableTarget[DocumentNode],
+    mentions_rel: neo4j.RelationTarget[Any],
+) -> None:
+    await coco.mount_each(
+        process_document, source.documents(), document_table, mentions_rel
+    )
+
+
+@coco.fn
+async def ingest_entities(
+    source: EntitySource,
+    entity_table: neo4j.TableTarget[EntityNode],
+    depends_on_rel: neo4j.RelationTarget[Any],
+) -> None:
+    await coco.mount_each(
+        process_entity, source.entities(), entity_table, depends_on_rel
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -333,69 +546,44 @@ async def process_issue(
 
 @coco.fn
 async def app_main() -> None:
-    # --- Node tables: each label has exactly one owning source below ---
-    component_table = await neo4j.mount_table_target(
+    # --- Node tables and relation targets, shared by every source ---
+    entity_table = await neo4j.mount_table_target(
         KG_DB,
-        "Component",
-        await neo4j.TableSchema.from_class(Component, primary_key="key"),
+        "Entity",
+        await neo4j.TableSchema.from_class(EntityNode, primary_key="key"),
         primary_key="key",
     )
-    doc_table = await neo4j.mount_table_target(
+    document_table = await neo4j.mount_table_target(
         KG_DB,
-        "Doc",
-        await neo4j.TableSchema.from_class(Doc, primary_key="path"),
-        primary_key="path",
+        "Document",
+        await neo4j.TableSchema.from_class(DocumentNode, primary_key="id"),
+        primary_key="id",
     )
-    issue_table = await neo4j.mount_table_target(
-        KG_DB,
-        "Issue",
-        await neo4j.TableSchema.from_class(Issue, primary_key="number"),
-        primary_key="number",
-    )
-
-    # --- Relation targets ---
     depends_on_rel = await neo4j.mount_relation_target(
-        KG_DB, "DEPENDS_ON", component_table, component_table
-    )
-    documents_rel = await neo4j.mount_relation_target(
-        KG_DB, "DOCUMENTS", doc_table, component_table
+        KG_DB, "DEPENDS_ON", entity_table, entity_table
     )
     mentions_rel = await neo4j.mount_relation_target(
-        KG_DB, "MENTIONS", issue_table, component_table
+        KG_DB, "MENTIONS", document_table, entity_table
     )
 
-    # --- Three sources, three connector kinds, one component per item ---
-    catalog = postgres.PgTableSource(
-        coco.use_context(CATALOG_DB), table_name=CATALOG_TABLE, row_type=CatalogRow
-    )
-    await coco.mount_each(
-        coco.component_subpath("catalog"),
-        process_component,
-        catalog.fetch_rows().items(lambda row: row.key),
-        component_table,
-        depends_on_rel,
-    )
-
-    docs = localfs.walk_dir(
-        DOCS_DIR,
-        recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md", "**/*.mdx"]),
-    )
-    await coco.mount_each(
-        coco.component_subpath("docs"),
-        process_doc,
-        docs.items(),
-        doc_table,
-        documents_rel,
-    )
-
-    await coco.mount_each(
-        coco.component_subpath("github"),
-        process_issue,
-        fetch_issues(),
-        issue_table,
-        mentions_rel,
-    )
+    # --- One processing component per source, under /source/<name> ---
+    with coco.component_subpath("source"):
+        for entity_source in ENTITY_SOURCES:
+            await coco.mount(
+                coco.component_subpath(entity_source.name),
+                ingest_entities,
+                entity_source,
+                entity_table,
+                depends_on_rel,
+            )
+        for document_source in DOCUMENT_SOURCES:
+            await coco.mount(
+                coco.component_subpath(document_source.name),
+                ingest_documents,
+                document_source,
+                document_table,
+                mentions_rel,
+            )
 
 
 app = coco.App(

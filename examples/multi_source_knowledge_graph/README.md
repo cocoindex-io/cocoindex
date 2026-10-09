@@ -1,8 +1,8 @@
-<h1 align="center">One knowledge graph from <em>many</em> sources — no merge step.</h1>
+<h1 align="center">Many sources, <em>one</em> pipeline, one knowledge graph.</h1>
 
 <p align="center">
-  <b>A component catalog in Postgres, a folder of Markdown docs, and the issues of a GitHub repo land in one Neo4j graph.</b><br/>
-  Each row, file, and issue is its own incremental unit — in plain async Python.
+  <b>A Postgres catalog, a folder of Markdown docs, and the issues, pull requests, and releases of a GitHub repo land in one Neo4j graph.</b><br/>
+  Every source is a small adapter; everything after it is shared — in plain async Python.
 </p>
 
 <p align="center">
@@ -22,59 +22,79 @@
 
 <br/>
 
-Knowledge about a software system is scattered: the catalog says what exists and what depends on what, the docs explain it, the issue tracker records what is broken. This example reads all three — a Postgres table, a folder of Markdown, and GitHub issues fetched over the REST API — and writes **one** Neo4j graph where a `Component` node is reachable from the docs that describe it and the issues that mention it. There is no global "build the graph" pass: every catalog row, doc, and issue is its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/), so editing one doc or closing one issue re-syncs exactly that node and its edges.
+Knowledge about a software system is spread over dozens of systems: a catalog says what exists, docs explain it, the issue tracker records what is broken, pull requests and release notes record what changed. The processing is mostly the same for all of them — find which entities a piece of text is about, link it to them — and only the shape of each source differs. This example is built in that shape. A **source** is a name plus an async generator of records; a **document** from any source goes through the same `process_document`; and the result is **one** Neo4j graph where a `Document` is a docs page, an issue, a pull request, or a release, and any of them can `MENTIONS` any `Entity`.
 
-By default the catalog describes CocoIndex itself and the docs and issues are CocoIndex's own, so you get an engineering knowledge graph of this repository. Three settings point it at your catalog, your docs, and your GitHub or GitHub Enterprise repo instead.
+By default the catalog describes CocoIndex itself and the docs, issues, pull requests, and releases are CocoIndex's own, so you get an engineering knowledge graph of this repository. Point the settings at your own catalog, docs, and GitHub or GitHub Enterprise repo instead. No LLM, no API keys; the only services are Postgres and Neo4j.
 
 ## How it works
 
-The graph has three node labels and three edge types:
+**Two record types are the contract between sources and the pipeline.** A `Document` carries source, key, kind, title, text, url, author, status, and `refs` — entity keys the source already knows structurally. An `Entity` carries key, name, kind, area, and dependencies. Everything a source does is produce these.
 
-| Node | Owned by | Edges it declares |
-|---|---|---|
-| `Component {key, name, kind, area}` | one catalog row | `DEPENDS_ON → Component` |
-| `Doc {path, title}` | one Markdown file | `DOCUMENTS → Component` |
-| `Issue {number, title, state, url, author}` | one GitHub issue | `MENTIONS → Component` |
+**One adapter per source.** Each is a small frozen dataclass with a `documents()` or `entities()` async generator. The GitHub adapters share one search helper and differ only in the qualifier and the field mapping; the pull-request adapter adds one line of source-specific extraction, reading the entity out of a conventional-commit title such as `fix(neo4j): …`. The registry is a list:
 
-The rule that makes multiple sources compose without a merge step: **every node label has exactly one source that owns it, and the other sources only declare edges into it, keyed by the component key.** A doc never declares a `Component` node; it declares a `DOCUMENTS` edge whose target is a key. The Neo4j connector merges edges onto their endpoints, so write order between sources never matters.
+```python
+DOCUMENT_SOURCES: list[DocumentSource] = [
+    MarkdownDocs("docs", DOCS_DIR),
+    GitHubIssues("github_issues", GITHUB_REPO),
+    GitHubPullRequests("github_pull_requests", GITHUB_REPO),
+    GitHubReleases("github_releases", GITHUB_REPO),
+]
+ENTITY_SOURCES: list[EntitySource] = [PostgresCatalog("catalog", CATALOG_DB, CATALOG_TABLE)]
+```
 
-Mentions are resolved by a deliberately simple resolver — whole-word, case-insensitive alias lookup against the catalog — in one method, `Catalog.resolve`. The catalog is provided as a [context value](https://cocoindex.io/docs/programming_guide/context/) with change detection on, so adding an alias re-processes the docs and issues that depend on it. Read it in [`main.py`](main.py):
+**Two shared processors.** `process_document` resolves mentions and declares the `Document` node plus its `MENTIONS` edges; `process_entity` declares the `Entity` node plus its `DEPENDS_ON` edges. Both are memoized per record, so a changed issue or an edited page re-runs exactly one of them.
 
 ```python
 @coco.fn(memo=True)
-async def process_doc(file: localfs.File, doc_table: neo4j.TableTarget[Doc], documents_rel: neo4j.RelationTarget[Any]) -> None:
-    text = await file.read_text()
-    path = file.file_path.path.as_posix()
-    doc_table.declare_record(row=Doc(path=path, title=_doc_title(text, path)))
-    for key in coco.use_context(CATALOG).resolve(text):
-        documents_rel.declare_relation(from_id=path, to_id=key)
-
-@coco.fn
-async def app_main(docs_dir: pathlib.Path) -> None:
-    component_table = await neo4j.mount_table_target(KG_DB, "Component", ..., primary_key="key")
-    doc_table = await neo4j.mount_table_target(KG_DB, "Doc", ..., primary_key="path")
-    issue_table = await neo4j.mount_table_target(KG_DB, "Issue", ..., primary_key="number")
-    depends_on_rel = await neo4j.mount_relation_target(KG_DB, "DEPENDS_ON", component_table, component_table)
-    documents_rel = await neo4j.mount_relation_target(KG_DB, "DOCUMENTS", doc_table, component_table)
-    mentions_rel = await neo4j.mount_relation_target(KG_DB, "MENTIONS", issue_table, component_table)
-
-    catalog = postgres.PgTableSource(coco.use_context(CATALOG_DB), table_name=CATALOG_TABLE, row_type=CatalogRow)
-    await coco.mount_each(coco.component_subpath("catalog"), process_component,
-                          catalog.fetch_rows().items(lambda row: row.key), component_table, depends_on_rel)
-    docs = localfs.walk_dir(docs_dir, recursive=True, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md", "**/*.mdx"]))
-    await coco.mount_each(coco.component_subpath("docs"), process_doc, docs.items(), doc_table, documents_rel)
-    await coco.mount_each(coco.component_subpath("github"), process_issue, fetch_issues(), issue_table, mentions_rel)
+async def process_document(doc: Document, document_table: neo4j.TableTarget[DocumentNode], mentions_rel: neo4j.RelationTarget[Any]) -> None:
+    doc_id = f"{doc.source}:{doc.key}"
+    document_table.declare_record(row=DocumentNode(id=doc_id, source=doc.source, kind=doc.kind, title=doc.title, ...))
+    catalog = coco.use_context(CATALOG)
+    mentioned = catalog.resolve(f"{doc.title}\n{doc.text}")
+    mentioned.update(ref for ref in doc.refs if ref in catalog.keys)
+    for key in mentioned:
+        mentions_rel.declare_relation(from_id=doc_id, to_id=key)
 ```
 
-Three `mount_each` calls, three source kinds: a database table, a directory walk, and an async generator over a REST API. The GitHub source uses the search endpoint so pull requests are excluded server-side; the same code talks to GitHub Enterprise via `GITHUB_API_URL`. The docs folder is passed as a `ContextKey`, so `Doc` keys are paths relative to it and memoization survives moving the folder.
+**Two layers of processing components.** Each source is a [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) at `/source/<name>` that enumerates its records, and every record is a memoized child below it:
+
+```
+/source/"catalog"/process_entity/"neo4j"
+/source/"docs"/process_document/"connectors/neo4j.mdx"
+/source/"github_issues"/process_document/2460
+/source/"github_pull_requests"/process_document/2491
+/source/"github_releases"/process_document/"v1.0.25"
+```
+
+```python
+@coco.fn
+async def ingest_documents(source: DocumentSource, document_table, mentions_rel) -> None:
+    await coco.mount_each(process_document, source.documents(), document_table, mentions_rel)
+
+@coco.fn
+async def app_main() -> None:
+    ...  # mount the Entity and Document tables and the two relation targets once
+    with coco.component_subpath("source"):
+        for entity_source in ENTITY_SOURCES:
+            await coco.mount(coco.component_subpath(entity_source.name), ingest_entities, entity_source, entity_table, depends_on_rel)
+        for document_source in DOCUMENT_SOURCES:
+            await coco.mount(coco.component_subpath(document_source.name), ingest_documents, document_source, document_table, mentions_rel)
+```
+
+The source layer is what makes many sources manageable: sources enumerate in parallel, a source that fails (a rate limit, an unreachable API) fails in its own component while the others finish, and removing a source from the registry unmounts its subtree, taking every node and edge it owned with it.
+
+**One rule keeps the sources independent.** Every node label has exactly one *kind* of source that owns it — entity sources own `Entity` nodes, document sources own `Document` nodes — and documents only ever declare edges into entities, keyed by the entity key. A document never declares or looks up an `Entity` node; the Neo4j connector merges the edge onto its endpoint, so the write order between sources never matters.
+
+**Resolution is one seam.** `Catalog.resolve` does whole-word, case-insensitive alias matching against the catalog, which is provided as a [context value](https://cocoindex.io/docs/programming_guide/context/) with change detection on, so adding an alias re-processes the documents that depend on it. Replace it with an embedding search, an LLM, or a call to your own entity-resolution service and nothing else changes.
 
 ## Why it's worth a star ⭐
 
-- **Heterogeneous sources, one graph.** Postgres, local files, and an HTTP API in one app, sharing one set of node tables. Any keyed async iterable is a source; no connector is needed for your internal APIs.
-- **No fan-in bottleneck.** Nothing collects "all entities" into one component. Each item owns its node and edges, so a million issues are a million small incremental units, not one giant re-run.
-- **Edges by key, not by lookup.** A doc declares `DOCUMENTS → "postgres"`; it never needs to find or create the `Component` node. Sources stay independent and write order is irrelevant.
-- **Resolution is a single seam.** Swap `Catalog.resolve` for an embedding, LLM, or external resolver. Only the docs and issues whose mentions change are re-processed.
-- **Incremental across all three.** Edit one doc, close one issue, add one catalog row: exactly those components re-run, and vanished items take their nodes and edges with them.
+- **Adding a source is adding an adapter.** Twenty lines that yield records, one line in the registry. The pipeline, the targets, and the graph schema do not change.
+- **Shared labels, shared edges.** `MATCH (d:Document)-[:MENTIONS]->(e:Entity {key: 'postgres'})` returns docs pages, issues, pull requests, and releases in one result. Filter on `d.kind` when you want one of them.
+- **No fan-in bottleneck.** Nothing collects "all entities" into one component. A million documents are a million small incremental units.
+- **Sources are isolated.** Each enumerates in its own processing component; a failure or a removal is scoped to that source's subtree.
+- **Incremental across all of them.** Edit a page, close an issue, cut a release, add a catalog row: exactly those records re-run, and vanished records take their nodes and edges with them.
+- **Three connector kinds in one app.** A database table, a directory walk, and an HTTP API, with no connector needed for the API: any async generator of keyed records is a source.
 
 ## Run it
 
@@ -92,67 +112,69 @@ cp .env.example .env     # defaults match the two containers above
 pip install -e .
 ```
 
-**3. Seed the component catalog** — one row per CocoIndex component, with aliases and dependencies:
+**3. Seed the catalog** — one row per CocoIndex component, with aliases and dependencies:
 
 ```sh
 psql "$POSTGRES_URL" -f ./prepare_source_data.sql
 ```
 
-**4. Build the graph** — reads the catalog, walks the repo's docs folder, fetches the repo's issues (a few unauthenticated requests), and syncs Neo4j:
+**4. Build the graph** — reads the catalog, walks the repo's docs folder, fetches the repo's issues, pull requests, and releases, and syncs Neo4j:
 
 ```sh
 cocoindex update main
 ```
 
-Run it again and nothing is written: every item is memoized on its content. Edit a doc page, or wait for an issue to change, and only that item re-syncs.
+One run stays within GitHub's unauthenticated search limit of ten requests a minute; set `GITHUB_TOKEN` in `.env` to run more often. Run it again and nothing is written: every record is memoized on its content.
 
-**5. Explore the graph** — open [Neo4j Browser](http://localhost:7474) (`neo4j` / `cocoindex`). These questions can only be answered because the three sources share component keys:
+**5. Explore the graph** — open [Neo4j Browser](http://localhost:7474) (`neo4j` / `cocoindex`). Every query below spans sources; that is the point of the shared labels:
 
 ```cypher
-// Open issues about anything the Rust SDK depends on, transitively
-MATCH (:Component {key: 'rust_sdk'})-[:DEPENDS_ON*1..]->(c:Component)<-[:MENTIONS]-(i:Issue {state: 'open'})
-RETURN c.key AS component, i.number AS issue, i.title AS title
-ORDER BY component, issue
+// One entity, seen from every kind of source
+MATCH (d:Document)-[:MENTIONS]->(:Entity {key: 'postgres'})
+RETURN d.kind AS kind, count(*) AS documents, collect(d.title)[..3] AS sample
+ORDER BY documents DESC
 ```
 
 ```cypher
-// Connectors with open issues, and the docs pages that cover them
-MATCH (d:Doc)-[:DOCUMENTS]->(c:Component {kind: 'connector'})<-[:MENTIONS]-(i:Issue {state: 'open'})
-RETURN c.key AS connector, count(DISTINCT i) AS open_issues, collect(DISTINCT d.path)[..5] AS docs
+// For each entity: the last release that mentioned it and how many issues are still open
+MATCH (e:Entity)<-[:MENTIONS]-(r:Document {kind: 'release'})
+WITH e, max(r.updated_at) AS last_release
+OPTIONAL MATCH (e)<-[:MENTIONS]-(i:Document {kind: 'issue', status: 'open'})
+RETURN e.key AS entity, last_release, count(i) AS open_issues
 ORDER BY open_issues DESC
+```
+
+```cypher
+// Open issues and pull requests about anything the Rust SDK depends on, transitively
+MATCH (:Entity {key: 'rust_sdk'})-[:DEPENDS_ON*1..]->(e:Entity)<-[:MENTIONS]-(d:Document {status: 'open'})
+RETURN e.key AS entity, d.kind AS kind, d.key AS number, d.title AS title
+ORDER BY entity, kind, number
 ```
 
 ```cypher
 // Which area of the project do open issues cluster in?
-MATCH (c:Component)<-[:MENTIONS]-(i:Issue {state: 'open'})
-RETURN c.area AS area, count(DISTINCT i) AS open_issues, collect(DISTINCT c.key) AS components
+MATCH (e:Entity)<-[:MENTIONS]-(i:Document {kind: 'issue', status: 'open'})
+RETURN e.area AS area, count(DISTINCT i) AS open_issues, collect(DISTINCT e.key) AS entities
 ORDER BY open_issues DESC
 ```
 
 ```cypher
-// Issues that cut across the most components
-MATCH (i:Issue)-[:MENTIONS]->(c:Component)
-WITH i, collect(c.key) AS components
-WHERE size(components) >= 3
-RETURN i.number AS issue, i.title AS title, components
-ORDER BY size(components) DESC LIMIT 10
-```
-
-```cypher
-// Everything the graph knows about one component
-MATCH (c:Component {key: 'postgres'})
-OPTIONAL MATCH (c)<-[:DOCUMENTS]-(d:Doc)
-OPTIONAL MATCH (c)<-[:MENTIONS]-(i:Issue {state: 'open'})
-RETURN c.name AS component, collect(DISTINCT d.path) AS docs, collect(DISTINCT i.number) AS open_issues
+// Documents that cut across the most entities, whatever their source
+MATCH (d:Document)-[:MENTIONS]->(e:Entity)
+WITH d, collect(e.key) AS entities
+WHERE size(entities) >= 3
+RETURN d.source AS source, d.title AS title, entities
+ORDER BY size(entities) DESC LIMIT 10
 ```
 
 ## Make it yours
 
-- **Your catalog.** Replace `prepare_source_data.sql` with your service or component catalog. Keep a key column, an `aliases` array for the other ways people write each name, and a `depends_on` array if you have a dependency graph. Teams, tiers, and owners are plain columns.
-- **Your docs.** Point `DOCS_DIR` at any Markdown or MDX tree — an export of a wiki works the same way as a repo's docs folder.
-- **Your tickets.** Set `GITHUB_REPO`, a `GITHUB_TOKEN`, and for GitHub Enterprise `GITHUB_API_URL=https://<host>/api/v3`. A Jira or Confluence source is the same shape: an async generator yielding `(key, item)` pairs for `mount_each`.
-- **Your resolver.** `Catalog.resolve` is where whole-word matching becomes an embedding search, an LLM call, or a lookup against your own entity-resolution service.
+- **Add a source.** Write a dataclass with a `documents()` async generator that yields `(key, Document)` and append it to `DOCUMENT_SOURCES`. A Jira project, a Confluence space, a Slack channel, or another GHE repo is the same shape. A source with its own extraction step (an LLM prompt per source type, a parser for its format) does that work inside the generator and still yields a `Document`.
+- **Add an entity source.** A service catalog, a service mesh export, or an HR directory yields `(key, Entity)` and goes in `ENTITY_SOURCES`. Each entity should come from exactly one source.
+- **Point it at your data.** `DOCS_DIR` for any Markdown or MDX tree; `GITHUB_REPO`, `GITHUB_TOKEN`, and for GitHub Enterprise `GITHUB_API_URL=https://<host>/api/v3`; `prepare_source_data.sql` for your catalog, keeping a key, an `aliases` array, and a `depends_on` array.
+- **Swap the resolver.** `Catalog.resolve` is where whole-word matching becomes an embedding search, an LLM call, or a lookup against your own entity-resolution service.
+- **Very large file sources.** Adapters here read each file while enumerating, which is simplest and costs one read per file per run. If that is too much, yield the file handle instead and read it inside the memoized processor, so unchanged files are skipped on their fingerprint alone.
 
-**What stays simple on purpose.** Every node label here has one source that owns it, so people and teams are properties rather than nodes: a `Person` node mentioned by both an issue and a doc would need a shared owner. Shared entity nodes are the next step for this example, built on shared processing components. Until then, one consequence of single ownership is worth knowing: removing a row from the catalog removes its `Component` node and every edge into it from the other sources.
+**What stays simple on purpose.** Each entity has one owning source, so people and teams are properties rather than nodes: a `Person` node mentioned by both an issue and a release would need a shared owner. Shared entity nodes are the next step for this example, built on shared processing components. Until then, one consequence of single ownership is worth knowing: removing a row from the catalog removes its `Entity` node and every edge into it from the other sources.
 
 <img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=7f27e85b-be3a-411a-b612-0b9d53711814&page=examples/multi_source_knowledge_graph" alt="" width="1" height="1" />

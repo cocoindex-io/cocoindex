@@ -44,11 +44,11 @@ INSERT INTO catalog_components (key, name, kind, area, aliases, depends_on) VALU
     -- Rust crates
     ('core',                'Core engine (rust/core)', 'crate',    'engine',             ARRAY['cocoindex_core', 'lmdb', 'state store'], ARRAY['utils']),
     ('utils',               'Shared utilities (rust/utils)', 'crate', 'engine',          ARRAY['cocoindex_utils'], ARRAY[]::text[]),
-    ('py',                  'Python bindings (rust/py)', 'crate',  'sdk',                ARRAY['pyo3', 'cocoindex_py'], ARRAY['core']),
+    ('py_bindings',         'Python bindings (rust/py)', 'crate',  'sdk',                ARRAY['pyo3', 'cocoindex_py', 'rust/py'], ARRAY['core']),
     ('code_ast',            'Tree-sitter foundation (rust/code_ast)', 'crate', 'code',   ARRAY['tree-sitter', 'tree_sitter', 'treesitter'], ARRAY[]::text[]),
     ('ops_text',            'Text ops (rust/ops_text)', 'crate',   'code',               ARRAY[]::text[], ARRAY['code_ast']),
     ('code_match',          'Structural code matching (rust/code_match)', 'crate', 'code', ARRAY['code match'], ARRAY['code_ast']),
     -- SDKs and tooling
-    ('python_sdk',          'Python SDK',             'sdk',       'sdk',                ARRAY['python api', 'python package', 'pip install cocoindex'], ARRAY['py']),
+    ('python_sdk',          'Python SDK',             'sdk',       'sdk',                ARRAY['python api', 'python package', 'pip install cocoindex'], ARRAY['py_bindings']),
     ('rust_sdk',            'Rust SDK',               'sdk',       'sdk',                ARRAY['rust api', 'cocoindex crate', 'cargo add cocoindex'], ARRAY['core']),
     ('cli',                 'cocoindex CLI',          'tool',      'tooling',            ARRAY['cocoindex update', 'cocoindex server', 'cocoindex drop', 'command line'], ARRAY['python_sdk']);
