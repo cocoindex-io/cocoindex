@@ -1941,11 +1941,6 @@ class _GenericFunctionBuilder:
         self._deps = deps
 
     def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
-        if self._batching or self._runner is not None:
-            raise ValueError(
-                "Batching and runner require the function to be async. "
-                "Use @coco.fn.as_async instead, or rewrite the function to be async."
-            )
         wrapper = SyncFunction(
             fn,
             memo=self._memo,
@@ -1980,16 +1975,15 @@ class _GenericFunctionBuilder:
         return wrapper
 
 
-# Only supports sync function -> sync function
-class _SyncFunctionBuilder(_GenericFunctionBuilder):
-    def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
-        if inspect.iscoroutinefunction(fn):
+# Only supports async function -> async function for @coco.fn with batching/runner
+class _AsyncBatchedFunctionBuilder(_GenericFunctionBuilder):
+    def __call__(self, fn: AnyCallable[P, R_co]) -> AsyncFunction[P, R_co]:
+        if not inspect.iscoroutinefunction(fn):
             raise ValueError(
-                "Async functions are not supported by @coco.fn decorator "
-                "when batching or runner is specified. "
-                "Please use @coco.fn.as_async instead."
+                "Batching and runner require the function to be async. "
+                "Use @coco.fn.as_async instead, or rewrite the function to be async."
             )
-        return self._build_sync(fn)
+        return self._build_async(fn)
 
 
 # Supports sync function -> sync function and async function -> async function
@@ -2074,7 +2068,7 @@ class _FunctionDecorator:
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
     ) -> _AsyncBatchedDecorator: ...
-    # With batching / runner, only supports sync functions
+    # With runner or batching=False, requires async functions
     @overload
     def __call__(
         self,
@@ -2087,7 +2081,7 @@ class _FunctionDecorator:
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
-    ) -> _SyncFunctionBuilder: ...
+    ) -> _AsyncBatchedFunctionBuilder: ...
     # Overloads for direct function decoration
     @overload
     def __call__(  # type: ignore[overload-overlap]
@@ -2165,7 +2159,7 @@ class _FunctionDecorator:
             - With batching/runner: ComponentContext optional, memo checked when available
         """
         builder = (
-            _SyncFunctionBuilder(
+            _AsyncBatchedFunctionBuilder(
                 memo=memo,
                 memo_key=memo_key,
                 batching=batching,
