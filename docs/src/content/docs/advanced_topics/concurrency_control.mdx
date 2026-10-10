@@ -46,7 +46,7 @@ So a parent that is blocked — on its children, or on anything else after mount
 
 A few related rules:
 
-* A component that awaits a function call — including a batched one (`@coco.fn(batching=True)`) — keeps its slot; only mounting a child lends it.
+* A component that awaits a function call — including a batched one (`@coco.fn.as_async(batching=True)`) — keeps its slot; only mounting a child lends it.
 * When several parents mount the same component at once (two `App.update()` calls overlapping, or several owners of a shared component), only the run that executes takes a slot. The others wait for it without a slot and reuse its result.
 * Live components (`coco.auto_refresh`, `mount_each()` over a live map) borrow the slot of the component that mounted them for their cycles and item updates, like its other children, for as long as it runs; afterwards they take slots from the pool like any other component.
 * Deleting components (cleaning up a removed subtree, `App.drop()`) is bounded by the same limit.

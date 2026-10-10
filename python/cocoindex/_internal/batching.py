@@ -1,7 +1,7 @@
 """Batch splitting: retry a failed batch as smaller batches.
 
 ``RetryWithSmallerBatch`` is the control-flow signal a batched function body
-(``@coco.fn(batching=True)``) raises to tell the engine that the batch failed
+(``@coco.fn.as_async(batching=True)``) raises to tell the engine that the batch failed
 in a way that may depend on the batch's composition — e.g. a provider's
 per-request token/payload limit, or a single input the provider rejects. The
 engine reacts by halving the batch and re-running each half, recursing down
