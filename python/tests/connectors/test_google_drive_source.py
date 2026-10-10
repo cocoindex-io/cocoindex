@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import PurePath
+from typing import AsyncIterator
 
 import pytest
 
@@ -20,7 +21,10 @@ import pytest
 
 try:
     from cocoindex.connectors.google_drive._source import (
+        DriveFile,
+        DriveFileInfo,
         DriveFilePath,
+        GoogleDriveSource,
         _parse_modified_time,
     )
 
@@ -107,3 +111,41 @@ class TestDriveFilePath:
         fp1 = DriveFilePath("a.txt", file_id="abc")
         fp2 = DriveFilePath("b.txt", file_id="abc")
         assert fp1 != fp2
+
+    def test_memo_key_distinguishes_ids_and_paths(self) -> None:
+        first = DriveFilePath("report.txt", file_id="id-1")
+        second = DriveFilePath("report.txt", file_id="id-2")
+        renamed = DriveFilePath("renamed.txt", file_id="id-1")
+        assert first.__coco_memo_key__() != second.__coco_memo_key__()
+        assert first.__coco_memo_key__() != renamed.__coco_memo_key__()
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_items_key_same_named_files_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = GoogleDriveSource(
+        service_account_credential_path="unused.json", root_folder_ids=["root"]
+    )
+
+    async def files() -> AsyncIterator[DriveFile]:
+        for file_id in ("id-1", "id-2"):
+            yield DriveFile(
+                None,
+                DriveFileInfo(
+                    file_id=file_id,
+                    name="report.txt",
+                    mime_type="text/plain",
+                    size=0,
+                    modified_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                ),
+            )
+
+    monkeypatch.setattr(source, "files", files)
+    items = [item async for item in source.items()]
+    assert [key for key, _ in items] == ["id-1", "id-2"]
+    assert [file.file_path.path.as_posix() for _, file in items] == [
+        "report.txt",
+        "report.txt",
+    ]

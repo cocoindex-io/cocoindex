@@ -52,7 +52,7 @@ async def app_main() -> None:
     await coco.mount_each(process_file, source.items(), table)
 ```
 
-`source.items()` yields `(key, file)` pairs keyed by the file's name path — exactly what `mount_each` expects — so the engine tracks each Drive file as its own component and updates them independently. `mount_table_target` creates and manages the Postgres table: schema, idempotent upserts, and orphan cleanup when a file disappears from the folder.
+`source.items()` yields `(key, file)` pairs keyed by each file's stable Google Drive ID. This lets `mount_each` track files independently even when they share a name. The file's display name is still available through `file.file_path`. `mount_table_target` creates and manages the Postgres table: schema, idempotent upserts, and orphan cleanup when a file disappears from the folder.
 
 <p align="center">
   📘 <b><a href="https://cocoindex.io/docs/examples/google-drive-embedding/">Full Tutorial →</a></b><br/>

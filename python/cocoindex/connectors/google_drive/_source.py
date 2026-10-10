@@ -59,6 +59,9 @@ class DriveFilePath(file.FilePath[str]):
         """Create a new DriveFilePath with the given path."""
         return type(self)(path, file_id=self._file_id)  # type: ignore[return-value]
 
+    def __coco_memo_key__(self) -> object:
+        return (self._file_id, self._path)
+
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -255,10 +258,10 @@ class GoogleDriveSource:
     async def items(self) -> AsyncIterator[tuple[str, DriveFile]]:
         """Async iterate as (key, file) pairs for use with mount_each().
 
-        The key is the file's name path.
+        The key is the file's stable Google Drive ID, since names are not unique.
         """
         async for f in self.files():
-            yield (f.file_path.path.as_posix(), f)
+            yield (f.file_path.resolve(), f)
 
 
 __all__ = [
