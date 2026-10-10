@@ -480,6 +480,15 @@ class _RecordAction(NamedTuple):
     to_label: str | None
     to_pk_field: str | None
     to_id: Any | None
+    # A relationship update with a stable user-provided PK may need to remove
+    # the old edge before MERGEing the new endpoints. This is false for node
+    # upserts and for relationships that are known to be inserts.
+    delete_before_upsert: bool
+
+
+def _record_action_key(action: _RecordAction) -> tuple[str, bool, str, Any]:
+    """Identity used to pair deletes with upserts inside one sink batch."""
+    return (action.table_name, action.is_relation, action.pk_field, action.record_id)
 
 
 class _SharedRecordApplier:
@@ -510,14 +519,41 @@ class _SharedRecordApplier:
         delete_relation: list[_RecordAction] = []
         delete_normal: list[_RecordAction] = []
 
+        # A relationship key present as both a delete and an upsert in the same
+        # batch is an update. Keep one delete before the upsert and let the
+        # upsert win, rather than emitting the delete again after the upsert.
+        # Relationship updates with a stable custom PK also carry
+        # `delete_before_upsert` even when the engine did not separately
+        # materialize a delete action. Keep node deletes out of this pairing:
+        # node deletes use DETACH DELETE and must not tear down unrelated edges
+        # just because an upsert for the same node happened to share the batch.
+        relation_upsert_keys = {
+            _record_action_key(action)
+            for action in actions
+            if action.is_relation and action.value is not None
+        }
+        pre_delete: list[_RecordAction] = []
+        pre_delete_keys: set[tuple[str, bool, str, Any]] = set()
+
+        def add_pre_delete(action: _RecordAction) -> None:
+            key = _record_action_key(action)
+            if key not in pre_delete_keys:
+                pre_delete_keys.add(key)
+                pre_delete.append(action)
+
         for action in actions:
+            key = _record_action_key(action)
             if action.value is not None:
                 if action.is_relation:
+                    if action.delete_before_upsert:
+                        add_pre_delete(action)
                     upsert_relation.append(action)
                 else:
                     upsert_normal.append(action)
             else:
-                if action.is_relation:
+                if action.is_relation and key in relation_upsert_keys:
+                    add_pre_delete(action)
+                elif action.is_relation:
                     delete_relation.append(action)
                 else:
                     delete_normal.append(action)
@@ -527,6 +563,11 @@ class _SharedRecordApplier:
         ) as session:
             tx = await session.begin_transaction()
             try:
+                for action in pre_delete:
+                    if action.is_relation:
+                        await self._apply_relation_delete(tx, action)
+                    else:
+                        await self._apply_node_delete(tx, action)
                 for action in upsert_normal:
                     await self._apply_node_upsert(tx, action)
                 for action in upsert_relation:
@@ -756,6 +797,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _table_schema: TableSchema[Any] | None
     _graph: _GraphHandle
     _sink: coco.TargetActionSink[_RecordAction]
+    _force_delete_before_upsert: bool
 
     def __init__(
         self,
@@ -765,6 +807,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_schema: TableSchema[Any] | None,
         graph: _GraphHandle,
         sink: coco.TargetActionSink[_RecordAction],
+        force_delete_before_upsert: bool = False,
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
@@ -772,6 +815,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_schema = table_schema
         self._graph = graph
         self._sink = sink
+        self._force_delete_before_upsert = force_delete_before_upsert
 
     def attachments(self) -> dict[str, _VectorIndexHandler]:
         # Eagerly declare all attachment types so the engine can clean up
@@ -818,6 +862,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                     to_label=None,
                     to_pk_field=None,
                     to_id=None,
+                    delete_before_upsert=False,
                 ),
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
@@ -846,6 +891,16 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             to_id = None
             encoded = self._encode_row(desired_state)
 
+        # A previous tracking record means this relationship already existed:
+        # it is an update, not an insert. Its user-provided PK may stay stable
+        # while the endpoints change, so remove the old edge before MERGEing
+        # the new endpoints. A destructive table replace discards previous
+        # child tracking while leaving data behind, so force the same guard
+        # there. A plain first insert needs no pre-delete.
+        delete_before_upsert = self._is_relation and (
+            self._force_delete_before_upsert or bool(prev_possible_records)
+        )
+
         return coco.TargetReconcileOutput(
             action=_RecordAction(
                 table_name=self._table_name,
@@ -859,6 +914,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 to_label=to_label,
                 to_pk_field=to_pk_field,
                 to_id=to_id,
+                delete_before_upsert=delete_before_upsert,
             ),
             sink=self._sink,
             tracking_record=target_fp,
@@ -1131,6 +1187,7 @@ class _TableHandler(
                         table_schema=spec.table_schema,
                         graph=graph,
                         sink=shared_applier.sink,
+                        force_delete_before_upsert=action.main_action == "replace",
                     )
                 )
 
