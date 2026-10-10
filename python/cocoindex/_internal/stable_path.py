@@ -21,6 +21,17 @@ class StablePath:
     def __init__(self, core_path: core.StablePath | None = None) -> None:
         self._core = core_path or _ROOT_PATH
 
+    @classmethod
+    def parse(cls, text: str) -> "StablePath":
+        """
+        Parse a path from the textual form produced by ``str(path)``,
+        e.g. ``/@process_files/"rfc8259.md"``.
+
+        Raises:
+            ValueError: if ``text`` isn't a valid stable path.
+        """
+        return cls(core.StablePath.parse(text))
+
     def concat_part(self, part: StableKey) -> "StablePath":
         result = StablePath()
         result._core = self._core.concat(part)

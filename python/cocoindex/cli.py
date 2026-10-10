@@ -675,6 +675,13 @@ def show(
     Otherwise, `--db` and `--app-name` can be used to inspect an app
     directly from its database without loading the module.
 
+    \b
+    `STABLE_PATH` is written the way this command prints paths, so a line of
+    output can be pasted straight back in. Each part carries its key type:
+    `@symbol`, `"string"`, `b"bytes"`, `123`, `true`, `false`, `null`, a UUID,
+    `[a,b]` for arrays, and `#<hex>` for fingerprints. For example:
+    `cocoindex show ./app.py '/@process_files/"rfc8259.md"'`.
+
     """
     if (recursive or parents) and not stable_path:
         raise click.ClickException(
@@ -742,23 +749,16 @@ def show(
 
 
 def _parse_stable_path(path_str: str) -> StablePath:
-    """Parse a CLI stable path string into a StablePath.
+    """Parse a CLI stable path argument, in the form `cocoindex show` prints.
 
-    Accepts formats like:
-      /"files"/"file1.txt"   (quoted parts, as displayed by StablePath.__str__)
-      /files/file1.txt       (unquoted parts)
+    Each part carries its key type, so a path copied from the output can be
+    pasted straight back in: `@symbol`, `"string"`, `b"bytes"`, `123`, `true`,
+    `false`, `null`, a UUID, `[a,b]` for arrays and `#<hex>` for fingerprints.
     """
-    path = StablePath()
-    # Strip leading slash
-    stripped = path_str.strip("/")
-    if not stripped:
-        return path
-    for part in stripped.split("/"):
-        # Strip surrounding quotes if present
-        if len(part) >= 2 and part.startswith('"') and part.endswith('"'):
-            part = part[1:-1]
-        path = path / part
-    return path
+    try:
+        return StablePath.parse(path_str)
+    except ValueError as e:
+        raise click.ClickException(f"Invalid stable path: {e}") from e
 
 
 async def _show_from_app(
@@ -781,7 +781,7 @@ async def _show_from_app(
                 recursive=recursive,
                 include_parents=parents,
             )
-            _print_details(details, fingerprints)
+            _print_details(details, path_obj, fingerprints)
         elif long_format:
             # Stream details in one read txn with one shared resolver
             # (no buffering, no per-path txn/resolver).
@@ -803,16 +803,12 @@ async def _show_from_app(
         await _stop_all_environments()
 
 
-async def _show_from_database(
-    db_path: str,
-    app_name: str,
-    tree: bool = False,
-    long_format: bool = False,
-    stable_path: str | None = None,
-    recursive: bool = False,
-    parents: bool = False,
-    fingerprints: bool = False,
-) -> None:
+def _open_db_env(db_path: str, app_name: str) -> Environment:
+    """Open an environment for `--db`/`--app-name`, checking both exist.
+
+    Without this, a typo'd app name reads as an app with nothing in it, and
+    every downstream lookup reports its own subject as missing.
+    """
     db_path_obj = pathlib.Path(db_path)
     if not db_path_obj.exists():
         raise click.ClickException(f"Database path does not exist: {db_path}")
@@ -823,6 +819,26 @@ async def _show_from_database(
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
+    persisted = _get_persisted_app_names(env)
+    if app_name not in persisted:
+        available = ", ".join(sorted(persisted)) if persisted else "(none)"
+        raise click.ClickException(
+            f"No app named '{app_name}' in {db_path}. Available: {available}"
+        )
+    return env
+
+
+async def _show_from_database(
+    db_path: str,
+    app_name: str,
+    tree: bool = False,
+    long_format: bool = False,
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+    fingerprints: bool = False,
+) -> None:
+    env = _open_db_env(db_path, app_name)
 
     if stable_path is not None:
         path_obj = _parse_stable_path(stable_path)
@@ -834,7 +850,7 @@ async def _show_from_database(
             recursive=recursive,
             include_parents=parents,
         )
-        _print_details(details, fingerprints)
+        _print_details(details, path_obj, fingerprints)
     elif long_format:
         click.echo("Stable paths:")
         count = 0
@@ -871,16 +887,7 @@ async def _show_target_states_from_database(
     tree: bool = False,
     fingerprints: bool = False,
 ) -> None:
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
-
-    from cocoindex._internal.setting import Settings
-
-    env = Environment(
-        Settings(db_path=db_path_obj),
-        event_loop=asyncio.get_running_loop(),
-    )
+    env = _open_db_env(db_path, app_name)
     await _print_target_states(
         iter_target_states_by_name(env, app_name), fingerprints, tree
     )
@@ -931,13 +938,13 @@ async def _print_target_states(
 
 
 def _print_details(
-    details: list[_core.StablePathDetail], fingerprints: bool = False
+    details: list[_core.StablePathDetail],
+    path: StablePath,
+    fingerprints: bool = False,
 ) -> None:
-    """Print a list of StablePathDetail in multi-line format."""
+    """Print the result of a targeted stable-path query."""
     if not details:
-        click.echo("Stable paths:")
-        click.echo("  (none)")
-        return
+        raise click.ClickException(f"Stable path not found: {path}")
 
     click.echo("Stable paths:")
     for detail in details:
