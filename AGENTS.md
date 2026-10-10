@@ -251,7 +251,7 @@ When adding a new public API (function, class, kwarg, configuration option), pre
 
 ### Rust guidelines
 
-Before writing or reviewing Rust, read [`dev/rust-guidelines.md`](dev/rust-guidelines.md). It is distilled from George's (georgeh0) review comments on this repo, and each rule cites the pull request it comes from. Self-review a change against it before opening a pull request, and cite the rule when flagging it in someone else's. The short version: typed values (`Duration`, structs, `Option<T>`, the domain type at the boundary), library code never panics and propagates with `?`, precompute per analysis not per row, stream rather than buffer, tests that exercise behavior rather than definitions.
+- [dev/rust-guidelines.md](dev/rust-guidelines.md)
 
 ### Testing Guidelines
 
