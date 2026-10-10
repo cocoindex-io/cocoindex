@@ -3,7 +3,9 @@ FalkorDB target for CocoIndex.
 
 Two-level state system:
 1. Table level — creates/drops Cypher indexes (and best-effort unique
-   constraints) for node labels and relationship types.
+   constraints) for node labels and relationship types. A system-managed
+   table owns its label / relationship type: dropping it deletes every node
+   or relationship there before the index goes.
 2. Record level — upserts/deletes nodes via Cypher MERGE and edges via
    triple-MERGE (source, target, relationship).
 
@@ -695,6 +697,8 @@ class _VectorIndexHandler:
 class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for record-level target states within a FalkorDB table."""
 
+    tracks_value_fingerprint = True
+
     _table_name: str
     _is_relation: bool
     _pk_field: str
@@ -836,12 +840,18 @@ class _TableSpec:
 
 
 class _TableMainRecord(msgspec.Struct, frozen=True):
-    """Tracking record for table-level properties — change ⇒ DROP+CREATE index."""
+    """Identity-defining table properties.
 
-    has_schema: bool
+    A change here means existing nodes / relationships can no longer be
+    matched record by record (their MERGE key pattern changed), so the table
+    is rebuilt: contents deleted, DDL artifact recreated, children re-declared
+    from scratch. Everything else about the schema is tracked per field —
+    FalkorDB has no server-side property types, so a field change at most
+    re-upserts the records (lossy), never rebuilds.
+    """
+
     is_relation: bool
     primary_key: str
-    pk_type: str | None
     from_label: str | None
     from_pk_field: str | None
     to_label: str | None
@@ -849,9 +859,9 @@ class _TableMainRecord(msgspec.Struct, frozen=True):
 
 
 class _FieldTrackingRecord(msgspec.Struct, frozen=True):
-    """Per-field tracking record. FalkorDB has no per-field DDL, so this is
-    fingerprint-only — schema fingerprint stability lets two flows share a
-    table only if they declare matching columns."""
+    """Per-field tracking record, primary key included. FalkorDB has no
+    per-field DDL, so this is fingerprint-only — schema fingerprint stability
+    lets two flows share a table only if they declare matching columns."""
 
     falkor_type: str
     nullable: bool
@@ -871,9 +881,9 @@ class _TableAction(NamedTuple):
     main_action: statediff.DiffAction | None
     column_actions: dict[str, statediff.DiffAction]
     # Recovered from the most recent system-managed prev tracking record.
-    # Needed on "delete"/"replace" to know what artifact to drop, since
-    # FalkorDB has no IF EXISTS for DROP INDEX and we have to identify the
-    # index by its underlying field set.
+    # Needed on "delete"/"replace" to know what to destroy: FalkorDB has no
+    # IF EXISTS for DROP INDEX, so the index is identified by its underlying
+    # field set.
     prev_pk_field: str | None
     prev_is_relation: bool
 
@@ -881,28 +891,17 @@ class _TableAction(NamedTuple):
 def _table_composite_tracking_record_from_spec(
     spec: _TableSpec,
 ) -> statediff.CompositeTrackingRecord[_TableMainRecord, str, _FieldTrackingRecord]:
-    schema = spec.table_schema
-    has_schema = schema is not None
-    pk_type: str | None = None
     sub: dict[str, _FieldTrackingRecord] = {}
-
-    if schema is not None:
-        pk_col = schema.columns.get(spec.primary_key)
-        if pk_col is not None:
-            pk_type = pk_col.type
-        for col_name, col_def in schema.columns.items():
-            if col_name == spec.primary_key:
-                continue
+    if spec.table_schema is not None:
+        for col_name, col_def in spec.table_schema.columns.items():
             sub[_field_subkey(col_name)] = _FieldTrackingRecord(
                 falkor_type=col_def.type,
                 nullable=col_def.nullable,
             )
 
     main = _TableMainRecord(
-        has_schema=has_schema,
         is_relation=spec.is_relation,
         primary_key=spec.primary_key,
-        pk_type=pk_type,
         from_label=spec.from_label,
         from_pk_field=spec.from_pk_field,
         to_label=spec.to_label,
@@ -998,7 +997,7 @@ class _TableHandler(
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if main_action == "replace":
-            # Index is dropped and recreated — all rows lose their tracking.
+            # The table is rebuilt: its contents are deleted and re-declared.
             child_invalidation = "destructive"
         elif any(a != "insert" for a in column_actions.values()):
             # FalkorDB has no per-field DDL so column changes don't actually
@@ -1065,7 +1064,7 @@ class _TableHandler(
                 spec = action.spec
 
                 if action.main_action in ("replace", "delete"):
-                    await self._drop_table_artifacts(graph, action.key, action)
+                    await self._drop_table(graph, action.key, action)
 
                 if coco.is_non_existence(spec):
                     continue
@@ -1145,10 +1144,19 @@ class _TableHandler(
                 )
 
     @staticmethod
-    async def _drop_table_artifacts(
-        graph: Any, key: _TableKey, action: _TableAction
-    ) -> None:
-        """Drop the supporting Cypher index + unique constraint on table teardown.
+    async def _drop_table(graph: Any, key: _TableKey, action: _TableAction) -> None:
+        """Destroy the table: delete its contents, then its index + constraint.
+
+        A system-managed table owns its label / relationship type the way a
+        Postgres table owns its rows: every node carrying the label (with the
+        relationships attached to it) or every relationship of the type is
+        deleted, whoever wrote it. The engine prunes the records' tracking
+        without reconciling them once their container is gone, so this is
+        where their data goes away. A label shared with data CocoIndex does
+        not own belongs in a ``managed_by="user"`` table, which never gets
+        here.
+        The content delete must succeed; the DDL drops stay best-effort
+        (FalkorDB has no IF EXISTS).
 
         Uses ``prev_pk_field`` recovered during reconcile from the previous
         tracking record — that's what was actually CREATEd, so it's what we
@@ -1163,6 +1171,10 @@ class _TableHandler(
             is_relation = action.spec.is_relation
         if pk_field is None:
             return  # Nothing to drop.
+        if is_relation:
+            await graph.query(_cypher.build_relationship_delete_all(key.table_name))
+        else:
+            await graph.query(_cypher.build_node_delete_all(key.table_name))
         entity_kind = "RELATIONSHIP" if is_relation else "NODE"
         try:
             await _exec_constraint(

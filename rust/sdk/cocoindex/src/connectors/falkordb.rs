@@ -123,19 +123,70 @@ cypher_graph::graph_target_api!(Graph);
 
 #[cfg(test)]
 mod tests {
-    use std::sync::LazyLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde::Serialize;
 
     use super::*;
-    use crate::{App, ContextKey, Environment};
+    use crate::{App, Environment};
 
-    static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| ContextKey::new("falkordb_graph"));
+    crate::context_key!(static GRAPH: Graph, key = "falkordb_graph");
 
     #[derive(Serialize)]
     struct Person {
         name: String,
+    }
+
+    #[derive(Serialize)]
+    struct PersonById {
+        id: String,
+        name: String,
+    }
+
+    /// The people graph re-keyed by `id`: an identity change for both the
+    /// node table and the relation whose endpoints it defines.
+    async fn run_people_graph_keyed_by_id(
+        app: &App,
+        person_label: String,
+        relation_label: String,
+    ) -> Result<()> {
+        app.run(move |ctx| {
+            let person_label = person_label.clone();
+            let relation_label = relation_label.clone();
+            async move {
+                let graph = ctx.get_key(&GRAPH)?;
+                let schema = TableSchema::new(
+                    [
+                        ("id", ColumnDef::new("string")),
+                        ("name", ColumnDef::new("string")),
+                    ],
+                    "id",
+                )?;
+                let people = mount_table_target(&ctx, graph, person_label, schema).await?;
+                let knows =
+                    mount_relation_target(&ctx, graph, relation_label, &people, &people).await?;
+                people.declare_record(
+                    &ctx,
+                    "a1",
+                    &PersonById {
+                        id: "a1".to_string(),
+                        name: "alice".to_string(),
+                    },
+                )?;
+                people.declare_record(
+                    &ctx,
+                    "b1",
+                    &PersonById {
+                        id: "b1".to_string(),
+                        name: "bob".to_string(),
+                    },
+                )?;
+                knows.declare_relation(&ctx, "a1", "b1")?;
+                Ok(())
+            }
+        })
+        .await
+        .map(|_| ())
     }
 
     fn nonce() -> u128 {
@@ -283,6 +334,72 @@ mod tests {
             )
             .await?,
             0
+        );
+
+        delete_graph(&graph).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn falkordb_primary_key_change_rebuilds_table_when_available() -> Result<()> {
+        let nonce = nonce();
+        let graph_name = format!("cocoindex_rust_falkor_rebuild_{nonce}");
+        let Some(graph) = try_graph(&graph_name).await else {
+            eprintln!(
+                "skipping live FalkorDB rebuild test; FALKORDB_URI is not set or unavailable"
+            );
+            return Ok(());
+        };
+        delete_graph(&graph).await;
+
+        let person_label = format!("Person_{nonce}");
+        let relation_label = format!("KNOWS_{nonce}");
+        let dir = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(dir.path().join(".cocoindex_db"))
+            .provide_key(&GRAPH, graph.clone())
+            .build()
+            .await?
+            .app("FalkorDBTargetRebuildE2ETest")
+            .await?;
+
+        run_people_graph(&app, person_label.clone(), relation_label.clone(), true).await?;
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH (n:`{person_label}`) RETURN count(n)")
+            )
+            .await?,
+            2
+        );
+
+        // Re-keying the table by `id` rebuilds it: the nodes keyed by `name`
+        // (with the relationships hanging on them) are deleted before the
+        // records are declared again under the new key.
+        run_people_graph_keyed_by_id(&app, person_label.clone(), relation_label.clone()).await?;
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH (n:`{person_label}`) RETURN count(n)")
+            )
+            .await?,
+            2
+        );
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH (n:`{person_label}`) WHERE n.id IS NULL RETURN count(n)"),
+            )
+            .await?,
+            0
+        );
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH ()-[r:`{relation_label}`]->() RETURN count(r)"),
+            )
+            .await?,
+            1
         );
 
         delete_graph(&graph).await;

@@ -22,12 +22,14 @@ __all__ = [
     "build_constraint_create",
     "build_constraint_drop",
     "build_node_delete",
+    "build_node_delete_all",
     "build_node_delete_batch",
     "build_node_index_create",
     "build_node_index_drop",
     "build_node_upsert",
     "build_node_upsert_batch",
     "build_relationship_delete",
+    "build_relationship_delete_all",
     "build_relationship_delete_batch",
     "build_relationship_index_create",
     "build_relationship_index_drop",
@@ -145,6 +147,19 @@ def build_node_upsert_batch(label: str, pk_fields: Sequence[str]) -> str:
     )
 
 
+def build_node_delete_all(label: str) -> str:
+    """``MATCH (n:`Label`) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS``.
+
+    Destroys a node table: every node carrying the label goes, together with
+    the relationships attached to it. The deletes run in Neo4j's default-sized
+    inner transactions so a large label need not fit one transaction's heap;
+    ``CALL … IN TRANSACTIONS`` only runs in an auto-commit session.
+    """
+    return (
+        f"MATCH (n:{_quote(label)}) CALL {{ WITH n DETACH DELETE n }} IN TRANSACTIONS"
+    )
+
+
 def build_node_delete_batch(label: str, pk_fields: Sequence[str]) -> str:
     """Batched ``DETACH DELETE`` for nodes of one label and PK shape."""
     if not pk_fields:
@@ -227,6 +242,15 @@ def build_relationship_upsert_batch(
         f"{_row_key_clause('rel_key', rel_pk_fields)}]->(t) "
         "SET r += row.props"
     )
+
+
+def build_relationship_delete_all(rel_type: str) -> str:
+    """``MATCH ()-[r:`RelType`]->() CALL { WITH r DELETE r } IN TRANSACTIONS``.
+
+    Destroys a relation table: every relationship of the type goes; the
+    endpoints stay, as with the per-record delete.
+    """
+    return f"MATCH ()-[r:{_quote(rel_type)}]->() CALL {{ WITH r DELETE r }} IN TRANSACTIONS"
 
 
 def build_relationship_delete_batch(rel_type: str, pk_fields: Sequence[str]) -> str:

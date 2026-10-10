@@ -414,6 +414,20 @@ impl TableSpec {
             managed_by,
         }
     }
+
+    /// Whether `other` keys its records the same way: same MERGE pattern (label
+    /// or relationship type, primary key field, kind, endpoints). A table whose
+    /// identity changed has to be rebuilt — its existing nodes / relationships
+    /// can no longer be matched record by record. Any other change to the
+    /// declaration (a schema edit) only re-upserts records: the graph has no
+    /// server-side schema to alter.
+    fn same_identity(&self, other: &Self) -> bool {
+        self.table_name == other.table_name
+            && self.primary_key == other.primary_key
+            && self.is_relation == other.is_relation
+            && self.from_table == other.from_table
+            && self.to_table == other.to_table
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -649,27 +663,34 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
                     .as_ref()
                     .and_then(|r| r.prev.iter().find(|p| *p != &spec))
                     .cloned();
+                // A rebuild deletes every node / relationship of the table, so
+                // only an identity change gets one. A schema-only change keeps
+                // the table and is lossy: the records re-upsert.
+                let (action, child_invalidation) = match prev_system_spec {
+                    Some(prev_spec) if changed && !prev_spec.same_identity(&spec) => (
+                        TargetAction::Update(TableAction::Replace {
+                            prev: prev_spec,
+                            next: spec.clone(),
+                        }),
+                        Some(crate::target_state::TargetChildInvalidation::Destructive),
+                    ),
+                    _ => {
+                        let ensure = TableAction::Ensure(spec.clone());
+                        (
+                            if prev_is_empty {
+                                TargetAction::Create(ensure)
+                            } else {
+                                TargetAction::Update(ensure)
+                            },
+                            changed.then_some(crate::target_state::TargetChildInvalidation::Lossy),
+                        )
+                    }
+                };
                 Ok(Some(TargetReconcileOutput {
-                    action: if changed {
-                        if let Some(prev_spec) = prev_system_spec {
-                            TargetAction::Update(TableAction::Replace {
-                                prev: prev_spec,
-                                next: spec.clone(),
-                            })
-                        } else if prev_is_empty {
-                            TargetAction::Create(TableAction::Ensure(spec.clone()))
-                        } else {
-                            TargetAction::Update(TableAction::Ensure(spec.clone()))
-                        }
-                    } else if prev_is_empty {
-                        TargetAction::Create(TableAction::Ensure(spec.clone()))
-                    } else {
-                        TargetAction::Update(TableAction::Ensure(spec.clone()))
-                    },
+                    action,
                     sink,
                     tracking_record: Some(tracking_record),
-                    child_invalidation: changed
-                        .then_some(crate::target_state::TargetChildInvalidation::Destructive),
+                    child_invalidation,
                 }))
             }
             None => {
@@ -1078,10 +1099,35 @@ async fn ensure_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<
     Ok(())
 }
 
+/// Destroy a system-managed table: delete its contents, then its DDL artifact.
+///
+/// The table owns its label / relationship type the way a Postgres table owns
+/// its rows: every node carrying the label (with the relationships attached to
+/// it) or every relationship of the type is deleted, whoever wrote it. The
+/// engine prunes the records' tracking without reconciling them once their
+/// container is gone, so this is where their data goes away. A label shared
+/// with data CocoIndex does not own belongs in a user-managed table, which is
+/// abandoned instead.
 async fn drop_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<()> {
     if spec.managed_by.is_user() {
         return Ok(());
     }
+    let delete_contents = match (graph.dialect(), spec.is_relation) {
+        // Neo4j: default-sized inner transactions so a large label need not fit
+        // one transaction's heap. `CALL … IN TRANSACTIONS` requires the
+        // auto-commit execution `execute` uses.
+        ("neo4j", false) => format!(
+            "MATCH (n:`{}`) CALL {{ WITH n DETACH DELETE n }} IN TRANSACTIONS",
+            spec.table_name
+        ),
+        ("neo4j", true) => format!(
+            "MATCH ()-[r:`{}`]->() CALL {{ WITH r DELETE r }} IN TRANSACTIONS",
+            spec.table_name
+        ),
+        (_, false) => format!("MATCH (n:`{}`) DETACH DELETE n", spec.table_name),
+        (_, true) => format!("MATCH ()-[r:`{}`]->() DELETE r", spec.table_name),
+    };
+    graph.execute(&delete_contents).await?;
     match (graph.dialect(), spec.is_relation) {
         ("neo4j", false) => {
             graph
@@ -1967,7 +2013,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn neo4j_table_drop_drops_artifacts_not_data() {
+    async fn neo4j_table_drop_deletes_nodes_then_constraint() {
         let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let spec = TableSpec::table(
             "Meeting".to_string(),
@@ -1980,14 +2026,26 @@ mod tests {
 
         assert_eq!(
             graph.statements(),
-            vec!["DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS"]
+            vec![
+                "MATCH (n:`Meeting`) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS",
+                "DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS",
+            ]
         );
-        assert!(
-            graph
-                .statements()
-                .iter()
-                .all(|stmt| !stmt.contains("DETACH DELETE") && !stmt.contains("DELETE r"))
+    }
+
+    #[tokio::test]
+    async fn user_managed_table_drop_is_a_no_op() {
+        let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let spec = TableSpec::table(
+            "Meeting".to_string(),
+            schema,
+            crate::statediff::ManagedBy::User,
         );
+        let graph = RecordingGraph::new("neo4j");
+
+        drop_table(&graph, &spec).await.unwrap();
+
+        assert!(graph.statements().is_empty());
     }
 
     #[tokio::test]
@@ -2011,13 +2069,14 @@ mod tests {
             graph.statements(),
             vec![
                 "CREATE INDEX `coco_idx_rel_ATTENDED__id` IF NOT EXISTS FOR ()-[r:`ATTENDED`]-() ON (r.`id`)",
+                "MATCH ()-[r:`ATTENDED`]->() CALL { WITH r DELETE r } IN TRANSACTIONS",
                 "DROP INDEX `coco_idx_rel_ATTENDED__id` IF EXISTS",
             ]
         );
     }
 
     #[tokio::test]
-    async fn neo4j_table_replace_drops_old_artifact_and_recreates_children() {
+    async fn neo4j_primary_key_change_rebuilds_table() {
         let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let new_schema = TableSchema::new([("uuid", ColumnDef::new("STRING"))], "uuid").unwrap();
         let old_spec = TableSpec::table(
@@ -2058,6 +2117,7 @@ mod tests {
         assert_eq!(
             graph.statements(),
             vec![
+                "MATCH (n:`Meeting`) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS",
                 "DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS",
                 "CREATE CONSTRAINT `coco_uniq_Meeting__uuid` IF NOT EXISTS FOR (n:`Meeting`) REQUIRE n.`uuid` IS UNIQUE",
             ]
@@ -2065,7 +2125,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falkordb_table_drop_drops_artifacts_not_data() {
+    async fn schema_only_change_is_lossy_and_keeps_the_table() {
+        let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let new_schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new("INTEGER")),
+                ("title", ColumnDef::new("STRING")),
+            ],
+            "id",
+        )
+        .unwrap();
+        let old_spec = TableSpec::table(
+            "Meeting".to_string(),
+            old_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let new_spec = TableSpec::table(
+            "Meeting".to_string(),
+            new_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("neo4j");
+        let handler = TableHandler {
+            graph: graph.clone(),
+        };
+
+        let out = handler
+            .reconcile(
+                StableKey::Str(Arc::from("Meeting")),
+                Some(new_spec),
+                vec![MutualTrackingRecord::new(
+                    old_spec,
+                    crate::statediff::ManagedBy::System,
+                )],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            out.child_invalidation,
+            Some(crate::target_state::TargetChildInvalidation::Lossy)
+        );
+        let children = out.sink.apply_for_test(vec![out.action]).await.unwrap();
+        assert!(children[0].is_some());
+
+        // Nothing is deleted or dropped; the constraint DDL is idempotent.
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE CONSTRAINT `coco_uniq_Meeting__id` IF NOT EXISTS FOR (n:`Meeting`) REQUIRE n.`id` IS UNIQUE",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_table_drop_deletes_nodes_then_index() {
         let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let spec = TableSpec::table(
             "Meeting".to_string(),
@@ -2078,15 +2193,12 @@ mod tests {
 
         assert_eq!(
             graph.statements(),
-            vec!["DROP INDEX FOR (e:`Meeting`) ON (e.`id`)"]
+            vec![
+                "MATCH (n:`Meeting`) DETACH DELETE n",
+                "DROP INDEX FOR (e:`Meeting`) ON (e.`id`)",
+            ]
         );
         assert_eq!(graph.constraints(), vec!["DROP NODE Meeting.id"]);
-        assert!(
-            graph
-                .statements()
-                .iter()
-                .all(|stmt| !stmt.contains("DETACH DELETE") && !stmt.contains("DELETE r"))
-        );
     }
 
     #[tokio::test]
@@ -2110,6 +2222,7 @@ mod tests {
             graph.statements(),
             vec![
                 "CREATE INDEX FOR ()-[e:`ATTENDED`]-() ON (e.`id`)",
+                "MATCH ()-[r:`ATTENDED`]->() DELETE r",
                 "DROP INDEX FOR ()-[e:`ATTENDED`]-() ON (e.`id`)",
             ]
         );
@@ -2123,7 +2236,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falkordb_table_replace_drops_old_artifact_and_recreates_children() {
+    async fn falkordb_primary_key_change_rebuilds_table() {
         let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let new_schema = TableSchema::new([("uuid", ColumnDef::new("STRING"))], "uuid").unwrap();
         let old_spec = TableSpec::table(
@@ -2164,6 +2277,7 @@ mod tests {
         assert_eq!(
             graph.statements(),
             vec![
+                "MATCH (n:`Meeting`) DETACH DELETE n",
                 "DROP INDEX FOR (e:`Meeting`) ON (e.`id`)",
                 "CREATE INDEX FOR (e:`Meeting`) ON (e.`uuid`)",
             ]

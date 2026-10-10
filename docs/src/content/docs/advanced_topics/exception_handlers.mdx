@@ -117,7 +117,9 @@ async def process_all(files):
             await coco.mount(coco.component_subpath(str(f.path)), process_file, f)
 ```
 
-The handler applies to all `mount()` / `mount_each()` calls within the `async with` block, including those in nested functions called from within the block.
+The handler applies to all `mount()` / `mount_each()` calls within the `async with` block, including those in nested functions called from within the block, and to every item of a `mount_each()` whether it iterates a collection or a [`LiveMapView` / `LiveMapFeed`](./live_component#livemapfeed-and-livemapview).
+
+It does not reach the mounts those components make themselves: a component's own `mount()` / `mount_each()` calls start from the global handler, plus any handler the component scopes itself. To observe the failures of components at any depth, register a global handler.
 
 ### Handler type
 

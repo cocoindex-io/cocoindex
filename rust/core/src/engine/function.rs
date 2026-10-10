@@ -15,14 +15,12 @@ fn build_fn_call_memo<Prof: EngineProfile>(
     memo_states: MemoStatesPayload<Prof>,
 ) -> Option<FnCallMemo<Prof>> {
     fn_ctx.update(|inner| {
-        let mut logic_deps = inner.fn_logic_deps.clone();
-        logic_deps.extend(inner.context_change_deps.iter().cloned());
         Some(FnCallMemo {
             ret,
             target_state_paths: inner.target_state_paths.clone(),
             target_provider_deps: inner.target_provider_deps.clone(),
             dependency_memo_entries: inner.dependency_memo_entries.clone(),
-            logic_deps,
+            logic_deps: inner.entry_logic_deps().collect(),
             memo_states: memo_states.positional,
             context_memo_states: memo_states.by_context_fp,
             already_stored: false,

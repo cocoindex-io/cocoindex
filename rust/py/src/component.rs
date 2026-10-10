@@ -221,7 +221,7 @@ pub fn mount_async<'py>(
 
     future_into_py(py, async move {
         let handle = child
-            .mount(&comp_ctx.0, processor, on_error, None)
+            .mount(&comp_ctx.0, processor, on_error)
             .await
             .into_py_result()?;
         Ok(PyComponentMountHandle(Some(handle)))

@@ -402,16 +402,23 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     /// Reconcile the desired target state against the previously-tracked
     /// records, returning the action to take.
     ///
+    /// Runs inside the precommit txn, which may be retried, so it can be
+    /// called more than once for the same target state in one update; only
+    /// the output of the attempt that commits is applied. Implementations
+    /// must therefore be free of side effects.
+    ///
     /// `desired_target_state` is borrowed (not owned) because the engine
     /// holds it under a short-lived `tokio::sync::MutexGuard` for the
     /// duration of this call — see the lock-scoped call site in
-    /// `submit()`'s `pre_commit`. Borrowing here lets the host-specific
-    /// implementation decide whether (and how) to clone:
+    /// `submit()`'s `pre_commit` — and may call again for the same value
+    /// when the pre-commit is retried. Borrowing here lets the host-specific
+    /// implementation decide whether (and how) to materialize it:
     ///
     /// * Native Rust profile (`Value: Clone`): typically `value.clone()`
     ///   when constructing the `Action`.
-    /// * Python profile (`Py<PyAny>: !Clone`): `value.clone_ref(py)`
-    ///   under the GIL.
+    /// * Python profile: the value is held encoded where it is plain data,
+    ///   decoded for each call, and the returned action is held encoded in
+    ///   turn (`rust/py/src/target_state_codec.rs`).
     ///
     /// Avoids forcing every call site to round-trip through an
     /// engine-level `clone_target_state_value` even when the impl
@@ -423,6 +430,20 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         prev_possible_records: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
+
+    /// For a handler whose tracking record is a fingerprint of the declared
+    /// value: the serialized tracking record `reconcile` would return for
+    /// `desired_target_state`. The engine then skips `reconcile` for a state
+    /// that is surely present and whose previous records all equal it.
+    ///
+    /// `None` (the default) means `reconcile` must decide — the handler tracks
+    /// something else, or cannot fingerprint this value without `reconcile`.
+    fn value_fingerprint_record(
+        &self,
+        _desired_target_state: &Prof::TargetStateValue,
+    ) -> Result<Option<bytes::Bytes>> {
+        Ok(None)
+    }
 
     /// Return all attachment types this handler supports, keyed by type name.
     /// The engine eagerly registers these as providers so that orphaned

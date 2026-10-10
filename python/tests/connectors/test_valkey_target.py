@@ -30,10 +30,17 @@ from tests import common
 # =============================================================================
 
 try:
+    import importlib.metadata
+
     from glide import GlideClient, GlideClientConfiguration, NodeAddress
     from glide.async_commands import ft as glide_ft
 
-    HAS_GLIDE = True
+    try:
+        _glide_ver = importlib.metadata.version("valkey-glide")
+        _ver_tuple = tuple(int(x) for x in _glide_ver.split(".")[:3] if x.isdigit())
+        HAS_GLIDE = _ver_tuple >= (2, 5, 2)
+    except Exception:
+        HAS_GLIDE = False
 except ImportError:
     HAS_GLIDE = False
 
@@ -173,10 +180,19 @@ class TestCreateClientConfig:
     def test_default_config(self) -> None:
         config = valkey.create_client_config()
         assert config is not None
+        assert config.client_name == "cocoindex_vector_store"
+        assert config.client_info_tag == "cocoindex"
 
     def test_custom_host_port(self) -> None:
         config = valkey.create_client_config("myhost", 7777)
         assert config is not None
+
+    def test_kwargs_override(self) -> None:
+        config = valkey.create_client_config(
+            client_info_tag="my_custom_tag", client_name="my_custom_name"
+        )
+        assert config.client_info_tag == "my_custom_tag"
+        assert config.client_name == "my_custom_name"
 
 
 @requires_glide

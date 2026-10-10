@@ -368,7 +368,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<HashMap<UniCase<String>, &'static Program
             None,
         );
         add("ninja", &[".ninja"], None);
-        add("nix", &[".nix"], None);
+        add(
+            "nix",
+            &[".nix"],
+            Some(TreeSitterLanguageInfo::new(tree_sitter_nix::LANGUAGE, [])),
+        );
         add("nqc", &[".nqc"], None);
         add(
             "pascal",
@@ -627,6 +631,12 @@ mod tests {
         let lua = get_language_info(".lua").unwrap();
         assert_eq!(lua.name.as_ref(), "lua");
         assert!(lua.treesitter_info.is_some());
+    }
+    #[test]
+    fn test_nix_has_treesitter() {
+        let nix = get_language_info(".nix").unwrap();
+        assert_eq!(nix.name.as_ref(), "nix");
+        assert!(nix.treesitter_info.is_some());
     }
 
     #[test]
