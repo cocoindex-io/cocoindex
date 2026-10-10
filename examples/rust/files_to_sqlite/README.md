@@ -1,7 +1,7 @@
 # Files → SQLite (Rust)
 
 A self-contained example of the Rust SDK's embedded **SQLite table target**
-(`cocoindex::sqlite`). No external server is needed — SQLite is embedded.
+(`cocoindex::connectors::sqlite`). No external server is needed — SQLite is embedded.
 
 It walks `**/*.md` / `**/*.txt` files under a source directory, computes a small
 per-file summary (word count + first line), and writes one row per file into a
@@ -14,7 +14,7 @@ rows for files that disappear.
 | Connection | `sqlite::Database::connect(path)` |
 | Schema | `sqlite::TableSchema` + `sqlite::ColumnDef` |
 | Target | `sqlite::mount_table_target` + `TableTarget::declare_row` |
-| Source | `cocoindex::fs::walk` + `Ctx::mount_each` |
+| Source | `cocoindex::resources::fs::walk` + `Ctx::mount_each` |
 
 ## Run
 

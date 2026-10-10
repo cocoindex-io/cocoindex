@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
-use cocoindex::falkordb::{self, ColumnDef, TableSchema};
-use cocoindex::fs;
+use cocoindex::connectors::falkordb::{self, ColumnDef, TableSchema};
+use cocoindex::resources::fs;
 use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 

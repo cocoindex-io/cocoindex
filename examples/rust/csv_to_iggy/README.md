@@ -3,7 +3,7 @@
 Rust analogue of the Python [`csv_to_kafka`](../../csv_to_kafka) example, targeting
 **Apache Iggy** instead of Kafka. (Python ships an `iggy` connector with the same
 shape as its `kafka` one; this mirrors the Rust [`csv_to_kafka`](../csv_to_kafka)
-example onto `cocoindex::iggy`.)
+example onto `cocoindex::connectors::iggy`.)
 
 Reads local CSV files, converts each row to a JSON object (header row as keys),
 and publishes one Iggy message per row via CocoIndex's declarative
@@ -14,7 +14,7 @@ and publishes one Iggy message per row via CocoIndex's declarative
 | Concern          | Python (`csv_to_kafka` / `iggy`)         | Rust (this example)                                 |
 | ---------------- | ---------------------------------------- | --------------------------------------------------- |
 | Per-file compute | `@coco.fn(memo=True)`                    | `#[cocoindex::function(memo)] process_csv`          |
-| Target           | `mount_kafka_topic_target` / `mount_iggy_topic_target` | `cocoindex::iggy::mount_iggy_topic_target` |
+| Target           | `mount_kafka_topic_target` / `mount_iggy_topic_target` | `cocoindex::connectors::iggy::mount_iggy_topic_target` |
 | Declare a message| `target.declare_target_state(key, value)`| `target.declare_message(key, value)`                |
 
 Incrementality (two layers): unchanged CSV files are memo-skipped, and the

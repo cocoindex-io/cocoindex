@@ -1203,6 +1203,7 @@ mod tests {
         assert!(crate::lang::by_name("python").is_some());
         assert!(crate::lang::by_name("PY").is_some());
         assert!(crate::lang::by_name("c++").is_some());
+        assert!(crate::lang::by_name("nix").is_some());
         assert!(crate::lang::by_name("nope").is_none());
     }
 

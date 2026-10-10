@@ -129,7 +129,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)).
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). A fourth tool, [`coco.logic_tracked`](#callbacks-logic_tracked), is for callbacks that cross a `"self"` boundary.
 
 #### `logic_tracking`
 
@@ -189,6 +189,57 @@ The value is canonicalized through the [memoization-key pipeline](../advanced_to
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
+#### Callbacks: `logic_tracked`
+
+`logic_tracking` is per function, so `"self"` hides the logic of *everything* a function calls — including callbacks it received as arguments. A library whose `accept` is `logic_tracking="self"` therefore hides the user's `visit_file`: an edit to `visit_file` invalidates nothing, even though it is the user's input, not the library's implementation detail.
+
+`coco.logic_tracked(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback.
+
+Call it at the entry point that hands a callback down. The function that calls `logic_tracked` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame — the owner's own entry included — whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
+
+```python
+# Library
+@coco.fn(memo=True, logic_tracking="self", version=1)
+async def accept(file: File, visit_file: Callable[[File], Awaitable[None]]) -> None:
+    await visit_file(file)
+
+
+@coco.fn
+async def walk(repo: Repo, visitor: RepoVisitor) -> None:
+    visit_file = coco.logic_tracked(visitor.visit_file)  # walk owns the callback
+    for file in repo.files():
+        await coco.use_mount(coco.component_subpath(file.path), accept, file, visit_file)
+```
+
+```python
+# User
+class MyVisitor(RepoVisitor):
+    @coco.fn
+    async def visit_file(self, file: File) -> None:
+        ...
+
+
+@coco.fn
+async def app_main(repo: Repo) -> None:
+    await walk(repo, MyVisitor())
+```
+
+The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees `logic_tracked`. `accept` needs no code of its own: the wrapper it receives already carries its owner.
+
+**When a library does not do this**, wrap the callback in your own code. Your function becomes the owner:
+
+```python
+@coco.fn(memo=True)
+def process(doc: str) -> str:
+    return third_party_transform(doc, coco.logic_tracked(summarize))
+```
+
+Rules, for whoever calls `logic_tracked`:
+
+- Decorate the callback with `@coco.fn` for its own code to be tracked. An undecorated callable contributes only the `@coco.fn` functions it calls, as always.
+- The wrapper is valid only while the owner's call is running. A call after the owner has returned raises `RuntimeError` instead of silently running untracked. Mount the components that call it with `use_mount`, or `await handle.ready()` inside the owner.
+- The wrapper is transparent for memoization keys: passing `logic_tracked(fn)` where `fn` was passed before keys the same callback (the key changes once, when the wrapper is adopted).
+
 #### Common patterns
 
 :::tip[`@coco.fn` on non-memoized helpers]
@@ -246,6 +297,7 @@ Conversely, if a memo is hitting when you expect invalidation, common causes are
 - A logic change in a helper that is **not** decorated with `@coco.fn`. Add `@coco.fn` to it (no `memo=` needed) so its logic participates in propagation — see [Common patterns](#common-patterns).
 - A `deps` value that you changed at runtime: `deps` is [snapshotted at decoration time](#deps), so per-instance or per-request values must be passed as regular arguments instead.
 - The function uses [`logic_tracking=None`](#logic_tracking), which opts it out of code-change detection entirely.
+- The change is in a callback that passes through a `logic_tracking="self"` function and nobody wrapped it with [`coco.logic_tracked`](#callbacks-logic_tracked).
 
 ### Customizing data fingerprinting
 
@@ -259,7 +311,7 @@ The following capabilities control *how* the function executes, independent of c
 
 ### Async adapter
 
-Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions, and is required for features like [batching](#batching) and [runner](#runner).
+Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions. The decorator also accepts an `async def` body as-is, and [batching](#batching) and [runner](#runner) — which need an async interface — are always enabled through it.
 
 ```python
 @coco.fn.as_async
@@ -290,13 +342,14 @@ result = await expensive_fn.as_async(data)
 
 With `batching=True`, multiple concurrent calls to the function are automatically batched together. This is useful for operations that are more efficient when processing multiple inputs at once, such as embedding models.
 
-Batching requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(batching=True)`. If the underlying function is already `async def`, `@coco.fn(batching=True)` works directly.
+Batching requires an async interface, so it is always enabled with `@coco.fn.as_async(batching=True)`, whether the body is a plain `def` or an `async def`. `@coco.fn(batching=True)` is not supported: it raises `ValueError` when the decorator is applied, whichever kind of body it is given.
 
 When batching is enabled:
 
 - The function implementation receives a `list[T]` and returns a `list[R]`
 - The external signature becomes `async T -> R` (single input, single output)
 - Concurrent calls are collected and processed together
+- The implementation runs outside the calling components — see [Context values in a batched body](#context-values-in-a-batched-body)
 
 ```python
 @coco.fn.as_async(batching=True, max_batch_size=32)
@@ -317,12 +370,31 @@ embeddings = await asyncio.gather(
 
 The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
 
+#### Context values in a batched body
+
+One batch merges calls from many components, so the body runs outside any of them: `coco.use_context(...)` inside a `batching=True` body raises `RuntimeError: No ComponentContext available`. Resolve context values in the caller — a `@coco.fn` function or method running inside the component — and pass them to the batched function as extra arguments:
+
+```python
+EMBED_CLIENT = coco.ContextKey[EmbedClient]("embed_client")
+
+@coco.fn.as_async(batching=True, max_batch_size=64)
+async def _embed_batch(texts: list[str], client: EmbedClient) -> list[list[float]]:
+    return await client.embed(texts)
+
+@coco.fn
+async def embed(text: str) -> list[float]:
+    client = coco.use_context(EMBED_CLIENT)  # inside the component
+    return await _embed_batch(text, client)
+```
+
+Only the first parameter is batched. Every other argument is passed through to the body unchanged and is part of the key that selects the batcher (so is `self`, for methods): calls share a batcher only when these arguments compare equal, which also means they must be hashable. Pass them the same way on every call. An explicit value and the default, or the same value given positionally and by keyword, select different batchers, and the calls are never batched together.
+
 #### Retrying a failed batch as smaller batches
 
 Some batch failures depend on the batch's composition rather than any single input — e.g. a provider's per-request token or payload limit, or one input the provider rejects. No fixed `max_batch_size` can rule these out. When the function body hits such a failure, raise `coco.RetryWithSmallerBatch` from it: CocoIndex halves the batch and retries each half, recursing down to single items. At size 1, the wrapped original error is raised as that item's own failure — so one bad input fails only its own caller, while the rest of the batch still succeeds. There is no need to check the batch size before raising: at size 1 the engine simply unwraps the signal and raises the original error.
 
 ```python
-@coco.fn(batching=True, max_batch_size=64)
+@coco.fn.as_async(batching=True, max_batch_size=64)
 async def embed(texts: list[str]) -> list[list[float]]:
     try:
         return await provider.embed(texts)
@@ -354,7 +426,7 @@ Common use cases:
 
 The `runner` parameter allows functions to execute in a specific context, such as a dedicated GPU runner that serializes GPU workloads.
 
-Like batching, a runner requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(runner=...)` to make it async. If the underlying function is already `async def`, `@coco.fn(runner=...)` works directly.
+Like batching, a runner requires an async interface, so it is always set with `@coco.fn.as_async(runner=...)`, on a plain `def` or an `async def` body. `@coco.fn(runner=...)` raises `ValueError` when applied.
 
 ```python
 @coco.fn.as_async(runner=coco.GPU)

@@ -127,6 +127,19 @@ class ComponentContext:
             ExceptionHandlerChain(handler=handler, base=self._exception_handler_chain),
         )
 
+    def _with_exception_handler_chain(
+        self, chain: ExceptionHandlerChain | None
+    ) -> ComponentContext:
+        """Same context, routing child failures through ``chain`` instead."""
+        return ComponentContext(
+            self._env,
+            self._core_path,
+            self._core_processor_ctx,
+            self._core_fn_call_ctx,
+            chain,
+            self._in_memo_fn,
+        )
+
     def resolve_exception_handler(
         self,
         *,

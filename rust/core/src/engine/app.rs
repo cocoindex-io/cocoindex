@@ -257,7 +257,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 drain_live_components(live_snapshot).await;
 
                 // Delete the root component (uses on_error from the context).
-                let handle = root_component.clone().delete(context.clone(), None)?;
+                let handle = root_component.clone().delete(context.clone())?;
 
                 // Wait for the drop operation to complete
                 handle.ready().await?;

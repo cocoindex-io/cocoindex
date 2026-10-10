@@ -9,6 +9,12 @@
 //! Storage I/O goes through methods on `AppStore` / `Storage`; this module
 //! is the in-memory caching half and never touches the storage backend
 //! directly.
+//!
+//! `pre_commit` bypasses this cache: it reserves a child provider's fresh
+//! generation ID (under `TARGET_ID_KEY`) with
+//! `AppStore::reserve_id_range_in_txn`, directly inside the open precommit
+//! write txn. Being a txn write, that reservation rolls back if the batcher
+//! re-runs the batch on `MDB_MAP_FULL`.
 
 use std::collections::HashMap;
 

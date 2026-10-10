@@ -6,8 +6,8 @@ use std::sync::Weak;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
-    AppContext, ComponentDeleteContext, ComponentProcessingAction, ComponentProcessingMode,
-    ComponentProcessorContext, MemoStatesPayload, PreviewActionCollector,
+    AppContext, ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
+    MemoStatesPayload, PreviewActionCollector,
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
@@ -152,6 +152,11 @@ struct ComponentInner<Prof: EngineProfile> {
     active_ops: std::sync::atomic::AtomicUsize,
     /// Signaled when `active_ops` drops to zero (see `wait_until_inactive`).
     inactive: tokio::sync::Notify,
+    /// Number of runs of this component itself (not its descendants) in
+    /// flight, maintained by [`RunGuard`]. A run that starts while another is
+    /// in flight will queue on `build_semaphore` behind it, so it is admitted
+    /// to the in-flight pool lazily, only if it turns out to execute.
+    active_runs: std::sync::atomic::AtomicUsize,
 }
 
 /// Marks a processing task as in flight on a component for the guard's
@@ -178,12 +183,44 @@ impl<Prof: EngineProfile> ActivityGuard<Prof> {
     }
 }
 
+/// Counts a run of a component (`ComponentInner::active_runs`) from its
+/// entry point until it ends.
+struct RunGuard<Prof: EngineProfile> {
+    component: Component<Prof>,
+    /// Another run of the same component was in flight when this one started.
+    concurrent: bool,
+}
+
+impl<Prof: EngineProfile> RunGuard<Prof> {
+    fn new(component: Component<Prof>) -> Self {
+        let previous = component
+            .inner
+            .active_runs
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self {
+            component,
+            concurrent: previous > 0,
+        }
+    }
+}
+
+impl<Prof: EngineProfile> Drop for RunGuard<Prof> {
+    fn drop(&mut self) {
+        self.component
+            .inner
+            .active_runs
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// What a processing task holds from its entry point until it ends
 /// (see [`Component::start_task`]).
 struct StartedTask<Prof: EngineProfile> {
     /// Keeps the component and its ancestors active; the task drops it right
     /// before resolving child readiness.
     activity: ActivityGuard<Prof>,
+    /// Counts this run on the component; dropped with `activity`.
+    run: RunGuard<Prof>,
     /// Registration with the parent's readiness accumulator; `None` for the root.
     child_readiness: Option<ComponentBgChildReadinessChildGuard>,
 }
@@ -680,6 +717,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 live_state: parking_lot::Mutex::new(None),
                 active_ops: std::sync::atomic::AtomicUsize::new(0),
                 inactive: tokio::sync::Notify::new(),
+                active_runs: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
     }
@@ -699,14 +737,36 @@ impl<Prof: EngineProfile> Component<Prof> {
     /// without also tracking its activity.
     fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> StartedTask<Prof> {
         let activity = ActivityGuard::new(self.clone());
+        let run = RunGuard::new(self.clone());
         let child_readiness = context.parent_context().map(|parent_ctx| {
             parent_ctx.push_active_member(self);
             parent_ctx.components_readiness().clone().add_child()
         });
         StartedTask {
             activity,
+            run,
             child_readiness,
         }
+    }
+
+    /// Admit a run to the in-flight pool before its task is spawned, so a
+    /// mount waits while the pool is empty (and the parent's token is lent):
+    /// that is what bounds how far a parent can run ahead of its children.
+    ///
+    /// Skipped for a run that starts while another run of the same component
+    /// is in flight — a second owner of a shared component, or an update
+    /// overlapping the previous one. Such a run queues on the component's
+    /// `build_semaphore`; it is admitted in `execute_once`, only once it
+    /// knows it will execute rather than reuse the memo the first run stores.
+    async fn admit_before_spawn(
+        &self,
+        context: &ComponentProcessorContext<Prof>,
+        started: &StartedTask<Prof>,
+    ) -> Result<()> {
+        if started.run.concurrent {
+            return Ok(());
+        }
+        context.admission().admit().await
     }
 
     pub fn mount_child(&self, fn_ctx: &FnCallContext, stable_path: StablePath) -> Result<Self> {
@@ -755,7 +815,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_ctx: &ComponentProcessorContext<Prof>,
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
-        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // Store `on_error` on the child's build context too, so the
         // commit-phase GC sweep can cascade it to orphan deletes. The
@@ -770,8 +829,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.host_ctx().clone(),
             on_error.clone(),
         )?;
-        self.run_in_background(processor, child_ctx, on_error, pre_execute_check)
-            .await
+        self.run_in_background(processor, child_ctx, on_error).await
     }
 
     pub fn get_child(&self, stable_path: StablePath) -> Self {
@@ -867,27 +925,13 @@ impl<Prof: EngineProfile> Component<Prof> {
         deadline: DeadlineContext,
         caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        let started = self.start_task(&context);
+        self.admit_before_spawn(&context, &started).await?;
         let StartedTask {
             activity,
+            run,
             child_readiness: child_readiness_guard,
-        } = self.start_task(&context);
-
-        // Release parent's inflight permit (deadlock prevention).
-        // On a component's first child mount, the parent gives up its slot
-        // so children can make progress.
-        if let Some(parent_ctx) = context.parent_context() {
-            parent_ctx.release_inflight_permit();
-        }
-
-        // Acquire inflight permit (waits if quota exhausted).
-        if let Some(sem) = self.app_ctx().inflight_semaphore() {
-            let permit = sem
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
-            context.set_inflight_permit(permit);
-        }
+        } = started;
 
         let relative_path = self.relative_path()?;
         let span = info_span!("component.run", component_path = %relative_path);
@@ -905,12 +949,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Ok((outcome, output)) => (outcome, Ok(output)),
                     Err(err) => (ComponentRunOutcome::exception(), Err(err)),
                 };
-                context.release_inflight_permit();
+                // Give the in-flight token back before anyone can observe
+                // the run as over.
+                context.admission().finish();
                 drop(processor);
                 drop(context);
                 drop(self);
                 // Mark the task over before readiness resolves, so whoever
                 // observes readiness also observes the component as inactive.
+                drop(run);
                 drop(activity);
                 child_readiness_guard.map(|guard| guard.resolve(outcome));
                 output?
@@ -929,46 +976,18 @@ impl<Prof: EngineProfile> Component<Prof> {
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
         on_error: Option<OnError>,
-        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
+        let started = self.start_task(&context);
+        self.admit_before_spawn(&context, &started).await?;
         let StartedTask {
             activity,
+            run,
             child_readiness: child_readiness_guard,
-        } = self.start_task(&context);
-
-        // Release parent's inflight permit (deadlock prevention).
-        if let Some(parent_ctx) = context.parent_context() {
-            parent_ctx.release_inflight_permit();
-        }
-
-        // Acquire inflight permit (waits if quota exhausted).
-        if let Some(sem) = self.app_ctx().inflight_semaphore() {
-            let permit = sem
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
-            context.set_inflight_permit(permit);
-        }
+        } = started;
 
         let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(async move {
-            // Check if this task has been superseded before executing.
-            if let Some(check) = pre_execute_check {
-                if !check() {
-                    // Superseded — skip execution, resolve as success.
-                    context.release_inflight_permit();
-                    drop(processor);
-                    drop(context);
-                    drop(self);
-                    drop(activity);
-                    if let Some(guard) = child_readiness_guard {
-                        guard.resolve(ComponentRunOutcome::default());
-                    }
-                    return Ok(());
-                }
-            }
             // Race the work against app-level cancellation. On cancel, the
             // work future is dropped, which cascades drop into from_py_future
             // → CancelOnDropPy and cancels the underlying Python task.
@@ -1007,11 +1026,12 @@ impl<Prof: EngineProfile> Component<Prof> {
                     (ComponentRunOutcome::exception(), task_result)
                 }
             };
-            context.release_inflight_permit();
+            context.admission().finish();
             drop(processor);
             drop(context);
             drop(self);
             // See `run` for why this precedes readiness resolution.
+            drop(run);
             drop(activity);
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
@@ -1028,10 +1048,14 @@ impl<Prof: EngineProfile> Component<Prof> {
     pub fn delete(
         self,
         context: ComponentProcessorContext<Prof>,
-        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
+        // A delete run is admitted to the in-flight pool inside its task
+        // (`execute_once`), not here: `delete` is synchronous, and a parent
+        // sweeping its tombstones spawns every child delete at once. The
+        // children then run as the pool and the parent's token allow.
         let StartedTask {
             activity,
+            run,
             child_readiness: child_readiness_guard,
         } = self.start_task(&context);
         // Pull on_error out of the delete context so the spawned task
@@ -1040,17 +1064,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         let on_error = context.delete_action_on_error();
         let join_handle: tokio::task::JoinHandle<SharedResult<()>> =
             get_runtime().spawn(async move {
-                if let Some(check) = pre_execute_check {
-                    if !check() {
-                        drop(context);
-                        drop(self);
-                        drop(activity);
-                        if let Some(guard) = child_readiness_guard {
-                            guard.resolve(ComponentRunOutcome::default());
-                        }
-                        return Ok(());
-                    }
-                }
                 trace!("deleting component at {}", self.stable_path());
                 // Delete/GC runs must never be deadline-bounded.
                 let result = self
@@ -1080,9 +1093,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                 };
                 // Drop profile-specific objects BEFORE resolving child readiness.
                 // See run_in_background for the rationale (PyGILState finalization fix).
+                context.admission().finish();
                 drop(context);
                 drop(self);
                 // See `run` for why this precedes readiness resolution.
+                drop(run);
                 drop(activity);
                 if let Some(guard) = child_readiness_guard {
                     guard.resolve(outcome);
@@ -1148,35 +1163,56 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // and `submit()`: a run queued behind this one must find the
                 // stored memo once it gets the permit, so it can reuse it
                 // instead of executing again.
-                let _permit = self.inner.build_semaphore.acquire().await?;
+                let _permit = loop {
+                    let permit = self.inner.build_semaphore.acquire().await?;
 
-                // A run with the same memo key completed under the permit while
-                // this one waited for it — e.g. two `App::update` calls on one
-                // app that both missed the fast-path above before either had
-                // stored a memo. Re-check the memo now; a failed run stores
-                // none (and records none), so a miss falls through to
-                // executing. Under `full_reprocess` only a memo stored by this
-                // same operation qualifies: that is the operation's own
-                // execution of the component, not a cache from a previous run.
-                let last_stored_memo = *self.inner.last_stored_memo.lock().unwrap();
-                if let Some(processor) = processor
-                    && let Some(memo_fp) = memo_fp_to_store
-                    && let Some(stored) = last_stored_memo
-                    && stored.memo_fp == memo_fp
-                    && (!processor_context.full_reprocess()
-                        || stored.operation_generation == processor_context.operation_generation())
-                {
-                    match lookup_component_memo(processor_context, processor, memo_fp_to_store)
-                        .await?
+                    // A run with the same memo key completed under the permit
+                    // while this one waited for it — e.g. two `App::update`
+                    // calls on one app that both missed the fast-path above
+                    // before either had stored a memo. Re-check the memo now;
+                    // a failed run stores none (and records none), so a miss
+                    // falls through to executing. Under `full_reprocess` only
+                    // a memo stored by this same operation qualifies: that is
+                    // the operation's own execution of the component, not a
+                    // cache from a previous run.
+                    let last_stored_memo = *self.inner.last_stored_memo.lock().unwrap();
+                    if let Some(processor) = processor
+                        && let Some(memo_fp) = memo_fp_to_store
+                        && let Some(stored) = last_stored_memo
+                        && stored.memo_fp == memo_fp
+                        && (!processor_context.full_reprocess()
+                            || stored.operation_generation
+                                == processor_context.operation_generation())
                     {
-                        MemoLookup::Reuse(outcome, output) => {
-                            return Ok(GuardedRun::Reused(outcome, output));
-                        }
-                        MemoLookup::Miss { revalidated_states } => {
-                            memo_states_for_store = revalidated_states;
+                        match lookup_component_memo(processor_context, processor, memo_fp_to_store)
+                            .await?
+                        {
+                            MemoLookup::Reuse(outcome, output) => {
+                                return Ok(GuardedRun::Reused(outcome, output));
+                            }
+                            MemoLookup::Miss { revalidated_states } => {
+                                memo_states_for_store = revalidated_states;
+                            }
                         }
                     }
-                }
+
+                    // The run executes, so it holds an in-flight token from
+                    // here until the memo is stored. A run admitted before its
+                    // task was spawned already has one; a run that queued on
+                    // the permit behind another run of this component, or a
+                    // delete, takes one now (see `admit_before_spawn`) — with
+                    // the permit released while it waits. A run never waits
+                    // for a token while holding the permit: another run of
+                    // this component may hold a token and wait for the
+                    // permit, and with no other token to come, the two would
+                    // wait for each other. Once admitted, the memo is checked
+                    // again under a fresh permit.
+                    if !processor_context.admission().needs_token() {
+                        break permit;
+                    }
+                    drop(permit);
+                    processor_context.admission().admit().await?;
+                };
 
                 // Build mode only: write the component's own existence bit
                 // (and ancestor chain) into the parent in its own txn,
@@ -1453,10 +1489,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::Delete(ComponentDeleteContext {
-                providers,
-                on_error,
-            }),
+            ComponentProcessingAction::new_delete(providers, on_error),
         )
     }
 }
@@ -1485,6 +1518,7 @@ mod tests {
     };
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
+    use crate::state_store::test_support::hold_write_batch;
     use async_trait::async_trait;
     use cocoindex_utils::fingerprint::Fingerprint;
     use std::hash::{Hash, Hasher};
@@ -1581,21 +1615,27 @@ mod tests {
     }
 
     /// Plans an action for every desired target state (none for a deletion)
-    /// and counts its `reconcile` calls.
+    /// and counts its `reconcile` calls. With `reject`, it rejects every
+    /// desired target state instead, as a connector rejecting a declared
+    /// value does.
     struct CountingHandler {
         reconcile_calls: Arc<AtomicUsize>,
         sink: TargetActionSinkKeeper<TestProfile>,
+        reject: bool,
     }
 
     impl TargetHandler<TestProfile> for CountingHandler {
         fn reconcile(
             &self,
-            _key: StableKey,
+            key: StableKey,
             desired_target_state: Option<&()>,
             _prev_possible_records: &[TestData],
             _prev_may_be_missing: bool,
         ) -> crate::prelude::Result<Option<TargetReconcileOutput<TestProfile>>> {
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+            if self.reject && desired_target_state.is_some() {
+                cocoindex_utils::client_bail!("target state {key:?} rejected");
+            }
             Ok(desired_target_state.map(|_| TargetReconcileOutput {
                 action: (),
                 sink: self.sink.clone(),
@@ -1767,6 +1807,14 @@ mod tests {
         name: &str,
         lmdb_map_size: usize,
     ) -> (App<TestProfile>, tempfile::TempDir) {
+        test_app_with_options(name, lmdb_map_size, None).await
+    }
+
+    async fn test_app_with_options(
+        name: &str,
+        lmdb_map_size: usize,
+        max_inflight_components: Option<usize>,
+    ) -> (App<TestProfile>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let settings = StorageSettings {
             db_path: dir.path().join("lmdb"),
@@ -1779,8 +1827,317 @@ mod tests {
         let env = Environment::<TestProfile>::new(settings, providers, ())
             .await
             .unwrap();
-        let app = App::new(name, env, None).await.unwrap();
+        let app = App::new(name, env, max_inflight_components).await.unwrap();
         (app, dir)
+    }
+
+    /// Every run in a chain of `use_mount`s borrows its parent's in-flight
+    /// token, so a hierarchy of any depth completes on a single pool token.
+    #[tokio::test]
+    async fn a_chain_of_mounts_runs_on_one_pool_token() {
+        fn chain(depth: usize, tokens_at_leaf: Arc<Mutex<Option<Option<usize>>>>) -> TestProcessor {
+            let memo_fp = Fingerprint::from(&format!("chain_one_token/{depth}")).unwrap();
+            TestProcessor::new("chain", memo_fp, Arc::new(AtomicBool::new(false)), false)
+                .with_on_process(Arc::new(move |ctx| {
+                    let tokens_at_leaf = tokens_at_leaf.clone();
+                    Box::pin(async move {
+                        if depth == 0 {
+                            *tokens_at_leaf.lock().unwrap() =
+                                Some(ctx.app_ctx().admission_pool().available_tokens());
+                            return Ok(TestData(b"leaf".to_vec()));
+                        }
+                        let child = ctx.component().mount_child(
+                            &FnCallContext::new(true),
+                            key_path(ctx.component(), "child"),
+                        )?;
+                        let handle = child
+                            .use_mount(
+                                &ctx,
+                                chain(depth - 1, tokens_at_leaf),
+                                DeadlineContext::NONE,
+                            )
+                            .await?;
+                        handle.result(Some(&ctx)).await
+                    })
+                }))
+        }
+
+        let (app, _dir) = test_app_with_options("chain_one_token", 1 << 24, Some(1)).await;
+        let tokens_at_leaf = Arc::new(Mutex::new(None));
+        let (handle, _) = app
+            .update(
+                chain(8, tokens_at_leaf.clone()),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), handle.result())
+            .await
+            .expect("a chain of mounts must not deadlock on one token")
+            .unwrap();
+        assert_eq!(
+            *tokens_at_leaf.lock().unwrap(),
+            Some(Some(0)),
+            "the leaf ran on a chain of loans from the one pool token"
+        );
+        assert_eq!(app.app_ctx().admission_pool().available_tokens(), Some(1));
+    }
+
+    /// With one token in the pool, the root's run holds it and lends it to the
+    /// child's first run, whose body blocks. A second run of the same child
+    /// started meanwhile — what a second owner mounting a shared component
+    /// starts — needs no token: it queues on the child's permit, and once the
+    /// first run is released it reuses the memo that run stored.
+    #[tokio::test]
+    async fn a_second_run_of_a_running_component_waits_without_a_token() {
+        let (app, _dir) = test_app_with_options("second_run_no_token", 1 << 24, Some(1)).await;
+        let child_path = StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+        let child_memo_fp = Fingerprint::from(&"second_run_no_token/child").unwrap();
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let body: ProcessHook = {
+            let body_runs = body_runs.clone();
+            let release = release.clone();
+            Arc::new(move |_ctx| {
+                let body_runs = body_runs.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    body_runs.fetch_add(1, Ordering::SeqCst);
+                    release.notified().await;
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            })
+        };
+        let child_processor = move || {
+            TestProcessor::new(
+                "child",
+                child_memo_fp,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_reusable_memo_states()
+            .with_on_process(body.clone())
+        };
+        let child_processors = Mutex::new(Some((child_processor(), child_processor())));
+        let results: Arc<Mutex<Option<[crate::prelude::Result<TestData>; 2]>>> = Default::default();
+        let root_processor = {
+            let results = results.clone();
+            let body_runs = body_runs.clone();
+            let release = release.clone();
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"second_run_no_token/root").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                let (first, second) = child_processors.lock().unwrap().take().unwrap();
+                let child_path = child_path.clone();
+                let results = results.clone();
+                let body_runs = body_runs.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    let pool = ctx.app_ctx().admission_pool().clone();
+                    assert_eq!(pool.available_tokens(), Some(0), "the root holds the token");
+                    let child = ctx
+                        .component()
+                        .mount_child(&FnCallContext::new(true), child_path)?;
+                    let first = child
+                        .clone()
+                        .use_mount(&ctx, first, DeadlineContext::NONE)
+                        .await?;
+                    // The first run borrows the root's token and blocks in
+                    // its body.
+                    while body_runs.load(Ordering::SeqCst) == 0 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    assert_eq!(pool.available_tokens(), Some(0));
+                    let second_ctx = ComponentProcessorContext::new(
+                        child.clone(),
+                        Some(ctx.clone()),
+                        ctx.processing_stats().clone(),
+                        ctx.host_ctx().clone(),
+                        ComponentProcessingAction::new_build(
+                            ctx.target_states_providers()?,
+                            ctx.full_reprocess(),
+                            ctx.live(),
+                            None,
+                            None,
+                        ),
+                    );
+                    // No token is free and the root's is lent, yet the
+                    // second run starts: it needs none to queue.
+                    let second = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        child.run(
+                            second,
+                            second_ctx,
+                            DeadlineContext::NONE,
+                            DeadlineContext::NONE,
+                        ),
+                    )
+                    .await
+                    .expect("a second run of a running component must not wait for a token")?;
+                    release.notify_one();
+                    let first = first.result(Some(&ctx)).await;
+                    let second = second.result(Some(&ctx)).await;
+                    *results.lock().unwrap() = Some([first, second]);
+                    Ok(TestData(b"root".to_vec()))
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(
+                root_processor,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), handle.result())
+            .await
+            .expect("the update must complete")
+            .unwrap();
+        let [first, second] = results.lock().unwrap().take().expect("root processor ran");
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(
+            second.unwrap(),
+            TestData(b"ret".to_vec()),
+            "the second run reused the first run's memo"
+        );
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(app.app_ctx().admission_pool().available_tokens(), Some(1));
+    }
+
+    /// Two runs of one child start while the root's token is lent to a
+    /// sibling and the pool is empty: the first waits for a token before its
+    /// task spawns, the second (concurrent, so admitted lazily) takes the
+    /// build permit first. The second must not hold the permit while it waits
+    /// for a token: when the sibling ends, the token goes to the first run,
+    /// which would then wait for the permit forever.
+    #[tokio::test]
+    async fn runs_of_one_component_never_wait_for_a_token_under_the_permit() {
+        let (app, _dir) = test_app_with_options("token_under_permit", 1 << 24, Some(1)).await;
+        let sibling_path = StablePath::root().concat_part(StableKey::Str(Arc::from("sibling")));
+        let child_path = StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+        let child_memo_fp = Fingerprint::from(&"token_under_permit/child").unwrap();
+        let release_sibling = Arc::new(tokio::sync::Notify::new());
+        let sibling_started = Arc::new(AtomicBool::new(false));
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let sibling_processor = {
+            let release_sibling = release_sibling.clone();
+            TestProcessor::new(
+                "sibling",
+                Fingerprint::from(&"token_under_permit/sibling").unwrap(),
+                sibling_started.clone(),
+                false,
+            )
+            .with_on_process(Arc::new(move |_ctx| {
+                let release_sibling = release_sibling.clone();
+                Box::pin(async move {
+                    release_sibling.notified().await;
+                    Ok(TestData(b"sibling".to_vec()))
+                })
+            }))
+        };
+        let child_processor = {
+            let body = counting_body(body_runs.clone(), Duration::from_millis(10));
+            move || {
+                TestProcessor::new(
+                    "child",
+                    child_memo_fp,
+                    Arc::new(AtomicBool::new(false)),
+                    false,
+                )
+                .with_reusable_memo_states()
+                .with_on_process(body.clone())
+            }
+        };
+        let processors = Mutex::new(Some((
+            sibling_processor,
+            child_processor(),
+            child_processor(),
+        )));
+        let root_processor = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"token_under_permit/root").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .with_on_process(Arc::new(move |ctx| {
+            let (sibling, first, second) = processors.lock().unwrap().take().unwrap();
+            let sibling_path = sibling_path.clone();
+            let child_path = child_path.clone();
+            let release_sibling = release_sibling.clone();
+            let sibling_started = sibling_started.clone();
+            Box::pin(async move {
+                let sibling = ctx
+                    .component()
+                    .mount_child(&FnCallContext::new(true), sibling_path)?
+                    .use_mount(&ctx, sibling, DeadlineContext::NONE)
+                    .await?;
+                while !sibling_started.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                // The root's token is lent to the sibling; the pool is empty.
+                let child = ctx
+                    .component()
+                    .mount_child(&FnCallContext::new(true), child_path)?;
+                let first = tokio::spawn({
+                    let child = child.clone();
+                    let ctx = ctx.clone();
+                    async move {
+                        let handle = child.use_mount(&ctx, first, DeadlineContext::NONE).await?;
+                        handle.result(Some(&ctx)).await
+                    }
+                });
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let second_ctx = ComponentProcessorContext::new(
+                    child.clone(),
+                    Some(ctx.clone()),
+                    ctx.processing_stats().clone(),
+                    ctx.host_ctx().clone(),
+                    ComponentProcessingAction::new_build(
+                        ctx.target_states_providers()?,
+                        ctx.full_reprocess(),
+                        ctx.live(),
+                        None,
+                        None,
+                    ),
+                );
+                let second = child
+                    .run(
+                        second,
+                        second_ctx,
+                        DeadlineContext::NONE,
+                        DeadlineContext::NONE,
+                    )
+                    .await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                release_sibling.notify_one();
+                sibling.result(Some(&ctx)).await?;
+                let first = first.await.unwrap()?;
+                let second = second.result(Some(&ctx)).await?;
+                assert_eq!(first, TestData(b"ret".to_vec()));
+                assert_eq!(second, TestData(b"ret".to_vec()));
+                Ok(TestData(b"root".to_vec()))
+            })
+        }));
+        let (handle, _) = app
+            .update(
+                root_processor,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), handle.result())
+            .await
+            .expect("the two runs must not wait for each other")
+            .unwrap();
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(app.app_ctx().admission_pool().available_tokens(), Some(1));
     }
 
     #[tokio::test]
@@ -2163,25 +2520,7 @@ mod tests {
         // write txn of its own, which would wait on that batch's writer lock.
         let overflow_store = env.create_app_store("overflow").await.unwrap();
 
-        // Hold a write batch open, so the `run_txn` calls made meanwhile queue
-        // into the next batch, which runs their bodies in call order.
-        let held = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let holder = tokio::spawn({
-            let (env, held, release) = (env.clone(), held.clone(), release.clone());
-            async move {
-                env.run_txn(move |_wtxn| {
-                    let (held, release) = (held.clone(), release.clone());
-                    Box::pin(async move {
-                        held.notify_one();
-                        release.notified().await;
-                        Ok(())
-                    })
-                })
-                .await
-            }
-        });
-        held.notified().await;
+        let batch = hold_write_batch(env.storage()).await;
 
         let collector = PreviewActionCollector::<TestProfile>::default();
         let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
@@ -2202,6 +2541,7 @@ mod tests {
             CountingHandler {
                 reconcile_calls: reconcile_calls.clone(),
                 sink: TargetActionSinkKeeper::new(NoopSink),
+                reject: false,
             },
         )
         .unwrap();
@@ -2240,8 +2580,7 @@ mod tests {
         }));
         assert!(futures::poll!(overflow.as_mut()).is_pending());
 
-        release.notify_one();
-        holder.await.unwrap().unwrap();
+        batch.release().await;
         overflow.await.unwrap();
         preview.await.unwrap();
 
@@ -2250,5 +2589,85 @@ mod tests {
             "the overflowing write must make the batch re-run the preview's precommit"
         );
         assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
+    }
+
+    /// Precommits that share a write batch fail independently, even across
+    /// apps sharing the environment: a target handler rejecting one
+    /// component's target state fails that component's submit alone.
+    #[tokio::test]
+    async fn rejected_target_state_fails_only_its_own_components_submit() {
+        let (accepting_app, _dir) = test_app("accepting_app").await;
+        let env = accepting_app.app_ctx().env().clone();
+        let rejecting_app = App::new("rejecting_app", env.clone(), None).await.unwrap();
+
+        let batch = hold_write_batch(env.storage()).await;
+
+        // Each app's root component declares one target state, through a
+        // handler that accepts it or rejects it.
+        let root_ctx = |app: &App<TestProfile>, reject: bool| {
+            let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+                .new_processor_context_for_build(
+                    None,
+                    ProcessingStats::new(),
+                    false,
+                    false,
+                    None,
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            let reconcile_calls = Arc::new(AtomicUsize::new(0));
+            let provider = register_root_target_state_provider(
+                &ctx,
+                "target".to_string(),
+                CountingHandler {
+                    reconcile_calls: reconcile_calls.clone(),
+                    sink: TargetActionSinkKeeper::new(NoopSink),
+                    reject,
+                },
+            )
+            .unwrap();
+            declare_target_state(
+                &ctx,
+                &FnCallContext::default(),
+                provider,
+                StableKey::Int(0),
+                (),
+            )
+            .unwrap();
+            (ctx, reconcile_calls)
+        };
+        let (accepting_ctx, accepting_reconcile_calls) = root_ctx(&accepting_app, false);
+        let (rejecting_ctx, _) = root_ctx(&rejecting_app, true);
+        let processor = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"rejected_target_state").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+
+        // Polling each submit once runs it up to queuing its precommit: the
+        // accepting one first, so the rejection aborts a txn it ran in.
+        let mut accepting = std::pin::pin!(submit(&accepting_ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(accepting.as_mut()).is_pending());
+        let mut rejecting = std::pin::pin!(submit(&rejecting_ctx, Some(&processor), |_| {}));
+        assert!(futures::poll!(rejecting.as_mut()).is_pending());
+
+        batch.release().await;
+        let Err(err) = rejecting.await else {
+            panic!("the rejecting component's submit must fail");
+        };
+        assert!(
+            err.to_string().contains("rejected"),
+            "unexpected error: {err}"
+        );
+        accepting
+            .await
+            .expect("the accepting component's submit must not fail with the rejecting one");
+        assert_eq!(
+            accepting_reconcile_calls.load(Ordering::SeqCst),
+            2,
+            "the accepting precommit runs again to commit without the rejected one"
+        );
     }
 }

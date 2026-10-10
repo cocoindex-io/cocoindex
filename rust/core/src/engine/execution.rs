@@ -271,7 +271,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     let provider_dep = target_provider_dep(&provider);
     let declared_target_state = DeclaredTargetState {
         provider,
-        item_key: key,
+        item_key_bytes: encode_item_key(&key)?,
         value,
         child_provider: None,
     };
@@ -281,11 +281,8 @@ pub fn declare_target_state<Prof: EngineProfile>(
             .declared_target_states
             .entry(target_state_path.clone())
         {
-            btree_map::Entry::Occupied(entry) => {
-                client_bail!(
-                    "Target state already declared with key: {:?}",
-                    entry.get().item_key
-                );
+            btree_map::Entry::Occupied(_) => {
+                client_bail!("Target state already declared with key: {key:?}");
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_target_state);
@@ -300,6 +297,12 @@ pub fn declare_target_state<Prof: EngineProfile>(
         }
     });
     Ok(())
+}
+
+fn encode_item_key(key: &StableKey) -> Result<Box<[u8]>> {
+    Ok(storekey::encode_vec(key)
+        .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?
+        .into_boxed_slice())
 }
 
 /// Whether every recorded target-provider dependency still matches the live
@@ -357,6 +360,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
     let provider_dep = target_provider_dep(&provider);
+    let item_key_bytes = encode_item_key(&key)?;
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
             .target_states
@@ -364,7 +368,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             .register_lazy(&provider, key.clone())?;
         let declared_target_state = DeclaredTargetState {
             provider,
-            item_key: key,
+            item_key_bytes,
             value,
             child_provider: Some(child_provider.clone()),
         };
@@ -373,11 +377,8 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             .declared_target_states
             .entry(child_provider.target_state_path().clone())
         {
-            btree_map::Entry::Occupied(entry) => {
-                client_bail!(
-                    "Target state already declared with key: {:?}",
-                    entry.get().item_key
-                );
+            btree_map::Entry::Occupied(_) => {
+                client_bail!("Target state already declared with key: {key:?}");
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_target_state);
@@ -513,9 +514,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// Closure that walks `declared_children` (`None`: nothing declared)
     /// against the on-disk `__cex` rows under this component — see
     /// [`reconcile_child_existence`]. `Fn` (not `FnOnce`) because LMDB's
-    /// batcher re-invokes it when it re-runs the commit txn after growing
-    /// the map on `MDB_MAP_FULL`: the cheap (`Arc`/owned) captures are
-    /// cloned per call rather than moved into the future.
+    /// batcher re-invokes it when it re-runs the commit's body, after
+    /// growing the map on `MDB_MAP_FULL` or after another body in its write
+    /// batch fails: the cheap (`Arc`/owned) captures are cloned per call
+    /// rather than moved into the future.
     fn existence_reconciler(
         &self,
         declared_children: Option<Arc<ChildStablePathSet>>,
@@ -674,7 +676,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.component_ctx.host_ctx().clone(),
                 cascaded_on_error.clone(),
             );
-            handles.push(component.delete(delete_ctx, None)?);
+            handles.push(component.delete(delete_ctx)?);
         }
         // Await each handle so descendant failures (when on_error
         // propagates) reach our own task_result, which the parent
@@ -758,10 +760,11 @@ enum PreCommitOutcome<Prof: EngineProfile> {
 /// Captures bundle shared into the precommit callback closure. Every
 /// field is `O(1)` to clone (Arc-internal or persistent data structure)
 /// so the body's per-call `Arc::clone(&captures)` is cheap. The callback
-/// must stay `Fn` and only read the bundle: LMDB's batcher re-runs the
-/// whole write batch after growing the map on `MDB_MAP_FULL`, so one
-/// `AppStore::precommit` call can run it — and with it `pre_commit` and
-/// every `TargetHandler::reconcile` — more than once.
+/// must stay `Fn` and only read the bundle: LMDB's batcher re-runs a body
+/// after growing the map on `MDB_MAP_FULL`, or after another body in its
+/// write batch fails, so one `AppStore::precommit` call can run it — and
+/// with it `pre_commit` and every `TargetHandler::reconcile` — more than
+/// once.
 struct PreCommitCaptures<Prof: EngineProfile> {
     app_store: AppStore,
     stable_path: StablePath,
@@ -928,9 +931,10 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     // would error on a retry. Passing the detection sub-pass (the only
     // PendingRetry exit) doesn't make this attempt final: LMDB's batcher
     // re-runs the whole precommit callback, this function included, after
-    // growing the map on `MDB_MAP_FULL`. Collecting here and letting
-    // `submit()` apply them after the commit keeps the invariant "set at most
-    // once per successful lifecycle".
+    // growing the map on `MDB_MAP_FULL` or after another body in its write
+    // batch fails. Collecting here and letting `submit()` apply them after
+    // the commit keeps the invariant "set at most once per successful
+    // lifecycle".
     let mut deferred_provider_generations: Vec<(
         TargetStateProvider<Prof>,
         TargetStateProviderGeneration,
@@ -1025,30 +1029,24 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 }
             };
 
-            // Compute prev_states and prev_may_be_missing uniformly from prev_item.
+            // Compute prev_may_be_missing uniformly from prev_item.
             // A `Deleted` entry among the states means the sink may be absent —
             // e.g. a prior delete whose sink_apply succeeded but whose commit
             // didn't finish (crash, or a `rollback_pending_tokens` after a later
             // failure). Multi-state on its own does NOT imply missing: every
-            // value the sink could hold is already among `prev_states`, so the
-            // handler's own `all(prev == desired)` check decides whether to act.
-            let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
-                let schema_version_mismatch = match parent_provider_gen {
-                    Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
-                    None => false,
-                };
-                let prev_may_be_missing = full_reprocess
-                    || schema_version_mismatch
-                    || prev_item.states.iter().any(|(_, s)| s.is_deleted());
-                let prev_states = prev_item
-                    .states
-                    .iter()
-                    .filter_map(|(_, s)| s.as_ref())
-                    .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
-                    .collect::<Result<Vec<_>>>()?;
-                (prev_states, prev_may_be_missing)
-            } else {
-                (vec![], true)
+            // value the sink could hold is already among the previous records, so
+            // the `all(prev == desired)` check decides whether to act.
+            let prev_may_be_missing = match &prev_item {
+                Some(prev_item) => {
+                    let schema_version_mismatch = match parent_provider_gen {
+                        Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
+                        None => false,
+                    };
+                    full_reprocess
+                        || schema_version_mismatch
+                        || prev_item.states.iter().any(|(_, s)| s.is_deleted())
+                }
+                None => true,
             };
 
             // Lock the shared map to run `reconcile` against `&decl.value`,
@@ -1061,25 +1059,46 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 let decl = guard.get(&target_state_path).ok_or_else(|| {
                     internal_error!("declared entry vanished mid-pre_commit: {target_state_path}")
                 })?;
-                let target_state_key_bytes = storekey::encode_vec(&decl.item_key)
-                    .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
-                let recon_output = decl
-                    .provider
-                    .handler()
-                    .ok_or_else(|| {
-                        internal_error!(
-                            "provider not ready for target state with key {:?}",
-                            decl.item_key
-                        )
-                    })?
-                    .reconcile(
-                        decl.item_key.clone(),
+                let decode_item_key =
+                    || -> Result<StableKey> { Ok(storekey::decode(decl.item_key_bytes.as_ref())?) };
+                let Some(handler) = decl.provider.handler() else {
+                    internal_bail!(
+                        "provider not ready for target state with key {:?}",
+                        decode_item_key()?
+                    );
+                };
+                let prev_states = prev_item.as_ref().map_or(&[][..], |item| &item.states);
+                // A handler that tracks the fingerprint of the declared value
+                // has nothing to do for a state that is surely present with
+                // every previous record equal to that fingerprint, so
+                // `reconcile` is not called for it. A container's `reconcile`
+                // always runs: its action is what fulfills the child slot.
+                let unchanged = decl.child_provider.is_none()
+                    && !prev_may_be_missing
+                    && !prev_states.is_empty()
+                    && match handler.value_fingerprint_record(&decl.value)? {
+                        Some(record) => prev_states
+                            .iter()
+                            .all(|(_, s)| s.as_ref() == Some(record.as_ref())),
+                        None => false,
+                    };
+                let recon_output = if unchanged {
+                    None
+                } else {
+                    let prev_records = prev_states
+                        .iter()
+                        .filter_map(|(_, s)| s.as_ref())
+                        .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                        .collect::<Result<Vec<_>>>()?;
+                    handler.reconcile(
+                        decode_item_key()?,
                         Some(&decl.value),
-                        &prev_states,
+                        &prev_records,
                         prev_may_be_missing,
-                    )?;
+                    )?
+                };
                 (
-                    target_state_key_bytes,
+                    decl.item_key_bytes.to_vec(),
                     recon_output,
                     decl.child_provider.clone(),
                 )
@@ -1306,7 +1325,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
 
     // Provider-generation updates: buffered into the output, applied
     // by `submit()` after the precommit txn commits — so a re-run of this
-    // function (the batcher's `MDB_MAP_FULL` retry) doesn't trip the
+    // function (by the batcher, see `PreCommitCaptures`) doesn't trip the
     // `OnceLock::set` "already set" guard.
     Ok(PreCommitOutcome::Done {
         output: PreCommitOutput {
@@ -1413,11 +1432,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         // `Ok(None)` from the callback so AppStore applies/commits no
         // tracking writes; the callback hands its output out through
         // `preview_output` instead. One `precommit` call can run the
-        // callback more than once — a batch retried on `MDB_MAP_FULL`
-        // re-runs every body in it — so each run overwrites the slot
-        // (`None` on `PendingRetry`) and only the last run's output
-        // counts. Its actions reach the shared collector once, after
-        // `precommit` returns.
+        // callback more than once — the batcher re-runs a body on
+        // `MDB_MAP_FULL`, or when a body after it in the same write txn
+        // fails — so each run overwrites the slot (`None` on
+        // `PendingRetry`) and only the last run's output counts. Its
+        // actions reach the shared collector once, after `precommit`
+        // returns.
         let collector = comp_ctx
             .preview_collector()
             .cloned()
@@ -1512,7 +1532,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         let output = match outcome {
                             PreCommitOutcome::Done { output, write_plan: _ } => {
                                 // Checked in here rather than after `precommit`:
-                                // the error rolls back the whole batch, so no
+                                // the error drops this body's writes, so no
                                 // generation ID `pre_commit` reserved for a
                                 // child provider commits.
                                 for input in output.actions_by_sinks.values() {
@@ -1602,11 +1622,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let contained_target_state_paths = Arc::new(contained_target_state_paths);
     // `declared_target_states` is shared across retries via
     // `Arc<tokio::sync::Mutex<…>>`. The mutex is necessary (not just an
-    // `Arc<BTreeMap<…>>`) because for some profiles `TargetStateValue`
-    // is `!Sync` (e.g. Python's `Py<PyAny>`); `tokio::sync::Mutex<T>:
-    // Sync` holds whenever `T: Send`. There's no contention — only the
-    // outer submit task ever locks — so the mutex is purely a `Sync`
-    // marker.
+    // `Arc<BTreeMap<…>>`) because `TargetStateValue` is only required to be
+    // `Send`; `tokio::sync::Mutex<T>: Sync` holds whenever `T: Send`. There's
+    // no contention — only the outer submit task ever locks — so the mutex is
+    // purely a `Sync` marker.
     let declared_target_states = Arc::new(tokio::sync::Mutex::new(declared_target_states));
 
     // Open the precommit txn via `AppStore::precommit` and drive
@@ -1746,6 +1765,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             }
         }
     };
+
+    // Pre-commit was the last reader of the declared target states: the
+    // actions carry what the sinks need. Release them now instead of holding
+    // every declared value through sink apply and commit, so each sink's
+    // actions are the only copy left and go once it has applied them.
+    drop(declared_target_states);
 
     if let Some(ref name) = pre_commit_out.processor_name_for_del {
         collect_processor_name_name_for_del(name);

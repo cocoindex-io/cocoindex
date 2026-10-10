@@ -67,10 +67,13 @@ _DeprecatedChildHandlerT_co = TypeVar(
 class _TypedTargetHandlerWrapper:
     """Wraps a TargetHandler to auto-deserialize tracking records (StoredValue → typed objects)."""
 
-    __slots__ = ("_handler", "_deserializer")
+    __slots__ = ("_handler", "_deserializer", "tracks_value_fingerprint")
 
     def __init__(self, handler: Any) -> None:
         self._handler = handler
+        self.tracks_value_fingerprint: bool = getattr(
+            handler, "tracks_value_fingerprint", False
+        )
         # reconcile(self, key, desired, prev_possible_records, ...) — position 3
         reconcile_label = qualified_name(type(handler).reconcile)
         try:
@@ -430,11 +433,21 @@ class TargetReconcileOutput(
 class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co]):
     """Reconciles one kind of target state.
 
+    ``reconcile`` may be called more than once for the same target state in
+    one update; only the output of the attempt that commits is applied, so it
+    must be free of side effects.
+
     ``OptChildHandlerT_co`` is the handler type of the child target states this
     handler's sink fulfills, or ``None`` for a leaf target. A container handler
     declares it on the return type of ``reconcile``
     (``TargetReconcileOutput[Action, TrackingRecord, ChildHandler]``), or by
     subclassing ``TargetHandler[Spec, TrackingRecord, ChildHandler]``.
+
+    A handler may set the class attribute ``tracks_value_fingerprint = True`` to
+    state that its tracking record for a declared value is exactly
+    ``connectorkits.fingerprint.fingerprint_object(value)``, and that a value
+    whose fingerprint equals every previous record needs no action. ``reconcile``
+    is then not called for such unchanged values.
     """
 
     def reconcile(

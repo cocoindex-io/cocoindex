@@ -17,16 +17,115 @@
 //! }
 //! // Postgres:  id text NOT NULL, title text, views bigint NOT NULL,
 //! //            embedding vector(384) NOT NULL
-//! let schema = postgres::TableSchema::from_row::<Doc>(["id"])?;
+//! let schema = cocoindex::connectors::postgres::TableSchema::from_row::<Doc>(["id"])?;
 //! ```
 //!
 //! Field attributes:
+//! * `#[coco(vector)]` — a dense `f32` vector whose dimension is supplied with
+//!   the connector schema's `with_vector_dim` builder.
 //! * `#[coco(vector = N)]` — a dense `f32` vector column of dimension `N`.
 //! * `#[coco(vector = N, half)]` — a 16-bit (half-precision) vector column.
 //! * `#[coco(type = "…")]` — a raw connector SQL type, used verbatim (the escape
 //!   hatch matching Python's `PgType`/`SqliteType`/`DorisType`).
 //! * `#[coco(json)]` — force JSON storage for a field.
 //! * `#[coco(rename = "…")]` — use a different column name.
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+use crate::error::{Error, Result};
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn require_resolved_vector_dimension(connector: &str, field_name: &str) -> Result<()> {
+    Err(vector_dimension_error(
+        connector,
+        field_name,
+        format_args!(
+            "has an unresolved dimension; call with_vector_dim({field_name:?}, dimension) before \
+             declaring the target"
+        ),
+    ))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn vector_dimension_error(
+    connector: &str,
+    field_name: &str,
+    detail: impl std::fmt::Display,
+) -> Error {
+    Error::engine(format!("{connector} vector field {field_name:?} {detail}"))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn zero_vector_dimension_error(connector: &str, field_name: &str) -> Error {
+    vector_dimension_error(
+        connector,
+        field_name,
+        "requires a dimension greater than zero",
+    )
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer"
+))]
+pub(crate) fn unknown_vector_field_error(connector: &str, field_name: &str) -> Error {
+    Error::engine(format!(
+        "{connector} vector dimension override names unknown field {field_name:?}"
+    ))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb"
+))]
+pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error {
+    Error::engine(format!(
+        "{connector} field {field_name:?} is not a vector field"
+    ))
+}
+
+#[cfg(any(feature = "postgres", feature = "sqlite", feature = "doris"))]
+pub(crate) fn serialized_duration_parts(value: &serde_json::Value) -> Option<(u64, u32)> {
+    let object = value.as_object()?;
+    if object.len() != 2 {
+        return None;
+    }
+    let secs = object.get("secs")?.as_u64()?;
+    let nanos = u32::try_from(object.get("nanos")?.as_u64()?).ok()?;
+    (nanos < 1_000_000_000).then_some((secs, nanos))
+}
 
 /// A connector-agnostic column type derived from a Rust field type. Each target
 /// connector maps these to its own SQL type strings.
@@ -48,7 +147,9 @@ pub enum LogicalType {
     Duration,
     /// A complex value (collection / map / nested struct / `Any`) stored as JSON.
     Json,
-    /// A dense float vector of fixed dimension (`half` → 16-bit element type).
+    /// A dense float vector (`half` → 16-bit element type). A dimension of zero
+    /// is the unresolved form emitted by `#[coco(vector)]`; connector schemas
+    /// resolve it through `with_vector_dim` before use.
     Vector {
         dim: u32,
         half: bool,

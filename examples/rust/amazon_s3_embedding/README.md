@@ -10,7 +10,7 @@ serves similarity search.
 
 | Concern          | Python                                   | Rust (this example)                                  |
 | ---------------- | ---------------------------------------- | ---------------------------------------------------- |
-| Source           | `amazon_s3.list_objects` (aiobotocore)   | `cocoindex::amazon_s3::list_objects` (aws-sdk-s3)    |
+| Source           | `amazon_s3.list_objects` (aiobotocore)   | `cocoindex::connectors::amazon_s3::list_objects` (aws-sdk-s3)    |
 | Per-file compute | `@coco.fn(memo=True) process_file`       | `#[cocoindex::function(memo)] process_file`          |
 | Chunking         | `RecursiveSplitter` (markdown, 2000/500) | `cocoindex_ops_text` `RecursiveChunker` (markdown)   |
 | Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `fastembed` `AllMiniLML6V2` (same model, 384-dim)    |

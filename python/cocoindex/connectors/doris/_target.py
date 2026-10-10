@@ -826,6 +826,8 @@ class _RowAction(NamedTuple):
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a Doris table."""
 
+    tracks_value_fingerprint = True
+
     _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]

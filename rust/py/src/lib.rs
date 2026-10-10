@@ -20,6 +20,7 @@ mod runtime;
 mod rwlock;
 mod stable_path;
 mod target_state;
+mod target_state_codec;
 mod value;
 
 #[pyo3::pymodule]
@@ -129,6 +130,14 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     // Memoization fingerprinting (deterministic)
     m.add_function(wrap_pyfunction!(
         memo_fingerprint::fingerprint_simple_object,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        memo_fingerprint::fingerprint_plain_object,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        memo_fingerprint::set_plain_canonical_form_overridden,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(memo_fingerprint::fingerprint_bytes, m)?)?;

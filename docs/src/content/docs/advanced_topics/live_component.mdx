@@ -52,7 +52,7 @@ The `operator` passed to `process_live()` provides five methods:
 
 Triggers a full processing cycle: calls `process()`, submits target states, waits for all children to be ready, and garbage-collects children that are no longer mounted. This is the same mechanism as a traditional component's update cycle.
 
-Exceptions raised inside `process()` (or its descendants) are routed through the parent's [exception handler chain](./exception_handlers#exception-handlers) — same as background `coco.mount()` failures — and **do not propagate** to the caller. This lets long-running `process_live` loops (such as periodic refreshers) keep going across transient cycle failures while still surfacing the failure to operators.
+Exceptions raised inside `process()` (including a failed `use_mount` child's, which surfaces there) are routed through the parent's [exception handler chain](./exception_handlers#exception-handlers) — same as background `coco.mount()` failures — and **do not propagate** to the caller. Components that `process()` mounts in the background report their own failures through the chain in effect where they are mounted, as any `coco.mount()` does. This lets long-running `process_live` loops (such as periodic refreshers) keep going across transient cycle failures while still surfacing the failure to operators.
 
 ### `update()` and `delete()`
 

@@ -112,32 +112,6 @@ class PreparedMemoKeySpec(NamedTuple):
 
 if TYPE_CHECKING:
 
-    class _AsyncBatchedDecorator(Protocol):
-        """Protocol for batched function decorator used by @cocoindex.function.
-
-        Only accepts async underlying functions, since @cocoindex.function preserves
-        sync/async and batching requires an async interface.
-
-        Transforms:
-        - Async: Callable[[list[T]], Awaitable[list[U]]] -> Callable[[T], Awaitable[U]]
-
-        For methods (functions with self parameter), the type transformation
-        is handled at runtime via descriptor protocol, but static typing is less
-        precise. The decorated method will work correctly when called on an instance.
-        """
-
-        # Async standalone functions (single list[T] parameter)
-        @overload
-        def __call__(
-            self, fn: Callable[[list[T]], Awaitable[list[U]]]
-        ) -> AsyncFunction[[T], U]: ...
-        # Methods with self parameter
-        @overload
-        def __call__(  # type: ignore[overload-overlap]
-            self, fn: Callable[[SelfT, list[T]], Awaitable[list[U]]]
-        ) -> AsyncFunction[[SelfT, T], U]: ...
-        def __call__(self, fn: Any) -> Any: ...
-
     class _BatchedDecorator(Protocol):
         """Protocol for batched function decorator used by @coco.fn.as_async.
 
@@ -199,6 +173,9 @@ class StateMethodsResult(NamedTuple):
     new_context_states: dict[core.Fingerprint, list[Any]]
     can_reuse: bool
     states_changed: bool
+    # Indices into `new_states` whose state function asked to be called again
+    # after the function body (`MemoStateOutcome.recollect_after_run`).
+    recollect: tuple[int, ...] = ()
 
 
 class _StateCallResult(NamedTuple):
@@ -388,7 +365,39 @@ def _aggregate_state_results(
         new_context_states=new_context,
         can_reuse=can_reuse,
         states_changed=states_changed,
+        recollect=tuple(
+            i for i, r in enumerate(positional_results) if r.outcome.recollect_after_run
+        ),
     )
+
+
+def _recollect_states_sync(
+    entries: list[StateFnEntry], states: list[Any], indices: tuple[int, ...]
+) -> list[Any]:
+    """Call the state functions at *indices* again, as on a first run, and
+    return *states* with their results substituted."""
+    if not indices:
+        return states
+    fresh = _call_state_methods_sync([entries[i] for i in indices], None).new_states
+    states = list(states)
+    for i, state in zip(indices, fresh):
+        states[i] = state
+    return states
+
+
+async def _recollect_states_async(
+    entries: list[StateFnEntry], states: list[Any], indices: tuple[int, ...]
+) -> list[Any]:
+    """Async variant of :func:`_recollect_states_sync`."""
+    if not indices:
+        return states
+    fresh = (
+        await _call_state_methods_async([entries[i] for i in indices], None)
+    ).new_states
+    states = list(states)
+    for i, state in zip(indices, fresh):
+        states[i] = state
+    return states
 
 
 def _collect_context_entries_from_stored(
@@ -755,6 +764,17 @@ class SyncFunction(Function[P, R_co]):
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
         return self
 
+    # Pickles by name, like a plain function (and like `AsyncFunction`), so a
+    # `@coco.fn` function can be passed as an argument to a memoized function:
+    # the memo-key pipeline's fallback pickles argument values.
+    def __reduce__(self) -> tuple[Any, ...]:
+        return SyncFunction._unpickle, (self._fn.__module__, self._fn.__qualname__)
+
+    @staticmethod
+    def _unpickle(module_name: str, qualname: str) -> SyncFunction[P, R_co]:
+        module = importlib.import_module(module_name)
+        return functools.reduce(getattr, qualname.split("."), module)  # type: ignore[arg-type]
+
     @overload
     def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
     @overload
@@ -828,6 +848,7 @@ class SyncFunction(Function[P, R_co]):
                     # Check if cached result is still valid
                     use_cache = False
                     memo_states_for_resolve: list[Any] | None = None
+                    recollect: tuple[int, ...] = ()
                     context_states_for_resolve: (
                         dict[core.Fingerprint, list[Any]] | None
                     ) = None
@@ -850,6 +871,7 @@ class SyncFunction(Function[P, R_co]):
                                 # (same across runs), so the validation result is
                                 # safe to reuse on the re-execution path.
                                 memo_states_for_resolve = state_result.new_states
+                                recollect = state_result.recollect
                                 # Context state is re-collected fresh from fn_ctx
                                 # below — re-execution may observe a different set
                                 # of change-detection context fps than the stored entry,
@@ -886,6 +908,10 @@ class SyncFunction(Function[P, R_co]):
                     if memo_states_for_resolve is None and state_methods:
                         initial = _call_state_methods_sync(state_methods, None)
                         memo_states_for_resolve = initial.new_states
+                    elif memo_states_for_resolve is not None:
+                        memo_states_for_resolve = _recollect_states_sync(
+                            state_methods, memo_states_for_resolve, recollect
+                        )
                     fresh_context_states = fn_ctx.initial_context_memo_states(
                         env._core_env
                     )
@@ -984,12 +1010,18 @@ class SyncFunction(Function[P, R_co]):
                         context_entries = _collect_context_entries_from_stored(
                             env, context_stored
                         )
-                        return await _call_state_methods_async(
+                        validated = await _call_state_methods_async(
                             captured,
                             positional_stored,
                             context_entries=context_entries,
                             context_stored=context_stored,
                         )
+                        if validated.recollect and not validated.can_reuse:
+                            raise ValueError(
+                                "MemoStateOutcome.recollect_after_run is supported "
+                                "for memoized functions, not for memoized components"
+                            )
+                        return validated
                     # Cache miss: look up the eager initial states for the
                     # context fps observed during function execution, in a
                     # single Rust call — no Python-side iteration over the
@@ -1041,6 +1073,11 @@ class _BoundSyncMethod(Generic[SelfT]):
     ):
         self._func = func
         self._instance = instance
+
+    # Picklable (function by name, instance by value) like `_BoundAsyncMethod`,
+    # so a bound `@coco.fn` method can be a memoized function's argument.
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _BoundSyncMethod, (self._func, self._instance)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(self._instance, *args, **kwargs)
@@ -1369,6 +1406,7 @@ class AsyncFunction(Function[P, R_co]):
         try:
             # Check memo (when enabled and context available)
             memo_states_for_resolve: list[Any] | None = None
+            recollect: tuple[int, ...] = ()
             context_states_for_resolve: dict[core.Fingerprint, list[Any]] | None = None
             if self._memo and parent_ctx is not None:
                 env = parent_ctx._env
@@ -1406,6 +1444,7 @@ class AsyncFunction(Function[P, R_co]):
                             # Positional states are stable across runs (same
                             # args ⇒ same state method list) — safe to reuse.
                             memo_states_for_resolve = state_result.new_states
+                            recollect = state_result.recollect
                             # Context states are re-collected fresh from fn_ctx
                             # below: re-execution may observe a different set
                             # of change-detection context fps than the stored entry.
@@ -1457,6 +1496,10 @@ class AsyncFunction(Function[P, R_co]):
                 if memo_states_for_resolve is None and state_methods:
                     initial = await _call_state_methods_async(state_methods, None)
                     memo_states_for_resolve = initial.new_states
+                elif memo_states_for_resolve is not None:
+                    memo_states_for_resolve = await _recollect_states_async(
+                        state_methods, memo_states_for_resolve, recollect
+                    )
                 fresh_context_states = fn_ctx.initial_context_memo_states(env._core_env)
                 if fresh_context_states:
                     context_states_for_resolve = fresh_context_states
@@ -1764,12 +1807,18 @@ class AsyncFunction(Function[P, R_co]):
                         context_entries = _collect_context_entries_from_stored(
                             env, context_stored
                         )
-                        return await _call_state_methods_async(
+                        validated = await _call_state_methods_async(
                             captured,
                             positional_stored,
                             context_entries=context_entries,
                             context_stored=context_stored,
                         )
+                        if validated.recollect and not validated.can_reuse:
+                            raise ValueError(
+                                "MemoStateOutcome.recollect_after_run is supported "
+                                "for memoized functions, not for memoized components"
+                            )
+                        return validated
                     # TODO(future simplification): this branch is pure data
                     # collection; should move out of the handler.
                     new_context = comp_ctx.initial_context_memo_states()
@@ -1866,11 +1915,7 @@ class _GenericFunctionBuilder:
         self._deps = deps
 
     def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
-        if self._batching or self._runner is not None:
-            raise ValueError(
-                "Batching and runner require the function to be async. "
-                "Use @coco.fn.as_async instead, or rewrite the function to be async."
-            )
+        assert not self._batching and self._runner is None
         wrapper = SyncFunction(
             fn,
             memo=self._memo,
@@ -1903,18 +1948,6 @@ class _GenericFunctionBuilder:
         )
         functools.update_wrapper(wrapper, fn)
         return wrapper
-
-
-# Only supports sync function -> sync function
-class _SyncFunctionBuilder(_GenericFunctionBuilder):
-    def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
-        if inspect.iscoroutinefunction(fn):
-            raise ValueError(
-                "Async functions are not supported by @coco.fn decorator "
-                "when batching or runner is specified. "
-                "Please use @coco.fn.as_async instead."
-            )
-        return self._build_sync(fn)
 
 
 # Supports sync function -> sync function and async function -> async function
@@ -1974,7 +2007,9 @@ class _FunctionDecorator:
 
     # --- @coco.fn(...) / @coco.fn ---
 
-    # Without batching / runner, supports both sync and async functions
+    # Keyword form: supports both sync and async functions. batching / runner
+    # are deliberately absent — they need an async interface and are only
+    # available through @coco.fn.as_async; passing them here raises at runtime.
     @overload
     def __call__(
         self,
@@ -1985,34 +2020,6 @@ class _FunctionDecorator:
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
     ) -> _AutoFunctionBuilder: ...
-    # Overload for batching=True
-    @overload
-    def __call__(
-        self,
-        *,
-        memo: bool = False,
-        memo_key: MemoKeySpec = None,
-        batching: Literal[True],
-        max_batch_size: int | None = None,
-        runner: Runner | None = None,
-        version: int | None = None,
-        logic_tracking: LogicTracking = "full",
-        deps: Any = None,
-    ) -> _AsyncBatchedDecorator: ...
-    # With batching / runner, only supports sync functions
-    @overload
-    def __call__(
-        self,
-        *,
-        memo: bool = False,
-        memo_key: MemoKeySpec = None,
-        batching: Literal[False] = False,
-        max_batch_size: int | None = None,
-        runner: Runner | None = None,
-        version: int | None = None,
-        logic_tracking: LogicTracking = "full",
-        deps: Any = None,
-    ) -> _SyncFunctionBuilder: ...
     # Overloads for direct function decoration
     @overload
     def __call__(  # type: ignore[overload-overlap]
@@ -2080,34 +2087,24 @@ class _FunctionDecorator:
                 Requires ``logic_tracking`` to be enabled; raises ``ValueError`` if
                 combined with ``logic_tracking=None``.
 
-        Batching and runner require an async interface. With this decorator, only
-        async underlying functions are accepted when batching/runner is specified.
-        Use @coco.fn.as_async for sync underlying functions that need
-        batching/runner.
+        Batching and runner require an async interface and are not supported by
+        this decorator, whichever kind of function it is applied to: use
+        @coco.fn.as_async for them.
 
-        Memoization works with all modes:
-            - Without batching/runner: requires ComponentContext
-            - With batching/runner: ComponentContext optional, memo checked when available
+        Memoization requires a ComponentContext: the call must happen inside a
+        processing component.
         """
-        builder = (
-            _SyncFunctionBuilder(
-                memo=memo,
-                memo_key=memo_key,
-                batching=batching,
-                max_batch_size=max_batch_size,
-                runner=runner,
-                version=version,
-                logic_tracking=logic_tracking,
-                deps=deps,
+        if batching or max_batch_size is not None or runner is not None:
+            raise ValueError(
+                "@coco.fn does not support batching, max_batch_size or runner: "
+                "they require an async interface. Use @coco.fn.as_async instead."
             )
-            if batching or runner or max_batch_size is not None
-            else _AutoFunctionBuilder(
-                memo=memo,
-                memo_key=memo_key,
-                version=version,
-                logic_tracking=logic_tracking,
-                deps=deps,
-            )
+        builder = _AutoFunctionBuilder(
+            memo=memo,
+            memo_key=memo_key,
+            version=version,
+            logic_tracking=logic_tracking,
+            deps=deps,
         )
         if fn is not None:
             return builder(fn)

@@ -34,6 +34,12 @@ impl PyEnvironment {
         Ok(Self(environment))
     }
 
+    /// Close the LMDB env once the transactions in flight finish. Later
+    /// operations on this environment fail. Idempotent.
+    pub fn close(&self, py: Python<'_>) {
+        py.detach(|| get_runtime().block_on(self.0.close()));
+    }
+
     pub fn register_logic(&self, fp: PyFingerprint) {
         self.0.register_logic(fp.0);
     }

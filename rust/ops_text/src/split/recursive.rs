@@ -991,6 +991,38 @@ class Point {
     }
 
     #[test]
+    fn test_split_with_nix_language() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = r#"{ pkgs, ... }:
+let
+  package-name = pkgs.hello;
+  greeting = "hello ${package-name}";
+in {
+  inherit package-name;
+  script = ''
+    echo "${greeting}"
+  '';
+}
+"#;
+        let config = RecursiveChunkConfig {
+            chunk_size: 70,
+            min_chunk_size: Some(20),
+            chunk_overlap: Some(0),
+        };
+        let chunks = chunker.split(&CodeSource::with_language(text, "nix"), config);
+        let chunk_texts: Vec<&str> = chunks
+            .iter()
+            .map(|chunk| &text[chunk.range.start..chunk.range.end])
+            .collect();
+        assert_eq!(chunk_texts.len(), 3);
+        assert_eq!(
+            chunk_texts[1],
+            "  greeting = \"hello ${package-name}\";\nin"
+        );
+        assert!(chunk_texts[2].starts_with("{\n  inherit package-name;"));
+    }
+
+    #[test]
     fn test_split_positions() {
         let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
         let text = "Chunk1\n\nChunk2";

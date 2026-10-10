@@ -4,7 +4,9 @@ Neo4j target for CocoIndex.
 Two-level state system:
 1. Table level — creates/drops Cypher indexes and uniqueness constraints
    for node labels and relationship types (real Cypher DDL, not best-effort
-   like FalkorDB's GRAPH.CONSTRAINT redis command).
+   like FalkorDB's GRAPH.CONSTRAINT redis command). A system-managed table
+   owns its label / relationship type: dropping it deletes every node or
+   relationship there before the DDL artifact goes.
 2. Record level — upserts/deletes nodes via Cypher MERGE and edges via
    triple-MERGE (source, target, relationship).
 
@@ -787,6 +789,8 @@ class _VectorIndexHandler:
 class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for record-level target states within a Neo4j table."""
 
+    tracks_value_fingerprint = True
+
     _table_name: str
     _is_relation: bool
     _pk_field: str
@@ -943,12 +947,18 @@ class _TableSpec:
 
 
 class _TableMainRecord(msgspec.Struct, frozen=True):
-    """Tracking record for table-level properties — change ⇒ DROP+CREATE index."""
+    """Identity-defining table properties.
 
-    has_schema: bool
+    A change here means existing nodes / relationships can no longer be
+    matched record by record (their MERGE key pattern changed), so the table
+    is rebuilt: contents deleted, DDL artifact recreated, children re-declared
+    from scratch. Everything else about the schema is tracked per field —
+    Neo4j has no server-side property types, so a field change at most
+    re-upserts the records (lossy), never rebuilds.
+    """
+
     is_relation: bool
     primary_key: str
-    pk_type: str | None
     from_label: str | None
     from_pk_field: str | None
     to_label: str | None
@@ -956,10 +966,10 @@ class _TableMainRecord(msgspec.Struct, frozen=True):
 
 
 class _FieldTrackingRecord(msgspec.Struct, frozen=True):
-    """Per-field tracking record. Neo4j has optional property-type
-    constraints (5.9+) but this connector does not emit them yet, so the
-    record is fingerprint-only — schema fingerprint stability lets two
-    flows share a table only if they declare matching columns.
+    """Per-field tracking record, primary key included. Neo4j has optional
+    property-type constraints (5.9+) but this connector does not emit them
+    yet, so the record is fingerprint-only — schema fingerprint stability
+    lets two flows share a table only if they declare matching columns.
     """
 
     neo4j_type: str
@@ -980,7 +990,7 @@ class _TableAction(NamedTuple):
     main_action: statediff.DiffAction | None
     column_actions: dict[str, statediff.DiffAction]
     # Recovered from the most recent system-managed prev tracking record.
-    # Needed on "delete"/"replace" to know what artifact to drop.
+    # Needed on "delete"/"replace" to know what to destroy.
     prev_pk_field: str | None
     prev_is_relation: bool
 
@@ -988,28 +998,17 @@ class _TableAction(NamedTuple):
 def _table_composite_tracking_record_from_spec(
     spec: _TableSpec,
 ) -> statediff.CompositeTrackingRecord[_TableMainRecord, str, _FieldTrackingRecord]:
-    schema = spec.table_schema
-    has_schema = schema is not None
-    pk_type: str | None = None
     sub: dict[str, _FieldTrackingRecord] = {}
-
-    if schema is not None:
-        pk_col = schema.columns.get(spec.primary_key)
-        if pk_col is not None:
-            pk_type = pk_col.type
-        for col_name, col_def in schema.columns.items():
-            if col_name == spec.primary_key:
-                continue
+    if spec.table_schema is not None:
+        for col_name, col_def in spec.table_schema.columns.items():
             sub[_field_subkey(col_name)] = _FieldTrackingRecord(
                 neo4j_type=col_def.type,
                 nullable=col_def.nullable,
             )
 
     main = _TableMainRecord(
-        has_schema=has_schema,
         is_relation=spec.is_relation,
         primary_key=spec.primary_key,
-        pk_type=pk_type,
         from_label=spec.from_label,
         from_pk_field=spec.from_pk_field,
         to_label=spec.to_label,
@@ -1105,6 +1104,7 @@ class _TableHandler(
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if main_action == "replace":
+            # The table is rebuilt: its contents are deleted and re-declared.
             child_invalidation = "destructive"
         elif any(a != "insert" for a in column_actions.values()):
             # No incremental property DDL emitted in v1; treat column
@@ -1169,7 +1169,7 @@ class _TableHandler(
                 spec = action.spec
 
                 if action.main_action in ("replace", "delete"):
-                    await self._drop_table_artifacts(graph, action.key, action)
+                    await self._drop_table(graph, action.key, action)
 
                 if coco.is_non_existence(spec):
                     continue
@@ -1226,15 +1226,23 @@ class _TableHandler(
             )
 
     @staticmethod
-    async def _drop_table_artifacts(
+    async def _drop_table(
         graph: _GraphHandle, key: _TableKey, action: _TableAction
     ) -> None:
-        """Drop the supporting Cypher index + uniqueness constraint on
-        table teardown.
+        """Destroy the table: delete its contents, then its DDL artifact.
 
-        Uses ``prev_pk_field`` recovered during reconcile from the previous
-        tracking record — that's what was actually CREATEd, so it's what
-        we need to DROP.
+        A system-managed table owns its label / relationship type the way a
+        Postgres table owns its rows: every node carrying the label (with the
+        relationships attached to it) or every relationship of the type is
+        deleted, whoever wrote it. The engine prunes the records' tracking
+        without reconciling them once their container is gone, so this is
+        where their data goes away. A label shared with data CocoIndex does
+        not own belongs in a ``managed_by="user"`` table, which never gets
+        here.
+
+        Uses ``prev_pk_field`` / ``prev_is_relation`` recovered during
+        reconcile from the previous tracking record — that's what was
+        actually CREATEd, so it's what we need to DROP.
         """
         pk_field = action.prev_pk_field
         is_relation = action.prev_is_relation
@@ -1245,9 +1253,11 @@ class _TableHandler(
             return  # Nothing to drop.
 
         if is_relation:
+            await graph.query(_cypher.build_relationship_delete_all(key.table_name))
             idx_name = _cypher.index_name("rel", key.table_name, [pk_field])
             await graph.query(_cypher.build_relationship_index_drop(idx_name))
         else:
+            await graph.query(_cypher.build_node_delete_all(key.table_name))
             cn = _cypher.constraint_name(key.table_name, [pk_field])
             await graph.query(_cypher.build_constraint_drop(cn))
 
