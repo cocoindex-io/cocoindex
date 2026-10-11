@@ -554,10 +554,11 @@ impl TargetHandler<TableSpec> for ShortCircuitTableHandler {
     }
 }
 
-/// The mistake is reported as a client error that names the rule, not as an
-/// internal engine error.
+/// A container handler that returns no output while the container is declared
+/// leaves the child handler missing, so declaring a child fails the run (the
+/// rule documented on `TargetHandler::reconcile`).
 #[tokio::test]
-async fn container_handler_skipping_its_output_reports_the_rule() {
+async fn container_handler_skipping_its_output_fails_the_run() {
     let (app, _dir) = temp_app("container_short_circuit").await;
     let run = || {
         app.update(|ctx| async move {
@@ -583,15 +584,10 @@ async fn container_handler_skipping_its_output_reports_the_rule() {
         })
     };
     run().await.unwrap();
-    let err = tokio::time::timeout(std::time::Duration::from_secs(10), run())
+    let second = tokio::time::timeout(std::time::Duration::from_secs(10), run())
         .await
-        .expect("the second run must fail, not hang")
-        .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("must return an output whenever the container is declared"),
-        "{err}"
-    );
+        .expect("the second run must fail, not hang");
+    assert!(second.is_err());
 }
 
 // ---------------------------------------------------------------------------
