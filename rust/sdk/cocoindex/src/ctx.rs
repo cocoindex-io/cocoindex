@@ -1013,16 +1013,16 @@ impl Ctx {
 
     /// Foreground mount with an explicit component-memo fingerprint. The
     /// `mount!` / `use_mount!` / `mount_each!` macros call this; `scope` is the
-    /// `memo_fp = None` (always-run) case kept for direct use and tests.
+    /// `memo = None` (always-run) case kept for direct use and tests.
     ///
-    /// When `memo_fp` is `Some`, the engine checks it before running the child
+    /// When `memo` is `Some`, the engine checks its fingerprint and argument states before running the child
     /// and skips the whole component on an unchanged hit (see
-    /// [`crate::mount::component_memo_fp`]).
+    /// [`crate::mount::component_memo`]).
     #[doc(hidden)]
     pub async fn __use_mount_fp<T, F, Fut>(
         &self,
         key: String,
-        memo_fp: Option<Fingerprint>,
+        memo: Option<crate::mount::ComponentMemo>,
         f: F,
     ) -> Result<T>
     where
@@ -1076,10 +1076,11 @@ impl Ctx {
                     Value::from_serializable(&result)
                 })
             },
-            memo_fp,
+            memo.as_ref().map(|memo| memo.fp),
             format!("mount:{key}"),
         )
-        .with_memo_state_handler(has_context_memo_state);
+        .with_memo_state_handler(has_context_memo_state)
+        .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
 
         let handle = match child_component
             .use_mount(comp_ctx, processor, self.deadline)
@@ -1123,7 +1124,7 @@ impl Ctx {
         K: Display,
         V: Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        M: Fn(&V) -> Result<Option<Fingerprint>>,
+        M: Fn(&V) -> Result<Option<crate::mount::ComponentMemo>>,
         B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
@@ -1136,20 +1137,20 @@ impl Ctx {
                     "duplicate key `{key}` in mount_each batch"
                 )));
             }
-            let memo_fp = memo_of(&value)?;
+            let memo = memo_of(&value)?;
             let subpath = match prefix {
                 Some(prefix) => format!("{prefix}/{key}"),
                 None => key,
             };
-            keyed.push((subpath, memo_fp, value));
+            keyed.push((subpath, memo, value));
         }
 
         let futs: Vec<_> = keyed
             .into_iter()
-            .map(|(subpath, memo_fp, value)| {
+            .map(|(subpath, memo, value)| {
                 let body = body.clone();
                 async move {
-                    self.__use_mount_fp(subpath, memo_fp, move |child| body(child, value))
+                    self.__use_mount_fp(subpath, memo, move |child| body(child, value))
                         .await
                 }
             })

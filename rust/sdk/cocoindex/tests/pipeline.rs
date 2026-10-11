@@ -747,13 +747,15 @@ async fn type_owned_context_memo_state_invalidates_cached_function() {
             })
             .await?;
 
-            let memo_fp = cocoindex_utils::fingerprint::Fingerprint::from(
-                &"type_owned_context_state_component",
-            )
-            .unwrap();
+            let memo = cocoindex::mount::component_memo(
+                module_path!(),
+                "type_owned_context_state_component",
+                0,
+                Vec::new(),
+            )?;
             ctx.__use_mount_fp(
                 "stateful_child".to_string(),
-                Some(memo_fp),
+                Some(memo),
                 move |child_ctx| async move {
                     component_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(child_ctx.get_key(&key)?.version)
@@ -3709,5 +3711,83 @@ mod memo_test_nested_calls {
             err.to_string().contains("mounted child components"),
             "unexpected error: {err}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mount macros key file arguments by their memo identity and revalidate them
+// by state (mtime, then content), like `#[function(memo)]` arguments and the
+// Python SDK's `mount`/`mount_each`.
+// ---------------------------------------------------------------------------
+
+mod mount_macros_file_state {
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime};
+
+    use cocoindex::resources::fs::{FilePath, walk_dir};
+    use cocoindex::{Ctx, DirTarget, FileEntry, Result, mount_each};
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function]
+    async fn copy_file(ctx: &Ctx, file: FileEntry, target: DirTarget) -> Result<()> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        target.declare_file(ctx, &file.key(), &file.content()?)
+    }
+
+    async fn run(app: &cocoindex::App, src: &Path, out: &Path) {
+        let src = src.to_path_buf();
+        let out = out.to_path_buf();
+        app.update(move |ctx| async move {
+            let target = DirTarget::mount(&ctx, &out)?;
+            // A stable base key keeps file identities independent of where
+            // the source directory lives.
+            let files = walk_dir(FilePath::with_base_dir("src", &src, ""))
+                .recursive(true)
+                .items()?;
+            mount_each!(files, |file| copy_file(ctx, file, target)).await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    fn touch(path: &Path, offset: Duration) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() + offset).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mount_each_revalidates_file_arguments_by_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"one").unwrap();
+        let app = cocoindex::App::open("mount_each_file_state", dir.path().join("lmdb"))
+            .await
+            .unwrap();
+
+        run(&app, &src, &out).await;
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+
+        // New mtime, same content: the component is reused.
+        touch(&src.join("a.txt"), Duration::from_secs(10));
+        run(&app, &src, &out).await;
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "touched file re-ran");
+
+        // Same base key, new location, same content: the component is reused.
+        let moved = dir.path().join("moved");
+        std::fs::rename(&src, &moved).unwrap();
+        run(&app, &moved, &out).await;
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "moved source re-ran");
+
+        // Changed content: the component runs again.
+        std::fs::write(moved.join("a.txt"), b"two").unwrap();
+        touch(&moved.join("a.txt"), Duration::from_secs(20));
+        run(&app, &moved, &out).await;
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"two");
     }
 }

@@ -260,7 +260,7 @@ impl<T: MemoInput, const N: usize> MemoInput for [T; N] {
     }
 }
 
-fn memo_value_fingerprint<T: MemoInput + ?Sized>(value: &T) -> Result<Fingerprint> {
+pub(crate) fn memo_value_fingerprint<T: MemoInput + ?Sized>(value: &T) -> Result<Fingerprint> {
     let mut fingerprinter = Fingerprinter::default();
     value.write_memo_key(&mut MemoKeyWriter {
         fingerprinter: &mut fingerprinter,
@@ -576,6 +576,34 @@ pub async fn memo_state_group(
         memo_valid,
     )
     .map(Some)
+}
+
+/// Collect the memo states of a mounted component's arguments, validating
+/// them against the states stored with its memo entry (`None` on a miss).
+///
+/// States are positional: an argument whose `memo_state` is `None` takes no
+/// slot, exactly like `#[function(memo)]` argument states. Returns the new
+/// states and whether every stored state is still valid.
+pub(crate) async fn collect_component_states(
+    inputs: &[Arc<dyn MemoInput>],
+    stored: Option<&[Value]>,
+) -> Result<(Vec<Value>, bool)> {
+    let mut states = Vec::new();
+    let mut memo_valid = true;
+    for input in inputs {
+        let previous = stored
+            .and_then(|stored| stored.get(states.len()))
+            .cloned()
+            .map(MemoStateValue);
+        if let Some(decision) = input.memo_state(previous.as_ref()).await? {
+            memo_valid &= previous.is_some() && decision.memo_valid;
+            states.push(decision.state.0);
+        }
+    }
+    if let Some(stored) = stored {
+        memo_valid &= stored.len() == states.len();
+    }
+    Ok((states, memo_valid))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

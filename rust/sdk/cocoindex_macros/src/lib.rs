@@ -1351,25 +1351,28 @@ pub fn use_mount(input: TokenStream) -> TokenStream {
         .iter()
         .zip(data_args)
         .map(|(id, expr)| quote! { let #id = #expr; });
-    let fp_refs = arg_idents.iter().map(|id| quote! { & #id });
+    let fp_parts = arg_idents
+        .iter()
+        .map(|id| component_arg_part(quote! { & #id }));
     let key_tokens = match key_expr {
         Some(key) => quote! { ::std::string::ToString::to_string(&(#key)) },
         None => quote! { ::std::string::ToString::to_string(::core::stringify!(#fn_ident)) },
     };
 
     quote! {{
+        use ::cocoindex::mount::{ComponentArgViaMemoInput as _, ComponentArgViaSerialize as _};
         let __coco_parent = &(#ctx_arg);
         #(#arg_binds)*
-        let __coco_memo_fp = ::cocoindex::mount::component_memo_fp(
+        let __coco_memo = ::cocoindex::mount::component_memo(
             ::core::module_path!(),
             ::core::stringify!(#fn_ident),
             #hash_path,
-            &( #(#fp_refs,)* ),
+            ::std::vec![ #(#fp_parts),* ],
         )?;
         let __coco_key: ::std::string::String = #key_tokens;
         __coco_parent.__use_mount_fp(
             __coco_key,
-            ::core::option::Option::Some(__coco_memo_fp),
+            ::core::option::Option::Some(__coco_memo),
             move |__coco_child| async move {
                 #path(&__coco_child, #(#arg_idents),*).await
             },
@@ -1444,12 +1447,12 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
             continue;
         }
         if expr_is_ident(arg, &item_ident) {
-            fp_elems.push(quote! { __coco_value });
+            fp_elems.push(component_arg_part(quote! { __coco_value }));
             body_args.push(quote! { __coco_value });
         } else {
             let id = format_ident!("__coco_extra{}", extra_idents.len());
             extra_binds.push(quote! { let #id = #arg; });
-            fp_elems.push(quote! { & #id });
+            fp_elems.push(component_arg_part(quote! { & #id }));
             body_args.push(quote! { #id });
             extra_idents.push(id);
         }
@@ -1460,28 +1463,48 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
         None => quote! { ::core::option::Option::Some(::core::stringify!(#fn_ident)) },
     };
 
+    // The memo and body closures are passed inline so their parameter types
+    // are inferred from `items` before their bodies are checked: the memo
+    // closure resolves `__coco_component_arg` by method lookup on the item's
+    // concrete type.
     quote! {{
+        use ::cocoindex::mount::{ComponentArgViaMemoInput as _, ComponentArgViaSerialize as _};
         #(#extra_binds)*
-        let __coco_memo_of = {
-            #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
-            move |__coco_value: &_| ::cocoindex::mount::component_memo_fp(
-                ::core::module_path!(),
-                ::core::stringify!(#fn_ident),
-                #hash_path,
-                &( #(#fp_elems,)* ),
-            )
-            .map(::core::option::Option::Some)
-        };
-        let __coco_body = {
-            #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
-            move |__coco_child: ::cocoindex::Ctx, __coco_value| {
+        (#ctx_arg).__mount_each_fp(
+            #items_expr,
+            #prefix_tokens,
+            {
                 #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
-                async move { #path(#(#body_args),*).await }
-            }
-        };
-        (#ctx_arg).__mount_each_fp(#items_expr, #prefix_tokens, __coco_memo_of, __coco_body)
+                move |__coco_value| -> ::cocoindex::Result<
+                    ::core::option::Option<::cocoindex::mount::ComponentMemo>
+                > {
+                    ::cocoindex::mount::component_memo(
+                        ::core::module_path!(),
+                        ::core::stringify!(#fn_ident),
+                        #hash_path,
+                        ::std::vec![ #(#fp_elems),* ],
+                    )
+                    .map(::core::option::Option::Some)
+                }
+            },
+            {
+                #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
+                move |__coco_child: ::cocoindex::Ctx, __coco_value| {
+                    #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
+                    async move { #path(#(#body_args),*).await }
+                }
+            },
+        )
     }}
     .into()
+}
+
+/// One mount argument's memo part, chosen by autoref specialization: the
+/// `MemoInput` path when the argument's type supports it, else `Serialize`.
+fn component_arg_part(arg_ref: TokenStream2) -> TokenStream2 {
+    quote! {
+        (&&::cocoindex::mount::ComponentArg(#arg_ref)).__coco_component_arg()?
+    }
 }
 
 /// Whether `expr` is exactly the identifier `ident` (a bare path with one
