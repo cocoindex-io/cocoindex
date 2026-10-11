@@ -931,7 +931,7 @@ impl TargetHandler<RowState> for RowHandler {
         };
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -942,7 +942,7 @@ impl TargetHandler<RowState> for RowHandler {
             && !prev.is_empty()
             && let Some(desired_state) = desired.as_ref()
             && let Some(legacy_fp) = self.legacy_fingerprint_for_null_backfill(desired_state)?
-            && prev.iter().any(|p| p == &legacy_fp)
+            && prev.iter().all(|p| p == &legacy_fp)
         {
             return Ok(Some(TargetReconcileOutput {
                 action: TargetAction::Update(RowAction {
@@ -1126,43 +1126,51 @@ fn build_record_batch(
         let array: ArrayRef = match &def.col_type {
             ColumnType::Bool => Arc::new(BooleanArray::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(JsonValue::as_bool))
+                    .map(|v| typed_value(name, def, v, "a boolean", JsonValue::as_bool))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Int16 => Arc::new(Int16Array::from(
                 values
                     .map(|v| {
-                        nullable_value(name, def, v)
-                            .map(|v| v.as_i64().and_then(|n| i16::try_from(n).ok()))
+                        typed_value(name, def, v, "a 16-bit integer", |v| {
+                            v.as_i64().and_then(|n| i16::try_from(n).ok())
+                        })
                     })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Int32 => Arc::new(Int32Array::from(
                 values
                     .map(|v| {
-                        nullable_value(name, def, v)
-                            .map(|v| v.as_i64().and_then(|n| i32::try_from(n).ok()))
+                        typed_value(name, def, v, "a 32-bit integer", |v| {
+                            v.as_i64().and_then(|n| i32::try_from(n).ok())
+                        })
                     })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Int64 => Arc::new(Int64Array::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_i64()))
+                    .map(|v| typed_value(name, def, v, "a 64-bit integer", JsonValue::as_i64))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Float32 => Arc::new(Float32Array::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_f64().map(|n| n as f32)))
+                    .map(|v| {
+                        typed_value(name, def, v, "a 32-bit float", |v| {
+                            v.as_f64().map(|n| n as f32).filter(|n| n.is_finite())
+                        })
+                    })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Float64 => Arc::new(Float64Array::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_f64()))
+                    .map(|v| typed_value(name, def, v, "a float", JsonValue::as_f64))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Text => Arc::new(StringArray::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_str().map(str::to_string)))
+                    .map(|v| {
+                        typed_value(name, def, v, "a string", |v| v.as_str().map(str::to_string))
+                    })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Binary => {
@@ -1285,6 +1293,10 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
 // ---------------------------------------------------------------------------
 
 fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, JsonValue>> {
+    // Reject non-finite floats up front: `serde_json` would turn NaN/±Inf into
+    // JSON null, silently storing a null.
+    crate::finite::ensure_finite(row)
+        .map_err(|e| Error::engine(format!("LanceDB target row has a {e}")))?;
     let value = serde_json::to_value(row)
         .map_err(|e| Error::engine(format!("serialize LanceDB target row: {e}")))?;
     let JsonValue::Object(mut fields) = value else {
@@ -1313,6 +1325,26 @@ fn nullable_value<'a>(name: &str, def: &ColumnDef, value: &'a JsonValue) -> Resu
         )));
     }
     Ok(value)
+}
+
+/// A non-null value converted to its column's Arrow type, or an error naming
+/// the column when it does not fit. A mismatch is never stored as null.
+fn typed_value<'a, T>(
+    name: &str,
+    def: &ColumnDef,
+    value: &'a JsonValue,
+    expected: &str,
+    convert: impl FnOnce(&'a JsonValue) -> Option<T>,
+) -> Result<Option<T>> {
+    let value = nullable_value(name, def, value)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    convert(value).map(Some).ok_or_else(|| {
+        Error::engine(format!(
+            "LanceDB column {name:?} expects {expected}, got {value}"
+        ))
+    })
 }
 
 fn validate_identifier(name: &str) -> Result<()> {
@@ -1581,7 +1613,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
     ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -1651,7 +1683,7 @@ impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
     ) -> Result<Option<TargetReconcileOutput<FtsIndexAction, FtsIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -2202,5 +2234,54 @@ mod tests {
         let batch = build_record_batch(&s, &arrow, &[row]).unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert!(batch.column(1).is_null(0));
+    }
+
+    #[test]
+    fn build_batch_rejects_values_that_do_not_fit_instead_of_storing_null() {
+        let s = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Text)),
+                ("count", ColumnDef::new(ColumnType::Int16).nullable()),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        let arrow = s.arrow_schema();
+        let row = |id: JsonValue, count: JsonValue| {
+            Map::from_iter([("id".to_string(), id), ("count".to_string(), count)])
+        };
+
+        let overflow = build_record_batch(&s, &arrow, &[row("a".into(), 70_000.into())]);
+        assert!(overflow.unwrap_err().to_string().contains("\"count\""));
+        // A numeric primary key for a text column would otherwise be stored as
+        // a null key that no later delete can match.
+        assert!(build_record_batch(&s, &arrow, &[row(42.into(), JsonValue::Null)]).is_err());
+        assert!(build_record_batch(&s, &arrow, &[row("a".into(), 7.into())]).is_ok());
+    }
+
+    #[test]
+    fn row_state_rejects_non_finite_floats() {
+        #[derive(serde::Serialize)]
+        struct Row {
+            id: i64,
+            score: f64,
+        }
+        let s = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Int64)),
+                ("score", ColumnDef::new(ColumnType::Float64).nullable()),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        let err = row_state(
+            &Row {
+                id: 1,
+                score: f64::NAN,
+            },
+            &s,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("LanceDB target row"), "{err}");
     }
 }

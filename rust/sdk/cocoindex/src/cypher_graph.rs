@@ -451,9 +451,17 @@ enum KeyValue {
 }
 
 impl KeyValue {
+    /// The id's part of a relation's target-state key. Integers and ordinary
+    /// strings keep their plain form (existing keys stay stable); a string
+    /// that would read as an integer, or that starts with the escape marker,
+    /// is escaped, so `Int(1)` and `Str("1")` never share a key.
     fn key_fragment(&self) -> String {
+        const STR_ESCAPE: &str = "s:";
         match self {
             Self::Int(i) => i.to_string(),
+            Self::Str(s) if s.starts_with(STR_ESCAPE) || s.parse::<i64>().is_ok() => {
+                format!("{STR_ESCAPE}{s}")
+            }
             Self::Str(s) => s.clone(),
         }
     }
@@ -780,7 +788,7 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
     ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -882,7 +890,7 @@ impl<C: CypherExecutor> TargetHandler<NodeIndexSpec> for NodeIndexHandler<C> {
     ) -> Result<Option<TargetReconcileOutput<NodeIndexAction, NodeIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -960,7 +968,7 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
             .map_err(|e| Error::engine(e.to_string()))?;
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -1909,6 +1917,22 @@ mod tests {
         assert_eq!(params["from_id"], JsonValue::from("p1"));
         assert_eq!(params["to_id"], JsonValue::from(9));
         assert_eq!(params["rel_id"], JsonValue::from("rel-1"));
+    }
+
+    #[test]
+    fn relation_key_fragments_distinguish_int_and_string_ids() {
+        let fragment = |id: KeyValue| id.key_fragment();
+        assert_ne!(
+            fragment(KeyValue::Int(1)),
+            fragment(KeyValue::Str("1".into()))
+        );
+        assert_ne!(
+            fragment(KeyValue::Str("1".into())),
+            fragment(KeyValue::Str("s:1".into()))
+        );
+        // Ordinary ids keep their existing key form.
+        assert_eq!(fragment(KeyValue::Int(42)), "42");
+        assert_eq!(fragment(KeyValue::Str("alice".into())), "alice");
     }
 
     #[test]

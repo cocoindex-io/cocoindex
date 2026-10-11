@@ -1347,7 +1347,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
         };
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }

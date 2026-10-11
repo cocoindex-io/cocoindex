@@ -1056,7 +1056,7 @@ impl TargetHandler<Point> for PointHandler {
         let id = point_id(&key)?;
         match desired {
             Some(point) => {
-                let fp = point_fingerprint(&point);
+                let fp = point_fingerprint(&point)?;
                 let unchanged =
                     !prev_may_be_missing && !prev.is_empty() && prev.iter().all(|p| *p == fp);
                 if unchanged {
@@ -1106,10 +1106,9 @@ fn point_id(key: &StableKey) -> Result<QdrantPointId> {
 
 /// Content fingerprint of a point (vector + payload), as a hex string tracking
 /// record so unchanged points are skipped.
-fn point_fingerprint(point: &Point) -> String {
-    let fp = cocoindex_utils::fingerprint::Fingerprint::from(&(&point.vector, &point.payload))
-        .expect("fingerprint point");
-    format!("{fp:?}")
+fn point_fingerprint(point: &Point) -> Result<String> {
+    let fp = cocoindex_utils::fingerprint::Fingerprint::from(&(&point.vector, &point.payload))?;
+    Ok(format!("{fp:?}"))
 }
 
 fn point_sink(
@@ -1325,9 +1324,10 @@ mod tests {
         p2.vector = PointVector::Single(vec![0.1, 0.3]);
         let mut p3 = p1.clone();
         p3.payload.insert("text".into(), JsonValue::from("world"));
-        assert_eq!(point_fingerprint(&p1), point_fingerprint(&p1.clone()));
-        assert_ne!(point_fingerprint(&p1), point_fingerprint(&p2));
-        assert_ne!(point_fingerprint(&p1), point_fingerprint(&p3));
+        let fp = |point: &Point| point_fingerprint(point).unwrap();
+        assert_eq!(fp(&p1), fp(&p1.clone()));
+        assert_ne!(fp(&p1), fp(&p2));
+        assert_ne!(fp(&p1), fp(&p3));
     }
 
     #[test]
@@ -1566,6 +1566,9 @@ mod tests {
             payload,
         };
         // A single vector and a one-element multi-vector are distinct points.
-        assert_ne!(point_fingerprint(&single), point_fingerprint(&multi));
+        assert_ne!(
+            point_fingerprint(&single).unwrap(),
+            point_fingerprint(&multi).unwrap()
+        );
     }
 }

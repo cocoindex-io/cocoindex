@@ -533,7 +533,7 @@ impl TargetHandler<Vec<u8>> for FileHandler {
         // Skip when nothing changed.
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -598,6 +598,28 @@ impl FileHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_target_rewrites_unless_every_previous_state_matches() {
+        let handler = FileHandler {
+            dir: PathBuf::from("unused"),
+            sink: SinkCache::default(),
+        };
+        let key = || StableKey::Str("a.txt".into());
+        let fp = |content: &[u8]| Fingerprint::from(&content.to_vec()).unwrap();
+
+        let unchanged = handler
+            .reconcile(key(), Some(b"A".to_vec()), vec![fp(b"A")], false)
+            .unwrap();
+        assert!(unchanged.is_none());
+
+        // An interrupted commit can leave both the old and the new state
+        // tracked; the file may hold either, so it must be rewritten.
+        let ambiguous = handler
+            .reconcile(key(), Some(b"A".to_vec()), vec![fp(b"A"), fp(b"B")], false)
+            .unwrap();
+        assert!(ambiguous.is_some());
+    }
 
     #[test]
     fn walk_finds_files() {
