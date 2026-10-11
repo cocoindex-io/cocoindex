@@ -641,9 +641,10 @@ fn gen_memo_wrapper_block(
     ctx_ident: &Ident,
     params: &[ParamInfo],
     overrides: &[MemoKeyOverride],
-    propagate_children_fn_logic: bool,
+    logic_tracking: LogicTracking,
     body_closure: TokenStream2,
 ) -> syn::Result<TokenStream2> {
+    let propagate_children_fn_logic = logic_tracking == LogicTracking::Full;
     validate_memo_key_overrides(
         overrides,
         params.iter().map(|param| param.ident.to_string()),
@@ -669,13 +670,28 @@ fn gen_memo_wrapper_block(
     let state_clone_stmts = gen_clones(&state_params);
     let body_clone_stmts = gen_clones(params);
     let memo_key = gen_function_memo_key(fn_name, hash_const_name, &key_writes);
+    // `logic_tracking = "none"` is never registered in the logic set, so its
+    // fingerprint must not reach a caller's memo entry.
+    let logic_fp = if logic_tracking != LogicTracking::None {
+        quote! {
+            ::core::option::Option::Some(::cocoindex::memo::fn_logic_fingerprint(
+                ::core::module_path!(),
+                ::core::stringify!(#fn_name),
+                #hash_const_name,
+            )?)
+        }
+    } else {
+        quote! { ::core::option::Option::None }
+    };
 
     Ok(quote! {{
         let __coco_key = #memo_key;
+        let __coco_logic_fp = #logic_fp;
 
         ::cocoindex::memo::cached_by_fingerprint_with_state(
             #ctx_ident,
             __coco_key,
+            __coco_logic_fp,
             #propagate_children_fn_logic,
             {
                 #(#state_clone_stmts)*
@@ -948,7 +964,7 @@ fn expand_batching_function(
             ctx_ident,
             &key_params,
             &args.memo_key,
-            propagate_children_fn_logic,
+            args.logic_tracking,
             quote! {
                 move |__coco_scoped_ctx| async move {
                     #schedule_call
@@ -1154,7 +1170,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             &ctx_ident,
             &params,
             &args.memo_key,
-            propagate_children_fn_logic,
+            args.logic_tracking,
             quote! { move |#ctx_ident| async move #body },
         ) {
             Ok(wrapper) => wrapper,

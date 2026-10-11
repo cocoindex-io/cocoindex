@@ -415,30 +415,56 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let fp = Fingerprint::from(&("cocoindex_fn", module_path, fn_name, code_hash))
-            .map_err(|e| Error::engine(format!("function logic fingerprint error: {e}")))?;
+        let fp = fn_logic_fingerprint(module_path, fn_name, code_hash)?;
         // `propagate_children_fn_logic` is the `logic_tracking` mode lowered by
         // the `#[function]` macro: `true` for `"full"` (default — a transitively
         // called function's logic change also invalidates this one), `false` for
         // `"self"` (only this function's own body is tracked).
         let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
         fn_ctx.add_fn_logic_dep(fp);
-        let _guard = TrackedFnCallGuard {
+        let _frame = self.frame_guard(fn_ctx.clone());
+        f(self.with_fn_ctx(fn_ctx)).await
+    }
+
+    /// Guard that joins `fn_ctx` into this `Ctx`'s enclosing frame when it
+    /// drops: the surrounding function call if there is one, else the
+    /// component. Joining into the enclosing frame (not straight into the
+    /// component) is what lets a memoized caller inherit everything its body
+    /// observed — context deps, nested logic, target states, memo entries and
+    /// child mounts — matching the Python SDK's `parent.join_child(fn_ctx)`.
+    pub(crate) fn frame_guard(&self, fn_ctx: Arc<FnCallContext>) -> FnFrameGuard {
+        FnFrameGuard {
             comp_ctx: self.comp_ctx.clone(),
             parent_fn_ctx: self.fn_ctx.clone(),
-            fn_ctx: fn_ctx.clone(),
-        };
-        f(self.with_fn_ctx(fn_ctx)).await
+            fn_ctx,
+        }
     }
 }
 
-struct TrackedFnCallGuard {
+/// The logic fingerprint of one `#[cocoindex::function]`. Must match the one
+/// registered at startup (see `crate::logic`).
+pub(crate) fn fn_logic_fingerprint(
+    module_path: &str,
+    fn_name: &str,
+    code_hash: u64,
+) -> Result<Fingerprint> {
+    Ok(Fingerprint::from(&(
+        "cocoindex_fn",
+        module_path,
+        fn_name,
+        code_hash,
+    ))?)
+}
+
+/// Joins a function-call frame into its enclosing frame on drop, so the join
+/// also happens on error and cancellation paths. See [`Ctx::frame_guard`].
+pub(crate) struct FnFrameGuard {
     comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
     parent_fn_ctx: Option<Arc<FnCallContext>>,
     fn_ctx: Arc<FnCallContext>,
 }
 
-impl Drop for TrackedFnCallGuard {
+impl Drop for FnFrameGuard {
     fn drop(&mut self) {
         if let Some(parent) = &self.parent_fn_ctx {
             parent.join_child(&self.fn_ctx);
@@ -446,24 +472,6 @@ impl Drop for TrackedFnCallGuard {
             comp_ctx.join_fn_call(&self.fn_ctx);
         }
     }
-}
-
-pub(crate) struct FnCallGuard<'a> {
-    comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: Arc<FnCallContext>,
-}
-
-impl<'a> Drop for FnCallGuard<'a> {
-    fn drop(&mut self) {
-        self.comp_ctx.join_fn_call(&self.fn_ctx);
-    }
-}
-
-pub(crate) fn fn_call_guard<'a>(
-    comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: Arc<FnCallContext>,
-) -> FnCallGuard<'a> {
-    FnCallGuard { comp_ctx, fn_ctx }
 }
 
 struct StatsGroupEndGuard {
@@ -771,7 +779,7 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
-        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await
@@ -937,7 +945,7 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
-        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await
@@ -1037,13 +1045,15 @@ impl Ctx {
             .mount_child(&fn_ctx, child_path)
             .map_err(|e| Error::engine(format!("{e}")))?;
 
-        // Guard to ensure `join_fn_call` is executed even if `f` panics or the future
-        // is dropped/cancelled early.
-        let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
+        // Join the mount frame into the enclosing frame even if `f` panics or the
+        // future is dropped/cancelled early. Inside a memoized function this
+        // carries `has_child_components` to the memo frame, so the engine rejects
+        // the memo entry instead of letting a later hit delete the child's
+        // target states.
+        let _frame = self.frame_guard(fn_ctx.clone());
 
         let state = self.state.clone();
         let has_context_memo_state = state.context.has_memo_state_fns();
-        let scope_fn_ctx = fn_ctx.clone();
         let scope_handler_chain = self.handler_chain.clone();
         // Foreground child inherits the caller's current scoped deadline —
         // the same value passed to core use_mount below.
@@ -1051,13 +1061,16 @@ impl Ctx {
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
                 let deadline = child_deadline;
-                let ctx = Ctx {
-                    comp_ctx: Some(child_comp_ctx),
-                    state: state.clone(),
-                    fn_ctx: Some(scope_fn_ctx.clone()),
+                // The child component is its own root: frames opened in its
+                // body join the child component (like the app root), never
+                // the parent's mount frame. The child's dependencies reach the
+                // parent through the engine's component run outcome.
+                let ctx = Ctx::new_with_handlers(
+                    Some(child_comp_ctx),
+                    state.clone(),
+                    scope_handler_chain.clone(),
                     deadline,
-                    handler_chain: scope_handler_chain.clone(),
-                };
+                );
                 Box::pin(async move {
                     let result = f(ctx).await?;
                     Value::from_serializable(&result)

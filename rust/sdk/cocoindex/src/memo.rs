@@ -41,7 +41,7 @@ use cocoindex_core::engine::function::reserve_memoization;
 use cocoindex_utils::fingerprint::{Fingerprint, Fingerprinter};
 use serde::{Deserialize, Serialize};
 
-use crate::ctx::{Ctx, fn_call_guard};
+use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::profile::Value;
 use crate::resources::file::FileLike;
@@ -607,13 +607,18 @@ where
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
     let fp = key_fingerprint_result(key)?;
-    cached_by_fingerprint(ctx, fp, true, f).await
+    cached_by_fingerprint(ctx, fp, None, true, f).await
 }
 
-/// Fast path for generated macros that have already built the memo fingerprint.
+/// Fast path for callers that have already built the memo fingerprint.
 ///
 /// `f` receives a `Ctx` scoped to this memo call; use it for `get_key` so
 /// change-detection dependencies attach to this memo entry.
+///
+/// `logic_fp` is the memoized function's own logic fingerprint, recorded in
+/// the frame so an enclosing memoized caller is invalidated when this
+/// function's body changes. `None` for block-level memos (`ctx.memo`) and
+/// for `logic_tracking = "none"`.
 ///
 /// `propagate_children_fn_logic` is the function's `logic_tracking` mode: `true`
 /// for `"full"` (transitively-called functions' logic changes invalidate this
@@ -622,6 +627,7 @@ where
 pub async fn cached_by_fingerprint<T, F, Fut>(
     ctx: &Ctx,
     fp: Fingerprint,
+    logic_fp: Option<Fingerprint>,
     propagate_children_fn_logic: bool,
     f: F,
 ) -> Result<T>
@@ -630,66 +636,50 @@ where
     F: FnOnce(Ctx) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
-    ctx.check_cancellation()?;
-    // If we have a pipeline context, use LMDB-backed memoization.
-    let Some(comp_ctx) = &ctx.comp_ctx else {
-        // No pipeline context — execute directly (standalone mode).
-        let result = f(ctx.clone()).await?;
-        ctx.check_cancellation()?;
-        return Ok(result);
-    };
-
-    let mut guard = reserve_memoization(comp_ctx, fp)
-        .await
-        .map_err(|e| Error::engine(format!("reserve_memoization: {e}")))?;
-
-    let cached_context_states = guard
-        .cached()
-        .map(|cached| cached.context_memo_states.to_vec());
-    if let Some(cached_context_states) = cached_context_states {
-        let context_validation = ctx
-            .state
-            .context
-            .validate_memo_states(&cached_context_states)
-            .await?;
-        if context_validation.memo_valid {
-            let cached = guard
-                .cached()
-                .expect("cached memo disappeared while reserved");
-            let value: T = cached.ret.deserialize()?;
-            let positional_states = cached.memo_states.to_vec();
-            ctx.check_cancellation()?;
-            if context_validation.states_changed {
-                guard.update_memo_states(MemoStatesPayload {
-                    positional: positional_states,
-                    by_context_fp: context_validation.states,
-                });
-            }
-            return Ok(value);
-        }
-    }
-
-    // Cache miss (or memo disabled) — we are the resolver. Execute and commit.
-    let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
-    let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
-    let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
-    ctx.check_cancellation()?;
-    let value = Value::from_serializable(&result)
-        .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
-    let memo_states = MemoStatesPayload {
-        positional: Vec::new(),
-        by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
-    };
-    guard
-        .resolve(&fn_ctx, || value, memo_states)
-        .map_err(|e| Error::engine(format!("{e}")))?;
-    Ok(result)
+    memoized_call(
+        ctx,
+        fp,
+        logic_fp,
+        propagate_children_fn_logic,
+        |_| async { Ok(Vec::new()) },
+        f,
+    )
+    .await
 }
 
+/// Like [`cached_by_fingerprint`], with positional argument state validation
+/// (`MemoInput::memo_state`) supplied by the generated `#[function(memo)]`
+/// wrapper.
 #[doc(hidden)]
 pub async fn cached_by_fingerprint_with_state<T, F, Fut, S, SFut>(
     ctx: &Ctx,
     fp: Fingerprint,
+    logic_fp: Option<Fingerprint>,
+    propagate_children_fn_logic: bool,
+    state_fn: S,
+    f: F,
+) -> Result<T>
+where
+    T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+    F: FnOnce(Ctx) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T>> + Send + 'static,
+    S: FnOnce(Option<Vec<MemoStateValue>>) -> SFut,
+    SFut: Future<Output = Result<Vec<MemoStateDecision>>> + Send,
+{
+    memoized_call(ctx, fp, logic_fp, propagate_children_fn_logic, state_fn, f).await
+}
+
+/// One memoized call, mirroring the Python SDK's `Function.__call__`.
+///
+/// The call's frame is created (and seeded with the function's own logic
+/// fingerprint) before the memo probe and joined into the caller's frame on
+/// every exit path — hit, miss or error — so a memoized caller records this
+/// call's logic, context dependencies, target-provider generations and memo
+/// entry whether or not this call ran its body.
+async fn memoized_call<T, F, Fut, S, SFut>(
+    ctx: &Ctx,
+    fp: Fingerprint,
+    logic_fp: Option<Fingerprint>,
     propagate_children_fn_logic: bool,
     state_fn: S,
     f: F,
@@ -703,14 +693,21 @@ where
 {
     ctx.check_cancellation()?;
     let Some(comp_ctx) = &ctx.comp_ctx else {
+        // No pipeline context — execute directly (standalone mode).
         let result = f(ctx.clone()).await?;
         ctx.check_cancellation()?;
         return Ok(result);
     };
 
-    let mut guard = reserve_memoization(comp_ctx, fp)
-        .await
-        .map_err(|e| Error::engine(format!("reserve_memoization: {e}")))?;
+    let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
+    if let Some(logic_fp) = logic_fp {
+        fn_ctx.add_fn_logic_dep(logic_fp);
+    }
+    // Declared before the memo guard so it drops after it: the frame joins
+    // the caller once this entry's write lock is released.
+    let _frame = ctx.frame_guard(fn_ctx.clone());
+
+    let mut guard = reserve_memoization(comp_ctx, fp).await?;
 
     let cached_states = guard.cached().map(|cached| {
         cached
@@ -745,6 +742,10 @@ where
             .ne(cached.memo_states.iter().map(|value| &value.0));
         let value: T = cached.ret.deserialize()?;
         ctx.check_cancellation()?;
+        // The hit skips the body, so carry what it would have declared: this
+        // entry (which owns its target states) and its provider generations.
+        record_dependency_memo_entry(&fn_ctx, fp);
+        guard.join_cached_target_provider_deps(&fn_ctx);
         if states_changed || context_validation.states_changed {
             guard.update_memo_states(MemoStatesPayload {
                 positional: memo_states_for_resolve,
@@ -754,20 +755,25 @@ where
         return Ok(value);
     }
 
-    let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
-    let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
     let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
     ctx.check_cancellation()?;
-    let value = Value::from_serializable(&result)
-        .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
+    let value = Value::from_serializable(&result)?;
     let memo_states = MemoStatesPayload {
         positional: memo_states_for_resolve,
         by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
     };
-    guard
-        .resolve(&fn_ctx, || value, memo_states)
-        .map_err(|e| Error::engine(format!("{e}")))?;
+    // Recorded after `resolve`, which snapshots the frame's dependency
+    // entries: an entry must not list itself.
+    if guard.resolve(&fn_ctx, || value, memo_states)? {
+        record_dependency_memo_entry(&fn_ctx, fp);
+    }
     Ok(result)
+}
+
+fn record_dependency_memo_entry(fn_ctx: &FnCallContext, fp: Fingerprint) {
+    fn_ctx.update(|inner| {
+        inner.dependency_memo_entries.insert(fp);
+    });
 }
 
 /// Internal helper for stable memo keys in generated macros.
@@ -810,6 +816,17 @@ pub fn write_key_fingerprint_part_for_arg<T: MemoInput + ?Sized>(
 #[doc(hidden)]
 pub fn finish_key_fingerprinter(fingerprinter: Fingerprinter) -> Fingerprint {
     fingerprinter.into_fingerprint()
+}
+
+/// The logic fingerprint of one `#[cocoindex::function]`, for generated
+/// memo wrappers.
+#[doc(hidden)]
+pub fn fn_logic_fingerprint(
+    module_path: &str,
+    fn_name: &str,
+    code_hash: u64,
+) -> Result<Fingerprint> {
+    crate::ctx::fn_logic_fingerprint(module_path, fn_name, code_hash)
 }
 
 pub(crate) fn memo_input_fingerprint<T: MemoInput + ?Sized>(

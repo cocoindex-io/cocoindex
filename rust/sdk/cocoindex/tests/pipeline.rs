@@ -3534,3 +3534,180 @@ mod mount_macros {
         assert_eq!(out, vec![5, 6]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Nested memoized calls: a memoized callee's frame joins its memoized caller,
+// so the caller inherits the callee's context deps, target states and memo
+// entry, whether the callee hit or ran (Python's `parent.join_child`).
+// ---------------------------------------------------------------------------
+
+mod memo_test_nested_calls {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use cocoindex::{ContextKey, Ctx, DirTarget, Environment, Result};
+
+    fn version_key() -> &'static ContextKey<String> {
+        static KEY: OnceLock<ContextKey<String>> = OnceLock::new();
+        KEY.get_or_init(|| ContextKey::new_detect_change("pipeline/nested_memo_calls_version"))
+    }
+
+    async fn app_with_version(db_path: PathBuf, name: &str, version: &str) -> cocoindex::App {
+        Environment::builder()
+            .db_path(db_path)
+            .provide_key(version_key(), version.to_string())
+            .build()
+            .await
+            .unwrap()
+            .app(name)
+            .await
+            .unwrap()
+    }
+
+    static OUTER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static INNER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo)]
+    async fn read_version(ctx: &Ctx) -> Result<String> {
+        INNER_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(ctx.get_key(version_key())?.clone())
+    }
+
+    #[cocoindex::function(memo)]
+    async fn outer_read_version(ctx: &Ctx) -> Result<String> {
+        OUTER_CALLS.fetch_add(1, Ordering::SeqCst);
+        read_version(&ctx).await
+    }
+
+    #[tokio::test]
+    async fn outer_memo_is_invalidated_by_inner_memo_context_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lmdb");
+        let run = |version: &'static str| {
+            let db = db.clone();
+            async move {
+                app_with_version(db, "nested_memo_context_dep", version)
+                    .await
+                    .update(|ctx| async move { outer_read_version(&ctx).await })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        assert_eq!(run("v1").await, "v1");
+        assert_eq!(run("v1").await, "v1");
+        assert_eq!(
+            OUTER_CALLS.load(Ordering::SeqCst),
+            1,
+            "unchanged rerun hits"
+        );
+        assert_eq!(run("v2").await, "v2", "outer memo must not return stale v1");
+        assert_eq!(OUTER_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(INNER_CALLS.load(Ordering::SeqCst), 2);
+    }
+
+    static BATCH_OUTER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo, batching)]
+    async fn tag_with_version(ctx: &Ctx, items: Vec<String>) -> Result<Vec<String>> {
+        let version = ctx.get_key(version_key())?.clone();
+        Ok(items
+            .into_iter()
+            .map(|item| format!("{item}@{version}"))
+            .collect())
+    }
+
+    #[cocoindex::function(memo)]
+    async fn outer_tag(ctx: &Ctx, item: String) -> Result<String> {
+        BATCH_OUTER_CALLS.fetch_add(1, Ordering::SeqCst);
+        tag_with_version(&ctx, item).await
+    }
+
+    #[tokio::test]
+    async fn outer_memo_is_invalidated_by_inner_batched_memo_context_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lmdb");
+        let run = |version: &'static str| {
+            let db = db.clone();
+            async move {
+                app_with_version(db, "nested_batched_memo_context_dep", version)
+                    .await
+                    .update(|ctx| async move { outer_tag(&ctx, "a".to_string()).await })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        assert_eq!(run("v1").await, "a@v1");
+        assert_eq!(run("v1").await, "a@v1");
+        assert_eq!(BATCH_OUTER_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(run("v2").await, "a@v2");
+        assert_eq!(BATCH_OUTER_CALLS.load(Ordering::SeqCst), 2);
+    }
+
+    static DECLARE_OUTER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo, memo_key(target = skip))]
+    async fn declare_nested(ctx: &Ctx, target: DirTarget, content: String) -> Result<()> {
+        target.declare_file(&ctx, "nested.txt", content.as_bytes())
+    }
+
+    #[cocoindex::function(memo, memo_key(target = skip))]
+    async fn outer_declare(ctx: &Ctx, target: DirTarget, content: String) -> Result<()> {
+        DECLARE_OUTER_CALLS.fetch_add(1, Ordering::SeqCst);
+        declare_nested(&ctx, target, content).await
+    }
+
+    #[tokio::test]
+    async fn target_state_of_nested_memo_survives_outer_memo_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let app = cocoindex::App::open("nested_memo_target_state", dir.path().join("lmdb"))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let out = out.clone();
+            app.update(move |ctx| async move {
+                let target = DirTarget::mount(&ctx, &out)?;
+                outer_declare(&ctx, target, "hello".to_string()).await
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            DECLARE_OUTER_CALLS.load(Ordering::SeqCst),
+            1,
+            "second run hits"
+        );
+        assert_eq!(std::fs::read(out.join("nested.txt")).unwrap(), b"hello");
+    }
+
+    #[cocoindex::function(memo, memo_key(target = skip))]
+    async fn memo_that_mounts(ctx: &Ctx, target: DirTarget) -> Result<()> {
+        ctx.scope(&"child", move |child| async move {
+            target.declare_file(&child, "child.txt", b"hello")
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn memoized_function_mounting_a_child_component_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let app = cocoindex::App::open("memo_mounting_child", dir.path().join("lmdb"))
+            .await
+            .unwrap();
+        let err = app
+            .update(move |ctx| async move {
+                let target = DirTarget::mount(&ctx, &out)?;
+                memo_that_mounts(&ctx, target).await
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("mounted child components"),
+            "unexpected error: {err}"
+        );
+    }
+}
