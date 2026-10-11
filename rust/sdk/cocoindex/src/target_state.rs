@@ -456,6 +456,12 @@ where
     /// May be called more than once for the same target state in one update;
     /// only the output of the attempt that commits is applied, so it must be
     /// free of side effects.
+    ///
+    /// A *container* handler (one used with [`declare_target_state_with_child`]
+    /// or [`mount_target`]) must return `Some` output whenever `desired` is
+    /// `Some`, even when nothing changed, because its sink is what fulfills the
+    /// child slot. Returning `None` there leaves the child handler missing, and
+    /// declaring a child target state then fails.
     fn reconcile(
         &self,
         key: StableKey,

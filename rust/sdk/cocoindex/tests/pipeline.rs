@@ -2030,6 +2030,48 @@ mod memo_test_borrowed_str {
     }
 }
 
+mod memo_test_borrowed_slice {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function]
+    async fn total(_ctx: &cocoindex::Ctx, values: &[i64]) -> cocoindex::Result<i64> {
+        Ok(values.iter().sum())
+    }
+
+    // The memo body sees `ctx` as `&Ctx`, as in the signature, and can pass
+    // it straight to another function.
+    #[cocoindex::function(memo)]
+    async fn memo_total(ctx: &cocoindex::Ctx, values: &[i64]) -> cocoindex::Result<i64> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        total(ctx, &values).await
+    }
+
+    #[tokio::test]
+    async fn function_macro_memo_accepts_borrowed_slice() {
+        CALLS.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("fn_memo_borrowed_slice").await;
+        for expected_calls in [1, 1] {
+            app.update(|ctx| async move {
+                assert_eq!(memo_total(&ctx, &[1, 2, 3]).await?, 6);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(CALLS.load(Ordering::SeqCst), expected_calls);
+        }
+        app.update(|ctx| async move {
+            assert_eq!(memo_total(&ctx, &[4]).await?, 4);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    }
+}
+
 mod memo_test_nested_inputs {
     use super::*;
     use std::path::PathBuf;
@@ -2085,7 +2127,7 @@ mod memo_test_nested_inputs {
     #[cocoindex::function(memo)]
     async fn read_context(ctx: &cocoindex::Ctx) -> cocoindex::Result<u64> {
         CONTEXT_CALLS.fetch_add(1, Ordering::SeqCst);
-        read_context_helper(&ctx).await
+        read_context_helper(ctx).await
     }
 
     #[cocoindex::function]
@@ -3157,7 +3199,7 @@ mod mock_memo {
     use super::*;
 
     /// Whole-function memoization should use the attribute. Its body receives
-    /// the owned memo-scoped `Ctx`, so non-serializable resources remain
+    /// the memo-scoped `Ctx`, so non-serializable resources remain
     /// available through normal context lookup. A skipped argument needs only
     /// `Clone`; `MockApi` intentionally does not implement `Serialize`.
     #[cocoindex::function(memo, memo_key(_client = skip))]
@@ -3579,7 +3621,7 @@ mod memo_test_nested_calls {
     #[cocoindex::function(memo)]
     async fn outer_read_version(ctx: &Ctx) -> Result<String> {
         OUTER_CALLS.fetch_add(1, Ordering::SeqCst);
-        read_version(&ctx).await
+        read_version(ctx).await
     }
 
     #[tokio::test]
@@ -3623,7 +3665,7 @@ mod memo_test_nested_calls {
     #[cocoindex::function(memo)]
     async fn outer_tag(ctx: &Ctx, item: String) -> Result<String> {
         BATCH_OUTER_CALLS.fetch_add(1, Ordering::SeqCst);
-        tag_with_version(&ctx, item).await
+        tag_with_version(ctx, item).await
     }
 
     #[tokio::test]
@@ -3652,13 +3694,13 @@ mod memo_test_nested_calls {
 
     #[cocoindex::function(memo, memo_key(target = skip))]
     async fn declare_nested(ctx: &Ctx, target: DirTarget, content: String) -> Result<()> {
-        target.declare_file(&ctx, "nested.txt", content.as_bytes())
+        target.declare_file(ctx, "nested.txt", content.as_bytes())
     }
 
     #[cocoindex::function(memo, memo_key(target = skip))]
     async fn outer_declare(ctx: &Ctx, target: DirTarget, content: String) -> Result<()> {
         DECLARE_OUTER_CALLS.fetch_add(1, Ordering::SeqCst);
-        declare_nested(&ctx, target, content).await
+        declare_nested(ctx, target, content).await
     }
 
     #[tokio::test]

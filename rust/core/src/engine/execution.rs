@@ -30,6 +30,14 @@ use crate::state_store::{
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
+/// A child target state's provider has no handler: its container's handler
+/// did not fulfill the child slot. That happens when the container handler's
+/// `reconcile` returns no output while the container is declared, so its sink
+/// never runs.
+const CHILD_HANDLER_MISSING: &str = "the container of this target state has no child handler; \
+     a container target's `reconcile` must return an output whenever the container is \
+     declared, and its sink must fulfill the child slot";
+
 /// Deserialize a `Vec<MemoizedValue>` into a `Vec<Prof::FunctionData>`.
 pub(crate) fn deserialize_memo_values<Prof: EngineProfile>(
     values: &[db_schema::MemoizedValue<'_>],
@@ -1062,8 +1070,8 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 let decode_item_key =
                     || -> Result<StableKey> { Ok(storekey::decode(decl.item_key_bytes.as_ref())?) };
                 let Some(handler) = decl.provider.handler() else {
-                    internal_bail!(
-                        "provider not ready for target state with key {:?}",
+                    client_bail!(
+                        "{CHILD_HANDLER_MISSING}: target state with key {:?}",
                         decode_item_key()?
                     );
                 };
@@ -1256,8 +1264,8 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             let recon_output = target_states_provider
                 .handler()
                 .ok_or_else(|| {
-                    internal_error!(
-                        "provider not ready for target state with key {target_state_key:?}"
+                    client_error!(
+                        "{CHILD_HANDLER_MISSING}: target state with key {target_state_key:?}"
                     )
                 })?
                 .reconcile(target_state_key, None, &prev_states, prev_may_be_missing)?;

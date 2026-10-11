@@ -519,6 +519,81 @@ async fn run_table_with(
     .unwrap();
 }
 
+/// A container handler that wrongly skips an unchanged container, so its
+/// sink never fulfills the child slot on the second run.
+struct ShortCircuitTableHandler {
+    sink: TargetActionSink<TableAction>,
+}
+
+impl TargetHandler<TableSpec> for ShortCircuitTableHandler {
+    type TrackingRecord = TableSpec;
+    type Action = TableAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<TableSpec>,
+        prev: Vec<TableSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TableAction, TableSpec>>> {
+        let Some(spec) = desired else {
+            return Ok(None);
+        };
+        if prev.contains(&spec) && !prev_may_be_missing {
+            return Ok(None);
+        }
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Create(TableAction {
+                name: key_str(&key),
+                drop: false,
+            }),
+            sink: self.sink.clone(),
+            tracking_record: Some(spec),
+            child_invalidation: None,
+        }))
+    }
+}
+
+/// The mistake is reported as a client error that names the rule, not as an
+/// internal engine error.
+#[tokio::test]
+async fn container_handler_skipping_its_output_reports_the_rule() {
+    let (app, _dir) = temp_app("container_short_circuit").await;
+    let run = || {
+        app.update(|ctx| async move {
+            let table_provider = register_root_target_states_provider(
+                &ctx,
+                "test/short_circuit_table",
+                ShortCircuitTableHandler {
+                    sink: table_sink(new_log(), new_log()),
+                },
+            )?;
+            let child: TargetStateProvider<String> = mount_target(
+                &ctx,
+                table_provider.target_state(
+                    "docs",
+                    TableSpec {
+                        generation: "v1".to_string(),
+                    },
+                ),
+            )
+            .await?;
+            declare_target_state(&ctx, child.target_state("a", "1".to_string()))?;
+            Ok(())
+        })
+    };
+    run().await.unwrap();
+    let err = tokio::time::timeout(std::time::Duration::from_secs(10), run())
+        .await
+        .expect("the second run must fail, not hang")
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("must return an output whenever the container is declared"),
+        "{err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 3: mount_target child rows — insert / delete
 // ---------------------------------------------------------------------------

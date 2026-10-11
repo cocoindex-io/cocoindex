@@ -2,7 +2,7 @@
 //!
 //! Prefer `#[cocoindex::function(memo)]` for memoizing a whole pipeline
 //! function. The attribute builds the argument key, tracks the function body's
-//! logic, and passes an owned, memo-scoped [`Ctx`] into the body. Context
+//! logic, and passes the memo-scoped [`Ctx`] into the body as `&Ctx`. Context
 //! resources can therefore be read normally with [`Ctx::get_or_err`] or
 //! [`Ctx::get_key`]. Use `memo_key(parameter = skip)` for a `Clone` parameter
 //! that should not participate in the key; it does not need to implement
