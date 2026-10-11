@@ -196,12 +196,23 @@ where
         return Ok(ResolvedEntities::default());
     }
 
+    // Embed concurrently (cf. Python's `asyncio.gather`); an embedder that
+    // batches concurrent calls turns this into few requests.
+    let embeddings =
+        futures::future::try_join_all(entity_list.iter().map(|name| embedder.embed_entity(name)))
+            .await?;
+    let dimension = embeddings.first().map_or(0, Vec::len);
     let mut infos = Vec::with_capacity(entity_list.len());
-    for name in &entity_list {
-        let vec = normalize(embedder.embed_entity(name).await?)?;
+    for (name, vec) in entity_list.iter().zip(embeddings) {
+        if vec.len() != dimension {
+            return Err(Error::engine(format!(
+                "entity embedding for {name:?} has {} dimensions, expected {dimension}",
+                vec.len()
+            )));
+        }
         infos.push(EntityInfo {
             name: name.clone(),
-            normalized_vec: vec,
+            normalized_vec: normalize(vec)?,
             is_existing: is_existing_canonical.is_some_and(|f| f(name)),
         });
     }
@@ -217,41 +228,51 @@ where
     // owns its local dedup/candidate-index/events and borrows the shared,
     // immutable `entity_map` and `resolve_pair`.
     let entity_map_ref = &entity_map;
-    let component_futures = components.into_iter().map(|component| {
-        let component_infos: Vec<EntityInfo> = component
+    // Each component's events live outside its future, so the events a
+    // component produced before a failure survive the cancellation of its
+    // siblings and are still delivered (cf. Python).
+    let mut component_events: Vec<ComponentEvents> = components
+        .iter()
+        .map(|_| ComponentEvents::default())
+        .collect();
+    let component_futures =
+        components
             .into_iter()
-            .map(|idx| infos[idx].clone())
-            .collect();
-        async move {
-            let mut component_dedup = BTreeMap::new();
-            let mut candidate_index = CandidateIndex::new(options.max_distance, options.top_n);
-            let mut events = ComponentEvents::default();
-            resolve_component(
-                &component_infos,
-                entity_map_ref,
-                &mut component_dedup,
-                &mut candidate_index,
-                options.existing_policy,
-                resolve_pair,
-                &mut events,
-            )
-            .await?;
-            Ok::<_, Error>((component_dedup, events))
-        }
-    });
-    let results = futures::future::try_join_all(component_futures).await?;
-
-    let mut dedup = BTreeMap::new();
-    let mut all_events = Vec::with_capacity(results.len());
-    for (component_dedup, events) in results {
-        dedup.extend(component_dedup);
-        all_events.push(events);
-    }
+            .zip(component_events.iter_mut())
+            .map(|(component, events)| {
+                let component_infos: Vec<EntityInfo> = component
+                    .into_iter()
+                    .map(|idx| infos[idx].clone())
+                    .collect();
+                async move {
+                    let mut component_dedup = BTreeMap::new();
+                    let mut candidate_index =
+                        CandidateIndex::new(options.max_distance, options.top_n);
+                    resolve_component(
+                        &component_infos,
+                        entity_map_ref,
+                        &mut component_dedup,
+                        &mut candidate_index,
+                        options.existing_policy,
+                        resolve_pair,
+                        events,
+                    )
+                    .await?;
+                    Ok::<_, Error>(component_dedup)
+                }
+            });
+    // The first failure drops (cancels) the remaining components.
+    let results = futures::future::try_join_all(component_futures).await;
 
     if let Some(on_resolution) = on_resolution {
-        for event in &deliver_events(all_events) {
+        for event in &deliver_events(component_events) {
             on_resolution(event);
         }
+    }
+
+    let mut dedup = BTreeMap::new();
+    for component_dedup in results? {
+        dedup.extend(component_dedup);
     }
     Ok(ResolvedEntities { dedup })
 }
@@ -460,12 +481,15 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
     x
 }
 
+/// Scale to unit length. A zero vector stays zero (it then matches nothing),
+/// as FAISS `normalize_L2` leaves it in the Python SDK.
 fn normalize(mut vec: Vec<f32>) -> Result<Vec<f32>> {
     let norm = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if norm == 0.0 || !norm.is_finite() {
-        return Err(Error::engine(
-            "entity embedding has zero or non-finite norm",
-        ));
+    if !norm.is_finite() {
+        return Err(Error::engine("entity embedding has a non-finite norm"));
+    }
+    if norm == 0.0 {
+        return Ok(vec);
     }
     for value in &mut vec {
         *value /= norm;

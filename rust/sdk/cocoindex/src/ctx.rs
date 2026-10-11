@@ -795,8 +795,12 @@ impl Ctx {
             async move {
                 let mut ready_marked = false;
                 loop {
-                    let processor =
-                        auto_refresh_processor(state.clone(), f.clone(), processor_name.clone());
+                    let processor = auto_refresh_processor(
+                        state.clone(),
+                        handler_chain.clone(),
+                        f.clone(),
+                        processor_name.clone(),
+                    );
                     let on_error = build_chained_on_error(
                         &handler_chain,
                         ExceptionContext {
@@ -836,6 +840,9 @@ impl Ctx {
     /// task, and returns when the component marks itself ready. In catch-up
     /// (non-live) mode the default body runs a single full pass; in live mode it
     /// keeps reacting to its source in the background until the app is dropped.
+    ///
+    /// A failure in the component's processing is logged, not returned; use
+    /// [`Ctx::mount_live_with_handler`] to observe or propagate it.
     pub async fn mount_live<K, C>(&self, key: &K, component: C) -> Result<()>
     where
         K: Display,
@@ -1320,6 +1327,7 @@ impl Ctx {
 
 fn auto_refresh_processor<F, Fut>(
     state: Arc<AppInner>,
+    handler_chain: Arc<Vec<ExceptionHandler>>,
     f: F,
     processor_name: String,
 ) -> BoxedProcessor
@@ -1329,8 +1337,15 @@ where
 {
     BoxedProcessor::new(
         move |comp_ctx| {
-            // Live refresh components are deadline-isolated by design.
-            let ctx = Ctx::new(Some(comp_ctx), state.clone(), DeadlineContext::NONE);
+            // Live refresh components are deadline-isolated by design. Nested
+            // live components inherit the enclosing handler chain, as they do
+            // from `LiveComponentOperator`.
+            let ctx = Ctx::new_with_handlers(
+                Some(comp_ctx),
+                state.clone(),
+                handler_chain.clone(),
+                DeadlineContext::NONE,
+            );
             Box::pin(async move {
                 f(ctx).await?;
                 Ok(Value::unit())
