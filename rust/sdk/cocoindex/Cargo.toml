@@ -53,7 +53,7 @@ surrealdb = [
     "chrono",
     "rust_decimal",
 ]
-kafka = ["dep:rskafka", "chrono"]
+kafka = ["dep:rskafka", "dep:crc32fast", "chrono"]
 iggy = ["dep:iggy"]
 amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 google_drive = [
@@ -146,6 +146,9 @@ sqlx = { version = "0.8", default-features = false, optional = true, features = 
 chrono = { version = "0.4", default-features = false, optional = true, features = ["serde"] }
 rust_decimal = { version = "1", default-features = false, optional = true, features = ["serde"] }
 rskafka = { version = "0.6", default-features = false, optional = true }
+# Key-to-partition hashing for the Kafka target, matching librdkafka's default
+# `consistent_random` partitioner used by the Python connector.
+crc32fast = { version = "1", optional = true }
 # Apache Iggy message-streaming target (pure-Rust client; TCP/QUIC/HTTP).
 iggy = { version = "0.10", optional = true }
 # Amazon S3 (and S3-compatible, e.g. MinIO) object source.

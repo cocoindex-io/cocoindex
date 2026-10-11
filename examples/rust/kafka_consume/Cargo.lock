@@ -309,6 +309,7 @@ dependencies = [
  "cocoindex_core",
  "cocoindex_macros",
  "cocoindex_utils",
+ "crc32fast",
  "encoding_rs",
  "futures",
  "globset",
@@ -428,6 +429,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
 dependencies = [
  "rustc_version",
+]
+
+[[package]]
+name = "crc32fast"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]

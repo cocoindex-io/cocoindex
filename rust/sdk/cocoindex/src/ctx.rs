@@ -415,30 +415,56 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let fp = Fingerprint::from(&("cocoindex_fn", module_path, fn_name, code_hash))
-            .map_err(|e| Error::engine(format!("function logic fingerprint error: {e}")))?;
+        let fp = fn_logic_fingerprint(module_path, fn_name, code_hash)?;
         // `propagate_children_fn_logic` is the `logic_tracking` mode lowered by
         // the `#[function]` macro: `true` for `"full"` (default — a transitively
         // called function's logic change also invalidates this one), `false` for
         // `"self"` (only this function's own body is tracked).
         let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
         fn_ctx.add_fn_logic_dep(fp);
-        let _guard = TrackedFnCallGuard {
+        let _frame = self.frame_guard(fn_ctx.clone());
+        f(self.with_fn_ctx(fn_ctx)).await
+    }
+
+    /// Guard that joins `fn_ctx` into this `Ctx`'s enclosing frame when it
+    /// drops: the surrounding function call if there is one, else the
+    /// component. Joining into the enclosing frame (not straight into the
+    /// component) is what lets a memoized caller inherit everything its body
+    /// observed — context deps, nested logic, target states, memo entries and
+    /// child mounts — matching the Python SDK's `parent.join_child(fn_ctx)`.
+    pub(crate) fn frame_guard(&self, fn_ctx: Arc<FnCallContext>) -> FnFrameGuard {
+        FnFrameGuard {
             comp_ctx: self.comp_ctx.clone(),
             parent_fn_ctx: self.fn_ctx.clone(),
-            fn_ctx: fn_ctx.clone(),
-        };
-        f(self.with_fn_ctx(fn_ctx)).await
+            fn_ctx,
+        }
     }
 }
 
-struct TrackedFnCallGuard {
+/// The logic fingerprint of one `#[cocoindex::function]`. Must match the one
+/// registered at startup (see `crate::logic`).
+pub(crate) fn fn_logic_fingerprint(
+    module_path: &str,
+    fn_name: &str,
+    code_hash: u64,
+) -> Result<Fingerprint> {
+    Ok(Fingerprint::from(&(
+        "cocoindex_fn",
+        module_path,
+        fn_name,
+        code_hash,
+    ))?)
+}
+
+/// Joins a function-call frame into its enclosing frame on drop, so the join
+/// also happens on error and cancellation paths. See [`Ctx::frame_guard`].
+pub(crate) struct FnFrameGuard {
     comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
     parent_fn_ctx: Option<Arc<FnCallContext>>,
     fn_ctx: Arc<FnCallContext>,
 }
 
-impl Drop for TrackedFnCallGuard {
+impl Drop for FnFrameGuard {
     fn drop(&mut self) {
         if let Some(parent) = &self.parent_fn_ctx {
             parent.join_child(&self.fn_ctx);
@@ -446,24 +472,6 @@ impl Drop for TrackedFnCallGuard {
             comp_ctx.join_fn_call(&self.fn_ctx);
         }
     }
-}
-
-pub(crate) struct FnCallGuard<'a> {
-    comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: Arc<FnCallContext>,
-}
-
-impl<'a> Drop for FnCallGuard<'a> {
-    fn drop(&mut self) {
-        self.comp_ctx.join_fn_call(&self.fn_ctx);
-    }
-}
-
-pub(crate) fn fn_call_guard<'a>(
-    comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: Arc<FnCallContext>,
-) -> FnCallGuard<'a> {
-    FnCallGuard { comp_ctx, fn_ctx }
 }
 
 struct StatsGroupEndGuard {
@@ -771,7 +779,7 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
-        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await
@@ -787,8 +795,12 @@ impl Ctx {
             async move {
                 let mut ready_marked = false;
                 loop {
-                    let processor =
-                        auto_refresh_processor(state.clone(), f.clone(), processor_name.clone());
+                    let processor = auto_refresh_processor(
+                        state.clone(),
+                        handler_chain.clone(),
+                        f.clone(),
+                        processor_name.clone(),
+                    );
                     let on_error = build_chained_on_error(
                         &handler_chain,
                         ExceptionContext {
@@ -828,6 +840,9 @@ impl Ctx {
     /// task, and returns when the component marks itself ready. In catch-up
     /// (non-live) mode the default body runs a single full pass; in live mode it
     /// keeps reacting to its source in the background until the app is dropped.
+    ///
+    /// A failure in the component's processing is logged, not returned; use
+    /// [`Ctx::mount_live_with_handler`] to observe or propagate it.
     pub async fn mount_live<K, C>(&self, key: &K, component: C) -> Result<()>
     where
         K: Display,
@@ -937,7 +952,7 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
-        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await
@@ -1005,16 +1020,16 @@ impl Ctx {
 
     /// Foreground mount with an explicit component-memo fingerprint. The
     /// `mount!` / `use_mount!` / `mount_each!` macros call this; `scope` is the
-    /// `memo_fp = None` (always-run) case kept for direct use and tests.
+    /// `memo = None` (always-run) case kept for direct use and tests.
     ///
-    /// When `memo_fp` is `Some`, the engine checks it before running the child
+    /// When `memo` is `Some`, the engine checks its fingerprint and argument states before running the child
     /// and skips the whole component on an unchanged hit (see
-    /// [`crate::mount::component_memo_fp`]).
+    /// [`crate::mount::component_memo`]).
     #[doc(hidden)]
     pub async fn __use_mount_fp<T, F, Fut>(
         &self,
         key: String,
-        memo_fp: Option<Fingerprint>,
+        memo: Option<crate::mount::ComponentMemo>,
         f: F,
     ) -> Result<T>
     where
@@ -1037,13 +1052,15 @@ impl Ctx {
             .mount_child(&fn_ctx, child_path)
             .map_err(|e| Error::engine(format!("{e}")))?;
 
-        // Guard to ensure `join_fn_call` is executed even if `f` panics or the future
-        // is dropped/cancelled early.
-        let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
+        // Join the mount frame into the enclosing frame even if `f` panics or the
+        // future is dropped/cancelled early. Inside a memoized function this
+        // carries `has_child_components` to the memo frame, so the engine rejects
+        // the memo entry instead of letting a later hit delete the child's
+        // target states.
+        let _frame = self.frame_guard(fn_ctx.clone());
 
         let state = self.state.clone();
         let has_context_memo_state = state.context.has_memo_state_fns();
-        let scope_fn_ctx = fn_ctx.clone();
         let scope_handler_chain = self.handler_chain.clone();
         // Foreground child inherits the caller's current scoped deadline —
         // the same value passed to core use_mount below.
@@ -1051,22 +1068,26 @@ impl Ctx {
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
                 let deadline = child_deadline;
-                let ctx = Ctx {
-                    comp_ctx: Some(child_comp_ctx),
-                    state: state.clone(),
-                    fn_ctx: Some(scope_fn_ctx.clone()),
+                // The child component is its own root: frames opened in its
+                // body join the child component (like the app root), never
+                // the parent's mount frame. The child's dependencies reach the
+                // parent through the engine's component run outcome.
+                let ctx = Ctx::new_with_handlers(
+                    Some(child_comp_ctx),
+                    state.clone(),
+                    scope_handler_chain.clone(),
                     deadline,
-                    handler_chain: scope_handler_chain.clone(),
-                };
+                );
                 Box::pin(async move {
                     let result = f(ctx).await?;
                     Value::from_serializable(&result)
                 })
             },
-            memo_fp,
+            memo.as_ref().map(|memo| memo.fp),
             format!("mount:{key}"),
         )
-        .with_memo_state_handler(has_context_memo_state);
+        .with_memo_state_handler(has_context_memo_state)
+        .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
 
         let handle = match child_component
             .use_mount(comp_ctx, processor, self.deadline)
@@ -1110,7 +1131,7 @@ impl Ctx {
         K: Display,
         V: Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        M: Fn(&V) -> Result<Option<Fingerprint>>,
+        M: Fn(&V) -> Result<Option<crate::mount::ComponentMemo>>,
         B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
@@ -1123,20 +1144,20 @@ impl Ctx {
                     "duplicate key `{key}` in mount_each batch"
                 )));
             }
-            let memo_fp = memo_of(&value)?;
+            let memo = memo_of(&value)?;
             let subpath = match prefix {
                 Some(prefix) => format!("{prefix}/{key}"),
                 None => key,
             };
-            keyed.push((subpath, memo_fp, value));
+            keyed.push((subpath, memo, value));
         }
 
         let futs: Vec<_> = keyed
             .into_iter()
-            .map(|(subpath, memo_fp, value)| {
+            .map(|(subpath, memo, value)| {
                 let body = body.clone();
                 async move {
-                    self.__use_mount_fp(subpath, memo_fp, move |child| body(child, value))
+                    self.__use_mount_fp(subpath, memo, move |child| body(child, value))
                         .await
                 }
             })
@@ -1306,6 +1327,7 @@ impl Ctx {
 
 fn auto_refresh_processor<F, Fut>(
     state: Arc<AppInner>,
+    handler_chain: Arc<Vec<ExceptionHandler>>,
     f: F,
     processor_name: String,
 ) -> BoxedProcessor
@@ -1315,8 +1337,15 @@ where
 {
     BoxedProcessor::new(
         move |comp_ctx| {
-            // Live refresh components are deadline-isolated by design.
-            let ctx = Ctx::new(Some(comp_ctx), state.clone(), DeadlineContext::NONE);
+            // Live refresh components are deadline-isolated by design. Nested
+            // live components inherit the enclosing handler chain, as they do
+            // from `LiveComponentOperator`.
+            let ctx = Ctx::new_with_handlers(
+                Some(comp_ctx),
+                state.clone(),
+                handler_chain.clone(),
+                DeadlineContext::NONE,
+            );
             Box::pin(async move {
                 f(ctx).await?;
                 Ok(Value::unit())
