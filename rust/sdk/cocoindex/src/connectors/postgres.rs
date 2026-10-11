@@ -25,9 +25,10 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
+    register_root_target_states_provider,
 };
 
 #[derive(Clone)]
@@ -300,6 +301,7 @@ pub fn table_target_with_options(
             table_name
         ),
         TableHandler {
+            sink: SinkCache::default(),
             db_key: db.name().to_string(),
         },
     )?;
@@ -575,6 +577,7 @@ pub struct VectorIndexSpec {
 // ---------------------------------------------------------------------------
 
 struct TableHandler {
+    sink: SinkCache<TableAction>,
     db_key: String,
 }
 
@@ -649,7 +652,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         recreate,
                         retype_cols,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
@@ -676,7 +679,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         recreate: false,
                         retype_cols: Vec::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -689,12 +692,14 @@ impl TargetHandler<TableSpec> for TableHandler {
             (
                 "vector_index".to_string(),
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
                 }),
             ),
             (
                 "sql_command_attachment".to_string(),
                 ChildTargetDef::new::<SqlCommandSpec, _>(SqlCommandHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
                 }),
             ),
@@ -733,6 +738,7 @@ impl TableHandler {
                                 }
                                 if let Some(slot) = child_slot {
                                     slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler {
+                                        sink: SinkCache::default(),
                                         db_key: db_key.clone(),
                                         spec,
                                     }))?;
@@ -758,6 +764,7 @@ impl TableHandler {
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
 }
@@ -791,7 +798,7 @@ impl TargetHandler<RowState> for RowHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(RowAction { pk, state: desired }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -840,6 +847,7 @@ impl RowHandler {
 // ---------------------------------------------------------------------------
 
 struct VectorIndexHandler {
+    sink: SinkCache<VectorIndexAction>,
     db_key: String,
 }
 
@@ -867,7 +875,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
         match desired {
             Some(spec) => Ok(Some(TargetReconcileOutput {
                 action: TargetAction::Update(VectorIndexAction { spec: spec.clone() }),
-                sink: self.vector_index_sink(),
+                sink: self.sink.get(|| self.vector_index_sink()),
                 tracking_record: Some(spec),
                 child_invalidation: None,
             })),
@@ -875,7 +883,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
                 let spec = prev_spec.expect("delete path implies a previous index spec");
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(VectorIndexAction { spec }),
-                    sink: self.vector_index_sink(),
+                    sink: self.sink.get(|| self.vector_index_sink()),
                     tracking_record: None,
                     child_invalidation: None,
                 }))
@@ -946,6 +954,7 @@ fn collect_teardown_sql(prev: &[SqlCommandSpec]) -> Option<String> {
 }
 
 struct SqlCommandHandler {
+    sink: SinkCache<SqlCommandAction>,
     db_key: String,
 }
 
@@ -971,7 +980,7 @@ impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
                         spec: None,
                         prev_teardown_sql,
                     }),
-                    sink: self.sql_command_sink(),
+                    sink: self.sink.get(|| self.sql_command_sink()),
                     tracking_record: None,
                     child_invalidation: None,
                 }))
@@ -987,7 +996,7 @@ impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
                         spec: Some(spec.clone()),
                         prev_teardown_sql,
                     }),
-                    sink: self.sql_command_sink(),
+                    sink: self.sink.get(|| self.sql_command_sink()),
                     tracking_record: Some(spec),
                     child_invalidation: None,
                 }))

@@ -16,7 +16,7 @@ pub use crate::resources::file::{
     MatchAllFilePathMatcher, PatternFilePathMatcher, decode_bytes,
 };
 use crate::target_state::{
-    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
@@ -435,7 +435,10 @@ pub fn declare_dir_target(ctx: &Ctx, target: DirTargetState) -> Result<DirTarget
     let provider = register_root_target_states_provider(
         ctx,
         format!("cocoindex/localfs/dir/{}", dir.to_string_lossy()),
-        FileHandler { dir: dir.clone() },
+        FileHandler {
+            dir: dir.clone(),
+            sink: SinkCache::default(),
+        },
     )?;
     Ok(DirTarget { provider, dir })
 }
@@ -502,6 +505,7 @@ struct FileAction {
 /// directory root provider.
 struct FileHandler {
     dir: PathBuf,
+    sink: SinkCache<FileAction>,
 }
 
 impl TargetHandler<Vec<u8>> for FileHandler {
@@ -541,7 +545,7 @@ impl TargetHandler<Vec<u8>> for FileHandler {
                 name,
                 content: desired,
             }),
-            sink: self.dir_sink(),
+            sink: self.sink.get(|| self.dir_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))

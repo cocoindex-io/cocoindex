@@ -35,9 +35,9 @@ use crate::statediff::{
     diff, diff_composite, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, mount_target, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -340,6 +340,7 @@ pub fn table_target_with_options(
         ctx,
         format!("cocoindex/lancedb/table/{}/{}", db.name(), table_name),
         TableHandler {
+            sink: SinkCache::default(),
             db_key: db.name().to_string(),
         },
     )?;
@@ -622,6 +623,7 @@ fn resolve_db(host_ctx: &Arc<ContextStore>, db_key: &str) -> Result<Arc<LanceDat
 }
 
 struct TableHandler {
+    sink: SinkCache<TableAction>,
     db_key: String,
 }
 
@@ -664,7 +666,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         spec: Some(spec),
                         recreate,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: Some(tracking),
                     child_invalidation: recreate.then_some(TargetChildInvalidation::Destructive),
                 }))
@@ -685,7 +687,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         spec: None,
                         recreate: false,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -858,6 +860,7 @@ struct RowAction {
 const TRANSACTIONS_BEFORE_OPTIMIZE: u64 = 50;
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
     /// Shared across this handler's per-batch sinks: a monotonic count of applied
@@ -874,6 +877,7 @@ impl RowHandler {
             spec,
             optimize_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             null_backfilled_columns,
+            sink: SinkCache::default(),
         }
     }
 
@@ -946,7 +950,7 @@ impl TargetHandler<RowState> for RowHandler {
                     state: None,
                     track_only: true,
                 }),
-                sink: self.row_sink(),
+                sink: self.sink.get(|| self.row_sink()),
                 tracking_record: desired_fp,
                 child_invalidation: None,
             }));
@@ -957,7 +961,7 @@ impl TargetHandler<RowState> for RowHandler {
                 state: desired,
                 track_only: false,
             }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -971,12 +975,14 @@ impl TargetHandler<RowState> for RowHandler {
             (
                 "vector_index".to_string(),
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
                 }),
             ),
             (
                 "fts_index".to_string(),
                 ChildTargetDef::new::<FtsIndexSpec, _>(FtsIndexHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
                 }),
             ),
@@ -1558,6 +1564,7 @@ struct FtsIndexAction {
 }
 
 struct VectorIndexHandler {
+    sink: SinkCache<VectorIndexAction>,
     db_key: String,
 }
 
@@ -1596,7 +1603,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
                 table_name,
                 managed_by,
             }),
-            sink: self.sink(),
+            sink: self.sink.get(|| self.sink()),
             tracking_record: desired,
             child_invalidation: None,
         }))
@@ -1627,6 +1634,7 @@ impl VectorIndexHandler {
 }
 
 struct FtsIndexHandler {
+    sink: SinkCache<FtsIndexAction>,
     db_key: String,
 }
 
@@ -1665,7 +1673,7 @@ impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
                 table_name,
                 managed_by,
             }),
-            sink: self.sink(),
+            sink: self.sink.get(|| self.sink()),
             tracking_record: desired,
             child_invalidation: None,
         }))

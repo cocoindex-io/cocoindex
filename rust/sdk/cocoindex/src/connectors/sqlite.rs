@@ -29,9 +29,10 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
+    register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -296,6 +297,7 @@ pub fn table_target_with_options(
         // host context (see `design_connectors.md` §5.5).
         format!("cocoindex/sqlite/table/{}/{}", db.name(), table_name),
         TableHandler {
+            sink: SinkCache::default(),
             db_key: db.name().to_string(),
         },
     )?;
@@ -518,6 +520,7 @@ struct RowAction {
 // ---------------------------------------------------------------------------
 
 struct TableHandler {
+    sink: SinkCache<TableAction>,
     /// Stable connection identity (the `ContextKey` name); the live pool is
     /// resolved from the host context at apply time.
     db_key: String,
@@ -578,7 +581,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         main_action,
                         column_actions,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
@@ -598,7 +601,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         main_action: Some(DiffAction::Delete),
                         column_actions: BTreeMap::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -708,6 +711,7 @@ async fn apply_table_action(
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
+        sink: SinkCache::default(),
         db_key: db_key.to_string(),
         spec,
     })))
@@ -718,6 +722,7 @@ async fn apply_table_action(
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
 }
@@ -749,7 +754,7 @@ impl TargetHandler<RowState> for RowHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(RowAction { pk, state: desired }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))

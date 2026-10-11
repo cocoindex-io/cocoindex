@@ -12,8 +12,8 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    ChildTargetDef, IntoStableKey, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
@@ -494,6 +494,7 @@ pub(crate) fn table_target_state<C: CypherExecutor>(
             table_name
         ),
         TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         },
     )?;
@@ -540,6 +541,7 @@ pub(crate) fn relation_target_state<C: CypherExecutor>(
             relation_name
         ),
         TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         },
     )?;
@@ -633,6 +635,7 @@ pub(crate) fn declare_relation_target_with_options<C: CypherExecutor>(
 }
 
 struct TableHandler<C> {
+    sink: SinkCache<TableAction>,
     graph: C,
 }
 
@@ -647,7 +650,7 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
         prev: Vec<MutualTrackingRecord<TableSpec>>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Self::Action, Self::TrackingRecord>>> {
-        let sink = table_sink(self.graph.clone());
+        let sink = self.sink.get(|| table_sink(self.graph.clone()));
         match desired {
             Some(spec) => {
                 let prev_is_empty = prev.is_empty();
@@ -722,12 +725,14 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
             (
                 "vector_index".to_string(),
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    sink: SinkCache::default(),
                     graph: self.graph.clone(),
                 }),
             ),
             (
                 "node_index".to_string(),
                 ChildTargetDef::new::<NodeIndexSpec, _>(NodeIndexHandler {
+                    sink: SinkCache::default(),
                     graph: self.graph.clone(),
                 }),
             ),
@@ -758,6 +763,7 @@ struct VectorIndexAction {
 }
 
 struct VectorIndexHandler<C> {
+    sink: SinkCache<VectorIndexAction>,
     graph: C,
 }
 
@@ -796,7 +802,7 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
                 field,
                 spec: desired.clone(),
             }),
-            sink: vector_index_sink(self.graph.clone()),
+            sink: self.sink.get(|| vector_index_sink(self.graph.clone())),
             tracking_record: desired,
             child_invalidation: None,
         }))
@@ -859,6 +865,7 @@ struct NodeIndexAction {
 }
 
 struct NodeIndexHandler<C> {
+    sink: SinkCache<NodeIndexAction>,
     graph: C,
 }
 
@@ -897,7 +904,7 @@ impl<C: CypherExecutor> TargetHandler<NodeIndexSpec> for NodeIndexHandler<C> {
                 fields,
                 present,
             }),
-            sink: node_index_sink(self.graph.clone()),
+            sink: self.sink.get(|| node_index_sink(self.graph.clone())),
             tracking_record: desired,
             child_invalidation: None,
         }))
@@ -930,6 +937,7 @@ fn node_index_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<NodeIndexAct
 }
 
 struct RecordHandler<C> {
+    sink: SinkCache<RecordAction>,
     graph: C,
     spec: TableSpec,
 }
@@ -972,7 +980,7 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
         Ok(Some(TargetReconcileOutput {
             action,
             tracking_record: desired_fp,
-            sink: record_sink(self.graph.clone()),
+            sink: self.sink.get(|| record_sink(self.graph.clone())),
             child_invalidation: None,
         }))
     }
@@ -1015,6 +1023,7 @@ fn table_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<TableAction> {
                 };
                 if let (Some(slot), Some(spec)) = (child_slot, spec) {
                     slot.fulfill(ChildTargetDef::new::<RecordState, _>(RecordHandler {
+                        sink: SinkCache::default(),
                         graph: graph.clone(),
                         spec,
                     }))?;
@@ -2091,6 +2100,7 @@ mod tests {
         );
         let graph = RecordingGraph::new("neo4j");
         let handler = TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         };
 
@@ -2147,6 +2157,7 @@ mod tests {
         );
         let graph = RecordingGraph::new("neo4j");
         let handler = TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         };
 
@@ -2251,6 +2262,7 @@ mod tests {
         );
         let graph = RecordingGraph::new("falkordb");
         let handler = TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         };
 
@@ -2301,7 +2313,10 @@ mod tests {
             schema,
             crate::statediff::ManagedBy::User,
         );
-        let handler = TableHandler { graph: FakeGraph };
+        let handler = TableHandler {
+            graph: FakeGraph,
+            sink: SinkCache::default(),
+        };
         let out = handler
             .reconcile(
                 StableKey::Str(Arc::from("Meeting")),
@@ -2329,7 +2344,10 @@ mod tests {
             schema,
             crate::statediff::ManagedBy::User,
         );
-        let handler = TableHandler { graph: FakeGraph };
+        let handler = TableHandler {
+            graph: FakeGraph,
+            sink: SinkCache::default(),
+        };
         let out = handler
             .reconcile(
                 StableKey::Str(Arc::from("Meeting")),

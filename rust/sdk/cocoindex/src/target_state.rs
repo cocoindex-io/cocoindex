@@ -200,10 +200,43 @@ impl ChildSlot {
     }
 }
 
-#[derive(Clone)]
+/// Applies a batch of target actions.
+///
+/// The engine batches actions by sink *identity*: actions returned with the
+/// same sink (or a clone of it) are applied together in one call, while every
+/// `from_async_fn*` call creates a new identity whose actions are applied
+/// separately. A handler should therefore build its sink once and return a
+/// clone from each `reconcile`, rather than building one per call.
 pub struct TargetActionSink<A> {
     inner: TargetActionSinkKeeper<RustProfile>,
     _action: PhantomData<fn() -> A>,
+}
+
+// Not derived: a derive would require `A: Clone`, but cloning a sink only
+// shares its identity.
+impl<A> Clone for TargetActionSink<A> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _action: PhantomData,
+        }
+    }
+}
+
+/// A handler's sink, built on first use and shared by every `reconcile`
+/// output so the engine applies all of the handler's actions in one batch.
+pub(crate) struct SinkCache<A>(std::sync::OnceLock<TargetActionSink<A>>);
+
+impl<A> Default for SinkCache<A> {
+    fn default() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+}
+
+impl<A> SinkCache<A> {
+    pub(crate) fn get(&self, build: impl FnOnce() -> TargetActionSink<A>) -> TargetActionSink<A> {
+        self.0.get_or_init(build).clone()
+    }
 }
 
 impl<A> TargetActionSink<A>
@@ -593,6 +626,23 @@ fn internal(err: impl std::fmt::Display) -> cocoindex_utils::error::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sink_cache_returns_one_batching_identity() {
+        let builds = std::sync::atomic::AtomicUsize::new(0);
+        let cache = SinkCache::<()>::default();
+        let build = || {
+            builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            TargetActionSink::<()>::from_async_fn(|_| async { Ok(()) })
+        };
+        let first = cache.get(build);
+        let second = cache.get(build);
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // The engine groups actions by this identity.
+        assert!(first.inner == second.inner);
+        let fresh = TargetActionSink::<()>::from_async_fn(|_| async { Ok(()) });
+        assert!(first.inner != fresh.inner);
+    }
 
     #[test]
     fn u64_stable_key_is_tagged_and_non_lossy() {

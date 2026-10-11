@@ -31,7 +31,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
 use crate::target_state::{
-    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
@@ -214,6 +214,7 @@ struct MessageHandler {
     client: Arc<Client>,
     topic: String,
     deletion_value_fn: Option<DeletionValueFn>,
+    sink: SinkCache<MessageAction>,
 }
 
 impl MessageHandler {
@@ -222,6 +223,7 @@ impl MessageHandler {
             client,
             topic,
             deletion_value_fn,
+            sink: SinkCache::default(),
         }
     }
 }
@@ -261,7 +263,7 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
         };
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(action),
-            sink: self.message_sink(),
+            sink: self.sink.get(|| self.message_sink()),
             tracking_record: decision.tracking,
             child_invalidation: None,
         }))
