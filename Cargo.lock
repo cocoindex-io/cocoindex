@@ -1955,6 +1955,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cocoindex_cli"
+version = "999.0.0"
+dependencies = [
+ "clap",
+ "cocoindex",
+ "cocoindex_core",
+ "dotenvy",
+ "futures",
+ "nix 0.30.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "cocoindex_cli_fixture_app"
+version = "0.1.0"
+dependencies = [
+ "cocoindex",
+]
+
+[[package]]
 name = "cocoindex_code_ast"
 version = "999.0.0"
 dependencies = [

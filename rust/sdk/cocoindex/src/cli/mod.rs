@@ -309,7 +309,8 @@ fn resolve_app(requested: Option<&str>) -> std::result::Result<&'static AppEntry
 }
 
 fn app_names(apps: &[AppEntry]) -> String {
-    let names: Vec<&str> = apps.iter().map(|a| a.name).collect();
+    let mut names: Vec<&str> = apps.iter().map(|a| a.name).collect();
+    names.sort_unstable();
     names.join(", ")
 }
 

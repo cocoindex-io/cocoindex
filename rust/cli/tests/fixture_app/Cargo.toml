@@ -1,0 +1,9 @@
+# A tiny cocoindex app the CLI's end-to-end test builds and drives.
+[package]
+name = "cocoindex_cli_fixture_app"
+version = "0.1.0"
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+cocoindex = { path = "../../../sdk/cocoindex" }
