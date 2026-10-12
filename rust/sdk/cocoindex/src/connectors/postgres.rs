@@ -744,11 +744,7 @@ fn table_sink() -> TargetActionSink<TableAction> {
                                 apply_retypes(&db, &spec, &a.retype_cols).await?;
                             }
                             if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                    sink: SinkCache::default(),
-                                    db_key: a.db_key,
-                                    spec,
-                                }))?;
+                                slot.fulfill(row_child(a.db_key, spec))?;
                             }
                         }
                         TargetAction::Delete(a) => {
@@ -763,6 +759,24 @@ fn table_sink() -> TargetActionSink<TableAction> {
             }
         },
     )
+    .with_preview_child(|action| match action {
+        TargetAction::Create(a) | TargetAction::Update(a) => {
+            let spec = a
+                .spec
+                .ok_or_else(|| Error::engine("Postgres table action missing spec"))?;
+            Ok(row_child(a.db_key, spec))
+        }
+        TargetAction::Delete(_) => Err(Error::engine("a table drop has no row child")),
+    })
+}
+
+/// The row handler a table's sink fulfills its child slot with.
+fn row_child(db_key: String, spec: TableSpec) -> ChildTargetDef {
+    ChildTargetDef::new::<RowState, _>(RowHandler {
+        sink: SinkCache::default(),
+        db_key,
+        spec,
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -760,6 +760,14 @@ class _CollectionAction(NamedTuple):
     main_action: statediff.DiffAction | None
 
 
+def _doc_handler(
+    context_provider: ContextProvider, action: _CollectionAction, /
+) -> _DocHandler:
+    """The doc handler for a collection action, which `_apply_collection_actions`
+    fulfills its child slot with (and preview uses as is)."""
+    return _DocHandler(action.key.db_key, action.key.collection_name)
+
+
 def _apply_collection_actions(
     context_provider: ContextProvider,
     actions: Sequence[_CollectionAction],
@@ -784,7 +792,7 @@ def _apply_collection_actions(
                 continue
 
             spec = action.spec
-            child_slots[i].fulfill(_DocHandler(key.db_key, key.collection_name))
+            child_slots[i].fulfill(_doc_handler(context_provider, action))
 
             if action.main_action in ("insert", "upsert", "replace"):
                 conn.open_or_create(
@@ -795,7 +803,7 @@ def _apply_collection_actions(
 
 _collection_action_sink = coco.TargetActionSink[
     _CollectionAction
-].from_fn_with_children(_apply_collection_actions)
+].from_fn_with_children(_apply_collection_actions, preview_child=_doc_handler)
 
 
 class _CollectionHandler(

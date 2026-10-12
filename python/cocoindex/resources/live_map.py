@@ -188,6 +188,15 @@ async def _apply_entry_actions(
                 live_map._emit(_Change(action.key, action.value, False, live_map._seq))
 
 
+def _container_entry_handler(
+    context_provider: _coco.ContextProvider, action: _ContainerAction, /
+) -> _EntryHandler:
+    """The entry handler `_apply_container_actions` fulfills a container's child slot
+    with (and preview uses as is)."""
+    assert action.live_map is not None
+    return _EntryHandler(action.live_map)
+
+
 async def _apply_container_actions(
     context_provider: _coco.ContextProvider,
     actions: _Sequence[_ContainerAction],
@@ -197,14 +206,16 @@ async def _apply_container_actions(
     for i, action in enumerate(actions):
         if action.deleted or action.live_map is None:
             continue
-        child_slots[i].fulfill(_EntryHandler(action.live_map))
+        child_slots[i].fulfill(_container_entry_handler(context_provider, action))
 
 
 _ENTRY_SINK: _coco.TargetActionSink[_EntryAction] = (
     _coco.TargetActionSink.from_async_fn(_apply_entry_actions)
 )
 _CONTAINER_SINK: _coco.TargetActionSink[_ContainerAction] = (
-    _coco.TargetActionSink.from_async_fn_with_children(_apply_container_actions)
+    _coco.TargetActionSink.from_async_fn_with_children(
+        _apply_container_actions, preview_child=_container_entry_handler
+    )
 )
 _CONTAINER_PROVIDER = _coco.register_root_target_states_provider(
     "cocoindex/livemap", _ContainerHandler()

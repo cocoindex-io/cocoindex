@@ -993,7 +993,33 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
     def __init__(self) -> None:
         self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+            self._apply_actions, preview_child=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider,
+        action: _TableAction,
+        /,
+        *,
+        null_backfilled_columns: frozenset[str] = frozenset(),
+    ) -> _RowHandler:
+        """The row handler for a table action, which `_apply_actions` fulfills
+        its child slot with.
+
+        Preview calls it without ``null_backfilled_columns``: they are only
+        known once the action's column changes are applied against the live
+        table. So preview reports a row whose only change is a newly added,
+        null-backfilled column as an upsert, where apply only advances its
+        tracking record.
+        """
+        key = action.key
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            conn=context_provider.get(key.db_key, LanceAsyncConnection),
+            table_name=key.table_name,
+            table_schema=action.spec.table_schema,
+            null_backfilled_columns=null_backfilled_columns,
         )
 
     async def _apply_actions(
@@ -1047,13 +1073,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         action.column_actions,
                     )
 
-                handler = _RowHandler(
-                    conn=conn,
-                    table_name=key.table_name,
-                    table_schema=spec.table_schema,
-                    null_backfilled_columns=null_backfilled_columns,
+                child_slots[i].fulfill(
+                    self._row_handler(
+                        context_provider,
+                        action,
+                        null_backfilled_columns=null_backfilled_columns,
+                    )
                 )
-                child_slots[i].fulfill(handler)
 
     async def _drop_table(
         self,

@@ -394,11 +394,15 @@ def mount_live_async(
 class TargetActionSink:
     @staticmethod
     def new_sync(
-        callback: Callable[..., Any], with_children: bool
+        callback: Callable[..., Any],
+        with_children: bool,
+        preview_child: Callable[[Any, Any], Any] | None = None,
     ) -> TargetActionSink: ...
     @staticmethod
     def new_async(
-        callback: Callable[..., Coroutine[Any, Any, Any]], with_children: bool
+        callback: Callable[..., Coroutine[Any, Any, Any]],
+        with_children: bool,
+        preview_child: Callable[[Any, Any], Any] | None = None,
     ) -> TargetActionSink: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -755,10 +759,8 @@ class RateLimiter:
 
 class GPUPool:
     def __init__(self, num_gpus: int) -> None: ...
-
     @property
     def num_gpus(self) -> int: ...
-
     async def acquire(self, fraction: float) -> int:
         """
         Acquires a fraction of a GPU and returns the GPU ID.

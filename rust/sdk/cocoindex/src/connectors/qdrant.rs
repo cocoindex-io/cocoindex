@@ -999,9 +999,7 @@ fn collection_sink() -> TargetActionSink<CollectionAction> {
                         let client = resolve_client(&host_ctx, &a.conn_key)?;
                         ensure_collection(&client, &a).await?;
                         if let Some(slot) = child_slot {
-                            slot.fulfill(ChildTargetDef::new::<Point, _>(PointHandler::new(
-                                a.conn_key, a.name, a.schema,
-                            )))?;
+                            slot.fulfill(point_child(a))?;
                         }
                     }
                     TargetAction::Delete(a) => {
@@ -1013,6 +1011,15 @@ fn collection_sink() -> TargetActionSink<CollectionAction> {
             Ok(())
         },
     )
+    .with_preview_child(|action| match action {
+        TargetAction::Create(a) | TargetAction::Update(a) => Ok(point_child(a)),
+        TargetAction::Delete(_) => Err(Error::engine("a collection drop has no point child")),
+    })
+}
+
+/// The point handler a collection's sink fulfills its child slot with.
+fn point_child(a: CollectionAction) -> ChildTargetDef {
+    ChildTargetDef::new::<Point, _>(PointHandler::new(a.conn_key, a.name, a.schema))
 }
 
 async fn ensure_collection(client: &Qdrant, action: &CollectionAction) -> Result<()> {

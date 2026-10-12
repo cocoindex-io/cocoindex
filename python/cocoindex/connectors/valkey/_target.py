@@ -385,7 +385,18 @@ class _IndexHandler(
 
     def __init__(self) -> None:
         self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+            self._apply_actions, preview_child=self._document_handler
+        )
+
+    @staticmethod
+    def _document_handler(
+        context_provider: ContextProvider, action: _IndexAction, /
+    ) -> _DocumentHandler:
+        """The document handler for an index action, which `_apply_actions`
+        fulfills its child slot with (and preview uses as is)."""
+        return _DocumentHandler(
+            client=context_provider.get(action.key.db_key, GlideClient),  # type: ignore[type-abstract]
+            index_name=action.key.index_name,
         )
 
     async def _apply_actions(
@@ -422,12 +433,7 @@ class _IndexHandler(
                     continue
 
                 spec = action.spec
-                child_slots[i].fulfill(
-                    _DocumentHandler(
-                        client=client,
-                        index_name=key.index_name,
-                    )
-                )
+                child_slots[i].fulfill(self._document_handler(context_provider, action))
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     await self._create_index(

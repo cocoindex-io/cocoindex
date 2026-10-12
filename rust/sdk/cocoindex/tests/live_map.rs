@@ -1,6 +1,8 @@
 //! Integration test for the in-memory `LiveMap` resource.
 
-use cocoindex::{App, LiveMap};
+use std::sync::{Arc, Mutex};
+
+use cocoindex::{App, LiveMap, LiveMapView};
 
 /// Smoke test: `LiveMap::create` mounts its backing container target and
 /// `declare_entry` declares entries that sync (run the entry sink) when the
@@ -20,6 +22,34 @@ fn live_map_create_and_declare() {
         Ok(())
     })
     .unwrap();
+}
+
+/// Preview plans the container and its entries without applying them: the
+/// map stays empty.
+#[tokio::test]
+async fn live_map_preview_applies_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_preview", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<String>>>> = Arc::new(Mutex::new(None));
+
+    let actions = app
+        .preview({
+            let created = created.clone();
+            move |ctx| async move {
+                let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
+                lm.declare_entry(&ctx, "a", "alpha".to_string())?;
+                lm.declare_entry(&ctx, "b", "beta".to_string())?;
+                *created.lock().unwrap() = Some(lm);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(actions.len(), 3);
+    let lm = created.lock().unwrap().take().unwrap();
+    assert!(lm.scan().await.unwrap().is_empty());
 }
 
 mod live {

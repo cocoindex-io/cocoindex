@@ -6,9 +6,9 @@
 use std::sync::{Arc, Mutex};
 
 use cocoindex::{
-    App, PreviewAction, Result, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, UpdateOptions, declare_target_state,
-    register_root_target_states_provider,
+    App, ChildSlot, ChildTargetDef, Ctx, DirTarget, PreviewAction, Result, StableKey, TargetAction,
+    TargetActionSink, TargetHandler, TargetReconcileOutput, TargetStateProvider, UpdateOptions,
+    declare_target_state, mount_each, mount_target, register_root_target_states_provider,
 };
 use serde::{Deserialize, Serialize};
 
@@ -222,4 +222,253 @@ async fn report_to_stdout_runs_to_completion() {
         .unwrap();
 
     assert_eq!(*log.lock().unwrap(), vec!["create x=1".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// A container target (a table) whose rows are declared under its child
+// provider.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct TableAction {
+    name: String,
+}
+
+struct TableHandler {
+    sink: TargetActionSink<TableAction>,
+}
+
+impl TargetHandler<()> for TableHandler {
+    type TrackingRecord = ();
+    type Action = TableAction;
+
+    // Always emits for a declared table: its action is what readies the rows.
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<()>,
+        prev: Vec<()>,
+        _prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TableAction, ()>>> {
+        Ok(desired.map(|()| {
+            let table = TableAction {
+                name: key_str(&key),
+            };
+            TargetReconcileOutput {
+                action: if prev.is_empty() {
+                    TargetAction::Create(table)
+                } else {
+                    TargetAction::Update(table)
+                },
+                sink: self.sink.clone(),
+                tracking_record: Some(()),
+                child_invalidation: None,
+            }
+        }))
+    }
+}
+
+/// A table sink that records each applied table into `table_log` and fulfills
+/// its child slot with a [`RowHandler`] recording into `row_log`. With
+/// `previewable`, it also builds that row handler for preview.
+fn table_sink(table_log: Log, row_log: Log, previewable: bool) -> TargetActionSink<TableAction> {
+    let row_handler = move || {
+        ChildTargetDef::new::<String, _>(RowHandler {
+            sink: recording_sink(row_log.clone()),
+        })
+    };
+    let apply_row_handler = row_handler.clone();
+    let sink = TargetActionSink::from_async_fn_with_children(
+        move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
+            let table_log = table_log.clone();
+            let row_handler = apply_row_handler.clone();
+            async move {
+                for (action, child_slot) in actions {
+                    let (TargetAction::Create(t) | TargetAction::Update(t)) = action else {
+                        unreachable!("tables are never deleted here");
+                    };
+                    table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                    if let Some(slot) = child_slot {
+                        slot.fulfill(row_handler())?;
+                    }
+                }
+                Ok(())
+            }
+        },
+    );
+    if previewable {
+        sink.with_preview_child(move |_action| Ok(row_handler()))
+    } else {
+        sink
+    }
+}
+
+/// The app body: mount table `t` and declare `rows` under it.
+fn table_body(
+    sink: TargetActionSink<TableAction>,
+    rows: Vec<(&'static str, &'static str)>,
+) -> impl FnOnce(Ctx) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    move |ctx| {
+        Box::pin(async move {
+            let tables =
+                register_root_target_states_provider(&ctx, "test/tables", TableHandler { sink })?;
+            let table_rows: TargetStateProvider<String> =
+                mount_target(&ctx, tables.target_state("t", ())).await?;
+            for (k, v) in rows {
+                declare_target_state(&ctx, table_rows.target_state(k, v.to_string()))?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Planned actions as sorted strings: rows as `verb key=value`, tables as
+/// `verb table name`.
+fn describe(actions: &[PreviewAction]) -> Vec<String> {
+    let mut described: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            match value.decode::<RowAction>() {
+                Ok(row) => format!("{verb} {}={}", row.key, row.value.unwrap_or_default()),
+                Err(_) => {
+                    let table: TableAction = value.decode().unwrap();
+                    format!("{verb} table {}", table.name)
+                }
+            }
+        })
+        .collect();
+    described.sort();
+    described
+}
+
+#[tokio::test]
+async fn preview_collects_child_actions_without_applying_the_container() {
+    let (app, _dir) = temp_app("preview_child_actions").await;
+    let table_log: Log = Arc::new(Mutex::new(Vec::new()));
+    let row_log: Log = Arc::new(Mutex::new(Vec::new()));
+    let sink = || table_sink(table_log.clone(), row_log.clone(), true);
+
+    // First preview: the table and its rows would all be created.
+    let actions = app
+        .preview(table_body(sink(), vec![("a", "v1"), ("b", "v1")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        describe(&actions),
+        vec!["create a=v1", "create b=v1", "create table t"]
+    );
+    assert!(
+        table_log.lock().unwrap().is_empty(),
+        "the table was applied"
+    );
+    assert!(row_log.lock().unwrap().is_empty(), "rows were applied");
+
+    // A real update applies all of it.
+    app.update(table_body(sink(), vec![("a", "v1"), ("b", "v1")]))
+        .await
+        .unwrap();
+    assert_eq!(*table_log.lock().unwrap(), vec!["ensure t"]);
+    let mut applied = std::mem::take(&mut *row_log.lock().unwrap());
+    applied.sort();
+    assert_eq!(applied, vec!["create a=v1", "create b=v1"]);
+
+    // The next preview plans the rows against what is now tracked.
+    let actions = app
+        .preview(table_body(
+            sink(),
+            vec![("a", "v1"), ("b", "v2"), ("c", "v1")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        describe(&actions),
+        vec!["create c=v1", "update b=v2", "update table t"]
+    );
+    assert_eq!(*table_log.lock().unwrap(), vec!["ensure t"]);
+    assert!(row_log.lock().unwrap().is_empty(), "rows were applied");
+}
+
+#[tokio::test]
+async fn preview_fails_for_a_container_sink_without_preview_child() {
+    let (app, _dir) = temp_app("preview_child_unsupported").await;
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let err = app
+        .preview(table_body(
+            table_sink(log.clone(), log.clone(), false),
+            vec![("a", "v1")],
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("does not support preview of child target states"),
+        "unexpected error: {err}"
+    );
+    assert!(log.lock().unwrap().is_empty());
+}
+
+#[cocoindex::function]
+async fn write_file(ctx: &Ctx, name: String, target: DirTarget) -> Result<()> {
+    target.declare_file(ctx, &format!("{name}.txt"), name.as_bytes())
+}
+
+/// Preview runs memoized components but must not store their memos: a real
+/// update afterwards would reuse them and skip declaring their target states.
+#[tokio::test]
+async fn preview_does_not_store_component_memos() {
+    let (app, dir) = temp_app("preview_component_memo").await;
+    let out = dir.path().join("out");
+    let body = |out: std::path::PathBuf| {
+        move |ctx: Ctx| async move {
+            let target = DirTarget::mount(&ctx, &out)?;
+            let items = vec![("a".to_string(), "a".to_string())];
+            mount_each!(items, |name| write_file(ctx, name, target)).await?;
+            Ok::<(), cocoindex::Error>(())
+        }
+    };
+
+    let actions = app.preview(body(out.clone())).await.unwrap();
+    assert_eq!(actions.len(), 1);
+    assert!(!out.join("a.txt").exists(), "preview wrote the file");
+
+    app.update(body(out.clone())).await.unwrap();
+    assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"a");
+}
+
+/// Live components run their own builds; a preview must reach them too, or
+/// their target states are applied rather than previewed.
+#[cfg(feature = "fs_live")]
+#[tokio::test]
+async fn preview_reaches_live_components() {
+    use cocoindex::FileEntry;
+    use cocoindex::resources::fs::walk_dir;
+
+    let (app, dir) = temp_app("preview_live_components").await;
+    let src = dir.path().join("src");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.txt"), b"alpha").unwrap();
+    let body = |src: std::path::PathBuf, out: std::path::PathBuf| {
+        move |ctx: Ctx| async move {
+            let target = DirTarget::mount(&ctx, &out)?;
+            let feed = walk_dir(src).live();
+            ctx.mount_each_live(&"files", feed, move |ctx, file: FileEntry| {
+                let target = target.clone();
+                async move { target.declare_file(&ctx, &file.key(), &file.content()?) }
+            })
+            .await
+        }
+    };
+
+    let actions = app.preview(body(src.clone(), out.clone())).await.unwrap();
+    assert_eq!(actions.len(), 1);
+    assert!(!out.join("a.txt").exists(), "preview wrote the file");
+
+    app.update(body(src, out.clone())).await.unwrap();
+    assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"alpha");
 }

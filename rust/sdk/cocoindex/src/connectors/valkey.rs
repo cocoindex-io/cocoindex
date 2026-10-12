@@ -599,9 +599,7 @@ fn index_sink() -> TargetActionSink<IndexAction> {
                             create_index(&db, &a.index_name, &spec.schema).await?;
                         }
                         if let Some(slot) = child_slot {
-                            slot.fulfill(ChildTargetDef::new::<Document, _>(
-                                DocumentHandler::new(a.db_key, a.index_name),
-                            ))?;
+                            slot.fulfill(document_child(a.db_key, a.index_name))?;
                         }
                     }
                     TargetAction::Delete(a) => {
@@ -614,6 +612,17 @@ fn index_sink() -> TargetActionSink<IndexAction> {
             Ok(())
         },
     )
+    .with_preview_child(|action| match action {
+        TargetAction::Create(a) | TargetAction::Update(a) => {
+            Ok(document_child(a.db_key, a.index_name))
+        }
+        TargetAction::Delete(_) => Err(Error::engine("an index drop has no document child")),
+    })
+}
+
+/// The document handler an index's sink fulfills its child slot with.
+fn document_child(db_key: String, index_name: String) -> ChildTargetDef {
+    ChildTargetDef::new::<Document, _>(DocumentHandler::new(db_key, index_name))
 }
 
 /// Create the index unless it exists. An `Insert` (no tracked record) can

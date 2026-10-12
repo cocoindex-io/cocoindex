@@ -6,7 +6,9 @@ use crate::engine::component::{
     ActivityGuard, Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle,
     OnError,
 };
-use crate::engine::context::{ComponentProcessingAction, ComponentProcessorContext, FnCallContext};
+use crate::engine::context::{
+    ComponentProcessingAction, ComponentProcessorContext, FnCallContext, PreviewActionCollector,
+};
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
@@ -163,6 +165,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.host_ctx().clone(),
             parent_ctx.full_reprocess(),
             live,
+            parent_ctx.preview_collector().cloned(),
             providers,
             parent_ctx.admission().lender().clone(),
         );
@@ -449,6 +452,9 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     host_ctx: Arc<Prof::HostCtx>,
     full_reprocess: bool,
     live: bool,
+    /// The mounting run's preview collector: in a preview, this component's
+    /// runs preview too rather than apply.
+    preview_collector: Option<PreviewActionCollector<Prof>>,
 
     /// Providers inherited from the parent component context at creation time.
     /// Immutable — process() may not call use_mount(), so no new providers are created.
@@ -470,6 +476,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         full_reprocess: bool,
         live: bool,
+        preview_collector: Option<PreviewActionCollector<Prof>>,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
     ) -> Self {
@@ -480,6 +487,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             host_ctx,
             full_reprocess,
             live,
+            preview_collector,
             providers,
             lender,
         }
@@ -586,7 +594,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.full_reprocess,
                 self.live,
                 on_error.clone(),
-                None,
+                self.preview_collector.clone(),
             ),
         );
 
@@ -738,6 +746,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let providers = self.providers.clone();
         let full_reprocess = self.full_reprocess;
         let live = self.live;
+        let preview_collector = self.preview_collector.clone();
         let lender = self.lender.clone();
 
         // Queued ops keep the live component active until the drain task
@@ -754,6 +763,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 providers,
                 full_reprocess,
                 live,
+                preview_collector,
                 lender,
             )
             .await;
@@ -897,7 +907,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.full_reprocess,
                 self.live,
                 None,
-                None,
+                self.preview_collector.clone(),
             ),
         );
         let fn_ctx = FnCallContext::default();
@@ -911,8 +921,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // tombstone scan can't see this child and won't reconcile its
         // target states on parent re-runs that DON'T re-issue this
         // operator.update call. With this row, the install/tombstone
-        // state machine is symmetric across both installer paths.
-        if let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent() {
+        // state machine is symmetric across both installer paths. A preview
+        // writes no state, so it skips this as submit/commit does.
+        if self.preview_collector.is_none()
+            && let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent()
+        {
             let app_store = self.component.app_ctx().app_store().clone();
             let parent_path: StablePath = parent_path_ref.into();
             let child_key = child_key.clone();
@@ -1060,6 +1073,7 @@ async fn drain_task_body<Prof: EngineProfile>(
     providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     full_reprocess: bool,
     live: bool,
+    preview_collector: Option<PreviewActionCollector<Prof>>,
     lender: Lender,
 ) {
     loop {
@@ -1127,6 +1141,7 @@ async fn drain_task_body<Prof: EngineProfile>(
             &providers,
             full_reprocess,
             live,
+            &preview_collector,
             &lender,
         )
         .await;
@@ -1183,6 +1198,7 @@ async fn run_op<Prof: EngineProfile>(
     providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     full_reprocess: bool,
     live: bool,
+    preview_collector: &Option<PreviewActionCollector<Prof>>,
     lender: &Lender,
 ) -> Result<()> {
     let _ = state; // kept for symmetry / future use
@@ -1206,7 +1222,7 @@ async fn run_op<Prof: EngineProfile>(
                     full_reprocess,
                     live,
                     on_error.clone(),
-                    None,
+                    preview_collector.clone(),
                 ),
             );
             let inner_handle = child

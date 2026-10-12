@@ -51,7 +51,8 @@ For targets nested inside another target (e.g., files inside a directory):
 1. Build the parent's sink with `TargetActionSink.from_fn_with_children()` / `from_async_fn_with_children()`. Its callback receives a third positional argument, `child_slots: Mapping[int, ChildSlot[ChildHandler]]` — one slot per action whose target state was declared with a child, keyed by the action's index in `actions` — and calls `child_slots[i].fulfill(handler)` for each. Orphan deletes (and leaf actions on a shared sink) have no slot; index with `child_slots[i]`, not `.get()`, so a missing slot surfaces as a bug
 2. Call `declare_target_state_with_child(parent_ts)` to get an unresolved child provider
 3. CocoIndex resolves the child provider with the handler the sink fulfilled when the parent's sink executes; a slot left unfulfilled fails the commit
-4. Declare the child handler type as the third argument of the container handler's `reconcile()` return type, `coco.TargetReconcileOutput[Action, TrackingRecord, ChildHandler]` (or subclass `coco.TargetHandler[Spec, TrackingRecord, ChildHandler]` explicitly); it types the provider chain
+4. Pass `preview_child=` to `from_fn_with_children()` / `from_async_fn_with_children()`: a sync, side-effect-free `(context_provider, action) -> ChildHandler` that builds the handler the sink would fulfill the action's slot with. Preview mode never runs the sink, so this is the only way it gets child handlers; without it, preview fails for the container's children. Have the sink call the same function to fulfill its slots (single source of truth)
+5. Declare the child handler type as the third argument of the container handler's `reconcile()` return type, `coco.TargetReconcileOutput[Action, TrackingRecord, ChildHandler]` (or subclass `coco.TargetHandler[Spec, TrackingRecord, ChildHandler]` explicitly); it types the provider chain
 
 `coco.ChildTargetDef` and sinks that return an index-aligned list of child handlers are deprecated (they still run, with a `DeprecationWarning`); never use them in new connectors. `coco.TargetActionSink` takes one type argument; a second one is deprecated and ignored.
 
@@ -427,7 +428,9 @@ def test_vector_support(connector_with_vec: tuple[Connection, Path]) -> None:
 
 - `python/tests/connectors/test_sqlite_target.py` - SQLite tests with vector support
 - Rust SDK target connectors live under `rust/sdk/cocoindex/src/connectors/`; see
-  `sqlite.rs`, `postgres.rs`, and `doris.rs` there for relational connector patterns.
+  `sqlite.rs`, `postgres.rs`, and `doris.rs` there for relational connector patterns. A Rust
+  container sink supports preview through `TargetActionSink::with_preview_child`, the
+  counterpart of Python's `preview_child=` (see `table_sink` in `postgres.rs`).
 
 ## Attachment Providers
 

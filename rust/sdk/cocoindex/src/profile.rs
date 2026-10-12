@@ -326,9 +326,15 @@ type SinkFn = Arc<
         + Sync,
 >;
 
+// Preview mode: the child handler `apply` would fulfill an action's child slot
+// with, built from the action alone.
+type PreviewChildFn =
+    Arc<dyn Fn(Action) -> cocoindex_utils::error::Result<BoxedHandler> + Send + Sync>;
+
 #[derive(Clone)]
 pub(crate) struct BoxedSink {
     apply_fn: SinkFn,
+    preview_child_fn: Option<PreviewChildFn>,
 }
 
 impl BoxedSink {
@@ -340,7 +346,16 @@ impl BoxedSink {
     ) -> Self {
         Self {
             apply_fn: Arc::new(f),
+            preview_child_fn: None,
         }
+    }
+
+    pub(crate) fn with_preview_child(
+        mut self,
+        f: impl Fn(Action) -> cocoindex_utils::error::Result<BoxedHandler> + Send + Sync + 'static,
+    ) -> Self {
+        self.preview_child_fn = Some(Arc::new(f));
+        self
     }
 }
 
@@ -356,6 +371,25 @@ impl TargetActionSink<RustProfile> for BoxedSink {
         // `Action` wraps `Bytes` and a slot is an `Arc`, so this is a refcount
         // bump per action.
         (self.apply_fn)(host_ctx, actions.to_vec()).await
+    }
+
+    async fn preview_children(
+        &self,
+        _host_runtime_ctx: &(),
+        _host_ctx: Arc<ContextStore>,
+        actions: &[TargetActionWithChildSlot<RustProfile>],
+    ) -> cocoindex_utils::error::Result<()> {
+        // Without a preview callback the slots stay unfulfilled, which the
+        // engine reports as a sink that cannot preview child target states.
+        let Some(preview_child_fn) = &self.preview_child_fn else {
+            return Ok(());
+        };
+        for (action, slot) in actions {
+            if let Some(slot) = slot {
+                slot.fulfill(preview_child_fn(action.clone())?)?;
+            }
+        }
+        Ok(())
     }
 }
 

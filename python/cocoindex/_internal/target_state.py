@@ -199,6 +199,16 @@ class AsyncTargetActionSinkWithChildrenFn(Protocol[ActionT_contra]):
     ) -> None: ...
 
 
+class TargetActionSinkPreviewChildFn(Protocol[ActionT_contra]):
+    """``preview_child`` callback of a container sink: the handler the sink
+    callback would fulfill an action's child slot with, built without applying
+    the action. Must be sync and free of side effects."""
+
+    def __call__(
+        self, context_provider: ContextProvider, action: ActionT_contra, /
+    ) -> TargetHandler[Any, Any, Any]: ...
+
+
 class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     """Applies batches of actions to the external system.
 
@@ -291,6 +301,8 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     @staticmethod
     def from_fn_with_children(
         fn: TargetActionSinkWithChildrenFn[ActionT_contra],
+        *,
+        preview_child: TargetActionSinkPreviewChildFn[ActionT_contra] | None = None,
     ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]":
         """Create a container sink from a sync callback
         ``(context_provider, actions, child_slots)``.
@@ -299,20 +311,39 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
         declared with a child to the :class:`ChildSlot` the callback must
         fulfill; actions without a child (orphan deletes, leaf actions on a
         shared sink) have no entry.
+
+        ``preview_child`` makes the sink usable in preview mode
+        (``app.update(preview=True)``). Preview does not call ``fn``, so it
+        cannot get the child handlers from it; it calls
+        ``preview_child(context_provider, action)`` for each action with a child
+        slot instead, to get the handler ``fn`` would fulfill that slot with.
+        Without it, preview fails for target states declared under this sink's
+        children.
         """
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(
-            core.TargetActionSink.new_sync(canonical, with_children=True)
+            core.TargetActionSink.new_sync(
+                canonical,
+                with_children=True,
+                preview_child=_canonical_preview_child(preview_child),
+            )
         )
 
     @staticmethod
     def from_async_fn_with_children(
         fn: AsyncTargetActionSinkWithChildrenFn[ActionT_contra],
+        *,
+        preview_child: TargetActionSinkPreviewChildFn[ActionT_contra] | None = None,
     ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]":
-        """Async counterpart of :meth:`from_fn_with_children`."""
+        """Async counterpart of :meth:`from_fn_with_children`. ``preview_child``
+        is sync here too."""
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
         return TargetActionSink(
-            core.TargetActionSink.new_async(canonical, with_children=True)
+            core.TargetActionSink.new_async(
+                canonical,
+                with_children=True,
+                preview_child=_canonical_preview_child(preview_child),
+            )
         )
 
 
@@ -410,6 +441,12 @@ class _ObjectDeduper:
 
 _SYNC_FN_DEDUPER = _ObjectDeduper()
 _ASYNC_FN_DEDUPER = _ObjectDeduper()
+# `preview_child` is part of a sink's identity too (see `SinkKeeperKey`).
+_PREVIEW_CHILD_FN_DEDUPER = _ObjectDeduper()
+
+
+def _canonical_preview_child(fn: Any) -> Any:
+    return None if fn is None else _PREVIEW_CHILD_FN_DEDUPER.get_canonical(fn)
 
 
 class TargetReconcileOutput(

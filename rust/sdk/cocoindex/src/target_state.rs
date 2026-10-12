@@ -219,6 +219,9 @@ impl ChildSlot {
 /// clone from each `reconcile`, rather than building one per call.
 pub struct TargetActionSink<A> {
     inner: TargetActionSinkKeeper<RustProfile>,
+    /// What `inner` was built from, kept so [`Self::with_preview_child`] can
+    /// rebuild it.
+    sink: BoxedSink,
     _action: PhantomData<fn() -> A>,
 }
 
@@ -228,6 +231,7 @@ impl<A> Clone for TargetActionSink<A> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            sink: self.sink.clone(),
             _action: PhantomData,
         }
     }
@@ -273,6 +277,27 @@ where
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         Self::from_async_fn_with_children_ctx(move |_host_ctx, actions| f(actions))
+    }
+
+    /// Make this container sink usable in [preview](crate::App::preview) mode.
+    /// Returns a sink of a new identity, so call it where the sink is built.
+    ///
+    /// Preview does not apply the container's actions, so it cannot get the
+    /// child handlers from the apply closure. Instead it calls `f` for each
+    /// action with a child slot, to get the child target definition the apply
+    /// closure would fulfill that slot with. `f` must build it from the action
+    /// alone, free of side effects. Without it, preview fails for target states
+    /// declared under this sink's children.
+    pub fn with_preview_child<F>(self, f: F) -> Self
+    where
+        F: Fn(TargetAction<A>) -> Result<ChildTargetDef> + Send + Sync + 'static,
+    {
+        Self::from_boxed(self.sink.with_preview_child(move |action| {
+            let def = decode_action::<A>(action)
+                .and_then(&f)
+                .map_err(Error::into_core)?;
+            Ok(def.handler)
+        }))
     }
 
     /// Deprecated form of [`Self::from_async_fn_with_children`] taking the
@@ -357,15 +382,19 @@ where
             + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        let inner = TargetActionSinkKeeper::new(BoxedSink::new(move |host_ctx, actions| {
+        Self::from_boxed(BoxedSink::new(move |host_ctx, actions| {
             let fut: SinkFuture = match f(host_ctx, actions) {
                 Ok(fut) => Box::pin(async move { fut.await.map_err(Error::into_core) }),
                 Err(err) => Box::pin(async move { Err(err.into_core()) }),
             };
             fut
-        }));
+        }))
+    }
+
+    fn from_boxed(sink: BoxedSink) -> Self {
         Self {
-            inner,
+            inner: TargetActionSinkKeeper::new(sink.clone()),
+            sink,
             _action: PhantomData,
         }
     }

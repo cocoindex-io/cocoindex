@@ -165,7 +165,22 @@ class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
 
     def __init__(self) -> None:
         self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+            self._apply_actions, preview_child=self._message_handler
+        )
+
+    @staticmethod
+    def _message_handler(
+        context_provider: ContextProvider, action: _TopicAction, /
+    ) -> _MessageHandler:
+        """The message handler for a topic action, which `_apply_actions` fulfills
+        its child slot with (and preview uses as is)."""
+        assert not coco.is_non_existence(action.spec)
+        return _MessageHandler(
+            client=context_provider.get(action.key.client_key, IggyClient),
+            topic=action.key.topic,
+            stream=action.key.stream,
+            partition=action.key.partition,
+            deletion_value_fn=action.spec.deletion_value_fn,
         )
 
     async def _apply_actions(
@@ -178,16 +193,7 @@ class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
         for i, action in enumerate(actions):
             if coco.is_non_existence(action.spec):
                 continue
-            client = context_provider.get(action.key.client_key, IggyClient)
-            child_slots[i].fulfill(
-                _MessageHandler(
-                    client=client,
-                    topic=action.key.topic,
-                    stream=action.key.stream,
-                    partition=action.key.partition,
-                    deletion_value_fn=action.spec.deletion_value_fn,
-                )
-            )
+            child_slots[i].fulfill(self._message_handler(context_provider, action))
 
     def reconcile(
         self,

@@ -1098,6 +1098,20 @@ def _apply_column_actions(
                     raise
 
 
+def _row_handler(
+    context_provider: ContextProvider, action: _TableAction, /
+) -> _RowHandler:
+    """The row handler for a table action, which `_apply_table_actions` fulfills
+    its child slot with (and preview uses as is)."""
+    key = action.key
+    assert not coco.is_non_existence(action.spec)
+    return _RowHandler(
+        managed_conn=context_provider.get(key.db_key, ManagedConnection),
+        table_name=key.table_name,
+        table_schema=action.spec.table_schema,
+    )
+
+
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
@@ -1131,13 +1145,7 @@ def _apply_table_actions(
                 continue
 
             spec = action.spec
-            child_slots[i].fulfill(
-                _RowHandler(
-                    managed_conn=managed_conn,
-                    table_name=key.table_name,
-                    table_schema=spec.table_schema,
-                )
-            )
+            child_slots[i].fulfill(_row_handler(context_provider, action))
 
             if action.main_action in ("insert", "upsert", "replace"):
                 ddl = _generate_create_table_ddl(
@@ -1168,7 +1176,7 @@ def _apply_table_actions(
 
 
 _table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
-    _apply_table_actions
+    _apply_table_actions, preview_child=_row_handler
 )
 
 

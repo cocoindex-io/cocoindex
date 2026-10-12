@@ -4,6 +4,7 @@ Tests cover:
 - _execute_entry_action: file/directory creation, deletion, content writing
 - _get_base_dir_key: base directory key extraction
 - _EntrySpec / _DirSpec: specification construction
+- Preview of directory targets with files in them
 """
 
 from __future__ import annotations
@@ -13,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
+import cocoindex as coco
 from cocoindex._internal.context_keys import ContextKey
+from cocoindex.connectors import localfs
 from cocoindex.connectors.localfs._common import FilePath
 from cocoindex.connectors.localfs._target import (
     _DirSpec,
@@ -22,6 +25,10 @@ from cocoindex.connectors.localfs._target import (
     _execute_entry_action,
     _get_base_dir_key,
 )
+
+from tests import common
+
+coco_env = common.create_test_env(__file__)
 
 
 # =============================================================================
@@ -236,3 +243,56 @@ class TestExecuteEntryAction:
         # Should not raise
         result = _execute_entry_action(target, action)
         assert result is None
+
+
+# =============================================================================
+# Preview
+# =============================================================================
+
+_preview_files: dict[str, str] = {}
+
+
+def _declare_sub_dir(
+    target: localfs.DirTarget[coco.ResolvedS],
+) -> localfs.DirTarget[coco.PendingS]:
+    return target.declare_dir_target("sub")
+
+
+async def _declare_preview_files(outdir: Path) -> None:
+    target = await localfs.mount_dir_target(outdir)
+    sub = await coco.use_mount(coco.component_subpath("sub"), _declare_sub_dir, target)
+    for name, content in _preview_files.items():
+        sub.declare_file(name, content)
+
+
+def test_preview_dir_target(tmp_path: Path) -> None:
+    """Preview plans the directories and their files without writing anything."""
+    outdir = tmp_path / "out"
+    _preview_files.clear()
+    app = coco.App(
+        coco.AppConfig(name="test_preview_dir_target", environment=coco_env),
+        _declare_preview_files,
+        outdir=outdir,
+    )
+
+    # Both directories' actions and one per file; nothing is written.
+    _preview_files.update({"a.txt": "a", "b.txt": "b"})
+    actions = app.update_blocking(preview=True)
+    assert actions is not None and len(actions) == 4
+    assert not outdir.exists()
+
+    app.update_blocking()
+    assert (outdir / "sub" / "a.txt").read_text() == "a"
+    assert (outdir / "sub" / "b.txt").read_text() == "b"
+
+    # Against the applied state: both directories' actions, `a.txt` changed
+    # and `c.txt` added; `b.txt` is unchanged. Nothing is written.
+    _preview_files.update({"a.txt": "a2", "c.txt": "c"})
+    actions = app.update_blocking(preview=True)
+    assert actions is not None and len(actions) == 4
+    assert (outdir / "sub" / "a.txt").read_text() == "a"
+    assert not (outdir / "sub" / "c.txt").exists()
+
+    app.update_blocking()
+    assert (outdir / "sub" / "a.txt").read_text() == "a2"
+    assert (outdir / "sub" / "c.txt").read_text() == "c"

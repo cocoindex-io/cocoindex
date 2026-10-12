@@ -891,11 +891,7 @@ fn namespace_sink() -> TargetActionSink<NamespaceAction> {
                                 conn.delete_namespace(&a.namespace).await?;
                             }
                             if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<Row, _>(RowHandler::new(
-                                    a.conn_key,
-                                    a.namespace,
-                                    a.schema,
-                                )))?;
+                                slot.fulfill(row_child(a))?;
                             }
                         }
                         TargetAction::Delete(a) => {
@@ -910,6 +906,15 @@ fn namespace_sink() -> TargetActionSink<NamespaceAction> {
             }
         },
     )
+    .with_preview_child(|action| match action {
+        TargetAction::Create(a) | TargetAction::Update(a) => Ok(row_child(a)),
+        TargetAction::Delete(_) => Err(Error::engine("a namespace clear has no row child")),
+    })
+}
+
+/// The row handler a namespace's sink fulfills its child slot with.
+fn row_child(a: NamespaceAction) -> ChildTargetDef {
+    ChildTargetDef::new::<Row, _>(RowHandler::new(a.conn_key, a.namespace, a.schema))
 }
 
 // ---------------------------------------------------------------------------

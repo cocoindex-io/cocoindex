@@ -383,7 +383,20 @@ class _NamespaceHandler(
 
     def __init__(self) -> None:
         self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+            self._apply_actions, preview_child=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _NamespaceAction, /
+    ) -> _RowHandler:
+        """The row handler for a namespace action, which `_apply_actions` fulfills
+        its child slot with (and preview uses as is)."""
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            client=context_provider.get(action.key.db_key, AsyncTurbopuffer),
+            namespace_name=action.key.namespace_name,
+            schema=action.spec.schema,
         )
 
     async def _apply_actions(
@@ -407,14 +420,7 @@ class _NamespaceHandler(
             if coco.is_non_existence(action.spec):
                 continue
 
-            spec = action.spec
-            child_slots[i].fulfill(
-                _RowHandler(
-                    client=client,
-                    namespace_name=action.key.namespace_name,
-                    schema=spec.schema,
-                )
-            )
+            child_slots[i].fulfill(self._row_handler(context_provider, action))
 
     def reconcile(
         self,

@@ -365,7 +365,18 @@ class _CollectionHandler(
 
     def __init__(self) -> None:
         self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+            self._apply_actions, preview_child=self._point_handler
+        )
+
+    @staticmethod
+    def _point_handler(
+        context_provider: ContextProvider, action: _CollectionAction, /
+    ) -> _PointHandler:
+        """The point handler for a collection action, which `_apply_actions`
+        fulfills its child slot with (and preview uses as is)."""
+        return _PointHandler(
+            client=context_provider.get(action.key.db_key, QdrantClient),
+            collection_name=action.key.collection_name,
         )
 
     async def _apply_actions(
@@ -397,12 +408,7 @@ class _CollectionHandler(
                     continue
 
                 spec = action.spec
-                child_slots[i].fulfill(
-                    _PointHandler(
-                        client=client,
-                        collection_name=key.collection_name,
-                    )
-                )
+                child_slots[i].fulfill(self._point_handler(context_provider, action))
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     await self._create_collection(

@@ -1161,6 +1161,52 @@ async def test_postgres_delete_rows_with_composite_key(pg_env: _PgEnv) -> None:
         await _drop_table(pool, table_name)
 
 
+@pytest.mark.asyncio
+async def test_postgres_preview_rows(pg_env: _PgEnv) -> None:
+    """Preview plans the table and its rows without creating either."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_preview")
+    schema = await postgres.TableSchema.from_class(TextRow, primary_key=["id"])
+    rows = [TextRow(id="1", content="one"), TextRow(id="2", content="two")]
+
+    async def declare_fn() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            postgres.declare_table_target,
+            _PG_DB_KEY,
+            table_name,
+            schema,
+        )
+        for row in rows:
+            table.declare_row(row=row)
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_preview_{table_name}", environment=pg_env.coco_env),
+        declare_fn,
+    )
+    try:
+        # The table's action and one per row; nothing is created.
+        actions = await app.update(preview=True)
+        assert len(actions) == 3
+        assert not await _table_exists(pool, table_name)
+
+        await app.update()
+        assert await _row_count(pool, table_name) == 2
+
+        # Against the applied state: the table's action, row 2 changed and
+        # row 3 added; row 1 is unchanged. Nothing is applied.
+        rows = [
+            TextRow(id="1", content="one"),
+            TextRow(id="2", content="two-updated"),
+            TextRow(id="3", content="three"),
+        ]
+        actions = await app.update(preview=True)
+        assert len(actions) == 3
+        assert await _row_count(pool, table_name) == 2
+    finally:
+        await _drop_table(pool, table_name)
+
+
 def _row_handler(
     pool: "asyncpg.Pool", table_name: str, schema: "postgres.TableSchema[Any]"
 ) -> Any:

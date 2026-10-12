@@ -749,7 +749,23 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
     def __init__(self) -> None:
         self._sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
-            self._apply_actions
+            self._apply_actions, preview_child=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RowHandler:
+        """The row handler for a table action, which `_apply_actions` fulfills
+        its child slot with (and preview uses as is)."""
+        key = action.key
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            db_key=key.db_key,
+            project=key.project,
+            dataset=key.dataset,
+            table_name=key.table_name,
+            table_schema=action.spec.table_schema,
         )
 
     def _apply_actions(
@@ -778,15 +794,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         continue
 
                     spec = action.spec
-                    child_slots[i].fulfill(
-                        _RowHandler(
-                            db_key=key.db_key,
-                            project=key.project,
-                            dataset=key.dataset,
-                            table_name=key.table_name,
-                            table_schema=spec.table_schema,
-                        )
-                    )
+                    child_slots[i].fulfill(self._row_handler(context_provider, action))
 
                     if action.main_action in ("insert", "upsert", "replace"):
                         _create_table(

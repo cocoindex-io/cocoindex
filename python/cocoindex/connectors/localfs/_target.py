@@ -87,6 +87,24 @@ def _execute_entry_action(
     return path
 
 
+def _entry_path(
+    context_provider: ContextProvider, action: _EntryAction
+) -> pathlib.Path:
+    """The absolute path an entry action applies to."""
+    if action.base_dir_key is not None:
+        base = context_provider.get(action.base_dir_key, pathlib.Path)
+        return (base / action.path).resolve()
+    return pathlib.Path(action.path)  # already absolute
+
+
+def _preview_dir_entry_handler(
+    context_provider: ContextProvider, action: _EntryAction, /
+) -> _EntryHandler:
+    """The handler `_apply_actions_with_child` fulfills a created directory's
+    child slot with (its path), computed without modifying the filesystem."""
+    return _EntryHandler(_entry_path(context_provider, action))
+
+
 def _apply_actions_with_child(
     context_provider: ContextProvider,
     actions: Sequence[_EntryAction],
@@ -99,11 +117,7 @@ def _apply_actions_with_child(
     directory creates do.
     """
     for i, action in enumerate(actions):
-        if action.base_dir_key is not None:
-            base = context_provider.get(action.base_dir_key, pathlib.Path)
-            path = (base / action.path).resolve()
-        else:
-            path = pathlib.Path(action.path)  # already absolute
+        path = _entry_path(context_provider, action)
         result_path = _execute_entry_action(path, action)
         if result_path is not None:
             child_slots[i].fulfill(_EntryHandler(result_path))
@@ -111,7 +125,7 @@ def _apply_actions_with_child(
 
 # Shared action sink
 _action_sink_with_child = coco.TargetActionSink[_EntryAction].from_fn_with_children(
-    _apply_actions_with_child
+    _apply_actions_with_child, preview_child=_preview_dir_entry_handler
 )
 
 

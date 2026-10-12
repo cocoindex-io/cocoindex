@@ -294,6 +294,7 @@ impl<V: LiveMapValue> TargetHandler<ContainerSpec> for ContainerHandler<V> {
 impl<V: LiveMapValue> ContainerHandler<V> {
     fn sink(&self) -> TargetActionSink<ContainerAction> {
         let inner = self.inner.clone();
+        let preview_inner = self.inner.clone();
         TargetActionSink::from_async_fn_with_children(
             move |actions: Vec<(TargetAction<ContainerAction>, Option<ChildSlot>)>| {
                 let inner = inner.clone();
@@ -308,16 +309,30 @@ impl<V: LiveMapValue> ContainerHandler<V> {
                             continue;
                         }
                         if let Some(slot) = child_slot {
-                            slot.fulfill(ChildTargetDef::new::<V, _>(EntryHandler {
-                                inner: inner.clone(),
-                            }))?;
+                            slot.fulfill(entry_child(&inner))?;
                         }
                     }
                     Ok(())
                 }
             },
         )
+        .with_preview_child(move |action| {
+            let a = match action {
+                TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => a,
+            };
+            if a.deleted {
+                return Err(Error::engine("a deleted LiveMap has no entry child"));
+            }
+            Ok(entry_child(&preview_inner))
+        })
     }
+}
+
+/// The entry handler a LiveMap container's sink fulfills its child slot with.
+fn entry_child<V: LiveMapValue>(inner: &Arc<LiveMapInner<V>>) -> ChildTargetDef {
+    ChildTargetDef::new::<V, _>(EntryHandler {
+        inner: inner.clone(),
+    })
 }
 
 struct EntryHandler<V> {

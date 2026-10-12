@@ -1284,6 +1284,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                 })
                 .await?;
 
+                // Preview applies nothing, so it must store no memo either: a
+                // later real update would reuse it and skip declaring this
+                // component's target states.
+                let memo_fp_to_store = memo_fp_to_store.filter(|_| !processor_context.preview());
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {
@@ -1508,13 +1512,14 @@ mod tests {
     };
     use crate::engine::environment::Environment;
     use crate::engine::execution::{
-        declare_target_state, register_root_target_state_provider, submit,
+        declare_target_state, declare_target_state_with_child, register_root_target_state_provider,
+        submit,
     };
     use crate::engine::profile::{EngineProfile, Persist};
     use crate::engine::stats::ProcessingStats;
     use crate::engine::target_state::{
         TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot, TargetHandler,
-        TargetReconcileOutput, TargetStateProviderRegistry,
+        TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
     };
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
@@ -1600,7 +1605,33 @@ mod tests {
         }
     }
 
-    struct NoopSink;
+    /// Applies nothing but counts its `apply` calls. With
+    /// `child_reconcile_calls`, it fulfills every child slot — in `apply` and
+    /// in `preview_children` alike — with a `CountingHandler` counting into it.
+    #[derive(Default)]
+    struct NoopSink {
+        apply_calls: Arc<AtomicUsize>,
+        child_reconcile_calls: Option<Arc<AtomicUsize>>,
+    }
+
+    impl NoopSink {
+        fn fulfill_children(
+            &self,
+            actions: &[TargetActionWithChildSlot<TestProfile>],
+        ) -> crate::prelude::Result<()> {
+            let Some(child_reconcile_calls) = &self.child_reconcile_calls else {
+                return Ok(());
+            };
+            for slot in actions.iter().filter_map(|(_, slot)| slot.as_ref()) {
+                slot.fulfill(CountingHandler {
+                    reconcile_calls: child_reconcile_calls.clone(),
+                    sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                    reject: false,
+                })?;
+            }
+            Ok(())
+        }
+    }
 
     #[async_trait]
     impl TargetActionSink<TestProfile> for NoopSink {
@@ -1608,9 +1639,19 @@ mod tests {
             &self,
             _host_runtime_ctx: &(),
             _host_ctx: Arc<()>,
-            _actions: &[TargetActionWithChildSlot<TestProfile>],
+            actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
-            Ok(())
+            self.apply_calls.fetch_add(1, Ordering::SeqCst);
+            self.fulfill_children(actions)
+        }
+
+        async fn preview_children(
+            &self,
+            _host_runtime_ctx: &(),
+            _host_ctx: Arc<()>,
+            actions: &[TargetActionWithChildSlot<TestProfile>],
+        ) -> crate::prelude::Result<()> {
+            self.fulfill_children(actions)
         }
     }
 
@@ -2540,7 +2581,7 @@ mod tests {
             "preview_batch_rerun".to_string(),
             CountingHandler {
                 reconcile_calls: reconcile_calls.clone(),
-                sink: TargetActionSinkKeeper::new(NoopSink),
+                sink: TargetActionSinkKeeper::new(NoopSink::default()),
                 reject: false,
             },
         )
@@ -2591,6 +2632,154 @@ mod tests {
         assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
     }
 
+    /// A root in the `mount_target` shape: a child component declares one
+    /// container target state, routed to `container_sink`, and the root then
+    /// declares `num_rows` target states under the container's child provider.
+    fn container_root(
+        container_sink: TargetActionSinkKeeper<TestProfile>,
+        num_rows: i64,
+    ) -> TestProcessor {
+        let new_processor = |name: &str| {
+            TestProcessor::new(
+                name,
+                Fingerprint::from(&format!("container_root/{name}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+        };
+        let table_processor = Mutex::new(Some({
+            let child_provider: Arc<Mutex<Option<TargetStateProvider<TestProfile>>>> =
+                Default::default();
+            let processor = new_processor("table").with_on_process(Arc::new({
+                let child_provider = child_provider.clone();
+                move |ctx| {
+                    let child_provider = child_provider.clone();
+                    let container_sink = container_sink.clone();
+                    Box::pin(async move {
+                        let tables = register_root_target_state_provider(
+                            &ctx,
+                            "tables".to_string(),
+                            CountingHandler {
+                                reconcile_calls: Arc::new(AtomicUsize::new(0)),
+                                sink: container_sink,
+                                reject: false,
+                            },
+                        )?;
+                        *child_provider.lock().unwrap() = Some(declare_target_state_with_child(
+                            &ctx,
+                            &FnCallContext::default(),
+                            tables,
+                            StableKey::Str(Arc::from("table")),
+                            (),
+                        )?);
+                        Ok(TestData(b"table".to_vec()))
+                    })
+                }
+            }));
+            (processor, child_provider)
+        }));
+        new_processor("root").with_on_process(Arc::new(move |ctx| {
+            let (table_processor, child_provider) = table_processor.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                let table = ctx.component().mount_child(
+                    &FnCallContext::new(true),
+                    key_path(ctx.component(), "table"),
+                )?;
+                table
+                    .use_mount(&ctx, table_processor, DeadlineContext::NONE)
+                    .await?
+                    .result(Some(&ctx))
+                    .await?;
+                let rows = child_provider.lock().unwrap().take().unwrap();
+                for i in 0..num_rows {
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        rows.clone(),
+                        StableKey::Int(i),
+                        (),
+                    )?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// Preview readies a container's child provider through its sink's
+    /// `preview_children`, without applying the container's action, so the
+    /// target states declared under it are previewed too.
+    #[tokio::test]
+    async fn preview_collects_actions_under_a_child_provider() {
+        const NUM_ROWS: i64 = 3;
+        let (app, _dir) = test_app("preview_child_provider").await;
+        let child_reconcile_calls = Arc::new(AtomicUsize::new(0));
+        let container_apply_calls = Arc::new(AtomicUsize::new(0));
+        let container_sink = TargetActionSinkKeeper::new(NoopSink {
+            apply_calls: container_apply_calls.clone(),
+            child_reconcile_calls: Some(child_reconcile_calls.clone()),
+        });
+
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let (handle, _) = app
+            .update(
+                container_root(container_sink.clone(), NUM_ROWS),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(collector.clone()),
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(
+            collector.lock().unwrap().len(),
+            1 + NUM_ROWS as usize,
+            "the container's action and one per row"
+        );
+        assert_eq!(
+            child_reconcile_calls.load(Ordering::SeqCst),
+            NUM_ROWS as usize
+        );
+        assert_eq!(
+            container_apply_calls.load(Ordering::SeqCst),
+            0,
+            "preview must not apply the container's action"
+        );
+
+        // A real update afterwards applies it.
+        let (handle, _) = app
+            .update(
+                container_root(container_sink, NUM_ROWS),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A sink that fulfills no child slot in `preview_children` (the default)
+    /// fails the preview with an error naming the unsupported case.
+    #[tokio::test]
+    async fn preview_fails_for_a_sink_without_child_preview() {
+        let (app, _dir) = test_app("preview_child_provider_unsupported").await;
+        let (handle, _) = app
+            .update(
+                container_root(TargetActionSinkKeeper::new(NoopSink::default()), 1),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(PreviewActionCollector::<TestProfile>::default()),
+            )
+            .unwrap();
+        let Err(err) = handle.result().await else {
+            panic!("preview must fail when the sink cannot preview child target states");
+        };
+        assert!(
+            err.to_string()
+                .contains("does not support preview of child target states"),
+            "unexpected error: {err}"
+        );
+    }
+
     /// Precommits that share a write batch fail independently, even across
     /// apps sharing the environment: a target handler rejecting one
     /// component's target state fails that component's submit alone.
@@ -2622,7 +2811,7 @@ mod tests {
                 "target".to_string(),
                 CountingHandler {
                     reconcile_calls: reconcile_calls.clone(),
-                    sink: TargetActionSinkKeeper::new(NoopSink),
+                    sink: TargetActionSinkKeeper::new(NoopSink::default()),
                     reject,
                 },
             )

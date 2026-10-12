@@ -261,6 +261,80 @@ async fn postgres_table_target_reconciles_rows_when_available() -> Result<()> {
     Ok(())
 }
 
+/// Preview plans the table and its rows without creating either.
+#[tokio::test]
+async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres target test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_preview_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?
+        .app("PostgresTargetPreviewTest")
+        .await?;
+    let rows = |labels: &[(i64, &str)]| {
+        labels
+            .iter()
+            .map(|(id, label)| TestRow {
+                id: *id,
+                label: label.to_string(),
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // The table and both rows would be written (the connector plans every
+    // write as an upsert); nothing is.
+    let actions = app
+        .preview({
+            let schema = schema.clone();
+            let rows = rows(&[(1, "one"), (2, "two")]);
+            move |ctx| declare_rows(ctx, schema, rows)
+        })
+        .await?;
+    assert_eq!(actions.len(), 3);
+    assert!(!table_exists(&db, &schema, "rows").await?);
+
+    app.run({
+        let schema = schema.clone();
+        let rows = rows(&[(1, "one"), (2, "two")]);
+        move |ctx| declare_rows(ctx, schema, rows)
+    })
+    .await?;
+
+    // Against the applied state: the table's (always emitted) action, row 2
+    // updated, row 3 created; row 1 unchanged. Nothing is applied.
+    let actions = app
+        .preview({
+            let schema = schema.clone();
+            let rows = rows(&[(1, "one"), (2, "two-updated"), (3, "three")]);
+            move |ctx| declare_rows(ctx, schema, rows)
+        })
+        .await?;
+    assert_eq!(actions.len(), 3);
+    let row_count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM \"{schema}\".\"rows\""))
+        .fetch_one(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres count: {e}")))?;
+    assert_eq!(row_count, 2);
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn postgres_sql_command_attachment_runs_setup_and_teardown_when_available() -> Result<()> {
     let Ok(url) = std::env::var("POSTGRES_URL") else {

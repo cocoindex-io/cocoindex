@@ -874,6 +874,21 @@ def _apply_column_actions(
             continue
 
 
+def _row_handler(
+    context_provider: ContextProvider, action: _TableAction, /
+) -> _RowHandler:
+    """The row handler for a table action, which `_apply_table_actions` fulfills
+    its child slot with (and preview uses as is)."""
+    key = action.key
+    assert not coco.is_non_existence(action.spec)
+    return _RowHandler(
+        managed_conn=context_provider.get(key.db_key, ManagedConnection),
+        table_name=key.table_name,
+        table_schema=action.spec.table_schema,
+        is_virtual_table=(action.spec.virtual_table_def is not None),
+    )
+
+
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
@@ -922,14 +937,7 @@ def _apply_table_actions(
                     continue
 
                 spec = action.spec
-                child_slots[i].fulfill(
-                    _RowHandler(
-                        managed_conn=managed_conn,
-                        table_name=key.table_name,
-                        table_schema=spec.table_schema,
-                        is_virtual_table=(spec.virtual_table_def is not None),
-                    )
-                )
+                child_slots[i].fulfill(_row_handler(context_provider, action))
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     # Route to virtual or regular table creation
@@ -969,7 +977,7 @@ def _apply_table_actions(
 
 # Shared action sink for table-level actions
 _table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
-    _apply_table_actions
+    _apply_table_actions, preview_child=_row_handler
 )
 
 

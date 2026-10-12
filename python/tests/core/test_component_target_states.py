@@ -1359,24 +1359,47 @@ def test_mount_target_delete() -> None:
 
 
 ##################################################################################
-# Test: preview rejects child target providers
+# Test: preview of target states under child target providers
 ##################################################################################
 
 
-def test_preview_rejects_child_target_providers() -> None:
+def test_preview_child_target_providers() -> None:
     DictsTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         coco.AppConfig(
-            name="test_preview_rejects_child_target_providers", environment=coco_env
+            name="test_preview_child_target_providers", environment=coco_env
         ),
         _declare_dicts_data_together,
     )
 
-    _source_data["D1"] = {"a": 1}
-    with pytest.raises(Exception, match="child target providers"):
-        app.update_blocking(preview=True)
+    # The container's action and one per entry; nothing applied.
+    _source_data["D1"] = {"a": 1, "b": 2}
+    actions = app.update_blocking(preview=True)
+    assert actions is not None and len(actions) == 3
+    assert DictsTarget.store.data == {}
+    assert DictsTarget.store.metrics.collect() == {}
+
+    # A real update afterwards applies all of it.
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    DictsTarget.store.metrics.clear()
+
+    # The next preview plans the entries against what is now tracked: the
+    # container's (no-op) action, `b` updated and `c` inserted, `a` unchanged.
+    _source_data["D1"] = {"a": 1, "b": 3, "c": 4}
+    actions = app.update_blocking(preview=True)
+    assert actions is not None and len(actions) == 3
+    assert DictsTarget.store.data["D1"]["b"].data == 2
+    assert "c" not in DictsTarget.store.data["D1"]
+    assert DictsTarget.store.metrics.collect() == {}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
 
 ##################################################################################

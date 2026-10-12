@@ -229,10 +229,28 @@ class DictsTargetStateStore(coco.TargetHandler[None, None, DictTargetStateStore]
         self._lock = threading.Lock()
         self._use_async = use_async
         self._action_sink = (
-            coco.TargetActionSink.from_async_fn_with_children(self._async_sink)
+            coco.TargetActionSink.from_async_fn_with_children(
+                self._async_sink, preview_child=self._preview_child
+            )
             if use_async
-            else coco.TargetActionSink.from_fn_with_children(self._sink)
+            else coco.TargetActionSink.from_fn_with_children(
+                self._sink, preview_child=self._preview_child
+            )
         )
+
+    def _preview_child(
+        self,
+        context_provider: coco.ContextProvider,
+        action: _DictTargetStateStoreAction,
+        /,
+    ) -> DictTargetStateStore:
+        """The store `_sink` would fulfill the action's slot with, without
+        creating or replacing it: a fresh, unregistered one where `_sink` would
+        create one."""
+        existing = self._stores.get(action.name)
+        if existing is not None and not action.destructive:
+            return existing
+        return DictTargetStateStore(use_async=self._use_async)
 
     def _sink(
         self,

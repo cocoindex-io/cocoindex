@@ -650,7 +650,8 @@ fn table_sink() -> TargetActionSink<TableAction> {
                     }
                 };
                 let db = resolve_db(&host_ctx, &a.db_key)?;
-                let child = apply_table_action(&db, a).await?;
+                let child = row_child(&a);
+                apply_table_action(&db, a).await?;
                 if let (Some(slot), Some(child)) = (child_slot, child) {
                     slot.fulfill(child)?;
                 }
@@ -658,6 +659,23 @@ fn table_sink() -> TargetActionSink<TableAction> {
             Ok(())
         },
     )
+    .with_preview_child(|action| {
+        let a = match action {
+            TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => a,
+        };
+        row_child(&a).ok_or_else(|| Error::engine("a table drop has no row child"))
+    })
+}
+
+/// The row handler a table action's child slot is fulfilled with (`None` for
+/// a drop, which has no rows).
+fn row_child(action: &TableAction) -> Option<ChildTargetDef> {
+    let spec = action.spec.clone()?;
+    Some(ChildTargetDef::new::<RowState, _>(RowHandler {
+        sink: SinkCache::default(),
+        db_key: action.db_key.clone(),
+        spec,
+    }))
 }
 
 /// Resolve the live SQLite [`Database`] from the host context by its stable
@@ -674,12 +692,11 @@ fn resolve_db(
     })
 }
 
-/// Apply one resolved table action and return the row child handler
-/// definition (`None` for a drop), which the sink uses to fulfill the
-/// action's child slot. Mirrors Python's `_apply_table_actions` decision tree.
-async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option<ChildTargetDef>> {
+/// Apply one resolved table action. Mirrors Python's `_apply_table_actions`
+/// decision tree.
+async fn apply_table_action(db: &Database, action: TableAction) -> Result<()> {
     let TableAction {
-        db_key,
+        db_key: _,
         table_name,
         spec,
         mut main_action,
@@ -706,8 +723,8 @@ async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option
     }
 
     let Some(spec) = spec else {
-        // Pure drop — no row child to provide.
-        return Ok(None);
+        // Pure drop.
+        return Ok(());
     };
 
     if matches!(
@@ -725,12 +742,7 @@ async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option
         // (Virtual tables never reach here — upgraded to Replace above.)
         apply_column_actions(db, &spec, &column_actions).await?;
     }
-
-    Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        sink: SinkCache::default(),
-        db_key,
-        spec,
-    })))
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

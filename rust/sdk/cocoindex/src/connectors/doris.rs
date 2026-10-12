@@ -915,7 +915,8 @@ fn table_sink() -> TargetActionSink<TableAction> {
                     }
                 };
                 let conn = resolve_conn(&host_ctx, &a.conn_key)?;
-                let child = apply_table_action(&conn, a).await?;
+                let child = row_child(&a);
+                apply_table_action(&conn, a).await?;
                 if let (Some(slot), Some(child)) = (child_slot, child) {
                     slot.fulfill(child)?;
                 }
@@ -923,17 +924,29 @@ fn table_sink() -> TargetActionSink<TableAction> {
             Ok(())
         },
     )
+    .with_preview_child(|action| {
+        let a = match action {
+            TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => a,
+        };
+        row_child(&a).ok_or_else(|| Error::engine("a table drop has no row child"))
+    })
 }
 
-/// Apply one resolved table action and return the row child handler
-/// definition (`None` for a drop), which the sink uses to fulfill the
-/// action's child slot. Mirrors Python's `_apply_table_actions`.
-async fn apply_table_action(
-    conn: &DorisConnection,
-    action: TableAction,
-) -> Result<Option<ChildTargetDef>> {
+/// The row handler a table action's child slot is fulfilled with (`None` for
+/// a drop, which has no rows).
+fn row_child(action: &TableAction) -> Option<ChildTargetDef> {
+    let spec = action.spec.clone()?;
+    Some(ChildTargetDef::new::<RowState, _>(RowHandler {
+        sink: SinkCache::default(),
+        conn_key: action.conn_key.clone(),
+        spec,
+    }))
+}
+
+/// Apply one resolved table action. Mirrors Python's `_apply_table_actions`.
+async fn apply_table_action(conn: &DorisConnection, action: TableAction) -> Result<()> {
     let TableAction {
-        conn_key,
+        conn_key: _,
         spec,
         drop,
         main_action,
@@ -954,7 +967,7 @@ async fn apply_table_action(
     }
 
     let Some(spec) = spec else {
-        return Ok(None);
+        return Ok(());
     };
 
     if matches!(
@@ -969,12 +982,7 @@ async fn apply_table_action(
     if matches!(main_action, None | Some(DiffAction::Upsert)) && !column_actions.is_empty() {
         apply_column_actions(conn, &spec, &column_actions).await?;
     }
-
-    Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        sink: SinkCache::default(),
-        conn_key,
-        spec,
-    })))
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

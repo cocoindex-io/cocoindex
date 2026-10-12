@@ -756,11 +756,7 @@ fn table_sink() -> TargetActionSink<TableAction> {
                             null_backfilled_columns = ensure_table(&db, &spec, a.recreate).await?;
                         }
                         if let Some(slot) = child_slot {
-                            slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler::new(
-                                a.db_key,
-                                spec,
-                                null_backfilled_columns,
-                            )))?;
+                            slot.fulfill(row_child(a.db_key, spec, null_backfilled_columns))?;
                         }
                     }
                     TargetAction::Delete(a) => {
@@ -772,6 +768,27 @@ fn table_sink() -> TargetActionSink<TableAction> {
             Ok(())
         },
     )
+    .with_preview_child(|action| match action {
+        TargetAction::Create(a) | TargetAction::Update(a) => {
+            let spec = a
+                .spec
+                .ok_or_else(|| Error::engine("LanceDB create/update action missing spec"))?;
+            // Only evolving the table computes the null-backfilled columns, so
+            // preview may show a full row write where apply would only advance
+            // the row's tracking.
+            Ok(row_child(a.db_key, spec, HashSet::new()))
+        }
+        TargetAction::Delete(_) => Err(Error::engine("a table drop has no row child")),
+    })
+}
+
+/// The row handler a table's sink fulfills its child slot with.
+fn row_child(
+    db_key: String,
+    spec: TableSpec,
+    null_backfilled_columns: HashSet<String>,
+) -> ChildTargetDef {
+    ChildTargetDef::new::<RowState, _>(RowHandler::new(db_key, spec, null_backfilled_columns))
 }
 
 async fn table_exists(db: &LanceDatabase, table_name: &str) -> Result<bool> {

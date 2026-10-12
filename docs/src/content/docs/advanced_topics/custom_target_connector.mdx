@@ -432,6 +432,24 @@ _dir_sink = coco.TargetActionSink.from_fn_with_children(_apply_dir_actions)
 
 Every slot must be fulfilled exactly once before the sink returns; an unfulfilled slot fails the commit. Because each slot is tied to its action by CocoIndex, a handler can never be attached to the wrong target state. Actions without a child provider — orphan deletes, or leaf actions when one sink is shared between a container and its children — have no entry in `child_slots`, so a batch of leaf actions costs nothing extra.
 
+### Support preview
+
+Preview (`app.update(preview=True)`, `cocoindex update --preview`) computes the actions without applying them, so it never calls the parent's sink and gets no child handlers from it. To preview the child target states too, pass `preview_child` when you build the sink. It is a sync function `(context_provider, action) -> child handler` that returns the handler the sink would fulfill that action's slot with, built from the action alone, with no side effects:
+
+```python
+def _entry_handler(
+    context_provider: coco.ContextProvider, action: _DirAction
+) -> _EntryHandler:
+    return _EntryHandler(action.path)
+
+
+_dir_sink = coco.TargetActionSink.from_fn_with_children(
+    _apply_dir_actions, preview_child=_entry_handler
+)
+```
+
+Let the sink call the same function to fulfill its slots, so both modes build the handler in one place. Without `preview_child`, a preview fails for the target states declared under the container.
+
 ### Step 3: Create user-facing API
 
 The user-facing API uses `declare_target_state_with_child()` and exposes methods for declaring children:

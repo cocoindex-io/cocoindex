@@ -35,6 +35,10 @@ pub struct PyTargetActionSinkInner {
     /// Whether the callback takes the child-slot mapping as its third argument
     /// (`from_fn_with_children` / `from_async_fn_with_children`).
     with_children: bool,
+    /// Sync `(context_provider, action) -> handler`: the child handler the
+    /// callback would fulfill an action's child slot with, built for preview
+    /// without applying the action.
+    preview_child: Option<Py<PyAny>>,
 }
 
 /// Interns sink keepers by callback object and calling convention, so that
@@ -61,6 +65,17 @@ struct SinkKeeperRegistry {
 struct SinkKeeperKey {
     callback_ptr: usize,
     with_children: bool,
+    preview_child_ptr: Option<usize>,
+}
+
+impl SinkKeeperKey {
+    fn new(callback: &Py<PyAny>, with_children: bool, preview_child: Option<&Py<PyAny>>) -> Self {
+        Self {
+            callback_ptr: callback.as_ptr() as usize,
+            with_children,
+            preview_child_ptr: preview_child.map(|f| f.as_ptr() as usize),
+        }
+    }
 }
 
 const SINK_REGISTRY_MIN_PRUNE_AT: usize = 64;
@@ -104,11 +119,13 @@ static ASYNC_SINK_REGISTRY: LazyLock<Mutex<SinkKeeperRegistry>> =
 #[pymethods]
 impl PyTargetActionSink {
     #[staticmethod]
-    pub fn new_sync(callback: Py<PyAny>, with_children: bool) -> Self {
-        let key = SinkKeeperKey {
-            callback_ptr: callback.as_ptr() as usize,
-            with_children,
-        };
+    #[pyo3(signature = (callback, with_children, preview_child=None))]
+    pub fn new_sync(
+        callback: Py<PyAny>,
+        with_children: bool,
+        preview_child: Option<Py<PyAny>>,
+    ) -> Self {
+        let key = SinkKeeperKey::new(&callback, with_children, preview_child.as_ref());
         let keeper =
             SYNC_SINK_REGISTRY
                 .lock()
@@ -116,16 +133,19 @@ impl PyTargetActionSink {
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Sync(Arc::new(callback)),
                     with_children,
+                    preview_child,
                 });
         Self { keeper }
     }
 
     #[staticmethod]
-    pub fn new_async(callback: Py<PyAny>, with_children: bool) -> Self {
-        let key = SinkKeeperKey {
-            callback_ptr: callback.as_ptr() as usize,
-            with_children,
-        };
+    #[pyo3(signature = (callback, with_children, preview_child=None))]
+    pub fn new_async(
+        callback: Py<PyAny>,
+        with_children: bool,
+        preview_child: Option<Py<PyAny>>,
+    ) -> Self {
+        let key = SinkKeeperKey::new(&callback, with_children, preview_child.as_ref());
         let keeper =
             ASYNC_SINK_REGISTRY
                 .lock()
@@ -133,6 +153,7 @@ impl PyTargetActionSink {
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Async(Arc::new(callback)),
                     with_children,
+                    preview_child,
                 });
         Self { keeper }
     }
@@ -218,6 +239,39 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
             })?;
         }
         Ok(())
+    }
+
+    async fn preview_children(
+        &self,
+        _host_runtime_ctx: &PyAsyncContext,
+        host_ctx: Arc<Py<PyAny>>,
+        actions: &[TargetActionWithChildSlot<PyEngineProfile>],
+    ) -> Result<()> {
+        // Without a `preview_child` the slots stay unfulfilled, which the
+        // engine reports as a sink that cannot preview child target states.
+        let Some(preview_child) = &self.preview_child else {
+            return Ok(());
+        };
+        Python::attach(|py| {
+            let context_provider = host_ctx.as_ref().bind(py);
+            let wrap = &python_objects().child_slot_wrapper_fn;
+            for (action, slot) in actions {
+                let Some(slot) = slot else {
+                    continue;
+                };
+                let action = action.to_object(py).from_py_result()?;
+                let handler = preview_child
+                    .call1(py, (context_provider, action))
+                    .from_py_result()?;
+                // Route through the Python `ChildSlot` so the handler gets its
+                // typed-deserialization wrapper, as in `apply`.
+                wrap.call1(py, (PyChildTargetSlot(slot.clone()),))
+                    .from_py_result()?
+                    .call_method1(py, "fulfill", (handler,))
+                    .from_py_result()?;
+            }
+            Ok(())
+        })
     }
 }
 

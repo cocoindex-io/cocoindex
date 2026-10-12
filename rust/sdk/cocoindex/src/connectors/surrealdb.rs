@@ -1216,13 +1216,7 @@ fn table_sink() -> TargetActionSink<TableAction> {
                                 .await?;
                             }
                             if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<RecordState, _>(
-                                    RecordHandler {
-                                        sink: SinkCache::default(),
-                                        graph_key: a.graph_key,
-                                        spec,
-                                    },
-                                ))?;
+                                slot.fulfill(record_child(a.graph_key, spec))?;
                             }
                         }
                         TargetAction::Delete(a) => {
@@ -1237,6 +1231,24 @@ fn table_sink() -> TargetActionSink<TableAction> {
             }
         },
     )
+    .with_preview_child(|action| match action {
+        TargetAction::Create(a) | TargetAction::Update(a) => {
+            let spec = a
+                .spec
+                .ok_or_else(|| Error::engine("SurrealDB table action missing spec"))?;
+            Ok(record_child(a.graph_key, spec))
+        }
+        TargetAction::Delete(_) => Err(Error::engine("a table drop has no record child")),
+    })
+}
+
+/// The record handler a table's sink fulfills its child slot with.
+fn record_child(graph_key: String, spec: TableSpec) -> ChildTargetDef {
+    ChildTargetDef::new::<RecordState, _>(RecordHandler {
+        sink: SinkCache::default(),
+        graph_key,
+        spec,
+    })
 }
 
 // ---------------------------------------------------------------------------

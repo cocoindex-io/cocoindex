@@ -121,6 +121,20 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
         host_ctx: Arc<Prof::HostCtx>,
         actions: &[TargetActionWithChildSlot<Prof>],
     ) -> Result<()>;
+
+    /// Preview mode: fulfill the child slots of `actions` as [`Self::apply`]
+    /// would, without applying the actions. Must be free of side effects.
+    ///
+    /// The default fulfills none, so preview fails for a component whose
+    /// actions have child slots on this sink.
+    async fn preview_children(
+        &self,
+        _host_runtime_ctx: &Prof::HostRuntimeCtx,
+        _host_ctx: Arc<Prof::HostCtx>,
+        _actions: &[TargetActionWithChildSlot<Prof>],
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Cloneable handle to a target action sink and its per-sink batcher.
@@ -130,6 +144,7 @@ pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
 }
 
 struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
+    sink: Arc<Prof::TargetActionSink>,
     batcher: Batcher<TargetActionRunner<Prof>>,
 }
 
@@ -138,6 +153,7 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         let sink = Arc::new(sink);
         Self {
             inner: Arc::new(TargetActionSinkKeeperInner {
+                sink: Arc::clone(&sink),
                 batcher: Batcher::new(
                     TargetActionRunner { sink },
                     Arc::new(BatchQueue::new()),
@@ -145,6 +161,20 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
                 ),
             }),
         }
+    }
+
+    /// See [`TargetActionSink::preview_children`]. Not batched: nothing is
+    /// applied, so there is no sink call to share.
+    pub async fn preview_children(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: &[TargetActionWithChildSlot<Prof>],
+    ) -> Result<()> {
+        self.inner
+            .sink
+            .preview_children(host_runtime_ctx, host_ctx, actions)
+            .await
     }
 
     pub async fn apply(

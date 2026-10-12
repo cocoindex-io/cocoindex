@@ -1158,45 +1158,58 @@ fn table_sink<C: CypherExecutor>() -> TargetActionSink<TableAction> {
     TargetActionSink::from_async_fn_with_children_ctx(
         |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
             for (action, child_slot) in actions {
+                let child = record_child::<C>(&action);
                 let (is_delete, action) = match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => (false, a),
                     TargetAction::Delete(a) => (true, a),
                 };
                 let graph = resolve_graph::<C>(&host_ctx, &action.graph_key)?;
-                // The spec of the table that exists after the action, i.e. the
-                // one the child record handler should target.
-                let spec = match (is_delete, action.op) {
+                match (is_delete, action.op) {
                     (false, TableOp::Ensure(spec)) => {
                         ensure_table(graph.as_ref(), &spec).await?;
-                        Some(spec)
                     }
                     (false, TableOp::Replace { prev, next }) => {
                         drop_table(graph.as_ref(), &prev).await?;
                         ensure_table(graph.as_ref(), &next).await?;
-                        Some(next)
                     }
                     (true, TableOp::Ensure(spec)) | (_, TableOp::Drop(spec)) => {
                         drop_table(graph.as_ref(), &spec).await?;
-                        None
                     }
                     (true, TableOp::Replace { prev, next }) => {
                         drop_table(graph.as_ref(), &prev).await?;
                         drop_table(graph.as_ref(), &next).await?;
-                        None
                     }
-                };
-                if let (Some(slot), Some(spec)) = (child_slot, spec) {
-                    slot.fulfill(ChildTargetDef::new::<RecordState, _>(RecordHandler::<C> {
-                        sink: SinkCache::default(),
-                        graph_key: action.graph_key,
-                        spec,
-                        _graph: PhantomData,
-                    }))?;
+                }
+                if let (Some(slot), Some(child)) = (child_slot, child) {
+                    slot.fulfill(child)?;
                 }
             }
             Ok(())
         },
     )
+    .with_preview_child(|action| {
+        record_child::<C>(&action).ok_or_else(|| Error::engine("a table drop has no record child"))
+    })
+}
+
+/// The record handler a table action's child slot is fulfilled with. It
+/// targets the table that exists after the action (`None` when the action
+/// drops the table).
+fn record_child<C: CypherExecutor>(action: &TargetAction<TableAction>) -> Option<ChildTargetDef> {
+    let a = match action {
+        TargetAction::Create(a) | TargetAction::Update(a) => a,
+        TargetAction::Delete(_) => return None,
+    };
+    let spec = match &a.op {
+        TableOp::Ensure(spec) | TableOp::Replace { next: spec, .. } => spec.clone(),
+        TableOp::Drop(_) => return None,
+    };
+    Some(ChildTargetDef::new::<RecordState, _>(RecordHandler::<C> {
+        sink: SinkCache::default(),
+        graph_key: a.graph_key.clone(),
+        spec,
+        _graph: PhantomData,
+    }))
 }
 
 fn record_sink<C: CypherExecutor>(graph_key: String) -> TargetActionSink<RecordAction> {

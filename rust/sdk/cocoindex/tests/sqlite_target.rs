@@ -125,6 +125,49 @@ async fn table_exists(db: &sqlite::Database, table: &str) -> bool {
 }
 
 #[tokio::test]
+async fn sqlite_table_target_previews_rows() {
+    let (db, _dbdir) = temp_db().await;
+    let (app, _appdir) = build_app(&db).await;
+    let table_count = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap()
+    };
+
+    // The table and both rows would be written; nothing is.
+    let actions = app
+        .preview(|ctx| declare_items(ctx, vec![item(1, "one"), item(2, "two")]))
+        .await
+        .unwrap();
+    assert_eq!(actions.len(), 3);
+    assert_eq!(table_count().await, 0);
+
+    app.run(|ctx| declare_items(ctx, vec![item(1, "one"), item(2, "two")]))
+        .await
+        .unwrap();
+
+    // Against the applied state: the table's (always emitted) action, row 2
+    // updated, row 3 created; row 1 unchanged. Nothing is applied.
+    let actions = app
+        .preview(|ctx| {
+            declare_items(
+                ctx,
+                vec![item(1, "one"), item(2, "two-updated"), item(3, "three")],
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(actions.len(), 3);
+    assert_eq!(
+        fetch(&db, "items").await,
+        vec![(1, "one".to_string()), (2, "two".to_string())]
+    );
+}
+
+#[tokio::test]
 async fn sqlite_undeclared_and_dropped_tables_are_removed() {
     let (db, _dbdir) = temp_db().await;
     let (app, _appdir) = build_app(&db).await;

@@ -1530,21 +1530,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         .await?;
 
                         let output = match outcome {
-                            PreCommitOutcome::Done { output, write_plan: _ } => {
-                                // Checked in here rather than after `precommit`:
-                                // the error drops this body's writes, so no
-                                // generation ID `pre_commit` reserved for a
-                                // child provider commits.
-                                for input in output.actions_by_sinks.values() {
-                                    if !input.pending_children.is_empty() {
-                                        client_bail!(
-                                            "preview currently supports flat/leaf target actions only; \
-                                             target actions requiring child target providers are not supported yet"
-                                        );
-                                    }
-                                }
-                                Some(output)
-                            }
+                            PreCommitOutcome::Done {
+                                output,
+                                write_plan: _,
+                            } => Some(output),
                             PreCommitOutcome::PendingRetry => None,
                         };
                         *preview_output_capture.lock().unwrap() = output;
@@ -1576,12 +1565,40 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         if let Some(ref name) = pre_commit_out.processor_name_for_del {
             collect_processor_name_name_for_del(name);
         }
-        collector.lock().unwrap().extend(
-            pre_commit_out
-                .actions_by_sinks
-                .into_values()
-                .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
-        );
+
+        // Ready the child providers as a real submit would, so the components
+        // declaring child target states can preview theirs: the generations
+        // `pre_commit` planned, and the handlers from each sink's
+        // `preview_children` in place of `apply`.
+        for (child_provider, new_gen) in pre_commit_out.deferred_provider_generations {
+            child_provider.set_provider_generation(new_gen)?;
+        }
+        let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
+        let mut actions = Vec::new();
+        for (sink, input) in pre_commit_out.actions_by_sinks {
+            if !input.pending_children.is_empty() {
+                sink.preview_children(
+                    host_runtime_ctx,
+                    Arc::clone(comp_ctx.host_ctx()),
+                    &input.actions,
+                )
+                .await?;
+                for (child_provider, slot) in input.pending_children {
+                    let Some(handler) = slot.take()? else {
+                        client_bail!(
+                            "the target action sink for {} does not support preview of child \
+                             target states: it fulfilled no child target slot in preview mode",
+                            child_provider.target_state_path()
+                        );
+                    };
+                    if let Some(ref mut registry) = built_target_states_providers {
+                        child_provider.fulfill_handler(handler, registry)?;
+                    }
+                }
+            }
+            actions.extend(input.actions.into_iter().map(|(action, _)| action));
+        }
+        collector.lock().unwrap().extend(actions);
         return Ok(SubmitOutput {
             built_target_states_providers,
             touched_previous_states: pre_commit_out.previously_exists,
