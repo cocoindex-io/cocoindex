@@ -86,7 +86,10 @@ async fn main() -> Result<()> { ... }               // runs cli::try_dispatch() 
 **Acceptance.** `tests/registered.rs`: a lifespan provides a value, two shutdown hooks run LIFO,
 `find_app` resolves both a named and a default-named app, and the protocol child answers `ls`,
 `update --preview`, `update --full-reprocess` and `drop` in-process. `tests/registered_nodb.rs`:
-no lifespan and no `COCOINDEX_DB` is a clear error; an invalid `COCOINDEX_LMDB_MAX_DBS` is too.
+no lifespan and no `COCOINDEX_DB` is a clear error, an invalid `COCOINDEX_LMDB_MAX_DBS` is too, and a
+plain `build()` ignores `COCOINDEX_DB`. `tests/registered_dup.rs`: two apps with one name are
+refused. The CLI's end-to-end tests also run the fixture's own `main` (a `Debug`-only error
+exits 1) and build and run an `init` scaffold.
 
 ## Protocol
 
@@ -111,7 +114,7 @@ lifespan to one run per command; the CLI does the prompting.
 | `progress` | `version`, `ready`, `by_component: {name: counters}` | `update` | one per engine change; counters are `num_execution_starts`, `num_unchanged`, `num_adds`, `num_deletes`, `num_reprocesses`, `num_errors` |
 | `confirm` | `action: drop\|drop_db_only\|reset`, `app` | `drop`, `update --reset` with `--confirm` | asks for `yes`/`no` on stdin before the destructive step; `reset` only when there is state to drop |
 | `preview` | `kind: create\|update\|delete`, `value` (JSON) | `update --preview` | one planned target action |
-| `done` | `stats?` (`processed`, `skipped`, `written`, `deleted`, `elapsed_secs`), `cancelled`, `dropped?`, `aborted` | terminal | success; `cancelled: true` after Ctrl-C; `aborted: true` after a `no`; `dropped: false` when nothing was dropped |
+| `done` | `outcome: completed\|cancelled\|aborted\|nothing_to_drop`, `stats?` (`processed`, `skipped`, `written`, `deleted`, `elapsed: {secs, nanos}`) | terminal | `cancelled` after Ctrl-C; `aborted` after a `no` to `confirm`; `nothing_to_drop` when `drop` found no state; `stats` when an update completed |
 | `error` | `message` | terminal | failure |
 
 **Exit codes** (child and CLI alike): `0` success (also a clean Ctrl-C cancel), `1` error
@@ -120,8 +123,9 @@ lifespan to one run per command; the CLI does the prompting.
 **Cancellation.** From the moment `update` or `drop` starts (before the lifespan runs), the child
 turns every SIGINT into `cocoindex_core::engine::runtime::cancel_all()` (idempotent: the terminal
 and the CLI may both deliver one). A pending lifespan or confirmation is abandoned at once, and a
-step that fails because of the cancel is reported as `done {cancelled: true}` rather than
-`error`. The CLI prints `Stopping...` on the first Ctrl-C,
+step that fails because of the cancel is reported as `done` with outcome `cancelled` rather than
+`error`. If its stdout is gone (the CLI died), the child cancels its run instead of running on
+unobserved. The CLI prints `Stopping...` on the first Ctrl-C,
 forwards SIGINT to the child on Unix, and kills the child on the second.
 
 **Versioning.** `protocol` is a single integer; a change that an old CLI or an old SDK cannot

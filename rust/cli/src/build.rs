@@ -126,33 +126,38 @@ fn pick_executable(
     manifest: &Path,
     bin: Option<&str>,
 ) -> CliResult<PathBuf> {
-    let bins: Vec<&Artifact> = artifacts
+    /// A built binary: its target name, executable and manifest.
+    struct Built<'a> {
+        name: &'a str,
+        executable: &'a Path,
+        manifest_path: &'a Path,
+    }
+    let bins: Vec<Built<'_>> = artifacts
         .iter()
-        .filter(|a| a.executable.is_some() && a.target.kind.iter().any(|k| k == "bin"))
+        .filter(|a| a.target.kind.iter().any(|k| k == "bin"))
         .filter(|a| bin.is_none_or(|b| a.target.name == b))
-        .collect();
-    let manifest = manifest
-        .canonicalize()
-        .unwrap_or_else(|_| manifest.to_path_buf());
-    let own: Vec<&Artifact> = bins
-        .iter()
-        .copied()
-        .filter(|a| {
-            a.manifest_path
-                .canonicalize()
-                .unwrap_or_else(|_| a.manifest_path.clone())
-                == manifest
+        .filter_map(|a| {
+            Some(Built {
+                name: &a.target.name,
+                executable: a.executable.as_deref()?,
+                manifest_path: &a.manifest_path,
+            })
         })
         .collect();
-    let candidates = if own.is_empty() { bins } else { own };
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let manifest = canonical(manifest);
+    let (own, others): (Vec<Built<'_>>, Vec<Built<'_>>) = bins
+        .into_iter()
+        .partition(|b| canonical(b.manifest_path) == manifest);
+    let candidates = if own.is_empty() { others } else { own };
     match candidates.as_slice() {
-        [one] => Ok(one.executable.clone().expect("filtered on executable")),
+        [one] => Ok(one.executable.to_path_buf()),
         [] => Err(CliError::usage(match bin {
             Some(b) => format!("{} builds no binary named `{b}`", manifest.display()),
             None => format!("{} builds no binary", manifest.display()),
         })),
         many => {
-            let names: Vec<&str> = many.iter().map(|a| a.target.name.as_str()).collect();
+            let names: Vec<&str> = many.iter().map(|b| b.name).collect();
             Err(CliError::usage(format!(
                 "{} builds several binaries ({}); pass --bin NAME",
                 manifest.display(),

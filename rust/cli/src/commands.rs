@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cocoindex::cli::protocol::{AppInfo, Event};
+use cocoindex::cli::protocol::{AppInfo, Event, Outcome};
 
 use crate::build::{self, BuildOpts};
 use crate::child::{self, Interrupt, Output};
@@ -226,9 +226,16 @@ pub async fn show(args: ShowArgs) -> CliResult<()> {
     };
 
     let storage = inspect::open_db(&db_path).await?;
-    let text = inspect::show(&storage, &app, stable_path.as_deref(), mode).await;
+    let shown = inspect::show(
+        &storage,
+        &app,
+        stable_path.as_deref(),
+        mode,
+        &mut std::io::stdout().lock(),
+    )
+    .await;
     storage.close().await;
-    print!("{}", text?);
+    shown?;
     Ok(())
 }
 
@@ -310,23 +317,23 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
     .await;
     renderer.clear();
     let done = outcome?.into_done()?;
-    let Event::Done {
-        stats,
-        cancelled,
-        aborted,
-        ..
-    } = done
-    else {
+    let Event::Done { outcome, stats } = done else {
         return Ok(());
     };
-    if cancelled {
-        return Ok(());
-    }
-    if aborted {
-        if !quiet {
-            println!("Update operation aborted.");
+    match outcome {
+        Outcome::Completed => {}
+        Outcome::Cancelled => return Ok(()),
+        Outcome::Aborted => {
+            if !quiet {
+                println!("Update operation aborted.");
+            }
+            return Ok(());
         }
-        return Ok(());
+        Outcome::NothingToDrop => {
+            return Err(CliError::failure(
+                "the target binary answered `update` with a drop result",
+            ));
+        }
     }
     if args.preview {
         println!("Preview: planned target actions");
@@ -397,26 +404,22 @@ pub async fn drop_app(args: DropArgs) -> CliResult<()> {
         },
     )
     .await?;
-    let Event::Done {
-        cancelled,
-        aborted,
-        dropped,
-        ..
-    } = outcome.into_done()?
-    else {
+    let Event::Done { outcome, .. } = outcome.into_done()? else {
         return Ok(());
     };
-    if cancelled || quiet {
+    if quiet {
         return Ok(());
     }
-    if aborted {
-        println!("Drop operation aborted.");
-    } else if dropped != Some(true) {
-        println!("App '{app_name}' has no persisted state. Nothing to drop.");
-    } else if args.db_only {
-        println!("Cleared the state of app '{app_name}'.");
-    } else {
-        println!("Dropped app '{app_name}'.");
+    match outcome {
+        Outcome::Cancelled => {}
+        Outcome::Aborted => println!("Drop operation aborted."),
+        Outcome::NothingToDrop => {
+            println!("App '{app_name}' has no persisted state. Nothing to drop.");
+        }
+        Outcome::Completed if args.db_only => {
+            println!("Cleared the state of app '{app_name}'.");
+        }
+        Outcome::Completed => println!("Dropped app '{app_name}'."),
     }
     Ok(())
 }

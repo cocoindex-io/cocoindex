@@ -17,7 +17,7 @@
 use std::process::ExitCode;
 use std::sync::Mutex;
 
-use cocoindex::cli::protocol::{Event, Line, decode_line};
+use cocoindex::cli::protocol::{Event, Line, Outcome, decode_line};
 use cocoindex::prelude::*;
 
 const DB_ENV: &str = "COCO_TEST_REGISTERED_DB";
@@ -114,15 +114,10 @@ async fn registered_lifespan_apps_and_protocol() {
     // --- from_registered runs the lifespan ---------------------------------
     let env = Environment::from_registered().await.unwrap();
     assert_eq!(env.db_path(), db.as_path());
-    assert!(env.persisted_app_names().await.unwrap().is_empty());
     let app = env.app("Named").await.unwrap();
     let n: usize = app.update(app_one).await.unwrap();
     assert_eq!(n, 5, "the provided Greeting is visible to the app");
     assert_eq!(std::fs::read_dir(&out).unwrap().count(), 5);
-    assert_eq!(
-        env.persisted_app_names().await.unwrap(),
-        vec!["Named".to_string()]
-    );
     // The registered shim runs the same function.
     let entry = cocoindex::registry::find_app("Named").unwrap();
     app.update(move |ctx| (entry.run)(ctx)).await.unwrap();
@@ -157,10 +152,8 @@ async fn registered_lifespan_apps_and_protocol() {
     assert!(matches!(
         events.last(),
         Some(Event::Done {
+            outcome: Outcome::Completed,
             stats: None,
-            cancelled: false,
-            dropped: None,
-            aborted: false,
         })
     ));
     // The app's own `println!` goes to the process stdout here (in-process
@@ -186,9 +179,8 @@ async fn registered_lifespan_apps_and_protocol() {
     assert_eq!(code, ExitCode::SUCCESS);
     match events.last() {
         Some(Event::Done {
+            outcome: Outcome::Completed,
             stats: Some(stats),
-            cancelled: false,
-            ..
         }) => {
             assert!(stats.processed >= 1, "{stats:?}");
         }
@@ -210,7 +202,7 @@ async fn registered_lifespan_apps_and_protocol() {
         matches!(
             events.last(),
             Some(Event::Done {
-                dropped: Some(false),
+                outcome: Outcome::NothingToDrop,
                 ..
             })
         ),
@@ -222,7 +214,7 @@ async fn registered_lifespan_apps_and_protocol() {
         matches!(
             events.last(),
             Some(Event::Done {
-                dropped: Some(true),
+                outcome: Outcome::Completed,
                 ..
             })
         ),

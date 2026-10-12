@@ -2009,10 +2009,16 @@ fn expand_main(func: ItemFn) -> syn::Result<TokenStream2> {
         #vis fn #name() -> ::std::process::ExitCode {
             #inner
 
-            let runtime = ::cocoindex::tokio::runtime::Builder::new_multi_thread()
+            let runtime = match ::cocoindex::tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
-                .expect("cocoindex: failed to build the tokio runtime");
+            {
+                ::core::result::Result::Ok(runtime) => runtime,
+                ::core::result::Result::Err(err) => {
+                    ::std::eprintln!("cocoindex: failed to start the tokio runtime: {err}");
+                    return ::std::process::ExitCode::FAILURE;
+                }
+            };
             let code = runtime.block_on(async {
                 if let ::core::option::Option::Some(code) =
                     ::cocoindex::cli::try_dispatch().await

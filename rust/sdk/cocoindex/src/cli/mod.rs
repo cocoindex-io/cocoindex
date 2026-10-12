@@ -17,10 +17,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::app::{Environment, Progress, UpdateOptions};
-use crate::error::Error;
+use crate::error::{Error, Result};
 use crate::registry::{self, AppEntry};
 use protocol::{
-    AppInfo, ConfirmAction, Event, MARKER, PROTOCOL_VERSION, PreviewKind, RunStatsWire, encode,
+    AppInfo, ConfirmAction, Event, MARKER, Outcome, PROTOCOL_VERSION, PreviewKind, RunStatsWire,
+    encode,
 };
 
 /// Exit codes of a protocol child: success, failure, usage or protocol error.
@@ -65,7 +66,7 @@ pub async fn dispatch(args: Vec<String>) -> ExitCode {
 
 /// [`dispatch`] with an explicit record sink (tests capture the stream).
 pub async fn dispatch_to(args: Vec<String>, out: &mut (dyn Write + Send)) -> ExitCode {
-    let mut emitter = Emitter { out };
+    let mut emitter = Emitter::new(out);
     emitter.emit(&Event::Hello {
         protocol: PROTOCOL_VERSION,
         sdk: env!("CARGO_PKG_VERSION").to_string(),
@@ -216,13 +217,32 @@ impl From<Error> for Failure {
 
 struct Emitter<'a> {
     out: &'a mut (dyn Write + Send),
+    /// Set once a record could not be written.
+    lost: bool,
 }
 
 impl Emitter<'_> {
+    fn new(out: &mut (dyn Write + Send)) -> Emitter<'_> {
+        Emitter { out, lost: false }
+    }
+
+    /// Write one record. If the CLI is gone (closed pipe), nobody can see the
+    /// run any more, so it is cancelled instead of running on unobserved (a
+    /// live update would otherwise never end).
     fn emit(&mut self, event: &Event) {
-        // A broken pipe means the CLI went away; there is nobody to tell.
-        let _ = self.out.write_all(encode(event).as_bytes());
-        let _ = self.out.flush();
+        if self.lost {
+            return;
+        }
+        let written = encode(event)
+            .map_err(std::io::Error::other)
+            .and_then(|line| self.out.write_all(line.as_bytes()))
+            .and_then(|()| self.out.flush());
+        if let Err(err) = written {
+            self.lost = true;
+            eprintln!("cocoindex: lost the CLI ({err}); stopping");
+            CANCELLED.store(true, Ordering::SeqCst);
+            cocoindex_core::engine::runtime::cancel_all();
+        }
     }
 
     fn fail(&mut self, message: String, code: u8) -> ExitCode {
@@ -329,35 +349,12 @@ async fn until_cancelled<T>(fut: impl Future<Output = T>) -> Option<T> {
     }
 }
 
-fn emit_done(emitter: &mut Emitter<'_>, stats: Option<RunStatsWire>, dropped: Option<bool>) {
-    emitter.emit(&Event::Done {
-        stats,
-        cancelled: false,
-        dropped,
-        aborted: false,
-    });
+fn emit_done(emitter: &mut Emitter<'_>, outcome: Outcome, stats: Option<RunStatsWire>) {
+    emitter.emit(&Event::Done { outcome, stats });
 }
 
 fn emit_cancelled(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
-    emitter.emit(&Event::Done {
-        stats: None,
-        cancelled: true,
-        dropped: None,
-        aborted: false,
-    });
-    Ok(EXIT_OK)
-}
-
-fn emit_aborted(
-    emitter: &mut Emitter<'_>,
-    dropped: Option<bool>,
-) -> std::result::Result<u8, Failure> {
-    emitter.emit(&Event::Done {
-        stats: None,
-        cancelled: false,
-        dropped,
-        aborted: true,
-    });
+    emit_done(emitter, Outcome::Cancelled, None);
     Ok(EXIT_OK)
 }
 
@@ -436,7 +433,10 @@ async fn update_app(
         if args.confirm {
             match confirm(emitter, ConfirmAction::Reset, entry.name).await {
                 Answer::Yes => {}
-                Answer::No => return emit_aborted(emitter, None),
+                Answer::No => {
+                    emit_done(emitter, Outcome::Aborted, None);
+                    return Ok(EXIT_OK);
+                }
                 Answer::Cancelled => return emit_cancelled(emitter),
             }
         }
@@ -460,15 +460,19 @@ async fn update_app(
 
     if args.preview {
         for action in &handle.preview_actions().await? {
-            emitter.emit(&preview_event(action));
+            emitter.emit(&preview_event(action)?);
         }
-        emit_done(emitter, None, None);
+        emit_done(emitter, Outcome::Completed, None);
         return Ok(EXIT_OK);
     }
     handle.result().await?;
     let mut stats = final_stats.run_stats();
     stats.elapsed = started.elapsed();
-    emit_done(emitter, Some(RunStatsWire::from(&stats)), None);
+    emit_done(
+        emitter,
+        Outcome::Completed,
+        Some(RunStatsWire::from(&stats)),
+    );
     Ok(EXIT_OK)
 }
 
@@ -499,7 +503,7 @@ async fn drop_app(
         db_path: env.db_path().display().to_string(),
     });
     if !persisted.contains(&name) {
-        emit_done(emitter, None, Some(false));
+        emit_done(emitter, Outcome::NothingToDrop, None);
         return Ok(EXIT_OK);
     }
     if args.confirm {
@@ -510,7 +514,10 @@ async fn drop_app(
         };
         match confirm(emitter, action, &name).await {
             Answer::Yes => {}
-            Answer::No => return emit_aborted(emitter, Some(false)),
+            Answer::No => {
+                emit_done(emitter, Outcome::Aborted, None);
+                return Ok(EXIT_OK);
+            }
             Answer::Cancelled => return emit_cancelled(emitter),
         }
     }
@@ -519,22 +526,22 @@ async fn drop_app(
     } else {
         env.app(&name).await?.drop_state().await?;
     }
-    emit_done(emitter, None, Some(true));
+    emit_done(emitter, Outcome::Completed, None);
     Ok(EXIT_OK)
 }
 
 /// Decode a preview action's payload for the `preview` record.
-pub(crate) fn preview_event(action: &crate::app::PreviewAction) -> Event {
+fn preview_event(action: &crate::app::PreviewAction) -> Result<Event> {
     use crate::app::PreviewAction;
     let (kind, value) = match action {
         PreviewAction::Create(v) => (PreviewKind::Create, v),
         PreviewAction::Update(v) => (PreviewKind::Update, v),
         PreviewAction::Delete(v) => (PreviewKind::Delete, v),
     };
-    let value = value
-        .decode::<serde_json::Value>()
-        .unwrap_or_else(|e| serde_json::Value::String(format!("<undecodable: {e}>")));
-    Event::Preview { kind, value }
+    Ok(Event::Preview {
+        kind,
+        value: value.decode::<serde_json::Value>()?,
+    })
 }
 
 #[cfg(test)]

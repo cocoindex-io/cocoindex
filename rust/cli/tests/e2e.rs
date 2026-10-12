@@ -405,12 +405,22 @@ fn env_file_is_loaded() {
 #[cfg(unix)]
 #[test]
 fn ctrl_c_during_the_lifespan_is_a_cancel() {
+    for verb in [&["update"][..], &["drop", "-f"][..]] {
+        interrupt_slow_lifespan(verb);
+    }
+}
+
+#[cfg(unix)]
+fn interrupt_slow_lifespan(verb: &[&str]) {
     use std::io::{BufRead, BufReader};
     use std::time::{Duration, Instant};
 
     let sb = Sandbox::new(&[("a.txt", "alpha")]);
+    let target = exe_target("FixtureApp");
+    let mut args = verb.to_vec();
+    args.push(&target);
     let mut child = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
-        .args(["update", &exe_target("FixtureApp")])
+        .args(&args)
         .current_dir(sb.dir.path())
         .env("COCOINDEX_DB", sb.path("db"))
         .env("FIXTURE_SRC", sb.path("src"))
@@ -431,7 +441,7 @@ fn ctrl_c_during_the_lifespan_is_a_cancel() {
         }
         line.clear();
     }
-    assert!(seen.contains("slow lifespan started"), "{seen}");
+    assert!(seen.contains("slow lifespan started"), "{verb:?}: {seen}");
 
     let started = Instant::now();
     let status = Command::new("kill")
@@ -442,13 +452,88 @@ fn ctrl_c_during_the_lifespan_is_a_cancel() {
     let mut rest = String::new();
     std::io::Read::read_to_string(&mut stderr, &mut rest).unwrap();
     let status = child.wait().unwrap();
-    eprintln!("{seen}{rest}");
+    eprintln!("{verb:?}\n{seen}{rest}");
     assert!(
         started.elapsed() < Duration::from_secs(20),
-        "did not wait for the lifespan"
+        "{verb:?}: did not wait for the lifespan"
     );
-    assert_eq!(status.code(), Some(0), "a cancel is a clean exit");
-    assert!(rest.contains("Stopping..."), "{rest}");
-    assert!(!rest.contains("without reporting a result"), "{rest}");
-    assert_eq!(sb.out_files(), Vec::<String>::new(), "nothing ran");
+    assert_eq!(status.code(), Some(0), "{verb:?}: a cancel is a clean exit");
+    assert!(rest.contains("Stopping..."), "{verb:?}: {rest}");
+    assert!(
+        !rest.contains("without reporting a result"),
+        "{verb:?}: {rest}"
+    );
+    assert_eq!(
+        sb.out_files(),
+        Vec::<String>::new(),
+        "{verb:?}: nothing ran"
+    );
+}
+
+/// The binary's own `main` still runs, and its error (a `Debug`-only type, as
+/// a plain `main` allows) becomes exit status 1.
+#[test]
+fn the_binarys_own_main_runs() {
+    let ok = Command::new(fixture_exe()).output().unwrap();
+    assert!(ok.status.success());
+    assert_eq!(String::from_utf8_lossy(&ok.stdout), "fixture: own main\n");
+    let failed = Command::new(fixture_exe())
+        .env("FIXTURE_MAIN_FAILS", "1")
+        .output()
+        .unwrap();
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("Error: FixtureError"));
+}
+
+/// `init` writes a project that builds and runs: `update` turns its sample
+/// markdown into `out/hello.txt`.
+#[test]
+fn init_scaffold_builds_and_runs() {
+    // Inside the target dir: the repository's cargo config applies, and the
+    // workspace lockfile and target dir are reused, so only the scaffold
+    // itself compiles.
+    let target_dir = Path::new(env!("CARGO_BIN_EXE_cocoindex"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the CLI is built under <target>/<profile>/");
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let project = tmp.path().join("scaffold_app");
+    let sdk = concat!(env!("CARGO_MANIFEST_DIR"), "/../sdk/cocoindex");
+    let init = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
+        .args([
+            "init",
+            "--dir",
+            project.to_str().unwrap(),
+            "--sdk-path",
+            sdk,
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"),
+        project.join("Cargo.lock"),
+    )
+    .unwrap();
+
+    let update = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
+        .args(["update", "-q", project.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .env("CARGO_TARGET_DIR", target_dir)
+        .env_remove("COCOINDEX_DB")
+        .output()
+        .unwrap();
+    eprintln!("{}", String::from_utf8_lossy(&update.stderr));
+    assert!(update.status.success());
+    let written = std::fs::read_to_string(project.join("out/hello.txt")).unwrap();
+    assert!(written.starts_with("# HELLO"), "{written}");
+    assert!(
+        project.join(".cocoindex_db").is_dir(),
+        "the lifespan's db path"
+    );
 }

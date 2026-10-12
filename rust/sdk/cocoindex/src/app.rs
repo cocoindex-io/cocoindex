@@ -135,30 +135,29 @@ impl Environment {
     }
 
     /// Names of the apps that have persisted state in this environment's db.
-    pub async fn persisted_app_names(&self) -> Result<Vec<String>> {
-        cocoindex_core::inspect::db_inspect::list_app_names(&self.inner.core_env)
-            .await
-            .map_err(|e| Error::engine(format!("failed to list apps: {e}")))
+    pub(crate) async fn persisted_app_names(&self) -> Result<Vec<String>> {
+        Ok(cocoindex_core::inspect::db_inspect::list_app_names(&self.inner.core_env).await?)
     }
 
     /// Clear one app's state db namespace without reverting its target states
     /// (the `cocoindex drop --db-only` operation). Use
     /// [`App::drop_state`] to also revert targets.
-    pub async fn drop_app_db_only(&self, app_name: &str) -> Result<()> {
-        self.inner
-            .core_env
-            .storage()
-            .drop_app(app_name)
-            .await
-            .map_err(|e| Error::engine(format!("failed to drop app `{app_name}`: {e}")))
+    pub(crate) async fn drop_app_db_only(&self, app_name: &str) -> Result<()> {
+        Ok(self.inner.core_env.storage().drop_app(app_name).await?)
     }
 
     /// Run the `on_shutdown` hooks (most recently registered first), then
     /// close the state db. Hooks run once; a second call only closes.
     /// Await every running update or drop before calling this.
     pub async fn shutdown(&self) {
-        let hooks: Vec<ShutdownHook> =
-            std::mem::take(&mut *self.inner.shutdown_hooks.lock().unwrap());
+        // A poisoned lock still holds the hooks; run them anyway.
+        let hooks: Vec<ShutdownHook> = std::mem::take(
+            &mut *self
+                .inner
+                .shutdown_hooks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
         for hook in hooks.into_iter().rev() {
             hook().await;
         }
@@ -233,11 +232,6 @@ impl EnvironmentBuilder {
     pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.db_path = Some(path.into());
         self
-    }
-
-    /// Whether [`Self::db_path`] has been called.
-    pub fn has_db_path(&self) -> bool {
-        self.db_path.is_some()
     }
 
     /// Set the LMDB maximum number of named databases. Default: 1024

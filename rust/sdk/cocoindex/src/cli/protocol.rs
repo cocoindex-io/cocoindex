@@ -11,6 +11,7 @@
 //! [`Event::Error`]. See `dev/plans/rust-cli.md` for the full contract.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -51,18 +52,12 @@ pub enum Event {
         kind: PreviewKind,
         value: serde_json::Value,
     },
-    /// Terminal: the verb finished. `stats` is set for a completed update,
-    /// `dropped` for a drop (`false` when there was nothing to drop).
+    /// Terminal: the verb finished with `outcome`. `stats` is set when an
+    /// update completed.
     Done {
+        outcome: Outcome,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stats: Option<RunStatsWire>,
-        #[serde(default)]
-        cancelled: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        dropped: Option<bool>,
-        /// The user answered `no` to a `confirm`; nothing was changed.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        aborted: bool,
     },
     /// Terminal: the verb failed.
     Error { message: String },
@@ -122,7 +117,7 @@ pub struct RunStatsWire {
     pub skipped: u64,
     pub written: u64,
     pub deleted: u64,
-    pub elapsed_secs: f64,
+    pub elapsed: Duration,
 }
 
 impl From<&RunStats> for RunStatsWire {
@@ -132,7 +127,7 @@ impl From<&RunStats> for RunStatsWire {
             skipped: s.skipped,
             written: s.written,
             deleted: s.deleted,
-            elapsed_secs: s.elapsed.as_secs_f64(),
+            elapsed: s.elapsed,
         }
     }
 }
@@ -142,9 +137,27 @@ impl std::fmt::Display for RunStatsWire {
         write!(
             f,
             "processed {}, wrote {}, skipped {}, deleted {} in {:.1}s",
-            self.processed, self.written, self.skipped, self.deleted, self.elapsed_secs
+            self.processed,
+            self.written,
+            self.skipped,
+            self.deleted,
+            self.elapsed.as_secs_f64()
         )
     }
+}
+
+/// How a verb finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    /// `ls` answered, the update ran, or the drop happened.
+    Completed,
+    /// Ctrl-C stopped the verb; what had committed stays.
+    Cancelled,
+    /// The user answered `no` to a `confirm`; nothing changed.
+    Aborted,
+    /// `drop` found no persisted state for the app.
+    NothingToDrop,
 }
 
 /// The destructive step a `confirm` record asks about.
@@ -194,9 +207,9 @@ impl Event {
 }
 
 /// Encode a record as one protocol line (separator, JSON, newline).
-pub fn encode(event: &Event) -> String {
-    let json = serde_json::to_string(event).expect("protocol events always serialize");
-    format!("{RS}{json}\n")
+pub fn encode(event: &Event) -> serde_json::Result<String> {
+    let json = serde_json::to_string(event)?;
+    Ok(format!("{RS}{json}\n"))
 }
 
 /// One line of a protocol child's stdout, classified.
@@ -230,98 +243,34 @@ pub fn decode_line(line: &str) -> Line<'_> {
 mod tests {
     use super::*;
 
+    /// The wire form is the contract with other CLIs (phase 2: a Python
+    /// child): snake_case tags and values, optional fields left out.
     #[test]
-    fn round_trip_every_variant() {
-        let mut by_component = BTreeMap::new();
-        by_component.insert(
-            "app:x".to_string(),
-            ComponentStatsWire {
-                num_execution_starts: 3,
-                num_adds: 2,
-                ..Default::default()
-            },
-        );
-        let events = vec![
-            Event::Hello {
-                protocol: 1,
-                sdk: "0.1.0".into(),
-            },
-            Event::Apps {
-                apps: vec![AppInfo {
-                    name: "A".into(),
-                    persisted: true,
-                    registered: false,
-                }],
-                db_path: "./db".into(),
-            },
-            Event::Start {
-                app: "A".into(),
-                db_path: "./db".into(),
-            },
-            Event::Progress {
-                version: 7,
-                ready: false,
-                by_component,
-            },
-            Event::Preview {
-                kind: PreviewKind::Delete,
-                value: serde_json::json!({"id": 1}),
-            },
-            Event::Done {
-                stats: Some(RunStatsWire {
-                    processed: 1,
-                    elapsed_secs: 0.5,
-                    ..Default::default()
-                }),
-                cancelled: false,
-                dropped: None,
-                aborted: false,
-            },
-            Event::Done {
-                stats: None,
-                cancelled: true,
-                dropped: Some(false),
-                aborted: true,
-            },
-            Event::Confirm {
-                action: ConfirmAction::DropDbOnly,
-                app: "A".into(),
-            },
-            Event::Error {
-                message: "boom".into(),
-            },
-        ];
-        for event in events {
-            let line = encode(&event);
-            assert!(line.starts_with(RS), "line starts with RS");
-            assert!(line.ends_with('\n'));
-            match decode_line(line.trim_end_matches('\n')) {
-                Line::Record { text, event: back } => {
-                    assert_eq!(text, "");
-                    assert_eq!(back, event);
-                }
-                other => panic!("expected a record, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn event_tag_is_snake_case() {
+    fn wire_form() {
         let line = encode(&Event::Hello {
             protocol: 1,
             sdk: "x".into(),
-        });
-        assert!(line.contains(r#""event":"hello""#));
-        let line = encode(&Event::Done {
-            stats: None,
-            cancelled: false,
-            dropped: None,
-            aborted: false,
-        });
+        })
+        .unwrap();
         assert_eq!(
             line,
-            format!("{RS}{{\"event\":\"done\",\"cancelled\":false}}\n")
+            format!("{RS}{{\"event\":\"hello\",\"protocol\":1,\"sdk\":\"x\"}}\n")
         );
+        let line = encode(&Event::Done {
+            outcome: Outcome::NothingToDrop,
+            stats: None,
+        })
+        .unwrap();
+        assert_eq!(
+            line,
+            format!("{RS}{{\"event\":\"done\",\"outcome\":\"nothing_to_drop\"}}\n")
+        );
+        let line = encode(&Event::Confirm {
+            action: ConfirmAction::DropDbOnly,
+            app: "A".into(),
+        })
+        .unwrap();
+        assert!(line.contains(r#"{"event":"confirm","action":"drop_db_only","app":"A"}"#));
     }
 
     #[test]
@@ -331,6 +280,23 @@ mod tests {
             Line::Text("indexed 3 files")
         );
         assert_eq!(decode_line(""), Line::Text(""));
+    }
+
+    #[test]
+    fn a_record_decodes_from_its_line() {
+        let event = Event::Done {
+            outcome: Outcome::Completed,
+            stats: Some(RunStatsWire {
+                processed: 3,
+                elapsed: Duration::from_millis(1500),
+                ..Default::default()
+            }),
+        };
+        let line = encode(&event).unwrap();
+        assert_eq!(
+            decode_line(line.trim_end()),
+            Line::Record { text: "", event }
+        );
     }
 
     #[test]

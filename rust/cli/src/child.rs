@@ -134,7 +134,12 @@ pub async fn run(
     let pid = child.id();
     let mut child_stdin = child.stdin.take();
     let mut answer: Option<tokio::sync::oneshot::Receiver<bool>> = None;
-    let mut reader = BufReader::new(child.stdout.take().expect("stdout is piped"));
+    let Some(stdout) = child.stdout.take() else {
+        return Err(CliError::failure(
+            "could not read the target binary's output",
+        ));
+    };
+    let mut reader = BufReader::new(stdout);
 
     let mut buf = Vec::new();
     let mut greeted = false;

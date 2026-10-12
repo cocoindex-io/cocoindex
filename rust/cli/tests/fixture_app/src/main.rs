@@ -47,7 +47,16 @@ async fn never_run(_ctx: Ctx) -> Result<()> {
     Ok(())
 }
 
+/// An error type with `Debug` only: `#[cocoindex::main]` accepts whatever a
+/// plain `main` accepts.
+#[derive(Debug)]
+struct FixtureError;
+
 #[cocoindex::main]
-async fn main() {
+async fn main() -> std::result::Result<(), FixtureError> {
     println!("fixture: own main");
+    if std::env::var_os("FIXTURE_MAIN_FAILS").is_some() {
+        return Err(FixtureError);
+    }
+    Ok(())
 }
