@@ -35,13 +35,17 @@ fn group(stats: &ComponentStatsWire) -> ProcessingStatsGroup {
     }
 }
 
-/// The display group of a component's stats: the Rust SDK names a mounted
-/// component `mount:<function>/<item key>` (`Ctx` mount in `ctx.rs`), so one
-/// line per item would flood the display; items of one function share a line,
-/// as they do in the Python CLI (which names processors by function).
+/// The display group of a component's stats. The Rust SDK names a mounted
+/// component `mount:<key>` (`Ctx` mounts in `ctx.rs`): `mount_each!` keys are
+/// `<function>/<item>`, `mount_each_live` keys are the bare item. One line per
+/// item would flood the display, so items share a line: per function when the
+/// key names one (as the Python CLI groups by function), else `mount:*`.
 fn display_group(name: &str) -> &str {
-    match name.strip_prefix("mount:").and_then(|rest| rest.find('/')) {
-        Some(slash) => &name[.."mount:".len() + slash],
+    match name.strip_prefix("mount:") {
+        Some(rest) => match rest.find('/') {
+            Some(slash) => &name[.."mount:".len() + slash],
+            None => "mount:*",
+        },
         None => name,
     }
 }
@@ -153,7 +157,7 @@ mod tests {
     fn groups_mounted_items_by_function() {
         assert_eq!(display_group("mount:upper/a.txt"), "mount:upper");
         assert_eq!(display_group("mount:upper/dir/b.txt"), "mount:upper");
-        assert_eq!(display_group("mount:setup"), "mount:setup");
+        assert_eq!(display_group("mount:notes.md"), "mount:*");
         assert_eq!(display_group("app:Fixture"), "app:Fixture");
 
         let mut components = BTreeMap::new();
