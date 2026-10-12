@@ -396,6 +396,55 @@ async fn sqlite_change_column_type_recreates_column() {
 }
 
 #[tokio::test]
+async fn sqlite_column_type_change_that_cannot_drop_fails_instead_of_keeping_old_type() {
+    let (db, _dbdir) = temp_db().await;
+    let (app, _appdir) = build_app(&db).await;
+
+    app.run(|ctx| async move {
+        let s = sqlite::TableSchema::new([("id", col("INTEGER")), ("score", col("TEXT"))], ["id"])?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
+        t.declare_row(&ctx, &json!({"id": 1, "score": "10"}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    // SQLite cannot drop a column that an index references.
+    sqlx::query("CREATE INDEX scores_score ON \"scores\" (\"score\")")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let change_type = || {
+        app.run(|ctx| async move {
+            let s = sqlite::TableSchema::new(
+                [("id", col("INTEGER")), ("score", col("INTEGER"))],
+                ["id"],
+            )?;
+            let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
+            t.declare_row(&ctx, &json!({"id": 1, "score": 42}))?;
+            Ok(())
+        })
+    };
+    let err = change_type().await.unwrap_err();
+    assert!(err.to_string().contains("score"), "{err}");
+
+    // Once the blocking index is gone, the next run retries and applies the
+    // change, because the failed run recorded nothing.
+    sqlx::query("DROP INDEX scores_score")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    change_type().await.unwrap();
+    let cols = table_columns(&db, "scores").await;
+    assert!(
+        cols.iter()
+            .any(|(n, t)| n == "score" && t.eq_ignore_ascii_case("INTEGER")),
+        "{cols:?}"
+    );
+}
+
+#[tokio::test]
 async fn sqlite_mount_each_per_item_rows() {
     let (db, _dbdir) = temp_db().await;
     let (app, _appdir) = build_app(&db).await;

@@ -55,10 +55,12 @@ if HAS_FALKORDB:
     from cocoindex.connectors import falkordb as falkor  # type: ignore[attr-defined]
     from cocoindex.connectors.falkordb._cypher import (  # type: ignore[import-untyped]
         build_node_delete,
+        build_node_delete_all,
         build_node_index_create,
         build_node_index_drop,
         build_node_upsert,
         build_relationship_delete,
+        build_relationship_delete_all,
         build_relationship_index_create,
         build_relationship_index_drop,
         build_relationship_upsert,
@@ -168,6 +170,12 @@ class TestNodeDeleteCypher:
             == "MATCH (n:`Document` {`filename`: $key_0}) DETACH DELETE n"
         )
 
+    def test_delete_all_detaches_whole_label(self) -> None:
+        # Table teardown: every node carrying the label, with its relationships.
+        assert build_node_delete_all("Document") == (
+            "MATCH (n:`Document`) DETACH DELETE n"
+        )
+
 
 @requires_falkordb
 class TestRelationshipUpsertCypher:
@@ -209,6 +217,11 @@ class TestRelationshipDeleteCypher:
         assert cypher == "MATCH ()-[r:`REL` {`id`: $key_0}]->() DELETE r"
         assert "DELETE s" not in cypher
         assert "DELETE t" not in cypher
+
+    def test_delete_all_keeps_endpoints(self) -> None:
+        cypher = build_relationship_delete_all("REL")
+        assert cypher == "MATCH ()-[r:`REL`]->() DELETE r"
+        assert "DETACH" not in cypher
 
 
 @requires_falkordb
@@ -384,6 +397,7 @@ class TestTableReconcile:
         assert out_reproc is not None
         assert out_reproc.action.main_action == "upsert"
         assert out_reproc.action.column_actions == {
+            "field:id": "upsert",
             "field:a": "upsert",
             "field:b": "delete",
             "field:c": "insert",
@@ -460,10 +474,84 @@ class TestTableReconcile:
         assert out_reproc is not None
         assert out_reproc.action.main_action == "upsert"
         assert out_reproc.action.column_actions == {
+            "field:id": "upsert",
             "field:a": "upsert",
             "field:b": "insert",
         }
         assert out_reproc.child_invalidation == "lossy"
+
+    def test_only_identity_changes_rebuild_the_table(self) -> None:
+        """A rebuild deletes every node of the label, so only changes the
+        per-record reconcile can't absorb may trigger one: the primary key
+        field (and the node/relation kind or endpoints). Attaching a schema
+        or changing a property type re-upserts records at most."""
+        from cocoindex.connectorkits import statediff, target
+        from cocoindex.connectors.falkordb import _target as falkor_target
+
+        def spec(
+            columns: dict[str, falkor.ColumnDef] | None, primary_key: str
+        ) -> falkor_target._TableSpec:
+            schema = (
+                falkor.TableSchema(columns=columns, primary_key=primary_key)
+                if columns is not None
+                else None
+            )
+            return falkor_target._TableSpec(
+                table_schema=schema,
+                primary_key=primary_key,
+                is_relation=False,
+                from_label=None,
+                from_pk_field=None,
+                to_label=None,
+                to_pk_field=None,
+                managed_by=target.ManagedBy.SYSTEM,
+            )
+
+        handler = falkor_target._TableHandler()
+        key = falkor_target._TableKey("db", "Doc")
+
+        out = handler.reconcile(key, spec(None, "id"), [], False)
+        assert out is not None and out.action.main_action is None
+        schemaless = out.tracking_record
+        assert isinstance(schemaless, statediff.MutualTrackingRecord)
+
+        # Schemaless -> schema: the new fields show up, nothing is rebuilt.
+        with_schema = spec(
+            {"id": falkor.ColumnDef("string"), "a": falkor.ColumnDef("string")},
+            "id",
+        )
+        out = handler.reconcile(key, with_schema, [schemaless], False)
+        assert out is not None
+        assert out.action.main_action is None
+        assert out.action.column_actions == {
+            "field:id": "insert",
+            "field:a": "insert",
+        }
+        assert out.child_invalidation is None
+        with_schema_tracking = out.tracking_record
+        assert isinstance(with_schema_tracking, statediff.MutualTrackingRecord)
+
+        # Primary key type change: lossy (records re-upsert), not a rebuild.
+        int_pk = spec(
+            {"id": falkor.ColumnDef("integer"), "a": falkor.ColumnDef("string")},
+            "id",
+        )
+        out_int = handler.reconcile(key, int_pk, [with_schema_tracking], False)
+        assert out_int is not None
+        assert out_int.action.main_action is None
+        assert out_int.action.column_actions == {"field:id": "replace"}
+        assert out_int.child_invalidation == "lossy"
+
+        # Primary key field change: the table is rebuilt from scratch.
+        new_pk = spec(
+            {"id": falkor.ColumnDef("string"), "a": falkor.ColumnDef("string")},
+            "a",
+        )
+        out_pk = handler.reconcile(key, new_pk, [with_schema_tracking], False)
+        assert out_pk is not None
+        assert out_pk.action.main_action == "replace"
+        assert out_pk.child_invalidation == "destructive"
+        assert out_pk.action.prev_pk_field == "id"
 
 
 # =============================================================================
@@ -500,6 +588,24 @@ async def _read_nodes(graph_name: str, label: str) -> list[dict[str, Any]]:
     return rows
 
 
+async def _count(graph_name: str, cypher: str) -> int:
+    """Run ``cypher`` (which must return a single count) and return it."""
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    g = client.select_graph(graph_name)
+    res = await g.query(cypher)
+    await client.aclose()
+    return int(res.result_set[0][0])
+
+
+async def _indexed_labels(graph_name: str) -> set[str]:
+    """Labels and relationship types that still carry an index."""
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    g = client.select_graph(graph_name)
+    res = await g.query("CALL db.indexes() YIELD label RETURN label")
+    await client.aclose()
+    return {r[0] for r in res.result_set}
+
+
 async def _read_relationships(
     graph_name: str, rel_type: str
 ) -> list[tuple[Any, Any, dict[str, Any]]]:
@@ -520,6 +626,9 @@ async def _read_relationships(
 _current_graph: str = ""
 _node_rows: list[Any] = []
 _rel_pairs: list[tuple[Any, Any]] = []
+_doc_pk: str = "filename"
+_tables_declared: bool = True
+_entity_with_schema: bool = True
 
 
 @dataclass
@@ -554,8 +663,28 @@ async def _declare_documents_only() -> None:
         table.declare_record(row=row)
 
 
+async def _declare_documents_keyed_by_doc_pk() -> None:
+    schema = await falkor.TableSchema.from_class(Document, primary_key=_doc_pk)
+    table: Any = await coco.use_mount(  # type: ignore[call-overload]
+        coco.component_subpath("setup", "doc_table"),
+        falkor.mount_table_target,  # type: ignore[arg-type]
+        KG_DB,
+        "Document",
+        schema,
+        primary_key=_doc_pk,
+    )
+    for row in _node_rows:
+        table.declare_record(row=row)
+
+
 async def _declare_entities_and_relationships() -> None:
-    entity_schema = await falkor.TableSchema.from_class(Entity, primary_key="value")
+    if not _tables_declared:
+        return
+    entity_schema = (
+        await falkor.TableSchema.from_class(Entity, primary_key="value")
+        if _entity_with_schema
+        else None
+    )
     rel_schema = await falkor.TableSchema.from_class(RelRow, primary_key="id")
     entity_table: Any = await coco.use_mount(  # type: ignore[call-overload]
         coco.component_subpath("setup", "entity_table"),
@@ -685,6 +814,128 @@ async def test_delete_removes_node(falkor_graph_name: str) -> None:
     assert {
         r["filename"] for r in await _read_nodes(falkor_graph_name, "Document")
     } == {"a.md"}
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_drop_destroys_tables_with_their_contents(
+    falkor_graph_name: str,
+) -> None:
+    """App.drop() destroys the system-managed tables: the nodes, the
+    relationships, and the indexes the connector created."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_drop", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Entity")) == 3
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
+    assert await _indexed_labels(falkor_graph_name) == {"Entity", "REL"}
+
+    await app.drop()
+
+    assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 0
+    assert await _count(falkor_graph_name, "MATCH ()-[r]->() RETURN count(r)") == 0
+    assert await _indexed_labels(falkor_graph_name) == set()
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_undeclared_tables_are_destroyed(falkor_graph_name: str) -> None:
+    """Tables that are no longer declared go the same way as on drop."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_undeclare", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    await app.update()
+    assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 2
+
+    _tables_declared = False
+    await app.update()
+    assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 0
+    assert await _indexed_labels(falkor_graph_name) == set()
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_primary_key_change_rebuilds_table(falkor_graph_name: str) -> None:
+    """Changing the primary key field rebuilds the table: nodes keyed by the
+    old field are deleted rather than left behind as untracked stragglers."""
+    global _current_graph, _node_rows, _doc_pk
+    _current_graph = falkor_graph_name
+    _node_rows = [
+        Document(filename="a.md", title="A", summary="alpha"),
+        Document(filename="b.md", title="B", summary="beta"),
+    ]
+    _doc_pk = "filename"
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_pk_change", environment=coco_env),
+        _declare_documents_keyed_by_doc_pk,
+    )
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Document")) == 2
+
+    # Re-key by title, with new titles: the old nodes match neither key.
+    _doc_pk = "title"
+    _node_rows = [
+        Document(filename="a.md", title="A2", summary="alpha"),
+        Document(filename="b.md", title="B2", summary="beta"),
+    ]
+    await app.update()
+    assert {r["title"] for r in await _read_nodes(falkor_graph_name, "Document")} == {
+        "A2",
+        "B2",
+    }
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_attaching_a_schema_keeps_nodes_and_relationships(
+    falkor_graph_name: str,
+) -> None:
+    """Attaching a schema to a schemaless table is not a rebuild: the nodes
+    stay, and so do the relationships of other tables attached to them."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    _tables_declared = True
+    _entity_with_schema = False
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_schema_attach", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    try:
+        await app.update()
+        assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
+
+        _entity_with_schema = True
+        await app.update()
+        assert len(await _read_nodes(falkor_graph_name, "Entity")) == 3
+        assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
+    finally:
+        _entity_with_schema = True
 
 
 @requires_falkordb_server

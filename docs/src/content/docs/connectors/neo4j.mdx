@@ -321,9 +321,11 @@ For each managed table, the connector creates supporting Cypher artifacts on fir
   FOR ()-[r:`<RelType>`]-() ON (r.`<pk>`)
   ```
 
-Indexes and constraints are dropped on `cocoindex drop` or when the table is no longer declared.
+A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the constraint or index is dropped. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a label with data CocoIndex doesn't own, declare the table with `managed_by="user"`.
 
-When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the schema. Record-level upserts and deletes still work.
+The same teardown happens when a table's identity changes — its primary key field, whether it is a node or relation table, or a relation table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
+
+When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the schema — and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
 
 ### Example: Node tables
 

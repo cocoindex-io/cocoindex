@@ -249,6 +249,10 @@ When adding a new public API (function, class, kwarg, configuration option), pre
 - **Exceptions for exceptional situations only.** Reserve exceptions (Python) and errors (Rust) for truly unexpected failures — not for end-of-iteration, "not found", or other expected state transitions. Use explicit return values (sentinel, enum variant, `None`) for those.
 - **Single source of truth, delete dead code, honest names.** When the same value/logic appears in multiple places, consolidate. When changes make code unreachable, delete it (and its tests, and any dead config knobs). Function and field names should describe what the implementation does today.
 
+### Rust guidelines
+
+- [dev/rust-guidelines.md](dev/rust-guidelines.md)
+
 ### Testing Guidelines
 
 We prefer end-to-end tests on user-facing APIs, over unit tests on smaller internal functions. With this said, there're cases where unit tests are necessary, e.g. for internal logic with various situations and edge cases, in which case it's usually easier to cover various scenarios with unit tests.

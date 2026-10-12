@@ -192,6 +192,9 @@ impl Environment {
 
     /// Create an app in this environment (blocking). Convenience for sync
     /// callers — creates a tokio runtime internally and awaits [`Self::app`].
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn app_blocking(&self, name: &str) -> Result<App> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -344,6 +347,9 @@ impl EnvironmentBuilder {
     }
 
     /// Build the environment (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<Environment> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -411,6 +417,9 @@ impl AppBuilder {
     }
 
     /// Build the app (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<App> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -470,6 +479,9 @@ impl App {
 
     /// Convenience: synchronously open an app with a specific DB path. Same
     /// as [`Self::open`] but blocks on a tokio runtime internally.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn open_blocking(name: &str, db_path: impl Into<PathBuf>) -> Result<App> {
         App::builder(name).db_path(db_path).build_blocking()
     }
@@ -618,6 +630,9 @@ impl App {
     }
 
     /// Run the pipeline in preview mode (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn preview_blocking<F, Fut, T>(&self, f: F) -> Result<Vec<PreviewAction>>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -763,6 +778,9 @@ impl App {
     }
 
     /// Run the pipeline once with explicit update options (blocking).
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn update_blocking_with_options<F, Fut, T>(&self, options: UpdateOptions, f: F) -> Result<T>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -790,6 +808,9 @@ impl App {
     }
 
     /// Drop all persisted state (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn drop_state_blocking(&self) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -926,7 +947,7 @@ where
         // callers want the actions, not the return value).
         self.core.result().await.map_err(Error::from)?;
         let actions = collector
-            .map(|c| std::mem::take(&mut *c.lock().unwrap()))
+            .map(|c| std::mem::take(&mut *c.lock().unwrap_or_else(|e| e.into_inner())))
             .unwrap_or_default();
         Ok(actions
             .into_iter()

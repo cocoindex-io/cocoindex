@@ -29,9 +29,10 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
+    register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -296,6 +297,7 @@ pub fn table_target_with_options(
         // host context (see `design_connectors.md` §5.5).
         format!("cocoindex/sqlite/table/{}/{}", db.name(), table_name),
         TableHandler {
+            sink: SinkCache::default(),
             db_key: db.name().to_string(),
         },
     )?;
@@ -518,6 +520,7 @@ struct RowAction {
 // ---------------------------------------------------------------------------
 
 struct TableHandler {
+    sink: SinkCache<TableAction>,
     /// Stable connection identity (the `ContextKey` name); the live pool is
     /// resolved from the host context at apply time.
     db_key: String,
@@ -578,7 +581,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         main_action,
                         column_actions,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
@@ -598,7 +601,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         main_action: Some(DiffAction::Delete),
                         column_actions: BTreeMap::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -708,6 +711,7 @@ async fn apply_table_action(
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
+        sink: SinkCache::default(),
         db_key: db_key.to_string(),
         spec,
     })))
@@ -718,6 +722,7 @@ async fn apply_table_action(
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
 }
@@ -749,7 +754,7 @@ impl TargetHandler<RowState> for RowHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(RowAction { pk, state: desired }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -850,7 +855,12 @@ async fn apply_column_actions(
 
         match action {
             DiffAction::Delete => {
-                run_best_effort(db, &format!("ALTER TABLE {table} DROP COLUMN {col_ident}")).await;
+                // A removed column that cannot be dropped (an index references
+                // it, or SQLite < 3.35) is left in place as unused.
+                let sql = format!("ALTER TABLE {table} DROP COLUMN {col_ident}");
+                if let Err(e) = sqlx::query(&sql).execute(db.pool()).await {
+                    tracing::warn!("SQLite target: could not drop removed column ({sql:?}): {e}");
+                }
             }
             DiffAction::Insert | DiffAction::Upsert => {
                 if let Some(col) = schema.columns().get(col_name) {
@@ -861,31 +871,24 @@ async fn apply_column_actions(
                     // `upsert_sql` then references. This mirrors the Postgres
                     // connector, which also adds columns nullable. The NOT NULL
                     // constraint is only applied on a full table (re)create.
-                    run_best_effort(
-                        db,
-                        &format!(
-                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}",
-                            col.sqlite_type
-                        ),
-                    )
-                    .await;
+                    add_column(db, &table, &col_ident, &col.sqlite_type).await?;
                 }
             }
             DiffAction::Replace => {
                 // SQLite has no `ALTER COLUMN TYPE`; drop then re-add. Re-add as
                 // nullable for the same reason as the Insert/Upsert arm (a NOT
-                // NULL add fails on a populated table).
+                // NULL add fails on a populated table). A failed drop would
+                // leave the old type while the new one is recorded, so it fails
+                // the apply instead, and the change is retried on the next run.
                 if let Some(col) = schema.columns().get(col_name) {
-                    run_best_effort(db, &format!("ALTER TABLE {table} DROP COLUMN {col_ident}"))
-                        .await;
-                    run_best_effort(
-                        db,
-                        &format!(
-                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}",
-                            col.sqlite_type
-                        ),
-                    )
-                    .await;
+                    let sql = format!("ALTER TABLE {table} DROP COLUMN {col_ident}");
+                    sqlx::query(&sql).execute(db.pool()).await.map_err(|e| {
+                        Error::engine(format!(
+                            "SQLite target: cannot change the type of column {col_name:?} \
+                             in {table} ({sql:?}): {e}"
+                        ))
+                    })?;
+                    add_column(db, &table, &col_ident, &col.sqlite_type).await?;
                 }
             }
         }
@@ -893,12 +896,14 @@ async fn apply_column_actions(
     Ok(())
 }
 
-/// Run a DDL statement, tolerating failure (logged at debug). Used for
-/// best-effort `ALTER TABLE` column syncing where SQLite version limits or an
-/// already-applied change make a hard error the wrong outcome.
-async fn run_best_effort(db: &Database, sql: &str) {
-    if let Err(e) = sqlx::query(sql).execute(db.pool()).await {
-        tracing::debug!("sqlite best-effort DDL skipped ({sql:?}): {e}");
+/// Add a column, tolerating only the case where it already exists (an
+/// earlier, interrupted apply added it).
+async fn add_column(db: &Database, table: &str, col_ident: &str, sqlite_type: &str) -> Result<()> {
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {col_ident} {sqlite_type}");
+    match sqlx::query(&sql).execute(db.pool()).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("duplicate column name") => Ok(()),
+        Err(e) => Err(Error::engine(format!("SQLite target: {sql:?} failed: {e}"))),
     }
 }
 
@@ -1057,11 +1062,15 @@ fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
     }
     let mut predicates = Vec::with_capacity(pk.len());
     for (idx, name) in spec.table_schema.primary_key().iter().enumerate() {
-        let col = spec.table_schema.columns().get(name).expect("pk column");
+        let col = spec.table_schema.columns().get(name).ok_or_else(|| {
+            Error::engine(format!(
+                "primary key column {name:?} is not in the table schema"
+            ))
+        })?;
         predicates.push(format!(
             "{} = {}",
             quote_ident(name),
-            sql_literal(&pk[idx], col)?
+            sql_literal(&key_part_value(&pk[idx], col), col)?
         ));
     }
     Ok(format!(
@@ -1140,6 +1149,19 @@ fn stable_key_to_json(key: &StableKey) -> Result<JsonValue> {
             "unsupported SQLite row key: {other:?}"
         ))),
     }
+}
+
+/// A row key stores a boolean key part as the string `"true"`/`"false"` (see
+/// [`json_scalar_to_stable_key`]); turn it back into a boolean for a column
+/// that holds booleans, so a row with a boolean key can be deleted.
+fn key_part_value(value: &JsonValue, col: &ColumnDef) -> JsonValue {
+    if let JsonValue::String(s) = value
+        && let Ok(b) = s.parse::<bool>()
+        && is_integer_type(&col.sqlite_type.to_ascii_lowercase())
+    {
+        return JsonValue::Bool(b);
+    }
+    value.clone()
 }
 
 fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
@@ -1414,6 +1436,27 @@ mod tests {
         assert!(stmts[1].starts_with("INSERT INTO \"items\""), "{stmts:?}");
         // Neither statement contains a `;` separator (so each runs on its own).
         assert!(stmts.iter().all(|s| !s.contains(';')), "{stmts:?}");
+    }
+
+    #[test]
+    fn row_with_boolean_primary_key_can_be_deleted() {
+        let schema = TableSchema::new(
+            [
+                ("tenant", ColumnDef::new("TEXT")),
+                ("active", ColumnDef::new("INTEGER")),
+            ],
+            ["tenant", "active"],
+        )
+        .unwrap();
+        let key = StableKey::Array(Arc::from([
+            json_scalar_to_stable_key(&JsonValue::from("true")).unwrap(),
+            json_scalar_to_stable_key(&JsonValue::Bool(true)).unwrap(),
+        ]));
+        let sql = delete_sql(&spec(schema), &stable_key_to_pk(&key).unwrap()).unwrap();
+        assert_eq!(
+            sql,
+            "DELETE FROM \"items\" WHERE \"tenant\" = 'true' AND \"active\" = 1"
+        );
     }
 
     #[test]

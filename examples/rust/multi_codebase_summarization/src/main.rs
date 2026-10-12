@@ -9,8 +9,9 @@
 //! markdown documentation.
 //!
 //! Demonstrates the mount macros and memoization layering:
-//! - `use_mount!(key, process_project(ctx, …))` — one component per project,
-//!   skipped wholesale on the component-memo fast-path when unchanged
+//! - `mount_each!("project", projects, |project| process_project(ctx, …))` — one
+//!   component per project, processed concurrently and skipped wholesale on the
+//!   component-memo fast-path when unchanged
 //! - `mount_each!(files, |file| extract_file_info(ctx, file))` — concurrent
 //!   per-file extraction, each its own component (unchanged files skip the LLM)
 //! - `#[cocoindex::function(memo)]` — project aggregation cached by project
@@ -319,10 +320,10 @@ async fn generate_markdown(
 #[cocoindex::function]
 async fn process_project(
     ctx: &Ctx,
-    project_name: String,
-    files: Vec<FileEntry>,
+    project: (String, Vec<FileEntry>),
     target: DirTarget,
 ) -> Result<()> {
+    let (project_name, files) = project;
     // Extract per-file info — one child component per file (unchanged files skip).
     let file_infos: Vec<CodebaseInfo> =
         mount_each!(files.into_iter().map(|f| (f.key(), f)), |file| {
@@ -372,6 +373,7 @@ async fn main() -> Result<()> {
             entries.sort_by_key(|e| e.file_name());
             let target = DirTarget::mount(&ctx, &output_dir)?;
 
+            let mut projects = Vec::new();
             for entry in entries {
                 let project_name = entry.file_name().to_string_lossy().to_string();
                 let project_dir = entry.path();
@@ -391,14 +393,16 @@ async fn main() -> Result<()> {
                 }
 
                 println!("Processing project: {project_name} ({} files)", files.len());
-
-                use_mount!(
-                    format!("project/{project_name}"),
-                    process_project(ctx, project_name.clone(), files, target.clone())
-                )
-                .await?;
-                println!("  Wrote {}/{project_name}.md", output_dir.display());
+                projects.push((project_name.clone(), (project_name, files)));
             }
+
+            // One component per project (`project/<name>`), processed
+            // concurrently; unchanged projects are skipped wholesale.
+            mount_each!("project", projects, |project| {
+                process_project(ctx, project, target)
+            })
+            .await?;
+            println!("Wrote project summaries to {}", output_dir.display());
 
             Ok(())
         })

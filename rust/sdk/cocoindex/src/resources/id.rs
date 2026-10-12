@@ -46,7 +46,10 @@ pub async fn generate_uuid_default(ctx: &Ctx) -> Result<Uuid> {
 /// Repeated calls with the same dependency return distinct IDs in deterministic
 /// order. IDs stay stable across runs because allocation is memoized by
 /// `(generator deps, dep, occurrence ordinal)`.
-#[derive(Debug, Clone)]
+///
+/// Not `Clone`: a copy would replay the same ordinals and hand out the same
+/// IDs again. Create one generator per scope that needs distinct IDs.
+#[derive(Debug)]
 pub struct IdGenerator {
     deps_fp: Fingerprint,
     ordinals: HashMap<Fingerprint, u64>,
@@ -105,7 +108,9 @@ impl IdGenerator {
 ///
 /// Repeated calls with the same dependency return distinct UUIDs in
 /// deterministic order.
-#[derive(Debug, Clone)]
+///
+/// Not `Clone`, for the same reason as [`IdGenerator`].
+#[derive(Debug)]
 pub struct UuidGenerator {
     deps_fp: Fingerprint,
     ordinals: HashMap<Fingerprint, u64>,

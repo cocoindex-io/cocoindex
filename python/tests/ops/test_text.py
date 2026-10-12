@@ -1,10 +1,10 @@
 """Tests for cocoindex.ops.text module."""
 
 from cocoindex.ops.text import (
-    detect_code_language,
-    SeparatorSplitter,
     CustomLanguageConfig,
     RecursiveSplitter,
+    SeparatorSplitter,
+    detect_code_language,
 )
 from cocoindex.resources.chunk import Chunk, TextPosition
 
@@ -20,6 +20,7 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="script.jl") == "julia"
     assert detect_code_language(filename="main.dart") == "dart"
     assert detect_code_language(filename="init.lua") == "lua"
+    assert detect_code_language(filename="flake.nix") == "nix"
     assert detect_code_language(filename="Main.elm") == "elm"
     assert detect_code_language(filename="index.astro") == "astro"
     assert detect_code_language(filename="deploy.sh") == "bash"
@@ -227,6 +228,27 @@ def test_recursive_splitter_with_dart() -> None:
     chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="dart")
 
     assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_nix() -> None:
+    """Test RecursiveSplitter with Nix syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "{ pkgs, ... }:\n"
+        "let\n"
+        "  package-name = pkgs.hello;\n"
+        '  greeting = "hello ${package-name}";\n'
+        "in {\n"
+        "  inherit package-name;\n"
+        "  script = ''\n"
+        '    echo "${greeting}"\n'
+        "  '';\n"
+        "}\n"
+    )
+    chunks = splitter.split(code, chunk_size=70, min_chunk_size=20, language="nix")
+
+    assert len(chunks) >= 2
     assert all(isinstance(c, Chunk) for c in chunks)
 
 
@@ -610,7 +632,6 @@ def test_recursive_splitter_accepts_code_source() -> None:
 
 def test_recursive_splitter_code_source_rejects_language_kwarg() -> None:
     import pytest
-
     from cocoindex.ops.code import CodeSource
 
     splitter = RecursiveSplitter()

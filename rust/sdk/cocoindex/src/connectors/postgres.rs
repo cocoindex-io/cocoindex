@@ -25,9 +25,10 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
+    register_root_target_states_provider,
 };
 
 #[derive(Clone)]
@@ -300,6 +301,7 @@ pub fn table_target_with_options(
             table_name
         ),
         TableHandler {
+            sink: SinkCache::default(),
             db_key: db.name().to_string(),
         },
     )?;
@@ -575,6 +577,7 @@ pub struct VectorIndexSpec {
 // ---------------------------------------------------------------------------
 
 struct TableHandler {
+    sink: SinkCache<TableAction>,
     db_key: String,
 }
 
@@ -649,7 +652,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         recreate,
                         retype_cols,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
@@ -676,7 +679,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         recreate: false,
                         retype_cols: Vec::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(|| self.table_sink()),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -689,12 +692,14 @@ impl TargetHandler<TableSpec> for TableHandler {
             (
                 "vector_index".to_string(),
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
                 }),
             ),
             (
                 "sql_command_attachment".to_string(),
                 ChildTargetDef::new::<SqlCommandSpec, _>(SqlCommandHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
                 }),
             ),
@@ -733,6 +738,7 @@ impl TableHandler {
                                 }
                                 if let Some(slot) = child_slot {
                                     slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler {
+                                        sink: SinkCache::default(),
                                         db_key: db_key.clone(),
                                         spec,
                                     }))?;
@@ -758,6 +764,7 @@ impl TableHandler {
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
 }
@@ -791,7 +798,7 @@ impl TargetHandler<RowState> for RowHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(RowAction { pk, state: desired }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -840,6 +847,7 @@ impl RowHandler {
 // ---------------------------------------------------------------------------
 
 struct VectorIndexHandler {
+    sink: SinkCache<VectorIndexAction>,
     db_key: String,
 }
 
@@ -854,32 +862,28 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
         prev: Vec<VectorIndexSpec>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
-        let prev_spec = prev.into_iter().next();
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev_spec.as_ref() == Some(d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
-        if desired.is_none() && prev_spec.is_none() && !prev_may_be_missing {
-            return Ok(None);
-        }
+        let prev_spec = prev.into_iter().next();
         match desired {
             Some(spec) => Ok(Some(TargetReconcileOutput {
                 action: TargetAction::Update(VectorIndexAction { spec: spec.clone() }),
-                sink: self.vector_index_sink(),
+                sink: self.sink.get(|| self.vector_index_sink()),
                 tracking_record: Some(spec),
                 child_invalidation: None,
             })),
-            None => {
-                let spec = prev_spec.expect("delete path implies a previous index spec");
-                Ok(Some(TargetReconcileOutput {
-                    action: TargetAction::Delete(VectorIndexAction { spec }),
-                    sink: self.vector_index_sink(),
-                    tracking_record: None,
-                    child_invalidation: None,
-                }))
-            }
+            // No recorded spec means nothing is known to exist (for example a
+            // drop that was applied before its commit was interrupted).
+            None => Ok(prev_spec.map(|spec| TargetReconcileOutput {
+                action: TargetAction::Delete(VectorIndexAction { spec }),
+                sink: self.sink.get(|| self.vector_index_sink()),
+                tracking_record: None,
+                child_invalidation: None,
+            })),
         }
     }
 }
@@ -946,6 +950,7 @@ fn collect_teardown_sql(prev: &[SqlCommandSpec]) -> Option<String> {
 }
 
 struct SqlCommandHandler {
+    sink: SinkCache<SqlCommandAction>,
     db_key: String,
 }
 
@@ -971,7 +976,7 @@ impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
                         spec: None,
                         prev_teardown_sql,
                     }),
-                    sink: self.sql_command_sink(),
+                    sink: self.sink.get(|| self.sql_command_sink()),
                     tracking_record: None,
                     child_invalidation: None,
                 }))
@@ -987,7 +992,7 @@ impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
                         spec: Some(spec.clone()),
                         prev_teardown_sql,
                     }),
-                    sink: self.sql_command_sink(),
+                    sink: self.sink.get(|| self.sql_command_sink()),
                     tracking_record: Some(spec),
                     child_invalidation: None,
                 }))
@@ -1323,11 +1328,15 @@ fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
     }
     let mut predicates = Vec::with_capacity(pk.len());
     for (idx, name) in spec.table_schema.primary_key().iter().enumerate() {
-        let col = spec.table_schema.columns().get(name).expect("pk column");
+        let col = spec.table_schema.columns().get(name).ok_or_else(|| {
+            Error::engine(format!(
+                "primary key column {name:?} is not in the table schema"
+            ))
+        })?;
         predicates.push(format!(
             "{} = {}",
             quote_ident(name),
-            sql_literal(&pk[idx], col)?
+            sql_literal(&key_part_value(&pk[idx], col), col)?
         ));
     }
     Ok(format!(
@@ -1387,6 +1396,22 @@ fn stable_key_to_json(key: &StableKey) -> Result<JsonValue> {
             "unsupported Postgres row key: {other:?}"
         ))),
     }
+}
+
+/// A row key stores a boolean key part as the string `"true"`/`"false"` (see
+/// [`json_scalar_to_stable_key`]); turn it back into a boolean for a column
+/// that holds booleans, so a row with a boolean key can be deleted.
+fn key_part_value(value: &JsonValue, col: &ColumnDef) -> JsonValue {
+    if let JsonValue::String(s) = value
+        && let Ok(b) = s.parse::<bool>()
+        && matches!(
+            col.pg_type.to_ascii_lowercase().as_str(),
+            "boolean" | "bool"
+        )
+    {
+        return JsonValue::Bool(b);
+    }
+    value.clone()
 }
 
 fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
@@ -1728,6 +1753,20 @@ fn pg_err(e: sqlx::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vector_index_orphan_delete_without_recorded_spec_is_a_no_op() {
+        let handler = VectorIndexHandler {
+            sink: SinkCache::default(),
+            db_key: "db".to_string(),
+        };
+        // What the engine sends after a drop was applied but its commit was
+        // interrupted: no live previous state, and the sink may be missing.
+        let output = handler
+            .reconcile(StableKey::Str("idx".into()), None, Vec::new(), true)
+            .unwrap();
+        assert!(output.is_none());
+    }
     use serde::Serialize;
 
     #[derive(Serialize)]
@@ -1805,6 +1844,33 @@ mod tests {
         assert_eq!(
             sql,
             "DELETE FROM \"coco_examples\".\"code_embeddings\" WHERE \"id\" = 42"
+        );
+    }
+
+    #[test]
+    fn row_with_boolean_primary_key_can_be_deleted() {
+        let spec = TableSpec {
+            pg_schema_name: None,
+            table_name: "flags".to_string(),
+            table_schema: TableSchema::new(
+                [
+                    ("tenant", ColumnDef::new("text")),
+                    ("active", ColumnDef::new("boolean")),
+                ],
+                ["tenant", "active"],
+            )
+            .unwrap(),
+            managed_by: ManagedBy::System,
+        };
+        let key = StableKey::Array(Arc::from([
+            json_scalar_to_stable_key(&JsonValue::from("true")).unwrap(),
+            json_scalar_to_stable_key(&JsonValue::Bool(true)).unwrap(),
+        ]));
+        let sql = delete_sql(&spec, &stable_key_to_pk(&key).unwrap()).unwrap();
+        // A text key part spelled "true" stays a string.
+        assert_eq!(
+            sql,
+            "DELETE FROM \"flags\" WHERE \"tenant\" = 'true' AND \"active\" = TRUE"
         );
     }
 

@@ -12,8 +12,8 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    ChildTargetDef, IntoStableKey, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
@@ -414,6 +414,20 @@ impl TableSpec {
             managed_by,
         }
     }
+
+    /// Whether `other` keys its records the same way: same MERGE pattern (label
+    /// or relationship type, primary key field, kind, endpoints). A table whose
+    /// identity changed has to be rebuilt — its existing nodes / relationships
+    /// can no longer be matched record by record. Any other change to the
+    /// declaration (a schema edit) only re-upserts records: the graph has no
+    /// server-side schema to alter.
+    fn same_identity(&self, other: &Self) -> bool {
+        self.table_name == other.table_name
+            && self.primary_key == other.primary_key
+            && self.is_relation == other.is_relation
+            && self.from_table == other.from_table
+            && self.to_table == other.to_table
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -437,9 +451,17 @@ enum KeyValue {
 }
 
 impl KeyValue {
+    /// The id's part of a relation's target-state key. Integers and ordinary
+    /// strings keep their plain form (existing keys stay stable); a string
+    /// that would read as an integer, or that starts with the escape marker,
+    /// is escaped, so `Int(1)` and `Str("1")` never share a key.
     fn key_fragment(&self) -> String {
+        const STR_ESCAPE: &str = "s:";
         match self {
             Self::Int(i) => i.to_string(),
+            Self::Str(s) if s.starts_with(STR_ESCAPE) || s.parse::<i64>().is_ok() => {
+                format!("{STR_ESCAPE}{s}")
+            }
             Self::Str(s) => s.clone(),
         }
     }
@@ -480,6 +502,7 @@ pub(crate) fn table_target_state<C: CypherExecutor>(
             table_name
         ),
         TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         },
     )?;
@@ -526,6 +549,7 @@ pub(crate) fn relation_target_state<C: CypherExecutor>(
             relation_name
         ),
         TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         },
     )?;
@@ -619,6 +643,7 @@ pub(crate) fn declare_relation_target_with_options<C: CypherExecutor>(
 }
 
 struct TableHandler<C> {
+    sink: SinkCache<TableAction>,
     graph: C,
 }
 
@@ -633,7 +658,7 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
         prev: Vec<MutualTrackingRecord<TableSpec>>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Self::Action, Self::TrackingRecord>>> {
-        let sink = table_sink(self.graph.clone());
+        let sink = self.sink.get(|| table_sink(self.graph.clone()));
         match desired {
             Some(spec) => {
                 let prev_is_empty = prev.is_empty();
@@ -649,27 +674,34 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
                     .as_ref()
                     .and_then(|r| r.prev.iter().find(|p| *p != &spec))
                     .cloned();
+                // A rebuild deletes every node / relationship of the table, so
+                // only an identity change gets one. A schema-only change keeps
+                // the table and is lossy: the records re-upsert.
+                let (action, child_invalidation) = match prev_system_spec {
+                    Some(prev_spec) if changed && !prev_spec.same_identity(&spec) => (
+                        TargetAction::Update(TableAction::Replace {
+                            prev: prev_spec,
+                            next: spec.clone(),
+                        }),
+                        Some(crate::target_state::TargetChildInvalidation::Destructive),
+                    ),
+                    _ => {
+                        let ensure = TableAction::Ensure(spec.clone());
+                        (
+                            if prev_is_empty {
+                                TargetAction::Create(ensure)
+                            } else {
+                                TargetAction::Update(ensure)
+                            },
+                            changed.then_some(crate::target_state::TargetChildInvalidation::Lossy),
+                        )
+                    }
+                };
                 Ok(Some(TargetReconcileOutput {
-                    action: if changed {
-                        if let Some(prev_spec) = prev_system_spec {
-                            TargetAction::Update(TableAction::Replace {
-                                prev: prev_spec,
-                                next: spec.clone(),
-                            })
-                        } else if prev_is_empty {
-                            TargetAction::Create(TableAction::Ensure(spec.clone()))
-                        } else {
-                            TargetAction::Update(TableAction::Ensure(spec.clone()))
-                        }
-                    } else if prev_is_empty {
-                        TargetAction::Create(TableAction::Ensure(spec.clone()))
-                    } else {
-                        TargetAction::Update(TableAction::Ensure(spec.clone()))
-                    },
+                    action,
                     sink,
                     tracking_record: Some(tracking_record),
-                    child_invalidation: changed
-                        .then_some(crate::target_state::TargetChildInvalidation::Destructive),
+                    child_invalidation,
                 }))
             }
             None => {
@@ -701,12 +733,14 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
             (
                 "vector_index".to_string(),
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    sink: SinkCache::default(),
                     graph: self.graph.clone(),
                 }),
             ),
             (
                 "node_index".to_string(),
                 ChildTargetDef::new::<NodeIndexSpec, _>(NodeIndexHandler {
+                    sink: SinkCache::default(),
                     graph: self.graph.clone(),
                 }),
             ),
@@ -737,6 +771,7 @@ struct VectorIndexAction {
 }
 
 struct VectorIndexHandler<C> {
+    sink: SinkCache<VectorIndexAction>,
     graph: C,
 }
 
@@ -753,7 +788,7 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
     ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -775,7 +810,7 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
                 field,
                 spec: desired.clone(),
             }),
-            sink: vector_index_sink(self.graph.clone()),
+            sink: self.sink.get(|| vector_index_sink(self.graph.clone())),
             tracking_record: desired,
             child_invalidation: None,
         }))
@@ -838,6 +873,7 @@ struct NodeIndexAction {
 }
 
 struct NodeIndexHandler<C> {
+    sink: SinkCache<NodeIndexAction>,
     graph: C,
 }
 
@@ -854,7 +890,7 @@ impl<C: CypherExecutor> TargetHandler<NodeIndexSpec> for NodeIndexHandler<C> {
     ) -> Result<Option<TargetReconcileOutput<NodeIndexAction, NodeIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -876,7 +912,7 @@ impl<C: CypherExecutor> TargetHandler<NodeIndexSpec> for NodeIndexHandler<C> {
                 fields,
                 present,
             }),
-            sink: node_index_sink(self.graph.clone()),
+            sink: self.sink.get(|| node_index_sink(self.graph.clone())),
             tracking_record: desired,
             child_invalidation: None,
         }))
@@ -909,6 +945,7 @@ fn node_index_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<NodeIndexAct
 }
 
 struct RecordHandler<C> {
+    sink: SinkCache<RecordAction>,
     graph: C,
     spec: TableSpec,
 }
@@ -931,7 +968,7 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
             .map_err(|e| Error::engine(e.to_string()))?;
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -951,7 +988,7 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
         Ok(Some(TargetReconcileOutput {
             action,
             tracking_record: desired_fp,
-            sink: record_sink(self.graph.clone()),
+            sink: self.sink.get(|| record_sink(self.graph.clone())),
             child_invalidation: None,
         }))
     }
@@ -994,6 +1031,7 @@ fn table_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<TableAction> {
                 };
                 if let (Some(slot), Some(spec)) = (child_slot, spec) {
                     slot.fulfill(ChildTargetDef::new::<RecordState, _>(RecordHandler {
+                        sink: SinkCache::default(),
                         graph: graph.clone(),
                         spec,
                     }))?;
@@ -1078,10 +1116,35 @@ async fn ensure_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<
     Ok(())
 }
 
+/// Destroy a system-managed table: delete its contents, then its DDL artifact.
+///
+/// The table owns its label / relationship type the way a Postgres table owns
+/// its rows: every node carrying the label (with the relationships attached to
+/// it) or every relationship of the type is deleted, whoever wrote it. The
+/// engine prunes the records' tracking without reconciling them once their
+/// container is gone, so this is where their data goes away. A label shared
+/// with data CocoIndex does not own belongs in a user-managed table, which is
+/// abandoned instead.
 async fn drop_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<()> {
     if spec.managed_by.is_user() {
         return Ok(());
     }
+    let delete_contents = match (graph.dialect(), spec.is_relation) {
+        // Neo4j: default-sized inner transactions so a large label need not fit
+        // one transaction's heap. `CALL … IN TRANSACTIONS` requires the
+        // auto-commit execution `execute` uses.
+        ("neo4j", false) => format!(
+            "MATCH (n:`{}`) CALL {{ WITH n DETACH DELETE n }} IN TRANSACTIONS",
+            spec.table_name
+        ),
+        ("neo4j", true) => format!(
+            "MATCH ()-[r:`{}`]->() CALL {{ WITH r DELETE r }} IN TRANSACTIONS",
+            spec.table_name
+        ),
+        (_, false) => format!("MATCH (n:`{}`) DETACH DELETE n", spec.table_name),
+        (_, true) => format!("MATCH ()-[r:`{}`]->() DELETE r", spec.table_name),
+    };
+    graph.execute(&delete_contents).await?;
     match (graph.dialect(), spec.is_relation) {
         ("neo4j", false) => {
             graph
@@ -1857,6 +1920,22 @@ mod tests {
     }
 
     #[test]
+    fn relation_key_fragments_distinguish_int_and_string_ids() {
+        let fragment = |id: KeyValue| id.key_fragment();
+        assert_ne!(
+            fragment(KeyValue::Int(1)),
+            fragment(KeyValue::Str("1".into()))
+        );
+        assert_ne!(
+            fragment(KeyValue::Str("1".into())),
+            fragment(KeyValue::Str("s:1".into()))
+        );
+        // Ordinary ids keep their existing key form.
+        assert_eq!(fragment(KeyValue::Int(42)), "42");
+        assert_eq!(fragment(KeyValue::Str("alice".into())), "alice");
+    }
+
+    #[test]
     fn relation_keys_are_unambiguous() {
         assert_ne!(
             relation_key("ab", "c", "d", "e"),
@@ -1967,7 +2046,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn neo4j_table_drop_drops_artifacts_not_data() {
+    async fn neo4j_table_drop_deletes_nodes_then_constraint() {
         let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let spec = TableSpec::table(
             "Meeting".to_string(),
@@ -1980,14 +2059,26 @@ mod tests {
 
         assert_eq!(
             graph.statements(),
-            vec!["DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS"]
+            vec![
+                "MATCH (n:`Meeting`) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS",
+                "DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS",
+            ]
         );
-        assert!(
-            graph
-                .statements()
-                .iter()
-                .all(|stmt| !stmt.contains("DETACH DELETE") && !stmt.contains("DELETE r"))
+    }
+
+    #[tokio::test]
+    async fn user_managed_table_drop_is_a_no_op() {
+        let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let spec = TableSpec::table(
+            "Meeting".to_string(),
+            schema,
+            crate::statediff::ManagedBy::User,
         );
+        let graph = RecordingGraph::new("neo4j");
+
+        drop_table(&graph, &spec).await.unwrap();
+
+        assert!(graph.statements().is_empty());
     }
 
     #[tokio::test]
@@ -2011,13 +2102,14 @@ mod tests {
             graph.statements(),
             vec![
                 "CREATE INDEX `coco_idx_rel_ATTENDED__id` IF NOT EXISTS FOR ()-[r:`ATTENDED`]-() ON (r.`id`)",
+                "MATCH ()-[r:`ATTENDED`]->() CALL { WITH r DELETE r } IN TRANSACTIONS",
                 "DROP INDEX `coco_idx_rel_ATTENDED__id` IF EXISTS",
             ]
         );
     }
 
     #[tokio::test]
-    async fn neo4j_table_replace_drops_old_artifact_and_recreates_children() {
+    async fn neo4j_primary_key_change_rebuilds_table() {
         let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let new_schema = TableSchema::new([("uuid", ColumnDef::new("STRING"))], "uuid").unwrap();
         let old_spec = TableSpec::table(
@@ -2032,6 +2124,7 @@ mod tests {
         );
         let graph = RecordingGraph::new("neo4j");
         let handler = TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         };
 
@@ -2058,6 +2151,7 @@ mod tests {
         assert_eq!(
             graph.statements(),
             vec![
+                "MATCH (n:`Meeting`) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS",
                 "DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS",
                 "CREATE CONSTRAINT `coco_uniq_Meeting__uuid` IF NOT EXISTS FOR (n:`Meeting`) REQUIRE n.`uuid` IS UNIQUE",
             ]
@@ -2065,7 +2159,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falkordb_table_drop_drops_artifacts_not_data() {
+    async fn schema_only_change_is_lossy_and_keeps_the_table() {
+        let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let new_schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new("INTEGER")),
+                ("title", ColumnDef::new("STRING")),
+            ],
+            "id",
+        )
+        .unwrap();
+        let old_spec = TableSpec::table(
+            "Meeting".to_string(),
+            old_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let new_spec = TableSpec::table(
+            "Meeting".to_string(),
+            new_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("neo4j");
+        let handler = TableHandler {
+            sink: SinkCache::default(),
+            graph: graph.clone(),
+        };
+
+        let out = handler
+            .reconcile(
+                StableKey::Str(Arc::from("Meeting")),
+                Some(new_spec),
+                vec![MutualTrackingRecord::new(
+                    old_spec,
+                    crate::statediff::ManagedBy::System,
+                )],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            out.child_invalidation,
+            Some(crate::target_state::TargetChildInvalidation::Lossy)
+        );
+        let children = out.sink.apply_for_test(vec![out.action]).await.unwrap();
+        assert!(children[0].is_some());
+
+        // Nothing is deleted or dropped; the constraint DDL is idempotent.
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE CONSTRAINT `coco_uniq_Meeting__id` IF NOT EXISTS FOR (n:`Meeting`) REQUIRE n.`id` IS UNIQUE",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_table_drop_deletes_nodes_then_index() {
         let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let spec = TableSpec::table(
             "Meeting".to_string(),
@@ -2078,15 +2228,12 @@ mod tests {
 
         assert_eq!(
             graph.statements(),
-            vec!["DROP INDEX FOR (e:`Meeting`) ON (e.`id`)"]
+            vec![
+                "MATCH (n:`Meeting`) DETACH DELETE n",
+                "DROP INDEX FOR (e:`Meeting`) ON (e.`id`)",
+            ]
         );
         assert_eq!(graph.constraints(), vec!["DROP NODE Meeting.id"]);
-        assert!(
-            graph
-                .statements()
-                .iter()
-                .all(|stmt| !stmt.contains("DETACH DELETE") && !stmt.contains("DELETE r"))
-        );
     }
 
     #[tokio::test]
@@ -2110,6 +2257,7 @@ mod tests {
             graph.statements(),
             vec![
                 "CREATE INDEX FOR ()-[e:`ATTENDED`]-() ON (e.`id`)",
+                "MATCH ()-[r:`ATTENDED`]->() DELETE r",
                 "DROP INDEX FOR ()-[e:`ATTENDED`]-() ON (e.`id`)",
             ]
         );
@@ -2123,7 +2271,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falkordb_table_replace_drops_old_artifact_and_recreates_children() {
+    async fn falkordb_primary_key_change_rebuilds_table() {
         let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
         let new_schema = TableSchema::new([("uuid", ColumnDef::new("STRING"))], "uuid").unwrap();
         let old_spec = TableSpec::table(
@@ -2138,6 +2286,7 @@ mod tests {
         );
         let graph = RecordingGraph::new("falkordb");
         let handler = TableHandler {
+            sink: SinkCache::default(),
             graph: graph.clone(),
         };
 
@@ -2164,6 +2313,7 @@ mod tests {
         assert_eq!(
             graph.statements(),
             vec![
+                "MATCH (n:`Meeting`) DETACH DELETE n",
                 "DROP INDEX FOR (e:`Meeting`) ON (e.`id`)",
                 "CREATE INDEX FOR (e:`Meeting`) ON (e.`uuid`)",
             ]
@@ -2187,7 +2337,10 @@ mod tests {
             schema,
             crate::statediff::ManagedBy::User,
         );
-        let handler = TableHandler { graph: FakeGraph };
+        let handler = TableHandler {
+            graph: FakeGraph,
+            sink: SinkCache::default(),
+        };
         let out = handler
             .reconcile(
                 StableKey::Str(Arc::from("Meeting")),
@@ -2215,7 +2368,10 @@ mod tests {
             schema,
             crate::statediff::ManagedBy::User,
         );
-        let handler = TableHandler { graph: FakeGraph };
+        let handler = TableHandler {
+            graph: FakeGraph,
+            sink: SinkCache::default(),
+        };
         let out = handler
             .reconcile(
                 StableKey::Str(Arc::from("Meeting")),

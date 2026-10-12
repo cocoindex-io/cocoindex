@@ -17,7 +17,8 @@ pub mod error;
     feature = "doris",
     feature = "surrealdb",
     feature = "neo4j",
-    feature = "falkordb"
+    feature = "falkordb",
+    feature = "lancedb"
 ))]
 mod finite;
 pub mod live_component;

@@ -16,7 +16,7 @@ pub use crate::resources::file::{
     MatchAllFilePathMatcher, PatternFilePathMatcher, decode_bytes,
 };
 use crate::target_state::{
-    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
@@ -435,7 +435,10 @@ pub fn declare_dir_target(ctx: &Ctx, target: DirTargetState) -> Result<DirTarget
     let provider = register_root_target_states_provider(
         ctx,
         format!("cocoindex/localfs/dir/{}", dir.to_string_lossy()),
-        FileHandler { dir: dir.clone() },
+        FileHandler {
+            dir: dir.clone(),
+            sink: SinkCache::default(),
+        },
     )?;
     Ok(DirTarget { provider, dir })
 }
@@ -502,6 +505,7 @@ struct FileAction {
 /// directory root provider.
 struct FileHandler {
     dir: PathBuf,
+    sink: SinkCache<FileAction>,
 }
 
 impl TargetHandler<Vec<u8>> for FileHandler {
@@ -529,7 +533,7 @@ impl TargetHandler<Vec<u8>> for FileHandler {
         // Skip when nothing changed.
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -541,7 +545,7 @@ impl TargetHandler<Vec<u8>> for FileHandler {
                 name,
                 content: desired,
             }),
-            sink: self.dir_sink(),
+            sink: self.sink.get(|| self.dir_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -594,6 +598,28 @@ impl FileHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_target_rewrites_unless_every_previous_state_matches() {
+        let handler = FileHandler {
+            dir: PathBuf::from("unused"),
+            sink: SinkCache::default(),
+        };
+        let key = || StableKey::Str("a.txt".into());
+        let fp = |content: &[u8]| Fingerprint::from(&content.to_vec()).unwrap();
+
+        let unchanged = handler
+            .reconcile(key(), Some(b"A".to_vec()), vec![fp(b"A")], false)
+            .unwrap();
+        assert!(unchanged.is_none());
+
+        // An interrupted commit can leave both the old and the new state
+        // tracked; the file may hold either, so it must be rewritten.
+        let ambiguous = handler
+            .reconcile(key(), Some(b"A".to_vec()), vec![fp(b"A"), fp(b"B")], false)
+            .unwrap();
+        assert!(ambiguous.is_some());
+    }
 
     #[test]
     fn walk_finds_files() {
