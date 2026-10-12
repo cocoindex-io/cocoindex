@@ -155,19 +155,6 @@ Output wording follows `cli.py` so the two CLIs read the same.
 target-state segment that was never persisted with a readable name renders as `#hex`. Carrying
 provider names over the protocol is phase 2.
 
-## Known gap: `drop` does not revert Rust root targets yet
-
-`cocoindex drop` calls `App::drop_state`, which clears the app's state db namespace. In the Rust
-SDK it does not revert target states that hang off root providers registered during the run
-(`mount_dir_target`, connector tables): the engine deletes a root target only through the
-environment's provider registry (`rust/core/src/engine/execution.rs`, "skip deleting target
-states ... provider not found"), and Rust root providers are dynamic (the name embeds the
-directory or table) and live in the root component's build state. Python registers its root
-providers at import time, so it does not hit this. This predates the CLI and affects in-process
-`drop_state` too; `tests/registered.rs::drop_reverts_root_provider_targets` (ignored) pins the
-intended behaviour. Fixing it needs a decision on root-provider lifetime in the Rust SDK; the
-CLI needs no change once `drop_state` reverts targets.
-
 ## Known limit: `--preview` and child target providers
 
 `cocoindex update --preview` passes the engine's preview mode through. The engine previews flat

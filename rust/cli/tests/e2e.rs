@@ -267,6 +267,11 @@ fn update_preview_ls_show_drop() {
         "{}",
         stdout(&drop)
     );
+    assert_eq!(
+        sb.out_files(),
+        Vec::<String>::new(),
+        "drop reverted the files"
+    );
     let ls_db = sb.cli(&["ls", "--db", &sb.db()]);
     assert_eq!(stdout(&ls_db), "No persisted apps found in the database.\n");
 }

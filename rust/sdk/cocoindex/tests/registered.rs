@@ -3,14 +3,6 @@
 //! `on_shutdown` hooks run LIFO, and the `__coco` protocol child answers `ls`,
 //! `update` (plain and `--preview`) and `drop` against the same binary.
 //!
-//! Known gap (pre-existing, not specific to the CLI): `App::drop_state` clears
-//! the app's state but does not revert target states declared through root
-//! providers registered during the run (`mount_dir_target`, connector tables).
-//! The engine deletes a root target only through the environment's provider
-//! registry (`execution.rs`, "skip deleting target states ... provider not
-//! found"), and the Rust SDK registers root providers per run instead.
-//! `drop_reverts_root_provider_targets` pins the intended behaviour.
-//!
 //! One test function: the registry is per binary and the lifespan reads its
 //! db path from an environment variable, so scenarios run in sequence.
 
@@ -220,7 +212,11 @@ async fn registered_lifespan_apps_and_protocol() {
         ),
         "{events:?}"
     );
-    // Target files are not reverted yet: see `drop_reverts_root_provider_targets`.
+    assert_eq!(
+        std::fs::read_dir(&out).unwrap().count(),
+        0,
+        "drop reverted the files"
+    );
     let (_, events, _) = child(&["ls", "--protocol", "1"]).await;
     let Some(Event::Apps { apps, .. }) = events.get(1) else {
         panic!()
@@ -228,11 +224,9 @@ async fn registered_lifespan_apps_and_protocol() {
     assert!(apps.iter().all(|a| !a.persisted));
 }
 
-/// Intended behaviour of `drop`: target states are reverted. Ignored until the
-/// Rust SDK makes root target-state providers reachable at drop time (see the
-/// module docs).
+/// `drop` reverts target states declared through a root provider, here a
+/// `mount_dir_target` file, even in a fresh app on the same db.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Rust SDK gap: drop_state does not revert root-provider target states"]
 async fn drop_reverts_root_provider_targets() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out");

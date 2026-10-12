@@ -47,7 +47,7 @@ cocoindex update                   # build, then walk ./markdown_files -> chunk 
 cocoindex update -L                # keep watching ./markdown_files for changes (Ctrl-C to stop)
 cocoindex update --preview         # planned changes (see the note below)
 cocoindex show                     # inspect the persisted state
-cocoindex drop                     # drop the app's state
+cocoindex drop                     # drop the app: its state and the Postgres table
 cargo run -- query "your query"    # cosine similarity search
 ```
 
@@ -55,10 +55,6 @@ cargo run -- query "your query"    # cosine similarity search
 CLI, `cargo run -- index [DIR]` runs one catch-up pass through the same
 `#[cocoindex::lifespan]` (`Environment::from_registered`).
 
-Two limits, both described in `dev/plans/rust-cli.md`:
-
-- `cocoindex update --preview` stops with an engine error here: preview does not
-  yet support target actions under child providers, such as the rows of a
-  Postgres table.
-- `cocoindex drop` clears the app's state but leaves the Postgres table in
-  place: dropping does not yet revert targets in the Rust SDK.
+`cocoindex update --preview` stops with an engine error here: preview does not
+yet support target actions under child providers, such as the rows of a
+Postgres table (see `dev/plans/rust-cli.md`).

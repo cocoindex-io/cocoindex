@@ -1,5 +1,6 @@
 //! App lifecycle: builder, update loop, open/run convenience API.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -12,7 +13,9 @@ use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
 use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
-use cocoindex_core::engine::target_state::TargetStateProviderRegistry;
+use cocoindex_core::engine::target_state::{
+    TargetStateProvider as CoreTargetStateProvider, TargetStateProviderRegistry,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -21,6 +24,7 @@ use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::profile::{Action, BoxedProcessor, RustProfile, Value};
 use crate::stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
+use crate::target_state::STATIC_ROOT_PROVIDERS;
 use crate::typemap::TypeMap;
 
 // ---------------------------------------------------------------------------
@@ -56,6 +60,7 @@ pub(crate) struct EnvironmentInner {
     db_path: PathBuf,
     state: Arc<TypeMap>,
     context: Arc<ContextStore>,
+    static_root_providers: StaticRootProviders,
     max_inflight_components: Option<usize>,
     shutdown_hooks: Mutex<Vec<ShutdownHook>>,
 }
@@ -78,6 +83,12 @@ pub const LMDB_MAP_SIZE_ENV: &str = "COCOINDEX_LMDB_MAP_SIZE";
 pub const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
 /// LMDB map size in bytes (4 GiB) when nothing sets it.
 pub const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
+
+/// The environment's registered [`StaticRootProvider`]s, by name.
+///
+/// [`StaticRootProvider`]: crate::target_state::StaticRootProvider
+pub(crate) type StaticRootProviders =
+    Arc<HashMap<&'static str, CoreTargetStateProvider<RustProfile>>>;
 
 impl Environment {
     /// Start building an environment.
@@ -185,6 +196,7 @@ impl Environment {
                 core_app,
                 state: self.inner.state.clone(),
                 context: self.inner.context.clone(),
+                static_root_providers: self.inner.static_root_providers.clone(),
             }),
         })
     }
@@ -319,9 +331,15 @@ impl EnvironmentBuilder {
             lmdb_max_dbs,
             lmdb_map_size,
         };
-        let providers = Arc::new(std::sync::Mutex::new(TargetStateProviderRegistry::new(
-            Default::default(),
-        )));
+        let mut registry = TargetStateProviderRegistry::new(Default::default());
+        let mut static_root_providers = HashMap::new();
+        for def in STATIC_ROOT_PROVIDERS {
+            let provider = registry
+                .register_root(def.name().to_string(), def.make_handler())
+                .map_err(Error::from)?;
+            static_root_providers.insert(def.name(), provider);
+        }
+        let providers = Arc::new(std::sync::Mutex::new(registry));
         let core_env = CoreEnvironment::<RustProfile>::new(settings, providers, ())
             .await
             .map_err(|e| Error::engine(format!("failed to open LMDB: {e}")))?;
@@ -334,6 +352,7 @@ impl EnvironmentBuilder {
                 db_path,
                 state: Arc::new(self.state),
                 context: Arc::new(self.context),
+                static_root_providers: Arc::new(static_root_providers),
                 max_inflight_components: self.max_inflight_components,
                 shutdown_hooks: Mutex::new(self.shutdown_hooks),
             }),
@@ -443,6 +462,7 @@ pub(crate) struct AppInner {
     pub(crate) core_app: CoreApp<RustProfile>,
     pub(crate) state: Arc<TypeMap>,
     pub(crate) context: Arc<ContextStore>,
+    pub(crate) static_root_providers: StaticRootProviders,
 }
 
 #[derive(Clone)]

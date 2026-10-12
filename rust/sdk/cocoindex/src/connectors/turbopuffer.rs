@@ -20,9 +20,9 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -599,17 +599,13 @@ pub fn namespace_target_with_options(
     let namespace = namespace.into();
     validate_namespace(&namespace)?;
     schema.validate_vector_dimensions()?;
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!(
-            "cocoindex/turbopuffer/namespace/{}/{}",
-            conn.name(),
-            namespace
-        ),
-        NamespaceHandler::new(conn.name().to_string()),
-    )?;
+    let provider = NAMESPACE_PROVIDER.get(ctx)?;
     Ok(provider.target_state(
-        "default",
+        NamespaceKey {
+            conn_key: conn.name().to_string(),
+            namespace: namespace.clone(),
+        }
+        .stable_key(),
         NamespaceSpec {
             namespace,
             schema,
@@ -737,6 +733,8 @@ pub struct NamespaceSpec {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct NamespaceAction {
+    /// The `ContextKey` name of the connection the namespace lives in.
+    conn_key: String,
     namespace: String,
     schema: NamespaceSchema,
     clear: bool,
@@ -759,14 +757,50 @@ fn resolve_conn(
         })
 }
 
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static NAMESPACE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<NamespaceSpec, NamespaceHandler>("cocoindex/turbopuffer/namespace");
+
+/// A namespace target state's key: the connection's `ContextKey` name plus the
+/// namespace name.
+struct NamespaceKey {
+    conn_key: String,
+    namespace: String,
+}
+
+impl NamespaceKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.conn_key)),
+            StableKey::Str(Arc::from(self.namespace)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(conn_key), StableKey::Str(namespace)] = &parts[..]
+        {
+            return Ok(Self {
+                conn_key: conn_key.to_string(),
+                namespace: namespace.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected turbopuffer namespace target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every Turbopuffer namespace target: stateless, the
+/// connection is named by each target state's [`NamespaceKey`].
 struct NamespaceHandler {
     sink: TargetActionSink<NamespaceAction>,
 }
 
-impl NamespaceHandler {
-    fn new(conn_key: String) -> Self {
+impl Default for NamespaceHandler {
+    fn default() -> Self {
         Self {
-            sink: namespace_sink(conn_key),
+            sink: namespace_sink(),
         }
     }
 }
@@ -777,11 +811,12 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<NamespaceSpec>,
         prev: Vec<MutualTrackingRecord<NamespaceSpec>>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<NamespaceAction, Self::TrackingRecord>>> {
+        let conn_key = NamespaceKey::from_stable_key(&key)?.conn_key;
         match desired {
             // Always emit when declared, so the sink fulfills the row child.
             Some(spec) => {
@@ -795,6 +830,7 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
                 let main_action = diff(resolved.as_ref());
                 let changed = matches!(main_action, Some(DiffAction::Replace));
                 let action = NamespaceAction {
+                    conn_key,
                     namespace: spec.namespace.clone(),
                     schema: spec.schema.clone(),
                     clear: changed,
@@ -826,6 +862,7 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(NamespaceAction {
+                        conn_key,
                         namespace: prev_spec.namespace,
                         schema: prev_spec.schema,
                         clear: true,
@@ -840,15 +877,14 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
     }
 }
 
-fn namespace_sink(conn_key: String) -> TargetActionSink<NamespaceAction> {
+fn namespace_sink() -> TargetActionSink<NamespaceAction> {
     TargetActionSink::from_async_fn_with_children_ctx(
         move |host_ctx, actions: Vec<(TargetAction<NamespaceAction>, Option<ChildSlot>)>| {
-            let conn_key = conn_key.clone();
             async move {
-                let conn = resolve_conn(&host_ctx, &conn_key)?;
                 for (action, child_slot) in actions {
                     match action {
                         TargetAction::Create(a) | TargetAction::Update(a) => {
+                            let conn = resolve_conn(&host_ctx, &a.conn_key)?;
                             // Namespaces are created implicitly on write; clear on
                             // schema change.
                             if a.clear && a.managed_by.is_system() {
@@ -856,7 +892,7 @@ fn namespace_sink(conn_key: String) -> TargetActionSink<NamespaceAction> {
                             }
                             if let Some(slot) = child_slot {
                                 slot.fulfill(ChildTargetDef::new::<Row, _>(RowHandler::new(
-                                    conn_key.clone(),
+                                    a.conn_key,
                                     a.namespace,
                                     a.schema,
                                 )))?;
@@ -864,6 +900,7 @@ fn namespace_sink(conn_key: String) -> TargetActionSink<NamespaceAction> {
                         }
                         TargetAction::Delete(a) => {
                             if a.managed_by.is_system() {
+                                let conn = resolve_conn(&host_ctx, &a.conn_key)?;
                                 conn.delete_namespace(&a.namespace).await?;
                             }
                         }

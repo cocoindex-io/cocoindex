@@ -314,6 +314,79 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
     Ok(())
 }
 
+/// A table that a later run no longer declares is dropped, and so is one
+/// declared when the app's state is dropped. Covers both the sync
+/// `declare_table_target` (whose row provider is run-scoped) and
+/// `mount_table_target` (whose rows are a child of the table): re-declaring the
+/// table afterwards re-inserts every row and index, so no stale row or index
+/// tracking survives the drop.
+#[tokio::test]
+async fn lancedb_undeclared_and_dropped_tables_are_removed() -> Result<()> {
+    for mount in [false, true] {
+        let tempdir = tempfile::tempdir().unwrap();
+        let uri = tempdir.path().join("lancedb_data");
+        let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+        let app = Environment::builder()
+            .db_path(tempdir.path().join(".cocoindex_db"))
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceTableRemovalTest")
+            .await?;
+        let declare = move |ctx: cocoindex::Ctx| async move {
+            let table = if mount {
+                lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?
+            } else {
+                lancedb::declare_table_target(&ctx, &DB, TABLE, schema())?
+            };
+            for id in 0..5i64 {
+                table.declare_row(
+                    &ctx,
+                    &Row {
+                        id,
+                        text: format!("document number {id}"),
+                        embedding: vec![0.0, 0.0, 0.0],
+                    },
+                )?;
+            }
+            table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+            Ok(())
+        };
+        let assert_declared = |db: LanceDatabase| async move {
+            assert!(table_exists(&db, TABLE).await, "mount={mount}");
+            assert_eq!(row_count(&db).await, 5, "mount={mount}");
+            let names = index_names(&db, TABLE).await;
+            assert!(
+                names.iter().any(|n| n == "text_fts_idx"),
+                "mount={mount}: fts index created, got {names:?}"
+            );
+        };
+
+        app.run(declare).await?;
+        assert_declared(db.clone()).await;
+
+        // A run that no longer declares the table drops it.
+        app.run(|_ctx| async { Ok(()) }).await?;
+        assert!(
+            !table_exists(&db, TABLE).await,
+            "mount={mount}: a table no longer declared is dropped"
+        );
+
+        app.run(declare).await?;
+        assert_declared(db.clone()).await;
+
+        app.drop_state().await?;
+        assert!(
+            !table_exists(&db, TABLE).await,
+            "mount={mount}: drop_state drops the table"
+        );
+
+        app.run(declare).await?;
+        assert_declared(db.clone()).await;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn lancedb_nullable_schema_only_add_does_not_upsert_rows() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
