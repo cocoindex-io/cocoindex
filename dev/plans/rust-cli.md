@@ -152,6 +152,15 @@ providers at import time, so it does not hit this. This predates the CLI and aff
 intended behaviour. Fixing it needs a decision on root-provider lifetime in the Rust SDK; the
 CLI needs no change once `drop_state` reverts targets.
 
+## Known limit: `--preview` and child target providers
+
+`cocoindex update --preview` passes the engine's preview mode through. The engine previews flat
+(leaf) target actions only and rejects actions that need child target providers
+(`rust/core/src/engine/execution.rs`, "preview currently supports flat/leaf target actions
+only"), for example rows under a Postgres table target. The CLI reports that error (exit 1).
+This is an engine limit shared with the Python SDK; the fixture app's `DirTarget` files preview
+fine.
+
 ## Example
 
 `examples/rust/text_embedding` is the validating example: `#[cocoindex::lifespan]` connects
