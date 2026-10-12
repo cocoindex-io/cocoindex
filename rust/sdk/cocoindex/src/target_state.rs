@@ -102,7 +102,17 @@ impl<V> TargetStateProvider<V> {
         }
     }
 
+    /// The provider for this provider's `att_type` attachment. A child provider
+    /// gets its handler, and so its attachments, only when the parent target
+    /// state commits: declare attachments on a mounted target (e.g. from
+    /// `mount_table_target`), not on a pending `declare_*_target` handle.
     pub fn attachment<T>(&self, ctx: &Ctx, att_type: &str) -> Result<TargetStateProvider<T>> {
+        if self.inner.handler().is_none() {
+            return Err(Error::engine(format!(
+                "cannot declare a `{att_type}` attachment on a target that is not mounted yet: \
+                 use the `mount_*` variant of the target (e.g. `mount_table_target`)"
+            )));
+        }
         let provider = ctx.register_attachment_target_provider(&self.inner, att_type)?;
         Ok(TargetStateProvider::new(provider))
     }
@@ -365,10 +375,12 @@ where
     // tripping dead-code warnings in builds without those features.
     //
     // Every action gets a child slot; the returned entry is `None` where the
-    // sink left it unfulfilled (e.g. a drop).
+    // sink left it unfulfilled (e.g. a drop). `host_ctx` is what the sink
+    // resolves connections from.
     #[cfg(all(test, any(feature = "neo4j", feature = "falkordb")))]
     pub(crate) async fn apply_for_test(
         &self,
+        host_ctx: Arc<ContextStore>,
         actions: Vec<TargetAction<A>>,
     ) -> Result<Vec<Option<ChildTargetDef>>> {
         let slots: Vec<ChildTargetSlot<RustProfile>> =
@@ -391,9 +403,7 @@ where
                 Ok((action, Some(slot.clone())))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.inner
-            .apply(&(), Arc::new(crate::ctx::ContextStore::default()), actions)
-            .await?;
+        self.inner.apply(&(), host_ctx, actions).await?;
         slots
             .iter()
             .map(|slot| Ok(slot.take()?.map(|handler| ChildTargetDef { handler })))
@@ -481,6 +491,12 @@ where
     }
 }
 
+/// Register a root target-state provider for the current run.
+///
+/// The provider exists only while a run registers it: once a run stops
+/// registering it, or on [`App::drop_state`](crate::App::drop_state), the
+/// engine cannot reach its handler, so the target states declared through it
+/// are left in place.
 pub fn register_root_target_states_provider<V, H>(
     ctx: &Ctx,
     name: impl Into<String>,
@@ -566,6 +582,58 @@ where
         crate::error::Error::engine("mount_target: child provider was not produced")
     })?;
     Ok(TargetStateProvider::new(child))
+}
+
+/// A root target-state provider that every environment registers when it is
+/// built (collected at link time in [`STATIC_ROOT_PROVIDERS`]).
+///
+/// Its handler is stateless: the target's identity (a directory, a table)
+/// lives in the target-state key or value, and runtime resources are resolved
+/// at apply time from the host context. So the engine reaches the handler
+/// outside the run that declared the target states: on `App::drop_state`, and
+/// when a run no longer declares a target.
+pub(crate) struct StaticRootProvider {
+    name: &'static str,
+    make_handler: fn() -> BoxedHandler,
+}
+
+#[linkme::distributed_slice]
+pub(crate) static STATIC_ROOT_PROVIDERS: [StaticRootProvider] = [..];
+
+impl StaticRootProvider {
+    pub(crate) const fn new<V, H>(name: &'static str) -> Self
+    where
+        V: Serialize + DeserializeOwned + Send + 'static,
+        H: TargetHandler<V> + Default,
+    {
+        Self {
+            name,
+            make_handler: make_static_handler::<V, H>,
+        }
+    }
+
+    pub(crate) fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) fn make_handler(&self) -> BoxedHandler {
+        (self.make_handler)()
+    }
+
+    /// This provider as registered in the environment `ctx` runs in. `V` must
+    /// be the value type of the handler passed to [`Self::new`].
+    pub(crate) fn get<V>(&self, ctx: &Ctx) -> Result<TargetStateProvider<V>> {
+        ctx.static_root_target_provider(self.name)
+            .map(TargetStateProvider::new)
+    }
+}
+
+fn make_static_handler<V, H>() -> BoxedHandler
+where
+    V: Serialize + DeserializeOwned + Send + 'static,
+    H: TargetHandler<V> + Default,
+{
+    boxed_handler::<V, H>(H::default())
 }
 
 fn boxed_handler<V, H>(handler: H) -> BoxedHandler

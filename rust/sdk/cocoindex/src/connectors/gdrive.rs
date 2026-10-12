@@ -472,10 +472,10 @@ impl GoogleDriveClient {
                 token_uri,
             } => {
                 let mut guard = self.inner.token_cache.lock().await;
-                if let Some(cached) = guard.as_ref() {
-                    if cached.expires_at > Instant::now() + Duration::from_secs(60) {
-                        return Ok(cached.token.clone());
-                    }
+                if let Some(cached) = guard.as_ref()
+                    && cached.expires_at > Instant::now() + Duration::from_secs(60)
+                {
+                    return Ok(cached.token.clone());
                 }
                 let jwt = make_jwt(
                     client_email,
@@ -672,10 +672,10 @@ impl GoogleDriveSource {
                     pending.push_back((file.file_id, path));
                     continue;
                 }
-                if let Some(allowed) = &self.mime_types {
-                    if !allowed.iter().any(|m| m == &file.mime_type) {
-                        continue;
-                    }
+                if let Some(allowed) = &self.mime_types
+                    && !allowed.iter().any(|m| m == &file.mime_type)
+                {
+                    continue;
                 }
                 file.path = path;
                 out.push(file.with_client(self.client.clone()));

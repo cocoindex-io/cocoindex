@@ -646,6 +646,21 @@ impl Ctx {
             .map_err(Error::from)
     }
 
+    pub(crate) fn static_root_target_provider(
+        &self,
+        name: &str,
+    ) -> Result<TargetStateProvider<RustProfile>> {
+        self.state
+            .static_root_providers
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                Error::engine(format!(
+                    "static root target provider `{name}` is not registered"
+                ))
+            })
+    }
+
     pub(crate) fn register_attachment_target_provider(
         &self,
         parent: &TargetStateProvider<RustProfile>,

@@ -29,10 +29,10 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink,
-    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
-    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
-    register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
+    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
+    TargetState, TargetStateProvider, declare_target_state, declare_target_state_with_child,
+    mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -290,19 +290,16 @@ pub fn table_target_with_options(
     if let Some(def) = &options.virtual_table_def {
         validate_vec0(&table_name, &table_schema, def)?;
     }
-    let provider = register_root_target_states_provider(
-        ctx,
+    let provider = TABLE_PROVIDER.get(ctx)?;
+    Ok(provider.target_state(
         // Stable connection identity = the ContextKey's name (`db_key`), never
         // live connection details; the pool is resolved at apply time from the
         // host context (see `design_connectors.md` §5.5).
-        format!("cocoindex/sqlite/table/{}/{}", db.name(), table_name),
-        TableHandler {
-            sink: SinkCache::default(),
+        TableKey {
             db_key: db.name().to_string(),
-        },
-    )?;
-    Ok(provider.target_state(
-        "default",
+            table_name: table_name.clone(),
+        }
+        .stable_key(),
         TableSpec {
             table_name,
             table_schema,
@@ -433,14 +430,10 @@ fn col_subkey(col_name: &str) -> String {
 }
 
 /// The `main` half of a table's composite tracking record. A change here (PK
-/// columns, their types, the virtual-table config, or the table identity)
-/// forces a full table rewrite.
+/// columns, their types, or the virtual-table config) forces a full table
+/// rewrite. The table identity is the target-state key ([`TableKey`]).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct TablePrimaryTrackingRecord {
-    /// Table identity. (Python derives this from the target-state key; the Rust
-    /// provider keys on `"default"`, so we carry it here — it also gives the
-    /// delete path the name to drop.)
-    table_name: String,
     primary_key_columns: Vec<PkColumnInfo>,
     virtual_table_def: Option<Vec0TableDef>,
 }
@@ -467,7 +460,6 @@ fn table_composite_record(spec: &TableSpec) -> TableCompositeRecord {
     let schema = &spec.table_schema;
     let pk: std::collections::HashSet<&String> = schema.primary_key().iter().collect();
     let main = TablePrimaryTrackingRecord {
-        table_name: spec.table_name.clone(),
         primary_key_columns: schema
             .primary_key()
             .iter()
@@ -497,10 +489,12 @@ fn table_composite_record(spec: &TableSpec) -> TableCompositeRecord {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
-    /// `Some` for a create/update (carrying the desired spec).
+    /// The `ContextKey` name of the database the table lives in.
+    db_key: String,
+    table_name: String,
+    /// `Some` for a create/update (carrying the desired spec); `None` for a
+    /// drop of the orphaned table.
     spec: Option<TableSpec>,
-    /// `Some` for a drop (orphaned table name).
-    drop: Option<String>,
     /// Structural action for the table itself (`None` = no structural change,
     /// reconcile columns incrementally instead).
     main_action: Option<DiffAction>,
@@ -519,11 +513,46 @@ struct RowAction {
 // Table container handler (root) + sink yielding row children
 // ---------------------------------------------------------------------------
 
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TableSpec, TableHandler>("cocoindex/sqlite/table");
+
+/// A table target state's key: the database's `ContextKey` name plus the table
+/// name. Mirrors Python's `_TableKey`.
+struct TableKey {
+    db_key: String,
+    table_name: String,
+}
+
+impl TableKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.db_key)),
+            StableKey::Str(Arc::from(self.table_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(db_key), StableKey::Str(table_name)] = &parts[..]
+        {
+            return Ok(Self {
+                db_key: db_key.to_string(),
+                table_name: table_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected sqlite table target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every SQLite table target: stateless, the database and
+/// table are named by each target state's [`TableKey`]; the live pool is
+/// resolved from the host context at apply time.
+#[derive(Default)]
 struct TableHandler {
     sink: SinkCache<TableAction>,
-    /// Stable connection identity (the `ContextKey` name); the live pool is
-    /// resolved from the host context at apply time.
-    db_key: String,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -532,11 +561,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<TableSpec>,
         prev: Vec<TableTrackingRecord>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
+        let TableKey { db_key, table_name } = TableKey::from_stable_key(&key)?;
         match desired {
             // Always emit when declared so the sink fulfills the row child.
             Some(spec) => {
@@ -576,32 +606,32 @@ impl TargetHandler<TableSpec> for TableHandler {
 
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
+                        db_key,
+                        table_name,
                         spec: Some(spec),
-                        drop: None,
                         main_action,
                         column_actions,
                     }),
-                    sink: self.sink.get(|| self.table_sink()),
+                    sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
             }
             None => {
-                let resolved = resolve_system_transition(None, prev.clone(), prev_may_be_missing);
-                if resolved.is_none() {
+                let has_system_prev = prev.iter().any(|v| v.managed_by.is_system());
+                let resolved = resolve_system_transition(None, prev, prev_may_be_missing);
+                if resolved.is_none() || !has_system_prev {
                     return Ok(None);
                 }
-                let Some(prev_record) = prev.into_iter().find(|v| v.managed_by.is_system()) else {
-                    return Ok(None);
-                };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
+                        db_key,
+                        table_name,
                         spec: None,
-                        drop: Some(prev_record.tracking_record.main.table_name),
                         main_action: Some(DiffAction::Delete),
                         column_actions: BTreeMap::new(),
                     }),
-                    sink: self.sink.get(|| self.table_sink()),
+                    sink: self.sink.get(table_sink),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -610,30 +640,24 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-impl TableHandler {
-    fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db_key = self.db_key.clone();
-        TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-                let db_key = db_key.clone();
-                async move {
-                    let db = resolve_db(&host_ctx, &db_key)?;
-                    for (action, child_slot) in actions {
-                        let a = match action {
-                            TargetAction::Create(a)
-                            | TargetAction::Update(a)
-                            | TargetAction::Delete(a) => a,
-                        };
-                        let child = apply_table_action(&db, &db_key, a).await?;
-                        if let (Some(slot), Some(child)) = (child_slot, child) {
-                            slot.fulfill(child)?;
-                        }
+fn table_sink() -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_children_ctx(
+        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
+            for (action, child_slot) in actions {
+                let a = match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => {
+                        a
                     }
-                    Ok(())
+                };
+                let db = resolve_db(&host_ctx, &a.db_key)?;
+                let child = apply_table_action(&db, a).await?;
+                if let (Some(slot), Some(child)) = (child_slot, child) {
+                    slot.fulfill(child)?;
                 }
-            },
-        )
-    }
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Resolve the live SQLite [`Database`] from the host context by its stable
@@ -653,14 +677,11 @@ fn resolve_db(
 /// Apply one resolved table action and return the row child handler
 /// definition (`None` for a drop), which the sink uses to fulfill the
 /// action's child slot. Mirrors Python's `_apply_table_actions` decision tree.
-async fn apply_table_action(
-    db: &Database,
-    db_key: &str,
-    action: TableAction,
-) -> Result<Option<ChildTargetDef>> {
+async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option<ChildTargetDef>> {
     let TableAction {
+        db_key,
+        table_name,
         spec,
-        drop,
         mut main_action,
         mut column_actions,
     } = action;
@@ -681,11 +702,6 @@ async fn apply_table_action(
         main_action,
         Some(DiffAction::Replace) | Some(DiffAction::Delete)
     ) {
-        let table_name = spec
-            .as_ref()
-            .map(|s| s.table_name.clone())
-            .or(drop)
-            .ok_or_else(|| Error::engine("SQLite drop action missing table name"))?;
         drop_table(db, &table_name).await?;
     }
 
@@ -712,7 +728,7 @@ async fn apply_table_action(
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
         sink: SinkCache::default(),
-        db_key: db_key.to_string(),
+        db_key,
         spec,
     })))
 }
