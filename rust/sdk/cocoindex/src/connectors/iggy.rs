@@ -112,22 +112,13 @@ fn sanitize_state_id(connection_string: &str) -> String {
 pub type DeletionValueFn = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
 
 /// Options for the Iggy topic target.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct IggyTopicOptions {
     /// Partition to send messages to (default `0`).
     pub partition: u32,
     /// Value to send when a previously-declared message is removed. Iggy has no
     /// tombstone, so deleting a declared message without this is an error.
     pub deletion_value_fn: Option<DeletionValueFn>,
-}
-
-impl Default for IggyTopicOptions {
-    fn default() -> Self {
-        Self {
-            partition: 0,
-            deletion_value_fn: None,
-        }
-    }
 }
 
 /// A declarative Iggy topic target — a handle to declare messages on. See the

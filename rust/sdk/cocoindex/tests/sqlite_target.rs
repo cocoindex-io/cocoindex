@@ -114,37 +114,43 @@ async fn sqlite_table_target_insert_update_delete_nochange() {
     );
 }
 
+async fn table_exists(db: &sqlite::Database, table: &str) -> bool {
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?")
+            .bind(table)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    count == 1
+}
+
 #[tokio::test]
-async fn sqlite_table_dropped_when_no_longer_declared() {
+async fn sqlite_undeclared_and_dropped_tables_are_removed() {
     let (db, _dbdir) = temp_db().await;
     let (app, _appdir) = build_app(&db).await;
 
     app.run(|ctx| declare_items(ctx, vec![item(1, "one")]))
         .await
         .unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 1);
+    assert!(table_exists(&db, "items").await);
 
-    // Re-register the table provider but declare nothing → the orphaned table
-    // is dropped (handler present, table state absent).
-    app.run(|ctx| async move {
-        let _ = sqlite::table_target(&ctx, &DB, "items", item_schema())?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 0, "orphaned system-managed table should be dropped");
+    // A run that no longer declares the table drops it.
+    app.run(|_ctx| async { Ok(()) }).await.unwrap();
+    assert!(
+        !table_exists(&db, "items").await,
+        "a system-managed table no longer declared is dropped"
+    );
+
+    app.run(|ctx| declare_items(ctx, vec![item(1, "one")]))
+        .await
+        .unwrap();
+    assert!(table_exists(&db, "items").await);
+
+    app.drop_state().await.unwrap();
+    assert!(
+        !table_exists(&db, "items").await,
+        "drop_state drops the table"
+    );
 }
 
 #[tokio::test]
@@ -182,13 +188,10 @@ async fn sqlite_user_managed_table_keeps_table_manages_rows() {
 
     // Remove all rows; the user-managed table must still exist (empty).
     app.run(|ctx| declare_user(ctx, vec![])).await.unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 1, "user-managed table must persist when empty");
+    assert!(
+        table_exists(&db, "items").await,
+        "user-managed table must persist when empty"
+    );
     assert_eq!(fetch(&db, "items").await, Vec::<(i64, String)>::new());
 }
 

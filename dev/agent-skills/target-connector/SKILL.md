@@ -428,6 +428,12 @@ def test_vector_support(connector_with_vec: tuple[Connection, Path]) -> None:
 - `python/tests/connectors/test_sqlite_target.py` - SQLite tests with vector support
 - Rust SDK target connectors live under `rust/sdk/cocoindex/src/connectors/`; see
   `sqlite.rs`, `postgres.rs`, and `doris.rs` there for relational connector patterns.
+  Register a Rust connector's root handler as a `StaticRootProvider` (the
+  `STATIC_ROOT_PROVIDERS` slice in `target_state.rs`), not per run with
+  `register_root_target_states_provider`: the handler must be stateless, with the
+  target's identity (connection `ContextKey` name, table name) in the target-state
+  key. Only then can the engine reach it on `App::drop_state` and when a run stops
+  declaring the target. Put attachments on the per-table child handler.
 
 ## Attachment Providers
 

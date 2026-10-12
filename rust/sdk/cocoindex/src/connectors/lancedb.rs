@@ -35,9 +35,10 @@ use crate::statediff::{
     diff, diff_composite, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink,
-    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
-    TargetStateProvider, declare_target_state, mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
+    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
+    TargetState, TargetStateProvider, declare_target_state, mount_target,
+    register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -336,16 +337,15 @@ pub fn table_target_with_options(
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     table_schema.validate_vector_dimensions()?;
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!("cocoindex/lancedb/table/{}/{}", db.name(), table_name),
-        TableHandler {
-            sink: SinkCache::default(),
-            db_key: db.name().to_string(),
-        },
-    )?;
+    let provider = TABLE_PROVIDER.get(ctx)?;
     Ok(provider.target_state(
-        "default",
+        // Stable connection identity = the ContextKey's name; the database is
+        // resolved at apply time from the host context.
+        TableKey {
+            db_key: db.name().to_string(),
+            table_name: table_name.clone(),
+        }
+        .stable_key(),
         TableSpec {
             table_name,
             table_schema,
@@ -377,6 +377,10 @@ pub fn declare_table_target(
     let spec = target_state.value().clone();
     let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
     declare_target_state(ctx, target_state)?;
+    // The row provider stays run-scoped (its handler holds the spec). Once a
+    // run stops declaring the table, or on `App::drop_state`, the table itself
+    // is dropped (taking its rows and indexes with it), so the engine only
+    // needs to prune this provider's unreachable row tracking, which it does.
     let rows = register_root_target_states_provider(
         ctx,
         format!(
@@ -565,6 +569,8 @@ pub struct TableSpec {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
+    /// The `ContextKey` name of the database the table lives in.
+    db_key: String,
     table_name: String,
     spec: Option<TableSpec>,
     recreate: bool,
@@ -622,9 +628,45 @@ fn resolve_db(host_ctx: &Arc<ContextStore>, db_key: &str) -> Result<Arc<LanceDat
     })
 }
 
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TableSpec, TableHandler>("cocoindex/lancedb/table");
+
+/// A table target state's key: the database's `ContextKey` name plus the table
+/// name.
+struct TableKey {
+    db_key: String,
+    table_name: String,
+}
+
+impl TableKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.db_key)),
+            StableKey::Str(Arc::from(self.table_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(db_key), StableKey::Str(table_name)] = &parts[..]
+        {
+            return Ok(Self {
+                db_key: db_key.to_string(),
+                table_name: table_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected lancedb table target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every LanceDB table target: stateless, the database is
+/// named by each target state's [`TableKey`].
+#[derive(Default)]
 struct TableHandler {
     sink: SinkCache<TableAction>,
-    db_key: String,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -633,11 +675,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<TableSpec>,
         prev: Vec<TableTrackingRecord>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
+        let db_key = TableKey::from_stable_key(&key)?.db_key;
         match desired {
             // Always emit when declared so the sink fulfills the row child.
             Some(spec) => {
@@ -662,11 +705,12 @@ impl TargetHandler<TableSpec> for TableHandler {
                         }));
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
+                        db_key,
                         table_name: spec.table_name.clone(),
                         spec: Some(spec),
                         recreate,
                     }),
-                    sink: self.sink.get(|| self.table_sink()),
+                    sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
                     child_invalidation: recreate.then_some(TargetChildInvalidation::Destructive),
                 }))
@@ -683,11 +727,12 @@ impl TargetHandler<TableSpec> for TableHandler {
                     .ok_or_else(|| Error::engine("cannot drop LanceDB table without prior spec"))?;
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
+                        db_key,
                         table_name,
                         spec: None,
                         recreate: false,
                     }),
-                    sink: self.sink.get(|| self.table_sink()),
+                    sink: self.sink.get(table_sink),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -696,45 +741,37 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-impl TableHandler {
-    fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db_key = self.db_key.clone();
-        TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-                let db_key = db_key.clone();
-                async move {
-                    let db = resolve_db(&host_ctx, &db_key)?;
-                    for (action, child_slot) in actions {
-                        match action {
-                            TargetAction::Create(a) | TargetAction::Update(a) => {
-                                let spec = a.spec.ok_or_else(|| {
-                                    Error::engine("LanceDB create/update action missing spec")
-                                })?;
-                                let mut null_backfilled_columns = HashSet::new();
-                                if spec.managed_by.is_system() {
-                                    null_backfilled_columns =
-                                        ensure_table(&db, &spec, a.recreate).await?;
-                                }
-                                if let Some(slot) = child_slot {
-                                    slot.fulfill(ChildTargetDef::new::<RowState, _>(
-                                        RowHandler::new(
-                                            db_key.clone(),
-                                            spec,
-                                            null_backfilled_columns,
-                                        ),
-                                    ))?;
-                                }
-                            }
-                            TargetAction::Delete(a) => {
-                                drop_table(&db, &a.table_name).await?;
-                            }
+fn table_sink() -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_children_ctx(
+        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
+            for (action, child_slot) in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        let spec = a.spec.ok_or_else(|| {
+                            Error::engine("LanceDB create/update action missing spec")
+                        })?;
+                        let mut null_backfilled_columns = HashSet::new();
+                        if spec.managed_by.is_system() {
+                            null_backfilled_columns = ensure_table(&db, &spec, a.recreate).await?;
+                        }
+                        if let Some(slot) = child_slot {
+                            slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler::new(
+                                a.db_key,
+                                spec,
+                                null_backfilled_columns,
+                            )))?;
                         }
                     }
-                    Ok(())
+                    TargetAction::Delete(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        drop_table(&db, &a.table_name).await?;
+                    }
                 }
-            },
-        )
-    }
+            }
+            Ok(())
+        },
+    )
 }
 
 async fn table_exists(db: &LanceDatabase, table_name: &str) -> Result<bool> {
@@ -763,12 +800,44 @@ async fn ensure_table(
             TableEvolution::Recreate => drop_table(db, &spec.table_name).await?,
         }
     }
+    create_empty_table(db, spec).await?;
+    Ok(HashSet::new())
+}
+
+async fn create_empty_table(db: &LanceDatabase, spec: &TableSpec) -> Result<()> {
     db.conn
         .create_empty_table(&spec.table_name, spec.table_schema.arrow_schema())
         .execute()
         .await
         .map_err(|e| Error::engine(format!("lancedb create table {:?}: {e}", spec.table_name)))?;
-    Ok(HashSet::new())
+    Ok(())
+}
+
+/// Open the table `table_name` for an index action. A missing table is created
+/// from `create_from` (set when the action creates the index): the engine
+/// applies one commit's sinks in no fixed order, so with
+/// [`declare_table_target`] the index sink can run before the table and row
+/// sinks. Only a missing table is created; schema evolution and recreation stay
+/// with the table sink, which owns them. Returns `None` (nothing to do) for a
+/// drop on a missing table.
+async fn open_table_for_index(
+    db: &LanceDatabase,
+    table_name: &str,
+    create_from: Option<&TableSpec>,
+) -> Result<Option<lancedb::table::Table>> {
+    if !table_exists(db, table_name).await? {
+        let Some(spec) = create_from else {
+            return Ok(None);
+        };
+        create_empty_table(db, spec).await?;
+    }
+    let table = db
+        .conn
+        .open_table(table_name)
+        .execute()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb open table for index: {e}")))?;
+    Ok(Some(table))
 }
 
 enum TableEvolution {
@@ -977,6 +1046,7 @@ impl TargetHandler<RowState> for RowHandler {
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
                     sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
+                    table: self.spec.clone(),
                 }),
             ),
             (
@@ -984,6 +1054,7 @@ impl TargetHandler<RowState> for RowHandler {
                 ChildTargetDef::new::<FtsIndexSpec, _>(FtsIndexHandler {
                     sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
+                    table: self.spec.clone(),
                 }),
             ),
         ])
@@ -1084,7 +1155,7 @@ async fn apply_rows(
     // count via the atomic `fetch_add` and exactly one in N optimizes — no reset,
     // hence no lost-increment race or double-optimize.
     let count = optimize_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    if count % TRANSACTIONS_BEFORE_OPTIMIZE == 0 {
+    if count.is_multiple_of(TRANSACTIONS_BEFORE_OPTIMIZE) {
         table
             .optimize(lancedb::table::OptimizeAction::All)
             .await
@@ -1598,6 +1669,9 @@ struct FtsIndexAction {
 struct VectorIndexHandler {
     sink: SinkCache<VectorIndexAction>,
     db_key: String,
+    /// The indexed table, created from this spec if missing when the index is
+    /// created (see [`open_table_for_index`]).
+    table: TableSpec,
 }
 
 impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
@@ -1645,9 +1719,11 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
 impl VectorIndexHandler {
     fn sink(&self) -> TargetActionSink<VectorIndexAction> {
         let db_key = self.db_key.clone();
+        let table = self.table.clone();
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
                 let db_key = db_key.clone();
+                let table = table.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     for action in actions {
@@ -1656,7 +1732,7 @@ impl VectorIndexHandler {
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        apply_vector_index(&db, action).await?;
+                        apply_vector_index(&db, &table, action).await?;
                     }
                     Ok(())
                 }
@@ -1668,6 +1744,9 @@ impl VectorIndexHandler {
 struct FtsIndexHandler {
     sink: SinkCache<FtsIndexAction>,
     db_key: String,
+    /// The indexed table, created from this spec if missing when the index is
+    /// created (see [`open_table_for_index`]).
+    table: TableSpec,
 }
 
 impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
@@ -1715,9 +1794,11 @@ impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
 impl FtsIndexHandler {
     fn sink(&self) -> TargetActionSink<FtsIndexAction> {
         let db_key = self.db_key.clone();
+        let table = self.table.clone();
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<FtsIndexAction>>| {
                 let db_key = db_key.clone();
+                let table = table.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     for action in actions {
@@ -1726,7 +1807,7 @@ impl FtsIndexHandler {
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        apply_fts_index(&db, action).await?;
+                        apply_fts_index(&db, &table, action).await?;
                     }
                     Ok(())
                 }
@@ -1762,7 +1843,11 @@ async fn drop_index_if_exists(table: &lancedb::table::Table, name: &str) -> Resu
     Ok(())
 }
 
-async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Result<()> {
+async fn apply_vector_index(
+    db: &LanceDatabase,
+    table_spec: &TableSpec,
+    action: VectorIndexAction,
+) -> Result<()> {
     use lancedb::index::Index;
     use lancedb::index::vector::{IvfHnswPqIndexBuilder, IvfPqIndexBuilder};
 
@@ -1772,15 +1857,15 @@ async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Re
     if action.managed_by.is_user() {
         return Ok(());
     }
-    if !table_exists(db, &action.table_name).await? {
+    let Some(table) = open_table_for_index(
+        db,
+        &action.table_name,
+        (action.spec.is_some() && table_spec.managed_by.is_system()).then_some(table_spec),
+    )
+    .await?
+    else {
         return Ok(());
-    }
-    let table = db
-        .conn
-        .open_table(&action.table_name)
-        .execute()
-        .await
-        .map_err(|e| Error::engine(format!("lancedb open table for vector index: {e}")))?;
+    };
 
     let Some(spec) = action.spec else {
         return drop_index_if_exists(&table, &action.name).await;
@@ -1835,7 +1920,11 @@ async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Re
         .map_err(|e| Error::engine(format!("lancedb create vector index {:?}: {e}", spec.name)))
 }
 
-async fn apply_fts_index(db: &LanceDatabase, action: FtsIndexAction) -> Result<()> {
+async fn apply_fts_index(
+    db: &LanceDatabase,
+    table_spec: &TableSpec,
+    action: FtsIndexAction,
+) -> Result<()> {
     use lancedb::index::Index;
     use lancedb::index::scalar::FtsIndexBuilder;
 
@@ -1844,15 +1933,15 @@ async fn apply_fts_index(db: &LanceDatabase, action: FtsIndexAction) -> Result<(
     if action.managed_by.is_user() {
         return Ok(());
     }
-    if !table_exists(db, &action.table_name).await? {
+    let Some(table) = open_table_for_index(
+        db,
+        &action.table_name,
+        (action.spec.is_some() && table_spec.managed_by.is_system()).then_some(table_spec),
+    )
+    .await?
+    else {
         return Ok(());
-    }
-    let table = db
-        .conn
-        .open_table(&action.table_name)
-        .execute()
-        .await
-        .map_err(|e| Error::engine(format!("lancedb open table for fts index: {e}")))?;
+    };
 
     let Some(spec) = action.spec else {
         return drop_index_if_exists(&table, &action.name).await;

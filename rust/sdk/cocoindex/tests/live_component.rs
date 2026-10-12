@@ -531,13 +531,16 @@ impl LiveComponent for AutoRefreshFailingCycle {
     }
 }
 
+/// What an exception handler saw: mount kind, background flag, stable path,
+/// error message.
+type HandlerReport = (MountKind, bool, String, String);
+
 #[tokio::test]
 async fn auto_refresh_cycle_failure_uses_inherited_handler_and_continues() {
     let (app, _dir) = temp_app("auto_refresh_handler_chain").await;
     let calls = Arc::new(AtomicUsize::new(0));
     let third_call = Arc::new(Notify::new());
-    let reports: Arc<Mutex<Vec<(MountKind, bool, String, String)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let reports: Arc<Mutex<Vec<HandlerReport>>> = Arc::new(Mutex::new(Vec::new()));
 
     let component = AutoRefreshFailingCycle {
         calls: calls.clone(),
@@ -569,7 +572,7 @@ async fn auto_refresh_cycle_failure_uses_inherited_handler_and_continues() {
         .await
         .unwrap();
     assert!(calls.load(Ordering::SeqCst) >= 3);
-    let reports = reports.lock().unwrap();
+    let reports = reports.lock().unwrap().clone();
     assert!(
         reports.iter().any(|(kind, background, path, err)| {
             *kind == MountKind::UpdateFull

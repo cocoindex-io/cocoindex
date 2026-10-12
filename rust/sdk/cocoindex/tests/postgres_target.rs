@@ -317,6 +317,67 @@ async fn postgres_sql_command_attachment_runs_setup_and_teardown_when_available(
 }
 
 #[tokio::test]
+async fn postgres_undeclared_and_dropped_tables_are_removed_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres table-removal test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_removal_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?
+        .app("PostgresTableRemovalE2ETest")
+        .await?;
+    let row = TestRow {
+        id: 1,
+        label: "one".to_string(),
+    };
+
+    app.run({
+        let schema = schema.clone();
+        let row = row.clone();
+        move |ctx| declare_rows(ctx, schema, vec![row])
+    })
+    .await?;
+    assert!(table_exists(&db, &schema, "rows").await?);
+
+    // A run that no longer declares the table drops it.
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert!(
+        !table_exists(&db, &schema, "rows").await?,
+        "a table no longer declared is dropped"
+    );
+
+    app.run({
+        let schema = schema.clone();
+        move |ctx| declare_rows(ctx, schema, vec![row])
+    })
+    .await?;
+    assert!(table_exists(&db, &schema, "rows").await?);
+
+    app.drop_state().await?;
+    assert!(
+        !table_exists(&db, &schema, "rows").await?,
+        "drop_state drops the table"
+    );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn postgres_read_table_items_keys_rows_when_available() -> Result<()> {
     let Ok(url) = std::env::var("POSTGRES_URL") else {
         eprintln!("skipping live Postgres source-items test; POSTGRES_URL is not set");
