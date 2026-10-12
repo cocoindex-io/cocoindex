@@ -123,7 +123,6 @@ impl MemoInput for bytes::Bytes {
     }
 }
 
-#[cfg(feature = "serde_json")]
 impl_serde_memo_input!(serde_json::Value);
 
 #[cfg(feature = "chrono")]
@@ -1233,7 +1232,7 @@ mod tests {
         assert!(values.memo_state(None).await.unwrap().is_none());
     }
 
-    #[cfg(all(feature = "serde_json", feature = "chrono", feature = "rust_decimal"))]
+    #[cfg(all(feature = "chrono", feature = "rust_decimal"))]
     #[test]
     fn ecosystem_schema_leaf_types_compose_in_derived_inputs() {
         #[derive(crate::MemoInput)]

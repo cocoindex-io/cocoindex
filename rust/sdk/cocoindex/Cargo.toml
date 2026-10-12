@@ -23,14 +23,13 @@ code_match = [
 fastembed = ["dep:fastembed"]
 # MemoInput leaves for ecosystem data types. Connector features below depend on
 # these public features rather than duplicating implementation cfg lists.
-serde_json = ["dep:serde_json"]
+# (`serde_json` is always available: the `__coco` CLI protocol needs it.)
 chrono = ["dep:chrono"]
 rust_decimal = ["dep:rust_decimal"]
 # Remote embeddings / transcription over an OpenAI-compatible HTTP API (`ops::api`).
-embed_api = ["serde_json", "dep:reqwest", "reqwest/multipart"]
-postgres = ["serde_json", "dep:sqlx", "chrono", "rust_decimal"]
+embed_api = ["dep:reqwest", "reqwest/multipart"]
+postgres = ["dep:sqlx", "chrono", "rust_decimal"]
 sqlite = [
-    "serde_json",
     "dep:sqlx",
     "sqlx/sqlite",
     "chrono",
@@ -39,7 +38,6 @@ sqlite = [
 # Apache Doris target: MySQL protocol (DDL/DELETE) via sqlx + Stream Load (row
 # ingestion) over HTTP via reqwest.
 doris = [
-    "serde_json",
     "dep:sqlx",
     "sqlx/mysql",
     "dep:reqwest",
@@ -48,7 +46,6 @@ doris = [
     "rust_decimal",
 ]
 surrealdb = [
-    "serde_json",
     "dep:surrealdb",
     "chrono",
     "rust_decimal",
@@ -57,7 +54,6 @@ kafka = ["dep:rskafka", "chrono"]
 iggy = ["dep:iggy"]
 amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 google_drive = [
-    "serde_json",
     "dep:reqwest",
     "dep:rsa",
     "dep:sha2",
@@ -68,7 +64,6 @@ google_drive = [
 # signing (no official Oracle Rust SDK). Reuses the google_drive crypto/HTTP
 # crates; `chrono/clock` provides the request `date` header + timestamp parsing.
 oci_object_storage = [
-    "serde_json",
     "dep:reqwest",
     "dep:rsa",
     "dep:sha2",
@@ -77,7 +72,6 @@ oci_object_storage = [
     "chrono/clock",
 ]
 lancedb = [
-    "serde_json",
     "dep:lancedb",
     "dep:arrow-array",
     "dep:arrow-schema",
@@ -86,21 +80,19 @@ lancedb = [
     "rust_decimal",
 ]
 qdrant = [
-    "serde_json",
     "dep:qdrant-client",
     "chrono",
     "rust_decimal",
 ]
 turbopuffer = [
-    "serde_json",
     "dep:reqwest",
     "chrono",
     "rust_decimal",
 ]
-neo4j = ["serde_json", "dep:neo4rs", "chrono"]
-falkordb = ["serde_json", "dep:redis", "chrono"]
+neo4j = ["dep:neo4rs", "chrono"]
+falkordb = ["dep:redis", "chrono"]
 # Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
-valkey = ["dep:redis", "serde_json"]
+valkey = ["dep:redis"]
 # Extra core store hooks for the `state_store_read` bench (its
 # `required-features`). Never enabled by production dependents.
 bench-support = ["cocoindex_core/bench-support"]
@@ -122,7 +114,9 @@ thiserror = "2"
 bytes = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
-tokio = { version = "1", features = ["fs", "sync"] }
+# `rt-multi-thread` and `signal` back `#[cocoindex::main]` and the `__coco`
+# protocol child's Ctrl-C handling.
+tokio = { version = "1", features = ["fs", "sync", "rt-multi-thread", "signal"] }
 futures = "0.3"
 tracing = "0.1"
 globset = "0.4"
@@ -136,7 +130,7 @@ rustc-hash = "2.1.1"
 # the engine's logic set at startup so transitive logic-change detection works.
 linkme = "0.3"
 uuid = { workspace = true }
-serde_json = { version = "1", optional = true }
+serde_json = "1"
 sqlx = { version = "0.8", default-features = false, optional = true, features = [
     "runtime-tokio",
     "tls-rustls",

@@ -1,9 +1,11 @@
 //! App lifecycle: builder, update loop, open/run convenience API.
 
 use std::future::Future;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use futures::future::BoxFuture;
 
 use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions};
 use cocoindex_core::engine::deadline::DeadlineContext;
@@ -51,15 +53,100 @@ pub struct Environment {
 
 pub(crate) struct EnvironmentInner {
     core_env: CoreEnvironment<RustProfile>,
+    db_path: PathBuf,
     state: Arc<TypeMap>,
     context: Arc<ContextStore>,
     max_inflight_components: Option<usize>,
+    shutdown_hooks: Mutex<Vec<ShutdownHook>>,
 }
+
+/// A teardown step registered with [`EnvironmentBuilder::on_shutdown`].
+type ShutdownHook = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
+/// Environment variable naming the default state db path (shared with the
+/// Python SDK and the `cocoindex` CLI).
+pub const DB_PATH_ENV: &str = "COCOINDEX_DB";
+/// Environment variable overriding the LMDB maximum number of named databases.
+pub const LMDB_MAX_DBS_ENV: &str = "COCOINDEX_LMDB_MAX_DBS";
+/// Environment variable overriding the LMDB map size in bytes.
+pub const LMDB_MAP_SIZE_ENV: &str = "COCOINDEX_LMDB_MAP_SIZE";
+
+const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
+const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
 
 impl Environment {
     /// Start building an environment.
     pub fn builder() -> EnvironmentBuilder {
         EnvironmentBuilder::new()
+    }
+
+    /// Build the environment the way the `cocoindex` CLI does: run every
+    /// `#[cocoindex::lifespan]` linked into this binary over a fresh builder,
+    /// then open the state db. This is the Rust analogue of Python's default
+    /// environment (`@coco.lifespan` + import): a user's own `main` and the
+    /// CLI initialize the identical environment.
+    ///
+    /// The db path must come from a lifespan (`builder.db_path(..)`) or from
+    /// the `COCOINDEX_DB` environment variable. `COCOINDEX_LMDB_MAX_DBS` and
+    /// `COCOINDEX_LMDB_MAP_SIZE` apply when a lifespan did not set them.
+    ///
+    /// # Errors
+    /// Returns an error if two `#[cocoindex::app]`s share a name, a lifespan
+    /// fails, no db path is configured, or the db cannot be opened.
+    pub async fn from_registered() -> Result<Environment> {
+        crate::registry::check_unique_app_names()?;
+        let mut builder = EnvironmentBuilder::new();
+        for lifespan in crate::registry::lifespans() {
+            builder = (lifespan.run)(builder).await.map_err(|e| {
+                Error::engine(format!(
+                    "lifespan {}::{} failed: {e}",
+                    lifespan.module, lifespan.name
+                ))
+            })?;
+        }
+        if builder.db_path.is_none() && std::env::var_os(DB_PATH_ENV).is_none() {
+            return Err(Error::engine(format!(
+                "no state db path configured: call `builder.db_path(..)` in a \
+                 #[cocoindex::lifespan] or set the {DB_PATH_ENV} environment variable"
+            )));
+        }
+        builder.build().await
+    }
+
+    /// The directory of this environment's LMDB state db.
+    pub fn db_path(&self) -> &Path {
+        &self.inner.db_path
+    }
+
+    /// Names of the apps that have persisted state in this environment's db.
+    pub async fn persisted_app_names(&self) -> Result<Vec<String>> {
+        cocoindex_core::inspect::db_inspect::list_app_names(&self.inner.core_env)
+            .await
+            .map_err(|e| Error::engine(format!("failed to list apps: {e}")))
+    }
+
+    /// Clear one app's state db namespace without reverting its target states
+    /// (the `cocoindex drop --db-only` operation). Use
+    /// [`App::drop_state`] to also revert targets.
+    pub async fn drop_app_db_only(&self, app_name: &str) -> Result<()> {
+        self.inner
+            .core_env
+            .storage()
+            .drop_app(app_name)
+            .await
+            .map_err(|e| Error::engine(format!("failed to drop app `{app_name}`: {e}")))
+    }
+
+    /// Run the `on_shutdown` hooks (most recently registered first), then
+    /// close the state db. Hooks run once; a second call only closes.
+    /// Await every running update or drop before calling this.
+    pub async fn shutdown(&self) {
+        let hooks: Vec<ShutdownHook> =
+            std::mem::take(&mut *self.inner.shutdown_hooks.lock().unwrap());
+        for hook in hooks.into_iter().rev() {
+            hook().await;
+        }
+        self.inner.core_env.close().await;
     }
 
     /// Create an app in this environment. Multiple apps may share one
@@ -101,40 +188,62 @@ impl Environment {
 /// via [`Environment::app`].
 pub struct EnvironmentBuilder {
     db_path: Option<PathBuf>,
-    lmdb_max_dbs: u32,
-    lmdb_map_size: usize,
+    lmdb_max_dbs: Option<u32>,
+    lmdb_map_size: Option<usize>,
     max_inflight_components: Option<usize>,
     state: TypeMap,
     context: ContextStore,
+    shutdown_hooks: Vec<ShutdownHook>,
 }
 
 impl EnvironmentBuilder {
     fn new() -> Self {
         Self {
             db_path: None,
-            lmdb_max_dbs: 1024,
-            lmdb_map_size: 0x1_0000_0000,
+            lmdb_max_dbs: None,
+            lmdb_map_size: None,
             max_inflight_components: None,
             state: TypeMap::new(),
             context: ContextStore::default(),
+            shutdown_hooks: Vec::new(),
         }
     }
 
-    /// Set the LMDB database directory. Default: `./coco_state`.
+    /// Set the LMDB database directory. When unset, `COCOINDEX_DB` is used,
+    /// then `./coco_state`.
     pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.db_path = Some(path.into());
         self
     }
 
-    /// Set the LMDB maximum number of named databases.
+    /// Whether [`Self::db_path`] has been called.
+    pub fn has_db_path(&self) -> bool {
+        self.db_path.is_some()
+    }
+
+    /// Set the LMDB maximum number of named databases. When unset,
+    /// `COCOINDEX_LMDB_MAX_DBS` is used, then 1024.
     pub fn lmdb_max_dbs(mut self, value: u32) -> Self {
-        self.lmdb_max_dbs = value;
+        self.lmdb_max_dbs = Some(value);
         self
     }
 
-    /// Set the LMDB map size in bytes.
+    /// Set the LMDB map size in bytes. When unset, `COCOINDEX_LMDB_MAP_SIZE`
+    /// is used, then 4 GiB.
     pub fn lmdb_map_size(mut self, value: usize) -> Self {
-        self.lmdb_map_size = value;
+        self.lmdb_map_size = Some(value);
+        self
+    }
+
+    /// Register a teardown step for [`Environment::shutdown`]. Hooks run in
+    /// reverse registration order, before the state db is closed — the Rust
+    /// analogue of the code after `yield` in a Python lifespan.
+    pub fn on_shutdown<F, Fut>(mut self, hook: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.shutdown_hooks.push(Box::new(move || Box::pin(hook())));
         self
     }
 
@@ -186,14 +295,25 @@ impl EnvironmentBuilder {
         // (see `crate::logic`). Idempotent across builds.
         crate::logic::register_all_fn_logic();
 
-        let db_path = self
-            .db_path
-            .unwrap_or_else(|| PathBuf::from("./coco_state"));
+        let db_path = match self.db_path {
+            Some(path) => path,
+            None => std::env::var_os(DB_PATH_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("./coco_state")),
+        };
+        let lmdb_max_dbs = match self.lmdb_max_dbs {
+            Some(value) => value,
+            None => env_setting(LMDB_MAX_DBS_ENV)?.unwrap_or(DEFAULT_LMDB_MAX_DBS),
+        };
+        let lmdb_map_size = match self.lmdb_map_size {
+            Some(value) => value,
+            None => env_setting(LMDB_MAP_SIZE_ENV)?.unwrap_or(DEFAULT_LMDB_MAP_SIZE),
+        };
 
         let settings = EnvironmentSettings {
-            db_path,
-            lmdb_max_dbs: self.lmdb_max_dbs,
-            lmdb_map_size: self.lmdb_map_size,
+            db_path: db_path.clone(),
+            lmdb_max_dbs,
+            lmdb_map_size,
         };
         let providers = Arc::new(std::sync::Mutex::new(TargetStateProviderRegistry::new(
             Default::default(),
@@ -207,9 +327,11 @@ impl EnvironmentBuilder {
         Ok(Environment {
             inner: Arc::new(EnvironmentInner {
                 core_env,
+                db_path,
                 state: Arc::new(self.state),
                 context: Arc::new(self.context),
                 max_inflight_components: self.max_inflight_components,
+                shutdown_hooks: Mutex::new(self.shutdown_hooks),
             }),
         })
     }
@@ -219,6 +341,18 @@ impl EnvironmentBuilder {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
         rt.block_on(self.build())
+    }
+}
+
+/// Read an integer setting from the environment; `Ok(None)` when unset.
+fn env_setting<T: std::str::FromStr>(name: &str) -> Result<Option<T>> {
+    match std::env::var(name) {
+        Ok(raw) => raw
+            .trim()
+            .parse::<T>()
+            .map(Some)
+            .map_err(|_| Error::engine(format!("{name} must be an integer, got {raw:?}"))),
+        Err(_) => Ok(None),
     }
 }
 
