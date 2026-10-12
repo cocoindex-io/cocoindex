@@ -159,7 +159,8 @@ async fn registered_lifespan_apps_and_protocol() {
         Some(Event::Done {
             stats: None,
             cancelled: false,
-            dropped: None
+            dropped: None,
+            aborted: false,
         })
     ));
     // The app's own `println!` goes to the process stdout here (in-process

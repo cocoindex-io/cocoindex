@@ -64,16 +64,34 @@ impl Sandbox {
     }
 
     fn cli(&self, args: &[&str]) -> Output {
+        self.cli_with_input(args, "")
+    }
+
+    /// Run the CLI with `input` on its stdin (answers to its prompts).
+    fn cli_with_input(&self, args: &[&str], input: &str) -> Output {
+        use std::io::Write as _;
         let started = std::time::Instant::now();
-        let output = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
             .args(args)
             .current_dir(self.dir.path())
             .env("COCOINDEX_DB", self.path("db"))
             .env("FIXTURE_SRC", self.path("src"))
             .env("FIXTURE_OUT", self.path("out"))
             .env_remove("RUST_LOG")
-            .output()
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .expect("run the cocoindex binary");
+        child
+            .stdin
+            .take()
+            .expect("stdin is piped")
+            .write_all(input.as_bytes())
+            .expect("write the CLI's stdin");
+        let output = child
+            .wait_with_output()
+            .expect("wait for the cocoindex binary");
         eprintln!(
             "[{:.1}s] $ cocoindex {}\n--- stdout\n{}--- stderr\n{}",
             started.elapsed().as_secs_f64(),
@@ -279,6 +297,18 @@ fn reset_db_only_and_prompts() {
     assert!(stdout(&declined).contains("its target states are NOT reverted"));
     assert!(stdout(&declined).contains("Drop operation aborted."));
 
+    // Answering the prompt: the lifespan runs once (one shutdown line).
+    let reset = sb.cli_with_input(&["update", "--reset", &exe_target("FixtureApp")], "yes\n");
+    assert_ok(&reset);
+    assert!(stdout(&reset).contains("1 added"), "{}", stdout(&reset));
+    assert_eq!(stderr(&reset).matches("fixture: shutdown").count(), 1);
+
+    let cleared = sb.cli_with_input(&["drop", "--db-only", &exe_target("FixtureApp")], "YES\n");
+    assert_ok(&cleared);
+    assert!(stdout(&cleared).contains("Cleared the state of app 'FixtureApp'."));
+    assert_eq!(stderr(&cleared).matches("fixture: shutdown").count(), 1);
+    assert_ok(&sb.cli(&["update", "-q", &exe_target("FixtureApp")]));
+
     let cleared = sb.cli(&["drop", "-f", "--db-only", &exe_target("FixtureApp")]);
     assert_ok(&cleared);
     assert!(stdout(&cleared).contains("Cleared the state of app 'FixtureApp'."));
@@ -368,4 +398,57 @@ fn env_file_is_loaded() {
     assert!(stderr(&output).contains("Loaded environment variables from:"));
     assert_eq!(sb.out_files(), ["a.txt"]);
     assert!(!sb.path("elsewhere").exists());
+}
+
+/// Ctrl-C while the lifespan is still running cancels cleanly: the CLI prints
+/// `Stopping...`, the child reports a cancel, and both exit 0 right away.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_during_the_lifespan_is_a_cancel() {
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+
+    let sb = Sandbox::new(&[("a.txt", "alpha")]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
+        .args(["update", &exe_target("FixtureApp")])
+        .current_dir(sb.dir.path())
+        .env("COCOINDEX_DB", sb.path("db"))
+        .env("FIXTURE_SRC", sb.path("src"))
+        .env("FIXTURE_OUT", sb.path("out"))
+        .env("FIXTURE_SLOW_LIFESPAN", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run the cocoindex binary");
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut seen = String::new();
+    let mut line = String::new();
+    while stderr.read_line(&mut line).unwrap() > 0 {
+        seen.push_str(&line);
+        if line.contains("slow lifespan started") {
+            break;
+        }
+        line.clear();
+    }
+    assert!(seen.contains("slow lifespan started"), "{seen}");
+
+    let started = Instant::now();
+    let status = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut stderr, &mut rest).unwrap();
+    let status = child.wait().unwrap();
+    eprintln!("{seen}{rest}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "did not wait for the lifespan"
+    );
+    assert_eq!(status.code(), Some(0), "a cancel is a clean exit");
+    assert!(rest.contains("Stopping..."), "{rest}");
+    assert!(!rest.contains("without reporting a result"), "{rest}");
+    assert_eq!(sb.out_files(), Vec::<String>::new(), "nothing ran");
 }

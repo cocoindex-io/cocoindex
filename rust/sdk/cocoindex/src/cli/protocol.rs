@@ -41,6 +41,11 @@ pub enum Event {
         ready: bool,
         by_component: BTreeMap<String, ComponentStatsWire>,
     },
+    /// The child needs a yes/no answer before a destructive step (`drop`, or
+    /// `update --reset` with state to drop); sent only when the CLI passed
+    /// `--confirm`. The CLI answers with one line, `yes` or `no`, on the
+    /// child's stdin.
+    Confirm { action: ConfirmAction, app: String },
     /// One planned target action from an `update --preview`.
     Preview {
         kind: PreviewKind,
@@ -55,6 +60,9 @@ pub enum Event {
         cancelled: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dropped: Option<bool>,
+        /// The user answered `no` to a `confirm`; nothing was changed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        aborted: bool,
     },
     /// Terminal: the verb failed.
     Error { message: String },
@@ -137,6 +145,18 @@ impl std::fmt::Display for RunStatsWire {
             self.processed, self.written, self.skipped, self.deleted, self.elapsed_secs
         )
     }
+}
+
+/// The destructive step a `confirm` record asks about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmAction {
+    /// Drop the app and revert its target states.
+    Drop,
+    /// Clear the app's state db namespace only (`drop --db-only`).
+    DropDbOnly,
+    /// Drop the app's state before updating (`update --reset`).
+    Reset,
 }
 
 /// The kind of a previewed target action.
@@ -255,11 +275,17 @@ mod tests {
                 }),
                 cancelled: false,
                 dropped: None,
+                aborted: false,
             },
             Event::Done {
                 stats: None,
                 cancelled: true,
                 dropped: Some(false),
+                aborted: true,
+            },
+            Event::Confirm {
+                action: ConfirmAction::DropDbOnly,
+                app: "A".into(),
             },
             Event::Error {
                 message: "boom".into(),
@@ -290,6 +316,7 @@ mod tests {
             stats: None,
             cancelled: false,
             dropped: None,
+            aborted: false,
         });
         assert_eq!(
             line,

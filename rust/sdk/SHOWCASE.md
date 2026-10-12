@@ -114,8 +114,8 @@ cocoindex::context_key!(
   recursively, so the containing type does not need `Serialize`. Resource
   types can define a stable identity and external-state validation themselves.
 - `MemoInput` composes through `Option`, sequences, tuples, maps, sets, `Box`,
-  and `Arc`. UUID support is always available; enable the standalone
-  `serde_json`, `chrono`, or `rust_decimal` feature for those leaf types.
+  and `Arc`. UUID and `serde_json::Value` support is always available; enable
+  the standalone `chrono` or `rust_decimal` feature for those leaf types.
   Connector features enable the corresponding leaf feature automatically.
   Wrap other third-party leaf types in a newtype when they appear inside
   derived data.

@@ -1,10 +1,11 @@
 //! Run a user binary as a `__coco` protocol child and read its records.
 
+use std::io::Write as _;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 
-use cocoindex::cli::protocol::{Event, Line, MARKER, PROTOCOL_VERSION, decode_line};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use cocoindex::cli::protocol::{ConfirmAction, Event, Line, MARKER, PROTOCOL_VERSION, decode_line};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::{CliError, CliResult, fail};
 
@@ -52,8 +53,49 @@ pub enum Interrupt {
     Cancel { quiet: bool },
 }
 
+/// The question for a `confirm` record; the user must type `yes`.
+fn confirm_prompt(action: ConfirmAction, app: &str) -> String {
+    match action {
+        ConfirmAction::Drop => format!("Type 'yes' to drop app '{app}' and all its target states"),
+        ConfirmAction::DropDbOnly => format!(
+            "Type 'yes' to clear the state of app '{app}' (its target states are NOT reverted)"
+        ),
+        ConfirmAction::Reset => format!("Type 'yes' to reset app '{app}' (drop existing state)"),
+    }
+}
+
+/// Prompt on this process's terminal from a plain thread, so a pending read
+/// neither blocks the protocol loop (Ctrl-C still works) nor holds up exit.
+fn ask(prompt: String) -> tokio::sync::oneshot::Receiver<bool> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "{prompt}: ");
+        let _ = out.flush();
+        drop(out);
+        let mut answer = String::new();
+        let yes = std::io::stdin().read_line(&mut answer).is_ok()
+            && answer.trim().eq_ignore_ascii_case("yes");
+        let _ = tx.send(yes);
+    });
+    rx
+}
+
+async fn pending_answer(answer: &mut Option<tokio::sync::oneshot::Receiver<bool>>) -> bool {
+    match answer {
+        Some(rx) => {
+            let yes = rx.await.unwrap_or(false);
+            *answer = None;
+            yes
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Run `<exe> __coco <verb> --protocol N <flags>` and feed its output to
-/// `on_output`. The first record must be a matching `hello`.
+/// `on_output`. The first record must be a matching `hello`. A `confirm`
+/// record (sent when `flags` has `--confirm`) is answered here: the user is
+/// prompted and the answer goes to the child's stdin.
 pub async fn run(
     exe: &Path,
     verb: &str,
@@ -61,6 +103,7 @@ pub async fn run(
     interrupt: Interrupt,
     mut on_output: impl FnMut(Output<'_>),
 ) -> CliResult<Outcome> {
+    let confirming = flags.iter().any(|f| f == "--confirm");
     let mut interrupts = match interrupt {
         Interrupt::Default => None,
         Interrupt::Cancel { .. } => Some(Interrupts::install()?),
@@ -78,13 +121,19 @@ pub async fn run(
         .arg("--protocol")
         .arg(PROTOCOL_VERSION.to_string())
         .args(flags)
-        .stdin(Stdio::null())
+        .stdin(if confirming {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .map_err(fail(&format!("could not run {}", exe.display())))?;
     let pid = child.id();
+    let mut child_stdin = child.stdin.take();
+    let mut answer: Option<tokio::sync::oneshot::Receiver<bool>> = None;
     let mut reader = BufReader::new(child.stdout.take().expect("stdout is piped"));
 
     let mut buf = Vec::new();
@@ -137,11 +186,30 @@ pub async fn run(
                             }
                             continue;
                         }
+                        if let Event::Confirm { action, app } = &event {
+                            if child_stdin.is_none() || answer.is_some() {
+                                mismatch = Some(CliError::usage(
+                                    "the target binary asked for a confirmation that was not expected",
+                                ));
+                                let _ = child.start_kill();
+                                continue;
+                            }
+                            answer = Some(ask(confirm_prompt(*action, app)));
+                            continue;
+                        }
                         if matches!(event, Event::Done { .. } | Event::Error { .. }) {
                             terminal = Some(event.clone());
                         }
                         on_output(Output::Event(event));
                     }
+                }
+            }
+            yes = pending_answer(&mut answer) => {
+                if let Some(stdin) = child_stdin.as_mut() {
+                    let reply: &[u8] = if yes { b"yes\n" } else { b"no\n" };
+                    // A closed pipe means the child already ended.
+                    let _ = stdin.write_all(reply).await;
+                    let _ = stdin.flush().await;
                 }
             }
             Some(()) = next_interrupt(&mut interrupts) => {
@@ -236,4 +304,22 @@ fn forward_interrupt(pid: Option<u32>) {
     }
     #[cfg(not(unix))]
     let _ = pid; // The console delivers Ctrl-C to the whole process group.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirm_prompts_match_the_python_cli() {
+        assert_eq!(
+            confirm_prompt(ConfirmAction::Drop, "A"),
+            "Type 'yes' to drop app 'A' and all its target states"
+        );
+        assert_eq!(
+            confirm_prompt(ConfirmAction::Reset, "A"),
+            "Type 'yes' to reset app 'A' (drop existing state)"
+        );
+        assert!(confirm_prompt(ConfirmAction::DropDbOnly, "A").contains("NOT reverted"));
+    }
 }

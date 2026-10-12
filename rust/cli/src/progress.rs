@@ -35,37 +35,6 @@ fn group(stats: &ComponentStatsWire) -> ProcessingStatsGroup {
     }
 }
 
-/// The display group of a component's stats. The Rust SDK names a mounted
-/// component `mount:<key>` (`Ctx` mounts in `ctx.rs`): `mount_each!` keys are
-/// `<function>/<item>`, `mount_each_live` keys are the bare item. One line per
-/// item would flood the display, so items share a line: per function when the
-/// key names one (as the Python CLI groups by function), else `mount:*`.
-fn display_group(name: &str) -> &str {
-    match name.strip_prefix("mount:") {
-        Some(rest) => match rest.find('/') {
-            Some(slash) => &name[.."mount:".len() + slash],
-            None => "mount:*",
-        },
-        None => name,
-    }
-}
-
-fn group_components(
-    components: BTreeMap<String, ComponentStatsWire>,
-) -> BTreeMap<String, ComponentStatsWire> {
-    let mut grouped: BTreeMap<String, ComponentStatsWire> = BTreeMap::new();
-    for (name, stats) in components {
-        let entry = grouped.entry(display_group(&name).to_string()).or_default();
-        entry.num_execution_starts += stats.num_execution_starts;
-        entry.num_unchanged += stats.num_unchanged;
-        entry.num_adds += stats.num_adds;
-        entry.num_deletes += stats.num_deletes;
-        entry.num_reprocesses += stats.num_reprocesses;
-        entry.num_errors += stats.num_errors;
-    }
-    grouped
-}
-
 impl Renderer {
     pub fn new(quiet: bool, live: bool) -> Self {
         Self {
@@ -97,7 +66,7 @@ impl Renderer {
         if became_ready {
             self.ready_after = Some(self.started.elapsed());
         }
-        self.components = group_components(components);
+        self.components = components;
         let due = self.last_draw.is_none_or(|t| t.elapsed() >= MIN_REDRAW);
         if due || became_ready {
             self.clear();
@@ -146,34 +115,5 @@ impl Renderer {
             .iter()
             .map(|(name, stats)| format_component_line(name, &group(stats), 0))
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn groups_mounted_items_by_function() {
-        assert_eq!(display_group("mount:upper/a.txt"), "mount:upper");
-        assert_eq!(display_group("mount:upper/dir/b.txt"), "mount:upper");
-        assert_eq!(display_group("mount:notes.md"), "mount:*");
-        assert_eq!(display_group("app:Fixture"), "app:Fixture");
-
-        let mut components = BTreeMap::new();
-        for (name, adds) in [("app:A", 1), ("mount:f/x", 2), ("mount:f/y", 3)] {
-            components.insert(
-                name.to_string(),
-                ComponentStatsWire {
-                    num_execution_starts: 1,
-                    num_adds: adds,
-                    ..Default::default()
-                },
-            );
-        }
-        let grouped = group_components(components);
-        assert_eq!(grouped.len(), 2);
-        assert_eq!(grouped["mount:f"].num_adds, 5);
-        assert_eq!(grouped["mount:f"].num_execution_starts, 2);
     }
 }

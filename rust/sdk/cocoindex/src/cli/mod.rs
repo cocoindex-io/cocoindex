@@ -10,15 +10,18 @@
 
 pub mod protocol;
 
+use std::future::Future;
 use std::io::Write;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::app::{Environment, Progress, UpdateOptions};
-use crate::error::{Error, Result};
+use crate::error::Error;
 use crate::registry::{self, AppEntry};
-use protocol::{AppInfo, Event, MARKER, PROTOCOL_VERSION, PreviewKind, RunStatsWire, encode};
+use protocol::{
+    AppInfo, ConfirmAction, Event, MARKER, PROTOCOL_VERSION, PreviewKind, RunStatsWire, encode,
+};
 
 /// Exit codes of a protocol child: success, failure, usage or protocol error.
 const EXIT_OK: u8 = 0;
@@ -92,37 +95,6 @@ pub async fn dispatch_to(args: Vec<String>, out: &mut (dyn Write + Send)) -> Exi
     }
 }
 
-/// Converts a `#[cocoindex::main]` body's return value into the process exit
-/// code. Implemented for `()`, `std::process::ExitCode` and `Result<(), E>`.
-#[doc(hidden)]
-pub trait IntoMainExit {
-    fn into_exit_code(self) -> ExitCode;
-}
-
-impl IntoMainExit for () {
-    fn into_exit_code(self) -> ExitCode {
-        ExitCode::SUCCESS
-    }
-}
-
-impl IntoMainExit for ExitCode {
-    fn into_exit_code(self) -> ExitCode {
-        self
-    }
-}
-
-impl<E: std::fmt::Display> IntoMainExit for std::result::Result<(), E> {
-    fn into_exit_code(self) -> ExitCode {
-        match self {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("error: {err}");
-                ExitCode::FAILURE
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Child-side argument parsing
 // ---------------------------------------------------------------------------
@@ -144,6 +116,8 @@ struct ChildArgs {
     preview: bool,
     reset: bool,
     db_only: bool,
+    /// Ask the CLI (`confirm` record, answer on stdin) before destroying state.
+    confirm: bool,
 }
 
 impl ChildArgs {
@@ -165,6 +139,7 @@ impl ChildArgs {
             preview: false,
             reset: false,
             db_only: false,
+            confirm: false,
         };
         while let Some(arg) = iter.next() {
             match arg.as_str() {
@@ -187,6 +162,7 @@ impl ChildArgs {
                 "--preview" => parsed.preview = true,
                 "--reset" => parsed.reset = true,
                 "--db-only" => parsed.db_only = true,
+                "--confirm" => parsed.confirm = true,
                 other => return Err(format!("unknown __coco flag `{other}`")),
             }
         }
@@ -207,6 +183,10 @@ impl ChildArgs {
         flag_allowed("--reset", !parsed.reset || is_update)?;
         flag_allowed("--db-only", !parsed.db_only || verb == Verb::Drop)?;
         flag_allowed("--app", parsed.app.is_none() || verb != Verb::Ls)?;
+        flag_allowed(
+            "--confirm",
+            !parsed.confirm || verb == Verb::Drop || (is_update && parsed.reset),
+        )?;
         Ok(parsed)
     }
 }
@@ -326,23 +306,117 @@ fn watch_ctrl_c() {
     });
 }
 
+/// Start a cancellable verb (`update`, `drop`) before anything else runs, so
+/// a Ctrl-C during the lifespan is a cancel too: clear any earlier
+/// cancellation and turn Ctrl-C into engine cancellation.
+fn arm_cancellation() {
+    cocoindex_core::engine::runtime::reset_global_cancellation();
+    CANCELLED.store(false, Ordering::SeqCst);
+    watch_ctrl_c();
+}
+
+fn cancelled() -> bool {
+    CANCELLED.load(Ordering::SeqCst)
+}
+
+/// Run `fut` unless Ctrl-C cancels first (`None`). Dropping the future stops
+/// a lifespan or a prompt mid-way; the process ends right after.
+async fn until_cancelled<T>(fut: impl Future<Output = T>) -> Option<T> {
+    let token = cocoindex_core::engine::runtime::global_cancellation_token();
+    tokio::select! {
+        value = fut => Some(value),
+        () = token.cancelled() => None,
+    }
+}
+
+fn emit_done(emitter: &mut Emitter<'_>, stats: Option<RunStatsWire>, dropped: Option<bool>) {
+    emitter.emit(&Event::Done {
+        stats,
+        cancelled: false,
+        dropped,
+        aborted: false,
+    });
+}
+
+fn emit_cancelled(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
+    emitter.emit(&Event::Done {
+        stats: None,
+        cancelled: true,
+        dropped: None,
+        aborted: false,
+    });
+    Ok(EXIT_OK)
+}
+
+fn emit_aborted(
+    emitter: &mut Emitter<'_>,
+    dropped: Option<bool>,
+) -> std::result::Result<u8, Failure> {
+    emitter.emit(&Event::Done {
+        stats: None,
+        cancelled: false,
+        dropped,
+        aborted: true,
+    });
+    Ok(EXIT_OK)
+}
+
+/// A failed step after Ctrl-C is the cancellation surfacing (the engine
+/// reports a cancelled operation as an error), not a failure.
+fn cancel_or(
+    emitter: &mut Emitter<'_>,
+    outcome: std::result::Result<u8, Failure>,
+) -> std::result::Result<u8, Failure> {
+    match outcome {
+        Err(Failure::Error(_)) if cancelled() => emit_cancelled(emitter),
+        other => other,
+    }
+}
+
+enum Answer {
+    Yes,
+    No,
+    Cancelled,
+}
+
+/// Ask the CLI to confirm `action`, and wait for its one-line answer on stdin
+/// (EOF counts as `no`). The read runs on a plain thread so a pending read
+/// never holds up the runtime's shutdown.
+async fn confirm(emitter: &mut Emitter<'_>, action: ConfirmAction, app: &str) -> Answer {
+    emitter.emit(&Event::Confirm {
+        action,
+        app: app.to_string(),
+    });
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let yes = std::io::stdin().read_line(&mut line).is_ok() && line.trim() == "yes";
+        let _ = tx.send(yes);
+    });
+    match until_cancelled(rx).await {
+        None => Answer::Cancelled,
+        Some(Ok(true)) => Answer::Yes,
+        Some(_) => Answer::No,
+    }
+}
+
 async fn run_update(
     emitter: &mut Emitter<'_>,
     args: &ChildArgs,
 ) -> std::result::Result<u8, Failure> {
     let entry = resolve_app(args.app.as_deref())?;
-    let env = open_environment().await?;
+    arm_cancellation();
+    let Some(env) = until_cancelled(open_environment()).await else {
+        return emit_cancelled(emitter);
+    };
+    let env = env?;
     emitter.emit(&Event::Start {
         app: entry.name.to_string(),
         db_path: env.db_path().display().to_string(),
     });
-    cocoindex_core::engine::runtime::reset_global_cancellation();
-    CANCELLED.store(false, Ordering::SeqCst);
-    watch_ctrl_c();
-
     let outcome = update_app(emitter, args, entry, &env).await;
     env.shutdown().await;
-    outcome
+    cancel_or(emitter, outcome)
 }
 
 async fn update_app(
@@ -359,6 +433,13 @@ async fn update_app(
             .iter()
             .any(|p| p == entry.name)
     {
+        if args.confirm {
+            match confirm(emitter, ConfirmAction::Reset, entry.name).await {
+                Answer::Yes => {}
+                Answer::No => return emit_aborted(emitter, None),
+                Answer::Cancelled => return emit_cancelled(emitter),
+            }
+        }
         app.drop_state().await?;
     }
     let started = Instant::now();
@@ -378,87 +459,68 @@ async fn update_app(
     emitter.emit(&Event::progress(u64::MAX, &final_stats));
 
     if args.preview {
-        let actions = match handle.preview_actions().await {
-            Ok(actions) => actions,
-            Err(err) => return finish(emitter, Err(err), None),
-        };
-        for action in &actions {
+        for action in &handle.preview_actions().await? {
             emitter.emit(&preview_event(action));
         }
-        return finish(emitter, Ok(()), None);
+        emit_done(emitter, None, None);
+        return Ok(EXIT_OK);
     }
-    let result = handle.result().await;
+    handle.result().await?;
     let mut stats = final_stats.run_stats();
     stats.elapsed = started.elapsed();
-    finish(emitter, result, Some(RunStatsWire::from(&stats)))
-}
-
-/// Emit the terminal record for an update: `done` (with stats, or
-/// `cancelled` after a Ctrl-C) or `error`.
-fn finish(
-    emitter: &mut Emitter<'_>,
-    result: Result<()>,
-    stats: Option<RunStatsWire>,
-) -> std::result::Result<u8, Failure> {
-    match result {
-        Ok(()) => {
-            emitter.emit(&Event::Done {
-                stats,
-                cancelled: false,
-                dropped: None,
-            });
-            Ok(EXIT_OK)
-        }
-        Err(_) if CANCELLED.load(Ordering::SeqCst) => {
-            emitter.emit(&Event::Done {
-                stats: None,
-                cancelled: true,
-                dropped: None,
-            });
-            Ok(EXIT_OK)
-        }
-        Err(err) => Err(Failure::Error(err)),
-    }
+    emit_done(emitter, Some(RunStatsWire::from(&stats)), None);
+    Ok(EXIT_OK)
 }
 
 async fn run_drop(emitter: &mut Emitter<'_>, args: &ChildArgs) -> std::result::Result<u8, Failure> {
-    let env = open_environment().await?;
+    arm_cancellation();
+    let Some(env) = until_cancelled(open_environment()).await else {
+        return emit_cancelled(emitter);
+    };
+    let env = env?;
+    let outcome = drop_app(emitter, args, &env).await;
+    env.shutdown().await;
+    cancel_or(emitter, outcome)
+}
+
+async fn drop_app(
+    emitter: &mut Emitter<'_>,
+    args: &ChildArgs,
+    env: &Environment,
+) -> std::result::Result<u8, Failure> {
     let persisted = env.persisted_app_names().await?;
     // A persisted app whose code is gone can still be dropped by name.
-    let name: String = match (&args.app, registry::apps()) {
-        (Some(name), _) if persisted.iter().any(|p| p == name) => name.clone(),
-        (requested, _) => resolve_app(requested.as_deref())?.name.to_string(),
+    let name: String = match &args.app {
+        Some(name) if persisted.iter().any(|p| p == name) => name.clone(),
+        requested => resolve_app(requested.as_deref())?.name.to_string(),
     };
     emitter.emit(&Event::Start {
         app: name.clone(),
         db_path: env.db_path().display().to_string(),
     });
-    let outcome = drop_app(args, &env, &name, &persisted).await;
-    env.shutdown().await;
-    let dropped = outcome?;
-    emitter.emit(&Event::Done {
-        stats: None,
-        cancelled: false,
-        dropped: Some(dropped),
-    });
-    Ok(EXIT_OK)
-}
-
-async fn drop_app(
-    args: &ChildArgs,
-    env: &Environment,
-    name: &str,
-    persisted: &[String],
-) -> std::result::Result<bool, Failure> {
-    if !persisted.iter().any(|p| p == name) {
-        return Ok(false);
+    if !persisted.contains(&name) {
+        emit_done(emitter, None, Some(false));
+        return Ok(EXIT_OK);
+    }
+    if args.confirm {
+        let action = if args.db_only {
+            ConfirmAction::DropDbOnly
+        } else {
+            ConfirmAction::Drop
+        };
+        match confirm(emitter, action, &name).await {
+            Answer::Yes => {}
+            Answer::No => return emit_aborted(emitter, Some(false)),
+            Answer::Cancelled => return emit_cancelled(emitter),
+        }
     }
     if args.db_only {
-        env.drop_app_db_only(name).await?;
+        env.drop_app_db_only(&name).await?;
     } else {
-        env.app(name).await?.drop_state().await?;
+        env.app(&name).await?.drop_state().await?;
     }
-    Ok(true)
+    emit_done(emitter, None, Some(true));
+    Ok(EXIT_OK)
 }
 
 /// Decode a preview action's payload for the `preview` record.

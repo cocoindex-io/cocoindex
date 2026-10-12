@@ -63,16 +63,21 @@ pub(crate) struct EnvironmentInner {
 /// A teardown step registered with [`EnvironmentBuilder::on_shutdown`].
 type ShutdownHook = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
 
-/// Environment variable naming the default state db path (shared with the
-/// Python SDK and the `cocoindex` CLI).
+/// Environment variable naming the state db path when a lifespan sets none.
+/// Read by [`Environment::from_registered`] (the `cocoindex` CLI path), as the
+/// Python SDK does; [`EnvironmentBuilder::build`] reads no environment variables.
 pub const DB_PATH_ENV: &str = "COCOINDEX_DB";
-/// Environment variable overriding the LMDB maximum number of named databases.
+/// Environment variable for the LMDB maximum number of named databases when a
+/// lifespan sets none (read by [`Environment::from_registered`]).
 pub const LMDB_MAX_DBS_ENV: &str = "COCOINDEX_LMDB_MAX_DBS";
-/// Environment variable overriding the LMDB map size in bytes.
+/// Environment variable for the LMDB map size in bytes when a lifespan sets
+/// none (read by [`Environment::from_registered`]).
 pub const LMDB_MAP_SIZE_ENV: &str = "COCOINDEX_LMDB_MAP_SIZE";
 
-const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
-const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
+/// LMDB maximum number of named databases when nothing sets it.
+pub const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
+/// LMDB map size in bytes (4 GiB) when nothing sets it.
+pub const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
 
 impl Environment {
     /// Start building an environment.
@@ -104,11 +109,22 @@ impl Environment {
                 ))
             })?;
         }
-        if builder.db_path.is_none() && std::env::var_os(DB_PATH_ENV).is_none() {
-            return Err(Error::engine(format!(
-                "no state db path configured: call `builder.db_path(..)` in a \
-                 #[cocoindex::lifespan] or set the {DB_PATH_ENV} environment variable"
-            )));
+        // The CLI-facing settings come from the environment, as in Python;
+        // a plain `build()` reads no environment variables.
+        if builder.db_path.is_none() {
+            let Some(db_path) = std::env::var_os(DB_PATH_ENV) else {
+                return Err(Error::engine(format!(
+                    "no state db path configured: call `builder.db_path(..)` in a \
+                     #[cocoindex::lifespan] or set the {DB_PATH_ENV} environment variable"
+                )));
+            };
+            builder.db_path = Some(PathBuf::from(db_path));
+        }
+        if builder.lmdb_max_dbs.is_none() {
+            builder.lmdb_max_dbs = env_setting(LMDB_MAX_DBS_ENV)?;
+        }
+        if builder.lmdb_map_size.is_none() {
+            builder.lmdb_map_size = env_setting(LMDB_MAP_SIZE_ENV)?;
         }
         builder.build().await
     }
@@ -209,8 +225,8 @@ impl EnvironmentBuilder {
         }
     }
 
-    /// Set the LMDB database directory. When unset, `COCOINDEX_DB` is used,
-    /// then `./coco_state`.
+    /// Set the LMDB database directory. Default: `./coco_state`
+    /// ([`Environment::from_registered`] falls back to `COCOINDEX_DB` instead).
     pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.db_path = Some(path.into());
         self
@@ -221,15 +237,15 @@ impl EnvironmentBuilder {
         self.db_path.is_some()
     }
 
-    /// Set the LMDB maximum number of named databases. When unset,
-    /// `COCOINDEX_LMDB_MAX_DBS` is used, then 1024.
+    /// Set the LMDB maximum number of named databases. Default: 1024
+    /// ([`Environment::from_registered`] reads `COCOINDEX_LMDB_MAX_DBS` first).
     pub fn lmdb_max_dbs(mut self, value: u32) -> Self {
         self.lmdb_max_dbs = Some(value);
         self
     }
 
-    /// Set the LMDB map size in bytes. When unset, `COCOINDEX_LMDB_MAP_SIZE`
-    /// is used, then 4 GiB.
+    /// Set the LMDB map size in bytes. Default: 4 GiB
+    /// ([`Environment::from_registered`] reads `COCOINDEX_LMDB_MAP_SIZE` first).
     pub fn lmdb_map_size(mut self, value: usize) -> Self {
         self.lmdb_map_size = Some(value);
         self
@@ -295,20 +311,11 @@ impl EnvironmentBuilder {
         // (see `crate::logic`). Idempotent across builds.
         crate::logic::register_all_fn_logic();
 
-        let db_path = match self.db_path {
-            Some(path) => path,
-            None => std::env::var_os(DB_PATH_ENV)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("./coco_state")),
-        };
-        let lmdb_max_dbs = match self.lmdb_max_dbs {
-            Some(value) => value,
-            None => env_setting(LMDB_MAX_DBS_ENV)?.unwrap_or(DEFAULT_LMDB_MAX_DBS),
-        };
-        let lmdb_map_size = match self.lmdb_map_size {
-            Some(value) => value,
-            None => env_setting(LMDB_MAP_SIZE_ENV)?.unwrap_or(DEFAULT_LMDB_MAP_SIZE),
-        };
+        let db_path = self
+            .db_path
+            .unwrap_or_else(|| PathBuf::from("./coco_state"));
+        let lmdb_max_dbs = self.lmdb_max_dbs.unwrap_or(DEFAULT_LMDB_MAX_DBS);
+        let lmdb_map_size = self.lmdb_map_size.unwrap_or(DEFAULT_LMDB_MAP_SIZE);
 
         let settings = EnvironmentSettings {
             db_path: db_path.clone(),

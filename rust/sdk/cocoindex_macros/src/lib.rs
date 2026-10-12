@@ -1877,8 +1877,9 @@ fn expand_lifespan(func: ItemFn) -> syn::Result<TokenStream2> {
 /// The expansion builds a multi-thread tokio runtime, first lets the
 /// `cocoindex` CLI's `__coco` protocol take over when the binary was started
 /// by the CLI (`cocoindex::cli::try_dispatch`), and otherwise runs the body.
-/// The body may return `()`, `std::process::ExitCode`, or `Result<(), E>`
-/// (an `Err` is printed to stderr and exits with status 1). Use the async SDK
+/// The body may return anything a plain `main` may return
+/// ([`std::process::Termination`]: `()`, `ExitCode`, `Result<T, E: Debug>`, ...);
+/// an `Err` is reported the same way. Use the async SDK
 /// APIs inside; the `*_blocking` helpers would nest a runtime and panic.
 ///
 /// ```ignore
@@ -1940,7 +1941,7 @@ fn expand_main(func: ItemFn) -> syn::Result<TokenStream2> {
                 {
                     return code;
                 }
-                ::cocoindex::cli::IntoMainExit::into_exit_code(__coco_user_main().await)
+                ::std::process::Termination::report(__coco_user_main().await)
             });
             ::core::mem::drop(runtime);
             code

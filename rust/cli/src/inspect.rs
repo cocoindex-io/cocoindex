@@ -19,8 +19,9 @@ use futures::{Stream, StreamExt};
 
 use crate::error::{CliError, CliResult, fail};
 
-const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
-const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
+use cocoindex::app::{
+    DEFAULT_LMDB_MAP_SIZE, DEFAULT_LMDB_MAX_DBS, LMDB_MAP_SIZE_ENV, LMDB_MAX_DBS_ENV,
+};
 
 fn env_setting<T: std::str::FromStr>(name: &str, default: T) -> CliResult<T> {
     match std::env::var(name) {
@@ -43,8 +44,8 @@ pub async fn open_db(path: &Path) -> CliResult<Storage> {
     }
     let settings = StorageSettings {
         db_path: path.to_path_buf(),
-        lmdb_max_dbs: env_setting("COCOINDEX_LMDB_MAX_DBS", DEFAULT_LMDB_MAX_DBS)?,
-        lmdb_map_size: env_setting("COCOINDEX_LMDB_MAP_SIZE", DEFAULT_LMDB_MAP_SIZE)?,
+        lmdb_max_dbs: env_setting(LMDB_MAX_DBS_ENV, DEFAULT_LMDB_MAX_DBS)?,
+        lmdb_map_size: env_setting(LMDB_MAP_SIZE_ENV, DEFAULT_LMDB_MAP_SIZE)?,
     };
     Storage::new(&settings)
         .await
@@ -141,24 +142,69 @@ async fn collect<T, E: std::fmt::Display>(
 }
 
 /// `/"files"/"a.txt"` or `/files/a.txt` → a stable path of string keys.
+///
+/// A quoted segment is read up to its closing quote, so it may contain `/`
+/// (file keys such as `"docs/a.md"`) and the escapes `show` prints (`\"`,
+/// `\\`, `\n`, `\t`, `\r`, `\'`, `\u{..}`).
 pub fn parse_stable_path(raw: &str) -> StablePath {
-    let trimmed = raw.trim_matches('/');
-    let keys: Vec<StableKey> = if trimmed.is_empty() {
-        Vec::new()
-    } else {
-        trimmed
-            .split('/')
-            .map(|part| {
-                let part = if part.len() >= 2 && part.starts_with('"') && part.ends_with('"') {
-                    &part[1..part.len() - 1]
-                } else {
-                    part
-                };
-                StableKey::Str(Arc::from(part))
-            })
-            .collect()
-    };
+    let mut keys: Vec<StableKey> = Vec::new();
+    let mut chars = raw.trim_start_matches('/').chars().peekable();
+    while chars.peek().is_some() {
+        let mut key = String::new();
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            let mut closed = false;
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => {
+                        closed = true;
+                        break;
+                    }
+                    '\\' => unescape_into(&mut chars, &mut key),
+                    c => key.push(c),
+                }
+            }
+            if !closed {
+                // An unterminated quote is taken literally.
+                key.insert(0, '"');
+            }
+        }
+        // The rest of the segment, up to the next `/`.
+        for c in chars.by_ref() {
+            if c == '/' {
+                break;
+            }
+            key.push(c);
+        }
+        keys.push(StableKey::Str(Arc::from(key)));
+        while chars.peek() == Some(&'/') {
+            chars.next();
+        }
+    }
     StablePath(keys.into())
+}
+
+/// Undo one `str::escape_default` escape (the backslash is already read).
+fn unescape_into(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, out: &mut String) {
+    match chars.next() {
+        Some('n') => out.push('\n'),
+        Some('t') => out.push('\t'),
+        Some('r') => out.push('\r'),
+        Some('u') if chars.peek() == Some(&'{') => {
+            chars.next();
+            let hex: String = chars.by_ref().take_while(|&c| c != '}').collect();
+            match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                Some(c) => out.push(c),
+                None => {
+                    out.push_str("\\u{");
+                    out.push_str(&hex);
+                    out.push('}');
+                }
+            }
+        }
+        Some(c) => out.push(c),
+        None => out.push('\\'),
+    }
 }
 
 /// A key as a tree label: strings without quotes, like Python's `str()`.
@@ -349,6 +395,10 @@ mod tests {
             parse_stable_path(r#"/"files"/"a.txt"/"#).to_string(),
             r#"/"files"/"a.txt""#
         );
+        // A quoted key may hold `/` and the escapes `show` prints.
+        let nested = parse_stable_path(r#"/"files"/"docs/a \"b\".md""#);
+        assert_eq!(nested.len(), 2);
+        assert_eq!(nested.to_string(), r#"/"files"/"docs/a \"b\".md""#);
     }
 
     #[test]

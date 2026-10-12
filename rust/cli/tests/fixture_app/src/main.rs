@@ -14,6 +14,12 @@ fn env_path(name: &str) -> Result<PathBuf> {
 
 #[cocoindex::lifespan]
 async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    // `FIXTURE_SLOW_LIFESPAN` stands in for a slow setup (a model download),
+    // to test Ctrl-C before the environment is ready.
+    if std::env::var_os("FIXTURE_SLOW_LIFESPAN").is_some() {
+        eprintln!("fixture: slow lifespan started");
+        cocoindex::tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }
     Ok(builder.on_shutdown(|| async { eprintln!("fixture: shutdown") }))
 }
 

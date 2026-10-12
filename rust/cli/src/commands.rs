@@ -1,6 +1,5 @@
 //! `ls`, `show`, `update` and `drop`.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use cocoindex::cli::protocol::{AppInfo, Event};
@@ -35,15 +34,10 @@ async fn query_apps(exe: &Path) -> CliResult<(Vec<AppInfo>, String)> {
     found.ok_or_else(|| CliError::failure("the target binary did not list its apps"))
 }
 
-/// The app a command acts on: the TARGET's `:app_name`, else the binary's
-/// only registered app. `allow_unregistered` also accepts a persisted app whose
-/// code is gone (`drop`, `show`).
-fn pick_app(
-    requested: Option<&str>,
-    apps: &[AppInfo],
-    allow_unregistered: bool,
-) -> CliResult<AppInfo> {
-    let usable = |a: &&AppInfo| a.registered || (allow_unregistered && a.persisted);
+/// The app `show` inspects: the TARGET's `:app_name` (a registered app, or a
+/// persisted one whose code is gone), else the binary's only registered app.
+fn pick_app(requested: Option<&str>, apps: &[AppInfo]) -> CliResult<AppInfo> {
+    let usable = |a: &&AppInfo| a.registered || a.persisted;
     match requested {
         Some(name) => apps
             .iter()
@@ -93,14 +87,6 @@ pub fn format_db_path(path: &str) -> String {
         Ok(rel) if !rel.as_os_str().is_empty() => format!("./{}", rel.display()),
         _ => path.to_string(),
     }
-}
-
-/// Prompt for an explicit `yes` (case-insensitive).
-fn confirm_yes(prompt: &str) -> bool {
-    print!("{prompt}: ");
-    let _ = std::io::stdout().flush();
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer).is_ok() && answer.trim().eq_ignore_ascii_case("yes")
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +221,7 @@ pub async fn show(args: ShowArgs) -> CliResult<()> {
         let target = parse_target(first.as_deref())?;
         let exe = resolve_exe(&target, &build).await?;
         let (apps, db_path) = query_apps(&exe).await?;
-        let app = pick_app(target.app.as_deref(), &apps, true)?;
+        let app = pick_app(target.app.as_deref(), &apps)?;
         (PathBuf::from(db_path), app.name)
     };
 
@@ -276,26 +262,12 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
     let exe = resolve_exe(&target, &args.build).await?;
 
     let mut flags: Vec<String> = Vec::new();
-    let app_name = if args.reset {
-        let (apps, _) = query_apps(&exe).await?;
-        let app = pick_app(target.app.as_deref(), &apps, false)?;
-        if !args.force
-            && !confirm_yes(&format!(
-                "Type 'yes' to reset app '{}' (drop existing state)",
-                app.name
-            ))
-        {
-            if !args.quiet {
-                println!("Update operation aborted.");
-            }
-            return Ok(());
-        }
-        Some(app.name)
-    } else {
-        target.app.clone()
-    };
-    if let Some(name) = app_name {
-        flags.extend(["--app".to_string(), name]);
+    if let Some(name) = &target.app {
+        flags.extend(["--app".to_string(), name.clone()]);
+    }
+    if args.reset && !args.force {
+        // The child asks before dropping state, so the lifespan runs once.
+        flags.push("--confirm".to_string());
     }
     for (on, flag) in [
         (args.live, "--live"),
@@ -339,12 +311,21 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
     renderer.clear();
     let done = outcome?.into_done()?;
     let Event::Done {
-        stats, cancelled, ..
+        stats,
+        cancelled,
+        aborted,
+        ..
     } = done
     else {
         return Ok(());
     };
     if cancelled {
+        return Ok(());
+    }
+    if aborted {
+        if !quiet {
+            println!("Update operation aborted.");
+        }
         return Ok(());
     }
     if args.preview {
@@ -383,65 +364,59 @@ pub struct DropArgs {
 pub async fn drop_app(args: DropArgs) -> CliResult<()> {
     let target = parse_target(args.target.as_deref())?;
     let exe = resolve_exe(&target, &args.build).await?;
-    let (apps, db_path) = query_apps(&exe).await?;
-    let app = pick_app(target.app.as_deref(), &apps, true)?;
-    if !args.quiet {
-        println!(
-            "Preparing to drop app '{}' (db path: {})",
-            app.name,
-            format_db_path(&db_path)
-        );
+    let mut flags: Vec<String> = Vec::new();
+    if let Some(name) = &target.app {
+        flags.extend(["--app".to_string(), name.clone()]);
     }
-    if !app.persisted {
-        if !args.quiet {
-            println!(
-                "App '{}' has no persisted state. Nothing to drop.",
-                app.name
-            );
-        }
-        return Ok(());
-    }
-    let prompt = if args.db_only {
-        format!(
-            "Type 'yes' to clear the state of app '{}' (its target states are NOT reverted)",
-            app.name
-        )
-    } else {
-        format!(
-            "Type 'yes' to drop app '{}' and all its target states",
-            app.name
-        )
-    };
-    if !args.force && !confirm_yes(&prompt) {
-        if !args.quiet {
-            println!("Drop operation aborted.");
-        }
-        return Ok(());
-    }
-    let mut flags = vec!["--app".to_string(), app.name.clone()];
     if args.db_only {
         flags.push("--db-only".to_string());
     }
+    if !args.force {
+        // The child asks before dropping, so the lifespan runs once.
+        flags.push("--confirm".to_string());
+    }
     let quiet = args.quiet;
+    let mut app_name = String::new();
     let outcome = child::run(
         &exe,
         "drop",
         &flags,
         Interrupt::Cancel { quiet },
-        |output| {
-            if let Output::Text(text) = output {
-                println!("{text}");
+        |output| match output {
+            Output::Text(text) => println!("{text}"),
+            Output::Event(Event::Start { app, db_path }) => {
+                if !quiet {
+                    println!(
+                        "Preparing to drop app '{app}' (db path: {})",
+                        format_db_path(&db_path)
+                    );
+                }
+                app_name = app;
             }
+            Output::Event(_) => {}
         },
     )
     .await?;
-    outcome.into_done()?;
-    if !quiet {
-        if args.db_only {
-            println!("Cleared the state of app '{}'.", app.name);
-        } else {
-            println!("Dropped app '{}'.", app.name);
-        }
+    let Event::Done {
+        cancelled,
+        aborted,
+        dropped,
+        ..
+    } = outcome.into_done()?
+    else {
+        return Ok(());
+    };
+    if cancelled || quiet {
+        return Ok(());
+    }
+    if aborted {
+        println!("Drop operation aborted.");
+    } else if dropped != Some(true) {
+        println!("App '{app_name}' has no persisted state. Nothing to drop.");
+    } else if args.db_only {
+        println!("Cleared the state of app '{app_name}'.");
+    } else {
+        println!("Dropped app '{app_name}'.");
     }
     Ok(())
 }
@@ -461,11 +436,11 @@ mod tests {
     #[test]
     fn picks_the_only_registered_app() {
         let apps = vec![app("A", true, false), app("Old", false, true)];
-        assert_eq!(pick_app(None, &apps, false).unwrap().name, "A");
-        assert_eq!(pick_app(Some("Old"), &apps, true).unwrap().name, "Old");
-        let err = pick_app(Some("Old"), &apps, false).unwrap_err();
+        assert_eq!(pick_app(None, &apps).unwrap().name, "A");
+        assert_eq!(pick_app(Some("Old"), &apps).unwrap().name, "Old");
+        let err = pick_app(Some("Gone"), &apps).unwrap_err();
         assert!(
-            err.message.contains("No app named 'Old'"),
+            err.message.contains("No app named 'Gone'"),
             "{}",
             err.message
         );
@@ -474,10 +449,10 @@ mod tests {
     #[test]
     fn several_apps_need_a_name() {
         let apps = vec![app("A", true, false), app("B", true, true)];
-        let err = pick_app(None, &apps, false).unwrap_err();
+        let err = pick_app(None, &apps).unwrap_err();
         assert_eq!(err.code, 2);
         assert!(err.message.contains("Multiple apps found: A, B"));
-        let err = pick_app(None, &[], false).unwrap_err();
+        let err = pick_app(None, &[]).unwrap_err();
         assert!(err.message.contains("No apps found"));
     }
 

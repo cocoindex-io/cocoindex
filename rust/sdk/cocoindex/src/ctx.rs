@@ -1022,6 +1022,26 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
+        let processor_name = format!("mount:{key}");
+        self.use_mount_named(key, processor_name, memo_fp, f).await
+    }
+
+    /// Foreground mount under `key`, reported (stats, `show -l`) as
+    /// `processor_name`. Items of one `mount_each` share a name, the way
+    /// Python names a processor after its function, so per-item mounts do not
+    /// produce one stats line per item.
+    async fn use_mount_named<T, F, Fut>(
+        &self,
+        key: String,
+        processor_name: String,
+        memo_fp: Option<Fingerprint>,
+        f: F,
+    ) -> Result<T>
+    where
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
         let Some(comp_ctx) = &self.comp_ctx else {
             // No pipeline context — just run the closure directly.
             let child_ctx = self.child(None);
@@ -1064,7 +1084,7 @@ impl Ctx {
                 })
             },
             memo_fp,
-            format!("mount:{key}"),
+            processor_name,
         )
         .with_memo_state_handler(has_context_memo_state);
 
@@ -1124,20 +1144,22 @@ impl Ctx {
                 )));
             }
             let memo_fp = memo_of(&value)?;
-            let subpath = match prefix {
-                Some(prefix) => format!("{prefix}/{key}"),
-                None => key,
+            let (subpath, processor_name) = match prefix {
+                Some(prefix) => (format!("{prefix}/{key}"), format!("mount:{prefix}")),
+                None => (key.clone(), format!("mount:{key}")),
             };
-            keyed.push((subpath, memo_fp, value));
+            keyed.push((subpath, processor_name, memo_fp, value));
         }
 
         let futs: Vec<_> = keyed
             .into_iter()
-            .map(|(subpath, memo_fp, value)| {
+            .map(|(subpath, processor_name, memo_fp, value)| {
                 let body = body.clone();
                 async move {
-                    self.__use_mount_fp(subpath, memo_fp, move |child| body(child, value))
-                        .await
+                    self.use_mount_named(subpath, processor_name, memo_fp, move |child| {
+                        body(child, value)
+                    })
+                    .await
                 }
             })
             .collect();
@@ -1207,6 +1229,9 @@ impl Ctx {
     /// # }
     /// ```
     ///
+    /// All items are reported under one processor name, `mount_each`, in
+    /// update stats and `cocoindex show -l`.
+    ///
     /// # Errors
     ///
     /// Returns an error if any of the closures fail. The first encountered error
@@ -1243,7 +1268,12 @@ impl Ctx {
             .into_iter()
             .map(|(key, item)| {
                 let f = f.clone();
-                async move { self.scope(&key, move |child| f(child, item)).await }
+                async move {
+                    self.use_mount_named(key, "mount_each".to_string(), None, move |child| {
+                        f(child, item)
+                    })
+                    .await
+                }
             })
             .collect();
 

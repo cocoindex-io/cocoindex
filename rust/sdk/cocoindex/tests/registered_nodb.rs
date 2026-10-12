@@ -1,5 +1,6 @@
 //! A binary with no `#[cocoindex::lifespan]`: `Environment::from_registered`
-//! falls back to `COCOINDEX_DB` and errors clearly when that is unset too.
+//! falls back to `COCOINDEX_DB` (and the LMDB variables) and errors clearly
+//! when the db path is unset too.
 
 use cocoindex::Environment;
 
@@ -20,6 +21,15 @@ async fn from_registered_without_lifespan() {
 
     let dir = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("COCOINDEX_DB", dir.path().join("db")) };
+
+    // LMDB settings come from the environment too, and are validated.
+    unsafe { std::env::set_var("COCOINDEX_LMDB_MAX_DBS", "lots") };
+    let err = Environment::from_registered()
+        .await
+        .err()
+        .expect("invalid integer");
+    assert!(err.to_string().contains("COCOINDEX_LMDB_MAX_DBS"), "{err}");
+    unsafe { std::env::set_var("COCOINDEX_LMDB_MAX_DBS", "64") };
     let env = Environment::from_registered().await.unwrap();
     assert_eq!(env.db_path(), dir.path().join("db"));
     env.shutdown().await;

@@ -68,8 +68,8 @@ pub fn check_unique_app_names() -> Result<()> {
     for entry in COCO_APPS.iter() {
         if let Some(prev) = seen.insert(entry.name, entry) {
             return Err(Error::engine(format!(
-                "two #[cocoindex::app] functions are named `{}`: {}::{} and {}::{}",
-                entry.name, prev.module, prev.name, entry.module, entry.name
+                "two #[cocoindex::app] functions register the app name `{}`, in {} and {}",
+                entry.name, prev.module, entry.module
             )));
         }
     }

@@ -66,13 +66,19 @@ async fn main() -> Result<()> { ... }               // runs cli::try_dispatch() 
 - `Environment::from_registered()` folds a fresh builder through every registered lifespan, then
   requires a db path from the lifespan or `COCOINDEX_DB`, applies `COCOINDEX_LMDB_MAX_DBS` /
   `COCOINDEX_LMDB_MAP_SIZE` when the lifespan did not set them, and opens the db. The CLI's
-  protocol child and a user's `main` call the same function.
+  protocol child and a user's `main` call the same function. Only this path reads environment
+  variables: a plain `EnvironmentBuilder::build()` keeps its explicit settings and the
+  `./coco_state` default, so existing builder users do not move their state.
 - `#[cocoindex::app]` registers `AppEntry { module, name, run: fn(Ctx) -> BoxFuture<Result<()>> }`;
   the user's return value is dropped by a generated shim, which is why the entry has no type
   parameter. App names are LMDB namespaces: `check_unique_app_names()` rejects duplicates.
 - `#[cocoindex::main]` expands to a sync `main` that builds a multi-thread tokio runtime, calls
   `cocoindex::cli::try_dispatch()` (handles `__coco ...` and returns the exit code) and otherwise
-  runs the body. A hand-written `main` calls `try_dispatch` itself as its first statement.
+  runs the body. The body may return anything a plain `main` may (`std::process::Termination`).
+  A hand-written `main` calls `try_dispatch` itself as its first statement.
+- Mounted components are reported per function, as in Python: items of `mount_each!` share the
+  processor name `mount:<function>` (or `mount:<prefix>`), items of `Ctx::mount_each` and
+  `mount_each_live` share `mount_each`. The name feeds update stats and `show -l`.
 - Order of lifespans across crates is link order; a binary normally has one.
 - The SDK's `serde_json` dependency became unconditional (the protocol needs it); the former
   `serde_json` feature is gone.
@@ -80,7 +86,7 @@ async fn main() -> Result<()> { ... }               // runs cli::try_dispatch() 
 **Acceptance.** `tests/registered.rs`: a lifespan provides a value, two shutdown hooks run LIFO,
 `find_app` resolves both a named and a default-named app, and the protocol child answers `ls`,
 `update --preview`, `update --full-reprocess` and `drop` in-process. `tests/registered_nodb.rs`:
-no lifespan and no `COCOINDEX_DB` is a clear error.
+no lifespan and no `COCOINDEX_DB` is a clear error; an invalid `COCOINDEX_LMDB_MAX_DBS` is too.
 
 ## Protocol
 
@@ -91,8 +97,11 @@ verbatim. Stderr is inherited. Lines whose JSON does not parse are reported as m
 otherwise ignored.
 
 **Invocation.** `<bin> __coco <ls|update|drop> --protocol 1 [--app NAME] [--live]
-[--full-reprocess] [--preview] [--reset] [--db-only]`. `--app` is required when the binary has
-more than one app. `--preview` excludes `--reset` and `--live`.
+[--full-reprocess] [--preview] [--reset] [--db-only] [--confirm]`. `--app` is required when the
+binary has more than one app. `--preview` excludes `--reset` and `--live`. `--confirm` (for
+`drop`, and `update --reset`) makes the child ask before destroying state: it sends `confirm` and
+reads one line, `yes` or `no`, from its stdin (EOF is `no`). Asking inside the run keeps the
+lifespan to one run per command; the CLI does the prompting.
 
 | event | fields | sent by | meaning |
 |---|---|---|---|
@@ -100,16 +109,19 @@ more than one app. `--preview` excludes `--reset` and `--live`.
 | `apps` | `apps: [{name, persisted, registered}]`, `db_path` | `ls` | registered ∪ persisted apps |
 | `start` | `app`, `db_path` | `update`, `drop` | the verb begins |
 | `progress` | `version`, `ready`, `by_component: {name: counters}` | `update` | one per engine change; counters are `num_execution_starts`, `num_unchanged`, `num_adds`, `num_deletes`, `num_reprocesses`, `num_errors` |
+| `confirm` | `action: drop\|drop_db_only\|reset`, `app` | `drop`, `update --reset` with `--confirm` | asks for `yes`/`no` on stdin before the destructive step; `reset` only when there is state to drop |
 | `preview` | `kind: create\|update\|delete`, `value` (JSON) | `update --preview` | one planned target action |
-| `done` | `stats?` (`processed`, `skipped`, `written`, `deleted`, `elapsed_secs`), `cancelled`, `dropped?` | terminal | success; `cancelled: true` after Ctrl-C; `dropped: false` when there was nothing to drop |
+| `done` | `stats?` (`processed`, `skipped`, `written`, `deleted`, `elapsed_secs`), `cancelled`, `dropped?`, `aborted` | terminal | success; `cancelled: true` after Ctrl-C; `aborted: true` after a `no`; `dropped: false` when nothing was dropped |
 | `error` | `message` | terminal | failure |
 
 **Exit codes** (child and CLI alike): `0` success (also a clean Ctrl-C cancel), `1` error
 (including a failed build), `2` usage or protocol mismatch.
 
-**Cancellation.** The child turns every SIGINT into `cocoindex_core::engine::runtime::cancel_all()`
-(idempotent: the terminal and the CLI may both deliver one) and reports the cancelled run as
-`done {cancelled: true}` rather than `error`. The CLI prints `Stopping...` on the first Ctrl-C,
+**Cancellation.** From the moment `update` or `drop` starts (before the lifespan runs), the child
+turns every SIGINT into `cocoindex_core::engine::runtime::cancel_all()` (idempotent: the terminal
+and the CLI may both deliver one). A pending lifespan or confirmation is abandoned at once, and a
+step that fails because of the cancel is reported as `done {cancelled: true}` rather than
+`error`. The CLI prints `Stopping...` on the first Ctrl-C,
 forwards SIGINT to the child on Unix, and kills the child on the second.
 
 **Versioning.** `protocol` is a single integer; a change that an old CLI or an old SDK cannot
@@ -127,10 +139,10 @@ existing variables are never overridden; the child inherits the environment), `-
 
 | command | Python | Rust CLI |
 |---|---|---|
-| `ls [TARGET] [--db PATH]` | same | `--db` reads the db directly (exists-check first: core creates missing dirs); otherwise build + `__coco ls`. `[+]` marks apps without persisted state |
+| `ls [TARGET] [--db PATH]` | same | `--db` reads the db directly (exists-check first: core creates missing dirs); otherwise build + `__coco ls`, which runs the lifespan to learn the db path (as Python's `ls` does). `[+]` marks apps without persisted state |
 | `show [TARGET] [STABLE_PATH] [--db] [--app-name] [--tree] [-l] [-r] [-p] [--fingerprints] [--target-states]` | same options | `--db --app-name` reads the db directly; with `--db` the single positional is `STABLE_PATH` (Python cannot express that). With `TARGET`, `__coco ls` resolves the db path and app, then the db is read in-process |
-| `update TARGET [-f] [-q] [--reset] [--full-reprocess] [-L/--live] [--preview]` | same | `--reset` prompts `Type 'yes' to reset app ...` unless `-f`; progress renders on stderr; `[Stats] ...` on stdout |
-| `drop TARGET [-f] [-q] [--db-only]` | no `--db-only` | `--db-only` clears the app's db namespace without reverting target states (core `Storage::drop_app`) |
+| `update TARGET [-f] [-q] [--reset] [--full-reprocess] [-L/--live] [--preview]` | same | `--reset` prompts `Type 'yes' to reset app ...` unless `-f` (only when there is state to drop); progress renders on stderr; `[Stats] ...` on stdout |
+| `drop TARGET [-f] [-q] [--db-only]` | no `--db-only` | one child run, prompting through `confirm`; `--db-only` clears the app's db namespace without reverting target states (core `Storage::drop_app`) |
 | `init [PROJECT_NAME] [--dir] [--sdk-path]` | no `--sdk-path` | scaffolds `Cargo.toml`, `src/main.rs` with the three attributes, `.env.example`, `README.md`, `.gitignore`; `--sdk-path` writes a path dependency (the crate is not on crates.io yet) |
 
 Output wording follows `cli.py` so the two CLIs read the same.
