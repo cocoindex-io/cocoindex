@@ -1002,8 +1002,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         """The row handler for a created or updated table's rows."""
         key = action.key
         spec = action.spec
-        if coco.is_non_existence(spec):
-            raise ValueError(f"a deleted table has no row handler: {key}")
+        assert not coco.is_non_existence(spec)
         # Null-backfilled columns (a row changing only by a null there is just
         # re-tracked): the nullable non-PK columns the action inserts/upserts,
         # but only when `main_action is None`, where the table surely exists

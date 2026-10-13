@@ -159,8 +159,7 @@ class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
         context_provider: ContextProvider, action: _TopicAction, /
     ) -> _MessageHandler:
         """The message handler for a declared topic's messages."""
-        if coco.is_non_existence(action.spec):
-            raise ValueError(f"a deleted topic has no message handler: {action.key}")
+        assert not coco.is_non_existence(action.spec)
         return _MessageHandler(
             producer=context_provider.get(action.key.producer_key, AIOProducer),
             topic=action.key.topic,

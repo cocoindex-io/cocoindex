@@ -552,8 +552,11 @@ def test_live_component_delete_in_preview_applies_nothing() -> None:
     assert set(GlobalDictTarget.store.data) == {"a", "b"}
     assert GlobalDictTarget.store.metrics.collect() == {}
 
+    # Nothing is written: a tombstone left by the preview would have `b`
+    # re-upserted here.
     app.update_blocking()
     assert set(GlobalDictTarget.store.data) == {"a", "b"}
+    assert GlobalDictTarget.store.metrics.collect() == {}
 
 
 class _CommittedStateLiveComponent:

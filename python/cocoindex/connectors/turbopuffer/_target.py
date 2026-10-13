@@ -390,8 +390,7 @@ class _NamespaceHandler(
         context_provider: ContextProvider, action: _NamespaceAction, /
     ) -> _RowHandler:
         """The row handler for a created or updated namespace's rows."""
-        if coco.is_non_existence(action.spec):
-            raise ValueError(f"a deleted namespace has no row handler: {action.key}")
+        assert not coco.is_non_existence(action.spec)
         return _RowHandler(
             client=context_provider.get(action.key.db_key, AsyncTurbopuffer),
             namespace_name=action.key.namespace_name,

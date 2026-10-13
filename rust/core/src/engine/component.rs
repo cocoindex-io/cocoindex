@@ -1640,7 +1640,11 @@ mod tests {
         fn child_handling(&self) -> ChildHandling {
             self.children
                 .as_ref()
-                .map_or(ChildHandling::None, |(child_handling, _)| *child_handling)
+                .map_or(ChildHandling::Leaf, |(child_handling, _)| *child_handling)
+        }
+
+        fn apply_in_preview(&self) -> bool {
+            false
         }
 
         async fn child_handlers(
@@ -1740,6 +1744,8 @@ mod tests {
         advance_clock_in_state_handler: bool,
         /// What the memo state handler reports as `can_reuse` on a memo hit.
         memo_states_reusable: bool,
+        /// What the memo state handler reports as `states_changed`.
+        memo_states_changed: bool,
         on_process: Option<ProcessHook>,
     }
 
@@ -1756,12 +1762,21 @@ mod tests {
                 body_started,
                 advance_clock_in_state_handler,
                 memo_states_reusable: false,
+                memo_states_changed: false,
                 on_process: None,
             }
         }
 
         fn with_reusable_memo_states(mut self) -> Self {
             self.memo_states_reusable = true;
+            self
+        }
+
+        /// Reusable memo states that moved (e.g. an mtime): a memo hit
+        /// rewrites them in place.
+        fn with_reusable_changed_memo_states(mut self) -> Self {
+            self.memo_states_reusable = true;
+            self.memo_states_changed = true;
             self
         }
 
@@ -1817,17 +1832,25 @@ mod tests {
         > {
             let advance_clock = self.advance_clock_in_state_handler;
             let reusable = self.memo_states_reusable;
+            let changed = self.memo_states_changed;
             Ok(async move {
                 if advance_clock {
                     testing_advance_deadline_clock(Duration::from_secs(2));
                 }
+                // Moved states differ from every earlier report.
+                static MOVES: AtomicUsize = AtomicUsize::new(0);
+                let state = if changed {
+                    format!("state/{}", MOVES.fetch_add(1, Ordering::SeqCst)).into_bytes()
+                } else {
+                    b"state".to_vec()
+                };
                 Ok((
                     MemoStatesPayload {
-                        positional: vec![TestData(b"state".to_vec())],
+                        positional: vec![TestData(state)],
                         by_context_fp: Vec::new(),
                     },
                     reusable,
-                    false,
+                    changed,
                 ))
             })
         }
@@ -2847,6 +2870,78 @@ mod tests {
             app_store_contents(&app).await == contents_before,
             "preview must not delete or store memos"
         );
+    }
+
+    /// After a real update, a preview that takes ids and meets a memo hit whose
+    /// reusable states moved writes nothing: not the id sequencer, not the
+    /// memo states. Its ids are the ones the next real update hands out.
+    #[tokio::test]
+    async fn preview_after_an_update_writes_nothing() {
+        const IDS_PER_RUN: usize = 3;
+        let (app, _dir) = test_app("preview_after_update").await;
+        // The root re-runs every time (a new memo key per run), taking ids,
+        // then mounts a memoized child whose memo hit reports moved states.
+        let root = |run: &str, ids: Arc<Mutex<Vec<u64>>>| {
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&format!("preview_after_update/{run}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                let ids = ids.clone();
+                Box::pin(async move {
+                    for _ in 0..IDS_PER_RUN {
+                        let id = ctx.next_id(None, DeadlineContext::NONE).await?;
+                        ids.lock().unwrap().push(id);
+                    }
+                    let child_path =
+                        StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+                    let child = ctx
+                        .component()
+                        .mount_child(&FnCallContext::new(true), child_path)?;
+                    let child_processor = TestProcessor::new(
+                        "child",
+                        Fingerprint::from(&"preview_after_update/child").unwrap(),
+                        Arc::new(AtomicBool::new(false)),
+                        false,
+                    )
+                    .with_reusable_changed_memo_states();
+                    child
+                        .use_mount(&ctx, child_processor, DeadlineContext::NONE)
+                        .await?;
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            }))
+        };
+        let run = |run: &'static str, preview: bool| {
+            let app = &app;
+            async move {
+                let ids = Arc::new(Mutex::new(Vec::new()));
+                let (handle, _) = app
+                    .update(
+                        root(run, ids.clone()),
+                        AppUpdateOptions::default(),
+                        Arc::new(()),
+                        preview.then(PreviewActionCollector::<TestProfile>::default),
+                    )
+                    .unwrap();
+                handle.result().await.unwrap();
+                let ids = ids.lock().unwrap().clone();
+                ids
+            }
+        };
+
+        assert_eq!(run("v1", false).await, vec![1, 2, 3]);
+        // Twice: the ids come from the process's buffer (4) and past it (5, 6).
+        let contents_before = app_store_contents(&app).await;
+        assert_eq!(run("v2", true).await, vec![4, 5, 6]);
+        assert_eq!(run("v2", true).await, vec![4, 5, 6]);
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not reserve ids or rewrite memo states"
+        );
+        assert_eq!(run("v2", false).await, vec![4, 5, 6]);
     }
 
     /// A root mounting one child component per name; each child declares one

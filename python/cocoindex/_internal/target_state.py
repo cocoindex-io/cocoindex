@@ -206,7 +206,11 @@ class ChildHandlerFn(Protocol[ActionT_contra, HandlerT_co]):
     """``child_handler`` factory of a container sink: the handler for the
     child target states of one created or updated container, built from its
     action alone. Sync and free of side effects: the engine calls it before the
-    sink callback in an update, and in place of it in a preview."""
+    sink callback in an update, and in place of it in a preview.
+
+    The engine may call it concurrently, across components, on an engine
+    thread rather than the event loop; a factory that caches state must guard
+    it with a lock."""
 
     def __call__(
         self, context_provider: ContextProvider, action: ActionT_contra, /
@@ -264,7 +268,8 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     def from_fn(
         fn: TargetActionSinkFn[ActionT_contra],
         *,
-        child_handler: ChildHandlerFn[ActionT_contra, Any] | None = None,
+        child_handler: ChildHandlerFn[ActionT_contra, TargetHandler[Any, Any, Any]]
+        | None = None,
     ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]": ...
     @overload
     @staticmethod
@@ -275,7 +280,7 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     def from_fn(
         fn: TargetActionSinkFn[Any] | LegacyTargetActionSinkFn[Any],
         *,
-        child_handler: ChildHandlerFn[Any, Any] | None = None,
+        child_handler: ChildHandlerFn[Any, TargetHandler[Any, Any, Any]] | None = None,
     ) -> "TargetActionSink[Any, Any]":
         """Create a sink from a sync callback ``(context_provider, actions)``.
 
@@ -301,7 +306,8 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     def from_async_fn(
         fn: AsyncTargetActionSinkFn[ActionT_contra],
         *,
-        child_handler: ChildHandlerFn[ActionT_contra, Any] | None = None,
+        child_handler: ChildHandlerFn[ActionT_contra, TargetHandler[Any, Any, Any]]
+        | None = None,
     ) -> "TargetActionSink[ActionT_contra, _DeprecatedChildHandlerT_co]": ...
     @overload
     @staticmethod
@@ -312,7 +318,7 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     def from_async_fn(
         fn: AsyncTargetActionSinkFn[Any] | LegacyAsyncTargetActionSinkFn[Any],
         *,
-        child_handler: ChildHandlerFn[Any, Any] | None = None,
+        child_handler: ChildHandlerFn[Any, TargetHandler[Any, Any, Any]] | None = None,
     ) -> "TargetActionSink[Any, Any]":
         """Create a sink from an async callback ``(context_provider, actions)``.
 
@@ -488,14 +494,29 @@ def _canonical_child_handler(
     return canonical
 
 
+def process_memory_sink_from_async_fn(
+    fn: AsyncTargetActionSinkFn[ActionT_contra],
+) -> "TargetActionSink[ActionT_contra, Any]":
+    """Like :meth:`TargetActionSink.from_async_fn`, for a leaf sink that
+    writes nothing but process memory scoped to the run (a ``LiveMap``'s
+    entries): a preview applies it too, so the components reading that memory
+    see what an update gives them."""
+    canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
+    return TargetActionSink(
+        core.TargetActionSink.new_async(
+            canonical, with_children=False, apply_in_preview=True
+        )
+    )
+
+
 class TargetReconcileOutput(
     Generic[ActionT, TrackingRecordT_co, OptChildHandlerT_co], NamedTuple
 ):
     """What ``reconcile()`` returns when an action is needed.
 
     The third type parameter declares the handler type of the child target
-    states the action's sink fulfills (through :class:`ChildSlot`), or ``None``
-    for a leaf target. Nothing in the tuple depends on it: it is how a
+    states, which the ``child_handler`` factory of the action's sink returns,
+    or ``None`` for a leaf target. Nothing in the tuple depends on it: it is how a
     :class:`TargetHandler` states its child handler type, which types the
     provider chain (``declare_target_state_with_child`` / ``mount_target``).
     """
@@ -513,8 +534,9 @@ class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co
     one update; only the output of the attempt that commits is applied, so it
     must be free of side effects.
 
-    ``OptChildHandlerT_co`` is the handler type of the child target states this
-    handler's sink fulfills, or ``None`` for a leaf target. A container handler
+    ``OptChildHandlerT_co`` is the handler type of the child target states,
+    which the ``child_handler`` factory of this handler's sink returns, or
+    ``None`` for a leaf target. A container handler
     declares it on the return type of ``reconcile``
     (``TargetReconcileOutput[Action, TrackingRecord, ChildHandler]``), or by
     subclassing ``TargetHandler[Spec, TrackingRecord, ChildHandler]``.

@@ -1168,8 +1168,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
     ) -> _RowHandler:
         """The row handler for a created or updated table's rows."""
         key = action.key
-        if coco.is_non_existence(action.spec):
-            raise ValueError(f"a deleted table has no row handler: {key}")
+        assert not coco.is_non_existence(action.spec)
         return _RowHandler(
             pool=context_provider.get(key.db_key, asyncpg.Pool),
             table_name=key.table_name,

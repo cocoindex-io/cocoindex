@@ -24,7 +24,9 @@ import datetime
 import decimal
 import logging
 import re
+import threading
 import uuid as uuid_mod
+import weakref
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -125,7 +127,8 @@ class ConnectionFactory:
     Connection factory for Neo4j.
 
     Holds connection parameters and lazily creates an authenticated,
-    connection-pooled async driver, shared by every table and apply batch.
+    connection-pooled async driver per event loop, shared by every table and
+    apply batch on that loop.
     The database name is part of the factory (not the table key) — different
     databases on the same Neo4j cluster are addressed via separate
     ``ConnectionFactory`` / ``ContextKey`` pairs. Call :meth:`close` at
@@ -141,8 +144,8 @@ class ConnectionFactory:
         builder.provide(NEO4J_DB, factory)
     """
 
-    _driver: AsyncDriver | None
-    _driver_loop: asyncio.AbstractEventLoop | None
+    _lock: threading.Lock
+    _drivers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncDriver]
 
     def __init__(
         self,
@@ -162,8 +165,8 @@ class ConnectionFactory:
         self._uri = uri
         self._auth = auth
         self._database = database
-        self._driver = None
-        self._driver_loop = None
+        self._lock = threading.Lock()
+        self._drivers = weakref.WeakKeyDictionary()
 
     @property
     def database(self) -> str:
@@ -172,25 +175,34 @@ class ConnectionFactory:
     async def acquire(self) -> _GraphHandle:
         """Return a graph handle ready to issue ``query(cypher, params)``.
 
-        The factory keeps one driver, for the event loop it was created on,
-        and reuses it. Called on another event loop, it creates a new driver for
-        that loop; the old one is dropped without closing, as it can't be closed
-        from another loop.
+        The factory keeps one driver per event loop (a driver is bound to the
+        loop it is used on), created on the loop's first ``acquire()`` and
+        reused after.
         """
         loop = asyncio.get_running_loop()
-        driver = self._driver
-        if driver is None or self._driver_loop is not loop:
-            driver = _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
-            self._driver, self._driver_loop = driver, loop
+        with self._lock:
+            driver = self._drivers.get(loop)
+            if driver is None:
+                driver = _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
+                self._drivers[loop] = driver
         return _GraphHandle(driver, self._database)
 
     async def close(self) -> None:
-        """Close the driver, if any. Call it on the event loop that used the
-        factory (e.g. in the lifespan, after ``yield``); a later ``acquire()``
-        creates a new driver."""
-        driver, loop = self._driver, self._driver_loop
-        self._driver, self._driver_loop = None, None
-        if driver is not None and loop is asyncio.get_running_loop():
+        """Close the driver of the running event loop, if any. Call it on the
+        loop that used the factory (e.g. in the lifespan, after ``yield``); a
+        later ``acquire()`` creates a new driver. Drivers of other loops can't
+        be closed here; they are left open, with a warning."""
+        with self._lock:
+            driver = self._drivers.pop(asyncio.get_running_loop(), None)
+            num_others = len(self._drivers)
+        if num_others:
+            _logger.warning(
+                "Neo4j ConnectionFactory.close(): %d driver(s) opened on other "
+                "event loops were not closed; close() must run on the event "
+                "loop that opened them",
+                num_others,
+            )
+        if driver is not None:
             await driver.close()
 
 
@@ -1039,8 +1051,7 @@ class _TableHandler(
     ) -> _RecordHandler:
         """The record handler for a created or updated table's records."""
         spec = action.spec
-        if coco.is_non_existence(spec):
-            raise ValueError(f"a deleted table has no record handler: {action.key}")
+        assert not coco.is_non_existence(spec)
         return _RecordHandler(
             table_name=action.key.table_name,
             is_relation=spec.is_relation,

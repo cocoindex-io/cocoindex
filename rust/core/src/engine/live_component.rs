@@ -1243,6 +1243,12 @@ async fn run_op<Prof: EngineProfile>(
             inner_handle.ready().await
         }
         Op::Delete { on_error } => {
+            // A full update's walk may already have planned this delete.
+            if let Some(collector) = &preview_collector {
+                if !collector.plan_component_delete(child.stable_path()) {
+                    return Ok(());
+                }
+            }
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
                 None,

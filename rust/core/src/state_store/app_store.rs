@@ -730,6 +730,19 @@ impl AppStore {
         }
     }
 
+    /// The persisted next id of `key`'s sequencer, if it has one. Read-only.
+    pub async fn read_id_sequence(&self, key: &StableKey) -> Result<Option<u64>> {
+        let rtxn = self.read_txn().await?;
+        let db_key = key_id_sequencer(key)?;
+        match self.db().get(&*rtxn, &db_key)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let info: IdSequencerInfo = from_msgpack_slice(bytes)?;
+                Ok(Some(info.next_id))
+            }
+        }
+    }
+
     pub async fn write_id_sequence(
         &self,
         txn: &mut WriteTxn<'_>,

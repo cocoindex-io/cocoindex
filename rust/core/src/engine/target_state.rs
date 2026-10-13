@@ -104,8 +104,10 @@ pub type TargetActionWithChildSlot<Prof> = (
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildHandling {
     /// The sink takes no child-bearing actions; declaring a child under it is
-    /// an error.
-    None,
+    /// an error. Python sinks never report it: a Python leaf sink may still
+    /// return the deprecated child-definition list, so it reports
+    /// [`ChildHandling::LegacySlots`].
+    Leaf,
     /// Deprecated: [`TargetActionSink::apply`] fulfills a [`ChildTargetSlot`]
     /// per child-bearing action. Such a sink cannot be previewed.
     LegacySlots,
@@ -122,6 +124,12 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     /// How this sink provides child handlers. Answered from the sink's own
     /// fields: the engine asks it inside the precommit txn.
     fn child_handling(&self) -> ChildHandling;
+
+    /// Whether a preview applies this sink's actions too. Only for a sink that
+    /// writes nothing but process memory scoped to the run (e.g. a LiveMap's
+    /// entries), so the components reading that memory see what a real update
+    /// would give them. Answered from the sink's own fields.
+    fn apply_in_preview(&self) -> bool;
 
     /// For a [`ChildHandling::Factory`] sink: the child handler of each of
     /// `actions`, in order. Must be free of side effects: it runs for previews
@@ -182,6 +190,25 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
 
     pub fn child_handling(&self) -> ChildHandling {
         self.inner.sink.child_handling()
+    }
+
+    /// See [`TargetActionSink::apply_in_preview`].
+    pub fn apply_in_preview(&self) -> bool {
+        self.inner.sink.apply_in_preview()
+    }
+
+    /// Applies `actions` for a preview: directly, as previews share no sink
+    /// call with other components.
+    pub(crate) async fn apply_for_preview(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: &[TargetActionWithChildSlot<Prof>],
+    ) -> Result<()> {
+        self.inner
+            .sink
+            .apply(host_runtime_ctx, host_ctx, actions)
+            .await
     }
 
     /// See [`TargetActionSink::child_handlers`]. Not batched: nothing is
@@ -550,6 +577,16 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
 
     pub fn stable_key(&self) -> &StableKey {
         &self.inner.stable_key
+    }
+
+    /// The stable keys from the root provider down to this one, joined with
+    /// `/`: how messages name a target state (its path is fingerprints).
+    pub fn display_name(&self) -> String {
+        self.stable_key_chain()
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     pub fn stable_key_chain(&self) -> Vec<StableKey> {

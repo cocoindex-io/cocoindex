@@ -156,14 +156,22 @@ def test_factory_runs_in_place_of_apply_in_preview_and_before_it_in_update() -> 
     assert sorted(_calls[2:]) == ["row:c/r1", "row:c/r2"]
 
 
-def test_factory_error_fails_the_component_before_apply() -> None:
+def test_factory_error_fails_the_component_before_apply_then_recovers() -> None:
     _rows["c"] = ["r1"]
     _mode["factory_raises"] = True
     app = _app("test_child_handler_factory_error")
 
+    # The container is never applied, nor are its rows.
     with pytest.raises(Exception, match="factory failed"):
         app.update_blocking()
     assert _calls == ["factory:c"]
+
+    # Once the factory succeeds, the next update applies the container and
+    # then its rows.
+    _calls.clear()
+    _mode["factory_raises"] = False
+    app.update_blocking()
+    assert _calls == ["factory:c", "apply:c", "row:c/r1"]
 
 
 def test_child_handler_sink_returning_a_value_fails() -> None:

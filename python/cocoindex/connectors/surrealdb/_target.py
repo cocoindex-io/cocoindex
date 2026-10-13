@@ -17,10 +17,13 @@ from __future__ import annotations
 import asyncio
 import datetime
 import decimal
+import logging
 import random
 import re
+import threading
 import uuid
-from dataclasses import dataclass
+import weakref
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
@@ -70,6 +73,8 @@ import msgspec
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
+_logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Identifier validation & record ID formatting
 # ---------------------------------------------------------------------------
@@ -101,11 +106,20 @@ def _to_record_id(table: str, value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _LoopConnection:
+    """The connection of one event loop, and the lock that opens it once."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    conn: AsyncSurreal | None = None
+
+
 class ConnectionFactory:
     """
     Connection factory for SurrealDB.
 
-    Holds connection parameters and creates authenticated connections on demand.
+    Holds connection parameters and creates authenticated connections on demand,
+    one per event loop.
 
     Example::
 
@@ -130,29 +144,30 @@ class ConnectionFactory:
         self._namespace = namespace
         self._database = database
         self._credentials = credentials
-        self._conn: AsyncSurreal | None = None
-        self._conn_loop: asyncio.AbstractEventLoop | None = None
-        self._conn_lock: asyncio.Lock | None = None
+        self._lock = threading.Lock()
+        self._conns: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, _LoopConnection
+        ] = weakref.WeakKeyDictionary()
 
     async def acquire(self) -> AsyncSurreal:
         """Return the authenticated connection for the current event loop.
 
-        The connection is opened once and reused by every table and batch (a
-        SurrealDB WebSocket multiplexes concurrent requests). Called on another
-        event loop, it opens a new one for that loop; the old one is dropped
-        without closing, as it can't be closed from another loop.
+        The connection is opened once per event loop (a connection is bound to
+        the loop it is used on) and reused by every table and batch on that
+        loop (a SurrealDB WebSocket multiplexes concurrent requests).
         """
-        # ponytail: one shared connection per factory; add a pool if a single
+        # ponytail: one shared connection per loop; add a pool if a single
         # WebSocket becomes the throughput limit.
         loop = asyncio.get_running_loop()
-        if self._conn_loop is not loop or self._conn_lock is None:
-            self._conn, self._conn_loop = None, loop
-            self._conn_lock = asyncio.Lock()
+        with self._lock:
+            entry = self._conns.get(loop)
+            if entry is None:
+                entry = self._conns[loop] = _LoopConnection()
         # Sinks apply concurrently: open the connection once, not once per caller.
-        async with self._conn_lock:
-            if self._conn is None:
-                self._conn = await self._connect()
-            return self._conn
+        async with entry.lock:
+            if entry.conn is None:
+                entry.conn = await self._connect()
+            return entry.conn
 
     async def _connect(self) -> AsyncSurreal:
         conn = AsyncSurreal(self._url)
@@ -167,16 +182,30 @@ class ConnectionFactory:
         return conn
 
     async def close(self) -> None:
-        """Close the connection, if any. Call it on the event loop that used the
-        factory (e.g. in the lifespan, after ``yield``); a later ``acquire()``
-        opens a new connection."""
-        if self._conn_lock is None or self._conn_loop is not asyncio.get_running_loop():
-            # Opened on another event loop (or never): it can't be closed here.
-            self._conn = None
+        """Close the connection of the running event loop, if any. Call it on
+        the loop that used the factory (e.g. in the lifespan, after ``yield``);
+        a later ``acquire()`` opens a new connection. Connections of other
+        loops can't be closed here; they are left open, with a warning."""
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            entry = self._conns.get(loop)
+            num_others = sum(
+                1
+                for other_loop, other in self._conns.items()
+                if other_loop is not loop and other.conn is not None
+            )
+        if num_others:
+            _logger.warning(
+                "SurrealDB ConnectionFactory.close(): %d connection(s) opened on "
+                "other event loops were not closed; close() must run on the "
+                "event loop that opened them",
+                num_others,
+            )
+        if entry is None:
             return
         # Waits for a connect in progress, so its connection is closed too.
-        async with self._conn_lock:
-            conn, self._conn = self._conn, None
+        async with entry.lock:
+            conn, entry.conn = entry.conn, None
         if conn is not None:
             await conn.close()
 
@@ -1054,8 +1083,7 @@ class _TableHandler(
     ) -> _RecordHandler:
         """The record handler for a created or updated table's records."""
         spec = action.spec
-        if coco.is_non_existence(spec):
-            raise ValueError(f"a deleted table has no record handler: {action.key}")
+        assert not coco.is_non_existence(spec)
         return _RecordHandler(
             table_name=action.key.table_name,
             is_relation=spec.is_relation,

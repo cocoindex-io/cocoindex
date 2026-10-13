@@ -20,7 +20,9 @@ import base64
 import datetime
 import decimal
 import logging
+import threading
 import uuid as uuid_mod
+import weakref
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -94,8 +96,8 @@ class ConnectionFactory:
     Connection factory for FalkorDB.
 
     Holds connection parameters and lazily creates a connection-pooled async
-    client, shared by every table and apply batch, that yields a graph handle
-    on demand. The graph name is part of the factory (not the table key) —
+    client per event loop, shared by every table and apply batch on that loop,
+    that yields a graph handle on demand. The graph name is part of the factory (not the table key) —
     different graphs in the same Redis instance are addressed via separate
     ``ConnectionFactory`` / ``ContextKey`` pairs. Call :meth:`close` at
     shutdown to close the client.
@@ -109,15 +111,15 @@ class ConnectionFactory:
         builder.provide(FALKOR_DB, factory)
     """
 
-    _client: AsyncFalkorDB | None
-    _client_loop: asyncio.AbstractEventLoop | None
+    _lock: threading.Lock
+    _clients: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncFalkorDB]
 
     def __init__(self, uri: str, *, graph: str = "default") -> None:
         _validate_identifier(graph, "graph name")
         self._uri = uri
         self._graph = graph
-        self._client = None
-        self._client_loop = None
+        self._lock = threading.Lock()
+        self._clients = weakref.WeakKeyDictionary()
 
     @property
     def graph(self) -> str:
@@ -126,25 +128,34 @@ class ConnectionFactory:
     async def acquire(self) -> Any:
         """Return an AsyncGraph handle ready to issue ``query(cypher, params)``.
 
-        The factory keeps one client, for the event loop it was created on,
-        and reuses it. Called on another event loop, it creates a new client for
-        that loop; the old one is dropped without closing, as it can't be closed
-        from another loop.
+        The factory keeps one client per event loop (a client is bound to the
+        loop it is used on), created on the loop's first ``acquire()`` and
+        reused after.
         """
         loop = asyncio.get_running_loop()
-        client = self._client
-        if client is None or self._client_loop is not loop:
-            client = AsyncFalkorDB.from_url(self._uri)
-            self._client, self._client_loop = client, loop
+        with self._lock:
+            client = self._clients.get(loop)
+            if client is None:
+                client = AsyncFalkorDB.from_url(self._uri)
+                self._clients[loop] = client
         return client.select_graph(self._graph)
 
     async def close(self) -> None:
-        """Close the client, if any. Call it on the event loop that used the
-        factory (e.g. in the lifespan, after ``yield``); a later ``acquire()``
-        creates a new client."""
-        client, loop = self._client, self._client_loop
-        self._client, self._client_loop = None, None
-        if client is not None and loop is asyncio.get_running_loop():
+        """Close the client of the running event loop, if any. Call it on the
+        loop that used the factory (e.g. in the lifespan, after ``yield``); a
+        later ``acquire()`` creates a new client. Clients of other loops can't
+        be closed here; they are left open, with a warning."""
+        with self._lock:
+            client = self._clients.pop(asyncio.get_running_loop(), None)
+            num_others = len(self._clients)
+        if num_others:
+            _logger.warning(
+                "FalkorDB ConnectionFactory.close(): %d client(s) opened on "
+                "other event loops were not closed; close() must run on the "
+                "event loop that opened them",
+                num_others,
+            )
+        if client is not None:
             await client.aclose()
 
 
@@ -981,8 +992,7 @@ class _TableHandler(
     ) -> _RecordHandler:
         """The record handler for a created or updated table's records."""
         spec = action.spec
-        if coco.is_non_existence(spec):
-            raise ValueError(f"a deleted table has no record handler: {action.key}")
+        assert not coco.is_non_existence(spec)
         return _RecordHandler(
             table_name=action.key.table_name,
             is_relation=spec.is_relation,

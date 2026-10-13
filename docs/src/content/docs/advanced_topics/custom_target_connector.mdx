@@ -161,7 +161,7 @@ class TargetReconcileOutput(Generic[ActionT, TrackingRecordT, OptChildHandlerT],
     child_invalidation: Literal["destructive", "lossy"] | None = None  # For container targets
 ```
 
-`OptChildHandlerT` is the handler type of the child target states the action's sink fulfills (`None` for leaf targets). Nothing in the tuple depends on it; it is how a container handler declares its child handler type.
+`OptChildHandlerT` is the handler type of the child target states, which the sink's `child_handler` factory returns for the action (`None` for leaf targets). Nothing in the tuple depends on it; it is how a container handler declares its child handler type.
 
 The `child_invalidation` field is only relevant for **container targets** (those with children). See [Child invalidation](#child-invalidation) for details.
 
@@ -338,7 +338,7 @@ Container targets (directories, tables) have children (files, rows). This sectio
 
 For targets **nested inside another target** (e.g., files inside a directory), the lifecycle is similar to root targets but **how you get the provider is different**.
 
-For root targets, you call `register_root_target_states_provider()` and immediately get a provider with your handler. For non-root targets, the handler comes from the **parent's sink execution**:
+For root targets, you call `register_root_target_states_provider()` and immediately get a provider with your handler. For non-root targets, the handler comes from the **`child_handler` factory of the parent's sink**, which CocoIndex calls with the parent's action:
 
 1. **Declaration**: Call `declare_target_state_with_child(parent_ts)` — returns an **unresolved** child provider immediately
 2. **Resolution**: When the parent reconciles, CocoIndex calls the sink's `child_handler` factory with the parent's action and resolves the child provider with the handler it returns. It does this before the sink applies the action, and in a preview (`app.update(preview=True)`) in place of applying it — so the factory must build the handler from the action alone, with no side effects.
@@ -465,7 +465,8 @@ def declare_dir_target(path: pathlib.Path) -> DirTarget:
         key=str(path),
         value=_DirSpec(),
     )
-    # Child provider is pending until parent sink runs
+    # Child provider is pending until the parent reconciles and its sink's
+    # `child_handler` factory returns the child handler
     child_provider = coco.declare_target_state_with_child(parent_ts)
     return DirTarget(child_provider)
 ```
@@ -557,7 +558,7 @@ The symbol keys (`@vector_index`, `@sql_command_attachment`) are path namespaces
 ### How it works
 
 1. **Handler implements `attachments()`**: The child handler (e.g., row handler) returns a dict of all supported attachment types and their handlers.
-2. **Engine eagerly registers attachment providers**: When the child handler is fulfilled, the engine calls `attachments()` and registers all returned types. This ensures orphaned attachments can be cleaned up even when not declared in the current run.
+2. **Engine eagerly registers attachment providers**: When the child provider is resolved with the handler from the `child_handler` factory, the engine calls `attachments()` and registers all returned types. This ensures orphaned attachments can be cleaned up even when not declared in the current run.
 3. **User code calls `provider.attachment()`**: On a resolved child provider, this retrieves the cached attachment sub-provider.
 4. **Target states declared under the attachment provider** are tracked independently from regular children.
 

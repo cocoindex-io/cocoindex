@@ -334,7 +334,7 @@ pub(crate) type ChildHandlerFn =
 
 /// How a [`BoxedSink`] provides child handlers (see [`ChildHandling`]).
 pub(crate) enum SinkChildren {
-    None,
+    Leaf,
     LegacySlots,
     Factory(ChildHandlerFn),
 }
@@ -342,6 +342,7 @@ pub(crate) enum SinkChildren {
 pub(crate) struct BoxedSink {
     apply_fn: SinkFn,
     children: SinkChildren,
+    apply_in_preview: bool,
 }
 
 impl BoxedSink {
@@ -351,10 +352,12 @@ impl BoxedSink {
         + Sync
         + 'static,
         children: SinkChildren,
+        apply_in_preview: bool,
     ) -> Self {
         Self {
             apply_fn: Arc::new(f),
             children,
+            apply_in_preview,
         }
     }
 }
@@ -363,10 +366,14 @@ impl BoxedSink {
 impl TargetActionSink<RustProfile> for BoxedSink {
     fn child_handling(&self) -> ChildHandling {
         match self.children {
-            SinkChildren::None => ChildHandling::None,
+            SinkChildren::Leaf => ChildHandling::Leaf,
             SinkChildren::LegacySlots => ChildHandling::LegacySlots,
             SinkChildren::Factory(_) => ChildHandling::Factory,
         }
+    }
+
+    fn apply_in_preview(&self) -> bool {
+        self.apply_in_preview
     }
 
     async fn child_handlers(

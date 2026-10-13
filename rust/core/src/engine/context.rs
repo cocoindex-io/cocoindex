@@ -174,13 +174,27 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
-    pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
+    /// Components take ids through [`ComponentProcessorContext::next_id`], which a preview
+    /// serves without reserving any.
+    pub(crate) async fn next_id(
+        &self,
+        key: Option<&StableKey>,
+        deadline: DeadlineContext,
+    ) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
             .next_id(self.inner.env.storage(), &self.inner.app_store, key)
+            .await
+    }
+
+    /// The id [`Self::next_id`] would return next for `key`, reserving none.
+    async fn peek_next_id(&self, key: &StableKey) -> Result<u64> {
+        self.inner
+            .id_sequencer_manager
+            .peek_next_id(&self.inner.app_store, key)
             .await
     }
 }
@@ -633,12 +647,22 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub user_states: UserStateCache<Prof::FunctionData>,
 }
 
-/// Actions and ownership claims shared by all components of one preview.
-/// Claims stay in memory: removed components must not delete targets that
-/// another component has already claimed during this preview.
+/// Actions, plus the state a real update would persist, shared by all
+/// components of one preview. A preview writes nothing, so it keeps here what
+/// a later component of the same preview must see:
+/// - which component claimed a target, so a removed component does not delete
+///   a target another component took over;
+/// - which component released a target (planned its delete), so a component
+///   taking it over plans a create rather than reading the released owner's
+///   record from the store;
+/// - which components' deletes are planned, so no delete is planned twice;
+/// - the ids handed out, so ids continue where a real update's would.
 pub struct PreviewActions<Prof: EngineProfile> {
     pub actions: std::sync::Mutex<Vec<Prof::TargetAction>>,
     pub(crate) claimed_targets: std::sync::Mutex<HashMap<TargetStatePath, StablePath>>,
+    pub(crate) released_targets: std::sync::Mutex<HashMap<TargetStatePath, StablePath>>,
+    deleted_components: std::sync::Mutex<HashSet<StablePath>>,
+    next_ids: tokio::sync::Mutex<HashMap<StableKey, u64>>,
 }
 
 impl<Prof: EngineProfile> Default for PreviewActions<Prof> {
@@ -646,7 +670,23 @@ impl<Prof: EngineProfile> Default for PreviewActions<Prof> {
         Self {
             actions: std::sync::Mutex::new(Vec::new()),
             claimed_targets: std::sync::Mutex::new(HashMap::new()),
+            released_targets: std::sync::Mutex::new(HashMap::new()),
+            deleted_components: std::sync::Mutex::new(HashSet::new()),
+            next_ids: tokio::sync::Mutex::new(HashMap::new()),
         }
+    }
+}
+
+impl<Prof: EngineProfile> PreviewActions<Prof> {
+    /// Whether `owner` planned the delete of `path` earlier in this preview.
+    pub(crate) fn released_by(&self, path: &TargetStatePath, owner: &StablePath) -> bool {
+        self.released_targets.lock().unwrap().get(path) == Some(owner)
+    }
+
+    /// Records that this preview plans the delete of the component at `path`.
+    /// False if one is already planned: a real run deletes a component once.
+    pub(crate) fn plan_component_delete(&self, path: &StablePath) -> bool {
+        self.deleted_components.lock().unwrap().insert(path.clone())
     }
 }
 
@@ -1168,6 +1208,24 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 .as_ref()
                 .is_some_and(|preview| preview.keep_children),
         }
+    }
+
+    /// The next id of `key`'s sequencer (the default one for `None`). A preview
+    /// reserves none: it hands out ids from its own counter, starting where a
+    /// real update would.
+    pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
+        let Some(preview) = self.preview_collector() else {
+            return self.app_ctx().next_id(key, deadline).await;
+        };
+        deadline.check()?;
+        let key = key.cloned().unwrap_or(StableKey::Null);
+        let mut next_ids = preview.next_ids.lock().await;
+        let id = match next_ids.get(&key) {
+            Some(id) => *id,
+            None => self.app_ctx().peek_next_id(&key).await?,
+        };
+        next_ids.insert(key, id + 1);
+        Ok(id)
     }
 
     pub fn live(&self) -> bool {

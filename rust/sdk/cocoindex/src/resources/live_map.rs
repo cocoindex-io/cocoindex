@@ -352,19 +352,21 @@ impl<V: LiveMapValue> TargetHandler<V> for EntryHandler<V> {
 impl<V: LiveMapValue> EntryHandler<V> {
     fn sink(&self) -> TargetActionSink<EntryAction<V>> {
         let inner = self.inner.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<EntryAction<V>>>| {
-            let inner = inner.clone();
-            async move {
-                for action in actions {
-                    let a = match action {
-                        TargetAction::Create(a)
-                        | TargetAction::Update(a)
-                        | TargetAction::Delete(a) => a,
-                    };
-                    inner.apply(a.key, a.value);
+        TargetActionSink::from_async_fn_applied_in_preview(
+            move |actions: Vec<TargetAction<EntryAction<V>>>| {
+                let inner = inner.clone();
+                async move {
+                    for action in actions {
+                        let a = match action {
+                            TargetAction::Create(a)
+                            | TargetAction::Update(a)
+                            | TargetAction::Delete(a) => a,
+                        };
+                        inner.apply(a.key, a.value);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-        })
+            },
+        )
     }
 }

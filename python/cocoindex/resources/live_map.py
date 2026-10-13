@@ -33,6 +33,7 @@ from typing import TypeVar as _TypeVar
 import msgspec as _msgspec
 
 import cocoindex as _coco
+from cocoindex._internal import target_state as _target_state
 
 __all__ = ["LiveMap"]
 
@@ -204,8 +205,10 @@ async def _apply_container_actions(
     """A container is the in-memory map itself, so there is nothing to apply."""
 
 
+# The entries are this run's process memory, so a preview applies them too: the
+# map's consumers then mount what an update would give them.
 _ENTRY_SINK: _coco.TargetActionSink[_EntryAction] = (
-    _coco.TargetActionSink.from_async_fn(_apply_entry_actions)
+    _target_state.process_memory_sink_from_async_fn(_apply_entry_actions)
 )
 _CONTAINER_SINK: _coco.TargetActionSink[_ContainerAction] = (
     _coco.TargetActionSink.from_async_fn(

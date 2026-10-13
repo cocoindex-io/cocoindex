@@ -24,7 +24,7 @@ pip install cocoindex[falkordb]
 
 ## Connection setup
 
-Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the FalkorDB URI plus the target graph name; on first use it opens one connection-pooled client, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the FalkorDB URI plus the target graph name; it opens one connection-pooled client per event loop, on first use on that loop, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -39,14 +39,13 @@ KG_DB: coco.ContextKey[falkordb.ConnectionFactory] = coco.ContextKey("kg_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(
-        KG_DB,
-        falkordb.ConnectionFactory(
-            uri="falkor://localhost:6379",
-            graph="knowledge_graph",
-        ),
+    factory = falkordb.ConnectionFactory(
+        uri="falkor://localhost:6379",
+        graph="knowledge_graph",
     )
+    builder.provide(KG_DB, factory)
     yield
+    await factory.close()
 ```
 
 ### Multitenancy
@@ -60,9 +59,13 @@ APIS_DB: coco.ContextKey[falkordb.ConnectionFactory] = coco.ContextKey("apis_db"
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     uri = "falkor://localhost:6379"
-    builder.provide(KG_DB, falkordb.ConnectionFactory(uri=uri, graph="knowledge_graph"))
-    builder.provide(APIS_DB, falkordb.ConnectionFactory(uri=uri, graph="apis_graph"))
+    kg_factory = falkordb.ConnectionFactory(uri=uri, graph="knowledge_graph")
+    apis_factory = falkordb.ConnectionFactory(uri=uri, graph="apis_graph")
+    builder.provide(KG_DB, kg_factory)
+    builder.provide(APIS_DB, apis_factory)
     yield
+    await kg_factory.close()
+    await apis_factory.close()
 ```
 
 Different `ContextKey`s with different graph names produce fully separate target-state trees — changes to one never spill into the other.
@@ -319,10 +322,12 @@ class Document:
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(KG_DB, falkordb.ConnectionFactory(
+    factory = falkordb.ConnectionFactory(
         uri="falkor://localhost:6379", graph="knowledge_graph",
-    ))
+    )
+    builder.provide(KG_DB, factory)
     yield
+    await factory.close()
 
 
 @coco.fn

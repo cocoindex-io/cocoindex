@@ -197,6 +197,28 @@ class _DictTargetStateStoreAction(NamedTuple):
     destructive: bool = False
 
 
+class PlannedDictsActions(NamedTuple):
+    """Actions a preview planned for `DictsTargetStateStore` containers and
+    their `DictTargetStateStore` entries."""
+
+    containers: dict[str, _DictTargetStateStoreAction]
+    # By entry key; the entries must be of distinct containers' distinct keys.
+    entries: dict[str, DictDataWithPrev | coco.NonExistenceType]
+
+
+def split_dicts_actions(actions: Sequence[Any] | None) -> PlannedDictsActions:
+    assert actions is not None
+    planned = PlannedDictsActions({}, {})
+    for action in actions:
+        if isinstance(action, _DictTargetStateStoreAction):
+            planned.containers[action.name] = action
+        else:
+            key, value = action
+            assert key not in planned.entries
+            planned.entries[key] = value
+    return planned
+
+
 class DictsTargetStateStore(coco.TargetHandler[None, None, DictTargetStateStore]):
     _stores: dict[str, DictTargetStateStore]
     # Stores handed out by `_child_handler` for a container `_sink` has yet to

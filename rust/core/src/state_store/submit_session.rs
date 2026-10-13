@@ -598,11 +598,17 @@ impl AppStore {
 /// [`ExistenceReconciler`]), and a preview reads it to find the child
 /// components a commit would delete. Lives on the storage side because the
 /// entire logic only depends on the state layer (no engine concepts).
+///
+/// `for_preview`: a real run's children upsert their own `__cex` rows as
+/// `Component` when built, before their parent's walk; a preview skips that
+/// write. So a preview treats a `Directory` row now declared as a `Component`
+/// as already upgraded, rather than tombstoning everything under it.
 pub fn plan_child_existence<'a>(
     txn: &heed::RoTxn<'_>,
     app_store: &AppStore,
     component_path: &StablePath,
     child_path_set: Option<&'a ChildStablePathSet>,
+    for_preview: bool,
 ) -> Result<ChildExistencePlan> {
     let mut plan = ChildExistencePlan::default();
     let mut queue: VecDeque<Level<'a>> = VecDeque::new();
@@ -712,7 +718,8 @@ pub fn plan_child_existence<'a>(
                                 path: level.path.concat_part(curr_key.clone()),
                                 child_path_set: Some(curr_dir_set),
                             });
-                        } else if existing_info.node_type == StablePathNodeType::Directory
+                        } else if !for_preview
+                            && existing_info.node_type == StablePathNodeType::Directory
                             && new_node_type == StablePathNodeType::Component
                         {
                             queue.push_back(Level {
@@ -753,7 +760,7 @@ pub async fn reconcile_child_existence(
     component_path: &StablePath,
     child_path_set: Option<&ChildStablePathSet>,
 ) -> Result<()> {
-    let plan = plan_child_existence(&***wtxn, app_store, component_path, child_path_set)?;
+    let plan = plan_child_existence(&***wtxn, app_store, component_path, child_path_set, false)?;
     for (parent, key) in &plan.removals {
         app_store.delete_child_existence(wtxn, parent, key).await?;
     }
