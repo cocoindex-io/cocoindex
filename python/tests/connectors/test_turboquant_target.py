@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cocoindex as coco
@@ -132,6 +133,30 @@ def test_turboquant_index_rejects_non_contiguous_vectors() -> None:
         index.add_with_ids(vectors, np.arange(16, dtype=np.uint64))
 
     assert len(index) == 0
+
+
+def test_turboquant_index_searches_while_adding() -> None:
+    index = core.TurboQuantIdMapIndex(dim=8, bit_width=4)
+    index.add_with_ids(_BASIS[:1], np.array([0], dtype=np.uint64))
+    num_adds = 200
+
+    def search_repeatedly() -> set[int]:
+        found: set[int] = set()
+        for _ in range(num_adds):
+            _, ids = index.search(_BASIS[:1], 1)
+            found.update(int(id_) for id_ in ids.reshape(-1))
+        return found
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        searches = [pool.submit(search_repeatedly) for _ in range(4)]
+        for id_ in range(1, num_adds + 1):
+            index.add_with_ids(
+                _BASIS[1 + id_ % 7][None, :], np.array([id_], dtype=np.uint64)
+            )
+        found = [search.result() for search in searches]
+
+    assert len(index) == num_adds + 1
+    assert found == [{0}] * 4
 
 
 def test_turboquant_target_removes_index(tmp_path: Path) -> None:

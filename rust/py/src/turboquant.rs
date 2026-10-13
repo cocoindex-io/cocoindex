@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use numpy::ndarray::{Array2, Dimension};
 use numpy::{Element, IntoPyArray, PyArray2, PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2};
@@ -13,12 +14,21 @@ fn py_io_err(e: impl Display) -> PyErr {
     pyo3::exceptions::PyIOError::new_err(e.to_string())
 }
 
-fn contiguous_slice<'a, T: Element, D: Dimension>(
-    array: &'a PyReadonlyArray<'_, T, D>,
+fn py_poisoned_err() -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(
+        "TurboQuantIdMapIndex is unusable after a panic during an earlier call",
+    )
+}
+
+// Copies the array so the GIL can be released without Python mutating the
+// buffer while it is read.
+fn contiguous_vec<T: Element + Copy, D: Dimension>(
+    array: &PyReadonlyArray<'_, T, D>,
     name: &str,
-) -> PyResult<&'a [T]> {
+) -> PyResult<Vec<T>> {
     array
         .as_slice()
+        .map(<[T]>::to_vec)
         .map_err(|_| py_value_err(format!("{name} must be a C-contiguous array")))
 }
 
@@ -33,9 +43,28 @@ fn to_pyarray_2d<T: Element>(
         .into_pyarray(py))
 }
 
-#[pyclass(name = "TurboQuantIdMapIndex")]
+/// Search, add, prepare, write, and load run with the GIL released. The lock
+/// lets a loaded index be searched by several threads while another thread
+/// updates it: readers share the index and writers wait instead of failing.
+#[pyclass(name = "TurboQuantIdMapIndex", frozen)]
 pub struct PyTurboQuantIdMapIndex {
-    inner: turbovec::IdMapIndex,
+    inner: RwLock<turbovec::IdMapIndex>,
+}
+
+impl PyTurboQuantIdMapIndex {
+    fn from_inner(inner: turbovec::IdMapIndex) -> Self {
+        Self {
+            inner: RwLock::new(inner),
+        }
+    }
+
+    fn read(&self) -> PyResult<RwLockReadGuard<'_, turbovec::IdMapIndex>> {
+        self.inner.read().map_err(|_| py_poisoned_err())
+    }
+
+    fn write_lock(&self) -> PyResult<RwLockWriteGuard<'_, turbovec::IdMapIndex>> {
+        self.inner.write().map_err(|_| py_poisoned_err())
+    }
 }
 
 #[pymethods]
@@ -48,26 +77,27 @@ impl PyTurboQuantIdMapIndex {
             None => turbovec::IdMapIndex::new_lazy(bit_width),
         }
         .map_err(py_value_err)?;
-        Ok(Self { inner })
+        Ok(Self::from_inner(inner))
     }
 
     fn add_with_ids(
-        &mut self,
+        &self,
+        py: Python<'_>,
         vectors: PyReadonlyArray2<f32>,
         ids: PyReadonlyArray1<u64>,
     ) -> PyResult<()> {
         let dim = vectors.as_array().ncols();
-        self.inner
-            .add_with_ids_2d(
-                contiguous_slice(&vectors, "vectors")?,
-                dim,
-                contiguous_slice(&ids, "ids")?,
-            )
-            .map_err(py_value_err)
+        let vectors = contiguous_vec(&vectors, "vectors")?;
+        let ids = contiguous_vec(&ids, "ids")?;
+        py.detach(|| {
+            self.write_lock()?
+                .add_with_ids_2d(&vectors, dim, &ids)
+                .map_err(py_value_err)
+        })
     }
 
-    fn remove(&mut self, id: u64) -> bool {
-        self.inner.remove(id)
+    fn remove(&self, id: u64) -> PyResult<bool> {
+        Ok(self.write_lock()?.remove(id))
     }
 
     #[pyo3(signature = (queries, k, *, allowlist=None))]
@@ -79,85 +109,89 @@ impl PyTurboQuantIdMapIndex {
         allowlist: Option<PyReadonlyArray1<u64>>,
     ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<u64>>)> {
         let num_queries = queries.as_array().nrows();
-        let query_slice = contiguous_slice(&queries, "queries")?;
+        let queries = contiguous_vec(&queries, "queries")?;
+        let allowlist = allowlist
+            .as_ref()
+            .map(|allowlist| contiguous_vec(allowlist, "allowlist"))
+            .transpose()?;
 
-        // turbovec rejects an empty allowlist and ids absent from the index, while
-        // callers pass allowlists precomputed from metadata that may name ids
-        // without stored vectors.
-        let allowlist_ids = match &allowlist {
-            Some(allowlist) => {
-                let ids: Vec<u64> = contiguous_slice(allowlist, "allowlist")?
-                    .iter()
-                    .copied()
-                    .filter(|id| self.inner.contains(*id))
-                    .collect();
-                if ids.is_empty() {
-                    return Ok((
-                        to_pyarray_2d(py, num_queries, 0, Vec::new())?,
-                        to_pyarray_2d(py, num_queries, 0, Vec::new())?,
-                    ));
-                }
-                Some(ids)
+        let results = py.detach(|| -> PyResult<Option<turbovec::IdSearchResults>> {
+            let inner = self.read()?;
+            // turbovec rejects an empty allowlist and ids absent from the index,
+            // while callers pass allowlists precomputed from metadata that may
+            // name ids without stored vectors.
+            let allowlist: Option<Vec<u64>> =
+                allowlist.map(|ids| ids.into_iter().filter(|id| inner.contains(*id)).collect());
+            if allowlist.as_ref().is_some_and(Vec::is_empty) {
+                return Ok(None);
             }
-            None => None,
-        };
+            inner
+                .try_search_with_allowlist(&queries, k, allowlist.as_deref())
+                .map(Some)
+                .map_err(py_value_err)
+        })?;
 
-        let results = self
-            .inner
-            .try_search_with_allowlist(query_slice, k, allowlist_ids.as_deref())
-            .map_err(py_value_err)?;
+        let (cols, scores, ids) = match results {
+            Some(results) => (results.k, results.scores, results.ids),
+            None => (0, Vec::new(), Vec::new()),
+        };
         Ok((
-            to_pyarray_2d(py, num_queries, results.k, results.scores)?,
-            to_pyarray_2d(py, num_queries, results.k, results.ids)?,
+            to_pyarray_2d(py, num_queries, cols, scores)?,
+            to_pyarray_2d(py, num_queries, cols, ids)?,
         ))
     }
 
-    fn contains(&self, id: u64) -> bool {
-        self.inner.contains(id)
+    fn contains(&self, id: u64) -> PyResult<bool> {
+        Ok(self.read()?.contains(id))
     }
 
-    fn prepare(&self) {
-        self.inner.prepare();
+    fn prepare(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| {
+            self.read()?.prepare();
+            Ok(())
+        })
     }
 
-    fn write(&self, path: &str) -> PyResult<()> {
-        self.inner.write(path).map_err(py_io_err)
+    fn write(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        py.detach(|| self.read()?.write(path).map_err(py_io_err))
     }
 
     #[classmethod]
-    fn load(_cls: &Bound<PyType>, path: &str) -> PyResult<Self> {
-        let inner = turbovec::IdMapIndex::load(path).map_err(py_io_err)?;
-        Ok(Self { inner })
+    fn load(_cls: &Bound<PyType>, py: Python<'_>, path: &str) -> PyResult<Self> {
+        let inner = py
+            .detach(|| turbovec::IdMapIndex::load(path))
+            .map_err(py_io_err)?;
+        Ok(Self::from_inner(inner))
     }
 
-    fn __len__(&self) -> usize {
-        self.inner.len()
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self.read()?.len())
     }
 
-    fn __contains__(&self, id: u64) -> bool {
-        self.inner.contains(id)
-    }
-
-    #[getter]
-    fn dim(&self) -> Option<usize> {
-        self.inner.dim_opt()
+    fn __contains__(&self, id: u64) -> PyResult<bool> {
+        self.contains(id)
     }
 
     #[getter]
-    fn bit_width(&self) -> usize {
-        self.inner.bit_width()
+    fn dim(&self) -> PyResult<Option<usize>> {
+        Ok(self.read()?.dim_opt())
     }
 
-    fn __repr__(&self) -> String {
-        let dim = self
-            .inner
+    #[getter]
+    fn bit_width(&self) -> PyResult<usize> {
+        Ok(self.read()?.bit_width())
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let inner = self.read()?;
+        let dim = inner
             .dim_opt()
             .map_or_else(|| "None".to_string(), |dim| dim.to_string());
-        format!(
+        Ok(format!(
             "cocoindex.TurboQuantIdMapIndex(dim={}, bit_width={}, n_vectors={})",
             dim,
-            self.inner.bit_width(),
-            self.inner.len()
-        )
+            inner.bit_width(),
+            inner.len()
+        ))
     }
 }
