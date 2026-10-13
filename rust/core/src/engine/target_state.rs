@@ -22,7 +22,8 @@ enum ChildTargetSlotState<H> {
     Consumed,
 }
 
-/// Fulfillment handle for the child target provider of one action.
+/// Fulfillment handle for the child target provider of one action, for a
+/// deprecated [`ChildHandling::LegacySlots`] sink.
 ///
 /// The engine mints one slot per action whose target state was declared with
 /// `declare_target_state_with_child`, hands it to the sink alongside the action,
@@ -98,13 +99,43 @@ pub type TargetActionWithChildSlot<Prof> = (
     Option<ChildTargetSlot<Prof>>,
 );
 
+/// How a sink provides the handlers for the child target states of its
+/// actions (the actions whose target state was declared with a child).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildHandling {
+    /// The sink takes no child-bearing actions; declaring a child under it is
+    /// an error.
+    None,
+    /// Deprecated: [`TargetActionSink::apply`] fulfills a [`ChildTargetSlot`]
+    /// per child-bearing action. Such a sink cannot be previewed.
+    LegacySlots,
+    /// [`TargetActionSink::child_handlers`] builds the handlers from the
+    /// actions alone. The engine calls it before `apply`, and in preview in
+    /// place of `apply`.
+    Factory,
+}
+
 #[async_trait]
 pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    /// Apply `actions` to the external system as one unit. Every child slot
-    /// handed over must be fulfilled before this returns; the engine reads
-    /// them back afterwards.
+    /// How this sink provides child handlers. Answered from the sink's own
+    /// fields: the engine asks it inside the precommit txn.
+    fn child_handling(&self) -> ChildHandling;
+
+    /// For a [`ChildHandling::Factory`] sink: the child handler of each of
+    /// `actions`, in order. Must be free of side effects: it runs for previews
+    /// too, and before `apply` in a real update.
+    async fn child_handlers(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: &[&Prof::TargetAction],
+    ) -> Result<Vec<Prof::TargetHdl>>;
+
+    /// Apply `actions` to the external system as one unit. A
+    /// [`ChildHandling::LegacySlots`] sink must fulfill every child slot handed
+    /// over before this returns; the engine reads them back afterwards.
     ///
     /// One call may carry the actions of several processing components: the
     /// engine merges the actions of components that finish while an earlier
@@ -121,20 +152,6 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
         host_ctx: Arc<Prof::HostCtx>,
         actions: &[TargetActionWithChildSlot<Prof>],
     ) -> Result<()>;
-
-    /// Preview mode: fulfill the child slots of `actions` as [`Self::apply`]
-    /// would, without applying the actions. Must be free of side effects.
-    ///
-    /// The default fulfills none, so preview fails for a component whose
-    /// actions have child slots on this sink.
-    async fn preview_children(
-        &self,
-        _host_runtime_ctx: &Prof::HostRuntimeCtx,
-        _host_ctx: Arc<Prof::HostCtx>,
-        _actions: &[TargetActionWithChildSlot<Prof>],
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Cloneable handle to a target action sink and its per-sink batcher.
@@ -163,17 +180,21 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         }
     }
 
-    /// See [`TargetActionSink::preview_children`]. Not batched: nothing is
+    pub fn child_handling(&self) -> ChildHandling {
+        self.inner.sink.child_handling()
+    }
+
+    /// See [`TargetActionSink::child_handlers`]. Not batched: nothing is
     /// applied, so there is no sink call to share.
-    pub async fn preview_children(
+    pub async fn child_handlers(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         host_ctx: Arc<Prof::HostCtx>,
-        actions: &[TargetActionWithChildSlot<Prof>],
-    ) -> Result<()> {
+        actions: &[&Prof::TargetAction],
+    ) -> Result<Vec<Prof::TargetHdl>> {
         self.inner
             .sink
-            .preview_children(host_runtime_ctx, host_ctx, actions)
+            .child_handlers(host_runtime_ctx, host_ctx, actions)
             .await
     }
 

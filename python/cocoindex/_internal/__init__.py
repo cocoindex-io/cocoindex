@@ -12,6 +12,7 @@ from . import typing as _typing
 from .._version import __version__ as _package_version
 from .memo_fingerprint import register_memo_key_function as _register_memo_key_function
 from .target_state import ChildSlot as _ChildSlot
+from .target_state import _TypedTargetHandlerWrapper
 
 
 _package_id = f"python-{_package_version}"
@@ -23,6 +24,7 @@ _core.init_runtime(
     lang=_lang,
     serialize_fn=_serde.serialize,
     child_slot_wrapper_fn=_ChildSlot,
+    typed_target_handler_wrapper_fn=_TypedTargetHandlerWrapper,
     non_existence=_typing.NON_EXISTENCE,
     target_state_codec=_target_state_codec,
 )

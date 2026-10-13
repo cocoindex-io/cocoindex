@@ -132,6 +132,7 @@ class ConnectionFactory:
         self._credentials = credentials
         self._conn: AsyncSurreal | None = None
         self._conn_loop: asyncio.AbstractEventLoop | None = None
+        self._conn_lock: asyncio.Lock | None = None
 
     async def acquire(self) -> AsyncSurreal:
         """Return the authenticated connection for the current event loop.
@@ -143,19 +144,31 @@ class ConnectionFactory:
         # ponytail: one shared connection per factory; add a pool if a single
         # WebSocket becomes the throughput limit.
         loop = asyncio.get_running_loop()
-        if self._conn is not None and self._conn_loop is loop:
+        if self._conn_loop is not loop or self._conn_lock is None:
+            self._conn, self._conn_loop = None, loop
+            self._conn_lock = asyncio.Lock()
+        # Sinks apply concurrently: open the connection once, not once per caller.
+        async with self._conn_lock:
+            if self._conn is None:
+                self._conn = await self._connect()
             return self._conn
+
+    async def _connect(self) -> AsyncSurreal:
         conn = AsyncSurreal(self._url)
         await conn.connect()  # type: ignore[call-arg]
-        if self._credentials:
-            await conn.signin(self._credentials)  # type: ignore[arg-type]
-        await conn.use(self._namespace, self._database)
-        self._conn, self._conn_loop = conn, loop
+        try:
+            if self._credentials:
+                await conn.signin(self._credentials)  # type: ignore[arg-type]
+            await conn.use(self._namespace, self._database)
+        except BaseException:
+            await conn.close()
+            raise
         return conn
 
     async def close(self) -> None:
         """Close the cached connection, if any."""
         conn, self._conn, self._conn_loop = self._conn, None, None
+        self._conn_lock = None
         if conn is not None:
             await conn.close()
 
@@ -575,8 +588,15 @@ def _check_response(res: Any) -> None:
         raise RuntimeError(f"SurrealDB batch failed: {msg}")
 
 
+@dataclass(frozen=True)
 class _SharedRecordApplier:
-    """Owns a TargetActionSink shared by all record handlers for one database.
+    """The record sink callback shared by every record handler of one database.
+
+    Equal for the same ``ConnectionFactory``, so the record sinks of all tables
+    of one database — node and relation tables alike — share one identity (see
+    ``coco.TargetActionSink``) and the engine batches their actions together;
+    each batch is ordered by :meth:`_rank` so a relation is never written
+    before its endpoints exist.
 
     Atomicity scope: the engine batches the actions of all components that share
     this sink; they are applied in chunks of ``_MAX_ACTIONS_PER_TXN``, each chunk one
@@ -584,12 +604,7 @@ class _SharedRecordApplier:
     retried on the next run. Earlier chunks stay committed (writes are idempotent).
     """
 
-    _conn: AsyncSurreal
-    sink: coco.TargetActionSink[_RecordAction]
-
-    def __init__(self, conn: AsyncSurreal) -> None:
-        self._conn = conn
-        self.sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+    factory: ConnectionFactory
 
     @staticmethod
     def _rank(action: _RecordAction) -> int:
@@ -600,14 +615,19 @@ class _SharedRecordApplier:
             return 2 if action.is_relation else 0
         return 3 if action.is_relation else 4
 
-    async def _apply_actions(
+    async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[_RecordAction]
     ) -> None:
+        if not actions:
+            return
+        conn = await self.factory.acquire()
         ordered = sorted(actions, key=self._rank)  # stable
         for start in range(0, len(ordered), _MAX_ACTIONS_PER_TXN):
-            await self._apply_chunk(ordered[start : start + _MAX_ACTIONS_PER_TXN])
+            await self._apply_chunk(conn, ordered[start : start + _MAX_ACTIONS_PER_TXN])
 
-    async def _apply_chunk(self, chunk: Sequence[_RecordAction]) -> None:
+    async def _apply_chunk(
+        self, conn: AsyncSurreal, chunk: Sequence[_RecordAction]
+    ) -> None:
         ups: list[dict[str, Any]] = []
         flds: list[dict[str, Any]] = []
         unf: list[dict[str, Any]] = []
@@ -639,7 +659,7 @@ class _SharedRecordApplier:
 
         for attempt in range(_MAX_ATTEMPTS):
             try:
-                _check_response(await self._conn.query_raw(_BATCH_SURQL, params))
+                _check_response(await conn.query_raw(_BATCH_SURQL, params))
                 return
             except _RetryableError:
                 if attempt == _MAX_ATTEMPTS - 1:
@@ -673,24 +693,22 @@ class _VectorIndexAction(NamedTuple):
     spec: _VectorIndexSpec | None  # None = delete
 
 
-class _VectorIndexHandler:
-    """Attachment handler for vector indexes on a SurrealDB table."""
+@dataclass(frozen=True)
+class _VectorIndexApplier:
+    """The vector index sink callback of one database (equal for the same
+    ``ConnectionFactory``, so one sink identity per database)."""
 
-    _conn: AsyncSurreal
-    _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction]
+    factory: ConnectionFactory
 
-    def __init__(self, conn: AsyncSurreal, table_name: str) -> None:
-        self._conn = conn
-        self._table_name = table_name
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
+    async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
     ) -> None:
+        if not actions:
+            return
+        conn = await self.factory.acquire()
         for action in actions:
             if action.spec is None:
-                await self._conn.query(
+                await conn.query(
                     f"REMOVE INDEX IF EXISTS {action.name} ON TABLE {action.table_name}"
                 )
             else:
@@ -702,7 +720,18 @@ class _VectorIndexHandler:
                     f"{method} DIMENSION {action.spec.dimension} "
                     f"DIST {dist} TYPE {action.spec.vector_type.upper()}"
                 )
-                await self._conn.query(surql)
+                await conn.query(surql)
+
+
+class _VectorIndexHandler:
+    """Attachment handler for vector indexes on a SurrealDB table."""
+
+    _table_name: str
+    _sink: coco.TargetActionSink[_VectorIndexAction]
+
+    def __init__(self, factory: ConnectionFactory, table_name: str) -> None:
+        self._table_name = table_name
+        self._sink = coco.TargetActionSink.from_async_fn(_VectorIndexApplier(factory))
 
     def reconcile(
         self,
@@ -754,12 +783,16 @@ def _owned_names(prev_possible_records: Collection[_RowTracking]) -> set[str]:
 
 
 class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
-    """Handler for record-level target states within a SurrealDB table."""
+    """Handler for record-level target states within a SurrealDB table.
+
+    Built by the table sink's ``child_handler`` factory, so it holds no
+    connection: its sinks acquire one when they apply.
+    """
 
     _table_name: str
     _is_relation: bool
     _table_schema: TableSchema[Any] | None
-    _conn: AsyncSurreal
+    _factory: ConnectionFactory
     _sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(
@@ -767,17 +800,16 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
         table_name: str,
         is_relation: bool,
         table_schema: TableSchema[Any] | None,
-        conn: AsyncSurreal,
-        sink: coco.TargetActionSink[_RecordAction],
+        factory: ConnectionFactory,
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
         self._table_schema = table_schema
-        self._conn = conn
-        self._sink = sink
+        self._factory = factory
+        self._sink = coco.TargetActionSink.from_async_fn(_SharedRecordApplier(factory))
 
     def attachments(self) -> dict[str, _VectorIndexHandler]:
-        return {"vector_index": _VectorIndexHandler(self._conn, self._table_name)}
+        return {"vector_index": _VectorIndexHandler(self._factory, self._table_name)}
 
     def reconcile(
         self,
@@ -1004,8 +1036,23 @@ class _TableHandler(
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._record_handler
+        )
+
+    @staticmethod
+    def _record_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RecordHandler:
+        """The record handler for a created or updated table's records."""
+        spec = action.spec
+        if coco.is_non_existence(spec):
+            raise ValueError(f"a deleted table has no record handler: {action.key}")
+        return _RecordHandler(
+            table_name=action.key.table_name,
+            is_relation=spec.is_relation,
+            table_schema=spec.table_schema,
+            factory=context_provider.get(action.key.db_key, ConnectionFactory),
         )
 
     def reconcile(
@@ -1084,43 +1131,37 @@ class _TableHandler(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RecordHandler]],
         /,
     ) -> None:
         # Group by db_key
-        by_db: dict[str, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_db.setdefault(action.key.db_key, []).append(i)
+        by_db: dict[str, list[_TableAction]] = {}
+        for action in actions:
+            by_db.setdefault(action.key.db_key, []).append(action)
 
-        for db_key, idxs in by_db.items():
-            factory: ConnectionFactory = context_provider.get(db_key)  # type: ignore[assignment]
-            conn = await factory.acquire()
-            shared_applier = _SharedRecordApplier(conn)
+        for db_key, db_actions in by_db.items():
+            conn = await context_provider.get(db_key, ConnectionFactory).acquire()
 
             # Sort into DDL ordering
-            create_normal: list[int] = []
-            create_relation: list[int] = []
-            remove_relation: list[int] = []
-            remove_normal: list[int] = []
+            create_normal: list[_TableAction] = []
+            create_relation: list[_TableAction] = []
+            remove_relation: list[_TableAction] = []
+            remove_normal: list[_TableAction] = []
 
-            for i in idxs:
-                action = actions[i]
+            for action in db_actions:
                 if coco.is_non_existence(action.spec):
                     if action.is_relation:
-                        remove_relation.append(i)
+                        remove_relation.append(action)
                     else:
-                        remove_normal.append(i)
+                        remove_normal.append(action)
                 else:
                     if action.is_relation:
-                        create_relation.append(i)
+                        create_relation.append(action)
                     else:
-                        create_normal.append(i)
+                        create_normal.append(action)
 
-            ordered = create_normal + create_relation + remove_relation + remove_normal
-
-            for i in ordered:
-                action = actions[i]
-
+            for action in (
+                create_normal + create_relation + remove_relation + remove_normal
+            ):
                 if action.main_action in ("replace", "delete"):
                     await conn.query(f"REMOVE TABLE IF EXISTS {action.key.table_name}")
 
@@ -1139,16 +1180,6 @@ class _TableHandler(
                     await self._apply_column_actions(
                         conn, action.key, spec, action.column_actions
                     )
-
-                child_slots[i].fulfill(
-                    _RecordHandler(
-                        table_name=action.key.table_name,
-                        is_relation=spec.is_relation,
-                        table_schema=spec.table_schema,
-                        conn=conn,
-                        sink=shared_applier.sink,
-                    )
-                )
 
     @staticmethod
     async def _create_table(

@@ -18,7 +18,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -382,17 +381,17 @@ class _NamespaceHandler(
     _sink: coco.TargetActionSink[_NamespaceAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions, preview_child=self._row_handler
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._row_handler
         )
 
     @staticmethod
     def _row_handler(
         context_provider: ContextProvider, action: _NamespaceAction, /
     ) -> _RowHandler:
-        """The row handler for a namespace action, which `_apply_actions` fulfills
-        its child slot with (and preview uses as is)."""
-        assert not coco.is_non_existence(action.spec)
+        """The row handler for a created or updated namespace's rows."""
+        if coco.is_non_existence(action.spec):
+            raise ValueError(f"a deleted namespace has no row handler: {action.key}")
         return _RowHandler(
             client=context_provider.get(action.key.db_key, AsyncTurbopuffer),
             namespace_name=action.key.namespace_name,
@@ -403,10 +402,9 @@ class _NamespaceHandler(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_NamespaceAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
         /,
     ) -> None:
-        for i, action in enumerate(actions):
+        for action in actions:
             client = context_provider.get(action.key.db_key, AsyncTurbopuffer)
 
             if action.main_action in ("replace", "delete"):
@@ -416,11 +414,6 @@ class _NamespaceHandler(
                 except NotFoundError:
                     # Namespace was deleted out-of-band (e.g. via the dashboard).
                     pass
-
-            if coco.is_non_existence(action.spec):
-                continue
-
-            child_slots[i].fulfill(self._row_handler(context_provider, action))
 
     def reconcile(
         self,

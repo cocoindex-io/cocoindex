@@ -24,7 +24,7 @@ pip install cocoindex[falkordb]
 
 ## Connection setup
 
-Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the FalkorDB URI plus the target graph name, and yields a graph handle on demand.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the FalkorDB URI plus the target graph name; it lazily opens one connection-pooled client per event loop, shared by all tables and batches. Call `await factory.close()` at shutdown to close it.
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.

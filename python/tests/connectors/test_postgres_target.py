@@ -1161,6 +1161,21 @@ async def test_postgres_delete_rows_with_composite_key(pg_env: _PgEnv) -> None:
         await _drop_table(pool, table_name)
 
 
+def _planned_actions(actions: list[Any] | None) -> dict[Any, Any]:
+    """Planned preview actions: ``("table", name) -> main action`` and
+    ``("row", key) -> value`` (``None``: delete)."""
+    assert actions is not None
+    plan: dict[Any, Any] = {}
+    for action in actions:
+        if isinstance(action, postgres._target._TableAction):
+            plan[("table", action.key.table_name)] = action.main_action
+        else:
+            assert isinstance(action, postgres._target._RowAction)
+            plan[("row", action.key)] = action.value
+    assert len(plan) == len(actions)
+    return plan
+
+
 @pytest.mark.asyncio
 async def test_postgres_preview_rows(pg_env: _PgEnv) -> None:
     """Preview plans the table and its rows without creating either."""
@@ -1187,21 +1202,30 @@ async def test_postgres_preview_rows(pg_env: _PgEnv) -> None:
     try:
         # The table's action and one per row; nothing is created.
         actions = await app.update(preview=True)
-        assert len(actions) == 3
+        assert _planned_actions(actions) == {
+            ("table", table_name): "insert",
+            ("row", ("1",)): {"id": "1", "content": "one"},
+            ("row", ("2",)): {"id": "2", "content": "two"},
+        }
         assert not await _table_exists(pool, table_name)
 
         await app.update()
         assert await _row_count(pool, table_name) == 2
 
-        # Against the applied state: the table's action, row 2 changed and
-        # row 3 added; row 1 is unchanged. Nothing is applied.
+        # Against the applied state: the table's action (no change of its
+        # own), row 2 changed and row 3 added; row 1 is unchanged. Nothing is
+        # applied.
         rows = [
             TextRow(id="1", content="one"),
             TextRow(id="2", content="two-updated"),
             TextRow(id="3", content="three"),
         ]
         actions = await app.update(preview=True)
-        assert len(actions) == 3
+        assert _planned_actions(actions) == {
+            ("table", table_name): None,
+            ("row", ("2",)): {"id": "2", "content": "two-updated"},
+            ("row", ("3",)): {"id": "3", "content": "three"},
+        }
         assert await _row_count(pool, table_name) == 2
     finally:
         await _drop_table(pool, table_name)

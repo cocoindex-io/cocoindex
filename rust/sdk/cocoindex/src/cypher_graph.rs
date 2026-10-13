@@ -13,9 +13,9 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, IntoStableKey, SinkCache, StableKey, StaticRootProvider,
-    TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput, TargetState,
-    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
+    ChildTargetDef, IntoStableKey, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider,
+    declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 /// Named parameters bound to a parameterized Cypher statement. Values are JSON
@@ -1155,10 +1155,9 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
 }
 
 fn table_sink<C: CypherExecutor>() -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
-            for (action, child_slot) in actions {
-                let child = record_child::<C>(&action);
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
                 let (is_delete, action) = match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => (false, a),
                     TargetAction::Delete(a) => (true, a),
@@ -1180,36 +1179,25 @@ fn table_sink<C: CypherExecutor>() -> TargetActionSink<TableAction> {
                         drop_table(graph.as_ref(), &next).await?;
                     }
                 }
-                if let (Some(slot), Some(child)) = (child_slot, child) {
-                    slot.fulfill(child)?;
-                }
             }
             Ok(())
         },
+        // The record handler targets the table that exists after the action.
+        |a: &TableAction| {
+            let spec = match &a.op {
+                TableOp::Ensure(spec) | TableOp::Replace { next: spec, .. } => spec.clone(),
+                TableOp::Drop(_) => {
+                    return Err(Error::engine("a table drop action has no record child"));
+                }
+            };
+            Ok(ChildTargetDef::new::<RecordState, _>(RecordHandler::<C> {
+                sink: SinkCache::default(),
+                graph_key: a.graph_key.clone(),
+                spec,
+                _graph: PhantomData,
+            }))
+        },
     )
-    .with_preview_child(|action| {
-        record_child::<C>(&action).ok_or_else(|| Error::engine("a table drop has no record child"))
-    })
-}
-
-/// The record handler a table action's child slot is fulfilled with. It
-/// targets the table that exists after the action (`None` when the action
-/// drops the table).
-fn record_child<C: CypherExecutor>(action: &TargetAction<TableAction>) -> Option<ChildTargetDef> {
-    let a = match action {
-        TargetAction::Create(a) | TargetAction::Update(a) => a,
-        TargetAction::Delete(_) => return None,
-    };
-    let spec = match &a.op {
-        TableOp::Ensure(spec) | TableOp::Replace { next: spec, .. } => spec.clone(),
-        TableOp::Drop(_) => return None,
-    };
-    Some(ChildTargetDef::new::<RecordState, _>(RecordHandler::<C> {
-        sink: SinkCache::default(),
-        graph_key: a.graph_key.clone(),
-        spec,
-        _graph: PhantomData,
-    }))
 }
 
 fn record_sink<C: CypherExecutor>(graph_key: String) -> TargetActionSink<RecordAction> {

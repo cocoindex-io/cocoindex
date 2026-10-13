@@ -4,7 +4,7 @@ use std::str::FromStr as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::postgres;
-use cocoindex::{Ctx, Environment, Result, SchemaFields};
+use cocoindex::{Ctx, Environment, PreviewAction, Result, SchemaFields};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
@@ -261,6 +261,34 @@ async fn postgres_table_target_reconciles_rows_when_available() -> Result<()> {
     Ok(())
 }
 
+/// Planned actions as sorted strings. The connector's actions encode as
+/// positional arrays: a table action is `[db_key, spec, drop, recreate,
+/// retype_cols]` with `spec` as `[pg_schema_name, table_name, ..]`, a row
+/// action `[pk, state]`.
+fn describe(actions: &[PreviewAction]) -> Vec<String> {
+    let mut described: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            let value: serde_json::Value = value.decode().unwrap();
+            match value.as_array().map(Vec::as_slice) {
+                Some([_db_key, spec, _drop, recreate, retype_cols]) => format!(
+                    "{verb} table {} recreate={recreate} retype={retype_cols}",
+                    spec[1]
+                ),
+                Some([pk, state]) => format!("{verb} row {pk} {}", state[0]),
+                _ => panic!("unexpected action payload {value}"),
+            }
+        })
+        .collect();
+    described.sort();
+    described
+}
+
 /// Preview plans the table and its rows without creating either.
 #[tokio::test]
 async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
@@ -302,7 +330,14 @@ async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
             move |ctx| declare_rows(ctx, schema, rows)
         })
         .await?;
-    assert_eq!(actions.len(), 3);
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [1] {"id":1,"label":"one"}"#,
+            r#"update row [2] {"id":2,"label":"two"}"#,
+            r#"update table "rows" recreate=false retype=[]"#,
+        ]
+    );
     assert!(!table_exists(&db, &schema, "rows").await?);
 
     app.run({
@@ -312,8 +347,8 @@ async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
     })
     .await?;
 
-    // Against the applied state: the table's (always emitted) action, row 2
-    // updated, row 3 created; row 1 unchanged. Nothing is applied.
+    // Against the applied state: the table's (always emitted) action, rows 2
+    // and 3 written; row 1 unchanged. Nothing is applied.
     let actions = app
         .preview({
             let schema = schema.clone();
@@ -321,7 +356,14 @@ async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
             move |ctx| declare_rows(ctx, schema, rows)
         })
         .await?;
-    assert_eq!(actions.len(), 3);
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [2] {"id":2,"label":"two-updated"}"#,
+            r#"update row [3] {"id":3,"label":"three"}"#,
+            r#"update table "rows" recreate=false retype=[]"#,
+        ]
+    );
     let row_count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM \"{schema}\".\"rows\""))
         .fetch_one(db.pool())
         .await

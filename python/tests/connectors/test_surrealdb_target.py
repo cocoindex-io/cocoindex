@@ -116,6 +116,34 @@ class TestValidateIdentifierAtApiEntryPoints:
             surrealdb.relation_target(SURREAL_DB_KEY, "bad-rel", [], [])
 
 
+@requires_surrealdb
+def test_record_sinks_shared_per_connection_factory() -> None:
+    """Every table's record handler of one database — node and relation tables
+    alike — reconciles to one record sink (and one vector index sink), so a
+    batch can order node writes around relation writes. Another factory gets
+    its own sinks."""
+    from cocoindex.connectors.surrealdb import _target
+
+    factory = surrealdb.ConnectionFactory(
+        url=_SURREALDB_URL, namespace="ns", database="db"
+    )
+    node = _target._RecordHandler("A", False, None, factory)
+    relation = _target._RecordHandler("R", True, None, factory)
+    other = _target._RecordHandler(
+        "A",
+        False,
+        None,
+        surrealdb.ConnectionFactory(url=_SURREALDB_URL, namespace="ns", database="db"),
+    )
+
+    assert node._sink._core == relation._sink._core
+    assert node._sink._core != other._sink._core
+    assert (
+        node.attachments()["vector_index"]._sink._core
+        == relation.attachments()["vector_index"]._sink._core
+    )
+
+
 # =============================================================================
 # Test utilities
 # =============================================================================
@@ -859,6 +887,116 @@ async def test_relation_basic(
     data = await _query_table(conn, "likes")
     assert len(data) == 1
     assert data[0]["rating"] == 5
+
+
+def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], Any]]:
+    """Split preview actions into table actions by table name and record
+    actions by ``(table name, record id)``."""
+    from cocoindex.connectors.surrealdb import _target
+
+    tables = {
+        a.key.table_name: a for a in actions if isinstance(a, _target._TableAction)
+    }
+    records = {
+        (a.table_name, a.record_id): a
+        for a in actions
+        if isinstance(a, _target._RecordAction)
+    }
+    assert len(actions) == len(tables) + len(records)
+    return tables, records
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_preview_plans_tables_and_records(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """Preview plans the tables and their records without touching the
+    database; a real update then applies them."""
+    conn, ns, db = surreal_conn
+
+    coco_env.context_provider.provide(
+        SURREAL_DB_KEY,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL,
+            namespace=ns,
+            database=db,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
+        ),
+    )
+    person_rows: list[Person] = []
+    likes_rows: list[tuple[str, str, Likes]] = []
+
+    async def declare_persons_and_likes() -> None:
+        person_target = await coco.use_mount(  # type: ignore[call-overload]
+            coco.component_subpath("setup", "person"),
+            surrealdb.mount_table_target,
+            SURREAL_DB_KEY,
+            "person",
+            await surrealdb.TableSchema.from_class(Person),
+        )
+        for r in person_rows:
+            person_target.declare_record(row=r)
+
+        likes_target = await coco.use_mount(  # type: ignore[call-overload]
+            coco.component_subpath("setup", "likes"),
+            surrealdb.mount_relation_target,
+            SURREAL_DB_KEY,
+            "likes",
+            person_target,
+            person_target,
+            await surrealdb.TableSchema.from_class(Likes),
+        )
+        for from_id, to_id, record in likes_rows:
+            likes_target.declare_relation(from_id=from_id, to_id=to_id, record=record)
+
+    app = coco.App(
+        coco.AppConfig(name="test_preview", environment=coco_env),
+        declare_persons_and_likes,
+    )
+
+    person_rows = [Person(id="alice", name="Alice"), Person(id="bob", name="Bob")]
+    likes_rows = [("alice", "bob", Likes(id="like1", rating=5))]
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "person": "insert",
+        "likes": "insert",
+    }
+    assert set(records) == {("person", "alice"), ("person", "bob"), ("likes", "like1")}
+    assert records[("person", "alice")].value["name"] == "Alice"
+    like = records[("likes", "like1")]
+    assert like.value["rating"] == 5
+    assert (like.from_record, like.to_record) == (
+        ("person", "alice"),
+        ("person", "bob"),
+    )
+    # Nothing is written: neither table exists yet.
+    assert not await _table_exists(conn, "person")
+    assert not await _table_exists(conn, "likes")
+
+    await app.update()
+    assert len(await _query_table(conn, "person")) == 2
+    assert len(await _query_table(conn, "likes")) == 1
+
+    # Against the applied state: no table DDL, and only the new relation and
+    # its new endpoint; the unchanged records are not planned. Nothing is
+    # applied.
+    person_rows.append(Person(id="carol", name="Carol"))
+    likes_rows.append(("bob", "carol", Likes(id="like2", rating=3)))
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: (a.main_action, a.column_actions) for name, a in tables.items()} == {
+        "person": (None, {}),
+        "likes": (None, {}),
+    }
+    assert set(records) == {("person", "carol"), ("likes", "like2")}
+    assert len(await _query_table(conn, "person")) == 2
+    assert len(await _query_table(conn, "likes")) == 1
+
+    await app.update()
+    assert len(await _query_table(conn, "person")) == 3
+    assert len(await _query_table(conn, "likes")) == 2
 
 
 @requires_surrealdb
@@ -2208,9 +2346,9 @@ async def test_bounded_transactions_and_no_op_rerun(
     calls: list[int] = []
     orig = _target._SharedRecordApplier._apply_chunk
 
-    async def spy(self: Any, chunk: Any) -> None:
+    async def spy(self: Any, conn: Any, chunk: Any) -> None:
         calls.append(len(chunk))
-        await orig(self, chunk)
+        await orig(self, conn, chunk)
 
     monkeypatch.setattr(_target._SharedRecordApplier, "_apply_chunk", spy)
 

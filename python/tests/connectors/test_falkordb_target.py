@@ -554,6 +554,29 @@ class TestTableReconcile:
         assert out_pk.action.prev_pk_field == "id"
 
 
+@requires_falkordb
+def test_record_sinks_shared_per_connection_factory() -> None:
+    """Every table's record handler of one database — node and relation tables
+    alike — reconciles to one record sink (and one vector index sink), so a
+    batch can order node writes around relation writes. Another factory gets
+    its own sinks."""
+    from cocoindex.connectors.falkordb import _target as falkor_target
+
+    factory = falkor.ConnectionFactory(uri=_FALKORDB_URI)
+    node = falkor_target._RecordHandler("A", False, "id", None, factory)
+    relation = falkor_target._RecordHandler("R", True, "id", None, factory)
+    other = falkor_target._RecordHandler(
+        "A", False, "id", None, falkor.ConnectionFactory(uri=_FALKORDB_URI)
+    )
+
+    assert node._sink._core == relation._sink._core
+    assert node._sink._core != other._sink._core
+    assert (
+        node.attachments()["vector_index"]._sink._core
+        == relation.attachments()["vector_index"]._sink._core
+    )
+
+
 # =============================================================================
 # Integration tests — require running FalkorDB
 # =============================================================================
@@ -966,6 +989,95 @@ async def test_relationship_upsert_with_endpoint_merge(
     # Relationship props are written
     for _, _, rel in edges:
         assert rel["predicate"] == "connects"
+
+
+async def _graph_exists(graph_name: str) -> bool:
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    try:
+        return graph_name in await client.list_graphs()
+    finally:
+        await client.aclose()
+
+
+def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], Any]]:
+    """Split preview actions into table actions by table name and record
+    actions by ``(table name, record id)``."""
+    from cocoindex.connectors.falkordb import _target as falkor_target
+
+    tables = {
+        a.key.table_name: a
+        for a in actions
+        if isinstance(a, falkor_target._TableAction)
+    }
+    records = {
+        (a.table_name, a.record_id): a
+        for a in actions
+        if isinstance(a, falkor_target._RecordAction)
+    }
+    assert len(actions) == len(tables) + len(records)
+    return tables, records
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_preview_plans_tables_and_records(falkor_graph_name: str) -> None:
+    """Preview plans the tables and their records without touching the graph;
+    a real update then applies them."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_preview", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "Entity": "insert",
+        "REL": "insert",
+    }
+    assert {k: a.value for k, a in records.items()} == {
+        ("Entity", "alice"): {"value": "alice"},
+        ("Entity", "bob"): {"value": "bob"},
+        ("REL", "alice->bob"): {"predicate": "connects"},
+    }
+    rel = records[("REL", "alice->bob")]
+    assert (rel.from_label, rel.from_id, rel.to_label, rel.to_id) == (
+        "Entity",
+        "alice",
+        "Entity",
+        "bob",
+    )
+    # Nothing is written: the graph does not even exist yet.
+    assert not await _graph_exists(falkor_graph_name)
+
+    await app.update()
+    assert {n["value"] for n in await _read_nodes(falkor_graph_name, "Entity")} == {
+        "alice",
+        "bob",
+    }
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 1
+
+    # Against the applied state: no table DDL, and only the new edge and its new
+    # endpoint; the unchanged records are not planned. Nothing is applied.
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "Entity": None,
+        "REL": None,
+    }
+    assert set(records) == {("Entity", "carol"), ("REL", "bob->carol")}
+    assert len(await _read_nodes(falkor_graph_name, "Entity")) == 2
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 1
+
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Entity")) == 3
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
 
 
 @requires_falkordb_server

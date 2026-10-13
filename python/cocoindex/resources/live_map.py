@@ -23,7 +23,6 @@ import uuid as _uuid
 import weakref as _weakref
 from collections.abc import AsyncIterator as _AsyncIterator
 from collections.abc import Collection as _Collection
-from collections.abc import Mapping as _Mapping
 from collections.abc import Sequence as _Sequence
 from dataclasses import dataclass as _dataclass
 from typing import Any as _Any
@@ -106,8 +105,8 @@ class _Change(_NamedTuple):
 class _EntryHandler:
     """Per-instance target handler for entries; closes over one ``LiveMap``.
 
-    Constructed by the container sink (bound to the instance recovered from the registry) and
-    reused for every entry declared into that map.
+    Constructed by ``_container_entry_handler`` (bound to the instance recovered from the
+    registry) and reused for every entry declared into that map.
     """
 
     __slots__ = ("_live_map",)
@@ -191,8 +190,8 @@ async def _apply_entry_actions(
 def _container_entry_handler(
     context_provider: _coco.ContextProvider, action: _ContainerAction, /
 ) -> _EntryHandler:
-    """The entry handler `_apply_container_actions` fulfills a container's child slot
-    with (and preview uses as is)."""
+    """The entry handler for a declared container's entries."""
+    # `live_map` is None only if the LiveMap was garbage-collected.
     assert action.live_map is not None
     return _EntryHandler(action.live_map)
 
@@ -200,21 +199,17 @@ def _container_entry_handler(
 async def _apply_container_actions(
     context_provider: _coco.ContextProvider,
     actions: _Sequence[_ContainerAction],
-    child_slots: _Mapping[int, _coco.ChildSlot[_EntryHandler]],
     /,
 ) -> None:
-    for i, action in enumerate(actions):
-        if action.deleted or action.live_map is None:
-            continue
-        child_slots[i].fulfill(_container_entry_handler(context_provider, action))
+    """A container is the in-memory map itself, so there is nothing to apply."""
 
 
 _ENTRY_SINK: _coco.TargetActionSink[_EntryAction] = (
     _coco.TargetActionSink.from_async_fn(_apply_entry_actions)
 )
 _CONTAINER_SINK: _coco.TargetActionSink[_ContainerAction] = (
-    _coco.TargetActionSink.from_async_fn_with_children(
-        _apply_container_actions, preview_child=_container_entry_handler
+    _coco.TargetActionSink.from_async_fn(
+        _apply_container_actions, child_handler=_container_entry_handler
     )
 )
 _CONTAINER_PROVIDER = _coco.register_root_target_states_provider(

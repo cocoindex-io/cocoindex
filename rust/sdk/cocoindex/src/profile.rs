@@ -10,7 +10,8 @@ use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorIn
 use cocoindex_core::engine::context::{ComponentProcessorContext, MemoStatesPayload};
 use cocoindex_core::engine::profile::{EngineProfile, Persist};
 use cocoindex_core::engine::target_state::{
-    TargetActionSink, TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput,
+    ChildHandling, TargetActionSink, TargetActionWithChildSlot, TargetHandler,
+    TargetReconcileOutput,
 };
 use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -326,15 +327,21 @@ type SinkFn = Arc<
         + Sync,
 >;
 
-// Preview mode: the child handler `apply` would fulfill an action's child slot
-// with, built from the action alone.
-type PreviewChildFn =
-    Arc<dyn Fn(Action) -> cocoindex_utils::error::Result<BoxedHandler> + Send + Sync>;
+// A container sink's child handler factory: the handler for the child target
+// states of one create/update action, built from the action alone.
+pub(crate) type ChildHandlerFn =
+    Arc<dyn Fn(&Action) -> cocoindex_utils::error::Result<BoxedHandler> + Send + Sync>;
 
-#[derive(Clone)]
+/// How a [`BoxedSink`] provides child handlers (see [`ChildHandling`]).
+pub(crate) enum SinkChildren {
+    None,
+    LegacySlots,
+    Factory(ChildHandlerFn),
+}
+
 pub(crate) struct BoxedSink {
     apply_fn: SinkFn,
-    preview_child_fn: Option<PreviewChildFn>,
+    children: SinkChildren,
 }
 
 impl BoxedSink {
@@ -343,24 +350,37 @@ impl BoxedSink {
         + Send
         + Sync
         + 'static,
+        children: SinkChildren,
     ) -> Self {
         Self {
             apply_fn: Arc::new(f),
-            preview_child_fn: None,
+            children,
         }
-    }
-
-    pub(crate) fn with_preview_child(
-        mut self,
-        f: impl Fn(Action) -> cocoindex_utils::error::Result<BoxedHandler> + Send + Sync + 'static,
-    ) -> Self {
-        self.preview_child_fn = Some(Arc::new(f));
-        self
     }
 }
 
 #[async_trait]
 impl TargetActionSink<RustProfile> for BoxedSink {
+    fn child_handling(&self) -> ChildHandling {
+        match self.children {
+            SinkChildren::None => ChildHandling::None,
+            SinkChildren::LegacySlots => ChildHandling::LegacySlots,
+            SinkChildren::Factory(_) => ChildHandling::Factory,
+        }
+    }
+
+    async fn child_handlers(
+        &self,
+        _host_runtime_ctx: &(),
+        _host_ctx: Arc<ContextStore>,
+        actions: &[&Action],
+    ) -> cocoindex_utils::error::Result<Vec<BoxedHandler>> {
+        let SinkChildren::Factory(child_handler) = &self.children else {
+            cocoindex_utils::internal_bail!("target action sink has no child handler factory");
+        };
+        actions.iter().map(|action| child_handler(action)).collect()
+    }
+
     async fn apply(
         &self,
         _host_runtime_ctx: &(),
@@ -371,25 +391,6 @@ impl TargetActionSink<RustProfile> for BoxedSink {
         // `Action` wraps `Bytes` and a slot is an `Arc`, so this is a refcount
         // bump per action.
         (self.apply_fn)(host_ctx, actions.to_vec()).await
-    }
-
-    async fn preview_children(
-        &self,
-        _host_runtime_ctx: &(),
-        _host_ctx: Arc<ContextStore>,
-        actions: &[TargetActionWithChildSlot<RustProfile>],
-    ) -> cocoindex_utils::error::Result<()> {
-        // Without a preview callback the slots stay unfulfilled, which the
-        // engine reports as a sink that cannot preview child target states.
-        let Some(preview_child_fn) = &self.preview_child_fn else {
-            return Ok(());
-        };
-        for (action, slot) in actions {
-            if let Some(slot) = slot {
-                slot.fulfill(preview_child_fn(action.clone())?)?;
-            }
-        }
-        Ok(())
     }
 }
 

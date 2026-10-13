@@ -12,7 +12,6 @@ import pytest
 
 import cocoindex as coco
 from tests import common
-from tests.common.target_states import RecordingChildSlot
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
 try:
@@ -587,6 +586,46 @@ def test_row_reconcile_upserts_non_nullable_added_column() -> None:
     assert result.action.value == new_row
 
 
+@requires_lancedb
+@pytest.mark.parametrize(
+    ("main_action", "expected"),
+    [(None, frozenset({"extra"})), ("upsert", frozenset())],
+)
+def test_table_row_handler_null_backfilled_columns(
+    main_action: Any, expected: frozenset[str]
+) -> None:
+    """Only the nullable non-PK columns added to a surely existing table are
+    null-backfilled: an "upsert" may recreate a dropped table empty."""
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string()),
+            "name": lancedb.ColumnDef(type=pa.string()),
+            "extra": lancedb.ColumnDef(type=pa.string()),
+            "score": lancedb.ColumnDef(type=pa.float64(), nullable=False),
+        },
+        primary_key=["id"],
+    )
+    action = _target._TableAction(
+        key=_target._TableKey(db_key="test_db", table_name="test_table"),
+        spec=_target._TableSpec(
+            table_schema=table_schema, managed_by=target.ManagedBy.SYSTEM
+        ),
+        main_action=main_action,
+        column_actions={
+            "col:id": "insert",
+            "col:gone": "delete",
+            "col:extra": "insert",
+            "col:score": "insert",
+        },
+    )
+
+    row_handler = _target._TableHandler._row_handler(
+        cast(Any, _FakeContextProvider(_FakeAsyncConnection())), action
+    )
+
+    assert row_handler._null_backfilled_columns == expected
+
+
 @pytest.mark.asyncio
 @requires_lancedb
 async def test_row_handler_track_only_actions_do_not_open_table_or_optimize() -> None:
@@ -936,9 +975,7 @@ async def test_table_handler_skips_optimize_for_existing_table() -> None:
         column_actions={},
     )
 
-    await handler._apply_actions(
-        cast(Any, _FakeContextProvider(conn)), [action], {0: RecordingChildSlot()}
-    )
+    await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
 
     assert conn.open_table_count == 0
     assert conn.table.optimize_count == 0
@@ -959,9 +996,7 @@ async def test_table_handler_does_not_optimize_new_table_before_row_mutations() 
         column_actions={},
     )
 
-    await handler._apply_actions(
-        cast(Any, _FakeContextProvider(conn)), [action], {0: RecordingChildSlot()}
-    )
+    await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
 
     assert conn.create_table_count == 1
     assert conn.open_table_count == 0

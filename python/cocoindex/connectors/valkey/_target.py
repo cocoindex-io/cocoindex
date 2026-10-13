@@ -12,7 +12,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -384,16 +383,15 @@ class _IndexHandler(
     _sink: coco.TargetActionSink[_IndexAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions, preview_child=self._document_handler
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._document_handler
         )
 
     @staticmethod
     def _document_handler(
         context_provider: ContextProvider, action: _IndexAction, /
     ) -> _DocumentHandler:
-        """The document handler for an index action, which `_apply_actions`
-        fulfills its child slot with (and preview uses as is)."""
+        """The document handler for a created or updated index's documents."""
         return _DocumentHandler(
             client=context_provider.get(action.key.db_key, GlideClient),  # type: ignore[type-abstract]
             index_name=action.key.index_name,
@@ -403,18 +401,15 @@ class _IndexHandler(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_IndexAction],
-        child_slots: Mapping[int, coco.ChildSlot[_DocumentHandler]],
         /,
     ) -> None:
-        by_key: dict[_IndexKey, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_key.setdefault(action.key, []).append(i)
+        by_key: dict[_IndexKey, list[_IndexAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             client = context_provider.get(key.db_key, GlideClient)  # type: ignore[type-abstract]
-            for i in idxs:
-                action = actions[i]
-
+            for action in key_actions:
                 if action.main_action in ("replace", "delete"):
                     # Drop the index, then purge the document hashes under its
                     # prefix. Once the index is reconciled away the engine no
@@ -433,7 +428,6 @@ class _IndexHandler(
                     continue
 
                 spec = action.spec
-                child_slots[i].fulfill(self._document_handler(context_provider, action))
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     await self._create_index(

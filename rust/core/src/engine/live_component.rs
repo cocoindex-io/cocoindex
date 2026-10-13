@@ -535,7 +535,13 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// independent of any component build's flush — so the live machinery can
     /// persist a bootstrap flag / logic version without going through
     /// `coco.use_state` (which targets the prune-eligible `Regular` keyspace).
+    ///
+    /// A preview writes nothing: a marker it committed would make the next real
+    /// run skip work the preview never did.
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        if self.preview_collector.is_some() {
+            return Ok(());
+        }
         self.component
             .app_ctx()
             .app_store()
@@ -643,11 +649,18 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// with `update()` — `Ok` swallows; `Err` propagates via the
     /// returned handle. The tombstone always remains in the DB, so even
     /// a failed delete is retried by the next reconcile's GC sweep.
+    ///
+    /// A preview neither writes the tombstone nor runs the delete: preview
+    /// does not plan the deletes of removed components yet, and must apply
+    /// nothing.
     pub async fn delete(
         &self,
         subpath: StablePath,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
+        if self.preview_collector.is_some() {
+            return Ok(ComponentExecutionHandle::new(std::future::ready(Ok(()))));
+        }
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract.
         if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {

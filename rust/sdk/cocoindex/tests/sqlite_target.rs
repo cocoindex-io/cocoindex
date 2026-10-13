@@ -7,7 +7,7 @@
 #![cfg(feature = "sqlite")]
 
 use cocoindex::connectors::sqlite;
-use cocoindex::{App, Ctx, Environment, Result};
+use cocoindex::{App, Ctx, Environment, PreviewAction, Result};
 use serde::Serialize;
 use serde_json::json;
 use sqlx::Row as _;
@@ -124,6 +124,32 @@ async fn table_exists(db: &sqlite::Database, table: &str) -> bool {
     count == 1
 }
 
+/// Planned actions as sorted strings. The connector's actions encode as
+/// positional arrays: a table action is `[db_key, table_name, spec,
+/// main_action, column_actions]`, a row action `[pk, state]`.
+fn describe(actions: &[PreviewAction]) -> Vec<String> {
+    let mut described: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            let value: serde_json::Value = value.decode().unwrap();
+            match value.as_array().map(Vec::as_slice) {
+                Some([_db_key, table, _spec, main_action, column_actions]) => {
+                    format!("{verb} table {table} main={main_action} columns={column_actions}")
+                }
+                Some([pk, state]) => format!("{verb} row {pk} {}", state[0]),
+                _ => panic!("unexpected action payload {value}"),
+            }
+        })
+        .collect();
+    described.sort();
+    described
+}
+
 #[tokio::test]
 async fn sqlite_table_target_previews_rows() {
     let (db, _dbdir) = temp_db().await;
@@ -137,20 +163,28 @@ async fn sqlite_table_target_previews_rows() {
         .unwrap()
     };
 
-    // The table and both rows would be written; nothing is.
+    // The table would be created and both rows written (the connector plans
+    // every row write as an upsert); nothing is.
     let actions = app
         .preview(|ctx| declare_items(ctx, vec![item(1, "one"), item(2, "two")]))
         .await
         .unwrap();
-    assert_eq!(actions.len(), 3);
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [1] {"id":1,"label":"one"}"#,
+            r#"update row [2] {"id":2,"label":"two"}"#,
+            r#"update table "items" main="insert" columns={}"#,
+        ]
+    );
     assert_eq!(table_count().await, 0);
 
     app.run(|ctx| declare_items(ctx, vec![item(1, "one"), item(2, "two")]))
         .await
         .unwrap();
 
-    // Against the applied state: the table's (always emitted) action, row 2
-    // updated, row 3 created; row 1 unchanged. Nothing is applied.
+    // Against the applied state: the table's (always emitted) action with no
+    // change, rows 2 and 3 written; row 1 unchanged. Nothing is applied.
     let actions = app
         .preview(|ctx| {
             declare_items(
@@ -160,7 +194,14 @@ async fn sqlite_table_target_previews_rows() {
         })
         .await
         .unwrap();
-    assert_eq!(actions.len(), 3);
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [2] {"id":2,"label":"two-updated"}"#,
+            r#"update row [3] {"id":3,"label":"three"}"#,
+            r#"update table "items" main=null columns={}"#,
+        ]
+    );
     assert_eq!(
         fetch(&db, "items").await,
         vec![(1, "one".to_string()), (2, "two".to_string())]

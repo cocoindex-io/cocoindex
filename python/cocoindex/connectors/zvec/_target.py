@@ -32,7 +32,6 @@ from typing import (
     Generic,
     Iterator,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -763,26 +762,22 @@ class _CollectionAction(NamedTuple):
 def _doc_handler(
     context_provider: ContextProvider, action: _CollectionAction, /
 ) -> _DocHandler:
-    """The doc handler for a collection action, which `_apply_collection_actions`
-    fulfills its child slot with (and preview uses as is)."""
+    """The doc handler for a created or updated collection's docs."""
     return _DocHandler(action.key.db_key, action.key.collection_name)
 
 
 def _apply_collection_actions(
     context_provider: ContextProvider,
     actions: Sequence[_CollectionAction],
-    child_slots: Mapping[int, coco.ChildSlot[_DocHandler]],
     /,
 ) -> None:
-    by_key: dict[_CollectionKey, list[int]] = {}
-    for i, action in enumerate(actions):
-        by_key.setdefault(action.key, []).append(i)
+    by_key: dict[_CollectionKey, list[_CollectionAction]] = {}
+    for action in actions:
+        by_key.setdefault(action.key, []).append(action)
 
-    for key, idxs in by_key.items():
+    for key, key_actions in by_key.items():
         conn = context_provider.get(key.db_key, ManagedConnection)
-        for i in idxs:
-            action = actions[i]
-
+        for action in key_actions:
             # A non-None main action implies a system-managed collection
             # (resolve_system_transition yields None for user-managed ones).
             if action.main_action in ("replace", "delete"):
@@ -792,7 +787,6 @@ def _apply_collection_actions(
                 continue
 
             spec = action.spec
-            child_slots[i].fulfill(_doc_handler(context_provider, action))
 
             if action.main_action in ("insert", "upsert", "replace"):
                 conn.open_or_create(
@@ -801,9 +795,9 @@ def _apply_collection_actions(
                 )
 
 
-_collection_action_sink = coco.TargetActionSink[
-    _CollectionAction
-].from_fn_with_children(_apply_collection_actions, preview_child=_doc_handler)
+_collection_action_sink = coco.TargetActionSink[_CollectionAction].from_fn(
+    _apply_collection_actions, child_handler=_doc_handler
+)
 
 
 class _CollectionHandler(

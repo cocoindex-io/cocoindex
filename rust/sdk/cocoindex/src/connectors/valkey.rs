@@ -24,7 +24,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
     TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
     TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
@@ -515,7 +515,7 @@ impl TargetHandler<IndexSpec> for IndexHandler {
     ) -> Result<Option<TargetReconcileOutput<IndexAction, IndexTrackingRecord>>> {
         let db_key = IndexKey::from_stable_key(&key)?.db_key;
         match desired {
-            // Always emit when declared so the sink fulfills the document child.
+            // Always emit when declared so the sink builds the document child.
             Some(spec) => {
                 let prev_is_empty = prev.is_empty();
                 let tracking =
@@ -572,9 +572,9 @@ impl TargetHandler<IndexSpec> for IndexHandler {
 }
 
 fn index_sink() -> TargetActionSink<IndexAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<IndexAction>, Option<ChildSlot>)>| async move {
-            for (action, child_slot) in actions {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<IndexAction>>| async move {
+            for action in actions {
                 match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => {
                         let db = resolve_db(&host_ctx, &a.db_key)?;
@@ -598,9 +598,6 @@ fn index_sink() -> TargetActionSink<IndexAction> {
                         {
                             create_index(&db, &a.index_name, &spec.schema).await?;
                         }
-                        if let Some(slot) = child_slot {
-                            slot.fulfill(document_child(a.db_key, a.index_name))?;
-                        }
                     }
                     TargetAction::Delete(a) => {
                         let db = resolve_db(&host_ctx, &a.db_key)?;
@@ -611,18 +608,13 @@ fn index_sink() -> TargetActionSink<IndexAction> {
             }
             Ok(())
         },
+        |a: &IndexAction| {
+            Ok(ChildTargetDef::new::<Document, _>(DocumentHandler::new(
+                a.db_key.clone(),
+                a.index_name.clone(),
+            )))
+        },
     )
-    .with_preview_child(|action| match action {
-        TargetAction::Create(a) | TargetAction::Update(a) => {
-            Ok(document_child(a.db_key, a.index_name))
-        }
-        TargetAction::Delete(_) => Err(Error::engine("an index drop has no document child")),
-    })
-}
-
-/// The document handler an index's sink fulfills its child slot with.
-fn document_child(db_key: String, index_name: String) -> ChildTargetDef {
-    ChildTargetDef::new::<Document, _>(DocumentHandler::new(db_key, index_name))
 }
 
 /// Create the index unless it exists. An `Insert` (no tracked record) can

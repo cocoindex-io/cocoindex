@@ -29,7 +29,7 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -1101,10 +1101,10 @@ def _apply_column_actions(
 def _row_handler(
     context_provider: ContextProvider, action: _TableAction, /
 ) -> _RowHandler:
-    """The row handler for a table action, which `_apply_table_actions` fulfills
-    its child slot with (and preview uses as is)."""
+    """The row handler for a created or updated table's rows."""
     key = action.key
-    assert not coco.is_non_existence(action.spec)
+    if coco.is_non_existence(action.spec):
+        raise ValueError(f"a deleted table has no row handler: {key}")
     return _RowHandler(
         managed_conn=context_provider.get(key.db_key, ManagedConnection),
         table_name=key.table_name,
@@ -1115,22 +1115,18 @@ def _row_handler(
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-    child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
     /,
 ) -> None:
-    """Apply table actions (DDL) and fulfill the child row handlers."""
-    by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions):
-        by_key.setdefault(action.key, []).append(i)
+    """Apply table actions (DDL)."""
+    by_key: dict[_TableKey, list[_TableAction]] = {}
+    for action in actions:
+        by_key.setdefault(action.key, []).append(action)
 
-    for key, idxs in by_key.items():
+    for key, key_actions in by_key.items():
         managed_conn = context_provider.get(key.db_key, ManagedConnection)
         config = managed_conn.config
 
-        for i in idxs:
-            action = actions[i]
-            assert action.key == key
-
+        for action in key_actions:
             if action.main_action in ("replace", "delete"):
                 # Drop table
                 try:
@@ -1145,7 +1141,6 @@ def _apply_table_actions(
                 continue
 
             spec = action.spec
-            child_slots[i].fulfill(_row_handler(context_provider, action))
 
             if action.main_action in ("insert", "upsert", "replace"):
                 ddl = _generate_create_table_ddl(
@@ -1175,8 +1170,8 @@ def _apply_table_actions(
                 )
 
 
-_table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
-    _apply_table_actions, preview_child=_row_handler
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn(
+    _apply_table_actions, child_handler=_row_handler
 )
 
 

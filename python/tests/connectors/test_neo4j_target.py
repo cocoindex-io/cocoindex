@@ -621,6 +621,29 @@ class TestTableReconcile:
         assert out_pk.action.prev_pk_field == "id"
 
 
+@requires_neo4j
+def test_record_sinks_shared_per_connection_factory() -> None:
+    """Every table's record handler of one database — node and relation tables
+    alike — reconciles to one record sink (and one vector index sink), so a
+    batch can order node writes around relation writes. Another factory gets
+    its own sinks."""
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    factory = neo.ConnectionFactory(uri="bolt://localhost:7687")
+    node = neo_target._RecordHandler("A", False, "id", None, factory)
+    relation = neo_target._RecordHandler("R", True, "id", None, factory)
+    other = neo_target._RecordHandler(
+        "A", False, "id", None, neo.ConnectionFactory(uri="bolt://localhost:7687")
+    )
+
+    assert node._sink._core == relation._sink._core
+    assert node._sink._core != other._sink._core
+    assert (
+        node.attachments()["vector_index"]._sink._core
+        == relation.attachments()["vector_index"]._sink._core
+    )
+
+
 # =============================================================================
 # Integration tests — require running Neo4j (testcontainers spins one up)
 # =============================================================================
@@ -1076,6 +1099,92 @@ async def test_relationship_upsert_with_endpoint_merge(
     assert pairs == {("alice", "bob"), ("bob", "carol")}
     for _, _, rel in edges:
         assert rel["predicate"] == "connects"
+
+
+def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], Any]]:
+    """Split preview actions into table actions by table name and record
+    actions by ``(table name, record id)``."""
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    tables = {
+        a.key.table_name: a for a in actions if isinstance(a, neo_target._TableAction)
+    }
+    records = {
+        (a.table_name, a.record_id): a
+        for a in actions
+        if isinstance(a, neo_target._RecordAction)
+    }
+    assert len(actions) == len(tables) + len(records)
+    return tables, records
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_preview_plans_tables_and_records(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Preview plans the tables and their records without touching the
+    database; a real update then applies them."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    uri, auth = neo4j_clean
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_preview", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "Entity": "insert",
+        "REL": "insert",
+    }
+    assert {k: a.value for k, a in records.items()} == {
+        ("Entity", "alice"): {"value": "alice"},
+        ("Entity", "bob"): {"value": "bob"},
+        ("REL", "alice->bob"): {"predicate": "connects"},
+    }
+    rel = records[("REL", "alice->bob")]
+    assert (rel.from_label, rel.from_id, rel.to_label, rel.to_id) == (
+        "Entity",
+        "alice",
+        "Entity",
+        "bob",
+    )
+    # Nothing is written: no nodes, no constraints or indexes.
+    assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 0
+    assert await _coco_schema_names(uri, auth) == set()
+
+    await app.update()
+    assert {n["value"] for n in await _read_nodes(uri, auth, "Entity")} == {
+        "alice",
+        "bob",
+    }
+    assert len(await _read_relationships(uri, auth, "REL")) == 1
+    assert await _coco_schema_names(uri, auth) == {
+        "coco_uniq_Entity__value",
+        "coco_idx_rel_REL__id",
+    }
+
+    # Against the applied state: no table DDL, and only the new edge and
+    # its new endpoint; the unchanged records are not planned. Nothing is
+    # applied.
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "Entity": None,
+        "REL": None,
+    }
+    assert set(records) == {("Entity", "carol"), ("REL", "bob->carol")}
+    assert len(await _read_nodes(uri, auth, "Entity")) == 2
+    assert len(await _read_relationships(uri, auth, "REL")) == 1
+
+    await app.update()
+    assert len(await _read_nodes(uri, auth, "Entity")) == 3
+    assert len(await _read_relationships(uri, auth, "REL")) == 2
 
 
 @requires_neo4j_server

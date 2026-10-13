@@ -500,6 +500,97 @@ def test_live_component_incremental_delete_direct() -> None:
     assert "b" not in GlobalDictTarget.store.data
 
 
+class _DeleteOnRequestLiveComponent:
+    """Mounts a child per source key; deletes child "b" through
+    operator.delete() when `delete_b` is set."""
+
+    delete_b = False
+
+    async def process(self) -> None:
+        for key, value in _source_data.items():
+            await coco.mount(coco.component_subpath(key), _declare_item, key, value)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        if _DeleteOnRequestLiveComponent.delete_b:
+            handle = await operator.delete(coco.component_subpath("b"))
+            await handle.ready()
+        await operator.mark_ready()
+
+
+def test_live_component_delete_in_preview_applies_nothing() -> None:
+    """In a preview, operator.delete() neither deletes the child's target
+    states nor leaves a tombstone: the next real update keeps the child."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _DeleteOnRequestLiveComponent.delete_b = False
+
+    _source_data["a"] = 1
+    _source_data["b"] = 2
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _DeleteOnRequestLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_component_delete_in_preview", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking()
+    assert set(GlobalDictTarget.store.data) == {"a", "b"}
+    GlobalDictTarget.store.metrics.clear()
+
+    _DeleteOnRequestLiveComponent.delete_b = True
+    try:
+        app.update_blocking(preview=True)
+    finally:
+        _DeleteOnRequestLiveComponent.delete_b = False
+    assert set(GlobalDictTarget.store.data) == {"a", "b"}
+    assert GlobalDictTarget.store.metrics.collect() == {}
+
+    app.update_blocking()
+    assert set(GlobalDictTarget.store.data) == {"a", "b"}
+
+
+class _CommittedStateLiveComponent:
+    """Records the committed value it reads, then commits a new one."""
+
+    seen: list[Any] = []
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        _CommittedStateLiveComponent.seen.append(
+            await operator.read_committed_state("marker")
+        )
+        await operator.write_committed_state("marker", "done")
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_live_component_preview_commits_no_state() -> None:
+    """write_committed_state() in a preview is not persisted, so the next real
+    run does not skip work the preview never did."""
+    _CommittedStateLiveComponent.seen = []
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _CommittedStateLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_component_preview_commits_no_state",
+            environment=coco_env,
+        ),
+        _main,
+    )
+    app.update_blocking(live=True, preview=True)
+    app.update_blocking(live=True)
+    app.update_blocking(live=True)
+    assert _CommittedStateLiveComponent.seen == [None, None, "done"]
+
+
 class _IncrementalDeleteNoStaleComponent:
     """LiveComponent for testing that incremental delete doesn't leave stale tombstones.
 

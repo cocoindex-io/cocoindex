@@ -18,7 +18,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -364,16 +363,15 @@ class _CollectionHandler(
     _sink: coco.TargetActionSink[_CollectionAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions, preview_child=self._point_handler
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._point_handler
         )
 
     @staticmethod
     def _point_handler(
         context_provider: ContextProvider, action: _CollectionAction, /
     ) -> _PointHandler:
-        """The point handler for a collection action, which `_apply_actions`
-        fulfills its child slot with (and preview uses as is)."""
+        """The point handler for a created or updated collection's points."""
         return _PointHandler(
             client=context_provider.get(action.key.db_key, QdrantClient),
             collection_name=action.key.collection_name,
@@ -383,18 +381,15 @@ class _CollectionHandler(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_CollectionAction],
-        child_slots: Mapping[int, coco.ChildSlot[_PointHandler]],
         /,
     ) -> None:
-        by_key: dict[_CollectionKey, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_key.setdefault(action.key, []).append(i)
+        by_key: dict[_CollectionKey, list[_CollectionAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             client = context_provider.get(key.db_key, QdrantClient)
-            for i in idxs:
-                action = actions[i]
-
+            for action in key_actions:
                 if action.main_action in ("replace", "delete"):
                     try:
                         await asyncio.to_thread(
@@ -408,7 +403,6 @@ class _CollectionHandler(
                     continue
 
                 spec = action.spec
-                child_slots[i].fulfill(self._point_handler(context_provider, action))
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     await self._create_collection(

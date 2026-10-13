@@ -268,39 +268,55 @@ impl TargetHandler<()> for TableHandler {
     }
 }
 
-/// A table sink that records each applied table into `table_log` and fulfills
-/// its child slot with a [`RowHandler`] recording into `row_log`. With
-/// `previewable`, it also builds that row handler for preview.
-fn table_sink(table_log: Log, row_log: Log, previewable: bool) -> TargetActionSink<TableAction> {
-    let row_handler = move || {
-        ChildTargetDef::new::<String, _>(RowHandler {
-            sink: recording_sink(row_log.clone()),
-        })
+fn log_table(table_log: &Log, action: TargetAction<TableAction>) {
+    let (TargetAction::Create(t) | TargetAction::Update(t)) = action else {
+        unreachable!("tables are never deleted here");
     };
-    let apply_row_handler = row_handler.clone();
-    let sink = TargetActionSink::from_async_fn_with_children(
+    table_log.lock().unwrap().push(format!("ensure {}", t.name));
+}
+
+/// A table sink that records each applied table into `table_log`, with a child
+/// handler factory giving the table a [`RowHandler`] recording into `row_log`.
+fn table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_handler(
+        move |actions: Vec<TargetAction<TableAction>>| {
+            let table_log = table_log.clone();
+            async move {
+                for action in actions {
+                    log_table(&table_log, action);
+                }
+                Ok(())
+            }
+        },
+        move |_: &TableAction| {
+            Ok(ChildTargetDef::new::<String, _>(RowHandler {
+                sink: recording_sink(row_log.clone()),
+            }))
+        },
+    )
+}
+
+/// [`table_sink`] built on the deprecated slot-fulfilling sink, which cannot
+/// be previewed.
+#[allow(deprecated)]
+fn legacy_table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_children(
         move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
             let table_log = table_log.clone();
-            let row_handler = apply_row_handler.clone();
+            let row_log = row_log.clone();
             async move {
                 for (action, child_slot) in actions {
-                    let (TargetAction::Create(t) | TargetAction::Update(t)) = action else {
-                        unreachable!("tables are never deleted here");
-                    };
-                    table_log.lock().unwrap().push(format!("ensure {}", t.name));
+                    log_table(&table_log, action);
                     if let Some(slot) = child_slot {
-                        slot.fulfill(row_handler())?;
+                        slot.fulfill(ChildTargetDef::new::<String, _>(RowHandler {
+                            sink: recording_sink(row_log.clone()),
+                        }))?;
                     }
                 }
                 Ok(())
             }
         },
-    );
-    if previewable {
-        sink.with_preview_child(move |_action| Ok(row_handler()))
-    } else {
-        sink
-    }
+    )
 }
 
 /// The app body: mount table `t` and declare `rows` under it.
@@ -351,7 +367,7 @@ async fn preview_collects_child_actions_without_applying_the_container() {
     let (app, _dir) = temp_app("preview_child_actions").await;
     let table_log: Log = Arc::new(Mutex::new(Vec::new()));
     let row_log: Log = Arc::new(Mutex::new(Vec::new()));
-    let sink = || table_sink(table_log.clone(), row_log.clone(), true);
+    let sink = || table_sink(table_log.clone(), row_log.clone());
 
     // First preview: the table and its rows would all be created.
     let actions = app
@@ -394,12 +410,12 @@ async fn preview_collects_child_actions_without_applying_the_container() {
 }
 
 #[tokio::test]
-async fn preview_fails_for_a_container_sink_without_preview_child() {
+async fn preview_fails_for_a_legacy_slot_container_sink() {
     let (app, _dir) = temp_app("preview_child_unsupported").await;
     let log: Log = Arc::new(Mutex::new(Vec::new()));
     let err = app
         .preview(table_body(
-            table_sink(log.clone(), log.clone(), false),
+            legacy_table_sink(log.clone(), log.clone()),
             vec![("a", "v1")],
         ))
         .await

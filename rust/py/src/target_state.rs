@@ -6,7 +6,7 @@ use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
-    ChildInvalidation, ChildTargetSlot, TargetActionSink, TargetActionSinkKeeper,
+    ChildHandling, ChildInvalidation, ChildTargetSlot, TargetActionSink, TargetActionSinkKeeper,
     TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput, TargetStateProvider,
     TargetStateProviderRegistry, WeakTargetActionSinkKeeper,
 };
@@ -21,7 +21,7 @@ use crate::prelude::*;
 use crate::stable_path::PyStableKey;
 
 use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
-use crate::target_state_codec::{DesiredForReconcile, PyTargetStateValue};
+use crate::target_state_codec::{DesiredForReconcile, PyTargetAction, PyTargetStateValue};
 use crate::value::PyStoredValue;
 
 #[pyclass(name = "TargetActionSink", from_py_object)]
@@ -32,13 +32,22 @@ pub struct PyTargetActionSink {
 
 pub struct PyTargetActionSinkInner {
     callback: PyCallback,
-    /// Whether the callback takes the child-slot mapping as its third argument
-    /// (`from_fn_with_children` / `from_async_fn_with_children`).
-    with_children: bool,
-    /// Sync `(context_provider, action) -> handler`: the child handler the
-    /// callback would fulfill an action's child slot with, built for preview
-    /// without applying the action.
-    preview_child: Option<Py<PyAny>>,
+    convention: SinkConvention,
+}
+
+/// How a sink's callback is called, and where child handlers come from.
+enum SinkConvention {
+    /// `from_fn` / `from_async_fn`: `callback(context_provider, actions)`.
+    /// Child-bearing actions get slots, for the deprecated callback that
+    /// returns `ChildTargetDef`s.
+    Leaf,
+    /// Deprecated `from_fn_with_children` / `from_async_fn_with_children`:
+    /// `callback(context_provider, actions, child_slots)`.
+    LegacySlots,
+    /// `from_fn` / `from_async_fn` with `child_handler=`: the sync factory
+    /// `child_handler(context_provider, action) -> handler` builds the child
+    /// handlers; the callback is called as for `Leaf` and gets no slots.
+    Factory(Py<PyAny>),
 }
 
 /// Interns sink keepers by callback object and calling convention, so that
@@ -64,16 +73,36 @@ struct SinkKeeperRegistry {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct SinkKeeperKey {
     callback_ptr: usize,
-    with_children: bool,
-    preview_child_ptr: Option<usize>,
+    convention: SinkConventionKey,
 }
 
-impl SinkKeeperKey {
-    fn new(callback: &Py<PyAny>, with_children: bool, preview_child: Option<&Py<PyAny>>) -> Self {
-        Self {
-            callback_ptr: callback.as_ptr() as usize,
-            with_children,
-            preview_child_ptr: preview_child.map(|f| f.as_ptr() as usize),
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SinkConventionKey {
+    Leaf,
+    LegacySlots,
+    /// The canonical `child_handler` factory's address.
+    Factory(usize),
+}
+
+impl SinkConvention {
+    fn new(with_children: bool, child_handler: Option<Py<PyAny>>) -> PyResult<Self> {
+        match (with_children, child_handler) {
+            (false, None) => Ok(Self::Leaf),
+            (true, None) => Ok(Self::LegacySlots),
+            (false, Some(child_handler)) => Ok(Self::Factory(child_handler)),
+            (true, Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+                "a sink built with child slots takes no `child_handler`",
+            )),
+        }
+    }
+
+    fn key(&self) -> SinkConventionKey {
+        match self {
+            Self::Leaf => SinkConventionKey::Leaf,
+            Self::LegacySlots => SinkConventionKey::LegacySlots,
+            Self::Factory(child_handler) => {
+                SinkConventionKey::Factory(child_handler.as_ptr() as usize)
+            }
         }
     }
 }
@@ -119,43 +148,49 @@ static ASYNC_SINK_REGISTRY: LazyLock<Mutex<SinkKeeperRegistry>> =
 #[pymethods]
 impl PyTargetActionSink {
     #[staticmethod]
-    #[pyo3(signature = (callback, with_children, preview_child=None))]
+    #[pyo3(signature = (callback, with_children, child_handler=None))]
     pub fn new_sync(
         callback: Py<PyAny>,
         with_children: bool,
-        preview_child: Option<Py<PyAny>>,
-    ) -> Self {
-        let key = SinkKeeperKey::new(&callback, with_children, preview_child.as_ref());
+        child_handler: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let convention = SinkConvention::new(with_children, child_handler)?;
+        let key = SinkKeeperKey {
+            callback_ptr: callback.as_ptr() as usize,
+            convention: convention.key(),
+        };
         let keeper =
             SYNC_SINK_REGISTRY
                 .lock()
                 .unwrap()
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Sync(Arc::new(callback)),
-                    with_children,
-                    preview_child,
+                    convention,
                 });
-        Self { keeper }
+        Ok(Self { keeper })
     }
 
     #[staticmethod]
-    #[pyo3(signature = (callback, with_children, preview_child=None))]
+    #[pyo3(signature = (callback, with_children, child_handler=None))]
     pub fn new_async(
         callback: Py<PyAny>,
         with_children: bool,
-        preview_child: Option<Py<PyAny>>,
-    ) -> Self {
-        let key = SinkKeeperKey::new(&callback, with_children, preview_child.as_ref());
+        child_handler: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let convention = SinkConvention::new(with_children, child_handler)?;
+        let key = SinkKeeperKey {
+            callback_ptr: callback.as_ptr() as usize,
+            convention: convention.key(),
+        };
         let keeper =
             ASYNC_SINK_REGISTRY
                 .lock()
                 .unwrap()
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Async(Arc::new(callback)),
-                    with_children,
-                    preview_child,
+                    convention,
                 });
-        Self { keeper }
+        Ok(Self { keeper })
     }
 
     /// Two sinks are equal iff they share one batching identity: actions
@@ -182,6 +217,41 @@ fn get_core_field(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 
 #[async_trait]
 impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
+    fn child_handling(&self) -> ChildHandling {
+        match self.convention {
+            // A leaf sink's callback may still return the deprecated
+            // `ChildTargetDef` list, which fulfills slots.
+            SinkConvention::Leaf | SinkConvention::LegacySlots => ChildHandling::LegacySlots,
+            SinkConvention::Factory(_) => ChildHandling::Factory,
+        }
+    }
+
+    async fn child_handlers(
+        &self,
+        _host_runtime_ctx: &PyAsyncContext,
+        host_ctx: Arc<Py<PyAny>>,
+        actions: &[&PyTargetAction],
+    ) -> Result<Vec<PyTargetHandler>> {
+        let SinkConvention::Factory(child_handler) = &self.convention else {
+            internal_bail!("target action sink has no child handler factory");
+        };
+        Python::attach(|py| {
+            let context_provider = host_ctx.as_ref().bind(py);
+            let wrap = &python_objects().typed_target_handler_wrapper_fn;
+            actions
+                .iter()
+                .map(|action| {
+                    let action = action.to_object(py).from_py_result()?;
+                    let handler = child_handler
+                        .call1(py, (context_provider, action))
+                        .from_py_result()?;
+                    let handler = wrap.call1(py, (handler,)).from_py_result()?;
+                    PyTargetHandler::new(handler.into_bound(py)).from_py_result()
+                })
+                .collect()
+        })
+    }
+
     async fn apply(
         &self,
         host_runtime_ctx: &PyAsyncContext,
@@ -204,7 +274,7 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
                 objects.push(action.to_object(py).from_py_result()?);
             }
             let actions = PyList::new(py, objects).from_py_result()?;
-            if self.with_children {
+            if matches!(self.convention, SinkConvention::LegacySlots) {
                 let slots = PyDict::new(py);
                 let wrap = &python_objects().child_slot_wrapper_fn;
                 for (idx, slot) in child_slots {
@@ -240,39 +310,6 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
         }
         Ok(())
     }
-
-    async fn preview_children(
-        &self,
-        _host_runtime_ctx: &PyAsyncContext,
-        host_ctx: Arc<Py<PyAny>>,
-        actions: &[TargetActionWithChildSlot<PyEngineProfile>],
-    ) -> Result<()> {
-        // Without a `preview_child` the slots stay unfulfilled, which the
-        // engine reports as a sink that cannot preview child target states.
-        let Some(preview_child) = &self.preview_child else {
-            return Ok(());
-        };
-        Python::attach(|py| {
-            let context_provider = host_ctx.as_ref().bind(py);
-            let wrap = &python_objects().child_slot_wrapper_fn;
-            for (action, slot) in actions {
-                let Some(slot) = slot else {
-                    continue;
-                };
-                let action = action.to_object(py).from_py_result()?;
-                let handler = preview_child
-                    .call1(py, (context_provider, action))
-                    .from_py_result()?;
-                // Route through the Python `ChildSlot` so the handler gets its
-                // typed-deserialization wrapper, as in `apply`.
-                wrap.call1(py, (PyChildTargetSlot(slot.clone()),))
-                    .from_py_result()?
-                    .call_method1(py, "fulfill", (handler,))
-                    .from_py_result()?;
-            }
-            Ok(())
-        })
-    }
 }
 
 impl PyTargetActionSinkInner {
@@ -287,6 +324,16 @@ impl PyTargetActionSinkInner {
         actions_len: usize,
         child_slots: Vec<(usize, ChildTargetSlot<PyEngineProfile>)>,
     ) -> Result<()> {
+        if let SinkConvention::Factory(_) = self.convention {
+            if !ret.is_none() {
+                client_bail!(
+                    "target action sink built with `child_handler=` returned a value from \
+                     {}; it must return `None`, as `child_handler` builds the child handlers",
+                    callback_label(self.callback.object().bind(py))
+                );
+            }
+            return Ok(());
+        }
         if ret.is_none() {
             if child_slots.is_empty() {
                 return Ok(());
@@ -294,8 +341,7 @@ impl PyTargetActionSinkInner {
             client_bail!(
                 "target action sink built with `TargetActionSink.from_fn()` / \
                  `from_async_fn()` received {} action(s) with child target states; \
-                 build it with `from_fn_with_children()` / `from_async_fn_with_children()` \
-                 and fulfill their child slots",
+                 pass it a `child_handler=` factory that builds their handlers",
                 child_slots.len()
             );
         }

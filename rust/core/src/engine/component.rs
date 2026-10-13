@@ -1284,10 +1284,6 @@ impl<Prof: EngineProfile> Component<Prof> {
                 })
                 .await?;
 
-                // Preview applies nothing, so it must store no memo either: a
-                // later real update would reuse it and skip declaring this
-                // component's target states.
-                let memo_fp_to_store = memo_fp_to_store.filter(|_| !processor_context.preview());
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {
@@ -1325,7 +1321,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             let logic_deps = processor_context.take_logic_deps();
                             let target_provider_deps =
                                 processor_context.take_target_provider_deps();
-                            post_submit_for_build(
+                            let stored = post_submit_for_build(
                                 processor_context,
                                 comp_memo,
                                 &logic_deps,
@@ -1335,7 +1331,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             // Record the store for a run queued on the permit
                             // (see the re-check above). Still under the permit,
                             // so this is the component's latest memo.
-                            if let Some(memo_fp) = memo_fp_to_store {
+                            if stored && let Some(memo_fp) = memo_fp_to_store {
                                 *self.inner.last_stored_memo.lock().unwrap() = Some(StoredMemo {
                                     operation_generation: processor_context.operation_generation(),
                                     memo_fp,
@@ -1518,8 +1514,8 @@ mod tests {
     use crate::engine::profile::{EngineProfile, Persist};
     use crate::engine::stats::ProcessingStats;
     use crate::engine::target_state::{
-        TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot, TargetHandler,
-        TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
+        ChildHandling, TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot,
+        TargetHandler, TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
     };
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
@@ -1605,36 +1601,54 @@ mod tests {
         }
     }
 
-    /// Applies nothing but counts its `apply` calls. With
-    /// `child_reconcile_calls`, it fulfills every child slot — in `apply` and
-    /// in `preview_children` alike — with a `CountingHandler` counting into it.
+    /// Applies nothing but counts its `apply` calls. With `children`, it
+    /// provides a `CountingHandler` counting into the given counter for every
+    /// child-bearing action, in the given way: from `child_handlers` or by
+    /// fulfilling the slots in `apply`.
     #[derive(Default)]
     struct NoopSink {
         apply_calls: Arc<AtomicUsize>,
-        child_reconcile_calls: Option<Arc<AtomicUsize>>,
+        children: Option<(ChildHandling, Arc<AtomicUsize>)>,
     }
 
     impl NoopSink {
-        fn fulfill_children(
-            &self,
-            actions: &[TargetActionWithChildSlot<TestProfile>],
-        ) -> crate::prelude::Result<()> {
-            let Some(child_reconcile_calls) = &self.child_reconcile_calls else {
-                return Ok(());
+        fn container(child_handling: ChildHandling) -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+            let apply_calls = Arc::new(AtomicUsize::new(0));
+            let child_reconcile_calls = Arc::new(AtomicUsize::new(0));
+            let sink = Self {
+                apply_calls: apply_calls.clone(),
+                children: Some((child_handling, child_reconcile_calls.clone())),
             };
-            for slot in actions.iter().filter_map(|(_, slot)| slot.as_ref()) {
-                slot.fulfill(CountingHandler {
-                    reconcile_calls: child_reconcile_calls.clone(),
-                    sink: TargetActionSinkKeeper::new(NoopSink::default()),
-                    reject: false,
-                })?;
+            (sink, apply_calls, child_reconcile_calls)
+        }
+
+        fn child_handler(&self) -> CountingHandler {
+            let (_, child_reconcile_calls) = self.children.as_ref().expect("a container sink");
+            CountingHandler {
+                reconcile_calls: child_reconcile_calls.clone(),
+                sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                reject: false,
             }
-            Ok(())
         }
     }
 
     #[async_trait]
     impl TargetActionSink<TestProfile> for NoopSink {
+        fn child_handling(&self) -> ChildHandling {
+            self.children
+                .as_ref()
+                .map_or(ChildHandling::None, |(child_handling, _)| *child_handling)
+        }
+
+        async fn child_handlers(
+            &self,
+            _host_runtime_ctx: &(),
+            _host_ctx: Arc<()>,
+            actions: &[&()],
+        ) -> crate::prelude::Result<Vec<CountingHandler>> {
+            Ok(actions.iter().map(|_| self.child_handler()).collect())
+        }
+
         async fn apply(
             &self,
             _host_runtime_ctx: &(),
@@ -1642,16 +1656,10 @@ mod tests {
             actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
             self.apply_calls.fetch_add(1, Ordering::SeqCst);
-            self.fulfill_children(actions)
-        }
-
-        async fn preview_children(
-            &self,
-            _host_runtime_ctx: &(),
-            _host_ctx: Arc<()>,
-            actions: &[TargetActionWithChildSlot<TestProfile>],
-        ) -> crate::prelude::Result<()> {
-            self.fulfill_children(actions)
+            for slot in actions.iter().filter_map(|(_, slot)| slot.as_ref()) {
+                slot.fulfill(self.child_handler())?;
+            }
+            Ok(())
         }
     }
 
@@ -2705,20 +2713,34 @@ mod tests {
         }))
     }
 
-    /// Preview readies a container's child provider through its sink's
-    /// `preview_children`, without applying the container's action, so the
-    /// target states declared under it are previewed too.
+    /// Every key and value of the app's state store.
+    async fn app_store_contents(app: &App<TestProfile>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let app_store = app.app_ctx().app_store();
+        let txn = app_store.read_txn().await.unwrap();
+        app_store
+            .db()
+            .iter(&txn)
+            .unwrap()
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                (key.to_vec(), value.to_vec())
+            })
+            .collect()
+    }
+
+    /// Preview readies a container's child provider from its sink's child
+    /// handler factory, without applying the container's action, so the
+    /// target states declared under it are previewed too — and writes nothing,
+    /// not even the id of the container's new child provider generation.
     #[tokio::test]
     async fn preview_collects_actions_under_a_child_provider() {
         const NUM_ROWS: i64 = 3;
         let (app, _dir) = test_app("preview_child_provider").await;
-        let child_reconcile_calls = Arc::new(AtomicUsize::new(0));
-        let container_apply_calls = Arc::new(AtomicUsize::new(0));
-        let container_sink = TargetActionSinkKeeper::new(NoopSink {
-            apply_calls: container_apply_calls.clone(),
-            child_reconcile_calls: Some(child_reconcile_calls.clone()),
-        });
+        let (container_sink, container_apply_calls, child_reconcile_calls) =
+            NoopSink::container(ChildHandling::Factory);
+        let container_sink = TargetActionSinkKeeper::new(container_sink);
 
+        let contents_before = app_store_contents(&app).await;
         let collector = PreviewActionCollector::<TestProfile>::default();
         let (handle, _) = app
             .update(
@@ -2743,8 +2765,13 @@ mod tests {
             0,
             "preview must not apply the container's action"
         );
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not write to the state store"
+        );
 
-        // A real update afterwards applies it.
+        // A real update afterwards applies it, with the rows reconciled
+        // against the handlers from the same factory.
         let (handle, _) = app
             .update(
                 container_root(container_sink, NUM_ROWS),
@@ -2755,16 +2782,64 @@ mod tests {
             .unwrap();
         handle.result().await.unwrap();
         assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            child_reconcile_calls.load(Ordering::SeqCst),
+            2 * NUM_ROWS as usize
+        );
     }
 
-    /// A sink that fulfills no child slot in `preview_children` (the default)
-    /// fails the preview with an error naming the unsupported case.
+    /// A preview that finds the stored memo invalid (here: a changed memo key)
+    /// re-runs the component but leaves the memo in place, as everything else
+    /// it reads: it writes nothing.
     #[tokio::test]
-    async fn preview_fails_for_a_sink_without_child_preview() {
-        let (app, _dir) = test_app("preview_child_provider_unsupported").await;
+    async fn preview_leaves_an_invalidated_memo_in_place() {
+        let (app, _dir) = test_app("preview_memo_invalidation").await;
+        let processor = |key: &str| {
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&key).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+        };
         let (handle, _) = app
             .update(
-                container_root(TargetActionSinkKeeper::new(NoopSink::default()), 1),
+                processor("v1"),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+
+        let contents_before = app_store_contents(&app).await;
+        let (handle, _) = app
+            .update(
+                processor("v2"),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(PreviewActionCollector::<TestProfile>::default()),
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not delete or store memos"
+        );
+    }
+
+    /// A deprecated slot-fulfilling sink still works for a real update, but
+    /// fails a preview with an error naming the unsupported case.
+    #[tokio::test]
+    async fn legacy_slot_sink_applies_but_fails_preview() {
+        let (app, _dir) = test_app("preview_child_provider_legacy").await;
+        let (container_sink, container_apply_calls, child_reconcile_calls) =
+            NoopSink::container(ChildHandling::LegacySlots);
+        let container_sink = TargetActionSinkKeeper::new(container_sink);
+
+        let (handle, _) = app
+            .update(
+                container_root(container_sink.clone(), 1),
                 AppUpdateOptions::default(),
                 Arc::new(()),
                 Some(PreviewActionCollector::<TestProfile>::default()),
@@ -2778,6 +2853,43 @@ mod tests {
                 .contains("does not support preview of child target states"),
             "unexpected error: {err}"
         );
+
+        let (handle, _) = app
+            .update(
+                container_root(container_sink, 1),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(child_reconcile_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A target state declared with a child under a sink that builds no child
+    /// handlers fails its component before the sink is called.
+    #[tokio::test]
+    async fn child_declaration_under_a_leaf_sink_fails_before_apply() {
+        let (app, _dir) = test_app("child_under_leaf_sink").await;
+        let leaf_sink = NoopSink::default();
+        let apply_calls = leaf_sink.apply_calls.clone();
+        let (handle, _) = app
+            .update(
+                container_root(TargetActionSinkKeeper::new(leaf_sink), 1),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let Err(err) = handle.result().await else {
+            panic!("a child declared under a leaf sink must fail");
+        };
+        assert!(
+            err.to_string().contains("builds no child handlers"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 0);
     }
 
     /// Precommits that share a write batch fail independently, even across

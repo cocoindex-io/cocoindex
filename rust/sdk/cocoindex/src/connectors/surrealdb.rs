@@ -28,10 +28,9 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
-    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
-    TargetState, TargetStateProvider, declare_target_state, declare_target_state_with_child,
-    mount_target,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1087,7 +1086,7 @@ impl TargetHandler<TableSpec> for TableHandler {
     ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
         let graph_key = TableKey::from_stable_key(&key)?.graph_key;
         match desired {
-            // Always emit when declared so the sink fulfills the record child.
+            // Always emit when declared so the sink builds the record child.
             Some(spec) => {
                 let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
                 // The previous system spec drives schema evolution: a change to the
@@ -1189,66 +1188,49 @@ impl TargetHandler<TableSpec> for TableHandler {
 }
 
 fn table_sink() -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-            async move {
-                for (action, child_slot) in actions {
-                    match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) => {
-                            let graph = resolve_graph(&host_ctx, &a.graph_key)?;
-                            let spec = a.spec.ok_or_else(|| {
-                                Error::engine("SurrealDB table action missing spec")
-                            })?;
-                            // A "main"-shape change can't be applied in place;
-                            // remove and redefine (records replayed via the
-                            // Destructive child invalidation set at reconcile).
-                            if a.recreate && spec.managed_by.is_system() {
-                                remove_table(&graph, &spec.table_name).await?;
-                            }
-                            define_table(&graph, &spec).await?;
-                            if !a.drop_fields.is_empty() || !a.retype_fields.is_empty() {
-                                apply_field_changes(
-                                    &graph,
-                                    &spec,
-                                    &a.drop_fields,
-                                    &a.retype_fields,
-                                )
-                                .await?;
-                            }
-                            if let Some(slot) = child_slot {
-                                slot.fulfill(record_child(a.graph_key, spec))?;
-                            }
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let graph = resolve_graph(&host_ctx, &a.graph_key)?;
+                        let spec = a
+                            .spec
+                            .ok_or_else(|| Error::engine("SurrealDB table action missing spec"))?;
+                        // A "main"-shape change can't be applied in place;
+                        // remove and redefine (records replayed via the
+                        // Destructive child invalidation set at reconcile).
+                        if a.recreate && spec.managed_by.is_system() {
+                            remove_table(&graph, &spec.table_name).await?;
                         }
-                        TargetAction::Delete(a) => {
-                            if let Some(table_name) = a.drop {
-                                let graph = resolve_graph(&host_ctx, &a.graph_key)?;
-                                remove_table(&graph, &table_name).await?;
-                            }
+                        define_table(&graph, &spec).await?;
+                        if !a.drop_fields.is_empty() || !a.retype_fields.is_empty() {
+                            apply_field_changes(&graph, &spec, &a.drop_fields, &a.retype_fields)
+                                .await?;
+                        }
+                    }
+                    TargetAction::Delete(a) => {
+                        if let Some(table_name) = a.drop {
+                            let graph = resolve_graph(&host_ctx, &a.graph_key)?;
+                            remove_table(&graph, &table_name).await?;
                         }
                     }
                 }
-                Ok(())
             }
+            Ok(())
         },
-    )
-    .with_preview_child(|action| match action {
-        TargetAction::Create(a) | TargetAction::Update(a) => {
+        |a: &TableAction| {
             let spec = a
                 .spec
+                .clone()
                 .ok_or_else(|| Error::engine("SurrealDB table action missing spec"))?;
-            Ok(record_child(a.graph_key, spec))
-        }
-        TargetAction::Delete(_) => Err(Error::engine("a table drop has no record child")),
-    })
-}
-
-/// The record handler a table's sink fulfills its child slot with.
-fn record_child(graph_key: String, spec: TableSpec) -> ChildTargetDef {
-    ChildTargetDef::new::<RecordState, _>(RecordHandler {
-        sink: SinkCache::default(),
-        graph_key,
-        spec,
-    })
+            Ok(ChildTargetDef::new::<RecordState, _>(RecordHandler {
+                sink: SinkCache::default(),
+                graph_key: a.graph_key.clone(),
+                spec,
+            }))
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

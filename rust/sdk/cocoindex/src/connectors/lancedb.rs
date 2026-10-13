@@ -10,7 +10,7 @@
 //!
 //! Built on the native Rust `lancedb` crate (LanceDB's core is Rust) + Arrow.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use arrow_array::builder::{FixedSizeListBuilder, PrimitiveBuilder};
@@ -35,10 +35,9 @@ use crate::statediff::{
     diff, diff_composite, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
-    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
-    TargetState, TargetStateProvider, declare_target_state, mount_target,
-    register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, mount_target, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -389,7 +388,7 @@ pub fn declare_table_target(
             table_name,
             schema_fp
         ),
-        RowHandler::new(db.name().to_string(), spec.clone(), HashSet::new()),
+        RowHandler::new(db.name().to_string(), spec.clone(), BTreeSet::new()),
     )?;
     Ok(LanceTableTarget {
         table_name: Arc::from(table_name),
@@ -574,6 +573,10 @@ struct TableAction {
     table_name: String,
     spec: Option<TableSpec>,
     recreate: bool,
+    /// Nullable non-PK columns this action adds to a table that surely exists,
+    /// so its existing rows read null in them (see
+    /// [`RowHandler::legacy_fingerprint_for_null_backfill`]).
+    null_backfilled_columns: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -682,33 +685,62 @@ impl TargetHandler<TableSpec> for TableHandler {
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
         let db_key = TableKey::from_stable_key(&key)?.db_key;
         match desired {
-            // Always emit when declared so the sink fulfills the row child.
+            // Always emit when declared so the sink builds the row child.
             Some(spec) => {
                 let tracking =
                     MutualTrackingRecord::new(table_tracking_record(&spec), spec.managed_by);
                 let resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
                 let (main_action, column_transitions) = diff_composite(resolved.as_ref());
-                let check_column_actions = matches!(main_action, None | Some(DiffAction::Upsert));
+                let column_actions: HashMap<String, DiffAction> =
+                    if matches!(main_action, None | Some(DiffAction::Upsert)) {
+                        column_transitions
+                            .into_iter()
+                            .filter_map(|(name, transition)| {
+                                diff(Some(&transition)).map(|action| (name, action))
+                            })
+                            .collect()
+                    } else {
+                        HashMap::new()
+                    };
                 // A pure column *add* is additive (a nullable column added via
                 // `add_columns`, including vectors — see `evolve_existing_table`),
                 // so it never recreates. A column *retype* or *drop* can't be done
                 // in place in LanceDB, so it forces a destructive recreate (matches
                 // Python, which upgrades non-add column actions to a replace).
                 let recreate = matches!(main_action, Some(DiffAction::Replace))
-                    || (check_column_actions
-                        && column_transitions.into_iter().any(|(_name, transition)| {
-                            matches!(
-                                diff(Some(&transition)),
-                                Some(DiffAction::Replace | DiffAction::Delete)
-                            )
-                        }));
+                    || column_actions
+                        .values()
+                        .any(|a| matches!(a, DiffAction::Replace | DiffAction::Delete));
+                // Rows already in the table read null in an added column. Only
+                // when the table surely exists: an `upsert` can recreate an
+                // externally dropped table empty, where those rows are missing.
+                let null_backfilled_columns =
+                    if main_action.is_none() && !recreate && spec.managed_by.is_system() {
+                        let schema = &spec.table_schema;
+                        schema
+                            .columns
+                            .iter()
+                            .filter(|(name, def)| {
+                                def.nullable
+                                    && !schema.primary_key.contains(name)
+                                    && matches!(
+                                        column_actions.get(name),
+                                        Some(DiffAction::Insert | DiffAction::Upsert)
+                                    )
+                            })
+                            .map(|(name, _)| name.clone())
+                            .collect()
+                    } else {
+                        BTreeSet::new()
+                    };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
                         db_key,
                         table_name: spec.table_name.clone(),
                         spec: Some(spec),
                         recreate,
+                        null_backfilled_columns,
                     }),
                     sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
@@ -731,6 +763,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         table_name,
                         spec: None,
                         recreate: false,
+                        null_backfilled_columns: BTreeSet::new(),
                     }),
                     sink: self.sink.get(table_sink),
                     tracking_record: None,
@@ -742,21 +775,17 @@ impl TargetHandler<TableSpec> for TableHandler {
 }
 
 fn table_sink() -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
-            for (action, child_slot) in actions {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
                 match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => {
                         let db = resolve_db(&host_ctx, &a.db_key)?;
                         let spec = a.spec.ok_or_else(|| {
                             Error::engine("LanceDB create/update action missing spec")
                         })?;
-                        let mut null_backfilled_columns = HashSet::new();
                         if spec.managed_by.is_system() {
-                            null_backfilled_columns = ensure_table(&db, &spec, a.recreate).await?;
-                        }
-                        if let Some(slot) = child_slot {
-                            slot.fulfill(row_child(a.db_key, spec, null_backfilled_columns))?;
+                            ensure_table(&db, &spec, a.recreate).await?;
                         }
                     }
                     TargetAction::Delete(a) => {
@@ -767,28 +796,18 @@ fn table_sink() -> TargetActionSink<TableAction> {
             }
             Ok(())
         },
-    )
-    .with_preview_child(|action| match action {
-        TargetAction::Create(a) | TargetAction::Update(a) => {
+        |a: &TableAction| {
             let spec = a
                 .spec
+                .clone()
                 .ok_or_else(|| Error::engine("LanceDB create/update action missing spec"))?;
-            // Only evolving the table computes the null-backfilled columns, so
-            // preview may show a full row write where apply would only advance
-            // the row's tracking.
-            Ok(row_child(a.db_key, spec, HashSet::new()))
-        }
-        TargetAction::Delete(_) => Err(Error::engine("a table drop has no row child")),
-    })
-}
-
-/// The row handler a table's sink fulfills its child slot with.
-fn row_child(
-    db_key: String,
-    spec: TableSpec,
-    null_backfilled_columns: HashSet<String>,
-) -> ChildTargetDef {
-    ChildTargetDef::new::<RowState, _>(RowHandler::new(db_key, spec, null_backfilled_columns))
+            Ok(ChildTargetDef::new::<RowState, _>(RowHandler::new(
+                a.db_key.clone(),
+                spec,
+                a.null_backfilled_columns.clone(),
+            )))
+        },
+    )
 }
 
 async fn table_exists(db: &LanceDatabase, table_name: &str) -> Result<bool> {
@@ -801,24 +820,17 @@ async fn table_exists(db: &LanceDatabase, table_name: &str) -> Result<bool> {
     Ok(names.iter().any(|n| n == table_name))
 }
 
-async fn ensure_table(
-    db: &LanceDatabase,
-    spec: &TableSpec,
-    recreate: bool,
-) -> Result<HashSet<String>> {
+async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> Result<()> {
     let exists = table_exists(db, &spec.table_name).await?;
     if exists && recreate {
         drop_table(db, &spec.table_name).await?;
     } else if exists {
         match evolve_existing_table(db, spec).await? {
-            TableEvolution::Done {
-                null_backfilled_columns,
-            } => return Ok(null_backfilled_columns),
+            TableEvolution::Done => return Ok(()),
             TableEvolution::Recreate => drop_table(db, &spec.table_name).await?,
         }
     }
-    create_empty_table(db, spec).await?;
-    Ok(HashSet::new())
+    create_empty_table(db, spec).await
 }
 
 async fn create_empty_table(db: &LanceDatabase, spec: &TableSpec) -> Result<()> {
@@ -858,9 +870,7 @@ async fn open_table_for_index(
 }
 
 enum TableEvolution {
-    Done {
-        null_backfilled_columns: HashSet<String>,
-    },
+    Done,
     Recreate,
 }
 
@@ -876,7 +886,6 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
         .await
         .map_err(|e| Error::engine(format!("lancedb read schema: {e}")))?;
     let mut add_fields = Vec::new();
-    let mut null_backfilled_columns = HashSet::new();
     for (name, def) in &spec.table_schema.columns {
         match existing.field_with_name(name) {
             Ok(field) => {
@@ -892,9 +901,6 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
                 // type, including fixed-size-list vector columns — so adding a
                 // vector column is additive instead of wiping the table.
                 add_fields.push(Field::new(name, def.col_type.arrow_data_type(), true));
-                if def.nullable {
-                    null_backfilled_columns.insert(name.clone());
-                }
             }
         }
     }
@@ -905,9 +911,7 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
             .await
             .map_err(|e| Error::engine(format!("lancedb add columns: {e}")))?;
     }
-    Ok(TableEvolution::Done {
-        null_backfilled_columns,
-    })
+    Ok(TableEvolution::Done)
 }
 
 async fn drop_table(db: &LanceDatabase, table_name: &str) -> Result<()> {
@@ -953,11 +957,11 @@ struct RowHandler {
     /// row-batches so the table is optimized every
     /// [`TRANSACTIONS_BEFORE_OPTIMIZE`] batches (see [`apply_rows`]).
     optimize_counter: Arc<std::sync::atomic::AtomicU64>,
-    null_backfilled_columns: HashSet<String>,
+    null_backfilled_columns: BTreeSet<String>,
 }
 
 impl RowHandler {
-    fn new(db_key: String, spec: TableSpec, null_backfilled_columns: HashSet<String>) -> Self {
+    fn new(db_key: String, spec: TableSpec, null_backfilled_columns: BTreeSet<String>) -> Self {
         Self {
             db_key,
             spec,
