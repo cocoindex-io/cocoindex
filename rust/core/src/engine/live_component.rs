@@ -7,7 +7,8 @@ use crate::engine::component::{
     OnError,
 };
 use crate::engine::context::{
-    ComponentProcessingAction, ComponentProcessorContext, FnCallContext, PreviewActionCollector,
+    ComponentProcessingAction, ComponentProcessorContext, DeletePreview, FnCallContext,
+    PreviewActionCollector,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -650,20 +651,18 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// returned handle. The tombstone always remains in the DB, so even
     /// a failed delete is retried by the next reconcile's GC sweep.
     ///
-    /// A preview neither writes the tombstone nor runs the delete: preview
-    /// does not plan the deletes of removed components yet, and must apply
-    /// nothing.
+    /// A preview writes no tombstone and runs the delete as a preview: it
+    /// plans the child's delete actions without applying them.
     pub async fn delete(
         &self,
         subpath: StablePath,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
-        if self.preview_collector.is_some() {
-            return Ok(ComponentExecutionHandle::new(std::future::ready(Ok(()))));
-        }
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract.
-        if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
+        if self.preview_collector.is_none()
+            && let Some((parent_ref, child_key)) = subpath.as_ref().split_parent()
+        {
             let app_store = self.component.app_ctx().app_store().clone();
             let parent_path: StablePath = parent_ref.into();
             let child_key = child_key.clone();
@@ -1250,7 +1249,14 @@ async fn run_op<Prof: EngineProfile>(
                 Some(lender.clone()),
                 processing_stats.clone(),
                 host_ctx.clone(),
-                ComponentProcessingAction::new_delete(providers.clone(), on_error),
+                ComponentProcessingAction::new_delete(
+                    providers.clone(),
+                    on_error,
+                    preview_collector.clone().map(|collector| DeletePreview {
+                        collector,
+                        keep_children: false,
+                    }),
+                ),
             );
             let inner_handle = child.delete(context)?;
             inner_handle.ready().await

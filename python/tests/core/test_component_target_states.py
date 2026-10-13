@@ -1391,15 +1391,48 @@ def test_preview_child_target_providers() -> None:
     }
     DictsTarget.store.metrics.clear()
 
-    # The next preview plans the entries against what is now tracked: the
-    # container's (no-op) action, `b` updated and `c` inserted, `a` unchanged.
+    # The next preview plans the entries against what is now tracked: `b`
+    # updated and `c` inserted; `a` and the container are unchanged, so not
+    # listed.
     _source_data["D1"] = {"a": 1, "b": 3, "c": 4}
     actions = app.update_blocking(preview=True)
-    assert actions is not None and len(actions) == 3
+    assert actions is not None and len(actions) == 2
     assert DictsTarget.store.data["D1"]["b"].data == 2
     assert "c" not in DictsTarget.store.data["D1"]
     assert DictsTarget.store.metrics.collect() == {}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+
+def test_preview_plans_deletes_of_removed_components() -> None:
+    """An update deletes the components it no longer mounts (here: the one
+    holding container D2), through its commit; a preview plans those deletes
+    too, without applying or recording them."""
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_preview_plans_deletes_of_removed_components",
+            environment=coco_env,
+        ),
+        _declare_dicts_data_together,
+    )
+    _source_data["D1"] = {"a": 1}
+    _source_data["D2"] = {"b": 2}
+    app.update_blocking()
+    DictsTarget.store.metrics.clear()
+
+    del _source_data["D2"]
+    for _ in range(2):
+        # Recorded nothing: a second preview plans the same delete.
+        actions = app.update_blocking(preview=True)
+        assert actions is not None
+        assert [(a.name, a.action) for a in actions] == [("D2", "delete")]
+        assert set(DictsTarget.store.data) == {"D1", "D2"}
+        assert DictsTarget.store.metrics.collect() == {}
+
+    app.update_blocking()
+    assert set(DictsTarget.store.data) == {"D1"}
 
 
 ##################################################################################

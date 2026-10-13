@@ -659,6 +659,18 @@ pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     ///
     /// See `specs/core/error_handling.md` for the unified principle.
     pub on_error: Option<crate::engine::component::OnError>,
+    /// Set when the delete runs inside a preview: it collects its actions
+    /// instead of applying them.
+    pub preview: Option<DeletePreview<Prof>>,
+}
+
+/// A delete-mode run inside a preview.
+pub struct DeletePreview<Prof: EngineProfile> {
+    pub(crate) collector: PreviewActionCollector<Prof>,
+    /// Whether the component's child components stay: it was demoted to a
+    /// directory whose children the parent still declares, so only its own
+    /// target states go (as with `ChildExistenceAction::Keep` in a commit).
+    pub(crate) keep_children: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -700,10 +712,12 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
     pub fn new_delete(
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         on_error: Option<crate::engine::component::OnError>,
+        preview: Option<DeletePreview<Prof>>,
     ) -> Self {
         Self::Delete(ComponentDeleteContext {
             providers,
             on_error,
+            preview,
         })
     }
 }
@@ -1116,16 +1130,28 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn preview(&self) -> bool {
-        match &self.inner.processing_action {
-            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.is_some(),
-            ComponentProcessingAction::Delete { .. } => false,
-        }
+        self.preview_collector().is_some()
     }
 
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
-            ComponentProcessingAction::Delete { .. } => None,
+            ComponentProcessingAction::Delete(delete_ctx) => delete_ctx
+                .preview
+                .as_ref()
+                .map(|preview| &preview.collector),
+        }
+    }
+
+    /// For a previewed delete: whether the component's child components stay
+    /// (see [`DeletePreview::keep_children`]).
+    pub(crate) fn preview_keeps_children(&self) -> bool {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(_) => false,
+            ComponentProcessingAction::Delete(delete_ctx) => delete_ctx
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.keep_children),
         }
     }
 

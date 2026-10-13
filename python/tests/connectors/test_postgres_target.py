@@ -1212,9 +1212,8 @@ async def test_postgres_preview_rows(pg_env: _PgEnv) -> None:
         await app.update()
         assert await _row_count(pool, table_name) == 2
 
-        # Against the applied state: the table's action (no change of its
-        # own), row 2 changed and row 3 added; row 1 is unchanged. Nothing is
-        # applied.
+        # Against the applied state: row 2 changed and row 3 added; row 1 and
+        # the table are unchanged, so not listed. Nothing is applied.
         rows = [
             TextRow(id="1", content="one"),
             TextRow(id="2", content="two-updated"),
@@ -1222,7 +1221,6 @@ async def test_postgres_preview_rows(pg_env: _PgEnv) -> None:
         ]
         actions = await app.update(preview=True)
         assert _planned_actions(actions) == {
-            ("table", table_name): None,
             ("row", ("2",)): {"id": "2", "content": "two-updated"},
             ("row", ("3",)): {"id": "3", "content": "three"},
         }

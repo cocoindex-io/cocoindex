@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
+    DeclaredTargetState, DeletePreview, MemoStatesPayload, TARGET_ID_KEY,
 };
 use crate::engine::context::{
     FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
@@ -18,14 +18,15 @@ use crate::engine::target_state::{
     TargetActionWithChildSlot, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
-use crate::state::stable_path_set::ChildStablePathSet;
+use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetProviderDeps, TargetStatePath, TargetStatePathWithProviderId,
     TargetStateProviderGeneration,
 };
 use crate::state_store::{
     AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
-    PrecommitReadPlan, PrecommitWritePlan, WriteTxn, reconcile_child_existence,
+    PrecommitReadPlan, PrecommitWritePlan, WriteTxn, plan_child_existence,
+    reconcile_child_existence,
 };
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -680,6 +681,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.component_ctx.processing_stats().clone(),
                 self.component_ctx.host_ctx().clone(),
                 cascaded_on_error.clone(),
+                None,
             );
             handles.push(component.delete(delete_ctx)?);
         }
@@ -709,6 +711,9 @@ struct SinkInput<Prof: EngineProfile> {
     /// sink for the declaring action. Read back after the sink call; a slot the
     /// sink left unfulfilled is an error.
     pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
+    /// Indexes in `actions` of the actions that change nothing (see
+    /// `pre_commit`): applied in an update, left out of a preview's actions.
+    unchanged: Vec<usize>,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
@@ -717,6 +722,7 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
             actions: Vec::new(),
             factory_children: Vec::new(),
             pending_children: Vec::new(),
+            unchanged: Vec::new(),
         }
     }
 }
@@ -1229,17 +1235,37 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     deferred_provider_generations.push((child_provider.clone(), new_gen));
                 }
 
-                let child = child_provider
-                    .map(|child_provider| (child_provider, recon_output.sink.child_handling()));
-                actions_by_sinks
-                    .entry(recon_output.sink)
-                    .or_default()
-                    .add_action(recon_output.action, child)?;
-
                 let new_state_bytes = recon_output
                     .tracking_record
                     .map(|s| s.to_bytes())
                     .transpose()?;
+                // A container's `reconcile` always emits an action, as the
+                // child handler is built from it. When its tracking record
+                // equals every previous one, nothing may be missing and the
+                // children keep their generation, the container itself is
+                // unchanged — as a leaf with such a record would not even be
+                // reconciled — so a preview does not list the action.
+                let unchanged = child_provider.is_some()
+                    && !prev_may_be_missing
+                    && recon_output.child_invalidation.is_none()
+                    && match (&new_state_bytes, &prev_item) {
+                        (Some(new_state), Some(item)) => {
+                            !item.states.is_empty()
+                                && item
+                                    .states
+                                    .iter()
+                                    .all(|(_, s)| s.as_ref() == Some(new_state.as_ref()))
+                        }
+                        _ => false,
+                    };
+
+                let child = child_provider
+                    .map(|child_provider| (child_provider, recon_output.sink.child_handling()));
+                let sink_input = actions_by_sinks.entry(recon_output.sink).or_default();
+                if unchanged {
+                    sink_input.unchanged.push(sink_input.actions.len());
+                }
+                sink_input.add_action(recon_output.action, child)?;
 
                 if let Some(item) = &mut prev_item {
                     // Update existing item.
@@ -1511,6 +1537,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let processor_name_owned: Option<Arc<str>> = processor_name.map(Arc::from);
 
     if comp_ctx.preview() {
+        // For the child components the preview deletes, after the providers
+        // below have been readied.
+        let child_delete_providers = target_states_providers.clone();
         // Mirror normal precommit Phase 2 planning, but always return
         // `Ok(None)` from the callback so AppStore applies/commits no
         // tracking writes; the callback hands its output out through
@@ -1675,12 +1704,34 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 child_provider.fulfill_handler(handler, registry)?;
             }
         }
-        collector.lock().unwrap().extend(
-            pre_commit_out
-                .actions_by_sinks
-                .into_values()
-                .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
-        );
+        collector
+            .lock()
+            .unwrap()
+            .extend(
+                pre_commit_out
+                    .actions_by_sinks
+                    .into_values()
+                    .flat_map(|input| {
+                        let unchanged = input.unchanged;
+                        input
+                            .actions
+                            .into_iter()
+                            .enumerate()
+                            .filter(move |(idx, _)| !unchanged.contains(idx))
+                            .map(|(_, (action, _))| action)
+                    }),
+            );
+        // A commit deletes the child components this run no longer declares
+        // (a delete: all of them); a preview skips the commit, so it previews
+        // those deletes here.
+        if !comp_ctx.preview_keeps_children() {
+            preview_child_component_deletes(
+                comp_ctx,
+                child_path_set.as_ref(),
+                &child_delete_providers,
+            )
+            .await?;
+        }
         return Ok(SubmitOutput {
             built_target_states_providers,
             touched_previous_states: pre_commit_out.previously_exists,
@@ -1947,6 +1998,83 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         built_target_states_providers,
         touched_previous_states,
     })
+}
+
+/// Preview the deletes a commit of `comp_ctx` cascades into: the child
+/// components its existence walk would tombstone (those `declared_children`
+/// no longer declares; every one when `None`), plus the tombstones an earlier
+/// failed delete left for the next update to retry. Each runs as a previewed
+/// delete-mode component, which previews its own child components' deletes
+/// in turn — except one demoted to a directory whose children are declared
+/// again, which keeps them.
+async fn preview_child_component_deletes<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    declared_children: Option<&ChildStablePathSet>,
+    providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+) -> Result<()> {
+    let collector = comp_ctx
+        .preview_collector()
+        .cloned()
+        .ok_or_else(|| internal_error!("preview mode requires a preview collector"))?;
+    let app_store = comp_ctx.app_ctx().app_store();
+    let component_path = comp_ctx.stable_path();
+    let mut relative_paths: HashSet<StablePath> = {
+        let txn = app_store.read_txn().await?;
+        plan_child_existence(&txn, app_store, component_path, declared_children)?
+            .tombstones
+            .into_iter()
+            .collect()
+    };
+    relative_paths.extend(app_store.list_tombstones(component_path).await?);
+
+    let mut handles = Vec::with_capacity(relative_paths.len());
+    for relative_path in relative_paths {
+        let keep_children = match declared_at(declared_children, &relative_path) {
+            // Declared again: alive, nothing to delete.
+            Some(StablePathSet::Component) => continue,
+            Some(StablePathSet::Directory(_)) => true,
+            None => false,
+        };
+        let component = comp_ctx
+            .component()
+            .get_child(component_path.concat(relative_path.as_ref()));
+        let delete_ctx = component.new_processor_context_for_delete(
+            providers.clone(),
+            Some(comp_ctx),
+            comp_ctx.processing_stats().clone(),
+            comp_ctx.host_ctx().clone(),
+            comp_ctx.processing_action_on_error(),
+            Some(DeletePreview {
+                collector: collector.clone(),
+                keep_children,
+            }),
+        );
+        handles.push(component.delete(delete_ctx)?);
+    }
+    for handle in handles {
+        handle.ready().await?;
+    }
+    Ok(())
+}
+
+/// What `declared` declares at `relative_path` (relative to the component),
+/// if anything.
+fn declared_at<'a>(
+    declared: Option<&'a ChildStablePathSet>,
+    relative_path: &StablePath,
+) -> Option<&'a StablePathSet> {
+    let mut children = declared?;
+    let mut parts = relative_path.0.iter().peekable();
+    while let Some(part) = parts.next() {
+        let path_set = children.children.get(part)?;
+        match (path_set, parts.peek()) {
+            (_, None) => return Some(path_set),
+            (StablePathSet::Directory(dir), Some(_)) => children = dir,
+            // A component's own children are in its own subtree, not this one.
+            (StablePathSet::Component, Some(_)) => return None,
+        }
+    }
+    None
 }
 
 /// Clear this component's `pending_process_token` field in the

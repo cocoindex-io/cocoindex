@@ -576,7 +576,7 @@ impl AppStore {
 // ---------------------------------------------------------------------------
 
 /// Walk the in-memory child tree under `component_path`, diff against
-/// the on-disk `__cex` rows per parent, and apply the deltas:
+/// the on-disk `__cex` rows per parent, and plan the deltas:
 ///
 /// * declared-not-present → write `__cex` row, recurse into Directory.
 /// * present-not-declared → delete `__cex` row; for Component leaves,
@@ -593,16 +593,18 @@ impl AppStore {
 /// at all (whole-component delete): every on-disk child is removed and
 /// every Component leaf below it tombstoned, cascading the delete.
 ///
-/// Used by [`AppStore::commit`]: the AppStore opens the commit txn,
-/// then invokes the engine-supplied [`ExistenceReconciler`] which in
-/// turn calls this function. Lives on the storage side because the
+/// Read-only: [`reconcile_child_existence`] applies the plan inside the
+/// commit txn ([`AppStore::commit`] invokes it through the engine-supplied
+/// [`ExistenceReconciler`]), and a preview reads it to find the child
+/// components a commit would delete. Lives on the storage side because the
 /// entire logic only depends on the state layer (no engine concepts).
-pub async fn reconcile_child_existence<'a>(
-    wtxn: &mut WriteTxn<'_>,
+pub fn plan_child_existence<'a>(
+    txn: &heed::RoTxn<'_>,
     app_store: &AppStore,
     component_path: &StablePath,
     child_path_set: Option<&'a ChildStablePathSet>,
-) -> Result<()> {
+) -> Result<ChildExistencePlan> {
+    let mut plan = ChildExistencePlan::default();
     let mut queue: VecDeque<Level<'a>> = VecDeque::new();
     queue.push_back(Level {
         path: component_path.clone(),
@@ -615,9 +617,7 @@ pub async fn reconcile_child_existence<'a>(
             .child_path_set
             .into_iter()
             .flat_map(|set| set.children.iter());
-        let existing_children = app_store
-            .list_child_existence_in_txn(&mut *wtxn, &level.path)
-            .await?;
+        let existing_children = app_store.list_child_existence(txn, &level.path)?;
         let mut existing_iter = existing_children.into_iter();
 
         let mut curr_next = curr_iter.next();
@@ -636,9 +636,7 @@ pub async fn reconcile_child_existence<'a>(
                 }
                 (None, Some(_)) => {
                     if let Some((key, info)) = existing_next.take() {
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
+                        plan.removals.push((level.path.clone(), key.clone()));
                         del_child(
                             &key,
                             &info,
@@ -649,9 +647,7 @@ pub async fn reconcile_child_existence<'a>(
                         )?;
                     }
                     for (key, info) in existing_iter.by_ref() {
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
+                        plan.removals.push((level.path.clone(), key.clone()));
                         del_child(
                             &key,
                             &info,
@@ -677,9 +673,7 @@ pub async fn reconcile_child_existence<'a>(
                         let (key, info) = existing_next
                             .take()
                             .ok_or_else(|| internal_error!("invariance violation"))?;
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
+                        plan.removals.push((level.path.clone(), key.clone()));
                         del_child(
                             &key,
                             &info,
@@ -700,16 +694,11 @@ pub async fn reconcile_child_existence<'a>(
                         let new_node_type = node_type_for(curr_path_set);
 
                         if existing_info.node_type != new_node_type {
-                            app_store
-                                .write_child_existence(
-                                    wtxn,
-                                    &level.path,
-                                    curr_key,
-                                    &ChildExistenceInfo {
-                                        node_type: new_node_type,
-                                    },
-                                )
-                                .await?;
+                            plan.upserts.push((
+                                level.path.clone(),
+                                curr_key.clone(),
+                                new_node_type,
+                            ));
                         }
 
                         if let StablePathSet::Directory(curr_dir_set) = curr_path_set {
@@ -740,14 +729,8 @@ pub async fn reconcile_child_existence<'a>(
 
         for (stable_key, path_set) in children_to_add {
             let node_type = node_type_for(path_set);
-            app_store
-                .write_child_existence(
-                    wtxn,
-                    &level.path,
-                    stable_key,
-                    &ChildExistenceInfo { node_type },
-                )
-                .await?;
+            plan.upserts
+                .push((level.path.clone(), stable_key.clone(), node_type));
             if let StablePathSet::Directory(child_path_set) = path_set {
                 queue.push_back(Level {
                     path: level.path.concat_part(stable_key.clone()),
@@ -756,13 +739,55 @@ pub async fn reconcile_child_existence<'a>(
             }
         }
 
-        for relative_path in std::mem::take(&mut buffered_tombstones) {
-            app_store
-                .write_tombstone(wtxn, component_path, &relative_path)
-                .await?;
-        }
+        plan.tombstones.append(&mut buffered_tombstones);
+    }
+    Ok(plan)
+}
+
+/// Apply [`plan_child_existence`]'s plan in `wtxn`: the `__cex` rows to
+/// remove and upsert, and the tombstones for the Component leaves that
+/// disappeared.
+pub async fn reconcile_child_existence(
+    wtxn: &mut WriteTxn<'_>,
+    app_store: &AppStore,
+    component_path: &StablePath,
+    child_path_set: Option<&ChildStablePathSet>,
+) -> Result<()> {
+    let plan = plan_child_existence(&***wtxn, app_store, component_path, child_path_set)?;
+    for (parent, key) in &plan.removals {
+        app_store.delete_child_existence(wtxn, parent, key).await?;
+    }
+    for (parent, key, node_type) in &plan.upserts {
+        app_store
+            .write_child_existence(
+                wtxn,
+                parent,
+                key,
+                &ChildExistenceInfo {
+                    node_type: *node_type,
+                },
+            )
+            .await?;
+    }
+    for relative_path in &plan.tombstones {
+        app_store
+            .write_tombstone(wtxn, component_path, relative_path)
+            .await?;
     }
     Ok(())
+}
+
+/// What [`reconcile_child_existence`] writes, from the read-only walk of
+/// [`plan_child_existence`].
+#[derive(Default)]
+pub struct ChildExistencePlan {
+    /// `(parent, key)` of the `__cex` rows to remove.
+    pub removals: Vec<(StablePath, StableKey)>,
+    /// `(parent, key, node type)` of the `__cex` rows to write.
+    pub upserts: Vec<(StablePath, StableKey, StablePathNodeType)>,
+    /// Paths, relative to the component, of the Component leaves to
+    /// tombstone: the child components the commit deletes.
+    pub tombstones: Vec<StablePath>,
 }
 
 struct Level<'a> {

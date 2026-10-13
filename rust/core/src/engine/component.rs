@@ -7,7 +7,7 @@ use std::sync::Weak;
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
     AppContext, ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    MemoStatesPayload, PreviewActionCollector,
+    DeletePreview, MemoStatesPayload, PreviewActionCollector,
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
@@ -1363,7 +1363,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                         // GC sweep — see `execution.rs::launch_child_component_gc`.
                         // That's the single, unified error-handling
                         // channel; this branch just preserves metadata.
-                        if !children_outcome.has_exception {
+                        // A preview left the tombstone unwritten (and writes
+                        // nothing), so it has none to clean up.
+                        if !children_outcome.has_exception && !processor_context.preview() {
                             cleanup_tombstone(&processor_context).await?;
                         }
                         None
@@ -1483,13 +1485,14 @@ impl<Prof: EngineProfile> Component<Prof> {
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
+        preview: Option<DeletePreview<Prof>>,
     ) -> ComponentProcessorContext<Prof> {
         ComponentProcessorContext::new(
             self.clone(),
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::new_delete(providers, on_error),
+            ComponentProcessingAction::new_delete(providers, on_error, preview),
         )
     }
 }
@@ -2774,7 +2777,7 @@ mod tests {
         // against the handlers from the same factory.
         let (handle, _) = app
             .update(
-                container_root(container_sink, NUM_ROWS),
+                container_root(container_sink.clone(), NUM_ROWS),
                 AppUpdateOptions::default(),
                 Arc::new(()),
                 None,
@@ -2786,6 +2789,21 @@ mod tests {
             child_reconcile_calls.load(Ordering::SeqCst),
             2 * NUM_ROWS as usize
         );
+
+        // With the container unchanged, a preview lists only the rows' actions:
+        // the container's action still readies the rows, but changes nothing.
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let (handle, _) = app
+            .update(
+                container_root(container_sink, NUM_ROWS),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(collector.clone()),
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(collector.lock().unwrap().len(), NUM_ROWS as usize);
+        assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
     }
 
     /// A preview that finds the stored memo invalid (here: a changed memo key)
@@ -2825,6 +2843,102 @@ mod tests {
         assert!(
             app_store_contents(&app).await == contents_before,
             "preview must not delete or store memos"
+        );
+    }
+
+    /// A root mounting one child component per name; each child declares one
+    /// target state, through a handler counting into `reconcile_calls`.
+    fn children_root(
+        names: &'static [&'static str],
+        reconcile_calls: Arc<AtomicUsize>,
+    ) -> TestProcessor {
+        TestProcessor::new(
+            "root",
+            Fingerprint::from(&"children_root").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .with_on_process(Arc::new(move |ctx| {
+            let reconcile_calls = reconcile_calls.clone();
+            Box::pin(async move {
+                let items = register_root_target_state_provider(
+                    &ctx,
+                    "items".to_string(),
+                    CountingHandler {
+                        reconcile_calls,
+                        sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                        reject: false,
+                    },
+                )?;
+                for name in names {
+                    let items = items.clone();
+                    let child = TestProcessor::new(
+                        "child",
+                        Fingerprint::from(&format!("children_root/{name}")).unwrap(),
+                        Arc::new(AtomicBool::new(false)),
+                        false,
+                    )
+                    .with_on_process(Arc::new(move |ctx| {
+                        let items = items.clone();
+                        Box::pin(async move {
+                            declare_target_state(
+                                &ctx,
+                                &FnCallContext::default(),
+                                items,
+                                StableKey::Str(Arc::from(*name)),
+                                (),
+                            )?;
+                            Ok(TestData(Vec::new()))
+                        })
+                    }));
+                    ctx.component()
+                        .mount_child(&FnCallContext::new(true), key_path(ctx.component(), name))?
+                        .use_mount(&ctx, child, DeadlineContext::NONE)
+                        .await?
+                        .result(Some(&ctx))
+                        .await?;
+                }
+                Ok(TestData(Vec::new()))
+            })
+        }))
+    }
+
+    /// A commit deletes the child components an update no longer mounts; a
+    /// preview plans those deletes (the removed child's state is reconciled
+    /// away) and writes nothing — no tombstone, no removed existence row.
+    #[tokio::test]
+    async fn preview_plans_deletes_of_removed_child_components() {
+        let (app, _dir) = test_app("preview_removed_children").await;
+        let reconcile_calls = Arc::new(AtomicUsize::new(0));
+        let (handle, _) = app
+            .update(
+                children_root(&["a", "b"], reconcile_calls.clone()),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+
+        let contents_before = app_store_contents(&app).await;
+        reconcile_calls.store(0, Ordering::SeqCst);
+        let (handle, _) = app
+            .update(
+                children_root(&["a"], reconcile_calls.clone()),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(PreviewActionCollector::<TestProfile>::default()),
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            2,
+            "child a's state and removed child b's state are reconciled"
+        );
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not write to the state store"
         );
     }
 

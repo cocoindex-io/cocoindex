@@ -561,16 +561,16 @@ impl AppStore {
     /// All child-existence entries for `parent`, in sorted-key order (which
     /// matches `BTreeMap<StableKey, _>` iteration order because the on-disk
     /// encoding via `storekey` is order-preserving). Used by
-    /// `Committer::update_existence` for the sorted-merge against the
-    /// in-memory declared children.
-    pub async fn list_child_existence_in_txn(
+    /// `plan_child_existence` for the sorted-merge against the in-memory
+    /// declared children, in a write txn (commit) or a read txn (preview).
+    pub fn list_child_existence(
         &self,
-        txn: &mut WriteTxn<'_>,
+        txn: &heed::RoTxn<'_>,
         parent: &StablePath,
     ) -> Result<Vec<(StableKey, ChildExistenceInfo)>> {
         let prefix = key_child_existence_prefix(parent)?;
         let mut out = Vec::new();
-        for entry in self.db().prefix_iter(&**txn, &prefix)? {
+        for entry in self.db().prefix_iter(txn, &prefix)? {
             let (raw_key, raw_value) = entry?;
             let stable_key: StableKey = storekey::decode(raw_key[prefix.len()..].as_ref())?;
             let info: ChildExistenceInfo = from_msgpack_slice(raw_value)?;

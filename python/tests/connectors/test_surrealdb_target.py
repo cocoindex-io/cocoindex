@@ -980,16 +980,13 @@ async def test_preview_plans_tables_and_records(
     assert len(await _query_table(conn, "person")) == 2
     assert len(await _query_table(conn, "likes")) == 1
 
-    # Against the applied state: no table DDL, and only the new relation and
+    # Against the applied state: no table action (both are unchanged), and only the new relation and
     # its new endpoint; the unchanged records are not planned. Nothing is
     # applied.
     person_rows.append(Person(id="carol", name="Carol"))
     likes_rows.append(("bob", "carol", Likes(id="like2", rating=3)))
     tables, records = _planned(await app.update(preview=True))
-    assert {name: (a.main_action, a.column_actions) for name, a in tables.items()} == {
-        "person": (None, {}),
-        "likes": (None, {}),
-    }
+    assert tables == {}
     assert set(records) == {("person", "carol"), ("likes", "like2")}
     assert len(await _query_table(conn, "person")) == 2
     assert len(await _query_table(conn, "likes")) == 1

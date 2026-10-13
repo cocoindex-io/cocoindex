@@ -1169,15 +1169,12 @@ async def test_preview_plans_tables_and_records(
         "coco_idx_rel_REL__id",
     }
 
-    # Against the applied state: no table DDL, and only the new edge and
+    # Against the applied state: no table action (both are unchanged), and only the new edge and
     # its new endpoint; the unchanged records are not planned. Nothing is
     # applied.
     _rel_pairs = [("alice", "bob"), ("bob", "carol")]
     tables, records = _planned(await app.update(preview=True))
-    assert {name: a.main_action for name, a in tables.items()} == {
-        "Entity": None,
-        "REL": None,
-    }
+    assert tables == {}
     assert set(records) == {("Entity", "carol"), ("REL", "bob->carol")}
     assert len(await _read_nodes(uri, auth, "Entity")) == 2
     assert len(await _read_relationships(uri, auth, "REL")) == 1
