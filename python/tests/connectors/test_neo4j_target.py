@@ -1130,14 +1130,15 @@ async def test_preview_plans_tables_and_records(
     _rel_pairs = [("alice", "bob")]
     _tables_declared = True
     _entity_with_schema = True
-    coco_env.context_provider.provide(
-        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
-    )
+    factory = neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    coco_env.context_provider.provide(KG_DB, factory)
     app = coco.App(
         coco.AppConfig(name="test_neo4j_preview", environment=coco_env),
         _declare_entities_and_relationships,
     )
     tables, records = _planned(await app.update(preview=True))
+    # Building the record handlers opened no connection.
+    assert factory._driver is None
     assert {name: a.main_action for name, a in tables.items()} == {
         "Entity": "insert",
         "REL": "insert",

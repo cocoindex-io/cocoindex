@@ -286,3 +286,30 @@ def test_preview_keeps_container_actions_with_equal_tracking_records() -> None:
     assert applied == {"c": "v1"}
     app.update_blocking()
     assert applied == {"c": "v2"}
+
+
+async def _async_apply(
+    context_provider: coco.ContextProvider,
+    actions: Sequence[_ContainerAction],
+    /,
+) -> None:
+    pass
+
+
+async def _async_row_handler(
+    context_provider: coco.ContextProvider, action: _ContainerAction, /
+) -> _RowHandler:
+    return _RowHandler(action[0])
+
+
+class _AsyncFactory:
+    async def __call__(
+        self, context_provider: coco.ContextProvider, action: _ContainerAction, /
+    ) -> _RowHandler:
+        return _RowHandler(action[0])
+
+
+@pytest.mark.parametrize("factory", [_async_row_handler, _AsyncFactory()])
+def test_async_child_handler_is_rejected(factory: Any) -> None:
+    with pytest.raises(TypeError, match="must be a sync function"):
+        coco.TargetActionSink.from_async_fn(_async_apply, child_handler=factory)

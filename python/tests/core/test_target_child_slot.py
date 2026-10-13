@@ -261,7 +261,7 @@ def _expect_legacy_deprecation() -> contextlib.AbstractContextManager[Any]:
     """
     if getattr(sys.flags, "context_aware_warnings", 0):
         return contextlib.nullcontext()
-    return pytest.warns(DeprecationWarning, match="from_fn_with_children")
+    return pytest.warns(DeprecationWarning, match="child_handler=")
 
 
 def test_child_slots_only_for_child_bearing_actions() -> None:

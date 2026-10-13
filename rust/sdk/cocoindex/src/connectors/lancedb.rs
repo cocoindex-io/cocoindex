@@ -2105,6 +2105,88 @@ mod tests {
         }
     }
 
+    fn docs_spec(columns: &[(&'static str, ColumnDef)], managed_by: ManagedBy) -> TableSpec {
+        TableSpec {
+            table_name: "docs".to_string(),
+            table_schema: TableSchema::new(columns.iter().cloned(), ["id"]).unwrap(),
+            managed_by,
+        }
+    }
+
+    /// The `null_backfilled_columns` the table handler plans for `desired`
+    /// against the previously tracked `prev` specs.
+    fn planned_null_backfill(
+        prev: &[&TableSpec],
+        desired: &TableSpec,
+        prev_may_be_missing: bool,
+    ) -> Vec<String> {
+        let key = TableKey {
+            db_key: "db".to_string(),
+            table_name: "docs".to_string(),
+        }
+        .stable_key();
+        let prev = prev
+            .iter()
+            .map(|spec| MutualTrackingRecord::new(table_tracking_record(spec), spec.managed_by))
+            .collect();
+        let output = TableHandler::default()
+            .reconcile(key, Some(desired.clone()), prev, prev_may_be_missing)
+            .unwrap()
+            .expect("a declared table always emits an action");
+        let (TargetAction::Create(action) | TargetAction::Update(action)) = output.action else {
+            panic!("a declared table emits a create or an update");
+        };
+        action.null_backfilled_columns.into_iter().collect()
+    }
+
+    /// Rows read null in a column added to a table that surely exists — and
+    /// only then: a new, possibly missing, user-managed or recreated table
+    /// gets its rows written again.
+    #[test]
+    fn null_backfill_only_for_nullable_columns_added_to_a_surely_existing_table() {
+        let id = ("id", ColumnDef::new(ColumnType::Int64));
+        let name = ("name", ColumnDef::new(ColumnType::Text));
+        let summary = ("summary", ColumnDef::new(ColumnType::Text).nullable());
+        let base = docs_spec(&[id.clone(), name.clone()], ManagedBy::System);
+        let with_summary = docs_spec(
+            &[id.clone(), name.clone(), summary.clone()],
+            ManagedBy::System,
+        );
+
+        assert_eq!(
+            planned_null_backfill(&[&base], &with_summary, false),
+            vec!["summary"]
+        );
+        // A non-nullable column has no null to backfill.
+        let with_score = docs_spec(
+            &[
+                id.clone(),
+                name.clone(),
+                ("score", ColumnDef::new(ColumnType::Float64)),
+            ],
+            ManagedBy::System,
+        );
+        assert!(planned_null_backfill(&[&base], &with_score, false).is_empty());
+        // The table may be missing (e.g. dropped outside CocoIndex).
+        assert!(planned_null_backfill(&[&base], &with_summary, true).is_empty());
+        // A new table has no rows.
+        assert!(planned_null_backfill(&[], &with_summary, false).is_empty());
+        // A retyped column recreates the table.
+        let retyped = docs_spec(
+            &[
+                id.clone(),
+                ("name", ColumnDef::new(ColumnType::Int64)),
+                summary.clone(),
+            ],
+            ManagedBy::System,
+        );
+        assert!(planned_null_backfill(&[&base], &retyped, false).is_empty());
+        // CocoIndex does not evolve a user-managed table.
+        let user_base = docs_spec(&[id.clone(), name.clone()], ManagedBy::User);
+        let user_with_summary = docs_spec(&[id, name, summary], ManagedBy::User);
+        assert!(planned_null_backfill(&[&user_base], &user_with_summary, false).is_empty());
+    }
+
     fn row_handler(null_backfilled_columns: impl IntoIterator<Item = &'static str>) -> RowHandler {
         let table_schema = TableSchema::new(
             [

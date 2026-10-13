@@ -349,9 +349,10 @@ impl PyTargetActionSinkInner {
             let message = CString::new(format!(
                 "{} returned child handler definitions from a target action sink \
                  callback; that contract is deprecated and will be removed. Build the \
-                 sink with `TargetActionSink.from_fn_with_children()` / \
-                 `from_async_fn_with_children()` and fulfill the child slots instead \
-                 (see \"Migrating from ChildTargetDef\" in the custom target connector docs).",
+                 sink with `TargetActionSink.from_fn()` / `from_async_fn()` and pass a \
+                 `child_handler=` factory that builds the child handlers instead (see \
+                 \"Migrating from child slots and ChildTargetDef\" in the custom target \
+                 connector docs).",
                 callback_label(self.callback.object().bind(py))
             ))?;
             let category = py.get_type::<PyDeprecationWarning>();

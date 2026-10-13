@@ -12,6 +12,7 @@ from typing import (
     TypeAlias,
     overload,
 )
+import inspect
 import threading
 import warnings
 import weakref
@@ -136,9 +137,9 @@ class ChildTargetDef(Generic[HandlerT_co], NamedTuple):
     :meth:`TargetActionSink.from_fn` / :meth:`TargetActionSink.from_async_fn`
     returned one ``ChildTargetDef`` (or ``None``) per action, index-aligned with
     ``actions``. Such sinks still work and emit a :class:`DeprecationWarning`;
-    new code builds the sink with :meth:`TargetActionSink.from_fn_with_children`
-    and fulfills each :class:`ChildSlot` instead. This class will be removed in
-    a future release.
+    new code passes a ``child_handler`` factory to :meth:`TargetActionSink.from_fn`
+    / :meth:`TargetActionSink.from_async_fn` instead. This class will be removed
+    in a future release.
     """
 
     handler: HandlerT_co
@@ -220,9 +221,11 @@ class TargetActionSink(Generic[ActionT_contra, _DeprecatedChildHandlerT_co]):
     equal (and so do their ``child_handler`` factories). The same function or
     bound method always yields the same identity; a callable with value
     equality (e.g. a frozen dataclass implementing ``__call__``) may be
-    constructed on the fly at each ``reconcile()`` call. The callback must
-    support weak references, so an idle identity can be released; a
-    tuple/NamedTuple callback is rejected with ``TypeError``.
+    constructed on the fly at each ``reconcile()`` call. A bound method of an
+    object constructed on the fly is not such a callable: bound methods compare
+    equal only when bound to the same object. The callback must support weak
+    references, so an idle identity can be released; a tuple/NamedTuple
+    callback is rejected with ``TypeError``.
 
     A sink built with :meth:`from_fn` / :meth:`from_async_fn` serves leaf
     target states. Given a ``child_handler`` factory, it serves a container
@@ -469,7 +472,20 @@ _CHILD_HANDLER_FN_DEDUPER = _ObjectDeduper()
 def _canonical_child_handler(
     fn: ChildHandlerFn[Any, Any] | None,
 ) -> ChildHandlerFn[Any, Any] | None:
-    return None if fn is None else _CHILD_HANDLER_FN_DEDUPER.get_canonical(fn)
+    if fn is None:
+        return None
+    # The engine calls the factory synchronously; a coroutine would only fail
+    # later, as a handler without `reconcile`.
+    if inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(
+        getattr(fn, "__call__", None)
+    ):
+        raise TypeError(
+            f"child_handler {qualified_name(fn)} must be a sync function, also "
+            "for a sink built with from_async_fn(): it builds the handler from "
+            "the action alone, with no I/O"
+        )
+    canonical: ChildHandlerFn[Any, Any] = _CHILD_HANDLER_FN_DEDUPER.get_canonical(fn)
+    return canonical
 
 
 class TargetReconcileOutput(

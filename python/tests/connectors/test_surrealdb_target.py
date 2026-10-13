@@ -915,17 +915,15 @@ async def test_preview_plans_tables_and_records(
     database; a real update then applies them."""
     conn, ns, db = surreal_conn
 
-    coco_env.context_provider.provide(
-        SURREAL_DB_KEY,
-        surrealdb.ConnectionFactory(
-            url=_SURREALDB_URL,
-            namespace=ns,
-            database=db,
-            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
-            if _SURREALDB_USER
-            else None,
-        ),
+    factory = surrealdb.ConnectionFactory(
+        url=_SURREALDB_URL,
+        namespace=ns,
+        database=db,
+        credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+        if _SURREALDB_USER
+        else None,
     )
+    coco_env.context_provider.provide(SURREAL_DB_KEY, factory)
     person_rows: list[Person] = []
     likes_rows: list[tuple[str, str, Likes]] = []
 
@@ -960,6 +958,8 @@ async def test_preview_plans_tables_and_records(
     person_rows = [Person(id="alice", name="Alice"), Person(id="bob", name="Bob")]
     likes_rows = [("alice", "bob", Likes(id="like1", rating=5))]
     tables, records = _planned(await app.update(preview=True))
+    # Building the record handlers opened no connection.
+    assert factory._conn is None
     assert {name: a.main_action for name, a in tables.items()} == {
         "person": "insert",
         "likes": "insert",

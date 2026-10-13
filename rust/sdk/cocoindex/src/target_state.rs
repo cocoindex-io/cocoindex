@@ -194,7 +194,10 @@ impl ChildTargetDef {
     }
 }
 
-/// Fulfillment handle for the child target provider of one container action.
+/// Fulfillment handle for the child target provider of one container action,
+/// for the deprecated [`TargetActionSink::from_async_fn_with_children`]; new
+/// sinks build child handlers with
+/// [`TargetActionSink::from_async_fn_with_child_handler`] instead.
 ///
 /// A sink built with [`TargetActionSink::from_async_fn_with_children`] receives
 /// `Some(slot)` alongside every action whose target state was declared with
@@ -304,8 +307,9 @@ where
         )
     }
 
-    /// Deprecated form of [`Self::from_async_fn_with_children`] taking the
-    /// pre-slot closure shape: the closure returns the child handler
+    /// Deprecated container sink with the pre-slot closure shape (older than
+    /// the also deprecated [`Self::from_async_fn_with_children`]); use
+    /// [`Self::from_async_fn_with_child_handler`]. The closure returns the child handler
     /// definitions as a `Vec` index-aligned with the actions (`None` for an
     /// action without a child). The definitions are used to fulfill the
     /// actions' child slots; a missing definition for an action that has a
@@ -478,8 +482,9 @@ fn decode_leaf_actions<A: DeserializeOwned>(
         .into_iter()
         .map(|(action, child_slot)| {
             if child_slot.is_some() {
+                // The engine mints slots only for a `LegacySlots` sink.
                 return Err(Error::engine(
-                    "target action sink received a child slot it cannot fulfill",
+                    "internal: a sink without child slots received one",
                 ));
             }
             decode_action::<A>(action)
@@ -528,7 +533,9 @@ where
     /// `Some`, even when nothing changed, because its action is what the sink's
     /// child handler factory builds the child handler from. Returning `None`
     /// there leaves the child handler missing, and declaring a child target
-    /// state then fails.
+    /// state then fails. The action must be a `Create` or an `Update`: a
+    /// factory gets no child handler from a `Delete`, which is only for a
+    /// container no longer declared (`desired` is `None`).
     fn reconcile(
         &self,
         key: StableKey,

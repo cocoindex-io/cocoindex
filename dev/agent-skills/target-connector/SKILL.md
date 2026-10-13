@@ -232,7 +232,12 @@ and row writes on one connection). Pass a `child_handler`; it only ever sees the
 container actions, and
 `TargetActionSink[ActionT]` is contravariant in the action type, so one
 `TargetActionSink[_TableAction | _RowAction]` is accepted by both handlers'
-`TargetReconcileOutput`s without casts:
+`TargetReconcileOutput`s without casts. The `child_handler` is part of the sink's
+identity too, so key it by value the same way — a bound method of a callback
+built per `reconcile()` is a new object each time (bound methods compare equal
+only when bound to the *same* instance), which would give every call its own
+sink — and build the sink for both levels in one place, so the table handler
+and the row handler pass the same factory:
 
 ```python
 @dataclasses.dataclass(frozen=True)
@@ -252,16 +257,24 @@ class _DbSink:
             else:
                 ...  # row write
 
-    def row_handler(
+
+@dataclasses.dataclass(frozen=True)
+class _DbRowHandlerFactory:
+    db_key: str
+
+    def __call__(
         self, context_provider: ContextProvider, action: _TableAction, /
     ) -> _RowHandler:
         # Only container creates/updates reach the factory.
         return _RowHandler(context_provider.get(self.db_key, ConnType), action.key)
 
-# In reconcile(): equal callbacks (and equal bound `row_handler`s) yield the same
-# sink identity.
-callback = _DbSink(key.db_key)
-sink = coco.TargetActionSink.from_async_fn(callback, child_handler=callback.row_handler)
+
+def _db_sink(db_key: str) -> coco.TargetActionSink[_TableAction | _RowAction]:
+    # Used by both the table and the row handler's reconcile(): equal callbacks
+    # and equal factories yield the same sink identity.
+    return coco.TargetActionSink.from_async_fn(
+        _DbSink(db_key), child_handler=_DbRowHandlerFactory(db_key)
+    )
 ```
 
 A value-keyed callback must have two properties, and the framework enforces

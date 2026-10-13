@@ -126,20 +126,25 @@ class ConnectionFactory:
     async def acquire(self) -> Any:
         """Return an AsyncGraph handle ready to issue ``query(cypher, params)``.
 
-        The handle uses the factory's client for the current event loop,
-        created on first use and reused afterwards. A new client is created if
-        the event loop changed, e.g. between ``update_blocking()`` calls.
+        The factory keeps one client, for the event loop it was created on,
+        and reuses it. Called on another event loop, it creates a new client for
+        that loop; the old one is dropped without closing, as it can't be closed
+        from another loop.
         """
         loop = asyncio.get_running_loop()
-        if self._client is None or self._client_loop is not loop:
-            self._client = AsyncFalkorDB.from_url(self._uri)
-            self._client_loop = loop
-        return self._client.select_graph(self._graph)
+        client = self._client
+        if client is None or self._client_loop is not loop:
+            client = AsyncFalkorDB.from_url(self._uri)
+            self._client, self._client_loop = client, loop
+        return client.select_graph(self._graph)
 
     async def close(self) -> None:
-        """Close the cached client, if any."""
-        client, self._client, self._client_loop = self._client, None, None
-        if client is not None:
+        """Close the client, if any. Call it on the event loop that used the
+        factory (e.g. in the lifespan, after ``yield``); a later ``acquire()``
+        creates a new client."""
+        client, loop = self._client, self._client_loop
+        self._client, self._client_loop = None, None
+        if client is not None and loop is asyncio.get_running_loop():
             await client.aclose()
 
 

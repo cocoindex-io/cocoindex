@@ -172,20 +172,25 @@ class ConnectionFactory:
     async def acquire(self) -> _GraphHandle:
         """Return a graph handle ready to issue ``query(cypher, params)``.
 
-        The handle uses the factory's driver for the current event loop,
-        created on first use and reused afterwards. A new driver is created if
-        the event loop changed, e.g. between ``update_blocking()`` calls.
+        The factory keeps one driver, for the event loop it was created on,
+        and reuses it. Called on another event loop, it creates a new driver for
+        that loop; the old one is dropped without closing, as it can't be closed
+        from another loop.
         """
         loop = asyncio.get_running_loop()
-        if self._driver is None or self._driver_loop is not loop:
-            self._driver = _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
-            self._driver_loop = loop
-        return _GraphHandle(self._driver, self._database)
+        driver = self._driver
+        if driver is None or self._driver_loop is not loop:
+            driver = _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
+            self._driver, self._driver_loop = driver, loop
+        return _GraphHandle(driver, self._database)
 
     async def close(self) -> None:
-        """Close the cached driver, if any."""
-        driver, self._driver, self._driver_loop = self._driver, None, None
-        if driver is not None:
+        """Close the driver, if any. Call it on the event loop that used the
+        factory (e.g. in the lifespan, after ``yield``); a later ``acquire()``
+        creates a new driver."""
+        driver, loop = self._driver, self._driver_loop
+        self._driver, self._driver_loop = None, None
+        if driver is not None and loop is asyncio.get_running_loop():
             await driver.close()
 
 

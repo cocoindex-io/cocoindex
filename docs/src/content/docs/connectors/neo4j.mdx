@@ -26,7 +26,7 @@ Targets Neo4j 5.18+. Vector-index DDL (`CREATE VECTOR INDEX … OPTIONS { indexC
 
 ## Connection setup
 
-Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the Bolt URI, optional auth, and the target database name; it lazily opens one connection-pooled Neo4j async driver per event loop, shared by all tables and batches. Call `await factory.close()` at shutdown to close it.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the Bolt URI, optional auth, and the target database name; on first use it opens one connection-pooled Neo4j async driver, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.

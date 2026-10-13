@@ -450,6 +450,31 @@ fn legacy_table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableActi
     )
 }
 
+/// [`table_sink`] written against the oldest deprecated shape: the closure
+/// returns the child definitions index-aligned with the actions.
+#[allow(deprecated)]
+fn legacy_child_defs_table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_defs(
+        move |actions: Vec<TargetAction<TableAction>>| {
+            let table_log = table_log.clone();
+            let row_log = row_log.clone();
+            async move {
+                let mut defs = Vec::with_capacity(actions.len());
+                for action in actions {
+                    let is_delete = matches!(action, TargetAction::Delete(_));
+                    log_table_action(&table_log, action);
+                    defs.push((!is_delete).then(|| {
+                        ChildTargetDef::new::<String, _>(RowHandler {
+                            sink: recording_sink(row_log.clone()),
+                        })
+                    }));
+                }
+                Ok(defs)
+            }
+        },
+    )
+}
+
 async fn run_table(
     app: &App,
     table_log: Log,
@@ -620,6 +645,28 @@ async fn legacy_slot_sink_fulfills_children() {
     .await;
     assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
     assert_eq!(drain_sorted(&row_log), vec!["delete r2"]);
+}
+
+/// The deprecated child-definitions sink still provides the child handler in
+/// a real update.
+#[tokio::test]
+async fn legacy_child_defs_sink_fulfills_children() {
+    let (app, _dir) = temp_app("legacy_child_defs_sink").await;
+    let table_log = new_log();
+    let row_log = new_log();
+
+    run_table_with(
+        &app,
+        legacy_child_defs_table_sink,
+        table_log.clone(),
+        row_log.clone(),
+        "g1",
+        None,
+        vec![("r1", "v1"), ("r2", "v1")],
+    )
+    .await;
+    assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
+    assert_eq!(drain_sorted(&row_log), vec!["create r1=v1", "create r2=v1"]);
 }
 
 #[tokio::test]

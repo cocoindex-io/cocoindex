@@ -450,7 +450,7 @@ async fn preview_does_not_store_component_memos() {
     };
 
     let actions = app.preview(body(out.clone())).await.unwrap();
-    assert_eq!(actions.len(), 1);
+    assert_eq!(describe_files(&actions), vec!["write a.txt"]);
     assert!(!out.join("a.txt").exists(), "preview wrote the file");
 
     app.update(body(out.clone())).await.unwrap();
@@ -483,7 +483,7 @@ async fn preview_reaches_live_components() {
     };
 
     let actions = app.preview(body(src.clone(), out.clone())).await.unwrap();
-    assert_eq!(actions.len(), 1);
+    assert_eq!(describe_files(&actions), vec!["write a.txt"]);
     assert!(!out.join("a.txt").exists(), "preview wrote the file");
 
     app.update(body(src, out.clone())).await.unwrap();

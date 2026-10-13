@@ -138,8 +138,9 @@ class ConnectionFactory:
         """Return the authenticated connection for the current event loop.
 
         The connection is opened once and reused by every table and batch (a
-        SurrealDB WebSocket multiplexes concurrent requests). A new one is opened
-        if the event loop changed, e.g. between ``update_blocking()`` calls.
+        SurrealDB WebSocket multiplexes concurrent requests). Called on another
+        event loop, it opens a new one for that loop; the old one is dropped
+        without closing, as it can't be closed from another loop.
         """
         # ponytail: one shared connection per factory; add a pool if a single
         # WebSocket becomes the throughput limit.
@@ -166,9 +167,16 @@ class ConnectionFactory:
         return conn
 
     async def close(self) -> None:
-        """Close the cached connection, if any."""
-        conn, self._conn, self._conn_loop = self._conn, None, None
-        self._conn_lock = None
+        """Close the connection, if any. Call it on the event loop that used the
+        factory (e.g. in the lifespan, after ``yield``); a later ``acquire()``
+        opens a new connection."""
+        if self._conn_lock is None or self._conn_loop is not asyncio.get_running_loop():
+            # Opened on another event loop (or never): it can't be closed here.
+            self._conn = None
+            return
+        # Waits for a connect in progress, so its connection is closed too.
+        async with self._conn_lock:
+            conn, self._conn = self._conn, None
         if conn is not None:
             await conn.close()
 

@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cocoindex::{App, LiveMap, LiveMapView};
+use cocoindex::{App, LiveMap, LiveMapView, PreviewAction};
 
 /// Smoke test: `LiveMap::create` mounts its backing container target and
 /// `declare_entry` declares entries that sync (run the entry sink) when the
@@ -47,7 +47,34 @@ async fn live_map_preview_applies_nothing() {
         })
         .await
         .unwrap();
-    assert_eq!(actions.len(), 3);
+    let mut planned: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            // Actions are encoded as arrays: the container's is empty, an
+            // entry's is `[key, value]`.
+            let fields: Vec<serde_json::Value> = value.decode().unwrap();
+            match fields.as_slice() {
+                [] => format!("{verb} container"),
+                [key, value] => format!("{verb} {key} = {value}"),
+                other => panic!("unexpected action {other:?}"),
+            }
+        })
+        .collect();
+    planned.sort();
+    // LiveMap plans every write as an update.
+    assert_eq!(
+        planned,
+        vec![
+            r#"update "a" = "alpha""#,
+            r#"update "b" = "beta""#,
+            "update container",
+        ]
+    );
     let lm = created.lock().unwrap().take().unwrap();
     assert!(lm.scan().await.unwrap().is_empty());
 }
