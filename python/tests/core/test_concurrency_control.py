@@ -536,6 +536,10 @@ async def _main_gated(
     [_file_gate_after_first_child, _file_gate_before_first_child],
     ids=["gate_after_first_child", "gate_before_first_child"],
 )
+# The gate runs each file's chunks one after another, so this test pays a long
+# chain of commit latencies: ~2 s locally, but over the suite's 30 s default on
+# a slow Windows runner. The wait_for below is the stall bound; let it fire.
+@pytest.mark.timeout(120)
 @pytest.mark.asyncio
 async def test_parent_blocked_on_an_asyncio_primitive_keeps_lending(
     file_fn: Callable[[int], Awaitable[None]],
