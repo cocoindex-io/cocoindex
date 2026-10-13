@@ -21,6 +21,7 @@ mod rwlock;
 mod stable_path;
 mod target_state;
 mod target_state_codec;
+mod turboquant;
 mod value;
 
 #[pyo3::pymodule]
@@ -179,6 +180,8 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     // PyStoredValue (self-caching deserialization wrapper)
     m.add_class::<value::PyStoredValue>()?;
+
+    m.add_class::<turboquant::PyTurboQuantIdMapIndex>()?;
 
     // Batching infrastructure
     m.add_class::<batching::PyBatchingOptions>()?;

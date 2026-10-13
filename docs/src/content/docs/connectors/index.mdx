@@ -19,7 +19,7 @@ Each connector lives in `cocoindex::connectors::<name>` behind a Cargo feature o
 </Lang>
 
 <RustNote>
-The Discord source is Python-only: the Rust SDK has no Discord connector, so this page does not list it. See the [Python Discord connector](/docs/connectors/discord/).
+The Discord source and the TurboQuant target are Python-only: the Rust SDK has neither connector, so this page does not list them. See the [Python Discord connector](/docs/connectors/discord/) and the [Python TurboQuant connector](/docs/connectors/turboquant/).
 </RustNote>
 
 ## Sources
@@ -73,6 +73,21 @@ Connectors that export data out of a flow. They're grouped by the kind of store,
 
 ### Vector databases
 
+<Lang only="python">
+
+| Connector | Notes |
+|-----------|-------|
+| [LanceDB](./lancedb)         | Embedded vector DB, vector + full-text (FTS) indexes |
+| [Qdrant](./qdrant)           | Single, named, and multi-vector points with schemaless payloads |
+| [Turbopuffer](./turbopuffer) | Namespaces with single or named vectors |
+| [TurboQuant](./turboquant)   | Local quantized vector index file (2-4 bit), allowlist-filtered search |
+| [Valkey](./valkey)           | Search indexes with vector similarity (HNSW / FLAT) |
+| [zvec](./zvec)               | Embedded, in-process vector DB with dense and sparse vectors |
+
+</Lang>
+
+<Lang only="rust">
+
 | Connector | Notes |
 |-----------|-------|
 | [LanceDB](./lancedb)         | Embedded vector DB, vector + full-text (FTS) indexes |
@@ -80,6 +95,8 @@ Connectors that export data out of a flow. They're grouped by the kind of store,
 | [Turbopuffer](./turbopuffer) | Namespaces with single or named vectors |
 | [Valkey](./valkey)           | Search indexes with vector similarity (HNSW / FLAT) |
 | [zvec](./zvec)               | Embedded, in-process vector DB with dense and sparse vectors |
+
+</Lang>
 
 ### Property graph
 
