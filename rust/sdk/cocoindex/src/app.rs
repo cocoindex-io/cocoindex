@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions};
+use cocoindex_core::engine::context::PreviewActions;
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
@@ -570,12 +571,10 @@ impl App {
         };
 
         // In preview mode the engine collects target actions into this shared
-        // buffer instead of applying them. The element type (`Action`) is
-        // inferred from the `update` call below — the core's collector alias is
-        // crate-private, but the underlying `Arc<Mutex<Vec<_>>>` is not.
-        let preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>> = options
-            .preview
-            .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
+        // buffer instead of applying them, with in-memory ownership claims
+        // for target transfers between components.
+        let preview_collector: Option<Arc<PreviewActions<RustProfile>>> =
+            options.preview.then(|| Arc::new(PreviewActions::default()));
 
         let (core, preview_collector) = self
             .inner
@@ -805,7 +804,7 @@ impl std::fmt::Debug for PreviewAction {
 /// Handle returned by [`App::start_update`].
 pub struct UpdateHandle<T> {
     core: AppOpHandle<Value>,
-    preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>>,
+    preview_collector: Option<Arc<PreviewActions<RustProfile>>>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -826,7 +825,7 @@ where
         // callers want the actions, not the return value).
         self.core.result().await.map_err(Error::from)?;
         let actions = collector
-            .map(|c| std::mem::take(&mut *c.lock().unwrap_or_else(|e| e.into_inner())))
+            .map(|c| std::mem::take(&mut *c.actions.lock().unwrap_or_else(|e| e.into_inner())))
             .unwrap_or_default();
         Ok(actions
             .into_iter()

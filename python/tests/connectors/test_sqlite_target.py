@@ -485,7 +485,7 @@ def test_preview_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     assert len(read_table_data(managed_conn, _table_name)) == 2
 
     # Against the applied state: the table's action (no change of its own),
-    # row 2 changed and row 3 added; row 1 and the table are unchanged, so not
+    # row 2 changed and row 3 added; row 1 is unchanged; the container action is still
     # listed. Nothing is applied.
     _source_rows = [
         SimpleRow(id="1", name="Alice", value=100),
@@ -494,6 +494,7 @@ def test_preview_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     ]
     actions = app.update_blocking(preview=True)
     assert _planned_actions(actions) == {
+        ("table", _table_name): None,
         ("row", ("2",)): {"id": "2", "name": "Bob", "value": 250},
         ("row", ("3",)): {"id": "3", "name": "Charlie", "value": 300},
     }

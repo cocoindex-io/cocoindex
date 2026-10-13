@@ -394,7 +394,7 @@ async fn preview_collects_child_actions_without_applying_the_container() {
     assert_eq!(applied, vec!["create a=v1", "create b=v1"]);
 
     // The next preview plans the rows against what is now tracked. The
-    // table is unchanged, so its action is not listed.
+    // container action remains listed even if its tracking record is unchanged.
     let actions = app
         .preview(table_body(
             sink(),
@@ -402,7 +402,10 @@ async fn preview_collects_child_actions_without_applying_the_container() {
         ))
         .await
         .unwrap();
-    assert_eq!(describe(&actions), vec!["create c=v1", "update b=v2"]);
+    assert_eq!(
+        describe(&actions),
+        vec!["create c=v1", "update b=v2", "update table t"]
+    );
     assert_eq!(*table_log.lock().unwrap(), vec!["ensure t"]);
     assert!(row_log.lock().unwrap().is_empty(), "rows were applied");
 }

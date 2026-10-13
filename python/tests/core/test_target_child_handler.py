@@ -234,3 +234,55 @@ def test_slot_sink_is_deprecated_and_cannot_be_previewed() -> None:
     with pytest.raises(Exception, match="does not support preview of child target"):
         app.update_blocking(preview=True)
     app.update_blocking()
+
+
+def test_preview_keeps_container_actions_with_equal_tracking_records() -> None:
+    """An existence-only record cannot prove an emitted action has no effect."""
+    applied: dict[str, str] = {}
+    desired = "v1"
+
+    def apply(
+        context_provider: coco.ContextProvider, actions: Sequence[tuple[str, str]], /
+    ) -> None:
+        applied.update(actions)
+
+    def child_handler(
+        context_provider: coco.ContextProvider, action: tuple[str, str], /
+    ) -> _RowHandler:
+        return _RowHandler(action[0])
+
+    sink = coco.TargetActionSink.from_fn(apply, child_handler=child_handler)
+
+    class Container(coco.TargetHandler[str, None, _RowHandler]):
+        def reconcile(
+            self,
+            key: coco.StableKey,
+            value: str | coco.NonExistenceType,
+            prev: Collection[None],
+            missing: bool,
+            /,
+        ) -> coco.TargetReconcileOutput[tuple[str, str], None, _RowHandler] | None:
+            assert isinstance(key, str)
+            if coco.is_non_existence(value):
+                return None
+            return coco.TargetReconcileOutput(
+                action=(key, value), sink=sink, tracking_record=None
+            )
+
+    provider = coco.register_root_target_states_provider(
+        "test_target_child_handler/existence_only", Container()
+    )
+
+    async def main() -> None:
+        await coco.mount_target(provider.target_state("c", desired))
+
+    app = coco.App(
+        coco.AppConfig(name="preview_equal_container_record", environment=coco_env),
+        main,
+    )
+    app.update_blocking()
+    desired = "v2"
+    assert app.update_blocking(preview=True) == [("c", "v2")]
+    assert applied == {"c": "v1"}
+    app.update_blocking()
+    assert applied == {"c": "v2"}

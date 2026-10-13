@@ -1063,11 +1063,14 @@ async def test_preview_plans_tables_and_records(falkor_graph_name: str) -> None:
     }
     assert len(await _read_relationships(falkor_graph_name, "REL")) == 1
 
-    # Against the applied state: no table action (both are unchanged), and only the new edge and its new
+    # Against the applied state: the container actions are retained, alongside the new edge and its new
     # endpoint; the unchanged records are not planned. Nothing is applied.
     _rel_pairs = [("alice", "bob"), ("bob", "carol")]
     tables, records = _planned(await app.update(preview=True))
-    assert tables == {}
+    assert {name: action.main_action for name, action in tables.items()} == {
+        "Entity": None,
+        "REL": None,
+    }
     assert set(records) == {("Entity", "carol"), ("REL", "bob->carol")}
     assert len(await _read_nodes(falkor_graph_name, "Entity")) == 2
     assert len(await _read_relationships(falkor_graph_name, "REL")) == 1

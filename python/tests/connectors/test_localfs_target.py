@@ -301,10 +301,12 @@ def test_preview_dir_target(tmp_path: Path) -> None:
     assert (outdir / "sub" / "b.txt").read_text() == "b"
 
     # Against the applied state: `a.txt` changed and `c.txt` added; `b.txt`
-    # and both directories are unchanged, so not listed. Nothing is written.
+    # is unchanged; both container actions remain listed. Nothing is written.
     _preview_files.update({"a.txt": "a2", "c.txt": "c"})
     actions = app.update_blocking(preview=True)
     assert _planned_entries(actions, outdir) == {
+        ("dir", "."): b"",
+        ("dir", "sub"): b"",
         ("file", "sub/a.txt"): b"a2",
         ("file", "sub/c.txt"): b"c",
     }

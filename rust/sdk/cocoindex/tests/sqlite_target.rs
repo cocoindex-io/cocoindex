@@ -184,7 +184,7 @@ async fn sqlite_table_target_previews_rows() {
         .unwrap();
 
     // Against the applied state: rows 2 and 3 written; row 1 and the table
-    // unchanged, so neither is listed. Nothing is applied.
+    // unchanged; the container action is still listed. Nothing is applied.
     let actions = app
         .preview(|ctx| {
             declare_items(
@@ -199,6 +199,7 @@ async fn sqlite_table_target_previews_rows() {
         vec![
             r#"update row [2] {"id":2,"label":"two-updated"}"#,
             r#"update row [3] {"id":3,"label":"three"}"#,
+            r#"update table "items" main=null columns={}"#,
         ]
     );
     assert_eq!(

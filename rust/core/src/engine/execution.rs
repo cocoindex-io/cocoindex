@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, DeletePreview, MemoStatesPayload, TARGET_ID_KEY,
+    DeclaredTargetState, DeletePreview, MemoStatesPayload, PreviewActions, TARGET_ID_KEY,
 };
 use crate::engine::context::{
     FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
@@ -711,9 +711,6 @@ struct SinkInput<Prof: EngineProfile> {
     /// sink for the declaring action. Read back after the sink call; a slot the
     /// sink left unfulfilled is an error.
     pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
-    /// Indexes in `actions` of the actions that change nothing (see
-    /// `pre_commit`): applied in an update, left out of a preview's actions.
-    unchanged: Vec<usize>,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
@@ -722,7 +719,6 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
             actions: Vec::new(),
             factory_children: Vec::new(),
             pending_children: Vec::new(),
-            unchanged: Vec::new(),
         }
     }
 }
@@ -869,7 +865,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     process_token: u128,
     stable_path: &StablePath,
     full_reprocess: bool,
-    preview: bool,
+    preview: Option<&PreviewActions<Prof>>,
     processor_name: Option<&str>,
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
@@ -1207,7 +1203,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                         // preview writes nothing, so it only peeks: an id
                         // not yet reserved is in no tracking record, as a
                         // fresh one must be, and nothing persists it.
-                        let new_id = if preview {
+                        let new_id = if preview.is_some() {
                             app_store
                                 .peek_id_sequence_in_txn(wtxn, &TARGET_ID_KEY)
                                 .await?
@@ -1239,32 +1235,9 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     .tracking_record
                     .map(|s| s.to_bytes())
                     .transpose()?;
-                // A container's `reconcile` always emits an action, as the
-                // child handler is built from it. When its tracking record
-                // equals every previous one, nothing may be missing and the
-                // children keep their generation, the container itself is
-                // unchanged — as a leaf with such a record would not even be
-                // reconciled — so a preview does not list the action.
-                let unchanged = child_provider.is_some()
-                    && !prev_may_be_missing
-                    && recon_output.child_invalidation.is_none()
-                    && match (&new_state_bytes, &prev_item) {
-                        (Some(new_state), Some(item)) => {
-                            !item.states.is_empty()
-                                && item
-                                    .states
-                                    .iter()
-                                    .all(|(_, s)| s.as_ref() == Some(new_state.as_ref()))
-                        }
-                        _ => false,
-                    };
-
                 let child = child_provider
                     .map(|child_provider| (child_provider, recon_output.sink.child_handling()));
                 let sink_input = actions_by_sinks.entry(recon_output.sink).or_default();
-                if unchanged {
-                    sink_input.unchanged.push(sink_input.actions.len());
-                }
                 sink_input.add_action(recon_output.action, child)?;
 
                 if let Some(item) = &mut prev_item {
@@ -1314,6 +1287,18 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
 
         // Phase 2: Delete + Contained — iterate remaining tracked entries not matched above.
         for (target_state_path_with_pid, item) in tracking_info.target_state_items.iter_mut() {
+            // A preview cannot persist preemption into the old owner's tracking
+            // blob. Consult its in-memory claims before planning orphan deletes.
+            if preview.is_some_and(|preview| {
+                preview
+                    .claimed_targets
+                    .lock()
+                    .unwrap()
+                    .get(&target_state_path_with_pid.target_state_path)
+                    .is_some_and(|owner| owner != stable_path)
+            }) {
+                continue;
+            }
             // Skip stale entries — commit() will prune them via version retention.
             // This is also what prunes, rather than reconciles, the children of a
             // container that is no longer declared: its deletion action subsumes them.
@@ -1564,6 +1549,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         let mut pending_attempt: u32 = 0;
         let pre_commit_out = loop {
             let preview_output_capture = preview_output.clone();
+            let preview_claims = collector.clone();
             let captures: Arc<PreCommitCaptures<Prof>> = Arc::new(PreCommitCaptures {
                 app_store: app_store.clone(),
                 stable_path: stable_path.clone(),
@@ -1577,6 +1563,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 .precommit(&stable_path, move |wtxn, session| {
                     let c = Arc::clone(&captures);
                     let preview_output_capture = preview_output_capture.clone();
+                    let preview_claims = preview_claims.clone();
                     Box::pin(async move {
                         let declared_paths_all: Vec<TargetStatePath> = {
                             let guard = c.declared_target_states.lock().await;
@@ -1630,7 +1617,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             process_token,
                             &c.stable_path,
                             full_reprocess,
-                            true,
+                            Some(preview_claims.as_ref()),
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
                             &c.target_states_providers,
@@ -1704,23 +1691,22 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 child_provider.fulfill_handler(handler, registry)?;
             }
         }
-        collector
-            .lock()
-            .unwrap()
-            .extend(
-                pre_commit_out
-                    .actions_by_sinks
-                    .into_values()
-                    .flat_map(|input| {
-                        let unchanged = input.unchanged;
-                        input
-                            .actions
-                            .into_iter()
-                            .enumerate()
-                            .filter(move |(idx, _)| !unchanged.contains(idx))
-                            .map(|(_, (action, _))| action)
-                    }),
-            );
+        // Publish claims only after planning and factory construction succeed,
+        // before cascading into removed components. Include unchanged declared
+        // targets: ownership may move without emitting any sink action.
+        {
+            let declared = declared_target_states.lock().await;
+            let mut claims = collector.claimed_targets.lock().unwrap();
+            for path in declared.keys() {
+                claims.insert(path.clone(), stable_path.clone());
+            }
+        }
+        collector.actions.lock().unwrap().extend(
+            pre_commit_out
+                .actions_by_sinks
+                .into_values()
+                .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
+        );
         // A commit deletes the child components this run no longer declares
         // (a delete: all of them); a preview skips the commit, so it previews
         // those deletes here.
@@ -1874,7 +1860,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             process_token,
                             &c.stable_path,
                             full_reprocess,
-                            false,
+                            None,
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
                             &c.target_states_providers,

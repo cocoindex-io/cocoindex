@@ -633,9 +633,24 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub user_states: UserStateCache<Prof::FunctionData>,
 }
 
-/// Shared collector for preview actions across all components in a single update.
-pub(crate) type PreviewActionCollector<Prof> =
-    Arc<std::sync::Mutex<Vec<<Prof as EngineProfile>::TargetAction>>>;
+/// Actions and ownership claims shared by all components of one preview.
+/// Claims stay in memory: removed components must not delete targets that
+/// another component has already claimed during this preview.
+pub struct PreviewActions<Prof: EngineProfile> {
+    pub actions: std::sync::Mutex<Vec<Prof::TargetAction>>,
+    pub(crate) claimed_targets: std::sync::Mutex<HashMap<TargetStatePath, StablePath>>,
+}
+
+impl<Prof: EngineProfile> Default for PreviewActions<Prof> {
+    fn default() -> Self {
+        Self {
+            actions: std::sync::Mutex::new(Vec::new()),
+            claimed_targets: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+pub(crate) type PreviewActionCollector<Prof> = Arc<PreviewActions<Prof>>;
 
 pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub state: Mutex<Option<ComponentBuildingState<Prof>>>,

@@ -2640,7 +2640,7 @@ mod tests {
             reconcile_calls.load(Ordering::SeqCst) >= 2 * NUM_TARGET_STATES,
             "the overflowing write must make the batch re-run the preview's precommit"
         );
-        assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
+        assert_eq!(collector.actions.lock().unwrap().len(), NUM_TARGET_STATES);
     }
 
     /// A root in the `mount_target` shape: a child component declares one
@@ -2755,7 +2755,7 @@ mod tests {
             .unwrap();
         handle.result().await.unwrap();
         assert_eq!(
-            collector.lock().unwrap().len(),
+            collector.actions.lock().unwrap().len(),
             1 + NUM_ROWS as usize,
             "the container's action and one per row"
         );
@@ -2790,8 +2790,8 @@ mod tests {
             2 * NUM_ROWS as usize
         );
 
-        // With the container unchanged, a preview lists only the rows' actions:
-        // the container's action still readies the rows, but changes nothing.
+        // The container action is still listed: arbitrary tracking-record
+        // equality does not prove that an action has no external effect.
         let collector = PreviewActionCollector::<TestProfile>::default();
         let (handle, _) = app
             .update(
@@ -2802,7 +2802,10 @@ mod tests {
             )
             .unwrap();
         handle.result().await.unwrap();
-        assert_eq!(collector.lock().unwrap().len(), NUM_ROWS as usize);
+        assert_eq!(
+            collector.actions.lock().unwrap().len(),
+            1 + NUM_ROWS as usize
+        );
         assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
     }
 

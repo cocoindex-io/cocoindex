@@ -348,7 +348,7 @@ async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
     .await?;
 
     // Against the applied state: rows 2 and 3 written; row 1 and the table
-    // unchanged, so neither is listed. Nothing is applied.
+    // unchanged; the container action is still listed. Nothing is applied.
     let actions = app
         .preview({
             let schema = schema.clone();
@@ -361,6 +361,7 @@ async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
         vec![
             r#"update row [2] {"id":2,"label":"two-updated"}"#,
             r#"update row [3] {"id":3,"label":"three"}"#,
+            r#"update table "rows" recreate=false retype=[]"#,
         ]
     );
     let row_count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM \"{schema}\".\"rows\""))

@@ -436,7 +436,7 @@ _dir_sink = coco.TargetActionSink.from_fn(
 
 CocoIndex calls the factory once per action whose target state was declared with a child — a created or updated container, never a delete — before the callback applies the batch, and in a preview in place of the callback. So the factory is sync, free of side effects, and builds the handler from the action alone (plus connections looked up through `context_provider`). Actions without a child provider — orphan deletes, or leaf actions when one sink is shared between a container and its children — don't reach the factory.
 
-The container handler's `reconcile()` returns an action on every run while the container is declared, even when nothing about it changed: the factory builds the child handler from that action. When the action's tracking record equals the previous one, a preview does not list it, as the container itself is unchanged.
+The container handler's `reconcile()` returns an action on every run while the container is declared, even when nothing about it changed: the factory builds the child handler from that action. Preview lists this action too: equality of arbitrary tracking records does not guarantee that applying the action has no external effect.
 
 ### Step 3: Create user-facing API
 
