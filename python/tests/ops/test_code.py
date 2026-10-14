@@ -130,6 +130,18 @@ def test_code_pattern_match_source_and_might_match() -> None:
     assert cp.match_source("def f():\n    return other(item)\n") == []
 
 
+def test_code_pattern_might_match_needs_required_term() -> None:
+    # Mirrors the `CodePattern` docstring example, which pytest does not run.
+    cp = CodePattern(r"evaluate_model(\(A*\))", language="python")
+    assert cp.might_match("evaluate_model(x, y)")
+    assert not cp.might_match("x = 1")
+    # `def` is a keyword and `\NAME` a metavariable: no required term, so the
+    # prefilter passes every source and the parse rejects the non-match.
+    cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
+    assert cp.might_match("x = 1")
+    assert cp.match_source("x = 1") == []
+
+
 def test_code_source_match_agrees_with_str_match() -> None:
     cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
     via_source = cp.match_source(CodeSource(_PY_SRC, language="python"))
