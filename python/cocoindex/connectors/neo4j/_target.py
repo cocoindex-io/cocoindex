@@ -57,6 +57,7 @@ import msgspec
 import numpy as np
 
 import cocoindex as coco
+from cocoindex._internal import deadline
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
     AnyType,
@@ -75,6 +76,12 @@ from cocoindex.resources import schema as res_schema
 from . import _cypher
 
 _logger = logging.getLogger(__name__)
+
+# Retry policy for an apply batch that hits a transient error (deadlock
+# between concurrent batches): a handful of attempts, sub-second backoff.
+_TXN_MAX_ATTEMPTS = 8
+_TXN_RETRY_INITIAL_BACKOFF_SECONDS = 0.05
+_TXN_RETRY_MAX_BACKOFF_SECONDS = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -571,26 +578,45 @@ class _SharedRecordApplier:
     async def _apply_batch(
         cls, graph: _GraphHandle, ordered: Sequence[_RecordAction]
     ) -> None:
-        """Apply ``ordered`` (already in dependency order) in one transaction."""
-        async with graph._driver.session(  # noqa: SLF001
-            database=graph.database
-        ) as session:
-            tx = await session.begin_transaction()
-            try:
-                for action in ordered:
-                    if action.value is not None:
-                        if action.is_relation:
-                            await cls._apply_relation_upsert(tx, action)
+        """Apply ``ordered`` (already in dependency order) in one transaction,
+        retried on a transient error."""
+
+        async def apply_in_txn() -> None:
+            async with graph._driver.session(  # noqa: SLF001
+                database=graph.database
+            ) as session:
+                tx = await session.begin_transaction()
+                try:
+                    for action in ordered:
+                        if action.value is not None:
+                            if action.is_relation:
+                                await cls._apply_relation_upsert(tx, action)
+                            else:
+                                await cls._apply_node_upsert(tx, action)
+                        elif action.is_relation:
+                            await cls._apply_relation_delete(tx, action)
                         else:
-                            await cls._apply_node_upsert(tx, action)
-                    elif action.is_relation:
-                        await cls._apply_relation_delete(tx, action)
-                    else:
-                        await cls._apply_node_delete(tx, action)
-                await tx.commit()
-            except BaseException:
-                await tx.rollback()
-                raise
+                            await cls._apply_node_delete(tx, action)
+                    await tx.commit()
+                except BaseException:
+                    await tx.rollback()
+                    raise
+
+        # Concurrent batches that touch the same nodes — many components
+        # merging edges onto one endpoint — can deadlock. Neo4j reports that
+        # as a TransientError and expects the client to retry the transaction.
+        await deadline.retry_transient(
+            apply_in_txn,
+            retry_on=(_neo4j.exceptions.TransientError,),
+            max_attempts=_TXN_MAX_ATTEMPTS,
+            backoff=deadline.exponential_backoff(
+                initial=_TXN_RETRY_INITIAL_BACKOFF_SECONDS,
+                multiplier=2.0,
+                max_delay=_TXN_RETRY_MAX_BACKOFF_SECONDS,
+                jitter=0.5,
+            ),
+            operation_name="neo4j apply batch",
+        )
 
     @staticmethod
     async def _apply_node_upsert(tx: Any, action: _RecordAction) -> None:
