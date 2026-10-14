@@ -77,7 +77,7 @@ Different `ContextKey`s with different database names produce fully separate tar
 
 The `neo4j` connector provides target state APIs for writing records to node tables and relation tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
 
-Each apply batch is wrapped in a single Neo4j transaction (`tx.commit()` on success, rollback on exception), so partial writes never leak into the database. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints.
+Each apply batch is wrapped in a single Neo4j transaction (`tx.commit()` on success, rollback on exception), so partial writes never leak into the database. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch that fails with a transient error — typically a deadlock between concurrent batches merging edges onto the same nodes — is rolled back and retried with backoff before the failure is reported.
 
 ### Declaring target states
 
