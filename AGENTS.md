@@ -25,7 +25,7 @@ uv run pytest python/    # Run Python tests (use after both Rust and Python chan
 
 ```bash
 uv run --group format ruff format .           # Format Python code
-uv run --group format ruff format --check .   # Check formatting without making changes (same as CI)
+uv run --group format ruff format --check .   # Check formatting without making changes (CI pins its own ruff; see `prek` below)
 uv run --group format ruff check .            # Lint Python code
 cargo fmt                                     # Format Rust code
 ```
