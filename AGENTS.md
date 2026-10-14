@@ -24,10 +24,10 @@ uv run pytest python/    # Run Python tests (use after both Rust and Python chan
 ### Code Formatting and Linting
 
 ```bash
-uv run ruff format .           # Format Python code
-uv run ruff format --check .   # Check formatting without making changes (same as CI)
-uv run ruff check .            # Lint Python code
-cargo fmt                      # Format Rust code
+uv run --group format ruff format .           # Format Python code
+uv run --group format ruff format --check .   # Check formatting without making changes (same as CI)
+uv run --group format ruff check .            # Lint Python code
+cargo fmt                                     # Format Rust code
 ```
 
 ### Pre-submission Checks
@@ -49,7 +49,7 @@ prek run --all-files
 | Rust code only | `uv run maturin develop && cargo test` |
 | Python code only | `uv run mypy && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
-| Python formatting | `uv run ruff format .` |
+| Python formatting | `uv run --group format ruff format .` |
 | Before pushing | `prek run --all-files` |
 
 After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — both `rust/py` and the Rust SDK under `rust/sdk/` call core directly, and the SDK is easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those.
