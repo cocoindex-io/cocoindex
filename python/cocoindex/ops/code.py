@@ -125,9 +125,12 @@ class CodePattern:
         min_len: Prefilter tuning — required terms shorter than this are dropped.
 
     Examples:
-        >>> cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
-        >>> cp.might_match("x = 1")          # cheap, parse-free pre-check
+        >>> cp = CodePattern(r"evaluate_model(\(A*\))", language="python")
+        >>> cp.might_match("evaluate_model(x, y)")   # cheap, parse-free pre-check
+        True
+        >>> cp.might_match("x = 1")      # required term `evaluate_model` is absent
         False
+        >>> cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
         >>> [m.captures["NAME"][0].text for m in cp.match_source("def f(): pass")]
         ['f']
     """
