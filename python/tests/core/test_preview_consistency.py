@@ -160,7 +160,9 @@ class _DeleteThenUpdateFullLiveComponent:
 
     async def process(self) -> None:
         for key, value in _live_items.items():
-            await coco.mount(coco.component_subpath(key), _declare_live_item, key, value)
+            await coco.mount(
+                coco.component_subpath(key), _declare_live_item, key, value
+            )
 
     async def process_live(self, operator: coco.LiveComponentOperator) -> None:
         if _DeleteThenUpdateFullLiveComponent.delete_b:

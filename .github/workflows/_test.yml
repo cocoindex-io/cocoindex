@@ -181,6 +181,61 @@ jobs:
               exit $status
             fi
 
+    # The Rust SDK has no default features, so the build-test legs' plain
+    # `cargo test` neither compiles its feature-gated connectors nor runs their
+    # tests. One Linux leg is enough: the SDK does not depend on Python.
+    sdk-features:
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTFLAGS: "-C debuginfo=0"
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: "sccache"
+        steps:
+        # Every connector's dependency tree in one `target/` (see build-test).
+        - name: Free disk space
+          uses: jlumbroso/free-disk-space@v2.0.0
+          with:
+            android: true
+            dotnet: true
+            haskell: true
+            docker-images: true
+            large-packages: false
+            tool-cache: false
+
+        - uses: actions/checkout@v7
+          with:
+            fetch-depth: 1
+
+        - name: Setup sccache
+          uses: mozilla-actions/sccache-action@v0.0.11
+          with:
+            version: "v0.12.0"
+
+        - run: rustup toolchain install stable --profile minimal
+
+        # The LanceDB and Qdrant features compile protobufs.
+        - name: Install protoc
+          uses: arduino/setup-protoc@v3
+          with:
+            repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+        - name: Setup Rust Cache
+          uses: Swatinem/rust-cache@v2
+          with:
+            key: rust-sdk-features
+            cache-targets: 'true'
+            cache-all-crates: 'false'
+            cache-workspace-crates: 'false'
+
+        - name: Type-check every SDK feature
+          run: cargo check -p cocoindex --tests --all-features
+
+        # Tests needing a server skip without one (e.g. no `POSTGRES_URL`).
+        - name: Run the feature-gated SDK tests that need no server
+          run: cargo test -p cocoindex --features sqlite,lancedb,postgres,fs_live
+
     validate-3p-notices:
         runs-on: ubuntu-latest
         steps:
