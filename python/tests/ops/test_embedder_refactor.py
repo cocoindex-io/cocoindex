@@ -9,6 +9,7 @@ single ``NDArray[np.float32]`` rather than a ``list[NDArray]``.
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, call, patch
@@ -388,6 +389,42 @@ def test_aligned_embeddings_rejects_bad_indices(
     data = [{"index": i, "embedding": [0.0]} for i in indices]
     with pytest.raises(RuntimeError, match=match):
         _aligned_embeddings(data, n)
+
+
+def test_aligned_embeddings_decodes_base64() -> None:
+    """A base64 (float32) payload — the shape vLLM / OpenAI return when a
+    caller requests ``encoding_format="base64"`` — decodes to a float32
+    vector instead of raising in ``np.array``. Pinning the format disables the
+    OpenAI SDK's own base64 auto-decode, so this decoder must handle it."""
+    vec = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    data = [{"index": 0, "embedding": base64.b64encode(vec.tobytes()).decode()}]
+    (out,) = _aligned_embeddings(data, 1)
+    assert out.dtype == np.float32
+    assert out.tolist() == [1.0, 2.0, 3.0]
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_decodes_base64_batch() -> None:
+    """A whole batch of base64 payloads decodes to float32, not a str."""
+    vecs = [[0.5, 1.5], [2.5, 3.5]]
+    response = SimpleNamespace(
+        data=[
+            {
+                "index": i,
+                "embedding": base64.b64encode(
+                    np.array(v, dtype=np.float32).tobytes()
+                ).decode(),
+            }
+            for i, v in enumerate(vecs)
+        ]
+    )
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ):
+        out = await embedder._embed._execute_orig_async_fn(["a", "b"])
+    assert [v.dtype for v in out] == [np.float32, np.float32]
+    assert [v.tolist() for v in out] == vecs
 
 
 @pytest.mark.asyncio
