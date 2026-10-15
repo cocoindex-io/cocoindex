@@ -70,7 +70,7 @@ table.declare_row(row=DocEmbedding(text="Hello, world!", embedding=embedding))
 
 #### Text that looks like a media reference
 
-litellm's Gemini embedding path reads a string that starts with `data:` and contains `;base64,`, or that starts with `gs://` or `files/`, as a file to embed rather than text — an inline file, a Cloud Storage object, or an uploaded file. Ordinary corpus text hits all three (a glTF file's buffer, an HTML page's inline image, a list of paths beginning `files/`), and the request would then fail before it is sent or silently embed an image. `LiteLLMEmbedder` sends such a text with one leading space, for every provider, so it embeds as text. To embed media through Gemini, call `litellm.aembedding` directly.
+litellm's Gemini embedding path reads a string that starts with `data:` and contains `;base64,`, or that starts with `gs://` or `files/`, as a file to embed rather than text — an inline file, a Cloud Storage object, or an uploaded file. Ordinary corpus text hits all three (a glTF file's buffer, an HTML page's inline image, a list of paths beginning `files/`), and the request would then fail before it is sent or silently embed an image. `LiteLLMEmbedder` sends such a text with one leading space, for every provider, so it embeds as text — litellm has no way to send such a string as text ([BerriAI/litellm#46719](https://github.com/BerriAI/litellm/issues/46719)). To embed media through Gemini, call `litellm.aembedding` directly.
 
 ### Limiting concurrent requests
 

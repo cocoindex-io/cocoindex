@@ -282,7 +282,9 @@ def _escape_media_reference(text: str) -> str:
     A leading space defeats each of those prefix checks and moves the
     embedding negligibly, so it is added to exactly the texts litellm would
     misread, for every provider: the check is on the input rather than the
-    model, because the detection is litellm's and may spread.
+    model, because the detection is litellm's and may spread. litellm has no
+    way to send such a string as text (BerriAI/litellm#46719); the escape
+    can go once it does.
     """
     if text.startswith(_MEDIA_REFERENCE_PREFIXES) or (
         text.startswith("data:") and ";base64," in text
