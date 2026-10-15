@@ -1,4 +1,4 @@
-"""Module v3 for ``coco.logic_tracked`` tests.
+"""Module v3 for ``coco.logic_propagated_to_callers`` tests.
 
 ``cb2`` and ``acb2`` changed (vs v1). ``cb`` and ``acb`` are identical to v1.
 """
