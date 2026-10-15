@@ -109,6 +109,10 @@ _RETRYABLE_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes(
 
 _TIMEOUT_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes("Timeout")
 
+# litellm's catch-all wrapper: its `status_code` is a constant 500 whether or
+# not an HTTP exchange happened (see `_is_local_request_failure`).
+_API_CONNECTION_ERROR_CLASSES = _litellm_exception_classes("APIConnectionError")
+
 # Errors about who we are or what we asked for (credentials, permissions,
 # unknown model, exhausted budget) — batch composition can't affect them, so
 # splitting the batch can't help.
@@ -178,11 +182,34 @@ def _is_transport_error(error: BaseException) -> bool:
     )
 
 
+def _is_local_request_failure(error: BaseException) -> bool:
+    """litellm failed to build the request and never sent one.
+
+    litellm wraps a ``ValueError`` or ``TypeError`` raised by its own request
+    transformation — an input the provider path refuses, an argument it
+    cannot shape — in ``APIConnectionError``, whose ``status_code`` is a
+    constant 500 whether or not any HTTP exchange happened. Read as a
+    status, that 500 would retry a failure no retry can change, for the
+    whole time budget. The failure has to surface at once instead, so that
+    batch splitting can isolate the input responsible. The wrapped exception
+    rides ``__cause__`` when litellm chains it explicitly and ``__context__``
+    when it re-raises inside an ``except`` block, the usual path.
+    """
+    if not isinstance(error, _API_CONNECTION_ERROR_CLASSES):
+        return False
+    wrapped = error.__cause__ or error.__context__
+    return isinstance(wrapped, (ValueError, TypeError))
+
+
 def _is_retryable_litellm_error(error: BaseException) -> bool:
     # Timeouts first, ahead of every other rule: each one below would
     # otherwise let a timeout back in — `litellm.Timeout` reports HTTP 408,
     # and both it and the httpx timeouts descend from retryable parents.
     if _is_timeout_error(error):
+        return False
+    # Then local failures, ahead of the status rule that would misread
+    # their constant 500.
+    if _is_local_request_failure(error):
         return False
     if _message_indicates_non_retryable_credentials_error(str(error)):
         return False
@@ -236,6 +263,34 @@ async def _retry_litellm_call(
     )
 
 
+# Prefixes litellm's Gemini embedding path reads as a media reference rather
+# than text to embed: a Cloud Storage object and an uploaded-file name. The
+# third, an inline data URL, also needs a base64 payload — see below.
+_MEDIA_REFERENCE_PREFIXES = ("gs://", "files/")
+
+
+def _escape_media_reference(text: str) -> str:
+    """Keep litellm from reading ``text`` as a file to embed.
+
+    litellm's Gemini embedding path treats a string that starts with
+    ``data:`` and contains ``;base64,``, or that starts with ``gs://`` or
+    ``files/``, as an inline file, a Cloud Storage object, or an uploaded
+    file — its multimodal input convention. Corpus text hits all three: a
+    glTF file's buffer, an HTML page's inline image, a path list beginning
+    ``files/``. The request then fails before it is sent (an unsupported
+    MIME type, an unresolved file reference) or silently embeds an image.
+    A leading space defeats each of those prefix checks and moves the
+    embedding negligibly, so it is added to exactly the texts litellm would
+    misread, for every provider: the check is on the input rather than the
+    model, because the detection is litellm's and may spread.
+    """
+    if text.startswith(_MEDIA_REFERENCE_PREFIXES) or (
+        text.startswith("data:") and ";base64," in text
+    ):
+        return " " + text
+    return text
+
+
 def _aligned_embeddings(data: list[_Any], n: int) -> list[_NDArray[_np.float32]]:
     """Map embedding response items back to the ``n`` inputs they embed.
 
@@ -273,6 +328,12 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
 
     This class provides an async interface to LiteLLM's embedding API
     and automatically provides vector schema information for CocoIndex connectors.
+
+    A text litellm would read as a media reference rather than text — one
+    starting ``data:`` with a base64 payload, ``gs://``, or ``files/`` — is
+    sent with a leading space so it embeds as text (see
+    :func:`_escape_media_reference`). A request litellm refuses to build is
+    not retried; in a batch, the input responsible fails alone.
 
     Args:
         model: LiteLLM model name (e.g., ``"text-embedding-ada-002"``,
@@ -373,6 +434,8 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         return kwargs
 
     async def _aembedding_with_retry(self, texts: list[str], **extra: _Any) -> _Any:
+        inputs = [_escape_media_reference(text) for text in texts]
+
         async def _call() -> _Any:
             # The permit is scoped to one backend request, deliberately as
             # tight as possible around it:
@@ -392,7 +455,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             async with self._inflight_permit():
                 return await litellm.aembedding(
                     model=self._model,
-                    input=texts,
+                    input=inputs,
                     **self._build_call_kwargs(**extra),
                 )
 

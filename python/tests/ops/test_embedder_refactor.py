@@ -9,6 +9,7 @@ single ``NDArray[np.float32]`` rather than a ``list[NDArray]``.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, call, patch
@@ -333,6 +334,137 @@ async def test_litellm_embedder_does_not_retry_missing_credentials_server_error(
 
     mocked_embedding.assert_awaited_once()
     sleep.assert_not_called()
+
+
+# ============================================================================
+# A request litellm refuses to build fails at once, and only its own input
+# ============================================================================
+
+
+def _raise_local_request_failure(message: str) -> None:
+    """Fail the way litellm does when its own request transformation rejects
+    an input: the ``ValueError`` is re-raised inside an ``except`` block as
+    ``APIConnectionError`` — implicit ``__context__``, and a ``status_code``
+    of 500 although no request was sent."""
+    try:
+        raise ValueError(message)
+    except ValueError:
+        raise APIConnectionError(
+            message=message, model="fake-model", llm_provider="gemini"
+        )
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_does_not_retry_local_request_failures() -> None:
+    message = "Unsupported MIME type for embedding: application/octet-stream"
+    embedder = LiteLLMEmbedder("fake-model")
+    mocked_embedding = AsyncMock(
+        side_effect=lambda **kwargs: _raise_local_request_failure(message)
+    )
+
+    with (
+        patch("cocoindex.ops.litellm.litellm.aembedding", new=mocked_embedding),
+        patch("cocoindex.ops.litellm._asyncio.sleep", new=AsyncMock()) as sleep,
+    ):
+        with pytest.raises(APIConnectionError, match="Unsupported MIME") as exc_info:
+            await embedder.embed("hello")
+
+    # The wrapper's status code is a constant, not an HTTP result: the rule
+    # that stops the retry has to see past it to the wrapped ValueError.
+    assert exc_info.value.status_code == 500
+    mocked_embedding.assert_awaited_once()
+    sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_fails_only_the_input_litellm_rejects() -> None:
+    """One input litellm refuses to send fails alone: the batch splits around
+    it, and every other text keeps its embedding."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    call_inputs: list[list[str]] = []
+
+    async def fake_aembedding(*, model: str, input: list[str], **kwargs: Any) -> Any:
+        call_inputs.append(list(input))
+        if len(call_inputs) == 1:
+            started.set()
+            await release.wait()
+        for text in input:
+            if text.startswith("bad"):
+                _raise_local_request_failure(f"rejected {text}")
+        return _fake_embedding_response(input)
+
+    # A short bound so that, were the failure retried, the test ends with a
+    # deadline error instead of hanging for the default ten minutes.
+    embedder = LiteLLMEmbedder("fake-model", timeout=timedelta(seconds=2))
+    with patch("cocoindex.ops.litellm.litellm.aembedding", new=fake_aembedding):
+        # First call runs inline and blocks, so the next four coalesce into
+        # one batch of 4, one of which litellm rejects.
+        task0 = asyncio.create_task(embedder.embed("a"))
+        await started.wait()
+        texts = ["bb", "bad", "dddd", "eeeee"]
+        tasks = [asyncio.create_task(embedder.embed(t)) for t in texts]
+        await asyncio.sleep(0.05)  # let them enqueue behind the inline call
+        release.set()
+        results = await asyncio.gather(task0, *tasks, return_exceptions=True)
+
+    first, *rest = results
+    assert isinstance(first, np.ndarray) and first.tolist() == [1.0]
+    by_text = dict(zip(texts, rest))
+    assert isinstance(by_text["bad"], APIConnectionError)
+    for text in ("bb", "dddd", "eeeee"):
+        vec = by_text[text]
+        assert isinstance(vec, np.ndarray) and vec.tolist() == [float(len(text))]
+    # The rejected input's last attempt was on its own.
+    assert [c for c in call_inputs if "bad" in c][-1] == ["bad"]
+
+
+# ============================================================================
+# A text litellm would read as a media reference is sent as text
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    ("text", "sent"),
+    [
+        pytest.param(
+            "data:application/octet-stream;base64,AACAvw==",
+            " data:application/octet-stream;base64,AACAvw==",
+            id="inline-data-url",
+        ),
+        pytest.param(
+            "data:image/png;base64,iVBORw0KGgo=",
+            " data:image/png;base64,iVBORw0KGgo=",
+            id="inline-image",
+        ),
+        pytest.param(
+            "gs://bucket/build/output.txt",
+            " gs://bucket/build/output.txt",
+            id="gcs-url",
+        ),
+        pytest.param(
+            "files/README.md\nfiles/setup.py",
+            " files/README.md\nfiles/setup.py",
+            id="file-reference",
+        ),
+        pytest.param(
+            "data:text/plain,hello", "data:text/plain,hello", id="data-url-no-base64"
+        ),
+        pytest.param("see gs://bucket/x", "see gs://bucket/x", id="prefix-mid-text"),
+        pytest.param("hello", "hello", id="plain"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_litellm_embedder_escapes_media_references(text: str, sent: str) -> None:
+    """litellm reads a text that starts like a data URL, a GCS object, or a
+    file reference as media to embed; a leading space keeps it text."""
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding",
+        new=AsyncMock(return_value=_fake_embedding_response([sent])),
+    ) as mocked:
+        await embedder._embed._execute_orig_async_fn([text])
+    assert mocked.call_args.kwargs["input"] == [sent]
 
 
 # ============================================================================
