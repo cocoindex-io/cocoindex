@@ -70,17 +70,15 @@ EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_chang
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    builder.provide(
-        KG_DB,
-        neo4j.ConnectionFactory(
-            uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-            auth=(
-                os.environ.get("NEO4J_USER", "neo4j"),
-                os.environ.get("NEO4J_PASSWORD", "cocoindex"),
-            ),
-            database=os.environ.get("NEO4J_DATABASE", "neo4j"),
+    kg_db = neo4j.ConnectionFactory(
+        uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+        auth=(
+            os.environ.get("NEO4J_USER", "neo4j"),
+            os.environ.get("NEO4J_PASSWORD", "cocoindex"),
         ),
+        database=os.environ.get("NEO4J_DATABASE", "neo4j"),
     )
+    builder.provide(KG_DB, kg_db)
     builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     builder.provide(
         RESOLUTION_LLM_MODEL,
@@ -91,6 +89,7 @@ async def coco_lifespan(
         SentenceTransformerEmbedder("Snowflake/snowflake-arctic-embed-xs"),
     )
     yield
+    await kg_db.close()
 
 
 # ---------------------------------------------------------------------------

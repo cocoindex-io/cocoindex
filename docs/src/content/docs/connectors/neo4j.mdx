@@ -26,7 +26,7 @@ Targets Neo4j 5.18+. Vector-index DDL (`CREATE VECTOR INDEX … OPTIONS { indexC
 
 ## Connection setup
 
-Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the Bolt URI, optional auth, and the target database name; it lazily opens a Neo4j async driver and returns a graph handle on demand.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the Bolt URI, optional auth, and the target database name; it opens one connection-pooled Neo4j async driver per event loop, on first use on that loop, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -41,15 +41,14 @@ KG_DB: coco.ContextKey[neo4j.ConnectionFactory] = coco.ContextKey("kg_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(
-        KG_DB,
-        neo4j.ConnectionFactory(
-            uri="bolt://localhost:7687",
-            auth=("neo4j", "cocoindex"),
-            database="neo4j",
-        ),
+    factory = neo4j.ConnectionFactory(
+        uri="bolt://localhost:7687",
+        auth=("neo4j", "cocoindex"),
+        database="neo4j",
     )
+    builder.provide(KG_DB, factory)
     yield
+    await factory.close()
 ```
 
 `auth` is optional — omit it for unauthenticated dev instances. `database` defaults to `"neo4j"` (the default db that ships with every Neo4j 5 installation).
@@ -66,9 +65,13 @@ APIS_DB: coco.ContextKey[neo4j.ConnectionFactory] = coco.ContextKey("apis_db")
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     uri = "bolt://localhost:7687"
     auth = ("neo4j", "cocoindex")
-    builder.provide(KG_DB, neo4j.ConnectionFactory(uri=uri, auth=auth, database="kg"))
-    builder.provide(APIS_DB, neo4j.ConnectionFactory(uri=uri, auth=auth, database="apis"))
+    kg_factory = neo4j.ConnectionFactory(uri=uri, auth=auth, database="kg")
+    apis_factory = neo4j.ConnectionFactory(uri=uri, auth=auth, database="apis")
+    builder.provide(KG_DB, kg_factory)
+    builder.provide(APIS_DB, apis_factory)
     yield
+    await kg_factory.close()
+    await apis_factory.close()
 ```
 
 Different `ContextKey`s with different database names produce fully separate target-state trees — changes to one never spill into the other.
@@ -347,12 +350,14 @@ class Document:
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(KG_DB, neo4j.ConnectionFactory(
+    factory = neo4j.ConnectionFactory(
         uri="bolt://localhost:7687",
         auth=("neo4j", "cocoindex"),
         database="neo4j",
-    ))
+    )
+    builder.provide(KG_DB, factory)
     yield
+    await factory.close()
 
 
 @coco.fn

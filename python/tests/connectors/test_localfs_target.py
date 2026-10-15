@@ -4,6 +4,7 @@ Tests cover:
 - _execute_entry_action: file/directory creation, deletion, content writing
 - _get_base_dir_key: base directory key extraction
 - _EntrySpec / _DirSpec: specification construction
+- Preview of directory targets with files in them
 """
 
 from __future__ import annotations
@@ -11,9 +12,13 @@ from __future__ import annotations
 import pathlib
 from pathlib import Path
 
+from typing import Any
+
 import pytest
 
+import cocoindex as coco
 from cocoindex._internal.context_keys import ContextKey
+from cocoindex.connectors import localfs
 from cocoindex.connectors.localfs._common import FilePath
 from cocoindex.connectors.localfs._target import (
     _DirSpec,
@@ -22,6 +27,10 @@ from cocoindex.connectors.localfs._target import (
     _execute_entry_action,
     _get_base_dir_key,
 )
+
+from tests import common
+
+coco_env = common.create_test_env(__file__)
 
 
 # =============================================================================
@@ -84,8 +93,7 @@ class TestExecuteEntryAction:
             content=b"hello world",
             create_parents=False,
         )
-        result = _execute_entry_action(target, action)
-        assert result is None
+        _execute_entry_action(target, action)
         assert target.read_bytes() == b"hello world"
 
     def test_creates_file_with_empty_content(self, tmp_path: Path) -> None:
@@ -149,8 +157,7 @@ class TestExecuteEntryAction:
             content=b"",
             create_parents=False,
         )
-        result = _execute_entry_action(target, action)
-        assert result == target
+        _execute_entry_action(target, action)
         assert target.is_dir()
 
     def test_creates_directory_with_parents(self, tmp_path: Path) -> None:
@@ -162,8 +169,7 @@ class TestExecuteEntryAction:
             content=b"",
             create_parents=True,
         )
-        result = _execute_entry_action(target, action)
-        assert result == target
+        _execute_entry_action(target, action)
         assert target.is_dir()
 
     def test_create_dir_is_idempotent(self, tmp_path: Path) -> None:
@@ -177,8 +183,7 @@ class TestExecuteEntryAction:
             create_parents=False,
         )
         # Should not raise even if directory already exists
-        result = _execute_entry_action(target, action)
-        assert result == target
+        _execute_entry_action(target, action)
 
     # --- Deletion ---
 
@@ -192,8 +197,7 @@ class TestExecuteEntryAction:
             content=None,
             create_parents=False,
         )
-        result = _execute_entry_action(target, action)
-        assert result is None
+        _execute_entry_action(target, action)
         assert not target.exists()
 
     def test_delete_missing_file_is_noop(self, tmp_path: Path) -> None:
@@ -206,8 +210,7 @@ class TestExecuteEntryAction:
             create_parents=False,
         )
         # Should not raise
-        result = _execute_entry_action(target, action)
-        assert result is None
+        _execute_entry_action(target, action)
 
     def test_deletes_existing_directory(self, tmp_path: Path) -> None:
         target = tmp_path / "dir_to_delete"
@@ -220,8 +223,7 @@ class TestExecuteEntryAction:
             content=None,
             create_parents=False,
         )
-        result = _execute_entry_action(target, action)
-        assert result is None
+        _execute_entry_action(target, action)
         assert not target.exists()
 
     def test_delete_missing_directory_is_noop(self, tmp_path: Path) -> None:
@@ -234,5 +236,83 @@ class TestExecuteEntryAction:
             create_parents=False,
         )
         # Should not raise
-        result = _execute_entry_action(target, action)
-        assert result is None
+        _execute_entry_action(target, action)
+
+
+# =============================================================================
+# Preview
+# =============================================================================
+
+_preview_files: dict[str, str] = {}
+
+
+def _declare_sub_dir(
+    target: localfs.DirTarget[coco.ResolvedS],
+) -> localfs.DirTarget[coco.PendingS]:
+    return target.declare_dir_target("sub")
+
+
+async def _declare_preview_files(outdir: Path) -> None:
+    target = await localfs.mount_dir_target(outdir)
+    sub = await coco.use_mount(coco.component_subpath("sub"), _declare_sub_dir, target)
+    for name, content in _preview_files.items():
+        sub.declare_file(name, content)
+
+
+def _planned_entries(
+    actions: list[Any] | None, outdir: Path
+) -> dict[tuple[str, str], bytes | None]:
+    """Planned entry actions as ``(entry type, path under outdir) -> content``
+    (``None``: delete)."""
+    assert actions is not None
+    root = outdir.resolve()
+    plan: dict[tuple[str, str], bytes | None] = {}
+    for action in actions:
+        assert isinstance(action, _EntryAction) and action.base_dir_key is None
+        path = Path(action.path).relative_to(root).as_posix()
+        plan[(action.entry_type, path)] = action.content
+    assert len(plan) == len(actions)
+    return plan
+
+
+def test_preview_dir_target(tmp_path: Path) -> None:
+    """Preview plans the directories and their files without writing anything."""
+    outdir = tmp_path / "out"
+    _preview_files.clear()
+    app = coco.App(
+        coco.AppConfig(name="test_preview_dir_target", environment=coco_env),
+        _declare_preview_files,
+        outdir=outdir,
+    )
+
+    # Both directories' actions and one per file; nothing is written.
+    _preview_files.update({"a.txt": "a", "b.txt": "b"})
+    actions = app.update_blocking(preview=True)
+    assert _planned_entries(actions, outdir) == {
+        ("dir", "."): b"",
+        ("dir", "sub"): b"",
+        ("file", "sub/a.txt"): b"a",
+        ("file", "sub/b.txt"): b"b",
+    }
+    assert not outdir.exists()
+
+    app.update_blocking()
+    assert (outdir / "sub" / "a.txt").read_text() == "a"
+    assert (outdir / "sub" / "b.txt").read_text() == "b"
+
+    # Against the applied state: `a.txt` changed and `c.txt` added; `b.txt`
+    # is unchanged; both container actions remain listed. Nothing is written.
+    _preview_files.update({"a.txt": "a2", "c.txt": "c"})
+    actions = app.update_blocking(preview=True)
+    assert _planned_entries(actions, outdir) == {
+        ("dir", "."): b"",
+        ("dir", "sub"): b"",
+        ("file", "sub/a.txt"): b"a2",
+        ("file", "sub/c.txt"): b"c",
+    }
+    assert (outdir / "sub" / "a.txt").read_text() == "a"
+    assert not (outdir / "sub" / "c.txt").exists()
+
+    app.update_blocking()
+    assert (outdir / "sub" / "a.txt").read_text() == "a2"
+    assert (outdir / "sub" / "c.txt").read_text() == "c"

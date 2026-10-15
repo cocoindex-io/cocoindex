@@ -18,7 +18,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -992,31 +991,60 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RowHandler:
+        """The row handler for a created or updated table's rows."""
+        key = action.key
+        spec = action.spec
+        assert not coco.is_non_existence(spec)
+        # Null-backfilled columns (a row changing only by a null there is just
+        # re-tracked): the nullable non-PK columns the action inserts/upserts,
+        # but only when `main_action is None`, where the table surely exists
+        # (incl. a retry after `add_columns` already ran). An "upsert" gets
+        # none: it may recreate an externally dropped table empty.
+        null_backfilled_columns: set[str] = set()
+        if action.main_action is None:
+            pk_cols = set(spec.table_schema.primary_key)
+            for sub_key, col_action in action.column_actions.items():
+                col_name = sub_key.removeprefix(_COL_SUBKEY_PREFIX)
+                col = spec.table_schema.columns.get(col_name)
+                if (
+                    col_action in ("insert", "upsert")
+                    and col is not None
+                    and col.nullable
+                    and col_name not in pk_cols
+                ):
+                    null_backfilled_columns.add(col_name)
+        return _RowHandler(
+            conn=context_provider.get(key.db_key, LanceAsyncConnection),
+            table_name=key.table_name,
+            table_schema=spec.table_schema,
+            null_backfilled_columns=null_backfilled_columns,
         )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
         /,
     ) -> None:
-        """Apply table actions (DDL) and fulfill the child row handlers."""
+        """Apply table actions (DDL)."""
 
         # Group actions by table key
-        by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_key.setdefault(action.key, []).append(i)
+        by_key: dict[_TableKey, list[_TableAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             conn = context_provider.get(key.db_key, LanceAsyncConnection)
 
-            for i in idxs:
-                action = actions[i]
-                assert action.key == key
-
+            for action in key_actions:
                 if action.main_action in ("replace", "delete"):
                     await self._drop_table(conn, key.table_name)
 
@@ -1038,22 +1066,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 # landed on a pre-existing table carrying an older column set
                 # (created above with `if_not_exists`), so fall through and
                 # reconcile non-PK columns in place.
-                null_backfilled_columns: frozenset[str] = frozenset()
                 if action.main_action in (None, "upsert") and action.column_actions:
-                    null_backfilled_columns = await self._apply_column_actions(
+                    await self._apply_column_actions(
                         conn,
                         key.table_name,
                         spec.table_schema,
                         action.column_actions,
                     )
-
-                handler = _RowHandler(
-                    conn=conn,
-                    table_name=key.table_name,
-                    table_schema=spec.table_schema,
-                    null_backfilled_columns=null_backfilled_columns,
-                )
-                child_slots[i].fulfill(handler)
 
     async def _drop_table(
         self,
@@ -1126,13 +1145,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         table_name: str,
         schema: TableSchema[Any],
         column_actions: dict[str, statediff.DiffAction],
-    ) -> frozenset[str]:
+    ) -> None:
         """Apply additive column schema changes in place."""
         table = await conn.open_table(table_name)
         existing_cols = set((await table.schema()).names)
         pk_cols = set(schema.primary_key)
         fields_to_add: list[pa.Field] = []
-        null_backfilled_columns: set[str] = set()
 
         for sub_key, action in column_actions.items():
             if not sub_key.startswith(_COL_SUBKEY_PREFIX):
@@ -1156,8 +1174,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     # evolution must materialize the new column as nullable.
                     pa.field(col_name, desired_col.type, nullable=True)
                 )
-                if desired_col.nullable:
-                    null_backfilled_columns.add(col_name)
                 continue
 
             raise ValueError(
@@ -1166,8 +1182,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         if fields_to_add:
             await table.add_columns(fields_to_add)
-            return frozenset(null_backfilled_columns)
-        return frozenset()
 
     def reconcile(
         self,

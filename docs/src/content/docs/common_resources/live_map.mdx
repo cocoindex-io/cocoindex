@@ -76,6 +76,7 @@ A LiveMap supports **one active consumer** (`mount_each`) at a time; a second co
 
 - **Live-mode first.** LiveMap is built for [`app.update(live=True)`](../programming_guide/live_mode): the consumer subscribes and reacts as producers update the map. In catch-up mode (plain `app.update()`), the consumer scans whatever entries happen to exist when it runs, which can race producers running concurrently in the same session — so for predictable one-shot results, order the producer ahead of the consumer (await the producer's `handle.ready()` before consuming).
 - **In-memory and per-session.** The map lives in process memory and is rebuilt from its producers each time the app starts; its contents do not persist across restarts.
+- **Filled in a preview too.** A preview (`app.update(preview=True)`, `cocoindex update --preview`) writes nothing to external systems, but it does fill the map, since the map is only process memory of that run. So the map's consumers mount its entries, and the preview plans the same downstream changes an update makes.
 
 ## When to use it
 

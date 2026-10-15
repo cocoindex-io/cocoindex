@@ -91,13 +91,13 @@ impl PyComponentProcessorContext {
         key: Option<PyStableKey>,
         deadline: PyDeadlineContext,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let app_ctx = self.0.app_ctx().clone();
+        let comp_ctx = self.0.clone();
         // Required hand-off: the caller's current (possibly narrowed) scope,
         // not this ctx's mount-time base. See deadline_for_engine() in the
         // Python SDK.
         let deadline = deadline.0;
         future_into_py(py, async move {
-            let id = app_ctx
+            let id = comp_ctx
                 .next_id(key.as_ref().map(|k| &k.0), deadline)
                 .await
                 .into_py_result()?;

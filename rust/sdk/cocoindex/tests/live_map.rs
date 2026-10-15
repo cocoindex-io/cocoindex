@@ -1,6 +1,8 @@
 //! Integration test for the in-memory `LiveMap` resource.
 
-use cocoindex::{App, LiveMap};
+use std::sync::{Arc, Mutex};
+
+use cocoindex::{App, LiveMap, LiveMapView, PreviewAction};
 
 /// Smoke test: `LiveMap::create` mounts its backing container target and
 /// `declare_entry` declares entries that sync (run the entry sink) when the
@@ -20,6 +22,69 @@ fn live_map_create_and_declare() {
         Ok(())
     })
     .unwrap();
+}
+
+/// Preview plans the container and its entries, and fills the map: its
+/// entries are this run's process memory, which the map's consumers read.
+#[tokio::test]
+async fn live_map_preview_fills_the_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_preview", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<String>>>> = Arc::new(Mutex::new(None));
+
+    let actions = app
+        .preview({
+            let created = created.clone();
+            move |ctx| async move {
+                let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
+                lm.declare_entry(&ctx, "a", "alpha".to_string())?;
+                lm.declare_entry(&ctx, "b", "beta".to_string())?;
+                *created.lock().unwrap() = Some(lm);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let mut planned: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            // Actions are encoded as arrays: the container's is empty, an
+            // entry's is `[key, value]`.
+            let fields: Vec<serde_json::Value> = value.decode().unwrap();
+            match fields.as_slice() {
+                [] => format!("{verb} container"),
+                [key, value] => format!("{verb} {key} = {value}"),
+                other => panic!("unexpected action {other:?}"),
+            }
+        })
+        .collect();
+    planned.sort();
+    // LiveMap plans every write as an update.
+    assert_eq!(
+        planned,
+        vec![
+            r#"update "a" = "alpha""#,
+            r#"update "b" = "beta""#,
+            "update container",
+        ]
+    );
+    let lm = created.lock().unwrap().take().unwrap();
+    let mut entries = lm.scan().await.unwrap();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![
+            ("a".to_string(), "alpha".to_string()),
+            ("b".to_string(), "beta".to_string()),
+        ]
+    );
 }
 
 mod live {

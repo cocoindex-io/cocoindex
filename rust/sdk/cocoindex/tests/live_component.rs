@@ -260,7 +260,9 @@ impl LiveComponent for DirectDelete {
         operator.mark_ready().await;
         // Directly delete the child mounted for key "a"; its target state is GC'd.
         operator.delete("a").await?;
-        self.done.notify_waiters();
+        // `notify_one` keeps a permit: the test may start waiting only after
+        // this runs (the engine drives the live component on its own threads).
+        self.done.notify_one();
         Ok(())
     }
 }
@@ -522,7 +524,8 @@ impl LiveComponent for AutoRefreshFailingCycle {
                     return Err(Error::engine("cycle failed"));
                 }
                 if call >= 3 {
-                    third_call.notify_waiters();
+                    // Keeps a permit if the test is not waiting yet.
+                    third_call.notify_one();
                 }
                 Ok(())
             }
@@ -678,7 +681,8 @@ impl LiveMapFeed<String, i64> for StreamFeed {
         for (k, v) in &self.items {
             subscriber.update(k.clone(), *v).await?;
         }
-        self.done.notify_waiters();
+        // Keeps a permit if the test is not waiting yet.
+        self.done.notify_one();
         Ok(())
     }
 }

@@ -437,6 +437,77 @@ def test_no_change_optimization(
     assert data1 == data2
 
 
+def _planned_actions(actions: list[Any] | None) -> dict[Any, Any]:
+    """Planned preview actions: ``("table", name) -> main action`` and
+    ``("row", key) -> value`` (``None``: delete)."""
+    assert actions is not None
+    plan: dict[Any, Any] = {}
+    for action in actions:
+        if isinstance(action, sqlite._target._TableAction):
+            plan[("table", action.key.table_name)] = action.main_action
+        else:
+            assert isinstance(action, sqlite._target._RowAction)
+            plan[("row", action.key)] = action.value
+    assert len(plan) == len(actions)
+    return plan
+
+
+def test_preview_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
+    """Preview plans the table and its rows without creating either."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    _source_rows = []
+    _row_type = SimpleRow
+    _table_name = "test_preview"
+
+    test_env = make_test_env(managed_conn, "test_preview_rows")
+
+    app = coco.App(
+        coco.AppConfig(name="test_preview_rows", environment=test_env),
+        declare_table_and_rows,
+    )
+
+    # The table's action and one per row; nothing is created.
+    _source_rows = [
+        SimpleRow(id="1", name="Alice", value=100),
+        SimpleRow(id="2", name="Bob", value=200),
+    ]
+    actions = app.update_blocking(preview=True)
+    assert _planned_actions(actions) == {
+        ("table", _table_name): "insert",
+        ("row", ("1",)): {"id": "1", "name": "Alice", "value": 100},
+        ("row", ("2",)): {"id": "2", "name": "Bob", "value": 200},
+    }
+    assert not table_exists(managed_conn, _table_name)
+
+    app.update_blocking()
+    assert len(read_table_data(managed_conn, _table_name)) == 2
+
+    # Against the applied state: the table's action (no change of its own),
+    # row 2 changed and row 3 added; row 1 is unchanged; the container action is still
+    # listed. Nothing is applied.
+    _source_rows = [
+        SimpleRow(id="1", name="Alice", value=100),
+        SimpleRow(id="2", name="Bob", value=250),
+        SimpleRow(id="3", name="Charlie", value=300),
+    ]
+    actions = app.update_blocking(preview=True)
+    assert _planned_actions(actions) == {
+        ("table", _table_name): None,
+        ("row", ("2",)): {"id": "2", "name": "Bob", "value": 250},
+        ("row", ("3",)): {"id": "3", "name": "Charlie", "value": 300},
+    }
+    data = read_table_data(managed_conn, _table_name)
+    assert len(data) == 2
+    assert {"id": "2", "name": "Bob", "value": 200} in data
+
+    app.update_blocking()
+    data = read_table_data(managed_conn, _table_name)
+    assert len(data) == 3
+    assert {"id": "2", "name": "Bob", "value": 250} in data
+
+
 def test_multiple_tables(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     """Test managing multiple tables in the same database."""
     managed_conn, _ = sqlite_db

@@ -23,7 +23,6 @@ import uuid as _uuid
 import weakref as _weakref
 from collections.abc import AsyncIterator as _AsyncIterator
 from collections.abc import Collection as _Collection
-from collections.abc import Mapping as _Mapping
 from collections.abc import Sequence as _Sequence
 from dataclasses import dataclass as _dataclass
 from typing import Any as _Any
@@ -34,6 +33,7 @@ from typing import TypeVar as _TypeVar
 import msgspec as _msgspec
 
 import cocoindex as _coco
+from cocoindex._internal import target_state as _target_state
 
 __all__ = ["LiveMap"]
 
@@ -106,8 +106,8 @@ class _Change(_NamedTuple):
 class _EntryHandler:
     """Per-instance target handler for entries; closes over one ``LiveMap``.
 
-    Constructed by the container sink (bound to the instance recovered from the registry) and
-    reused for every entry declared into that map.
+    Constructed by ``_container_entry_handler`` (bound to the instance recovered from the
+    registry) and reused for every entry declared into that map.
     """
 
     __slots__ = ("_live_map",)
@@ -188,23 +188,32 @@ async def _apply_entry_actions(
                 live_map._emit(_Change(action.key, action.value, False, live_map._seq))
 
 
+def _container_entry_handler(
+    context_provider: _coco.ContextProvider, action: _ContainerAction, /
+) -> _EntryHandler:
+    """The entry handler for a declared container's entries."""
+    # `live_map` is None only if the LiveMap was garbage-collected.
+    assert action.live_map is not None
+    return _EntryHandler(action.live_map)
+
+
 async def _apply_container_actions(
     context_provider: _coco.ContextProvider,
     actions: _Sequence[_ContainerAction],
-    child_slots: _Mapping[int, _coco.ChildSlot[_EntryHandler]],
     /,
 ) -> None:
-    for i, action in enumerate(actions):
-        if action.deleted or action.live_map is None:
-            continue
-        child_slots[i].fulfill(_EntryHandler(action.live_map))
+    """A container is the in-memory map itself, so there is nothing to apply."""
 
 
+# The entries are this run's process memory, so a preview applies them too: the
+# map's consumers then mount what an update would give them.
 _ENTRY_SINK: _coco.TargetActionSink[_EntryAction] = (
-    _coco.TargetActionSink.from_async_fn(_apply_entry_actions)
+    _target_state.process_memory_sink_from_async_fn(_apply_entry_actions)
 )
 _CONTAINER_SINK: _coco.TargetActionSink[_ContainerAction] = (
-    _coco.TargetActionSink.from_async_fn_with_children(_apply_container_actions)
+    _coco.TargetActionSink.from_async_fn(
+        _apply_container_actions, child_handler=_container_entry_handler
+    )
 )
 _CONTAINER_PROVIDER = _coco.register_root_target_states_provider(
     "cocoindex/livemap", _ContainerHandler()

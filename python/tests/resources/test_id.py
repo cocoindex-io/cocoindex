@@ -69,6 +69,38 @@ def test_generate_id_different_deps() -> None:
     assert _generate_id_results == {"X": 1, "Y": 2}
 
 
+_preview_deps: list[str] = []
+
+
+@coco.fn
+async def _app_main_generate_id_for_preview_deps() -> None:
+    for dep in _preview_deps:
+        _generate_id_results[dep] = await generate_id(dep)
+
+
+def test_generate_id_in_preview_reserves_nothing() -> None:
+    """A preview gives new dependencies the IDs the next update gives them, and
+    reserves none: a second preview gives the same IDs again."""
+    _generate_id_results.clear()
+    app = coco.App(
+        coco.AppConfig(name="test_generate_id_in_preview", environment=coco_env),
+        _app_main_generate_id_for_preview_deps,
+    )
+    _preview_deps[:] = ["A"]
+    app.update_blocking()
+    assert _generate_id_results == {"A": 1}
+
+    _preview_deps[:] = ["A", "B", "C"]
+    for _ in range(2):
+        _generate_id_results.clear()
+        app.update_blocking(preview=True)
+        assert _generate_id_results == {"A": 1, "B": 2, "C": 3}
+
+    _generate_id_results.clear()
+    app.update_blocking()
+    assert _generate_id_results == {"A": 1, "B": 2, "C": 3}
+
+
 @coco.fn
 def _app_main_generate_uuid(deps: list[str]) -> None:
     """App main that generates UUIDs for each dependency."""

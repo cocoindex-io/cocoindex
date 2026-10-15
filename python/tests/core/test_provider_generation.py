@@ -1,9 +1,16 @@
 from typing import Any, Literal
 
+import pytest
+
 import cocoindex as coco
 
 from tests import common
-from tests.common.target_states import DictsTarget, DictDataWithPrev, AtMost
+from tests.common.target_states import (
+    DictsTarget,
+    DictDataWithPrev,
+    AtMost,
+    split_dicts_actions,
+)
 
 _inner_exec_count: int = 0
 
@@ -119,6 +126,56 @@ def test_lossy_change_forces_child_upsert() -> None:
     }
     child_metrics = DictsTarget.store.collect_child_metrics()
     assert child_metrics.get("upsert", 0) == 2
+
+
+@pytest.mark.parametrize("invalidation", ["destructive", "lossy"])
+def test_preview_of_invalidating_container_change(
+    invalidation: Literal["destructive", "lossy"],
+) -> None:
+    """A destructive or lossy container change re-upserts every child. A
+    preview plans exactly that, every time it runs, applying and recording
+    nothing; a real update then applies it."""
+    app = _new_app(f"test_preview_of_{invalidation}_container_change")
+    _source_data["D1"] = {"a": 1, "b": 2}
+    app.update_blocking()
+    applied = {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.data == applied
+    DictsTarget.store.metrics.collect()
+    DictsTarget.store.collect_child_metrics()
+
+    # Destructive: the children are new; lossy: they may be missing.
+    prev: dict[str, list[Any]] = (
+        {"a": [], "b": []} if invalidation == "destructive" else {"a": [1], "b": [2]}
+    )
+    expected_entries = {
+        "a": DictDataWithPrev(data=1, prev=prev["a"], prev_may_be_missing=True),
+        "b": DictDataWithPrev(data=2, prev=prev["b"], prev_may_be_missing=True),
+    }
+
+    DictsTarget.store.child_invalidation = invalidation
+    try:
+        for _ in range(2):
+            planned = split_dicts_actions(app.update_blocking(preview=True))
+            assert {
+                name: (a.action, a.destructive)
+                for name, a in planned.containers.items()
+            } == {"D1": ("upsert", invalidation == "destructive")}
+            assert planned.entries == expected_entries
+            assert DictsTarget.store.data == applied
+            assert DictsTarget.store.metrics.collect() == {}
+            assert DictsTarget.store.collect_child_metrics() == {}
+
+        app.update_blocking()
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert DictsTarget.store.data == {"D1": expected_entries}
+    assert DictsTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": AtMost(1), "upsert": 2}
 
 
 def test_no_invalidation_skips_unchanged_children() -> None:

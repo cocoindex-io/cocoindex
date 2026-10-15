@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
+    DeclaredTargetState, DeletePreview, MemoStatesPayload, PreviewActions, TARGET_ID_KEY,
 };
 use crate::engine::context::{
     FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
@@ -14,18 +14,19 @@ use crate::engine::context::{
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
-    ChildInvalidation, ChildTargetSlot, TargetActionSinkKeeper, TargetActionWithChildSlot,
-    TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
+    ChildHandling, ChildInvalidation, ChildTargetSlot, TargetActionSinkKeeper,
+    TargetActionWithChildSlot, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
-use crate::state::stable_path_set::ChildStablePathSet;
+use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetProviderDeps, TargetStatePath, TargetStatePathWithProviderId,
     TargetStateProviderGeneration,
 };
 use crate::state_store::{
     AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
-    PrecommitReadPlan, PrecommitWritePlan, WriteTxn, reconcile_child_existence,
+    PrecommitReadPlan, PrecommitWritePlan, WriteTxn, plan_child_existence,
+    reconcile_child_existence,
 };
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -82,7 +83,9 @@ pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
 
 /// Read the component's stored memo and return it when it was stored under
 /// `processor_fp` and its logic and target-provider dependencies still hold;
-/// otherwise delete it. Whether a stored memo may be consulted at all under
+/// otherwise delete it — except in a preview, which writes nothing (a preview
+/// of a lossy schema change would otherwise invalidate memos the next real run
+/// still needs). Whether a stored memo may be consulted at all under
 /// `full_reprocess` is the caller's decision (see `Component::execute_once`).
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
@@ -151,7 +154,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
     }
 
     // Invalidate the memoization.
-    {
+    if !comp_ctx.preview() {
         let app_store = comp_ctx.app_ctx().app_store().clone();
         let path = path.clone();
         comp_ctx
@@ -174,11 +177,14 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
 /// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
 /// preserving `processor_fp`, `return_value`, `logic_deps`, and
-/// `target_provider_deps`.
+/// `target_provider_deps`. A no-op in a preview, which writes nothing.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
 ) -> Result<()> {
+    if comp_ctx.preview() {
+        return Ok(());
+    }
     let app_store = comp_ctx.app_ctx().app_store().clone();
     let path = comp_ctx.stable_path().clone();
 
@@ -675,6 +681,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.component_ctx.processing_stats().clone(),
                 self.component_ctx.host_ctx().clone(),
                 cascaded_on_error.clone(),
+                None,
             );
             handles.push(component.delete(delete_ctx)?);
         }
@@ -695,9 +702,14 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
 struct SinkInput<Prof: EngineProfile> {
     actions: Vec<TargetActionWithChildSlot<Prof>>,
-    /// Child providers awaiting a handler, each paired with the engine's clone
-    /// of the slot handed to the sink for the declaring action. Read back after
-    /// the sink call; a slot the sink left unfulfilled is an error.
+    /// For a [`ChildHandling::Factory`] sink: child providers awaiting a
+    /// handler, each paired with the index of its declaring action in
+    /// `actions`. See [`build_factory_children`].
+    factory_children: Vec<(TargetStateProvider<Prof>, usize)>,
+    /// For a [`ChildHandling::LegacySlots`] sink: child providers awaiting a
+    /// handler, each paired with the engine's clone of the slot handed to the
+    /// sink for the declaring action. Read back after the sink call; a slot the
+    /// sink left unfulfilled is an error.
     pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
 }
 
@@ -705,24 +717,96 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
     fn default() -> Self {
         Self {
             actions: Vec::new(),
+            factory_children: Vec::new(),
             pending_children: Vec::new(),
         }
     }
 }
 
 impl<Prof: EngineProfile> SinkInput<Prof> {
+    /// `child`: the child provider of the action's target state, with how its
+    /// sink provides child handlers.
     fn add_action(
         &mut self,
         action: Prof::TargetAction,
-        child_provider: Option<TargetStateProvider<Prof>>,
-    ) {
-        let child_slot = child_provider.map(|child_provider| {
-            let slot = ChildTargetSlot::new();
-            self.pending_children.push((child_provider, slot.clone()));
-            slot
-        });
+        child: Option<(TargetStateProvider<Prof>, ChildHandling)>,
+    ) -> Result<()> {
+        let child_slot = match child {
+            None => None,
+            Some((child_provider, ChildHandling::Factory)) => {
+                self.factory_children
+                    .push((child_provider, self.actions.len()));
+                None
+            }
+            Some((child_provider, ChildHandling::LegacySlots)) => {
+                let slot = ChildTargetSlot::new();
+                self.pending_children.push((child_provider, slot.clone()));
+                Some(slot)
+            }
+            Some((child_provider, ChildHandling::Leaf)) => {
+                client_bail!(
+                    "target state {} is declared with child target states, but its target \
+                     action sink builds no child handlers: build the sink with a child handler \
+                     factory (`child_handler=` in Python, `from_async_fn_with_child_handler` in \
+                     Rust)",
+                    child_provider.display_name()
+                );
+            }
+        };
         self.actions.push((action, child_slot));
+        Ok(())
     }
+}
+
+/// The child handlers of the [`ChildHandling::Factory`] sinks' child-bearing
+/// actions, each with the child provider it is for. A real update builds them
+/// right before applying the actions, a preview in place of applying them, so
+/// both get them through this one call from the same input.
+async fn build_factory_children<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    actions_by_sinks: &HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
+) -> Result<Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)>> {
+    let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
+    let mut children = Vec::new();
+    for (sink, input) in actions_by_sinks {
+        if input.factory_children.is_empty() {
+            continue;
+        }
+        let actions: Vec<&Prof::TargetAction> = input
+            .factory_children
+            .iter()
+            .map(|(_, idx)| &input.actions[*idx].0)
+            .collect();
+        let handlers = sink
+            .child_handlers(host_runtime_ctx, Arc::clone(comp_ctx.host_ctx()), &actions)
+            .await
+            .with_context(|| {
+                let paths: Vec<String> = input
+                    .factory_children
+                    .iter()
+                    .map(|(child_provider, _)| child_provider.display_name())
+                    .collect();
+                format!(
+                    "failed to build the child handlers for target states {}",
+                    paths.join(", ")
+                )
+            })?;
+        if handlers.len() != actions.len() {
+            internal_bail!(
+                "target action sink built {} child handlers for {} actions",
+                handlers.len(),
+                actions.len()
+            );
+        }
+        children.extend(
+            input
+                .factory_children
+                .iter()
+                .map(|(child_provider, _)| child_provider.clone())
+                .zip(handlers),
+        );
+    }
+    Ok(children)
 }
 
 struct PreCommitOutput<Prof: EngineProfile> {
@@ -736,6 +820,10 @@ struct PreCommitOutput<Prof: EngineProfile> {
     /// precommit txn has committed. Buffered so a retry of the
     /// precommit doesn't trip the `OnceLock` "already set" guard.
     deferred_provider_generations: Vec<(TargetStateProvider<Prof>, TargetStateProviderGeneration)>,
+    /// Target states whose delete this run planned: the commit ends this
+    /// component's ownership of them. A preview publishes them (see
+    /// [`PreviewActions`]).
+    released_targets: Vec<TargetStatePath>,
 }
 
 /// Either a completed pre_commit (with optional output for skip-cases) or a
@@ -794,6 +882,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     process_token: u128,
     stable_path: &StablePath,
     full_reprocess: bool,
+    preview: Option<&PreviewActions<Prof>>,
     processor_name: Option<&str>,
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
@@ -939,6 +1028,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         TargetStateProvider<Prof>,
         TargetStateProviderGeneration,
     )> = Vec::new();
+    let mut released_targets: Vec<TargetStatePath> = Vec::new();
     let curr_version = if let Some(mut tracking_info) = tracking_info {
         let curr_version = tracking_info.version + 1;
         tracking_info.version = curr_version;
@@ -986,7 +1076,16 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 Some(existing_item)
             } else {
                 match bulk_target_owners.get(&target_state_path) {
-                    Some(owner_path) if owner_path != stable_path => {
+                    // An owner that released the target earlier in this
+                    // preview has deleted it by the time a real update gets
+                    // here, and its commit has dropped the owner row: no
+                    // previous record.
+                    Some(owner_path)
+                        if owner_path != stable_path
+                            && !preview.is_some_and(|preview| {
+                                preview.released_by(&target_state_path, owner_path)
+                            }) =>
+                    {
                         let old_owner_path = owner_path.clone();
                         if let Some(cached_bytes) = old_tracking_cache.get(&old_owner_path) {
                             let mut old_tracking: db_schema::StablePathEntryTrackingInfo<'_> =
@@ -1072,7 +1171,8 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 // has nothing to do for a state that is surely present with
                 // every previous record equal to that fingerprint, so
                 // `reconcile` is not called for it. A container's `reconcile`
-                // always runs: its action is what fulfills the child slot.
+                // always runs: its action is what the child handler is built
+                // from.
                 let unchanged = decl.child_provider.is_none()
                     && !prev_may_be_missing
                     && !prev_states.is_empty()
@@ -1126,10 +1226,20 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     let new_gen = if needs_fresh_generation {
                         // Inside the open precommit WTxn — use the
                         // in-txn variant to avoid nesting another
-                        // batched WTxn on LMDB (would deadlock).
-                        let new_id = app_store
-                            .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
-                            .await?;
+                        // batched WTxn on LMDB (would deadlock). A
+                        // preview writes nothing, so it only peeks: an id
+                        // not yet reserved is in no tracking record, as a
+                        // fresh one must be, and nothing persists it.
+                        let new_id = if preview.is_some() {
+                            app_store
+                                .peek_id_sequence_in_txn(wtxn, &TARGET_ID_KEY)
+                                .await?
+                                .unwrap_or(1)
+                        } else {
+                            app_store
+                                .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
+                                .await?
+                        };
                         TargetStateProviderGeneration {
                             provider_id: new_id,
                             provider_schema_version: 0,
@@ -1148,15 +1258,14 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     deferred_provider_generations.push((child_provider.clone(), new_gen));
                 }
 
-                actions_by_sinks
-                    .entry(recon_output.sink)
-                    .or_default()
-                    .add_action(recon_output.action, child_provider);
-
                 let new_state_bytes = recon_output
                     .tracking_record
                     .map(|s| s.to_bytes())
                     .transpose()?;
+                let child = child_provider
+                    .map(|child_provider| (child_provider, recon_output.sink.child_handling()));
+                let sink_input = actions_by_sinks.entry(recon_output.sink).or_default();
+                sink_input.add_action(recon_output.action, child)?;
 
                 if let Some(item) = &mut prev_item {
                     // Update existing item.
@@ -1205,6 +1314,18 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
 
         // Phase 2: Delete + Contained — iterate remaining tracked entries not matched above.
         for (target_state_path_with_pid, item) in tracking_info.target_state_items.iter_mut() {
+            // A preview cannot persist preemption into the old owner's tracking
+            // blob. Consult its in-memory claims before planning orphan deletes.
+            if preview.is_some_and(|preview| {
+                preview
+                    .claimed_targets
+                    .lock()
+                    .unwrap()
+                    .get(&target_state_path_with_pid.target_state_path)
+                    .is_some_and(|owner| owner != stable_path)
+            }) {
+                continue;
+            }
             // Skip stale entries — commit() will prune them via version retention.
             // This is also what prunes, rather than reconciles, the children of a
             // container that is no longer declared: its deletion action subsumes them.
@@ -1262,10 +1383,13 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 })?
                 .reconcile(target_state_key, None, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
+                if recon_output.tracking_record.is_none() {
+                    released_targets.push(target_state_path_with_pid.target_state_path.clone());
+                }
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .add_action(recon_output.action, None);
+                    .add_action(recon_output.action, None)?;
                 item.states.push((
                     curr_version,
                     match recon_output
@@ -1334,6 +1458,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             actions_by_sinks,
             processor_name_for_del,
             deferred_provider_generations,
+            released_targets,
         },
         write_plan: PrecommitWritePlan {
             self_path: stable_path.clone(),
@@ -1428,6 +1553,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let processor_name_owned: Option<Arc<str>> = processor_name.map(Arc::from);
 
     if comp_ctx.preview() {
+        // For the child components the preview deletes, after the providers
+        // below have been readied.
+        let child_delete_providers = target_states_providers.clone();
         // Mirror normal precommit Phase 2 planning, but always return
         // `Ok(None)` from the callback so AppStore applies/commits no
         // tracking writes; the callback hands its output out through
@@ -1452,6 +1580,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         let mut pending_attempt: u32 = 0;
         let pre_commit_out = loop {
             let preview_output_capture = preview_output.clone();
+            let preview_claims = collector.clone();
             let captures: Arc<PreCommitCaptures<Prof>> = Arc::new(PreCommitCaptures {
                 app_store: app_store.clone(),
                 stable_path: stable_path.clone(),
@@ -1465,6 +1594,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 .precommit(&stable_path, move |wtxn, session| {
                     let c = Arc::clone(&captures);
                     let preview_output_capture = preview_output_capture.clone();
+                    let preview_claims = preview_claims.clone();
                     Box::pin(async move {
                         let declared_paths_all: Vec<TargetStatePath> = {
                             let guard = c.declared_target_states.lock().await;
@@ -1518,6 +1648,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             process_token,
                             &c.stable_path,
                             full_reprocess,
+                            Some(preview_claims.as_ref()),
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
                             &c.target_states_providers,
@@ -1530,21 +1661,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         .await?;
 
                         let output = match outcome {
-                            PreCommitOutcome::Done { output, write_plan: _ } => {
-                                // Checked in here rather than after `precommit`:
-                                // the error drops this body's writes, so no
-                                // generation ID `pre_commit` reserved for a
-                                // child provider commits.
-                                for input in output.actions_by_sinks.values() {
-                                    if !input.pending_children.is_empty() {
-                                        client_bail!(
-                                            "preview currently supports flat/leaf target actions only; \
-                                             target actions requiring child target providers are not supported yet"
-                                        );
-                                    }
-                                }
-                                Some(output)
-                            }
+                            PreCommitOutcome::Done {
+                                output,
+                                write_plan: _,
+                            } => Some(output),
                             PreCommitOutcome::PendingRetry => None,
                         };
                         *preview_output_capture.lock().unwrap() = output;
@@ -1576,12 +1696,76 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         if let Some(ref name) = pre_commit_out.processor_name_for_del {
             collect_processor_name_name_for_del(name);
         }
-        collector.lock().unwrap().extend(
+
+        // Ready the child providers as a real submit would, so the components
+        // declaring child target states can preview theirs: the generations
+        // `pre_commit` planned, and the handlers from each sink's child handler
+        // factory, built without applying the actions.
+        for (child_provider, new_gen) in pre_commit_out.deferred_provider_generations {
+            child_provider.set_provider_generation(new_gen)?;
+        }
+        if let Some((child_provider, _)) = pre_commit_out
+            .actions_by_sinks
+            .values()
+            .find_map(|input| input.pending_children.first())
+        {
+            client_bail!(
+                "the target action sink for {} does not support preview of child target \
+                 states: build it with a child handler factory (`child_handler=` in Python, \
+                 `from_async_fn_with_child_handler` in Rust)",
+                child_provider.display_name()
+            );
+        }
+        let children = build_factory_children(comp_ctx, &pre_commit_out.actions_by_sinks).await?;
+        if let Some(ref mut registry) = built_target_states_providers {
+            for (child_provider, handler) in children {
+                child_provider.fulfill_handler(handler, registry)?;
+            }
+        }
+        // Publish claims and releases only after planning and factory
+        // construction succeed, before cascading into removed components.
+        // Include unchanged declared targets: ownership may move without
+        // emitting any sink action.
+        {
+            let declared = declared_target_states.lock().await;
+            let mut claims = collector.claimed_targets.lock().unwrap();
+            for path in declared.keys() {
+                claims.insert(path.clone(), stable_path.clone());
+            }
+        }
+        {
+            let mut releases = collector.released_targets.lock().unwrap();
+            for path in pre_commit_out.released_targets {
+                releases.insert(path, stable_path.clone());
+            }
+        }
+        for (sink, input) in &pre_commit_out.actions_by_sinks {
+            if sink.apply_in_preview() && !input.actions.is_empty() {
+                sink.apply_for_preview(
+                    comp_ctx.app_ctx().env().host_runtime_ctx(),
+                    Arc::clone(comp_ctx.host_ctx()),
+                    &input.actions,
+                )
+                .await?;
+            }
+        }
+        collector.actions.lock().unwrap().extend(
             pre_commit_out
                 .actions_by_sinks
                 .into_values()
                 .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
         );
+        // A commit deletes the child components this run no longer declares
+        // (a delete: all of them); a preview skips the commit, so it previews
+        // those deletes here.
+        if !comp_ctx.preview_keeps_children() {
+            preview_child_component_deletes(
+                comp_ctx,
+                child_path_set.as_ref(),
+                &child_delete_providers,
+            )
+            .await?;
+        }
         return Ok(SubmitOutput {
             built_target_states_providers,
             touched_previous_states: pre_commit_out.previously_exists,
@@ -1724,6 +1908,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             process_token,
                             &c.stable_path,
                             full_reprocess,
+                            None,
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
                             &c.target_states_providers,
@@ -1791,6 +1976,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // subsequent precommit doesn't see a stale token from this
     // attempt.
     let sink_result: Result<()> = async {
+        // Before any action is applied, so a factory error fails the component
+        // with nothing applied.
+        pending_fulfillments.extend(build_factory_children(comp_ctx, &actions_by_sinks).await?);
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in actions_by_sinks {
             sink.apply(
@@ -1803,7 +1991,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 let Some(handler) = slot.take()? else {
                     client_bail!(
                         "target action sink did not fulfill the child target slot for {}",
-                        child_provider.target_state_path()
+                        child_provider.display_name()
                     );
                 };
                 pending_fulfillments.push((child_provider, handler));
@@ -1844,6 +2032,87 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         built_target_states_providers,
         touched_previous_states,
     })
+}
+
+/// Preview the deletes a commit of `comp_ctx` cascades into: the child
+/// components its existence walk would tombstone (those `declared_children`
+/// no longer declares; every one when `None`), plus the tombstones an earlier
+/// failed delete left for the next update to retry. Each runs as a previewed
+/// delete-mode component, which previews its own child components' deletes
+/// in turn — except one demoted to a directory whose children are declared
+/// again, which keeps them.
+async fn preview_child_component_deletes<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    declared_children: Option<&ChildStablePathSet>,
+    providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+) -> Result<()> {
+    let collector = comp_ctx
+        .preview_collector()
+        .cloned()
+        .ok_or_else(|| internal_error!("preview mode requires a preview collector"))?;
+    let app_store = comp_ctx.app_ctx().app_store();
+    let component_path = comp_ctx.stable_path();
+    let mut relative_paths: HashSet<StablePath> = {
+        let txn = app_store.read_txn().await?;
+        plan_child_existence(&txn, app_store, component_path, declared_children, true)?
+            .tombstones
+            .into_iter()
+            .collect()
+    };
+    relative_paths.extend(app_store.list_tombstones(component_path).await?);
+
+    let mut handles = Vec::with_capacity(relative_paths.len());
+    for relative_path in relative_paths {
+        let keep_children = match declared_at(declared_children, &relative_path) {
+            // Declared again: alive, nothing to delete.
+            Some(StablePathSet::Component) => continue,
+            Some(StablePathSet::Directory(_)) => true,
+            None => false,
+        };
+        // Two walks can reach one component (e.g. a live delete, then a full
+        // update): a real run deletes it once.
+        let path = component_path.concat(relative_path.as_ref());
+        if !collector.plan_component_delete(&path) {
+            continue;
+        }
+        let component = comp_ctx.component().get_child(path);
+        let delete_ctx = component.new_processor_context_for_delete(
+            providers.clone(),
+            Some(comp_ctx),
+            comp_ctx.processing_stats().clone(),
+            comp_ctx.host_ctx().clone(),
+            comp_ctx.processing_action_on_error(),
+            Some(DeletePreview {
+                collector: collector.clone(),
+                keep_children,
+            }),
+        );
+        handles.push(component.delete(delete_ctx)?);
+    }
+    for handle in handles {
+        handle.ready().await?;
+    }
+    Ok(())
+}
+
+/// What `declared` declares at `relative_path` (relative to the component),
+/// if anything.
+fn declared_at<'a>(
+    declared: Option<&'a ChildStablePathSet>,
+    relative_path: &StablePath,
+) -> Option<&'a StablePathSet> {
+    let mut children = declared?;
+    let mut parts = relative_path.0.iter().peekable();
+    while let Some(part) = parts.next() {
+        let path_set = children.children.get(part)?;
+        match (path_set, parts.peek()) {
+            (_, None) => return Some(path_set),
+            (StablePathSet::Directory(dir), Some(_)) => children = dir,
+            // A component's own children are in its own subtree, not this one.
+            (StablePathSet::Component, Some(_)) => return None,
+        }
+    }
+    None
 }
 
 /// Clear this component's `pending_process_token` field in the
@@ -1891,6 +2160,9 @@ async fn cleanup_pending_token<Prof: EngineProfile>(
     }
 }
 
+/// Store the component's memo, if it is memoized; returns whether it stored
+/// one. A preview stores none: a later real update would reuse it and skip
+/// declaring the component's target states.
 #[instrument(name = "post_submit_after_ready", skip_all)]
 pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
@@ -1901,10 +2173,13 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     )>,
     logic_deps: &HashSet<Fingerprint>,
     target_provider_deps: &TargetProviderDeps,
-) -> Result<()> {
+) -> Result<bool> {
     let Some((fp, ret, memo_states)) = comp_memo else {
-        return Ok(());
+        return Ok(false);
     };
+    if comp_ctx.preview() {
+        return Ok(false);
+    }
 
     let ret_bytes = ret.to_bytes()?;
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
@@ -1934,7 +2209,8 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         .app_ctx()
         .app_store()
         .finalize_memoization(comp_ctx.stable_path(), &encoded)
-        .await
+        .await?;
+    Ok(true)
 }
 
 pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
