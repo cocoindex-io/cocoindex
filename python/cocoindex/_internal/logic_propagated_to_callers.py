@@ -52,8 +52,9 @@ def _is_async_callable(fn: Callable[..., Any]) -> bool:
 class _PropagatedCallback:
     """Shared half of the two wrappers.
 
-    Transparent for memoization keys: the key is the wrapped callable's, so a
-    propagated callback keys the same memo entries as the bare one would.
+    Keys by the wrapped callable: two wrappers of the same callable key the
+    same memo entries. The wrapper does not key *as* the bare callable, so
+    adopting it where the bare callable was passed before moves that key once.
     """
 
     __slots__ = ("_fn", "_owner_fn_ctx")
@@ -174,7 +175,9 @@ def logic_propagated_to_callers(fn: Callable[..., Any]) -> Callable[..., Any]:
       async wrapper; anything else a sync one. A plain callable that merely
       *returns* an awaitable is rejected with ``TypeError`` when called, since
       its body would run after the tracked frame closed.
-    - The wrapper is transparent for memoization keys (it keys as ``fn``).
+    - The wrapper keys by ``fn``: two wrappers of the same ``fn`` key alike,
+      but adopting the wrapper where bare ``fn`` was passed before moves
+      that memo key once.
 
     Example (library entry point)::
 

@@ -242,7 +242,7 @@ Rules, for whoever calls `logic_propagated_to_callers`:
 
 - Decorate the callback with `@coco.fn` for its own code to be tracked. An undecorated callable contributes only the `@coco.fn` functions it calls, as always.
 - The wrapper is valid only while the owner's call is running. A call after the owner has returned raises `RuntimeError` instead of silently running untracked. Mount the components that call it with `use_mount`, or `await handle.ready()` inside the owner.
-- The wrapper is transparent for memoization keys: passing `logic_propagated_to_callers(fn)` where `fn` was passed before keys the same callback.
+- The wrapper keys by `fn`: two wrappers of the same `fn` key alike. It does not key as the bare `fn`, so passing `logic_propagated_to_callers(fn)` where `fn` was passed before moves that memo key once, when the wrapper is adopted.
 - Adopting the wrapper does not re-store existing memo entries (see the caution under [`logic_tracking`](#logic_tracking)): entries stored before the wrap recorded no callback logic and stay valid until their key or the memoized caller's `version` moves. Ship the adoption with one such change.
 
 #### Common patterns
