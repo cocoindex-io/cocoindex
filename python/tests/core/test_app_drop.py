@@ -48,9 +48,9 @@ def test_drop_blocking() -> None:
         },
     }
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
-        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
-        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@"test_target_state/dicts"/"D1"/"a"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D1"/"b"': coco.ROOT_PATH,
     }
 
     # Drop the app
@@ -160,8 +160,8 @@ async def test_drop_allows_rerun() -> None:
         "D2": {"b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True)},
     }
     assert await common.list_target_state_owners(app) == {
-        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "dict" / "D2",
-        '/@test_target_state/dicts/"D2"/"b"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D2"': coco.ROOT_PATH / "dict" / "D2",
+        '/@"test_target_state/dicts"/"D2"/"b"': coco.ROOT_PATH,
     }
 
 
@@ -267,8 +267,8 @@ def test_drop_failure_preserves_tracking_for_retry() -> None:
         "tracking records should exist after the initial update"
     )
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
-        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@"test_target_state/dicts"/"D1"/"a"': coco.ROOT_PATH,
     }
 
     # First drop attempt with a failing sink. Whether or not it raises,
@@ -294,7 +294,7 @@ def test_drop_failure_preserves_tracking_for_retry() -> None:
     # parent store); the leaf entry's delete succeeded, so its owner row is
     # legitimately gone.
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@"test_target_state/dicts"/"D1"': coco.ROOT_PATH / "dict" / "D1",
     }
 
     # Healthy retry cleans up properly.
