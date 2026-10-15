@@ -229,6 +229,13 @@ async def test_litellm_embedder_single_text_error_surfaces_original() -> None:
             await embedder.embed("only")
 
 
+def _raised_while_handling(error: Exception, context: Exception) -> Exception:
+    """``error`` as litellm raises it from inside an ``except`` block handling
+    ``context``: the implicit ``__context__`` is set, ``__cause__`` is not."""
+    error.__context__ = context
+    return error
+
+
 @pytest.mark.parametrize(
     ("error", "expected_calls"),
     [
@@ -247,6 +254,20 @@ async def test_litellm_embedder_single_text_error_surfaces_original() -> None:
             ),
             3,
             id="litellm-connection-error",
+        ),
+        # The same wrapper around a real transport failure keeps retrying:
+        # the local-failure rule matches only a wrapped ValueError/TypeError.
+        pytest.param(
+            _raised_while_handling(
+                APIConnectionError(
+                    message="connection refused",
+                    model="fake-model",
+                    llm_provider="openai",
+                ),
+                httpx.ConnectError("refused"),
+            ),
+            3,
+            id="litellm-connection-error-wrapping-transport-error",
         ),
         # httpx timeouts subclass neither TimeoutError nor litellm.Timeout;
         # they are matched by name.
