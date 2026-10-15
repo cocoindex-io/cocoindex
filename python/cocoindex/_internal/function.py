@@ -2064,6 +2064,12 @@ class _FunctionDecorator:
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
                 None: No function logic tracking (incompatible with ``deps``).
+                Adopting tracking later — decorating a function that memoized
+                callers already stored entries for, or raising its mode from
+                ``None`` — does not invalidate those entries: an entry records
+                only the fingerprints its writer offered when it was stored.
+                Ship such a change with a ``version`` bump or a memo-key change
+                on the memoized callers, so their entries are stored again.
             deps: External value(s) the function logic depends on but which
                 aren't visible in its body — for example a module-level prompt
                 string or model identifier. The value is canonicalized via the
@@ -2186,6 +2192,12 @@ class _FunctionDecorator:
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
                 None: No function logic tracking (incompatible with ``deps``).
+                Adopting tracking later — decorating a function that memoized
+                callers already stored entries for, or raising its mode from
+                ``None`` — does not invalidate those entries: an entry records
+                only the fingerprints its writer offered when it was stored.
+                Ship such a change with a ``version`` bump or a memo-key change
+                on the memoized callers, so their entries are stored again.
             deps: Additional value(s) the function logic depends on but that
                 aren't visible in its body. See :func:`fn` for the full
                 contract — the value is canonicalized through the memoization

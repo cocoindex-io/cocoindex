@@ -129,7 +129,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). A fourth tool, [`coco.logic_tracked`](#callbacks-logic_tracked), is for callbacks that cross a `"self"` boundary.
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). A fourth tool, [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers), is for callbacks that cross a `"self"` boundary.
 
 #### `logic_tracking`
 
@@ -140,6 +140,10 @@ The `logic_tracking` parameter controls whether and how logic changes are detect
 - **`None`:** Don't track logic through this function at all — neither its own logic nor its callees' reaches its callers.
 
 These settings govern nested *function calls*. A [mounted child component](./processing_component) is tracked through the component tree instead, so its logic reaches the parent regardless of the parent's `logic_tracking`.
+
+:::caution[Adopting tracking later does not re-store existing memo entries]
+A memo entry records only the logic fingerprints its writer offered when it was stored. Decorating a function with `@coco.fn` after memoized callers have stored entries that ran it, or raising its `logic_tracking` from `None`, leaves those entries valid: nothing in them can fail. Ship such a change together with a [`version`](#version) bump or a memoization-key change on the memoized callers, so their entries are stored again with the new fingerprints.
+:::
 
 #### `version`
 
@@ -189,13 +193,13 @@ The value is canonicalized through the [memoization-key pipeline](../advanced_to
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
-#### Callbacks: `logic_tracked`
+#### Callbacks: `logic_propagated_to_callers`
 
 `logic_tracking` is per function, so `"self"` hides the logic of *everything* a function calls — including callbacks it received as arguments. A library whose `accept` is `logic_tracking="self"` therefore hides the user's `visit_file`: an edit to `visit_file` invalidates nothing, even though it is the user's input, not the library's implementation detail.
 
-`coco.logic_tracked(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback.
+`coco.logic_propagated_to_callers(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback. It does not make `fn` tracked: `fn`'s own `@coco.fn` and `logic_tracking` decide what it offers, exactly as for any function. The wrapper only carries that up to the frame that called it, through layers that would otherwise drop it. (`coco.logic_tracked` is the former name; it still works and emits a `DeprecationWarning`.)
 
-Call it at the entry point that hands a callback down. The function that calls `logic_tracked` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame — the owner's own entry included — whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
+Call it at the entry point that hands a callback down. The function that calls `logic_propagated_to_callers` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame — the owner's own entry included — whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
 
 ```python
 # Library
@@ -206,7 +210,7 @@ async def accept(file: File, visit_file: Callable[[File], Awaitable[None]]) -> N
 
 @coco.fn
 async def walk(repo: Repo, visitor: RepoVisitor) -> None:
-    visit_file = coco.logic_tracked(visitor.visit_file)  # walk owns the callback
+    visit_file = coco.logic_propagated_to_callers(visitor.visit_file)  # walk owns the callback
     for file in repo.files():
         await coco.use_mount(coco.component_subpath(file.path), accept, file, visit_file)
 ```
@@ -224,21 +228,22 @@ async def app_main(repo: Repo) -> None:
     await walk(repo, MyVisitor())
 ```
 
-The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees `logic_tracked`. `accept` needs no code of its own: the wrapper it receives already carries its owner.
+The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees `logic_propagated_to_callers`. `accept` needs no code of its own: the wrapper it receives already carries its owner.
 
 **When a library does not do this**, wrap the callback in your own code. Your function becomes the owner:
 
 ```python
 @coco.fn(memo=True)
 def process(doc: str) -> str:
-    return third_party_transform(doc, coco.logic_tracked(summarize))
+    return third_party_transform(doc, coco.logic_propagated_to_callers(summarize))
 ```
 
-Rules, for whoever calls `logic_tracked`:
+Rules, for whoever calls `logic_propagated_to_callers`:
 
 - Decorate the callback with `@coco.fn` for its own code to be tracked. An undecorated callable contributes only the `@coco.fn` functions it calls, as always.
 - The wrapper is valid only while the owner's call is running. A call after the owner has returned raises `RuntimeError` instead of silently running untracked. Mount the components that call it with `use_mount`, or `await handle.ready()` inside the owner.
-- The wrapper is transparent for memoization keys: passing `logic_tracked(fn)` where `fn` was passed before keys the same callback (the key changes once, when the wrapper is adopted).
+- The wrapper is transparent for memoization keys: passing `logic_propagated_to_callers(fn)` where `fn` was passed before keys the same callback.
+- Adopting the wrapper does not re-store existing memo entries (see the caution under [`logic_tracking`](#logic_tracking)): entries stored before the wrap recorded no callback logic and stay valid until their key or the memoized caller's `version` moves. Ship the adoption with one such change.
 
 #### Common patterns
 
@@ -297,7 +302,7 @@ Conversely, if a memo is hitting when you expect invalidation, common causes are
 - A logic change in a helper that is **not** decorated with `@coco.fn`. Add `@coco.fn` to it (no `memo=` needed) so its logic participates in propagation — see [Common patterns](#common-patterns).
 - A `deps` value that you changed at runtime: `deps` is [snapshotted at decoration time](#deps), so per-instance or per-request values must be passed as regular arguments instead.
 - The function uses [`logic_tracking=None`](#logic_tracking), which opts it out of code-change detection entirely.
-- The change is in a callback that passes through a `logic_tracking="self"` function and nobody wrapped it with [`coco.logic_tracked`](#callbacks-logic_tracked).
+- The change is in a callback that passes through a `logic_tracking="self"` function and nobody wrapped it with [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers).
 
 ### Customizing data fingerprinting
 
