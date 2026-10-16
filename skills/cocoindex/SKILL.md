@@ -58,7 +58,7 @@ See [references/setup_project.md](references/setup_project.md) for complete exam
 ### Run the Pipeline
 
 ```bash
-uv run cocoindex update main.py   # or: pip install -e . && cocoindex update main.py
+uv run cocoindex update main.py   # installs dependencies, then runs
 ```
 
 ## Core Concepts
