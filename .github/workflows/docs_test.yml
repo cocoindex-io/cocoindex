@@ -14,7 +14,6 @@ on:
       - "examples/*/.env"
       - "examples/*/.env.example"
       - ".github/workflows/docs_test.yml"
-      - "uv.lock"
   push:
     branches: [main, v1]
     paths:
@@ -24,7 +23,6 @@ on:
       - "examples/*/.env"
       - "examples/*/.env.example"
       - ".github/workflows/docs_test.yml"
-      - "uv.lock"
   workflow_dispatch:
 
 permissions:
