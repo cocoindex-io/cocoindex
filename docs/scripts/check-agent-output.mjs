@@ -184,7 +184,7 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
 //    so a render-time check misses a post whose target page went away.
 {
   const isFile = (p) => existsSync(p) && statSync(p).isFile();
-  // Why a root-relative `url` fails to resolve in dist/; '' if it resolves.
+  // Why a root-relative `url` fails to resolve in dist/; null if it resolves.
   const rootLinkProblem = (url) => {
     const [, path, fragment] = url.match(/^([^?#]*)(?:\?[^#]*)?(?:#(.*))?$/);
     if (path !== '/docs' && !path.startsWith('/docs/'))
@@ -199,9 +199,9 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
         ? `lacks the trailing slash, so it 404s under astro dev (write ${path}/${url.slice(path.length)})`
         : `does not resolve (no dist/${relative(DIST, target)})`;
     }
-    if (!fragment) return '';
+    if (!fragment) return null;
     const html = read(target);
-    if ([...html.matchAll(/\sid="([^"]*)"/g)].some((m) => m[1] === fragment)) return '';
+    if ([...html.matchAll(/\sid="([^"]*)"/g)].some((m) => m[1] === fragment)) return null;
     const where = `dist/${relative(DIST, target)}`;
     return html.includes('http-equiv="refresh"')
       ? `has fragment #${fragment}, but ${where} is a redirect stub, which drops it (link the destination page)`
