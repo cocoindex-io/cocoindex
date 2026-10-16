@@ -45,8 +45,9 @@ jobs:
 
         steps:
         # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
-        # release branch runs `prek --all-files` -- every hook, including the
-        # `cargo check` over the external example/benchmark workspaces -- so the
+        # release branch runs `prek --all-files` -- every hook: the SDK's
+        # all-features build on every leg, plus the `cargo check` over the
+        # external example/benchmark workspaces on the x86_64 3.11 leg -- so the
         # combined `target/` trees crowd the root volume. `CARGO_INCREMENTAL=0`
         # and `-C debuginfo=0` below already keep `target/` as small as it gets,
         # so the remaining headroom has to come from the runner image itself.
