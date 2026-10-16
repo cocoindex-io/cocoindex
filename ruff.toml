@@ -8,3 +8,8 @@ line-ending = "lf"
 # `ruff-format` hook only ever sees Python (`types: [python]`), so leaving this
 # on would make `uv run ruff format .` rewrite docs the CI gate never checks.
 exclude = ["*.md", "*.mdx"]
+
+[lint.per-file-ignores]
+# These modules re-export their private submodules' `__all__` with `*`.
+"__init__.py" = ["F403"]
+"python/cocoindex/inspect.py" = ["F403"]

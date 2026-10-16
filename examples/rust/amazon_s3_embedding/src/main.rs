@@ -69,7 +69,7 @@ async fn process_file(ctx: &Ctx, file: S3File) -> Result<Vec<DocEmbeddingRow>> {
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
     for (chunk_text, embedding) in texts.into_iter().zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &chunk_text).await?;
+        let id = id_gen.next_id(ctx, &chunk_text).await?;
         let id =
             i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
         rows.push(DocEmbeddingRow {

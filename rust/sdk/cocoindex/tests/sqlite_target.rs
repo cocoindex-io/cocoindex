@@ -114,37 +114,43 @@ async fn sqlite_table_target_insert_update_delete_nochange() {
     );
 }
 
+async fn table_exists(db: &sqlite::Database, table: &str) -> bool {
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?")
+            .bind(table)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    count == 1
+}
+
 #[tokio::test]
-async fn sqlite_table_dropped_when_no_longer_declared() {
+async fn sqlite_undeclared_and_dropped_tables_are_removed() {
     let (db, _dbdir) = temp_db().await;
     let (app, _appdir) = build_app(&db).await;
 
     app.run(|ctx| declare_items(ctx, vec![item(1, "one")]))
         .await
         .unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 1);
+    assert!(table_exists(&db, "items").await);
 
-    // Re-register the table provider but declare nothing → the orphaned table
-    // is dropped (handler present, table state absent).
-    app.run(|ctx| async move {
-        let _ = sqlite::table_target(&ctx, &DB, "items", item_schema())?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 0, "orphaned system-managed table should be dropped");
+    // A run that no longer declares the table drops it.
+    app.run(|_ctx| async { Ok(()) }).await.unwrap();
+    assert!(
+        !table_exists(&db, "items").await,
+        "a system-managed table no longer declared is dropped"
+    );
+
+    app.run(|ctx| declare_items(ctx, vec![item(1, "one")]))
+        .await
+        .unwrap();
+    assert!(table_exists(&db, "items").await);
+
+    app.drop_state().await.unwrap();
+    assert!(
+        !table_exists(&db, "items").await,
+        "drop_state drops the table"
+    );
 }
 
 #[tokio::test]
@@ -182,13 +188,10 @@ async fn sqlite_user_managed_table_keeps_table_manages_rows() {
 
     // Remove all rows; the user-managed table must still exist (empty).
     app.run(|ctx| declare_user(ctx, vec![])).await.unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 1, "user-managed table must persist when empty");
+    assert!(
+        table_exists(&db, "items").await,
+        "user-managed table must persist when empty"
+    );
     assert_eq!(fetch(&db, "items").await, Vec::<(i64, String)>::new());
 }
 
@@ -393,6 +396,55 @@ async fn sqlite_change_column_type_recreates_column() {
         .unwrap();
     assert_eq!(row.get::<i64, _>("id"), 1);
     assert_eq!(row.get::<i64, _>("score"), 42);
+}
+
+#[tokio::test]
+async fn sqlite_column_type_change_that_cannot_drop_fails_instead_of_keeping_old_type() {
+    let (db, _dbdir) = temp_db().await;
+    let (app, _appdir) = build_app(&db).await;
+
+    app.run(|ctx| async move {
+        let s = sqlite::TableSchema::new([("id", col("INTEGER")), ("score", col("TEXT"))], ["id"])?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
+        t.declare_row(&ctx, &json!({"id": 1, "score": "10"}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    // SQLite cannot drop a column that an index references.
+    sqlx::query("CREATE INDEX scores_score ON \"scores\" (\"score\")")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let change_type = || {
+        app.run(|ctx| async move {
+            let s = sqlite::TableSchema::new(
+                [("id", col("INTEGER")), ("score", col("INTEGER"))],
+                ["id"],
+            )?;
+            let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
+            t.declare_row(&ctx, &json!({"id": 1, "score": 42}))?;
+            Ok(())
+        })
+    };
+    let err = change_type().await.unwrap_err();
+    assert!(err.to_string().contains("score"), "{err}");
+
+    // Once the blocking index is gone, the next run retries and applies the
+    // change, because the failed run recorded nothing.
+    sqlx::query("DROP INDEX scores_score")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    change_type().await.unwrap();
+    let cols = table_columns(&db, "scores").await;
+    assert!(
+        cols.iter()
+            .any(|(n, t)| n == "score" && t.eq_ignore_ascii_case("INTEGER")),
+        "{cols:?}"
+    );
 }
 
 #[tokio::test]

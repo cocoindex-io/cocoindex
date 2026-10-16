@@ -9,8 +9,6 @@ import cocoindex as coco
 import instructor
 import litellm
 
-litellm.drop_params = True
-
 from .models import (
     ENTITY_TYPES,
     LLM_MODEL,
@@ -21,6 +19,8 @@ from .models import (
     Utterance,
     is_speaker_label,
 )
+
+litellm.drop_params = True
 
 # ---------------------------------------------------------------------------
 # Shared transcript formatter

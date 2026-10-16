@@ -20,8 +20,6 @@ from typing import (
 import msgspec
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
 try:
     from glide import (
         Batch,
@@ -55,6 +53,8 @@ from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import TypeChecker
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

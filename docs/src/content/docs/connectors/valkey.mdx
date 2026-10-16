@@ -44,7 +44,7 @@ def create_client_config(
 - `password` — Optional authentication password.
 - `use_tls` — Whether to use TLS for the connection (default: `False`).
 - `client_name` — Client name for the connection, visible in `CLIENT LIST` and monitoring dashboards (default: `"cocoindex_vector_store"`). Pass `None` to disable.
-- `**kwargs` — Additional keyword arguments passed to `GlideClientConfiguration`.
+- `**kwargs` — Additional keyword arguments passed to `GlideClientConfiguration`. `client_info_tag` defaults to `"cocoindex"`, so the server attributes the connection to CocoIndex via `CLIENT SETINFO LIB-NAME` unless you override it.
 
 For advanced configurations not covered by these parameters, construct `GlideClientConfiguration` directly.
 

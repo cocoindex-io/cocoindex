@@ -28,6 +28,7 @@ uv run ruff format .           # Format Python code
 uv run ruff format --check .   # Check formatting without making changes (same as CI)
 uv run ruff check .            # Lint Python code
 cargo fmt                      # Format Rust code
+./dev/run_cargo_clippy.sh      # Lint Rust code (same as CI)
 ```
 
 ### Pre-submission Checks
@@ -248,6 +249,8 @@ When adding a new public API (function, class, kwarg, configuration option), pre
 - **`NamedTuple`/small dataclass for multi-value returns.** Access fields by name (`result.can_reuse`) at call sites.
 - **Exceptions for exceptional situations only.** Reserve exceptions (Python) and errors (Rust) for truly unexpected failures — not for end-of-iteration, "not found", or other expected state transitions. Use explicit return values (sentinel, enum variant, `None`) for those.
 - **Single source of truth, delete dead code, honest names.** When the same value/logic appears in multiple places, consolidate. When changes make code unreachable, delete it (and its tests, and any dead config knobs). Function and field names should describe what the implementation does today.
+
+- Rust code follows [dev/rust-guidelines.md](dev/rust-guidelines.md).
 
 ### Testing Guidelines
 

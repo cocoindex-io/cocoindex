@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ctx::ContextStore;
 use crate::error::{Error, Result};
+use crate::memo::{MemoInput, collect_component_states};
 
 // ---------------------------------------------------------------------------
 // RustProfile — the sealed EngineProfile implementation
@@ -99,6 +100,8 @@ pub(crate) struct BoxedProcessor {
     process_fn: std::sync::Mutex<Option<ProcessFn>>,
     memo_fp: Option<Fingerprint>,
     has_memo_state_handler: bool,
+    /// Mount arguments whose memo states gate a component-memo hit.
+    state_inputs: Vec<Arc<dyn MemoInput>>,
     info: Arc<ComponentProcessorInfo>,
 }
 
@@ -117,12 +120,18 @@ impl BoxedProcessor {
             process_fn: std::sync::Mutex::new(Some(Box::new(process_fn))),
             memo_fp,
             has_memo_state_handler: false,
+            state_inputs: Vec::new(),
             info: Arc::new(ComponentProcessorInfo::new(name)),
         }
     }
 
     pub(crate) fn with_memo_state_handler(mut self, enabled: bool) -> Self {
         self.has_memo_state_handler = enabled;
+        self
+    }
+
+    pub(crate) fn with_state_inputs(mut self, state_inputs: Vec<Arc<dyn MemoInput>>) -> Self {
+        self.state_inputs = state_inputs;
         self
     }
 }
@@ -152,7 +161,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
     }
 
     fn has_memo_state_handler(&self) -> bool {
-        self.has_memo_state_handler
+        self.has_memo_state_handler || !self.state_inputs.is_empty()
     }
 
     fn handle_memo_states(
@@ -167,28 +176,41 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
         + 'static,
     > {
         let context = Arc::clone(comp_ctx.host_ctx());
+        let state_inputs = self.state_inputs.clone();
         let initial_context_states = stored_states
             .is_none()
             .then(|| comp_ctx.collect_context_initial_states());
         let stored_states = stored_states.unwrap_or_default();
         Ok(async move {
             let Some(initial_context_states) = initial_context_states else {
+                let (positional, positional_valid) =
+                    collect_component_states(&state_inputs, Some(&stored_states.positional))
+                        .await
+                        .map_err(Error::into_core)?;
+                let positional_changed = positional.len() != stored_states.positional.len()
+                    || positional
+                        .iter()
+                        .zip(&stored_states.positional)
+                        .any(|(new, old)| new.0 != old.0);
                 let validation = context
                     .validate_memo_states(&stored_states.by_context_fp)
                     .await
                     .map_err(Error::into_core)?;
                 return Ok((
                     MemoStatesPayload {
-                        positional: stored_states.positional,
+                        positional,
                         by_context_fp: validation.states,
                     },
-                    validation.memo_valid,
-                    validation.states_changed,
+                    positional_valid && validation.memo_valid,
+                    positional_changed || validation.states_changed,
                 ));
             };
+            let (positional, _) = collect_component_states(&state_inputs, None)
+                .await
+                .map_err(Error::into_core)?;
             Ok((
                 MemoStatesPayload {
-                    positional: stored_states.positional,
+                    positional,
                     by_context_fp: initial_context_states,
                 },
                 true,

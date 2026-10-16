@@ -1211,12 +1211,10 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
         // Record the version only after a real scan (which has already committed
         // — `mark_ready` ran before `watch`), so a later run skips only when the
         // bootstrap durably landed.
-        if !skip_scan {
-            if let Some(version) = &self.logic_version {
-                subscriber
-                    .write_committed_state(OCI_SCAN_VERSION_KEY, version)
-                    .await?;
-            }
+        if !skip_scan && let Some(version) = &self.logic_version {
+            subscriber
+                .write_committed_state(OCI_SCAN_VERSION_KEY, version)
+                .await?;
         }
         // In skip-scan mode there is no scan to dedupe against, so the wall-clock
         // cutoff must not fire — the durable stream replays the downtime backlog

@@ -40,9 +40,10 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
+    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
+    TargetState, TargetStateProvider, declare_target_state, declare_target_state_with_child,
+    mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -538,15 +539,15 @@ pub fn table_target_with_options(
     validate_ident(&table_name, "table name")?;
     table_schema.validate_vector_dimensions()?;
     validate_indexes(&table_schema, &options)?;
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!("cocoindex/doris/table/{}/{}", conn.name(), table_name),
-        TableHandler {
-            conn_key: conn.name().to_string(),
-        },
-    )?;
+    let provider = TABLE_PROVIDER.get(ctx)?;
     Ok(provider.target_state(
-        "default",
+        // Stable connection identity = the ContextKey's name; the connection is
+        // resolved at apply time from the host context.
+        TableKey {
+            conn_key: conn.name().to_string(),
+            table_name: table_name.clone(),
+        }
+        .stable_key(),
         TableSpec {
             table_name,
             table_schema,
@@ -748,6 +749,8 @@ fn table_composite_record(spec: &TableSpec) -> TableCompositeRecord {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
+    /// The `ContextKey` name of the connection the table lives in.
+    conn_key: String,
     spec: Option<TableSpec>,
     drop: Option<String>,
     main_action: Option<DiffAction>,
@@ -777,8 +780,45 @@ fn resolve_conn(host_ctx: &Arc<ContextStore>, conn_key: &str) -> Result<Arc<Dori
         })
 }
 
-struct TableHandler {
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TableSpec, TableHandler>("cocoindex/doris/table");
+
+/// A table target state's key: the connection's `ContextKey` name plus the
+/// table name.
+struct TableKey {
     conn_key: String,
+    table_name: String,
+}
+
+impl TableKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.conn_key)),
+            StableKey::Str(Arc::from(self.table_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(conn_key), StableKey::Str(table_name)] = &parts[..]
+        {
+            return Ok(Self {
+                conn_key: conn_key.to_string(),
+                table_name: table_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected doris table target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every Doris table target: stateless, the connection is
+/// named by each target state's [`TableKey`].
+#[derive(Default)]
+struct TableHandler {
+    sink: SinkCache<TableAction>,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -787,11 +827,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<TableSpec>,
         prev: Vec<TableTrackingRecord>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
+        let conn_key = TableKey::from_stable_key(&key)?.conn_key;
         match desired {
             Some(spec) => {
                 let tracking =
@@ -828,12 +869,13 @@ impl TargetHandler<TableSpec> for TableHandler {
 
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
+                        conn_key,
                         spec: Some(spec),
                         drop: None,
                         main_action,
                         column_actions,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
@@ -848,12 +890,13 @@ impl TargetHandler<TableSpec> for TableHandler {
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
+                        conn_key,
                         spec: None,
                         drop: Some(prev_record.tracking_record.main.table_name),
                         main_action: Some(DiffAction::Delete),
                         column_actions: BTreeMap::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -862,30 +905,24 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-impl TableHandler {
-    fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let conn_key = self.conn_key.clone();
-        TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-                let conn_key = conn_key.clone();
-                async move {
-                    let conn = resolve_conn(&host_ctx, &conn_key)?;
-                    for (action, child_slot) in actions {
-                        let a = match action {
-                            TargetAction::Create(a)
-                            | TargetAction::Update(a)
-                            | TargetAction::Delete(a) => a,
-                        };
-                        let child = apply_table_action(&conn, &conn_key, a).await?;
-                        if let (Some(slot), Some(child)) = (child_slot, child) {
-                            slot.fulfill(child)?;
-                        }
+fn table_sink() -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_children_ctx(
+        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
+            for (action, child_slot) in actions {
+                let a = match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => {
+                        a
                     }
-                    Ok(())
+                };
+                let conn = resolve_conn(&host_ctx, &a.conn_key)?;
+                let child = apply_table_action(&conn, a).await?;
+                if let (Some(slot), Some(child)) = (child_slot, child) {
+                    slot.fulfill(child)?;
                 }
-            },
-        )
-    }
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Apply one resolved table action and return the row child handler
@@ -893,10 +930,10 @@ impl TableHandler {
 /// action's child slot. Mirrors Python's `_apply_table_actions`.
 async fn apply_table_action(
     conn: &DorisConnection,
-    conn_key: &str,
     action: TableAction,
 ) -> Result<Option<ChildTargetDef>> {
     let TableAction {
+        conn_key,
         spec,
         drop,
         main_action,
@@ -934,7 +971,8 @@ async fn apply_table_action(
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        conn_key: conn_key.to_string(),
+        sink: SinkCache::default(),
+        conn_key,
         spec,
     })))
 }
@@ -944,6 +982,7 @@ async fn apply_table_action(
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     conn_key: String,
     spec: TableSpec,
 }
@@ -978,7 +1017,7 @@ impl TargetHandler<RowState> for RowHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(RowAction { pk, state: desired }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))

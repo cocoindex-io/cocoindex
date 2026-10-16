@@ -1919,6 +1919,7 @@ dependencies = [
  "cocoindex_macros",
  "cocoindex_ops_text",
  "cocoindex_utils",
+ "crc32fast",
  "criterion",
  "encoding_rs",
  "fastembed",

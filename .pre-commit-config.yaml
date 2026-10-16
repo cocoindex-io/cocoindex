@@ -43,6 +43,9 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.0
     hooks:
+      # Lint before formatting, as Ruff recommends with `--fix`.
+      - id: ruff-check
+        args: [--fix]
       - id: ruff-format
         types: [python]
         pass_filenames: true
@@ -73,7 +76,14 @@ repos:
           name: cargo test
           entry: ./dev/run_cargo_test.sh
           language: system
-          files: ^(rust/|Cargo\.toml)
+          files: ^(rust/|Cargo\.(toml|lock)$)
+          pass_filenames: false
+
+        - id: cargo-clippy
+          name: cargo clippy
+          entry: ./dev/run_cargo_clippy.sh
+          language: system
+          files: ^(rust/|Cargo\.(toml|lock)$)
           pass_filenames: false
 
         - id: update-rust-extern-locks
