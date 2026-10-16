@@ -10,7 +10,7 @@ tags: [llm-extraction, pdf]
 
 Manuals, datasheets, and reference docs are full of structure — classes, functions, parameters, defaults — laid out for humans, not machines. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that pulls that structure out: convert each PDF manual to Markdown with [docling](https://github.com/docling-project/docling), LLM-extract a typed summary of the module it documents, and store the result in Postgres. The sample manuals are the reference docs for a few Python standard-library modules.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy PDF parse runs on a [GPU runner](https://cocoindex.io/docs/programming_guide/function/), and the Rust engine handles [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) — edit one manual and only that one is re-parsed and re-extracted.
+The whole pipeline is ordinary `async` Python and your own types. The heavy PDF parse runs on a [GPU runner](/docs/programming_guide/function/), and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — edit one manual and only that one is re-parsed and re-extracted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction)
 
@@ -48,7 +48,7 @@ class ModuleInfo(pydantic.BaseModel):
     methods: list[MethodInfo] = pydantic.Field(default_factory=list)
 ```
 
-Extraction is [instructor](https://github.com/instructor-ai/instructor) over [LiteLLM](https://docs.litellm.ai/), so `LLM_MODEL` swaps any provider (OpenAI, Gemini, a local Ollama model). [`@coco.fn(memo=True)`](https://cocoindex.io/docs/programming_guide/function/) caches both the PDF parse and the extraction by content.
+Extraction is [instructor](https://github.com/instructor-ai/instructor) over [LiteLLM](https://docs.litellm.ai/), so `LLM_MODEL` swaps any provider (OpenAI, Gemini, a local Ollama model). [`@coco.fn(memo=True)`](/docs/programming_guide/function/) caches both the PDF parse and the extraction by content.
 
 ## Convert, extract, and store
 
@@ -112,6 +112,6 @@ FROM coco_examples.modules_info WHERE filename = 'copy.pdf';
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/manuals_llm_extraction](https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction). For extracting metadata from research papers instead, see [Index Academic Papers](https://cocoindex.io/docs/examples/paper-metadata/); for extraction into typed JSON files, see the patient-intake examples.
+The full, runnable example is in the CocoIndex repo: [examples/manuals_llm_extraction](https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction). For extracting metadata from research papers instead, see [Index Academic Papers](/docs/examples/paper-metadata/); for extraction into typed JSON files, see the patient-intake examples.
 
 Got a pile of manuals or datasheets to structure? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

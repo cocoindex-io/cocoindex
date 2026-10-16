@@ -10,7 +10,7 @@ tags: [streaming, lancedb]
 
 We'll take a live [Kafka](https://kafka.apache.org/) topic of JSON messages and fan them into [LanceDB](https://lancedb.com/) tables — each message parsed, inspected, and routed to the table that matches its shape. A message with a `sku` field becomes a row in `products`; one with an `emp_id` field becomes a row in `employees`. This is the consumer side of [csv-to-kafka](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka): the same declarative flow that *produced* the topic now *consumes* it.
 
-The whole pipeline is ordinary `async` Python. Kafka is just a [source](https://cocoindex.io/docs/connectors/kafka/) you treat as a keyed map, and each LanceDB table is a [target](https://cocoindex.io/docs/connectors/lancedb/) you declare rows on. CocoIndex's Rust engine does the [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) underneath: it consumes one message per processing component, writes the row, and only then commits the Kafka offset — so a crash mid-flight replays from the last durably-written message, with no consumer loop and no offset bookkeeping in your code.
+The whole pipeline is ordinary `async` Python. Kafka is just a [source](/docs/connectors/kafka/) you treat as a keyed map, and each LanceDB table is a [target](/docs/connectors/lancedb/) you declare rows on. CocoIndex's Rust engine does the [incremental processing](/docs/programming_guide/core_concepts/) underneath: it consumes one message per processing component, writes the row, and only then commits the Kafka offset — so a crash mid-flight replays from the last durably-written message, with no consumer loop and no offset bookkeeping in your code.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/kafka_to_lancedb)
 
@@ -20,11 +20,11 @@ The whole pipeline is ordinary `async` Python. Kafka is just a [source](https://
 
 From a high level, these are the steps:
 
-1. Subscribe to a Kafka topic as a [live keyed map](https://cocoindex.io/docs/connectors/kafka/) — each message is an item keyed by its Kafka message key.
+1. Subscribe to a Kafka topic as a [live keyed map](/docs/connectors/kafka/) — each message is an item keyed by its Kafka message key.
 2. For each message, decode the value and `json.loads` it into a row dict.
-3. Dispatch by shape: a `sku` field declares a `Product` [row](https://cocoindex.io/docs/programming_guide/target_state/) on the `products` table; an `emp_id` field declares an `Employee` row on the `employees` table.
+3. Dispatch by shape: a `sku` field declares a `Product` [row](/docs/programming_guide/target_state/) on the `products` table; an `emp_id` field declares an `Employee` row on the `employees` table.
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 > **Why two tables from one topic?** A topic is often a firehose of heterogeneous events — orders, users, inventory, whatever a service emits — sharing a transport but not a schema. The consumer's job is to *sort the mail*: read each envelope, decide what it is, and put it where it belongs. Branching on a discriminator field (`sku` vs `emp_id` here, but just as easily an `event_type` or a [JSON Schema](https://json-schema.org/) `$id`) and declaring a typed row is the same pattern whether the destination is LanceDB, Postgres, or a vector index.
 
@@ -42,7 +42,7 @@ You [declare the transformation logic](https://cocoindex.io/docs/programming_gui
 
 ## Shared resources: the LanceDB connection
 
-The LanceDB connection is opened once at app startup in a [`lifespan`](https://cocoindex.io/docs/programming_guide/context/) hook and stashed in a [`ContextKey`](https://cocoindex.io/docs/programming_guide/context/), so the rest of the pipeline can grab it without threading it through every call:
+The LanceDB connection is opened once at app startup in a [`lifespan`](/docs/programming_guide/context/) hook and stashed in a [`ContextKey`](/docs/programming_guide/context/), so the rest of the pipeline can grab it without threading it through every call:
 
 ```python title="main.py"
 import cocoindex as coco
@@ -82,7 +82,7 @@ class Employee:
     email: str
 ```
 
-The dataclass *is* the schema. When we mount the table below, [`TableSchema.from_class`](https://cocoindex.io/docs/connectors/lancedb/) reads these fields and their types to build the table, with the primary key you nominate. A `Product` is keyed by `sku`, an `Employee` by `emp_id` — the same primary keys that keyed the Kafka messages on the way in.
+The dataclass *is* the schema. When we mount the table below, [`TableSchema.from_class`](/docs/connectors/lancedb/) reads these fields and their types to build the table, with the primary key you nominate. A `Product` is keyed by `sku`, an `Employee` by `emp_id` — the same primary keys that keyed the Kafka messages on the way in.
 
 ## Process a message
 
@@ -111,7 +111,7 @@ async def process_message(
         employees_table.declare_row(row=Employee(**row))
 ```
 
-Each message runs as its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) (mounted below), so the engine tracks each one independently. The component owns whichever row it declares; when its offset is committed, that row is durably in LanceDB. The `value()` may be `bytes` or `str` depending on the broker, so we normalize before `json.loads`. A message that matches neither shape declares nothing — it's quietly skipped, no row, no error.
+Each message runs as its own [processing component](/docs/programming_guide/processing_component/) (mounted below), so the engine tracks each one independently. The component owns whichever row it declares; when its offset is committed, that row is durably in LanceDB. The `value()` may be `bytes` or `str` depending on the broker, so we normalize before `json.loads`. A message that matches neither shape declares nothing — it's quietly skipped, no row, no error.
 
 ## Declare rows, not writes
 
@@ -121,13 +121,13 @@ The line worth pausing on is `declare_row` — deliberately *not* `insert()` or 
 products_table.declare_row(row=Product(...))
 ```
 
-CocoIndex is [state-driven](https://cocoindex.io/docs/programming_guide/core_concepts/): like a spreadsheet cell or a SQL materialized view, you describe what the row *should be* as a function of the source, and the engine figures out the transition. You don't write separate insert / update / delete code paths. When you call `declare_row(row=r)`:
+CocoIndex is [state-driven](/docs/programming_guide/core_concepts/): like a spreadsheet cell or a SQL materialized view, you describe what the row *should be* as a function of the source, and the engine figures out the transition. You don't write separate insert / update / delete code paths. When you call `declare_row(row=r)`:
 
 - **the primary key is new, or the row changed** → it's **upserted** into the table.
 - **the primary key was declared before but isn't this time** → that row is **removed**.
 - **the same row is declared with the same values** → **nothing is written.** No round-trip, no rewrite.
 
-It's the same `declare_*` shape as the [Postgres target](https://cocoindex.io/docs/connectors/postgres/) and the [Kafka target](https://cocoindex.io/docs/connectors/kafka/) on the producer side — the storage differs, the API doesn't, because the semantics are the same. The payoff: `process_message` is correct on the first message, every subsequent message, and after a crash-restart — there's no separate "initial load" versus "incremental update" path.
+It's the same `declare_*` shape as the [Postgres target](/docs/connectors/postgres/) and the [Kafka target](/docs/connectors/kafka/) on the producer side — the storage differs, the API doesn't, because the semantics are the same. The payoff: `process_message` is correct on the first message, every subsequent message, and after a crash-restart — there's no separate "initial load" versus "incremental update" path.
 
 ## Define the main function
 
@@ -169,13 +169,13 @@ Three things to notice:
 
 1. `mount_table_target(...)` resolves the connection from the context key and creates the table from the dataclass schema — `products` keyed by `sku`, `employees` keyed by `emp_id`. The handle it returns is what you call `declare_row` on.
 2. `enable.auto.commit` is **off** on purpose. CocoIndex commits each offset *after* the row is durably written, so the consumer group always resumes from the last message it actually persisted — at-least-once delivery without `__consumer_offsets` drifting ahead of your data. `auto.offset.reset="earliest"` means a fresh group reads the topic from the start.
-3. [`topic_as_map`](https://cocoindex.io/docs/connectors/kafka/) treats the topic as a [live keyed map](https://cocoindex.io/docs/programming_guide/live_mode/): each message becomes an item keyed by its Kafka key, and a tombstone (null value) deletes that key's row. [`mount_each`](https://cocoindex.io/docs/programming_guide/app/) runs one `process_message` component per message.
+3. [`topic_as_map`](/docs/connectors/kafka/) treats the topic as a [live keyed map](/docs/programming_guide/live_mode/): each message becomes an item keyed by its Kafka key, and a tombstone (null value) deletes that key's row. [`mount_each`](/docs/programming_guide/app/) runs one `process_message` component per message.
 
 That's the whole pipeline — one file.
 
 ## Run the pipeline
 
-Copy `.env.example` to `.env`, point `KAFKA_TOPIC` at the topic csv-to-kafka produced (and fill in SASL creds if your broker needs them), then run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/). Choose catch-up (drain what's there, then exit) or live (catch up, then keep consuming):
+Copy `.env.example` to `.env`, point `KAFKA_TOPIC` at the topic csv-to-kafka produced (and fill in SASL creds if your broker needs them), then run the [`cocoindex` CLI](/docs/cli/). Choose catch-up (drain what's there, then exit) or live (catch up, then keep consuming):
 
 ```sh
 # Catch-up run: consume everything up to now, write the rows, then exit
@@ -209,7 +209,7 @@ Every `sku` message is a row in `products`, every `emp_id` message a row in `emp
 
 ## Incremental updates
 
-This is where the declarative model pays for itself. You never write upsert logic or track which messages you've already handled — CocoIndex consumes each message, writes the row, and commits the offset, in that order. It keeps an [internal state store](https://cocoindex.io/docs/advanced_topics/internal_storage/) plus the committed Kafka offsets, and both survive restarts, so stopping and restarting resumes cleanly from the last durably-written row.
+This is where the declarative model pays for itself. You never write upsert logic or track which messages you've already handled — CocoIndex consumes each message, writes the row, and commits the offset, in that order. It keeps an [internal state store](/docs/advanced_topics/internal_storage/) plus the committed Kafka offsets, and both survive restarts, so stopping and restarting resumes cleanly from the last durably-written row.
 
 - **A new message** — one upsert into the matching table.
 - **A re-keyed message (same key, changed value)** — the existing row is updated in place.

@@ -8,9 +8,9 @@ tags: [postgres-source, vector-index]
 
 ![Postgres as a source with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/cover.png)
 
-Most data already lives in a database. This example takes an existing Postgres table of products, reads it row by row, derives a couple of fields, [embeds](https://cocoindex.io/docs/ops/sentence_transformers/) each row, and writes the result — including the vector — back into Postgres with [pgvector](https://github.com/pgvector/pgvector). Point it at any table and you have a semantic index over your structured data, kept in sync as the table changes.
+Most data already lives in a database. This example takes an existing Postgres table of products, reads it row by row, derives a couple of fields, [embeds](/docs/ops/sentence_transformers/) each row, and writes the result — including the vector — back into Postgres with [pgvector](https://github.com/pgvector/pgvector). Point it at any table and you have a semantic index over your structured data, kept in sync as the table changes.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only the rows that changed get re-embedded and re-upserted.
+The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only the rows that changed get re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source)
 
@@ -20,13 +20,13 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 From a high level, these are the steps:
 
-1. Read product rows from an existing Postgres table with [`PgTableSource`](https://cocoindex.io/docs/connectors/postgres/).
-2. For each row, derive a description and a `total_value`, then [embed](https://cocoindex.io/docs/ops/sentence_transformers/) the description.
-3. Store the enriched rows and their embeddings in Postgres (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+1. Read product rows from an existing Postgres table with [`PgTableSource`](/docs/connectors/postgres/).
+2. For each row, derive a description and a `total_value`, then [embed](/docs/ops/sentence_transformers/) the description.
+3. Store the enriched rows and their embeddings in Postgres (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
-> **New to embeddings?** An [*embedding*](https://cocoindex.io/docs/ops/sentence_transformers/) is a list of numbers (a vector) that captures the *meaning* of a piece of text, so rows with similar meaning land close together in vector space. A [*vector index*](https://cocoindex.io/docs/common_resources/vector_schema/) stores those vectors and finds the nearest ones to your query fast. That's what lets search match by meaning instead of exact words.
+> **New to embeddings?** An [*embedding*](/docs/ops/sentence_transformers/) is a list of numbers (a vector) that captures the *meaning* of a piece of text, so rows with similar meaning land close together in vector space. A [*vector index*](/docs/common_resources/vector_schema/) stores those vectors and finds the nearest ones to your query fast. That's what lets search match by meaning instead of exact words.
 
 ## Setup
 
@@ -51,7 +51,7 @@ You [declare the transformation logic](https://cocoindex.io/docs/programming_gui
 
 ## Define the data and shared resources
 
-[Apps](https://cocoindex.io/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up the data shapes and the [shared resources](https://cocoindex.io/docs/programming_guide/context/) the rest of the code builds on. `SourceProduct` describes one row read from the source table; `OutputProduct` describes one row written to the target, with the two derived fields and the embedding vector. `coco_lifespan` provides everything every step needs — a Postgres pool for the target, a pool for the source, and the embedding model — once at startup.
+[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up the data shapes and the [shared resources](/docs/programming_guide/context/) the rest of the code builds on. `SourceProduct` describes one row read from the source table; `OutputProduct` describes one row written to the target, with the two derived fields and the embedding vector. `coco_lifespan` provides everything every step needs — a Postgres pool for the target, a pool for the source, and the embedding model — once at startup.
 
 ```python title="main.py"
 DATABASE_URL = os.getenv("POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex")
@@ -127,13 +127,13 @@ async def process_product(
     )
 ```
 
-We embed the composed description rather than the raw body, so the category and name carry weight in the vector — a search for "wireless audio" matches even when the body never says it. We use [`SentenceTransformerEmbedder`](https://cocoindex.io/docs/ops/sentence_transformers/) with `all-MiniLM-L6-v2`, a small, fast model that runs locally with no API key; there are 12k+ sentence-transformer models on [Hugging Face](https://huggingface.co/models?other=sentence-transformers), so swap in whichever you prefer.
+We embed the composed description rather than the raw body, so the category and name carry weight in the vector — a search for "wireless audio" matches even when the body never says it. We use [`SentenceTransformerEmbedder`](/docs/ops/sentence_transformers/) with `all-MiniLM-L6-v2`, a small, fast model that runs locally with no API key; there are 12k+ sentence-transformer models on [Hugging Face](https://huggingface.co/models?other=sentence-transformers), so swap in whichever you prefer.
 
-[`@coco.fn`](https://cocoindex.io/docs/programming_guide/function/) with [`memo=True`](https://cocoindex.io/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a row's content and this function's code are both unchanged, the row is skipped on the next run. `table.declare_row` declares the row as a [target state](https://cocoindex.io/docs/programming_guide/target_state/); CocoIndex handles inserting, updating, or deleting it to match.
+[`@coco.fn`](/docs/programming_guide/function/) with [`memo=True`](/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a row's content and this function's code are both unchanged, the row is skipped on the next run. `table.declare_row` declares the row as a [target state](/docs/programming_guide/target_state/); CocoIndex handles inserting, updating, or deleting it to match.
 
 ## Define the main function
 
-`app_main` wires the source to the target. It mounts the Postgres target table, opens the source table, and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per source row.
+`app_main` wires the source to the target. It mounts the Postgres target table, opens the source table, and mounts one [processing component](/docs/programming_guide/processing_component/) per source row.
 
 ```python title="main.py"
 @coco.fn
@@ -167,11 +167,11 @@ app = coco.App(
 )
 ```
 
-[`PgTableSource`](https://cocoindex.io/docs/connectors/postgres/) reads the table — passing `row_type=SourceProduct` maps each row straight into the dataclass and selects exactly its fields. `fetch_rows().items(...)` streams rows over a cursor and tags each one with a [stable key](https://cocoindex.io/docs/programming_guide/processing_component/), here the `(product_category, product_name)` composite primary key. `mount_table_target` creates and manages the Postgres target table for you: schema, idempotent upserts, and orphan cleanup when a source row disappears. `mount_each` runs one component per row so the engine can track and update them independently.
+[`PgTableSource`](/docs/connectors/postgres/) reads the table — passing `row_type=SourceProduct` maps each row straight into the dataclass and selects exactly its fields. `fetch_rows().items(...)` streams rows over a cursor and tags each one with a [stable key](/docs/programming_guide/processing_component/), here the `(product_category, product_name)` composite primary key. `mount_table_target` creates and manages the Postgres target table for you: schema, idempotent upserts, and orphan cleanup when a source row disappears. `mount_each` runs one component per row so the engine can track and update them independently.
 
 ## Setup and run
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build and update the index. The Postgres source runs as a one-shot catch-up — it scans the source table, syncs the target, and exits:
+Run the [`cocoindex` CLI](/docs/cli/) to build and update the index. The Postgres source runs as a one-shot catch-up — it scans the source table, syncs the target, and exits:
 
 ```sh
 cocoindex update main

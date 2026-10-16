@@ -122,7 +122,7 @@ async def extract_topics(text: str | None) -> list[str]:
 
 The prompt in `TopicsResponse` does the heavy lifting: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
 
-[→ Function](https://cocoindex.io/docs/programming_guide/function)
+[→ Function](/docs/programming_guide/function/)
 
 ## Fetch from the HackerNews API
 
@@ -257,7 +257,7 @@ You *declare* what rows should exist — you don't write inserts or deletes. Whe
 
 **Why a component per thread?** A processing component groups one thread's work together with its target rows. Each one runs independently and in parallel, and its rows are committed to Postgres as soon as that thread is done — no waiting for the rest of the batch.
 
-[→ Processing Component](https://cocoindex.io/docs/programming_guide/processing_component)
+[→ Processing Component](/docs/programming_guide/processing_component/)
 
 ## Wire up the app
 
@@ -319,7 +319,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         yield
 ```
 
-[→ App](https://cocoindex.io/docs/programming_guide/app)
+[→ App](/docs/programming_guide/app/)
 
 ## Setup
 
