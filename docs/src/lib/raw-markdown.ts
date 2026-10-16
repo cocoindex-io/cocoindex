@@ -24,10 +24,9 @@ import type { CollectionEntry } from 'astro:content';
 import { getCollection, getEntry } from 'astro:content';
 import { GITHUB_REPO, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
 import { findExample } from '../data/examples';
-import { FENCE, MDX_COMMENT } from './fence.mjs';
+import { FENCE, INLINE_CODE, MDX_COMMENT } from './fence.mjs';
 
 const SENT = '\x00'; // sentinel: cannot occur in source text
-const INLINE = /`[^`\n]+`/g;
 const RESTORE_INLINE = /\x00C(\d+)\x00/g;
 const RESTORE_FENCE = /\x00F(\d+)\x00/g;
 
@@ -73,7 +72,7 @@ export function mdxToMarkdown(body: string, srcDir = ''): string {
   const fences: string[] = [];
   s = protect(s, FENCE, fences, 'F');
   const inlines: string[] = [];
-  s = protect(s, INLINE, inlines, 'C');
+  s = protect(s, INLINE_CODE, inlines, 'C');
 
   // 2. Strip ESM import lines (require `from` so we never eat prose starting
   //    with the word "import"), MDX `export …` scaffolding, and MDX comments.
