@@ -99,8 +99,7 @@ pub struct DriveFileInfo {
 pub struct DriveFile {
     pub file_id: String,
     pub name: String,
-    /// Path relative to the configured Drive root folder. `key()` uses this
-    /// path, matching Python's Google Drive source item keys.
+    /// Path relative to the configured Drive root folder.
     #[serde(default)]
     pub path: String,
     pub mime_type: String,
@@ -141,10 +140,9 @@ impl DriveFile {
         self
     }
 
-    /// Stable key for `mount_each`, matching Python's Google Drive source:
-    /// the file's path under the configured Drive root.
+    /// Stable key for `mount_each`. Drive names and paths need not be unique.
     pub fn key(&self) -> String {
-        self.path().to_string()
+        self.file_id.clone()
     }
 
     pub fn path(&self) -> &str {
@@ -731,11 +729,35 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].file_id, "a");
         assert_eq!(files[0].size, 42);
-        assert_eq!(files[0].key(), "doc.md");
+        assert_eq!(files[0].key(), "a");
         assert_eq!(files[0].path(), "doc.md");
         assert!(!files[0].is_folder());
         assert_eq!(files[1].size, 0); // folder omits size
         assert!(files[1].is_folder());
+    }
+
+    #[test]
+    fn same_named_files_have_distinct_mount_keys() {
+        let info = DriveFileInfo {
+            file_id: "id-1".into(),
+            name: "report.txt".into(),
+            path: "folder/report.txt".into(),
+            mime_type: "text/plain".into(),
+            size: 0,
+            modified_time: "2024-01-01T00:00:00Z".into(),
+        };
+        let first = DriveFile::new(info.clone());
+        let second = DriveFile::new(DriveFileInfo {
+            file_id: "id-2".into(),
+            ..info
+        });
+        assert_eq!(first.path(), second.path());
+        assert_ne!(first.key(), second.key());
+
+        let mut renamed = first.clone();
+        renamed.name = "renamed.txt".into();
+        renamed.path = "folder/renamed.txt".into();
+        assert_eq!(first.key(), renamed.key());
     }
 
     #[test]

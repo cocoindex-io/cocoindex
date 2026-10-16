@@ -84,7 +84,7 @@ async for file in source.files():
 
 ### Keyed iteration with `items()`
 
-`items()` yields `(str, DriveFile)` pairs, where the key is the file's name path. This is useful with `mount_each()`:
+`items()` yields `(str, DriveFile)` pairs keyed by the file's Google Drive ID. IDs remain stable across renames and avoid collisions when files share a name, including within the same folder. This is useful with `mount_each()`:
 
 ```python
 async for key, file in source.items():
