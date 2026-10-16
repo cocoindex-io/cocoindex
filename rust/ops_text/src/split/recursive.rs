@@ -27,18 +27,10 @@ pub struct CustomLanguageConfig {
 }
 
 /// Configuration for recursive text splitting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RecursiveSplitConfig {
     /// Custom language configurations.
     pub custom_languages: Vec<CustomLanguageConfig>,
-}
-
-impl Default for RecursiveSplitConfig {
-    fn default() -> Self {
-        Self {
-            custom_languages: vec![],
-        }
-    }
 }
 
 /// Configuration for a single chunking operation. The language comes from the
@@ -415,11 +407,9 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
     }
 
     fn get_overlap_cost_base(&self, offset: usize) -> usize {
-        if self.chunk_overlap == 0 {
-            0
-        } else {
-            (self.full_text.len() - offset) * MISSING_OVERLAP_COST / self.chunk_overlap
-        }
+        ((self.full_text.len() - offset) * MISSING_OVERLAP_COST)
+            .checked_div(self.chunk_overlap)
+            .unwrap_or(0)
     }
 
     fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<ChunkOutput> {

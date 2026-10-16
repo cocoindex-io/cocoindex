@@ -834,10 +834,10 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn get_child(&self, stable_path: StablePath) -> Self {
         let mut children = self.inner.active_children.lock();
-        if let Some(weak) = children.get(&stable_path) {
-            if let Some(inner) = weak.upgrade() {
-                return Self { inner };
-            }
+        if let Some(weak) = children.get(&stable_path)
+            && let Some(inner) = weak.upgrade()
+        {
+            return Self { inner };
         }
         let child = Self::new(
             self.app_ctx().clone(),
@@ -959,7 +959,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // observes readiness also observes the component as inactive.
                 drop(run);
                 drop(activity);
-                child_readiness_guard.map(|guard| guard.resolve(outcome));
+                if let Some(guard) = child_readiness_guard {
+                    guard.resolve(outcome)
+                }
                 output?
                     .ok_or_else(|| internal_error!("component deletion can only run in background"))
             }
@@ -1244,7 +1246,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Some(processor) => processor
                         .process(
                             processor_context.app_ctx().env().host_runtime_ctx(),
-                            &processor_context,
+                            processor_context,
                         )?
                         .await
                         .map(Some),
@@ -1276,7 +1278,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 deadline.check()?;
                 let submit_output = submit(processor_context, processor, |name| {
                     if reported_processor_name.is_none() {
-                        processing_stats.update(&name, |stats| {
+                        processing_stats.update(name, |stats| {
                             stats.num_execution_starts += 1;
                         });
                         *reported_processor_name = Some(Cow::Owned(name.to_string()));
@@ -1364,7 +1366,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         // That's the single, unified error-handling
                         // channel; this branch just preserves metadata.
                         if !children_outcome.has_exception {
-                            cleanup_tombstone(&processor_context).await?;
+                            cleanup_tombstone(processor_context).await?;
                         }
                         None
                     }
@@ -1427,6 +1429,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_processor_context_for_build(
         &self,
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,

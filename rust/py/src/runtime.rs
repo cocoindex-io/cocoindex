@@ -50,7 +50,7 @@ pub fn init_runtime(
     target_state_codec: Bound<'_, PyAny>,
 ) -> PyResult<()> {
     let target_state_codec = crate::target_state_codec::TargetStateCodec::new(&target_state_codec)?;
-    if let Err(_) = pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()) {
+    if pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).is_err() {
         return Err(PyException::new_err(
             "Failed to initialize Tokio runtime: already initialized",
         ));
@@ -89,8 +89,8 @@ pub fn py_reset_global_cancellation() {
 }
 
 pub fn python_objects() -> &'static PythonObjects {
-    // ManuallyDrop<T> implements Deref<Target = T>, so &**x coerces to &T.
-    &**PY_OBJECTS.get().expect("Python objects not initialized")
+    // ManuallyDrop<T> implements Deref<Target = T>, so &ManuallyDrop<T> coerces to &T.
+    PY_OBJECTS.get().expect("Python objects not initialized")
 }
 
 #[pyclass(name = "AsyncContext", from_py_object)]

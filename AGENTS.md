@@ -28,6 +28,7 @@ uv run ruff format .           # Format Python code
 uv run ruff format --check .   # Check formatting without making changes (same as CI)
 uv run ruff check .            # Lint Python code
 cargo fmt                      # Format Rust code
+./dev/run_cargo_clippy.sh      # Lint Rust code (same as CI)
 ```
 
 ### Pre-submission Checks

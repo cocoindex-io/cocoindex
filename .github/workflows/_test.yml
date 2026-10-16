@@ -78,7 +78,7 @@ jobs:
             # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
             version: "v0.12.0"
 
-        - run: rustup toolchain install stable --profile minimal
+        - run: rustup toolchain install stable --profile minimal --component clippy
 
         # `protoc` is needed to build the Rust examples that enable the LanceDB
         # (`lance-encoding`) and Qdrant (`qdrant-client`) features, which compile
@@ -129,8 +129,11 @@ jobs:
         - name: Run build-test hooks
           env:
             UV_NO_SYNC: "1"
-            # Skip mypy-check - it runs in e2e_type_check workflow
-            PREK_SKIP: mypy-check
+            # - mypy-check runs in the e2e_type_check workflow.
+            # - cargo-clippy lints one leg, Linux x86_64 on Python 3.11: the
+            #   lints don't depend on the interpreter, and the other legs would
+            #   rebuild to lint the same code, bar a few `cfg(not(unix))` lines.
+            PREK_SKIP: mypy-check${{ (matrix.platform.runner != 'ubuntu-latest' || matrix.platform.free-threaded) && ',cargo-clippy' || '' }}
           shell: bash
           run: |
             set +e

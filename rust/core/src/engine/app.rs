@@ -114,6 +114,7 @@ impl<Prof: EngineProfile> App<Prof> {
     /// - `changed()` for awaiting stats version changes
     /// - `result()` for awaiting the final result
     #[instrument(name = "app.update", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
+    #[allow(clippy::type_complexity)]
     pub fn update(
         &self,
         root_processor: Prof::ComponentProc,

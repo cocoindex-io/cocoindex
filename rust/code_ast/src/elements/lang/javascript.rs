@@ -65,12 +65,12 @@ pub(super) fn js_variable_names<H: LanguageHooks + ?Sized>(
             if vd.kind() != "variable_declarator" {
                 continue;
             }
-            if let Some(name_node) = vd.child_by_field_name("name") {
-                if name_node.kind() == "identifier" {
-                    let name = name_node.utf8_text(source).unwrap_or("").to_string();
-                    if !name.is_empty() {
-                        names.push((name, name_node.start_byte(), name_node.end_byte()));
-                    }
+            if let Some(name_node) = vd.child_by_field_name("name")
+                && name_node.kind() == "identifier"
+            {
+                let name = name_node.utf8_text(source).unwrap_or("").to_string();
+                if !name.is_empty() {
+                    names.push((name, name_node.start_byte(), name_node.end_byte()));
                 }
             }
         }

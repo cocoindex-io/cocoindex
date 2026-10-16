@@ -108,7 +108,7 @@ impl Persist for PyStoredValue {
             }; // mutex released before calling Python
 
             // Serialize (no mutex held — safe if serialize releases GIL)
-            let bytes = python_objects().serialize(py, &obj.bind(py))?;
+            let bytes = python_objects().serialize(py, obj.bind(py))?;
 
             // 2nd acquisition: cache result
             {
