@@ -30,7 +30,8 @@
 // current page and need no base prefix.
 //
 // Skipped entirely: absolute URLs (`https://`), root-relative URLs
-// (`/docs/foo` — already canonical), and `mailto:` links.
+// (`/docs/foo/` — already canonical; scripts/check-agent-output.mjs checks
+// them against the build output), and `mailto:` links.
 //
 // Plugin option:
 //   - `base` (default `''`): URL prefix to prepend when rewriting. Pass the

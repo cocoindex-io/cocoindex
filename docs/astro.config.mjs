@@ -38,11 +38,13 @@ export default defineConfig({
   // `trailingSlash: 'always'` matches `build.format: 'directory'`: every
   // page lives at `<slug>/index.html` and is canonical at `<slug>/`. In
   // dev, requests without the trailing slash 404 — that strictness is the
-  // point: the link-checker plugin catches no-slash hrefs in markdown/MDX,
-  // and `'always'` catches no-slash hrefs in `.astro` components (sidebar,
-  // breadcrumb, pager, future pieces) before they ship. External / legacy
-  // links without the slash still resolve in production via GitHub Pages's
-  // own 301 redirect, so this doesn't break inbound traffic.
+  // point: the link checks catch no-slash hrefs in markdown/MDX (the remark
+  // plugin rewrites relative links; scripts/check-agent-output.mjs flags
+  // root-relative ones), and `'always'` catches no-slash hrefs in `.astro`
+  // components (sidebar, breadcrumb, pager, future pieces) before they
+  // ship. External / legacy links without the slash still resolve in
+  // production via GitHub Pages's own 301 redirect, so this doesn't break
+  // inbound traffic.
   trailingSlash: 'always',
   integrations: [
     mdx({
