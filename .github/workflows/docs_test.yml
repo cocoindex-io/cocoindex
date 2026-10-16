@@ -1,16 +1,28 @@
 name: Test Docs
 
+# The build also reads files outside docs/: the agent skill under skills/
+# (hosted at /docs/skill.md and /docs/references/), and examples/AGENTS.md and
+# examples/<dir>/.env and .env.example, which docs/scripts/check-agent-output.mjs
+# checks. Keep both path lists below in sync with those reads.
 on:
   pull_request:
     branches: [main, v1]
     paths:
       - "docs/**"
+      - "skills/**"
+      - "examples/AGENTS.md"
+      - "examples/*/.env"
+      - "examples/*/.env.example"
       - ".github/workflows/docs_test.yml"
       - "uv.lock"
   push:
     branches: [main, v1]
     paths:
       - "docs/**"
+      - "skills/**"
+      - "examples/AGENTS.md"
+      - "examples/*/.env"
+      - "examples/*/.env.example"
       - ".github/workflows/docs_test.yml"
       - "uv.lock"
   workflow_dispatch:
