@@ -22,7 +22,7 @@ repos:
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
       - id: trailing-whitespace
         # Trims trailing whitespace.
-        exclude_types: [python]  # Covered by Ruff W291.
+        exclude_types: [python]  # ruff-format handles Python; this line-based fixer would also edit string literals.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
   - repo: https://github.com/gitleaks/gitleaks
@@ -47,8 +47,6 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
-        types: [python]
-        pass_filenames: true
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.6.1

@@ -755,10 +755,8 @@ class RateLimiter:
 
 class GPUPool:
     def __init__(self, num_gpus: int) -> None: ...
-
     @property
     def num_gpus(self) -> int: ...
-
     async def acquire(self, fraction: float) -> int:
         """
         Acquires a fraction of a GPU and returns the GPU ID.
