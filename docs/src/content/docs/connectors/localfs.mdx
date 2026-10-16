@@ -35,7 +35,7 @@ async def app_main() -> None:
         await process(file)
 
 # In your lifespan, provide the actual path:
-async def lifespan(builder: coco.EnvBuilder) -> None:
+async def lifespan(builder: coco.EnvironmentBuilder) -> None:
     builder.provide(SOURCE_DIR, pathlib.Path("./data"))
 ```
 
