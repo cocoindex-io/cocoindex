@@ -285,9 +285,13 @@ Use `common.create_test_env(__file__)` to create a CocoIndex `Environment` for t
 Use `testcontainers[postgres]` (in the `build-test` dependency group) to spin up real database instances automatically — no manual setup or environment variables needed. Use a module-scoped sync fixture for the container and a function-scoped async fixture for per-test resources:
 
 ```python
+_PG_IMAGE = "postgres:16-alpine"
+
+pytestmark = [pytest.mark.requires_docker(_PG_IMAGE)]
+
 @pytest.fixture(scope="module")
 def pg_dsn() -> Any:
-    with PostgresContainer("postgres:16-alpine") as pg:
+    with PostgresContainer(_PG_IMAGE) as pg:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
         yield dsn
 
@@ -297,6 +301,8 @@ async def pool(pg_dsn: str) -> Any:
     yield p
     await p.close()
 ```
+
+List every image a test's containers use in its `requires_docker(...)` marker. `python/tests/conftest.py` pulls missing images after collection, before the first test runs; otherwise testcontainers pulls inside the fixture, and a cold-cache download counts against the first test's `pytest-timeout`.
 
 ### LMDB write paths
 
