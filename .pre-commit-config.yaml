@@ -22,7 +22,7 @@ repos:
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
       - id: trailing-whitespace
         # Trims trailing whitespace.
-        exclude_types: [python]  # The ruff-format hook strips it from Python files.
+        exclude_types: [python]  # ruff-format handles Python; this line-based fixer would also edit string literals.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
   - repo: https://github.com/gitleaks/gitleaks
