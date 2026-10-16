@@ -13,6 +13,8 @@ const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const DIST = here('../dist/');
 const DOCS_SRC = here('../src/content/docs/');
 const POSTS_SRC = here('../src/content/example-posts/');
+// Files read outside docs/ must also match the `paths:` filters in
+// .github/workflows/docs_test.yml, or PRs touching only them skip these checks.
 const EXAMPLES_DIR = here('../../examples/');
 const REFERENCES_DIR = here('../../skills/cocoindex/references/');
 const errors = [];
