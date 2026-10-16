@@ -153,7 +153,16 @@ crc32fast = { version = "1", optional = true }
 iggy = { version = "0.10", optional = true }
 # Amazon S3 (and S3-compatible, e.g. MinIO) object source.
 aws-config = { version = "1", optional = true }
-aws-sdk-s3 = { version = "1", optional = true }
+# `default` minus its `rustls` feature. That feature only wires up the
+# deprecated hyper-0.14 connector, which drags in rustls 0.21 -> rustls-webpki
+# 0.101.x (unpatched: GHSA-82j2-j2ch-gfr8, and no aws-smithy-http-client release
+# drops the legacy dep). We never build a hyper-0.14 client; `default-https-client`
+# supplies the hyper-1.x + rustls-aws-lc stack that is actually used.
+aws-sdk-s3 = { version = "1", optional = true, default-features = false, features = [
+    "sigv4a",
+    "default-https-client",
+    "rt-tokio",
+] }
 # Google Drive source: HTTP (native-tls = macOS Security.framework, no cmake)
 # + pure-Rust RS256 JWT signing for service-account auth.
 reqwest = { version = "0.12", features = ["json"], optional = true }
