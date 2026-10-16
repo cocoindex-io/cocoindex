@@ -10,7 +10,7 @@ tags: [structured-data, full-text-search, hybrid-search]
 
 SEC filings come in many shapes — narrative 10-K risk factors as text, structured financials as XBRL JSON, exhibits as PDF. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that pulls these formats into a *single* searchable index in [Apache Doris](https://doris.apache.org/), with both a **vector index** for semantic search and a **full-text index** for keyword search — the foundation for hybrid retrieval. Along the way each document is scrubbed of PII, chunked, embedded, and tagged with risk/topic labels.
 
-The whole pipeline is ordinary `async` Python. Embedding runs on a [GPU runner](https://cocoindex.io/docs/programming_guide/function/), and the Rust engine handles [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) — add a filing and only its chunks are embedded and loaded.
+The whole pipeline is ordinary `async` Python. Embedding runs on a [GPU runner](/docs/programming_guide/function/), and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — add a filing and only its chunks are embedded and loaded.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/sec_edgar_analytics)
 
@@ -71,7 +71,7 @@ async def _index_text(text, source_type, filename, cik, filing_date, form_type, 
 
 Both sources `declare_row` into the *same* Doris table — `chunk_id` is a stable `uuid5` of the file and chunk offsets, so re-running reconciles cleanly instead of duplicating.
 
-> **A note on the port.** The original v0 example also ingested PDF exhibits via docling; this v1 port focuses on the text and XBRL-JSON sources (the PDF path is identical to the [Manuals to Structured Data](https://cocoindex.io/docs/examples/manuals-llm-extraction/) example — `docling` bytes → Markdown, then the same `_index_text`). It needs **Apache Doris 4.0+** for vector index support; a ready `docker-compose.yml` is included.
+> **A note on the port.** The original v0 example also ingested PDF exhibits via docling; this v1 port focuses on the text and XBRL-JSON sources (the PDF path is identical to the [Manuals to Structured Data](/docs/examples/manuals-llm-extraction/) example — `docling` bytes → Markdown, then the same `_index_text`). It needs **Apache Doris 4.0+** for vector index support; a ready `docker-compose.yml` is included.
 
 ## Run the pipeline
 
@@ -117,6 +117,6 @@ On the sample data that ranks **Microsoft's** cloud-and-AI filing first (it carr
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/sec_edgar_analytics](https://github.com/cocoindex-io/cocoindex/tree/main/examples/sec_edgar_analytics). For the PDF-extraction side, see [Manuals to Structured Data](https://cocoindex.io/docs/examples/manuals-llm-extraction/); for a pure-vector setup, see [Text Embedding](https://cocoindex.io/docs/examples/text-embedding/).
+The full, runnable example is in the CocoIndex repo: [examples/sec_edgar_analytics](https://github.com/cocoindex-io/cocoindex/tree/main/examples/sec_edgar_analytics). For the PDF-extraction side, see [Manuals to Structured Data](/docs/examples/manuals-llm-extraction/); for a pure-vector setup, see [Text Embedding](/docs/examples/text-embedding/).
 
 Indexing your own filing archive? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
