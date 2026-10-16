@@ -1,11 +1,16 @@
 import contextlib
+import json
 import os
 import time
 import warnings
+from typing import TYPE_CHECKING
 
 import pytest
 
 from cocoindex._internal.serde import enable_strict_serialize
+
+if TYPE_CHECKING:
+    import docker  # type: ignore[import-untyped]
 
 os.environ.setdefault("PYTHONASYNCIODEBUG", "1")
 enable_strict_serialize()
@@ -47,6 +52,43 @@ def _is_statically_skipped(item: pytest.Item) -> bool:
     )
 
 
+_PULL_ATTEMPTS = 3
+# Docker reports progress continuously while layers download; this much
+# silence means the pull is stuck.
+_PULL_STALL_TIMEOUT_S = 60
+_PULL_ATTEMPT_DEADLINE_S = 300
+
+
+def _pull_attempt(api: "docker.APIClient", image: str) -> None:
+    """Pull `image` once; raise on error, stall, or deadline.
+
+    ``client.images.pull`` streams the pull with no read timeout, so a stalled
+    registry download hangs it forever -- and here, outside any test, no
+    ``pytest-timeout`` would end it.
+    """
+    import docker
+    import requests
+
+    repo, tag = docker.utils.parse_repository_tag(image)
+    deadline = time.monotonic() + _PULL_ATTEMPT_DEADLINE_S
+    with api.post(
+        f"{api.base_url}/v{api.api_version}/images/create",
+        params={"fromImage": repo, "tag": tag or "latest"},
+        stream=True,
+        timeout=(10, _PULL_STALL_TIMEOUT_S),
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if line and (error := json.loads(line).get("error")):
+                raise requests.RequestException(error)
+            if time.monotonic() > deadline:
+                # Leaving the `with` closes the connection, which cancels the
+                # pull on the daemon side too.
+                raise requests.RequestException(
+                    f"not done after {_PULL_ATTEMPT_DEADLINE_S}s"
+                )
+
+
 def _pull_missing_docker_images(session: pytest.Session) -> None:
     """Pull the images that selected ``requires_docker`` tests need, up front.
 
@@ -67,7 +109,8 @@ def _pull_missing_docker_images(session: pytest.Session) -> None:
     if not images:
         return
 
-    import docker  # type: ignore[import-untyped]
+    import docker
+    import requests
     from docker.errors import ImageNotFound  # type: ignore[import-untyped]
 
     client = docker.from_env()
@@ -78,15 +121,21 @@ def _pull_missing_docker_images(session: pytest.Session) -> None:
             continue
         except ImageNotFound:
             pass
-        if reporter is not None:
-            reporter.write_line(f"Pulling docker image {image} ...")
         start = time.monotonic()
-        try:
-            client.images.pull(image)
-        except Exception as e:
+        for attempt in range(1, _PULL_ATTEMPTS + 1):
+            if reporter is not None:
+                reporter.write_line(
+                    f"Pulling docker image {image} (attempt {attempt}) ..."
+                )
+            try:
+                _pull_attempt(client.api, image)
+                break
+            except requests.RequestException as e:
+                last_error = e
+        else:
             # Leave it to the fixture: it retries the pull and fails only its
             # own tests, rather than this aborting the whole session.
-            warnings.warn(f"Failed to pre-pull docker image {image}: {e}")
+            warnings.warn(f"Failed to pre-pull docker image {image}: {last_error}")
             continue
         if reporter is not None:
             reporter.write_line(
