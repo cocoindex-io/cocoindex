@@ -278,7 +278,7 @@ def configure_gpu_pool(num_gpus: int) -> None:
 # ============================================================================
 
 
-class _EmptyContextThreadPoolExecutor(ThreadPoolExecutor):
+class EmptyContextThreadPoolExecutor(ThreadPoolExecutor):
     """A thread pool whose worker threads start in an empty context.
 
     Where threads inherit the starter's context (free-threaded 3.14+), a worker
@@ -332,7 +332,7 @@ class GPURunner(Runner):
     def _get_gpu_executor(self) -> ThreadPoolExecutor:
         """Get or create the dedicated GPU thread pool."""
         if self._gpu_executor is None:
-            self._gpu_executor = _EmptyContextThreadPoolExecutor(
+            self._gpu_executor = EmptyContextThreadPoolExecutor(
                 thread_name_prefix="gpu"
             )
         return self._gpu_executor

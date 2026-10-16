@@ -19,7 +19,7 @@ impl ChildStablePathSet {
             match current
                 .children
                 .entry(key.clone())
-                .or_insert_with(|| StablePathSet::directory())
+                .or_insert_with(StablePathSet::directory)
             {
                 StablePathSet::Directory(dir) => {
                     current = dir;

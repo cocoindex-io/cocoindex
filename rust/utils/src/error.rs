@@ -247,7 +247,7 @@ impl Error {
             write!(f, "\nContext:\n")?;
             let mut next_id = 1;
             while let Error::Context { msg, source } = current {
-                write!(f, "  {next_id}: {msg}\n")?;
+                writeln!(f, "  {next_id}: {msg}")?;
                 current = source.inner();
                 next_id += 1;
             }

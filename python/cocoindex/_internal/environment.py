@@ -28,6 +28,7 @@ from typing import (
 from . import core
 from . import setting
 from .context_keys import ContextKey, ContextProvider
+from .runner import EmptyContextThreadPoolExecutor
 
 if TYPE_CHECKING:
     from cocoindex._internal.app import App
@@ -97,7 +98,14 @@ class _LoopRunner:
 
     @classmethod
     def create_new_running(cls) -> "_LoopRunner":
-        runner = cls(asyncio.new_event_loop())
+        loop = asyncio.new_event_loop()
+        # The loop is ours, so its default executor (behind `asyncio.to_thread()`) is
+        # too: start its workers in an empty context, like the loop's own thread. A
+        # loop the user passes in keeps the user's executor.
+        loop.set_default_executor(
+            EmptyContextThreadPoolExecutor(thread_name_prefix="asyncio")
+        )
+        runner = cls(loop)
         runner.ensure_running()
         return runner
 

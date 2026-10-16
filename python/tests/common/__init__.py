@@ -1,3 +1,3 @@
 from .environment import *
 from .inspect_utils import *
-from . import target_states
+from . import target_states as target_states

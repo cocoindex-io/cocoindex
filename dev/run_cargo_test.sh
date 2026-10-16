@@ -75,6 +75,21 @@ else
   uv run cargo test "$@"
 fi
 
-# Plain `cargo test` never compiles bench targets; compile-check (not run)
-# them here to keep them from bit-rotting.
-cargo check -p cocoindex --features bench-support --benches
+# The Rust SDK (`cocoindex`) has no default features, so the plain `cargo test`
+# above leaves every optional connector and op out of the build. The two steps
+# below cover them.
+
+# Type-check every feature on every target, to keep the features that no test
+# run enables from bit-rotting. This also covers the bench targets, which
+# `cargo test` never compiles.
+cargo check -p cocoindex --all-features --all-targets
+
+# Run the SDK tests under the features that need no external server: their
+# tests are hermetic, or skip unless an env var names a live server. The
+# features left out probe localhost for a server, or pull in a large dependency
+# tree only to skip. Not done for a targeted run (one that passes arguments).
+SDK_TEST_FEATURES="code_match,doris,embed_api,fs_live,google_drive,kafka,lancedb"
+SDK_TEST_FEATURES+=",oci_object_storage,postgres,sqlite,text,turbopuffer,valkey"
+if [[ $# -eq 0 ]]; then
+  cargo test -p cocoindex --features "$SDK_TEST_FEATURES"
+fi

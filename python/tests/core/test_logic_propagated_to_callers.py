@@ -1,4 +1,4 @@
-"""End-to-end tests for ``coco.logic_tracked`` (the callback tunnel).
+"""End-to-end tests for ``coco.logic_propagated_to_callers`` (the callback tunnel).
 
 Case numbers refer to the matrix in
 ``specs/logic_change_detection/callback_tunnel.md``.
@@ -10,7 +10,7 @@ Roles (names from the spec):
 - ``H`` — ``higher_level*``: ``"self"`` layers that forward (or create)
   callbacks.
 - ``O`` — the owner: a ``"full"`` frame that creates the callback and wraps it
-  with ``coco.logic_tracked``. Either a memoized module-level ``owner*``
+  with ``coco.logic_propagated_to_callers``. Either a memoized module-level ``owner*``
   function (so its own entry is observable) or the test's ``app_main`` (a
   *root owner*, whose body always runs, which isolates what the entries below
   it recorded).
@@ -41,10 +41,10 @@ from tests.common.target_states import GlobalDictTarget, Metrics
 coco_env = common.create_test_env(__file__)
 
 _TEST_DIR = pathlib.Path(__file__).parent
-_V1_PATH = str(_TEST_DIR / "mod_logic_tracked_v1.py")
-_V2_PATH = str(_TEST_DIR / "mod_logic_tracked_v2.py")
-_V3_PATH = str(_TEST_DIR / "mod_logic_tracked_v3.py")
-_FAKE_MODULE = "tests.core._dynamic_logic_tracked_module"
+_V1_PATH = str(_TEST_DIR / "mod_logic_propagated_v1.py")
+_V2_PATH = str(_TEST_DIR / "mod_logic_propagated_v2.py")
+_V3_PATH = str(_TEST_DIR / "mod_logic_propagated_v3.py")
+_FAKE_MODULE = "tests.core._dynamic_logic_propagated_module"
 
 # Per-test state read by the module-level T/H/O functions below.
 _metrics: list[Metrics] = []
@@ -111,7 +111,7 @@ def traverse_wraps_own_callback(fn: Callable[[str], str], value: str) -> str:
     """T that is itself the owner: a "self" entry point calling an unwrapped
     callback records it in its own entry by wrapping it in its own frame."""
     _m().increment("traverse_wraps_own_callback")
-    return coco.logic_tracked(fn)(value)
+    return coco.logic_propagated_to_callers(fn)(value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
@@ -189,14 +189,14 @@ def higher_level_internal_cb2_traverse_wraps(value: str) -> str:
 def higher_level_two(fn1: Callable[[str], str], value: str, which: str) -> str:
     """H receives ``fn1`` from above and creates ``cb2``, wrapped by itself."""
     _m().increment("higher_level")
-    return traverse2(fn1, coco.logic_tracked(_mod().cb2), value, which)
+    return traverse2(fn1, coco.logic_propagated_to_callers(_mod().cb2), value, which)
 
 
 @coco.fn(logic_tracking="self", version=1)
 async def higher_level_gather(fn1: Callable[[str], Awaitable[str]], value: str) -> str:
     """H wraps ``acb2`` itself and runs two T calls concurrently."""
     _m().increment("higher_level")
-    fn2 = coco.logic_tracked(_mod().acb2)
+    fn2 = coco.logic_propagated_to_callers(_mod().acb2)
     r1, r2 = await asyncio.gather(
         traverse_gather(fn1, fn2, value + "1"),
         traverse_gather(fn1, fn2, value + "2"),
@@ -218,7 +218,7 @@ async def higher_level_mounts(fn: Callable[[str], str], key: str, value: str) ->
 @coco.fn(memo=True)
 def owner(key: str, value: str) -> str:
     _m().increment("owner")
-    return higher_level(coco.logic_tracked(_mod().cb), value)
+    return higher_level(coco.logic_propagated_to_callers(_mod().cb), value)
 
 
 @coco.fn(memo=True)
@@ -230,27 +230,27 @@ def owner_internal(key: str, value: str) -> str:
 @coco.fn(memo=True)
 def owner_two(key: str, value: str, which: str) -> str:
     _m().increment("owner")
-    return higher_level_two(coco.logic_tracked(_mod().cb), value, which)
+    return higher_level_two(coco.logic_propagated_to_callers(_mod().cb), value, which)
 
 
 @coco.fn(memo=True)
 def owner_forwarding(key: str, value: str) -> str:
     _m().increment("owner")
-    return higher_level_outer(coco.logic_tracked(_mod().cb), value)
+    return higher_level_outer(coco.logic_propagated_to_callers(_mod().cb), value)
 
 
 @coco.fn
 def owner_plain(value: str) -> str:
     """A "full" owner that is not memoized (so a "self" ancestor is observable)."""
     _m().increment("owner")
-    return traverse(coco.logic_tracked(_mod().cb), value)
+    return traverse(coco.logic_propagated_to_callers(_mod().cb), value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
 def owner_self_memo(key: str, value: str) -> str:
     """A memoized "self" owner: its own entry records what it wrapped."""
     _m().increment("owner")
-    return higher_level(coco.logic_tracked(_mod().cb), value)
+    return higher_level(coco.logic_propagated_to_callers(_mod().cb), value)
 
 
 @coco.fn(memo=True, logic_tracking="self", version=1)
@@ -262,14 +262,16 @@ def self_ancestor(key: str, value: str) -> str:
 @coco.fn(memo=True)
 async def owner_gather(key: str, value: str) -> str:
     _m().increment("owner")
-    return await higher_level_gather(coco.logic_tracked(_mod().acb), value)
+    return await higher_level_gather(
+        coco.logic_propagated_to_callers(_mod().acb), value
+    )
 
 
 @coco.fn
 async def owner_mounting(key: str, value: str) -> None:
     """A "full" owner inside component P's body; mounts, so cannot be memoized."""
     _m().increment("owner")
-    await higher_level_mounts(coco.logic_tracked(_mod().cb), key, value)
+    await higher_level_mounts(coco.logic_propagated_to_callers(_mod().cb), key, value)
 
 
 @coco.fn(memo=True)
@@ -289,7 +291,7 @@ async def parent_comp_plain(key: str, value: str) -> None:
 # ============================================================================
 
 
-def test_logic_tracked_callback_recorded_in_every_entry_on_the_path() -> None:
+def test_logic_propagated_callback_recorded_in_every_entry_on_the_path() -> None:
     """O (memo, full) wraps cb; H (self) forwards it; T (memo, self) calls it.
     Editing cb must miss both T's and O's entries."""
     metrics = _reset()
@@ -300,7 +302,7 @@ def test_logic_tracked_callback_recorded_in_every_entry_on_the_path() -> None:
 
     app = coco.App(
         coco.AppConfig(
-            name="test_logic_tracked_every_entry_on_path", environment=coco_env
+            name="test_logic_propagated_every_entry_on_path", environment=coco_env
         ),
         app_main,
     )
@@ -337,11 +339,13 @@ def test_intermediate_memo_misses_after_callback_edit_under_root_owner() -> None
 
     @coco.fn
     def app_main() -> None:
-        _declare("A", higher_level(coco.logic_tracked(_mod().cb), "value1"))
+        _declare(
+            "A", higher_level(coco.logic_propagated_to_callers(_mod().cb), "value1")
+        )
 
     app = coco.App(
         coco.AppConfig(
-            name="test_logic_tracked_stale_intermediate", environment=coco_env
+            name="test_logic_propagated_stale_intermediate", environment=coco_env
         ),
         app_main,
     )
@@ -499,7 +503,12 @@ def test_callback_owned_by_self_layer_reaches_traverse_and_stops_there() -> None
 
     @coco.fn
     def app_main_root_owner() -> None:
-        _declare("B", higher_level_two(coco.logic_tracked(_mod().cb), "value1", "12"))
+        _declare(
+            "B",
+            higher_level_two(
+                coco.logic_propagated_to_callers(_mod().cb), "value1", "12"
+            ),
+        )
 
     app_memo = coco.App(
         coco.AppConfig(name="test_self_owner_stops_memo", environment=coco_env),
@@ -539,7 +548,12 @@ def test_only_callbacks_that_ran_are_recorded() -> None:
 
     @coco.fn
     def app_main() -> None:
-        _declare("A", higher_level_two(coco.logic_tracked(_mod().cb), "value1", "1"))
+        _declare(
+            "A",
+            higher_level_two(
+                coco.logic_propagated_to_callers(_mod().cb), "value1", "1"
+            ),
+        )
 
     app = coco.App(
         coco.AppConfig(name="test_only_ran_callbacks_recorded", environment=coco_env),
@@ -566,7 +580,7 @@ def test_only_callbacks_that_ran_are_recorded() -> None:
 # ============================================================================
 
 
-def test_logic_tracked_forwards_through_two_self_layers() -> None:
+def test_logic_propagated_forwards_through_two_self_layers() -> None:
     metrics = _reset()
 
     @coco.fn
@@ -575,7 +589,10 @@ def test_logic_tracked_forwards_through_two_self_layers() -> None:
 
     @coco.fn
     def app_main_root_owner() -> None:
-        _declare("B", higher_level_outer(coco.logic_tracked(_mod().cb), "value1"))
+        _declare(
+            "B",
+            higher_level_outer(coco.logic_propagated_to_callers(_mod().cb), "value1"),
+        )
 
     app_memo = coco.App(
         coco.AppConfig(name="test_forward_two_layers_memo", environment=coco_env),
@@ -745,14 +762,14 @@ def test_mounted_component_on_the_path_records_the_callback() -> None:
 # ============================================================================
 
 
-def test_logic_tracked_extent_violations_raise() -> None:
+def test_logic_propagated_extent_violations_raise() -> None:
     metrics = _reset()
     escaped: list[Callable[[str], str]] = []
     checked: list[str] = []
 
     @coco.fn
     def owner_leaks_wrapper(value: str) -> None:
-        escaped.append(coco.logic_tracked(_mod().cb))
+        escaped.append(coco.logic_propagated_to_callers(_mod().cb))
 
     @coco.fn
     def app_main() -> None:
@@ -764,7 +781,7 @@ def test_logic_tracked_extent_violations_raise() -> None:
 
     app = coco.App(
         coco.AppConfig(
-            name="test_logic_tracked_extent_violation", environment=coco_env
+            name="test_logic_propagated_extent_violation", environment=coco_env
         ),
         app_main,
     )
@@ -779,7 +796,31 @@ def test_logic_tracked_extent_violations_raise() -> None:
 
     # Wrapping needs a frame to own the callback.
     with pytest.raises(RuntimeError, match="No ComponentContext available"):
-        coco.logic_tracked(_mod().cb)
+        coco.logic_propagated_to_callers(_mod().cb)
+
+
+def test_logic_tracked_alias_warns_and_wraps_identically() -> None:
+    """``coco.logic_tracked`` is the former name: the same wrapper, plus a
+    ``DeprecationWarning`` naming the replacement."""
+    _reset()
+    checked: list[str] = []
+
+    @coco.fn
+    def app_main() -> None:
+        cb: Callable[[str], str] = _mod().cb
+        with pytest.warns(DeprecationWarning, match="logic_propagated_to_callers"):
+            old = coco.logic_tracked(cb)
+        new = coco.logic_propagated_to_callers(cb)
+        assert type(old) is type(new)
+        assert old("x") == new("x") == cb("x")
+        checked.append("same")
+
+    app = coco.App(
+        coco.AppConfig(name="test_logic_tracked_alias", environment=coco_env), app_main
+    )
+    _load_module(_V1_PATH)
+    app.update_blocking()
+    assert checked == ["same"]
 
 
 def test_sync_callable_returning_awaitable_is_rejected() -> None:
@@ -795,14 +836,14 @@ def test_sync_callable_returning_awaitable_is_rejected() -> None:
         def make(s: str) -> Awaitable[str]:
             return acb(s)
 
-        wrapped = coco.logic_tracked(make)
+        wrapped = coco.logic_propagated_to_callers(make)
         with pytest.raises(TypeError, match="returned an awaitable"):
             _ = wrapped("x")
         checked.append("rejected")
 
     app = coco.App(
         coco.AppConfig(
-            name="test_logic_tracked_rejects_sync_awaitable", environment=coco_env
+            name="test_logic_propagated_rejects_sync_awaitable", environment=coco_env
         ),
         app_main,
     )
@@ -820,13 +861,15 @@ def test_partial_of_async_callback_gets_an_async_wrapper() -> None:
     @coco.fn
     async def app_main() -> None:
         acb: Callable[[str], Awaitable[str]] = _mod().acb
-        wrapped = coco.logic_tracked(functools.partial(acb, "p"))
+        wrapped = coco.logic_propagated_to_callers(functools.partial(acb, "p"))
         coro = wrapped()
         assert inspect.iscoroutine(coro)
         _declare("A", await coro)
 
     app = coco.App(
-        coco.AppConfig(name="test_logic_tracked_partial_async", environment=coco_env),
+        coco.AppConfig(
+            name="test_logic_propagated_partial_async", environment=coco_env
+        ),
         app_main,
     )
     _load_module(_V1_PATH)
@@ -840,7 +883,7 @@ def test_partial_of_async_callback_gets_an_async_wrapper() -> None:
 # ============================================================================
 
 
-def test_gathered_logic_tracked_callbacks_tag_without_cross_talk() -> None:
+def test_gathered_propagated_callbacks_tag_without_cross_talk() -> None:
     """O wraps acb; H wraps acb2 and gathers two T calls; each T gathers
     acb, acb2, acb. Editing acb misses O and both T entries."""
     metrics = _reset()
@@ -850,9 +893,7 @@ def test_gathered_logic_tracked_callbacks_tag_without_cross_talk() -> None:
         _declare("A", await owner_gather("A", "v"))
 
     app = coco.App(
-        coco.AppConfig(
-            name="test_gather_logic_tracked_outer_edit", environment=coco_env
-        ),
+        coco.AppConfig(name="test_gather_propagated_outer_edit", environment=coco_env),
         app_main,
     )
     all_ran = {"owner": 1, "higher_level": 1, "traverse_gather": 2, "acb": 4, "acb2": 2}
@@ -888,7 +929,12 @@ def test_gathered_callback_owned_by_self_layer_stops_there() -> None:
 
     @coco.fn
     async def app_main_root_owner() -> None:
-        _declare("B", await higher_level_gather(coco.logic_tracked(_mod().acb), "v"))
+        _declare(
+            "B",
+            await higher_level_gather(
+                coco.logic_propagated_to_callers(_mod().acb), "v"
+            ),
+        )
 
     app_memo = coco.App(
         coco.AppConfig(name="test_gather_self_owner_memo", environment=coco_env),

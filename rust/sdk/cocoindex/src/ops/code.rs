@@ -22,9 +22,10 @@
 //! let m = ast.matches(r"def \NAME(\(A*\)):").unwrap();
 //! assert_eq!(m[0].captures["NAME"][0].text(ast.source()), "f");
 //!
-//! // Reuse the compiled pattern across many sources.
-//! let pat = CodePattern::new(r"def \NAME(\(A*\)):", "python", 3).unwrap();
-//! assert!(pat.might_match("def foo(): pass"));
+//! // Reuse the compiled pattern across many sources. The parse-free prefilter
+//! // rejects a source that lacks an identifier the pattern requires.
+//! let pat = CodePattern::new(r"evaluate_model(\(A*\))", "python", 3).unwrap();
+//! assert!(pat.might_match("evaluate_model(x, y)"));
 //! assert!(!pat.might_match("x = 1"));
 //! # }
 //! ```

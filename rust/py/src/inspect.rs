@@ -1,4 +1,3 @@
-use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::{
@@ -12,7 +11,7 @@ use cocoindex_core::engine::runtime::get_runtime;
 use cocoindex_core::inspect::db_inspect;
 use cocoindex_core::inspect::db_inspect::StablePathNodeType;
 use cocoindex_core::state::stable_path::StableKey;
-use futures::stream::Stream;
+use futures::stream::{BoxStream, Stream};
 use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -61,10 +60,8 @@ pub struct PyStablePathInfo {
 #[pyclass(name = "StablePathInfoAsyncIterator")]
 pub struct PyStablePathInfoAsyncIterator {
     /// Stream wrapped in async Mutex to allow &self access without blocking Python thread.
-    /// Pin<Box<...>> is needed because streams are not Unpin.
-    stream: Arc<
-        tokio::sync::Mutex<Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathInfo>> + Send>>>,
-    >,
+    /// `BoxStream` (a `Pin<Box<...>>`) is needed because streams are not Unpin.
+    stream: Arc<tokio::sync::Mutex<BoxStream<'static, Result<db_inspect::StablePathInfo>>>>,
 }
 
 #[pymethods]
@@ -93,7 +90,6 @@ impl PyStablePathInfoAsyncIterator {
                         )
                         .map(|p| p.into_any())
                     })
-                    .map_err(|e| e.into())
                 }
             }
         })
@@ -133,8 +129,7 @@ fn wrap_stream_as_async_iterator<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     // Box and pin the stream to store it in the iterator.
     // No forwarder task needed - we poll the stream directly.
-    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathInfo>> + Send>> =
-        Box::pin(stream);
+    let stream: BoxStream<'static, Result<db_inspect::StablePathInfo>> = Box::pin(stream);
 
     let iterator = PyStablePathInfoAsyncIterator {
         stream: Arc::new(tokio::sync::Mutex::new(stream)),
@@ -292,11 +287,7 @@ pub fn get_stable_path_detail_by_name(
 /// (same shape as [`PyStablePathInfoAsyncIterator`]).
 #[pyclass(name = "StablePathDetailAsyncIterator")]
 pub struct PyStablePathDetailAsyncIterator {
-    stream: Arc<
-        tokio::sync::Mutex<
-            Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathDetail>> + Send>>,
-        >,
-    >,
+    stream: Arc<tokio::sync::Mutex<BoxStream<'static, Result<db_inspect::StablePathDetail>>>>,
 }
 
 #[pymethods]
@@ -319,7 +310,6 @@ impl PyStablePathDetailAsyncIterator {
                         let converted = convert_detail(py, detail)?;
                         Py::new(py, converted).map(|p| p.into_any())
                     })
-                    .map_err(|e| e.into())
                 }
             }
         })
@@ -330,8 +320,7 @@ fn wrap_detail_stream_as_async_iterator<'py>(
     stream: impl Stream<Item = Result<db_inspect::StablePathDetail>> + Send + 'static,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathDetail>> + Send>> =
-        Box::pin(stream);
+    let stream: BoxStream<'static, Result<db_inspect::StablePathDetail>> = Box::pin(stream);
     let iterator = PyStablePathDetailAsyncIterator {
         stream: Arc::new(tokio::sync::Mutex::new(stream)),
     };
@@ -395,11 +384,7 @@ fn convert_target_state_entry(e: db_inspect::TargetStateEntry) -> PyTargetStateE
 /// (same shape as [`PyStablePathInfoAsyncIterator`]).
 #[pyclass(name = "TargetStateEntryAsyncIterator")]
 pub struct PyTargetStateEntryAsyncIterator {
-    stream: Arc<
-        tokio::sync::Mutex<
-            Pin<Box<dyn Stream<Item = Result<db_inspect::TargetStateEntry>> + Send>>,
-        >,
-    >,
+    stream: Arc<tokio::sync::Mutex<BoxStream<'static, Result<db_inspect::TargetStateEntry>>>>,
 }
 
 #[pymethods]
@@ -421,7 +406,6 @@ impl PyTargetStateEntryAsyncIterator {
                     Python::attach(|py| {
                         Py::new(py, convert_target_state_entry(entry)).map(|p| p.into_any())
                     })
-                    .map_err(|e| e.into())
                 }
             }
         })
@@ -432,8 +416,7 @@ fn wrap_target_state_stream_as_async_iterator<'py>(
     stream: impl Stream<Item = Result<db_inspect::TargetStateEntry>> + Send + 'static,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::TargetStateEntry>> + Send>> =
-        Box::pin(stream);
+    let stream: BoxStream<'static, Result<db_inspect::TargetStateEntry>> = Box::pin(stream);
     let iterator = PyTargetStateEntryAsyncIterator {
         stream: Arc::new(tokio::sync::Mutex::new(stream)),
     };

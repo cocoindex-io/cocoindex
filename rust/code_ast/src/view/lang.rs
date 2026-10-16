@@ -477,7 +477,7 @@ impl LangCtx {
     }
 
     pub fn is_attached_prefix_kind(&self, kind: &str) -> bool {
-        self.attached_kinds.iter().any(|k| *k == kind)
+        self.attached_kinds.contains(&kind)
     }
 }
 

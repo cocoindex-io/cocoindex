@@ -60,32 +60,66 @@ enum Change<V> {
     Delete(String),
 }
 
+/// A change, numbered so a watcher can drop what its scan already covered.
+struct SeqChange<V> {
+    seq: u64,
+    change: Change<V>,
+}
+
+struct LiveMapState<V> {
+    entries: HashMap<String, V>,
+    /// Number of changes applied so far.
+    seq: u64,
+    /// `seq` as of the latest scan.
+    scan_seq: u64,
+    /// The active `watch()`'s queue. Changes are queued only while a watcher
+    /// is armed, so a map nobody watches does not accumulate them.
+    watcher: Option<mpsc::UnboundedSender<SeqChange<V>>>,
+}
+
 struct LiveMapInner<V> {
-    entries: Mutex<HashMap<String, V>>,
-    /// Always live, so producer changes queue even before a consumer attaches.
-    sender: mpsc::UnboundedSender<Change<V>>,
-    /// Taken by the single active `watch()`.
-    receiver: Mutex<Option<mpsc::UnboundedReceiver<Change<V>>>>,
+    state: Mutex<LiveMapState<V>>,
 }
 
 impl<V: LiveMapValue> LiveMapInner<V> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LiveMapState<V>> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Apply one entry action to the in-memory map, emitting a change to the
     /// watcher only when the value actually changed (the `==` gate).
     fn apply(&self, key: String, value: Option<V>) {
-        let mut entries = self.entries.lock().unwrap();
-        match value {
+        let mut state = self.lock();
+        let change = match value {
             Some(v) => {
-                if entries.get(&key) != Some(&v) {
-                    entries.insert(key.clone(), v.clone());
-                    let _ = self.sender.send(Change::Upsert(key, v));
+                if state.entries.get(&key) == Some(&v) {
+                    return;
                 }
+                state.entries.insert(key.clone(), v.clone());
+                Change::Upsert(key, v)
             }
             None => {
-                if entries.remove(&key).is_some() {
-                    let _ = self.sender.send(Change::Delete(key));
+                if state.entries.remove(&key).is_none() {
+                    return;
                 }
+                Change::Delete(key)
             }
+        };
+        state.seq += 1;
+        let seq = state.seq;
+        if let Some(watcher) = &state.watcher {
+            let _ = watcher.send(SeqChange { seq, change });
         }
+    }
+}
+
+/// Disarms the watcher when `watch()` ends (returns, fails or is cancelled),
+/// so the map can be watched again, like Python's `finally` reset.
+struct WatcherGuard<'a, V: LiveMapValue>(&'a LiveMapInner<V>);
+
+impl<V: LiveMapValue> Drop for WatcherGuard<'_, V> {
+    fn drop(&mut self) {
+        self.0.lock().watcher = None;
     }
 }
 
@@ -110,11 +144,13 @@ impl<V: LiveMapValue> LiveMap<V> {
     /// Create a LiveMap and mount its backing target. Call inside a component
     /// context (an `App::update`/`run` closure or a mounted component).
     pub async fn create(ctx: &Ctx) -> Result<Self> {
-        let (sender, receiver) = mpsc::unbounded_channel();
         let inner = Arc::new(LiveMapInner {
-            entries: Mutex::new(HashMap::new()),
-            sender,
-            receiver: Mutex::new(Some(receiver)),
+            state: Mutex::new(LiveMapState {
+                entries: HashMap::new(),
+                seq: 0,
+                scan_seq: 0,
+                watcher: None,
+            }),
         });
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let container_provider = register_root_target_states_provider(
@@ -147,8 +183,10 @@ impl<V: LiveMapValue> LiveMap<V> {
 #[async_trait]
 impl<V: LiveMapValue> LiveMapView<String, V> for LiveMap<V> {
     async fn scan(&self) -> Result<Vec<(String, V)>> {
-        let entries = self.inner.entries.lock().unwrap();
-        Ok(entries
+        let mut state = self.inner.lock();
+        state.scan_seq = state.seq;
+        Ok(state
+            .entries
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect())
@@ -158,15 +196,30 @@ impl<V: LiveMapValue> LiveMapView<String, V> for LiveMap<V> {
 #[async_trait]
 impl<V: LiveMapValue> LiveMapFeed<String, V> for LiveMap<V> {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, V>) -> Result<()> {
-        let mut rx =
-            self.inner.receiver.lock().unwrap().take().ok_or_else(|| {
-                Error::engine("LiveMap supports a single active watch() at a time.")
-            })?;
-        // The framework already ran the catch-up scan + mark_ready before calling
-        // `watch`. Drain incremental changes from here on. Changes that occurred
-        // before the scan are replayed too; the consumer's update/delete is
-        // idempotent, so the redundancy is harmless.
-        while let Some(change) = rx.recv().await {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let changed_since_scan = {
+            let mut state = self.inner.lock();
+            if state.watcher.is_some() {
+                return Err(Error::engine(
+                    "LiveMap supports a single active watch() at a time.",
+                ));
+            }
+            state.watcher = Some(tx);
+            state.seq != state.scan_seq
+        };
+        let _guard = WatcherGuard(self.inner.as_ref());
+        // The framework scanned before calling `watch`. Changes applied between
+        // that scan and arming the queue were not queued, so rescan to cover
+        // them; changes queued since arming that the scan already reflects are
+        // skipped below by sequence number.
+        if changed_since_scan {
+            subscriber.update_all().await?;
+        }
+        let snapshot_seq = self.inner.lock().scan_seq;
+        while let Some(SeqChange { seq, change }) = rx.recv().await {
+            if seq <= snapshot_seq {
+                continue;
+            }
             match change {
                 Change::Upsert(key, value) => subscriber.update(key, value).await?,
                 Change::Delete(key) => subscriber.delete(key).await?,

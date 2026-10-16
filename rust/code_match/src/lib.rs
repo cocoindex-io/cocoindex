@@ -17,6 +17,7 @@ pub use lexer::{Cardinality, PatternItem};
 pub use matcher::{Capture, Match, Pattern};
 pub use prefilter::{
     Boundary, FilterClause, FilterTerm, Prefilter, index_terms, index_terms_in_tree,
+    regex_required_literals,
 };
 
 // The crate's fallible surface uses the workspace-standard error type.

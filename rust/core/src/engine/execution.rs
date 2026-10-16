@@ -37,9 +37,7 @@ pub(crate) fn deserialize_memo_values<Prof: EngineProfile>(
     values
         .iter()
         .map(|s| {
-            let bytes = match s {
-                db_schema::MemoizedValue::Inlined(b) => b,
-            };
+            let db_schema::MemoizedValue::Inlined(bytes) = s;
             Prof::FunctionData::from_bytes(bytes.as_ref())
         })
         .collect()
@@ -102,49 +100,45 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
             return Ok(None);
         };
         let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&memo_bytes)?;
-        if let Some(processor_fp) = processor_fp {
-            if memo_info.processor_fp == processor_fp
-                && logic_registry::all_contained_with_env(
-                    &memo_info.logic_deps,
-                    comp_ctx.app_ctx().env(),
-                )
-                && target_provider_deps_still_valid(
-                    memo_info.target_provider_deps.iter().map(|(p, g)| (p, g)),
-                    &comp_ctx.target_states_providers()?,
-                )
-            {
-                let bytes = match memo_info.return_value {
-                    db_schema::MemoizedValue::Inlined(b) => b,
-                };
-                let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
-                match ret {
-                    Ok(ret) => {
-                        let memo_states = deserialize_memo_values::<Prof>(&memo_info.memo_states)?;
-                        let context_memo_states = deserialize_context_memo_states::<Prof>(
-                            &memo_info.context_memo_states,
-                        )?;
-                        // Carry the stored logic deps out so the cache-hit path
-                        // can still report this subtree's dependency set to the
-                        // parent — otherwise a parent that mounts this component
-                        // would not depend on it (or its descendants) and would
-                        // wrongly stay a memo hit when their code changes. The
-                        // target-provider deps ride along for the same reason.
-                        return Ok(Some((
-                            ret,
-                            MemoStatesPayload {
-                                positional: memo_states,
-                                by_context_fp: context_memo_states,
-                            },
-                            memo_info.logic_deps.to_vec(),
-                            memo_info.target_provider_deps.into_iter().collect(),
-                        )));
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Skip memoized return value because it failed in deserialization: {:?}",
-                            e
-                        );
-                    }
+        if let Some(processor_fp) = processor_fp
+            && memo_info.processor_fp == processor_fp
+            && logic_registry::all_contained_with_env(
+                &memo_info.logic_deps,
+                comp_ctx.app_ctx().env(),
+            )
+            && target_provider_deps_still_valid(
+                memo_info.target_provider_deps.iter().map(|(p, g)| (p, g)),
+                &comp_ctx.target_states_providers()?,
+            )
+        {
+            let db_schema::MemoizedValue::Inlined(bytes) = memo_info.return_value;
+            let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
+            match ret {
+                Ok(ret) => {
+                    let memo_states = deserialize_memo_values::<Prof>(&memo_info.memo_states)?;
+                    let context_memo_states =
+                        deserialize_context_memo_states::<Prof>(&memo_info.context_memo_states)?;
+                    // Carry the stored logic deps out so the cache-hit path
+                    // can still report this subtree's dependency set to the
+                    // parent — otherwise a parent that mounts this component
+                    // would not depend on it (or its descendants) and would
+                    // wrongly stay a memo hit when their code changes. The
+                    // target-provider deps ride along for the same reason.
+                    return Ok(Some((
+                        ret,
+                        MemoStatesPayload {
+                            positional: memo_states,
+                            by_context_fp: context_memo_states,
+                        },
+                        memo_info.logic_deps.to_vec(),
+                        memo_info.target_provider_deps.into_iter().collect(),
+                    )));
+                }
+                Err(e) => {
+                    warn!(
+                        "Skip memoized return value because it failed in deserialization: {:?}",
+                        e
+                    );
                 }
             }
         }
@@ -447,7 +441,6 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// invokes the `ExistenceReconciler` callback to walk the
     /// child-existence tree atomically inside the same txn. Then launches
     /// Phase 5 GC.
-
     async fn commit(
         self,
         child_existence: ChildExistenceAction,
@@ -749,6 +742,10 @@ struct PreCommitOutput<Prof: EngineProfile> {
 /// again — no clones, no consumed state to restore. `TargetStateValue`s
 /// are borrowed directly into `TargetHandler::reconcile` from within
 /// the lock scope; reconcile impls decide whether (and how) to clone.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one per pre-commit attempt, matched once; boxing would only add an allocation"
+)]
 enum PreCommitOutcome<Prof: EngineProfile> {
     Done {
         output: PreCommitOutput<Prof>,
@@ -805,6 +802,10 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     prior_owners: BTreeMap<TargetStatePath, Option<StablePath>>,
     preempted_owner_states: BTreeMap<StablePath, OwnerStateForPreempt>,
 ) -> Result<PreCommitOutcome<Prof>> {
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "`TargetActionSinkKeeper` hashes and compares by `Arc` identity"
+    )]
     let mut actions_by_sinks = HashMap::<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>::new();
     let mut processor_name_for_del: Option<String> = None;
 
@@ -880,13 +881,12 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             continue;
         };
         let old: db_schema::StablePathEntryTrackingInfo<'_> = from_msgpack_slice(cached)?;
-        if old.pending_process_token == Some(process_token) {
-            if let Some(item) = old.target_state_items.get(&lookup_key) {
-                if item.is_pending() {
-                    pending_retry = true;
-                    break;
-                }
-            }
+        if old.pending_process_token == Some(process_token)
+            && let Some(item) = old.target_state_items.get(&lookup_key)
+            && item.is_pending()
+        {
+            pending_retry = true;
+            break;
         }
     }
     if pending_retry {
@@ -1088,7 +1088,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     let prev_records = prev_states
                         .iter()
                         .filter_map(|(_, s)| s.as_ref())
-                        .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                        .map(Prof::TargetStateTrackingRecord::from_bytes)
                         .collect::<Result<Vec<_>>>()?;
                     handler.reconcile(
                         decode_item_key()?,
@@ -1173,7 +1173,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 } else if let Some(new_state) = new_state_bytes {
                     // Insert new item.
                     prev_item = Some(db_schema::TargetStateInfoItem {
-                        key: Cow::Owned(target_state_key_bytes.into()),
+                        key: Cow::Owned(target_state_key_bytes),
                         states: vec![
                             (0, db_schema::TargetStateInfoItemState::Deleted),
                             (
@@ -1250,7 +1250,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 .states
                 .iter()
                 .filter_map(|(_, s)| s.as_ref())
-                .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                .map(Prof::TargetStateTrackingRecord::from_bytes)
                 .collect::<Result<Vec<_>>>()?;
 
             let recon_output = target_states_provider
@@ -1353,7 +1353,7 @@ pub(crate) struct SubmitOutput<Prof: EngineProfile> {
 pub(crate) async fn submit<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor: Option<&Prof::ComponentProc>,
-    collect_processor_name_name_for_del: impl FnOnce(&str) -> (),
+    collect_processor_name_name_for_del: impl FnOnce(&str),
 ) -> Result<SubmitOutput<Prof>> {
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
@@ -1777,6 +1777,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     }
     let curr_version = pre_commit_out.curr_version;
     let touched_previous_states = pre_commit_out.previously_exists;
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "`TargetActionSinkKeeper` hashes and compares by `Arc` identity"
+    )]
     let actions_by_sinks = pre_commit_out.actions_by_sinks;
 
     // Apply deferred provider-generation updates now that precommit
@@ -1820,7 +1824,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     // Commit. `AppStore::commit` is a normal trait method — no
     // session handoff needed.
-    let committer = Committer::new(comp_ctx, &target_states_providers)?;
+    let committer = Committer::new(comp_ctx, target_states_providers)?;
     if let Err(e) = committer
         .commit(child_existence, fn_memos, user_states, curr_version)
         .await
@@ -2034,14 +2038,14 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
         let guard = lock
             .try_read()
             .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
-        if let FnCallMemoEntry::Ready(Some(memo)) = &*guard {
-            if memo.already_stored {
-                visited.insert(*fp);
-                contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());
-                for dep_fp in memo.dependency_memo_entries.iter() {
-                    if visited.insert(*dep_fp) {
-                        deps_to_walk.push_back(*dep_fp);
-                    }
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*guard
+            && memo.already_stored
+        {
+            visited.insert(*fp);
+            contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());
+            for dep_fp in memo.dependency_memo_entries.iter() {
+                if visited.insert(*dep_fp) {
+                    deps_to_walk.push_back(*dep_fp);
                 }
             }
         }

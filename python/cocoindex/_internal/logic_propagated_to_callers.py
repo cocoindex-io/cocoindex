@@ -1,14 +1,17 @@
-"""``logic_tracked(fn)``: a callback whose logic changes are tracked through
-``logic_tracking="self"`` / ``None`` layers.
+"""``logic_propagated_to_callers(fn)``: carry the logic a callback already
+offers up to the frame that wraps it, through ``logic_tracking="self"`` /
+``None`` layers that would otherwise hide it.
 
-Those modes hide the logic of everything a function calls, including callbacks
-it merely received. ``logic_tracked(fn)`` lets the owner of a callback (the
-frame that hands it down, typically a library's entry point) have the
-callback's logic recorded in every memo entry between the call site and the
-owner, regardless of their modes. The engine calls the mechanism a "callback
+Those modes hide the logic of everything a function calls, including
+callbacks it merely received. ``logic_propagated_to_callers(fn)`` lets the
+owner of a callback (the frame that hands it down, typically a library's
+entry point) have the callback's logic recorded in every memo entry between
+the call site and the owner, regardless of their modes. It decides nothing
+about *what* is tracked: ``fn``'s own ``@coco.fn`` and ``logic_tracking``
+do, exactly as for any function. The engine calls the mechanism a "callback
 tunnel": the deps ride through frames that would otherwise drop them.
 
-See ``specs/logic_change_detection/callback_tunnel.md``.
+``logic_tracked`` is the former name, kept as a deprecated alias.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
+import warnings
 from typing import (
     Any,
     Awaitable,
@@ -45,11 +49,12 @@ def _is_async_callable(fn: Callable[..., Any]) -> bool:
     )
 
 
-class _LogicTracked:
+class _PropagatedCallback:
     """Shared half of the two wrappers.
 
-    Transparent for memoization keys: the key is the wrapped callable's, so a
-    logic-tracked callback keys the same memo entries as the bare one would.
+    Keys by the wrapped callable: two wrappers of the same callable key the
+    same memo entries. The wrapper does not key *as* the bare callable, so
+    adopting it where the bare callable was passed before moves that key once.
     """
 
     __slots__ = ("_fn", "_owner_fn_ctx")
@@ -67,7 +72,7 @@ class _LogicTracked:
         return self._fn
 
     def __repr__(self) -> str:
-        return f"coco.logic_tracked({self._fn!r})"
+        return f"coco.logic_propagated_to_callers({self._fn!r})"
 
     @contextlib.contextmanager
     def _collecting(self) -> Iterator[None]:
@@ -81,15 +86,15 @@ class _LogicTracked:
         if parent_ctx is None:
             raise RuntimeError(
                 f"{self!r} was called with no active component context. A "
-                "logic-tracked callback must run inside the component that "
-                "wrapped it (use ComponentContext.attach() in worker threads)."
+                "propagated callback must run inside the component that wrapped "
+                "it (use ComponentContext.attach() in worker threads)."
             )
         if self._owner_fn_ctx.closed:
             raise RuntimeError(
                 f"{self!r} was called after the function that wrapped it "
-                "returned. A logic-tracked callback is only valid inside the "
-                "dynamic extent of that call; wrap it in a frame that encloses "
-                "every call site."
+                "returned. A propagated callback is only valid inside the dynamic "
+                "extent of that call; wrap it in a frame that encloses every "
+                "call site."
             )
         # The collector propagates everything, so its fn_logic_deps is exactly
         # what the callback offers under the callback's own logic_tracking.
@@ -106,7 +111,7 @@ class _LogicTracked:
             )
 
 
-class _SyncLogicTracked(_LogicTracked):
+class _SyncPropagatedCallback(_PropagatedCallback):
     __slots__ = ()
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -127,7 +132,7 @@ class _SyncLogicTracked(_LogicTracked):
         return result
 
 
-class _AsyncLogicTracked(_LogicTracked):
+class _AsyncPropagatedCallback(_PropagatedCallback):
     __slots__ = ()
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -136,14 +141,18 @@ class _AsyncLogicTracked(_LogicTracked):
 
 
 @overload
-def logic_tracked(  # type: ignore[overload-overlap]
+def logic_propagated_to_callers(  # type: ignore[overload-overlap]
     fn: Callable[P, Awaitable[R]],
 ) -> Callable[P, Coroutine[Any, Any, R]]: ...
 @overload
-def logic_tracked(fn: Callable[P, R]) -> Callable[P, R]: ...
-def logic_tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Return ``fn`` with its logic tracked through ``logic_tracking="self"`` /
-    ``None`` layers.
+def logic_propagated_to_callers(fn: Callable[P, R]) -> Callable[P, R]: ...
+def logic_propagated_to_callers(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Return ``fn`` with the logic it offers propagated to its callers' memo
+    entries, through ``logic_tracking="self"`` / ``None`` layers.
+
+    This does not make ``fn`` tracked. ``fn``'s own ``@coco.fn`` and
+    ``logic_tracking`` decide what it offers, as for any function; the wrapper
+    only carries that up to the frame that called this helper.
 
     Call this in the function that hands the callback down (the **owner**):
     typically the library entry point that receives it, or your own code when
@@ -166,13 +175,15 @@ def logic_tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
       async wrapper; anything else a sync one. A plain callable that merely
       *returns* an awaitable is rejected with ``TypeError`` when called, since
       its body would run after the tracked frame closed.
-    - The wrapper is transparent for memoization keys (it keys as ``fn``).
+    - The wrapper keys by ``fn``: two wrappers of the same ``fn`` key alike,
+      but adopting the wrapper where bare ``fn`` was passed before moves
+      that memo key once.
 
     Example (library entry point)::
 
         @coco.fn
         async def walk(repo: Repo, visitor: RepoVisitor) -> None:
-            visit_file = coco.logic_tracked(visitor.visit_file)  # walk owns it
+            visit_file = coco.logic_propagated_to_callers(visitor.visit_file)  # walk owns it
             for file in repo.files():
                 await coco.use_mount(
                     coco.component_subpath(file.path), accept, file, visit_file
@@ -181,10 +192,34 @@ def logic_tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
     Every memo entry below ``walk`` — e.g. a ``"self"`` ``accept`` — records
     the logic of ``visit_file``; the user only decorates it with ``@coco.fn``.
 
+    - Adopting the wrapper later does not re-store existing memo entries: an
+      entry records only the fingerprints its writer offered when it was
+      stored, so entries stored before the wrap stay valid until their key or
+      the memoized caller's ``version`` moves. Ship the adoption with one such
+      change.
+
     Raises:
         RuntimeError: when called outside an active component context.
     """
     owner_fn_ctx = get_context_from_ctx()._core_fn_call_ctx
     if _is_async_callable(fn):
-        return _AsyncLogicTracked(fn, owner_fn_ctx)
-    return _SyncLogicTracked(fn, owner_fn_ctx)
+        return _AsyncPropagatedCallback(fn, owner_fn_ctx)
+    return _SyncPropagatedCallback(fn, owner_fn_ctx)
+
+
+@overload
+def logic_tracked(  # type: ignore[overload-overlap]
+    fn: Callable[P, Awaitable[R]],
+) -> Callable[P, Coroutine[Any, Any, R]]: ...
+@overload
+def logic_tracked(fn: Callable[P, R]) -> Callable[P, R]: ...
+def logic_tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Deprecated former name of :func:`logic_propagated_to_callers`; same
+    behavior, plus a :class:`DeprecationWarning`."""
+    warnings.warn(
+        "coco.logic_tracked is deprecated and will be removed; use "
+        "coco.logic_propagated_to_callers (same behavior)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return logic_propagated_to_callers(fn)

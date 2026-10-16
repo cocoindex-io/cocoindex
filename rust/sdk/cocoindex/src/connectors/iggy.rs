@@ -40,7 +40,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
 use crate::target_state::{
-    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
@@ -112,22 +112,13 @@ fn sanitize_state_id(connection_string: &str) -> String {
 pub type DeletionValueFn = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
 
 /// Options for the Iggy topic target.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct IggyTopicOptions {
     /// Partition to send messages to (default `0`).
     pub partition: u32,
     /// Value to send when a previously-declared message is removed. Iggy has no
     /// tombstone, so deleting a declared message without this is an error.
     pub deletion_value_fn: Option<DeletionValueFn>,
-}
-
-impl Default for IggyTopicOptions {
-    fn default() -> Self {
-        Self {
-            partition: 0,
-            deletion_value_fn: None,
-        }
-    }
 }
 
 /// A declarative Iggy topic target — a handle to declare messages on. See the
@@ -230,6 +221,7 @@ struct MessageHandler {
     topic: String,
     partition: u32,
     deletion_value_fn: Option<DeletionValueFn>,
+    sink: SinkCache<MessageAction>,
 }
 
 impl MessageHandler {
@@ -246,6 +238,7 @@ impl MessageHandler {
             topic,
             partition,
             deletion_value_fn,
+            sink: SinkCache::default(),
         }
     }
 }
@@ -283,7 +276,7 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
             action: TargetAction::Update(MessageAction {
                 value: decision.value,
             }),
-            sink: self.message_sink(),
+            sink: self.sink.get(|| self.message_sink()),
             tracking_record: decision.tracking,
             child_invalidation: None,
         }))

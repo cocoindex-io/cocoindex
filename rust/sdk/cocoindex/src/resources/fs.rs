@@ -16,8 +16,9 @@ pub use crate::resources::file::{
     MatchAllFilePathMatcher, PatternFilePathMatcher, decode_bytes,
 };
 use crate::target_state::{
-    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
-    TargetStateProvider, declare_target_state, register_root_target_states_provider,
+    STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetHandler, TargetReconcileOutput, TargetStateProvider,
+    declare_target_state,
 };
 
 #[derive(Clone)]
@@ -383,7 +384,9 @@ fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<Path
 /// * new or changed files are written,
 /// * unchanged files are skipped (no rewrite),
 /// * files declared in a previous run but **not** this run (e.g. their source
-///   was deleted) are removed from disk.
+///   was deleted, or the directory is no longer mounted) are removed from disk,
+/// * [`App::drop_state`](crate::App::drop_state) removes every declared file.
+///
 /// A directory target handle. As a `mount_each!` / `use_mount!` argument it
 /// fingerprints by its `dir` (its stable key) — the `provider` is a runtime
 /// handle, not part of the component-memo identity.
@@ -392,6 +395,9 @@ pub struct DirTarget {
     #[serde(skip)]
     provider: TargetStateProvider<Vec<u8>>,
     dir: PathBuf,
+    /// `dir` as the first part of each file's target-state key.
+    #[serde(skip)]
+    dir_key: StableKey,
 }
 
 #[derive(Clone, Debug)]
@@ -432,12 +438,20 @@ pub fn declare_dir_target(ctx: &Ctx, target: DirTargetState) -> Result<DirTarget
             dir.display()
         )));
     }
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!("cocoindex/localfs/dir/{}", dir.to_string_lossy()),
-        FileHandler { dir: dir.clone() },
-    )?;
-    Ok(DirTarget { provider, dir })
+    // The handler rebuilds each file's path from its key, so the key must
+    // carry the directory exactly.
+    let dir_key = StableKey::Str(Arc::from(dir.to_str().ok_or_else(|| {
+        Error::engine(format!(
+            "directory target path is not valid UTF-8: {}",
+            dir.display()
+        ))
+    })?));
+    let provider = FILE_PROVIDER.get(ctx)?;
+    Ok(DirTarget {
+        provider,
+        dir,
+        dir_key,
+    })
 }
 
 impl DirTarget {
@@ -471,7 +485,11 @@ impl DirTarget {
     /// the target state fails.
     pub fn declare_file(&self, ctx: &Ctx, name: &str, content: &[u8]) -> Result<()> {
         validate_relative_name(name)?;
-        declare_target_state(ctx, self.provider.target_state(name, content.to_vec()))
+        let key = StableKey::Array(Arc::from([
+            self.dir_key.clone(),
+            StableKey::Str(Arc::from(name)),
+        ]));
+        declare_target_state(ctx, self.provider.target_state(key, content.to_vec()))
     }
 }
 
@@ -494,14 +512,19 @@ fn validate_relative_name(name: &str) -> Result<()> {
 /// What the sink should do for one file: write `content`, or delete when `None`.
 #[derive(Serialize, Deserialize)]
 struct FileAction {
-    name: String,
+    path: PathBuf,
     content: Option<Vec<u8>>,
 }
 
-/// Directory target handler. Each file is one leaf target state under the
-/// directory root provider.
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static FILE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<Vec<u8>, FileHandler>("cocoindex/localfs/file");
+
+/// Directory target handler. Each file is one leaf target state keyed by
+/// `[dir, name]`, so one handler serves every directory target.
+#[derive(Default)]
 struct FileHandler {
-    dir: PathBuf,
+    sink: SinkCache<FileAction>,
 }
 
 impl TargetHandler<Vec<u8>> for FileHandler {
@@ -515,12 +538,7 @@ impl TargetHandler<Vec<u8>> for FileHandler {
         prev: Vec<Fingerprint>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<FileAction, Fingerprint>>> {
-        let StableKey::Str(name) = &key else {
-            return Err(Error::engine(format!(
-                "unexpected file target key: {key:?}"
-            )));
-        };
-        let name = name.to_string();
+        let path = file_path(&key)?;
 
         let desired_fp = match &desired {
             Some(content) => Some(Fingerprint::from(content).map_err(Error::from)?),
@@ -529,7 +547,7 @@ impl TargetHandler<Vec<u8>> for FileHandler {
         // Skip when nothing changed.
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -538,62 +556,90 @@ impl TargetHandler<Vec<u8>> for FileHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(FileAction {
-                name,
+                path,
                 content: desired,
             }),
-            sink: self.dir_sink(),
+            sink: self.sink.get(file_sink),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
     }
 }
 
-impl FileHandler {
-    fn dir_sink(&self) -> TargetActionSink<FileAction> {
-        let dir = self.dir.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<FileAction>>| {
-            let dir = dir.clone();
-            async move {
-                let result =
-                    tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
-                        for action in actions {
-                            let file = match action {
-                                TargetAction::Create(f)
-                                | TargetAction::Update(f)
-                                | TargetAction::Delete(f) => f,
-                            };
-                            let path = dir.join(&file.name);
-                            match file.content {
-                                Some(content) => {
-                                    if let Some(parent) = path.parent() {
-                                        std::fs::create_dir_all(parent)
-                                            .map_err(|e| e.to_string())?;
-                                    }
-                                    std::fs::write(&path, &content).map_err(|e| e.to_string())?;
-                                }
-                                None => match std::fs::remove_file(&path) {
-                                    Ok(()) => {}
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                                    Err(e) => return Err(e.to_string()),
-                                },
-                            }
+/// The path of the file a `[dir, name]` target-state key names.
+fn file_path(key: &StableKey) -> Result<PathBuf> {
+    if let StableKey::Array(parts) = key
+        && let [StableKey::Str(dir), StableKey::Str(name)] = &parts[..]
+    {
+        return Ok(Path::new(&**dir).join(&**name));
+    }
+    Err(Error::engine(format!(
+        "unexpected file target key: {key:?}"
+    )))
+}
+
+fn file_sink() -> TargetActionSink<FileAction> {
+    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<FileAction>>| async move {
+        let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+            for action in actions {
+                let file = match action {
+                    TargetAction::Create(f) | TargetAction::Update(f) | TargetAction::Delete(f) => {
+                        f
+                    }
+                };
+                let path = file.path;
+                match file.content {
+                    Some(content) => {
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                         }
-                        Ok(())
-                    })
-                    .await;
-                match result {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(e)) => Err(Error::engine(e)),
-                    Err(e) => Err(Error::engine(format!("dir target sink task panicked: {e}"))),
+                        std::fs::write(&path, &content).map_err(|e| e.to_string())?;
+                    }
+                    None => match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.to_string()),
+                    },
                 }
             }
+            Ok(())
         })
-    }
+        .await;
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(Error::engine(e)),
+            Err(e) => Err(Error::engine(format!("dir target sink task panicked: {e}"))),
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_target_rewrites_unless_every_previous_state_matches() {
+        let handler = FileHandler::default();
+        let key = || {
+            StableKey::Array(Arc::from([
+                StableKey::Str("unused".into()),
+                StableKey::Str("a.txt".into()),
+            ]))
+        };
+        let fp = |content: &[u8]| Fingerprint::from(&content.to_vec()).unwrap();
+
+        let unchanged = handler
+            .reconcile(key(), Some(b"A".to_vec()), vec![fp(b"A")], false)
+            .unwrap();
+        assert!(unchanged.is_none());
+
+        // An interrupted commit can leave both the old and the new state
+        // tracked; the file may hold either, so it must be rewritten.
+        let ambiguous = handler
+            .reconcile(key(), Some(b"A".to_vec()), vec![fp(b"A"), fp(b"B")], false)
+            .unwrap();
+        assert!(ambiguous.is_some());
+    }
 
     #[test]
     fn walk_finds_files() {

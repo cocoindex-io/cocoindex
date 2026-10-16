@@ -124,6 +124,10 @@ impl PyStablePath {
         Self(self.0.concat_part(part.0))
     }
 
+    #[allow(
+        clippy::inherent_to_string,
+        reason = "Python API: `StablePath.to_string()`"
+    )]
     pub fn to_string(&self) -> String {
         self.0.to_string()
     }
