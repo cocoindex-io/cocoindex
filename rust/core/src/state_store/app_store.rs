@@ -762,15 +762,6 @@ impl AppStore {
     }
 }
 
-// --- App-level -----------------------------------------------------------
-
-impl AppStore {
-    pub async fn clear_all(&self, txn: &mut WriteTxn<'_>) -> Result<()> {
-        self.db().clear(txn)?;
-        Ok(())
-    }
-}
-
 // --- Path node type ------------------------------------------------------
 
 impl AppStore {
