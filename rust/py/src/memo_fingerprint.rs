@@ -33,7 +33,7 @@ fn write_int(fp: &mut Fingerprinter, obj: Borrowed<'_, '_, PyAny>) -> PyResult<(
     let is_neg = obj.call_method1("__lt__", (0,))?.extract::<bool>()?;
     let abs_obj = obj.call_method0("__abs__")?;
     let nbits = abs_obj.call_method0("bit_length")?.extract::<usize>()?;
-    let nbytes = std::cmp::max(1, (nbits + 7) / 8);
+    let nbytes = std::cmp::max(1, nbits.div_ceil(8));
     let mag: Bound<'_, PyBytes> = abs_obj
         .call_method1("to_bytes", (nbytes, "little"))?
         .extract()?;

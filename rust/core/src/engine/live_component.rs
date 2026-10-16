@@ -280,6 +280,7 @@ pub struct LiveComponentState<Prof: EngineProfile> {
     /// Signaled when any of:
     ///  - a drain task finishes processing an op (clears `processing` flag)
     ///  - update_full clears `update_full_active`
+    ///
     /// Awaited by:
     ///  - update_full's recheck loop (no entry has `processing`)
     ///  - drain task step 1 (gating on `update_full_active`)
@@ -463,6 +464,7 @@ pub struct LiveComponentController<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> LiveComponentController<Prof> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         component: Component<Prof>,
         state: Arc<LiveComponentState<Prof>>,
@@ -1051,6 +1053,7 @@ impl Drop for HandleSlotGuard {
 ///   - Step 2: run the op under a panic-safe `HandleSlotGuard`, observing
 ///     cancellation via biased `select!`.
 ///   - Step 3: clear `processing`, notify, loop back to step 1.
+#[allow(clippy::too_many_arguments)]
 async fn drain_task_body<Prof: EngineProfile>(
     state: Arc<LiveComponentState<Prof>>,
     component: Component<Prof>,
@@ -1173,6 +1176,7 @@ async fn drain_task_body<Prof: EngineProfile>(
 
 /// Execute a single op. Returns `Result<()>` from the underlying child
 /// `run_in_background` / `delete` flow.
+#[allow(clippy::too_many_arguments)]
 async fn run_op<Prof: EngineProfile>(
     op: Op<Prof>,
     component: &Component<Prof>,

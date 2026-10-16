@@ -30,7 +30,6 @@ from cocoindex._internal.typing import (
     NonExistenceType as _NonExistenceType,
     is_non_existence as _is_non_existence,
 )
-from cocoindex import StableKey as _StableKey
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes as _fingerprint_bytes
 
 # Type variable for the resolved path type (e.g., pathlib.Path for local filesystem)

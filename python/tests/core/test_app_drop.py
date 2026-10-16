@@ -287,7 +287,7 @@ def test_drop_failure_preserves_tracking_for_retry() -> None:
     paths_after_failed_drop = coco_inspect.list_stable_paths_sync(app)
     assert paths_after_failed_drop, (
         "tracking records must survive a failed drop so retry can find them; "
-        f"got empty list — target state would leak"
+        "got empty list — target state would leak"
     )
     # The owner row for the failed delete must survive alongside the tracking
     # record. Only the container's sink failed (`sink_exception` is on the

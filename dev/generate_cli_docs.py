@@ -219,7 +219,7 @@ def generate_command_docs(cmd: click.Group) -> str:
         # Add usage
         markdown_content.append("**Usage:**")
         markdown_content.append("")
-        markdown_content.append(f"```bash")
+        markdown_content.append("```bash")
         markdown_content.append(usage)
         markdown_content.append("```")
         markdown_content.append("")

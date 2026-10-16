@@ -18,10 +18,8 @@ from tests.common.kafka_stub import MockAIOConsumer, MockMessage, MockTopicParti
 from cocoindex._internal.live_component import _IMMEDIATE_READY
 from cocoindex.connectors.kafka._source import (
     TopicStream,
-    _OffsetTracker,
     _PartitionState,
     _TopicMapFeed,
-    topic_as_map,
     topic_as_stream,
 )
 
