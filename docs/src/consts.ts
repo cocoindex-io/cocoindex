@@ -19,7 +19,7 @@ export const SITE_BLOG = 'https://cocoindex.io/blogs';
 // DOCS_BASE and the URL builders below are the single source for the /docs base
 // and the trailingSlash: 'always' convention — don't rebuild them per file.
 export const DOCS_BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
-export const SITE_EXAMPLES = `${DOCS_BASE}/examples`;
+export const SITE_EXAMPLES = `${DOCS_BASE}/examples/`;
 export const pageUrl = (slug: string) => new URL(`${DOCS_BASE}/${slug}/`, SITE_URL).toString();
 export const pageMarkdownUrl = (slug: string) => new URL(`${DOCS_BASE}/${slug}.md`, SITE_URL).toString();
 export const LLMS_TXT_URL = new URL(`${DOCS_BASE}/llms.txt`, SITE_URL).toString();

@@ -19,8 +19,8 @@
 //
 // **Rewrite (default on).** After a relative link's target is resolved, the
 // link's `url` is replaced with an absolute path of the form
-// `<base>/<slug>` (e.g. `./app` from `programming_guide/core_concepts.mdx`
-// becomes `/docs/programming_guide/app`). This is needed under Astro's
+// `<base>/<slug>/` (e.g. `./app` from `programming_guide/core_concepts.mdx`
+// becomes `/docs/programming_guide/app/`). This is needed under Astro's
 // `build.format: 'directory'` mode: source-relative links and URL-relative
 // links diverge once each page lives at `<slug>/index.html`. Authors keep
 // writing the natural source-relative form; the plugin emits absolute hrefs
