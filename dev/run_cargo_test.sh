@@ -69,27 +69,11 @@ if [[ -n "${PYTHONPATH_DETECTED}" ]]; then
   fi
 fi
 
+# The Rust SDK (`cocoindex`) has no default features, so this builds none of
+# its optional connectors and ops; dev/run_cargo_test_sdk_features.sh covers
+# them.
 if [[ "${COCOINDEX_SKIP_UV:-}" == "1" ]]; then
   cargo test "$@"
 else
   uv run cargo test "$@"
-fi
-
-# The Rust SDK (`cocoindex`) has no default features, so the plain `cargo test`
-# above leaves every optional connector and op out of the build. The two steps
-# below cover them.
-
-# Type-check every feature on every target, to keep the features that no test
-# run enables from bit-rotting. This also covers the bench targets, which
-# `cargo test` never compiles.
-cargo check -p cocoindex --all-features --all-targets
-
-# Run the SDK tests under the features that need no external server: their
-# tests are hermetic, or skip unless an env var names a live server. The
-# features left out probe localhost for a server, or pull in a large dependency
-# tree only to skip. Not done for a targeted run (one that passes arguments).
-SDK_TEST_FEATURES="code_match,doris,embed_api,fs_live,google_drive,kafka,lancedb"
-SDK_TEST_FEATURES+=",oci_object_storage,postgres,sqlite,text,turbopuffer,valkey"
-if [[ $# -eq 0 ]]; then
-  cargo test -p cocoindex --features "$SDK_TEST_FEATURES"
 fi

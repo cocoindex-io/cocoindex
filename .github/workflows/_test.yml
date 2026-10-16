@@ -16,6 +16,10 @@ env:
 jobs:
     build-test:
         strategy:
+            # A failing leg cancels the rest on a PR, to stop a broken change
+            # early. On a push there is nothing to stop, and a cancelled leg
+            # skips its Rust cache save, so the next push starts it cold.
+            fail-fast: ${{ github.event_name == 'pull_request' }}
             matrix:
                 platform:
                   # Standard builds (Python 3.11)
@@ -41,8 +45,9 @@ jobs:
 
         steps:
         # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
-        # release branch runs `prek --all-files` -- every hook, including the
-        # `cargo check` over the external example/benchmark workspaces -- so the
+        # release branch runs `prek --all-files` -- every hook: the SDK's
+        # all-features build on every leg, plus the `cargo check` over the
+        # external example/benchmark workspaces on the x86_64 3.11 leg -- so the
         # combined `target/` trees crowd the root volume. `CARGO_INCREMENTAL=0`
         # and `-C debuginfo=0` below already keep `target/` as small as it gets,
         # so the remaining headroom has to come from the runner image itself.
@@ -108,6 +113,11 @@ jobs:
             cache-targets: 'true'
             cache-all-crates: 'false'
             cache-workspace-crates: 'false'
+            # Only dependency artifacts are cached (workspace crates are
+            # cleaned out), and a failed test doesn't spoil those. Saving on
+            # failure keeps a leg warm across a flaky run; with the default, a
+            # cold leg that flakes starts cold again on the next push.
+            cache-on-failure: 'true'
 
         - name: Install uv
           uses: astral-sh/setup-uv@v7
@@ -130,10 +140,20 @@ jobs:
           env:
             UV_NO_SYNC: "1"
             # - mypy-check runs in the e2e_type_check workflow.
-            # - cargo-clippy lints one leg, Linux x86_64 on Python 3.11: the
-            #   lints don't depend on the interpreter, and the other legs would
-            #   rebuild to lint the same code, bar a few `cfg(not(unix))` lines.
-            PREK_SKIP: mypy-check${{ (matrix.platform.runner != 'ubuntu-latest' || matrix.platform.free-threaded) && ',cargo-clippy' || '' }}
+            # - cargo-clippy and cargo-test-rust-externs run on one leg, Linux
+            #   x86_64 on Python 3.11. The lints don't depend on the
+            #   interpreter, and the other legs would rebuild to lint the same
+            #   code, bar a few `cfg(not(unix))` lines. The `cargo check` of
+            #   the external example/benchmark workspaces catches SDK API
+            #   breakage in consumer crates, which is the same on every
+            #   platform; it costs 13-28 min on a leg with a cold Rust cache
+            #   (every leg is cold after a rustc release), which pushed the
+            #   macOS Intel and Windows legs past `timeout-minutes`.
+            # - cargo-test-sdk-features also skips macOS Intel, the slowest
+            #   runner: the SDK's optional features are type-checked and
+            #   tested on x86_64 by the Linux legs and on Darwin by the arm64
+            #   legs.
+            PREK_SKIP: mypy-check${{ (matrix.platform.runner != 'ubuntu-latest' || matrix.platform.free-threaded) && ',cargo-clippy,cargo-test-rust-externs' || '' }}${{ matrix.platform.runner == 'macos-15-intel' && ',cargo-test-sdk-features' || '' }}
           shell: bash
           run: |
             set +e

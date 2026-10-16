@@ -77,6 +77,13 @@ repos:
           files: ^(rust/|Cargo\.(toml|lock)$)
           pass_filenames: false
 
+        - id: cargo-test-sdk-features
+          name: cargo test (cocoindex SDK optional features)
+          entry: ./dev/run_cargo_test_sdk_features.sh
+          language: system
+          files: ^(rust/|Cargo\.(toml|lock)$)
+          pass_filenames: false
+
         - id: cargo-clippy
           name: cargo clippy
           entry: ./dev/run_cargo_clippy.sh
