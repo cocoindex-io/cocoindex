@@ -265,8 +265,6 @@ impl<Prof: EngineProfile> App<Prof> {
 
                 // Drop the per-app state-store data. Clears the per-app
                 // sub-database (heed 0.22 doesn't expose `mdb_drop`).
-                // Subsumes the previous `clear_all` step — `drop_app`
-                // wipes everything `clear_all` would have emptied.
                 let app_name = root_component.app_ctx().app_reg().name().to_owned();
                 root_component
                     .app_ctx()
