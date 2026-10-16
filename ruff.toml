@@ -5,9 +5,18 @@ skip-magic-trailing-comma = false
 line-ending = "lf"
 
 # Ruff >=0.16 formats Python code blocks inside Markdown. The pre-commit
-# `ruff-format` hook only ever sees Python (`types: [python]`), so leaving this
-# on would make `uv run ruff format .` rewrite docs the CI gate never checks.
+# `ruff-format` hook only ever sees Python files, so leaving this on would let a
+# newer ruff run as `ruff format .` rewrite docs the CI gate never checks.
 exclude = ["*.md", "*.mdx"]
+
+[lint]
+# Ruff's default rule set before 0.16, which is what the `ruff-check` hook in
+# `.pre-commit-config.yaml` (the CI gate) enforces. Ruff 0.16 grew its default
+# from 59 to 413 rules and dropped some of these E/F rules, so without an
+# explicit selection the outcome of `ruff check` depends on which ruff runs it.
+# Pinning it keeps every ruff version, including a future hook bump, in
+# agreement with the gate. Widen the selection deliberately, not by upgrading.
+select = ["E4", "E7", "E9", "F"]
 
 [lint.per-file-ignores]
 # These modules re-export their private submodules' `__all__` with `*`.

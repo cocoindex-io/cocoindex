@@ -23,12 +23,17 @@ uv run pytest python/    # Run Python tests (use after both Rust and Python chan
 
 ### Code Formatting and Linting
 
+Python linting and formatting go through `prek`, which runs the `ruff-check` and
+`ruff-format` hooks from `.pre-commit-config.yaml` with the exact ruff version
+and file set CI uses. A `ruff` from `uv run`, `uvx`, or Homebrew is usually a
+different version than the hook pins, so run the hooks rather than `ruff` itself.
+
 ```bash
-uv run ruff format .           # Format Python code
-uv run ruff format --check .   # Check formatting without making changes (same as CI)
-uv run ruff check .            # Lint Python code
-cargo fmt                      # Format Rust code
-./dev/run_cargo_clippy.sh      # Lint Rust code (same as CI)
+uv tool install prek              # one-time; some hooks also need `protoc` (brew install protobuf)
+prek run ruff-check --all-files   # Lint Python code and apply safe fixes (same as CI)
+prek run ruff-format --all-files  # Format Python code (same as CI)
+cargo fmt                         # Format Rust code
+./dev/run_cargo_clippy.sh         # Lint Rust code (same as CI)
 ```
 
 ### Pre-submission Checks
@@ -39,7 +44,6 @@ covers more than the commands above — notably regenerating the CLI docs
 before pushing:
 
 ```bash
-uv tool install prek     # one-time; some hooks also need `protoc` (brew install protobuf)
 prek run --all-files
 ```
 
@@ -50,7 +54,7 @@ prek run --all-files
 | Rust code only | `uv run maturin develop && cargo test` |
 | Python code only | `uv run mypy && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
-| Python formatting | `uv run ruff format .` |
+| Python lint and format | `prek run ruff-check --all-files && prek run ruff-format --all-files` |
 | Before pushing | `prek run --all-files` |
 
 After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — both `rust/py` and the Rust SDK under `rust/sdk/` call core directly, and the SDK is easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those.
