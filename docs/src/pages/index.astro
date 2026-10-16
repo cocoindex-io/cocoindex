@@ -8,7 +8,7 @@ import Analytics from '../components/Analytics.astro';
 import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
 import {
-  SITE_URL, SITE_MAIN, GITHUB_REPO, DISCORD_URL,
+  SITE_URL, SITE_MAIN, SITE_EXAMPLES, GITHUB_REPO, DISCORD_URL,
   titleMarkup, SCARF_PIXEL_ID,
   THEME_COLOR,
 } from '../consts';
@@ -17,7 +17,6 @@ import { sidebar } from '../data/docs-sidebar';
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
 const doc = (slug: string) => `${base}/${slug}/`;
 const CODE = `${SITE_MAIN}/cocoindex-code`;
-const EXAMPLES = `${base}/examples`;
 
 const fullTitle = 'CocoIndex Docs — fresh data views for AI agents';
 const description =
@@ -294,7 +293,7 @@ app.update_blocking()</code></pre>
           <div class="card-grid four">
             <DocCard href={GITHUB_REPO} title="GitHub" body="Star the repo, read the source, open an issue." icon={ICONS.github} accent="coral" />
             <DocCard href={DISCORD_URL} title="Discord" body="Showcase, release notes, and help from maintainers." icon={ICONS.discord} accent="lavender" />
-            <DocCard href={EXAMPLES} title="Examples" body="Runnable recipes you can clone, run, and bend to your data." icon={ICONS.grid} accent="palm" />
+            <DocCard href={SITE_EXAMPLES} title="Examples" body="Runnable recipes you can clone, run, and bend to your data." icon={ICONS.grid} accent="palm" />
           </div>
         </section>
       </main>
