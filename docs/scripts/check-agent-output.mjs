@@ -238,10 +238,20 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
     if (!emitters.has(url)) emitters.set(url, new Set());
     emitters.get(url).add(relative(REPO_ROOT, file));
   };
+  // The renderer percent-encodes non-ASCII characters in hrefs (it links the
+  // heading id `café` as `#caf%C3%A9`); decode back to the form the Markdown
+  // and the ids use. An invalid escape stays as written and fails to resolve.
+  const decodeHref = (href) => {
+    try {
+      return decodeURI(href);
+    } catch {
+      return href;
+    }
+  };
   for (const f of walk(DIST, /\.html$/)) {
     // Attributes of a real tag only: an escaped `&lt;a href="…"` in a code
     // sample is text.
-    for (const m of read(f).matchAll(/<[a-z][^>]*?\shref="(\/(?!\/)[^"]*)"/gi)) emit(m[1], f);
+    for (const m of read(f).matchAll(/<[a-z][^>]*?\shref="(\/(?!\/)[^"]*)"/gi)) emit(decodeHref(m[1]), f);
   }
   for (const [f, text] of agentFiles) {
     const prose = text.replace(FENCE, '\n').replace(INLINE_CODE, '');
