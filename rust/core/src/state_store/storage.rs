@@ -369,15 +369,17 @@ impl Storage {
                 .open(db_path)
         };
         // heed keeps one env per canonical path for the whole process, so a
-        // second open of the same path fails. That is a caller mistake: report
-        // the path the caller passed and what to do about it, rather than
-        // heed's message, which names neither.
+        // second open of the same path fails while the first one is still held.
+        // Keep the error class `?` produced and make only the message
+        // actionable: heed's own text names no path, and its "with different
+        // options" reads as if the options differed when they are identical.
         let db_env = match db_env {
             Ok(env) => env,
-            Err(heed::Error::EnvAlreadyOpened) => client_bail!(
-                "the database at '{}' is already open in this process; close it \
-                 (env.close(), or coco.stop() for the default environment) before \
-                 opening it again, or use a different db_path",
+            Err(heed::Error::EnvAlreadyOpened) => internal_bail!(
+                "the database at '{}' is already open in this process; close that \
+                 Environment with Environment.close(), or drop every App, AppConfig \
+                 and ContextProvider bound to it (and let in-flight operations \
+                 finish), before opening it again",
                 settings.db_path.display()
             ),
             Err(e) => return Err(e.into()),
@@ -812,9 +814,10 @@ mod tests {
         );
     }
 
-    /// Opening a path that is still open is a caller mistake, so it is reported
-    /// as a client error that names the path and what to do about it, instead of
-    /// passing heed's message through.
+    /// Opening a path that is still open is reported with an actionable message:
+    /// it names the path and how to release it, instead of passing heed's text
+    /// through, which names no path and talks about "different options" even
+    /// when the options are identical.
     #[tokio::test]
     async fn new_on_an_open_path_reports_the_path_and_the_fix() {
         let dir = TempDir::new().unwrap();
@@ -826,7 +829,9 @@ mod tests {
         let storage = Storage::new(&settings).await.unwrap();
 
         let error = Storage::new(&settings).await.err().expect("still open");
-        assert!(matches!(error, Error::Client { .. }), "{error:?}");
+        // The same error class the `?` used to produce: a runtime error
+        // (`RuntimeError` in Python), not a client error.
+        assert!(matches!(error, Error::Internal(_)), "{error:?}");
         let message = error.to_string();
         assert!(
             message.contains(&settings.db_path.display().to_string()),

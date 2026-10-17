@@ -75,9 +75,10 @@ def _check_reopen_after_close() -> None:
 
     db_path = env.settings.db_path
     assert db_path is not None
-    # Opening a path that is still open is a caller mistake, so it is a
-    # `ValueError` that names the path and the fix, not heed's bare message.
-    with pytest.raises(ValueError, match="already open") as exc_info:
+    # Same error class as before (the issue's repro catches `RuntimeError`),
+    # but the message names the path and how to release it, instead of heed's
+    # bare text.
+    with pytest.raises(RuntimeError, match="already open") as exc_info:
         coco.Environment(env.settings)
     assert os.fspath(db_path) in str(exc_info.value)
 

@@ -35,15 +35,7 @@ Setting `db_path` in the lifespan or `Settings` takes precedence over the `COCOI
 
 ## Opening and closing the database
 
-Opening a `db_path` opens its LMDB environment, and a process holds one environment per path. Opening the same path again while it is still open fails, because CocoIndex can't tell which environment a write should go to:
-
-```text
-ValueError: Invalid Request: the database at './cocoindex.db' is already open in this process; close it (env.close(), or coco.stop() for the default environment) before opening it again, or use a different db_path
-```
-
-Close an explicit environment with `coco.Environment.close()` once you're done with it. Stopping the default environment — leaving `coco.runtime()`, or calling `coco.stop()` — closes that one for you.
-
-Garbage collection isn't enough. On free-threaded Python 3.14+, a thread started inside a component inherits that component's context, and a worker thread the connectors use for file I/O keeps the environment alive for as long as it runs. See [Closing an Environment](./multiple_environments#closing-an-environment) for the details.
+Opening a `db_path` opens its LMDB environment, and LMDB allows one environment per path per process. Opening the same path again while the first one is still held fails. See [Closing an Environment](./multiple_environments#closing-an-environment) for when an explicit environment releases its store, and the error you get when you reopen a path too early.
 
 ## LMDB tuning
 
