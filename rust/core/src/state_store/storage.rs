@@ -367,7 +367,21 @@ impl Storage {
                 .max_dbs(settings.lmdb_max_dbs)
                 .map_size(map_size)
                 .open(db_path)
-        }?;
+        };
+        // heed keeps one env per canonical path for the whole process, so a
+        // second open of the same path fails. That is a caller mistake: report
+        // the path the caller passed and what to do about it, rather than
+        // heed's message, which names neither.
+        let db_env = match db_env {
+            Ok(env) => env,
+            Err(heed::Error::EnvAlreadyOpened) => client_bail!(
+                "the database at '{}' is already open in this process; close it \
+                 (env.close(), or coco.stop() for the default environment) before \
+                 opening it again, or use a different db_path",
+                settings.db_path.display()
+            ),
+            Err(e) => return Err(e.into()),
+        };
         let cleared_count = db_env.clear_stale_readers()?;
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
@@ -796,6 +810,32 @@ mod tests {
             app_store.db().get(&rtxn, b"key").unwrap(),
             Some(&b"value"[..])
         );
+    }
+
+    /// Opening a path that is still open is a caller mistake, so it is reported
+    /// as a client error that names the path and what to do about it, instead of
+    /// passing heed's message through.
+    #[tokio::test]
+    async fn new_on_an_open_path_reports_the_path_and_the_fix() {
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+
+        let error = Storage::new(&settings).await.err().expect("still open");
+        assert!(matches!(error, Error::Client { .. }), "{error:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains(&settings.db_path.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("already open"), "{message}");
+        assert!(message.contains("close"), "{message}");
+
+        storage.close().await;
     }
 
     /// Integration test for `MDB_MAP_FULL` auto-resize on the `Storage::run_txn`

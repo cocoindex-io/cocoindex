@@ -33,6 +33,18 @@ settings = coco.Settings(db_path=pathlib.Path("./cocoindex.db"))
 
 Setting `db_path` in the lifespan or `Settings` takes precedence over the `COCOINDEX_DB` environment variable. If neither is provided, CocoIndex will raise an error.
 
+## Opening and closing the database
+
+Opening a `db_path` opens its LMDB environment, and a process holds one environment per path. Opening the same path again while it is still open fails, because CocoIndex can't tell which environment a write should go to:
+
+```text
+ValueError: Invalid Request: the database at './cocoindex.db' is already open in this process; close it (env.close(), or coco.stop() for the default environment) before opening it again, or use a different db_path
+```
+
+Close an explicit environment with `coco.Environment.close()` once you're done with it. Stopping the default environment — leaving `coco.runtime()`, or calling `coco.stop()` — closes that one for you.
+
+Garbage collection isn't enough. On free-threaded Python 3.14+, a thread started inside a component inherits that component's context, and a worker thread the connectors use for file I/O keeps the environment alive for as long as it runs. See [Closing an Environment](./multiple_environments#closing-an-environment) for the details.
+
 ## LMDB tuning
 
 The LMDB database has two tunable settings, grouped under `coco.LmdbSettings` and attached to `Settings` as `db_settings`. The defaults work well for most use cases — you only need to adjust them for large-scale deployments.
