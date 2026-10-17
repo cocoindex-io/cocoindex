@@ -77,6 +77,11 @@ def _register_builtin_types() -> None:
             _UNPICKLE_SAFE_GLOBALS[(_dtype_sub.__module__, _dtype_sub.__qualname__)] = (
                 _dtype_sub
             )
+        for _scalar_sub in [np.generic] + _all_subclasses(np.generic):
+            _UNPICKLE_SAFE_GLOBALS[
+                (_scalar_sub.__module__, _scalar_sub.__qualname__)
+            ] = _scalar_sub
+            _UNPICKLE_SAFE_GLOBALS[("numpy", _scalar_sub.__name__)] = _scalar_sub
         _numeric = None
         for _root_name in ("_core", "core"):
             _root = getattr(np, _root_name, None)
@@ -124,6 +129,9 @@ def _register_builtin_pickle_types() -> None:
 
         _SERIALIZE_BY_PICKLE_TYPES.add(np.ndarray)
         _SERIALIZE_BY_PICKLE_TYPES.add(np.dtype)
+        _SERIALIZE_BY_PICKLE_TYPES.add(np.generic)
+        for sub in _all_subclasses(np.generic):
+            _SERIALIZE_BY_PICKLE_TYPES.add(sub)
     except ImportError:
         pass
 
