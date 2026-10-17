@@ -26,13 +26,16 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import lancedb  # type: ignore
     import lancedb.index as lancedb_index  # type: ignore
     import pyarrow as pa  # type: ignore
 except ImportError as e:
     raise ImportError(
-        "lancedb and pyarrow are required to use the LanceDB connector. Please install cocoindex[lancedb]."
+        "lancedb and pyarrow are required to use the LanceDB connector. "
+        + install_hint("lancedb")
     ) from e
 
 from lancedb.db import AsyncConnection as LanceAsyncConnection  # type: ignore

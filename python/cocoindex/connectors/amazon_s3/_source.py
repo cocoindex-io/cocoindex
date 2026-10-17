@@ -21,12 +21,14 @@ __all__ = [
 from pathlib import PurePath
 from typing import AsyncIterator, overload
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from aiobotocore.client import AioBaseClient  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "aiobotocore is required to use the Amazon S3 source connector. "
-        "Please install cocoindex[amazon_s3]."
+        + install_hint("amazon_s3")
     ) from e
 
 from cocoindex.resources import file

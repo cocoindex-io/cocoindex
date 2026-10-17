@@ -14,6 +14,8 @@ from collections import deque
 from datetime import timedelta
 from typing import Any, Callable
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from apache_iggy import AutoCommit  # type: ignore[import-not-found]
     from apache_iggy import IggyClient  # type: ignore[import-not-found]
@@ -22,8 +24,7 @@ try:
     from apache_iggy import ReceiveMessage  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
-        "apache-iggy is required to use the Iggy connector. "
-        "Please install cocoindex[iggy]."
+        "apache-iggy is required to use the Iggy connector. " + install_hint("iggy")
     ) from e
 
 from cocoindex._internal.live_component import (

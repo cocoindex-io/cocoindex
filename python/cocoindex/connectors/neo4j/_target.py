@@ -39,11 +39,13 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import neo4j as _neo4j  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
-        "neo4j is required to use the Neo4j connector. Please install cocoindex[neo4j]."
+        "neo4j is required to use the Neo4j connector. " + install_hint("neo4j")
     ) from e
 
 if TYPE_CHECKING:

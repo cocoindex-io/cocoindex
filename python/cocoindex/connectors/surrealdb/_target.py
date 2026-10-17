@@ -35,12 +35,14 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import surrealdb as _surrealdb  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "surrealdb is required to use the SurrealDB connector. "
-        "Please install cocoindex[surrealdb]."
+        + install_hint("surrealdb")
     ) from e
 
 if TYPE_CHECKING:
