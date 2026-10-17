@@ -57,7 +57,7 @@ And two sugar APIs that simplify common patterns:
 - **`mount_each()`** — mounts one component per item in a keyed iterable
 - **`mount_target()`** — mounts a target without an explicit subpath
 
-See also [`map()`](#map) for a utility API that operates within a component without creating new ones.
+See also [`map()`](#using-cocoindex-map-to-apply-transformations) for a utility API that operates within a component without creating new ones.
 
 ### Automatic subpath derivation
 `mount()`, `use_mount()`, and `mount_each()` all accept an optional `ComponentSubpath` as their first argument. When omitted, the subpath is **auto-derived** from the function name using `Symbol(fn.__name__)`.
@@ -143,7 +143,7 @@ handle = await coco.mount_each(process_file, files.items(), target)
 await handle.ready()  # waits until every per-item component is ready
 ```
 
-If you want per-item results without creating components, use [`map()`](#map).
+If you want per-item results without creating components, use [`map()`](#using-cocoindex-map-to-apply-transformations).
 
 You can provide an explicit subpath as the first argument:
 
@@ -316,8 +316,8 @@ This pattern ensures that CocoIndex can track component relationships and target
 
 ## Processing helpers
 
-### `map()`
-`map()` applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount_each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
+### Using CocoIndex `map()` to apply transformations
+The `map()` API (also known as `coco.map()`) applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount_each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
 
 ```python
 @coco.fn(memo=True)
@@ -327,9 +327,9 @@ async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]
     await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 ```
 
-The first argument to the function receives each item; additional arguments are passed through to every call. `map()` returns a `list` of the results, in the same order as the input items.
+The first argument to the function receives each item; additional arguments are passed through to every call. The `coco.map()` API returns a `list` of the results, in the same order as the input items.
 
-#### When to use `map()` vs `mount_each()`
+#### When to use the `map()` API vs `mount_each()`
 
 - Use **`mount_each()`** when each item should be its own processing component — with its own component path, target state ownership, and target states sync boundary.
-- Use **`map()`** when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file — the same within-component chunk work the [chunk-embedding pipeline in Core Concepts](./core_concepts#processing-component) walks through.
+- Use the **`map()`** API when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file — the same within-component chunk work the [chunk-embedding pipeline in Core Concepts](./core_concepts#processing-component) walks through.
