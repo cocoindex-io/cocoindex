@@ -42,6 +42,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
+from cocoindex._internal.extras import install_hint
 from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
@@ -337,7 +338,7 @@ def _connect(config: ConnectionConfig) -> Iterator[Any]:
     except ImportError as e:
         raise ImportError(
             "snowflake-connector-python is required to use the Snowflake connector. "
-            "Please install cocoindex[snowflake]."
+            + install_hint("snowflake")
         ) from e
 
     kwargs: dict[str, str] = {

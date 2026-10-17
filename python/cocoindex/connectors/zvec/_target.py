@@ -41,11 +41,13 @@ from typing import (
 import numpy as np
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import zvec as _zvec
 except ImportError as e:
     raise ImportError(
-        "zvec is required to use the zvec connector. Please install cocoindex[zvec]."
+        "zvec is required to use the zvec connector. " + install_hint("zvec")
     ) from e
 
 import msgspec

@@ -12,12 +12,14 @@ import asyncio
 from dataclasses import dataclass
 from typing import Callable, Collection, Generic, Mapping, NamedTuple, Sequence
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
         "confluent_kafka is required to use the Kafka connector. "
-        "Please install cocoindex[kafka]."
+        + install_hint("kafka")
     ) from e
 
 import cocoindex as coco

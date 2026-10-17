@@ -20,6 +20,8 @@ from typing import (
 import msgspec
 import numpy as np
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from glide import (
         Batch,
@@ -44,7 +46,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "valkey-glide>=2.5.2 is required to use the Valkey connector. "
-        "Please install cocoindex[valkey]."
+        + install_hint("valkey")
     ) from e
 
 import cocoindex as coco

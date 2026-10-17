@@ -17,13 +17,15 @@ import logging
 from collections import deque
 from typing import Callable
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from confluent_kafka import Message, TopicPartition  # type: ignore[import-not-found]
     from confluent_kafka.aio import AIOConsumer  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
         "confluent_kafka is required to use the Kafka connector. "
-        "Please install cocoindex[kafka]."
+        + install_hint("kafka")
     ) from e
 
 from cocoindex._internal.live_component import (

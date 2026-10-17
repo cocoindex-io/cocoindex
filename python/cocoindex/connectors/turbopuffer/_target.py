@@ -26,12 +26,14 @@ from typing import (
 import msgspec
 import numpy as np
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from turbopuffer import AsyncTurbopuffer, NotFoundError  # type: ignore
 except ImportError as e:
     raise ImportError(
         "turbopuffer is required to use the Turbopuffer connector. "
-        "Please install cocoindex[turbopuffer]."
+        + install_hint("turbopuffer")
     ) from e
 
 import cocoindex as coco
