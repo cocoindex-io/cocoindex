@@ -504,3 +504,40 @@ class TestDeserializeFn:
         assert "union" in str(cause).lower()
         # The original TypeError from msgspec is chained one level deeper
         assert isinstance(cause.__cause__, TypeError)
+
+
+class TestNumpyScalarTypeSerde:
+    """Tests verifying numpy scalar type unpickling and VectorSchema round-trips (#2535)."""
+
+    def test_restricted_unpickler_loads_numpy_scalar_classes(self) -> None:
+        import numpy as np
+        from cocoindex._internal.serde import _RestrictedUnpickler
+
+        for scalar_cls in (np.float32, np.float64, np.int32, np.int64, np.bool_):
+            payload = pickle.dumps(scalar_cls, protocol=5)
+            loaded = _RestrictedUnpickler(io.BytesIO(payload)).load()
+            assert loaded is scalar_cls
+
+    def test_vector_schema_coerces_dtype_class_and_roundtrips(self) -> None:
+        import numpy as np
+        from cocoindex.resources.schema import VectorSchema
+
+        # Passing class np.float32 normalizes to np.dtype(np.float32)
+        vs1 = VectorSchema(dtype=np.float32, size=384)
+        assert isinstance(vs1.dtype, np.dtype)
+        assert vs1.dtype == np.dtype(np.float32)
+        data1 = serialize(vs1)
+        res1 = deserialize(data1, VectorSchema)
+        assert res1.dtype == np.dtype(np.float32)
+        assert res1.size == 384
+
+        # Passing string 'float32'
+        vs2 = VectorSchema(dtype="float32", size=128)
+        assert isinstance(vs2.dtype, np.dtype)
+        assert vs2.dtype == np.dtype(np.float32)
+
+        # Passing np.dtype instance directly
+        vs3 = VectorSchema(dtype=np.dtype(np.float32), size=512)
+        assert isinstance(vs3.dtype, np.dtype)
+        assert vs3.dtype == np.dtype(np.float32)
+
