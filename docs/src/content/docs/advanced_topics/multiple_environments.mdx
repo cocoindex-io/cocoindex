@@ -49,7 +49,13 @@ Apps that don't specify an environment use the default environment (configured v
 
 ## Closing an Environment
 
-An environment holds its database open. A process can't open the same `db_path` again until the environment is closed. Call `env.close()` once you're done with it:
+An environment holds its database open, and LMDB allows one environment per `db_path` per process. An explicit environment's store is released when the last reference to it is gone: the Apps and `AppConfig`s bound to it, its `ContextProvider`, and any operations still finishing. Until then, opening the same `db_path` again fails:
+
+```text
+RuntimeError: the database at './my_db.db' is already open in this process; close that Environment with Environment.close(), or drop every App, AppConfig and ContextProvider bound to it (and let in-flight operations finish), before opening it again
+```
+
+Call `env.close()` once you're done with it to release the database without waiting for those references:
 
 ```python
 env.close()
@@ -58,7 +64,7 @@ env = coco.Environment(coco.Settings.from_env(db_path=pathlib.Path("./my_db.db")
 
 `close()` waits for in-flight writes to finish. After that, using the environment raises an error, and so does updating the apps that use it. Context values provided to the environment stay open: whoever provided them closes them. Stopping the default environment (leaving `coco.runtime()`, or calling `coco.stop()`) closes it for you.
 
-Don't count on garbage collection to close it. An environment created while an event loop is running (for example, inside a function run by `asyncio.run()`) runs its apps on that loop. On free-threaded Python 3.14+, that loop's worker threads, which connectors use for file I/O, then keep the environment alive, and its database open, for as long as the loop runs — even after you drop every reference to it. So do threads you start from your own functions while an app updates.
+Garbage collection only helps when the last reference sits in a cycle: `gc.collect()` breaks the cycle and releases the store. Don't count on it otherwise. An environment created while an event loop is running (for example, inside a function run by `asyncio.run()`) runs its apps on that loop. On free-threaded Python 3.14+, that loop's worker threads, which connectors use for file I/O, then keep the environment alive, and its database open, for as long as the loop runs — even after you drop every reference to it. So do threads you start from your own functions while an app updates.
 
 ## Example: Multiple Environments
 

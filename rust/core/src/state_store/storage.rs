@@ -367,7 +367,23 @@ impl Storage {
                 .max_dbs(settings.lmdb_max_dbs)
                 .map_size(map_size)
                 .open(db_path)
-        }?;
+        };
+        // heed keeps one env per canonical path for the whole process, so a
+        // second open of the same path fails while the first one is still held.
+        // Keep the error class `?` produced and make only the message
+        // actionable: heed's own text names no path, and its "with different
+        // options" reads as if the options differed when they are identical.
+        let db_env = match db_env {
+            Ok(env) => env,
+            Err(heed::Error::EnvAlreadyOpened) => internal_bail!(
+                "the database at '{}' is already open in this process; close that \
+                 Environment with Environment.close(), or drop every App, AppConfig \
+                 and ContextProvider bound to it (and let in-flight operations \
+                 finish), before opening it again",
+                settings.db_path.display()
+            ),
+            Err(e) => return Err(e.into()),
+        };
         let cleared_count = db_env.clear_stale_readers()?;
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
@@ -796,6 +812,35 @@ mod tests {
             app_store.db().get(&rtxn, b"key").unwrap(),
             Some(&b"value"[..])
         );
+    }
+
+    /// Opening a path that is still open is reported with an actionable message:
+    /// it names the path and how to release it, instead of passing heed's text
+    /// through, which names no path and talks about "different options" even
+    /// when the options are identical.
+    #[tokio::test]
+    async fn new_on_an_open_path_reports_the_path_and_the_fix() {
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        };
+        let storage = Storage::new(&settings).await.unwrap();
+
+        let error = Storage::new(&settings).await.err().expect("still open");
+        // The same error class the `?` used to produce: a runtime error
+        // (`RuntimeError` in Python), not a client error.
+        assert!(matches!(error, Error::Internal(_)), "{error:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains(&settings.db_path.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("already open"), "{message}");
+        assert!(message.contains("close"), "{message}");
+
+        storage.close().await;
     }
 
     /// Integration test for `MDB_MAP_FULL` auto-resize on the `Storage::run_txn`

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextvars
 import gc
+import os
 import pathlib
 import subprocess
 import sys
@@ -72,8 +73,14 @@ def _check_reopen_after_close() -> None:
     assert _num_squares == 1
     assert _threads[0].is_alive()
 
-    with pytest.raises(Exception, match="already open"):
+    db_path = env.settings.db_path
+    assert db_path is not None
+    # Same error class as before (the issue's repro catches `RuntimeError`),
+    # but the message names the path and how to release it, instead of heed's
+    # bare text.
+    with pytest.raises(RuntimeError, match="already open") as exc_info:
         coco.Environment(env.settings)
+    assert os.fspath(db_path) in str(exc_info.value)
 
     env.close()
     env.close()
