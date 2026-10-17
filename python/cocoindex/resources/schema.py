@@ -26,6 +26,10 @@ class VectorSchema(_msgspec.Struct, frozen=True, tag=True):
     dtype: _np.dtype
     size: int
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.dtype, _np.dtype):
+            object.__setattr__(self, "dtype", _np.dtype(self.dtype))
+
     async def __coco_vector_schema__(self) -> VectorSchema:
         return self
 
