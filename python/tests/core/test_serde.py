@@ -510,6 +510,8 @@ class TestNumpyScalarTypeSerde:
     """Tests verifying numpy scalar type unpickling and VectorSchema round-trips (#2535)."""
 
     def test_restricted_unpickler_loads_numpy_scalar_classes(self) -> None:
+        import io
+
         import numpy as np
         from cocoindex._internal.serde import _RestrictedUnpickler
 
@@ -540,4 +542,3 @@ class TestNumpyScalarTypeSerde:
         vs3 = VectorSchema(dtype=np.dtype(np.float32), size=512)
         assert isinstance(vs3.dtype, np.dtype)
         assert vs3.dtype == np.dtype(np.float32)
-
