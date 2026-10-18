@@ -154,7 +154,7 @@ class CollectionSchema:
         schema = CollectionSchema(
             vectors={
                 "embedding": QdrantVectorDef(
-                    schema=VectorSchema(dtype=np.float32, size=384),
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
                     distance="cosine"
                 ),
             }

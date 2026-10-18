@@ -6,11 +6,14 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+import msgspec.msgpack
 import pytest
 
+import cocoindex._internal.serde as serde
 from cocoindex._internal.serde import (
     _add_unpickle_safe_global,
     deserialize,
+    get_deserialize_fn,
     serialize,
     serialize_by_pickle,
     unpickle_safe,
@@ -201,3 +204,80 @@ class TestBackwardCompat:
         assert old_data[0] == 0x80
         result = deserialize(old_data)
         assert result == original
+
+
+class TestNumpyScalarClasses:
+    """cocoindex-io/cocoindex#2535: serde-layer handling of numpy scalar types.
+
+    Run-1 tracking records pickled classes like ``np.float32`` as global
+    references, which the restricted unpickler rejected on run 2. The fix
+    allow-lists numpy scalar types so those records decode again, and makes the
+    writer refuse classes the reader would reject (fail on run 1, not run 2).
+    """
+
+    def test_run1_record_with_scalar_class_decodes(self) -> None:
+        """A run-1 record holding the raw ``np.float32`` class now decodes."""
+        np = pytest.importorskip("numpy")
+        # Simulate a tracking record written by run 1 (before the fix): the
+        # writer pickled the np.float32 *class* as a global reference, with no
+        # checks. Wrap it exactly as the old writer did (Ext code 100).
+        legacy_ext = msgspec.msgpack.Ext(100, pickle.dumps(np.float32, 5))
+        payload = b"\x01" + msgspec.msgpack.encode({"dtype": legacy_ext, "size": 384})
+        result = deserialize(payload, dict[str, Any])
+        assert result["dtype"] is np.float32
+        # Old and new records still compare equal.
+        assert np.dtype("float32") == result["dtype"]
+
+    def test_scalar_class_form_round_trip(self) -> None:
+        """The ``dtype=np.float32`` class form now round-trips through serde."""
+        np = pytest.importorskip("numpy")
+        assert deserialize(serialize(np.float32)) is np.float32
+        assert deserialize(serialize(np.int64)) is np.int64
+
+    def test_scalar_class_in_vectorschema_round_trip(self) -> None:
+        """End to end: a VectorSchema holding the class form decodes via serde.
+
+        This is the precise-typed decode path the engine uses for tracking
+        records: the scalar class is coerced to ``np.dtype`` by ``_dec_hook``
+        so the record loads, and it compares equal to the instance form.
+        """
+        np = pytest.importorskip("numpy")
+        from cocoindex.resources.schema import VectorSchema
+
+        schema = VectorSchema(dtype=np.float32, size=384)  # type: ignore[arg-type]
+        restored = get_deserialize_fn(VectorSchema)(serialize(schema))
+        assert restored == schema
+        assert restored.dtype == np.dtype("float32")
+        assert restored == VectorSchema(dtype=np.dtype(np.float32), size=384)
+
+    def test_scalar_instance_round_trip(self) -> None:
+        """Scalar *instances* became picklable; they must round-trip too."""
+        np = pytest.importorskip("numpy")
+        value = np.float32(1.5)
+        result = deserialize(serialize(value))
+        assert isinstance(result, np.float32)
+        assert result == value
+
+    def test_writer_refuses_class_reader_would_reject(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail on run 1: the writer refuses a class the reader would reject."""
+        # Force the legacy non-strict writer path so this test is meaningful
+        # even where strict mode was historically opt-in.
+        monkeypatch.setattr(serde, "_strict_serialize", False, raising=False)
+        with pytest.raises(pickle.PicklingError, match="not registered"):
+            serialize(pickle.PickleError)
+
+    def test_writer_refuses_unallowlisted_class_nested(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The write-time refusal also applies to classes nested in structs."""
+
+        @dataclass
+        class _Holder:
+            label: str
+            obj: Any
+
+        monkeypatch.setattr(serde, "_strict_serialize", False, raising=False)
+        with pytest.raises(pickle.PicklingError, match="not registered"):
+            serialize(_Holder(label="x", obj=pickle.PickleError))

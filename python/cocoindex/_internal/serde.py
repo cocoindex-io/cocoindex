@@ -49,6 +49,16 @@ def _all_subclasses(cls: type) -> list[type]:
     return result
 
 
+try:
+    import numpy as _np
+except ImportError:  # numpy is an optional dependency
+    _np = None  # type: ignore[assignment]
+
+_NUMPY_SCALAR_TYPES: frozenset[type] = (
+    frozenset(_all_subclasses(_np.generic)) if _np is not None else frozenset()
+)
+
+
 _STDLIB_UNPICKLE_SAFE_TYPES: tuple[type, ...] = (
     pathlib.PurePath,
     *_all_subclasses(pathlib.PurePath),
@@ -77,6 +87,32 @@ def _register_builtin_types() -> None:
             _UNPICKLE_SAFE_GLOBALS[(_dtype_sub.__module__, _dtype_sub.__qualname__)] = (
                 _dtype_sub
             )
+        # numpy scalar types (e.g. np.float32 as a *class*): tracking records
+        # written before the serde fix pickled these as global references, so
+        # allow-list them to let those records decode again. np.dtype("float32")
+        # == np.float32, so old and new records still compare equal.
+        for _scalar_sub in _all_subclasses(np.generic):
+            _UNPICKLE_SAFE_GLOBALS[
+                (_scalar_sub.__module__, _scalar_sub.__qualname__)
+            ] = _scalar_sub
+        # Scalar *instances* (e.g. np.float32(1.0)) pickle via this reduce
+        # callable; registering it lets the newly-picklable instances round-trip.
+        _multiarray = None
+        for _root_name in ("_core", "core"):
+            _root = getattr(np, _root_name, None)
+            if _root is None:
+                continue
+            _candidate = getattr(_root, "multiarray", None)
+            if _candidate is not None:
+                _multiarray = _candidate
+                break
+        if _multiarray is not None:
+            _scalar_fn = getattr(_multiarray, "scalar", None)
+            if _scalar_fn is not None:
+                _UNPICKLE_SAFE_GLOBALS[("numpy._core.multiarray", "scalar")] = (
+                    _scalar_fn
+                )
+                _UNPICKLE_SAFE_GLOBALS[("numpy.core.multiarray", "scalar")] = _scalar_fn
         _numeric = None
         for _root_name in ("_core", "core"):
             _root = getattr(np, _root_name, None)
@@ -191,34 +227,44 @@ class _RestrictedUnpickler(pickle.Unpickler):
 
 
 # ---------------------------------------------------------------------------
-# Strict serialization (opt-in, for use in tests)
+# Strict serialization (always on)
 # ---------------------------------------------------------------------------
-
-_strict_serialize: bool = False
 
 
 def enable_strict_serialize() -> None:
-    """Enable strict serialization type checking (call once in test setup)."""
-    global _strict_serialize
-    _strict_serialize = True
+    """Enable strict serialization type checking (call once in test setup).
+
+    Strict checking is now always on for pickle writes; this is a no-op kept
+    for backward compatibility.
+    """
 
 
 class _StrictPickler(pickle.Pickler):
-    """Pickler that validates every object's type is in the unpickle allow-list."""
+    """Pickler that validates every object's type is in the unpickle allow-list.
+
+    This runs on every pickle write: a value the reader would refuse must fail
+    here, on the run that writes it, instead of surfacing on a later run inside
+    ``reconcile()``.
+    """
 
     # Returns `NotImplemented` (defer to the default reducer) in every path;
     # typeshed's declared return type doesn't cover it, hence `Any`.
     def reducer_override(self, obj: object) -> Any:
-        # When obj is a class being pickled as a global reference, check it directly.
+        # When obj is a class being pickled as a global reference, check it
+        # directly against the same allow-list the reader uses. There is no
+        # builtins exemption here: the reader has none either, so a builtins
+        # class outside the allow-list (e.g. pickle.PickleError) must be
+        # refused at write time.
         if isinstance(obj, type):
-            if obj.__module__ != "builtins":
-                key = (obj.__module__, obj.__qualname__)
-                if key not in _UNPICKLE_SAFE_GLOBALS:
-                    raise pickle.PicklingError(
-                        f"Type not registered for safe unpickling: {obj.__module__}.{obj.__qualname__}"
-                    )
+            key = (obj.__module__, obj.__qualname__)
+            if key not in _UNPICKLE_SAFE_GLOBALS:
+                raise pickle.PicklingError(
+                    f"Type not registered for safe unpickling: {obj.__module__}.{obj.__qualname__}"
+                )
             return NotImplemented
-        # For instances, check their type.
+        # For instances, check their type. Objects whose type lives in builtins
+        # (e.g. the C reduce callables pickle emits, like
+        # numpy._core.multiarray.scalar) are skipped, as before.
         t = type(obj)
         if t.__module__ == "builtins":
             return NotImplemented
@@ -255,11 +301,9 @@ def _is_pydantic_model_type(tp: Any) -> bool:
 
 def _strict_pickle_dumps(value: Any) -> bytes:
     """Pickle with strict type validation. Always uses protocol 5."""
-    if _strict_serialize:
-        buf = io.BytesIO()
-        _StrictPickler(buf, 5).dump(value)
-        return buf.getvalue()
-    return pickle.dumps(value, 5)
+    buf = io.BytesIO()
+    _StrictPickler(buf, 5).dump(value)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -300,15 +344,29 @@ def _dec_hook(type_hint: Any, obj: Any) -> Any:
     """Handle custom types during msgspec decoding.
 
     Called when msgspec encounters a type it doesn't natively support.
-    Only two cases reach here:
+    Only three cases reach here:
 
     1. Pydantic models — enc_hook serialized via model_dump(mode="json"),
        so *obj* is a dict that needs model_validate to reconstruct.
     2. Pickle-quarantined values — ext_hook already reconstructed the
        correct object; just pass through.
+    3. Numpy scalar *classes* (e.g. ``np.float32``) persisted by pre-fix
+       writers into ``np.dtype``-annotated fields — coerced to ``np.dtype``
+       so the record decodes (msgspec would otherwise reject the class with
+       a ValidationError after ext_hook succeeds).
     """
     if _is_pydantic_model_type(type_hint):
         return type_hint.model_validate(obj)
+    if (
+        _np is not None
+        and type_hint is _np.dtype
+        and isinstance(obj, type)
+        and obj in _NUMPY_SCALAR_TYPES
+    ):
+        # Scalar classes pickled as global references by run 1 (before the
+        # serde fix). Coercing to np.dtype lets those records load; equality
+        # with new records still holds (np.dtype("float32") == np.float32).
+        return _np.dtype(obj)
     return obj
 
 

@@ -202,11 +202,11 @@ import numpy as np
 schema = await qdrant.CollectionSchema.create(
     vectors={
         "text_embedding": qdrant.QdrantVectorDef(
-            schema=VectorSchema(dtype=np.float32, size=384),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
             distance="cosine",
         ),
         "image_embedding": qdrant.QdrantVectorDef(
-            schema=VectorSchema(dtype=np.float32, size=512),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=512),
             distance="dot",
         ),
     }
@@ -238,7 +238,7 @@ import numpy as np
 schema = await qdrant.CollectionSchema.create(
     vectors={
         "dense": qdrant.QdrantVectorDef(
-            schema=VectorSchema(dtype=np.float32, size=384),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
             distance="cosine",
         ),
         "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
@@ -278,7 +278,7 @@ import numpy as np
 schema = await qdrant.CollectionSchema.create(
     vectors=qdrant.QdrantVectorDef(
         schema=MultiVectorSchema(
-            vector_schema=VectorSchema(dtype=np.float32, size=384)
+            vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=384)
         ),
         multivector_comparator="max_sim",
     )
@@ -368,7 +368,7 @@ async def app_main() -> None:
                     distance="cosine",
                 ),
                 "image": qdrant.QdrantVectorDef(
-                    schema=VectorSchema(dtype=np.float32, size=512),
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=512),
                     distance="dot",
                 ),
             }
@@ -403,7 +403,7 @@ async def app_main() -> None:
         await qdrant.CollectionSchema.create(
             vectors={
                 "dense": qdrant.QdrantVectorDef(
-                    schema=VectorSchema(dtype=np.float32, size=384),
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
                     distance="cosine",
                 ),
                 "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
