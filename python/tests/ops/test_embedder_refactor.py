@@ -9,6 +9,8 @@ single ``NDArray[np.float32]`` rather than a ``list[NDArray]``.
 from __future__ import annotations
 
 import asyncio
+import base64
+from collections import ChainMap
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -486,6 +488,196 @@ async def test_litellm_embedder_escapes_media_references(text: str, sent: str) -
     ) as mocked:
         await embedder._embed._execute_orig_async_fn([text])
     assert mocked.call_args.kwargs["input"] == [sent]
+
+
+# ============================================================================
+# A base64 response payload is decoded to float32 before numpy sees it
+# ============================================================================
+
+
+def _base64_embedding(vec: list[float]) -> str:
+    """A vector as a provider returns it for ``encoding_format="base64"``: the
+    raw ``float32`` bytes, base64-encoded. ``Embedding.embedding`` is typed
+    ``list[float] | str``, so this is the shape that arrives as a ``str``.
+
+    When ``encoding_format`` is given, the OpenAI SDK skips its own base64
+    decode, so this payload reaches ``_aligned_embeddings`` undecoded."""
+    return base64.b64encode(np.array(vec, dtype=np.float32).tobytes()).decode()
+
+
+def test_aligned_embeddings_decodes_base64() -> None:
+    """A base64 payload decodes to a ``float32`` vector instead of raising in
+    ``np.array``. The ``list[float]`` form is untouched."""
+    vec = [1.0, 2.0, 3.0]
+    data = [{"index": 0, "embedding": _base64_embedding(vec)}]
+    (out,) = _aligned_embeddings(data, 1)
+    assert out.dtype == np.float32
+    assert out.tolist() == vec
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_decodes_base64_batch() -> None:
+    """A batch of base64 payloads decodes to ``float32`` vectors, not ``str``s."""
+    vecs = [[0.5, 1.5], [2.5, 3.5]]
+    response = SimpleNamespace(
+        data=[
+            {"index": i, "embedding": _base64_embedding(v)} for i, v in enumerate(vecs)
+        ]
+    )
+    embedder = LiteLLMEmbedder("fake-model", encoding_format="base64")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ):
+        out = await embedder._embed._execute_orig_async_fn(["a", "b"])
+    assert [v.dtype for v in out] == [np.float32, np.float32]
+    assert [v.tolist() for v in out] == vecs
+
+
+# ============================================================================
+# The schema probe sizes the vector from the decoded payload
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_schema_size_from_base64_probe() -> None:
+    """Sizing the column off the base64 string would advertise a width as long
+    as the encoded payload — 16 for a 3-d vector — and every insert of a real
+    vector would then fail."""
+    vec = [1.0, 2.0, 3.0]
+    response = SimpleNamespace(data=[{"index": 0, "embedding": _base64_embedding(vec)}])
+    embedder = LiteLLMEmbedder("fake-model", encoding_format="base64")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ) as mocked:
+        schema = await embedder.__coco_vector_schema__()
+    assert schema.size == len(vec)
+    assert mocked.call_args.kwargs["encoding_format"] == "base64"
+
+
+# ============================================================================
+# `encoding_format="base64"` refuses payload options the decode cannot honor
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param(
+            {"encoding_format": "base64", "embed_dtype": "float16"},
+            id="embed-dtype",
+        ),
+        pytest.param(
+            {"encoding_format": "base64", "extra_body": {"embed_dtype": "float16"}},
+            id="embed-dtype-extra-body",
+        ),
+        pytest.param(
+            {"encoding_format": "base64", "output_dtype": "int8"}, id="output-dtype"
+        ),
+        pytest.param(
+            {"extra_body": {"encoding_format": "base64", "embed_dtype": "float16"}},
+            id="encoding-format-extra-body",
+        ),
+        # Both spellings reach the provider, and which one wins differs per
+        # key, so a pair that disagrees is refused rather than resolved.
+        pytest.param(
+            {
+                "encoding_format": "base64",
+                "embed_dtype": "float32",
+                "extra_body": {"embed_dtype": "float16"},
+            },
+            id="conflicting-sources",
+        ),
+        # litellm accepts any mapping for `extra_body`, not just a dict.
+        pytest.param(
+            {
+                "encoding_format": "base64",
+                "extra_body": ChainMap({"embed_dtype": "float16"}),
+            },
+            id="embed-dtype-mapping",
+        ),
+        # vLLM's `endianness` applies to base64 payloads: big-endian bytes read
+        # in native order have the right length and the wrong values.
+        pytest.param(
+            {"encoding_format": "base64", "endianness": "big"},
+            id="endianness",
+        ),
+        pytest.param(
+            {"encoding_format": "base64", "extra_body": {"endianness": "big"}},
+            id="endianness-extra-body",
+        ),
+    ],
+)
+def test_litellm_embedder_rejects_base64_payload_options_it_cannot_decode(
+    kwargs: dict[str, Any],
+) -> None:
+    """litellm forwards the options that alter the payload — at the top level
+    or through `extra_body` — and the base64 opt-in itself can arrive either
+    way. Those bytes decode as float32 to a shorter vector of meaningless
+    values, or, for a big-endian payload, to the right length of wrong values.
+    Neither raises on its own."""
+    with pytest.raises(ValueError, match="float32"):
+        LiteLLMEmbedder("fake-model", **kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param(
+            {"encoding_format": "base64", "embed_dtype": "float32"},
+            id="embed-dtype",
+        ),
+        pytest.param(
+            {"encoding_format": "base64", "extra_body": {"embed_dtype": "float32"}},
+            id="embed-dtype-extra-body",
+        ),
+        pytest.param(
+            {"encoding_format": "base64", "output_dtype": "float"}, id="output-dtype"
+        ),
+        pytest.param(
+            {"extra_body": {"encoding_format": "base64", "embed_dtype": "float32"}},
+            id="encoding-format-extra-body",
+        ),
+        pytest.param(
+            {"encoding_format": "base64", "endianness": "native"},
+            id="endianness-native",
+        ),
+        pytest.param(
+            {"encoding_format": "base64", "endianness": "little"},
+            id="endianness-little",
+        ),
+    ],
+)
+def test_litellm_embedder_accepts_base64_payload_options_it_can_decode(
+    kwargs: dict[str, Any],
+) -> None:
+    """The options the decode can honor — float payloads, native/little
+    endianness — stay valid."""
+    LiteLLMEmbedder("fake-model", **kwargs)
+
+
+@pytest.mark.parametrize("output_dtype", ["int8", "uint8", "binary", "ubinary"])
+def test_litellm_embedder_rejects_quantized_voyage_output(
+    output_dtype: str,
+) -> None:
+    """With base64, Voyage's quantized dtypes decode as float32 to a shorter
+    vector of meaningless values. Without base64 they arrive as plain lists,
+    which the guard deliberately leaves alone."""
+    with pytest.raises(ValueError, match="output_dtype"):
+        LiteLLMEmbedder(
+            "voyage/voyage-3", encoding_format="base64", output_dtype=output_dtype
+        )
+
+
+def test_litellm_embedder_accepts_float_voyage_output() -> None:
+    LiteLLMEmbedder("voyage/voyage-3", output_dtype="float")
+
+
+@pytest.mark.parametrize("model", ["fake-model", "voyage/voyage-3"])
+def test_litellm_embedder_leaves_non_base64_output_dtype_alone(model: str) -> None:
+    """Without base64 the payload arrives as a list, and Voyage's `int8` values
+    come back as full-length integers that float32 holds exactly, so the guard
+    must not refuse them."""
+    LiteLLMEmbedder(model, output_dtype="int8")
 
 
 # ============================================================================
