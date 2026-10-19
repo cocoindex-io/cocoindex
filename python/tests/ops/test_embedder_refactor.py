@@ -9,6 +9,7 @@ single ``NDArray[np.float32]`` rather than a ``list[NDArray]``.
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -486,6 +487,51 @@ async def test_litellm_embedder_escapes_media_references(text: str, sent: str) -
     ) as mocked:
         await embedder._embed._execute_orig_async_fn([text])
     assert mocked.call_args.kwargs["input"] == [sent]
+
+
+# ============================================================================
+# A base64 response payload is decoded to float32 before numpy sees it
+# ============================================================================
+
+
+def _base64_embedding(vec: list[float]) -> str:
+    """A vector as a provider returns it for ``encoding_format="base64"``: the
+    raw ``float32`` bytes, base64-encoded. ``Embedding.embedding`` is typed
+    ``list[float] | str``, so this is the shape that arrives as a ``str``.
+
+    The embedder pins ``encoding_format`` on every request, and the OpenAI SDK
+    returns the response as-is as soon as the format is given — its own base64
+    auto-decode never runs — so this payload reaches ``_aligned_embeddings``
+    undecoded."""
+    return base64.b64encode(np.array(vec, dtype=np.float32).tobytes()).decode()
+
+
+def test_aligned_embeddings_decodes_base64() -> None:
+    """A base64 payload decodes to a ``float32`` vector instead of raising in
+    ``np.array``. The ``list[float]`` form is untouched."""
+    vec = [1.0, 2.0, 3.0]
+    data = [{"index": 0, "embedding": _base64_embedding(vec)}]
+    (out,) = _aligned_embeddings(data, 1)
+    assert out.dtype == np.float32
+    assert out.tolist() == vec
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_decodes_base64_batch() -> None:
+    """A batch of base64 payloads decodes to ``float32`` vectors, not ``str``s."""
+    vecs = [[0.5, 1.5], [2.5, 3.5]]
+    response = SimpleNamespace(
+        data=[
+            {"index": i, "embedding": _base64_embedding(v)} for i, v in enumerate(vecs)
+        ]
+    )
+    embedder = LiteLLMEmbedder("fake-model")
+    with patch(
+        "cocoindex.ops.litellm.litellm.aembedding", new=AsyncMock(return_value=response)
+    ):
+        out = await embedder._embed._execute_orig_async_fn(["a", "b"])
+    assert [v.dtype for v in out] == [np.float32, np.float32]
+    assert [v.tolist() for v in out] == vecs
 
 
 # ============================================================================
