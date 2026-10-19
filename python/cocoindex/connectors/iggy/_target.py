@@ -11,13 +11,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Collection, Generic, NamedTuple, Sequence
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from apache_iggy import IggyClient  # type: ignore[import-not-found]
     from apache_iggy import SendMessage as Message  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
-        "apache-iggy is required to use the Iggy connector. "
-        "Please install cocoindex[iggy]."
+        "apache-iggy is required to use the Iggy connector. " + install_hint("iggy")
     ) from e
 
 import cocoindex as coco

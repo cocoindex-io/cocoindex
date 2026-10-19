@@ -92,6 +92,12 @@ impl<Prof: EngineProfile> ChildTargetSlot<Prof> {
     }
 }
 
+impl<Prof: EngineProfile> Default for ChildTargetSlot<Prof> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One action for a sink call, with the slot for its child target provider
 /// when the declaring call was `declare_target_state_with_child`.
 pub type TargetActionWithChildSlot<Prof> = (
@@ -417,6 +423,7 @@ where
     // Sub-batches still to apply, as index ranges over `spans`. The second
     // half of a split is pushed first, so sub-batches complete in component
     // order and each one's results are simply appended.
+    #[allow(clippy::single_range_in_vec_init)]
     let mut pending = vec![0..spans.len()];
     while let Some(sub) = pending.pop() {
         debug_assert_eq!(results.len(), sub.start);

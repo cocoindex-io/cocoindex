@@ -252,21 +252,17 @@ impl<Prof: EngineProfile> MemoStatesPayload<Prof> {
     }
 }
 
+#[derive(Default)]
 pub enum FnCallMemoEntry<Prof: EngineProfile> {
     /// Prefetched from the database but not yet accessed during this build.
     /// Lazily decoded on first access (transitions to `Ready` or stays
     /// `Stored` for later GC). Treated as untouched at flush time.
     Stored(Vec<u8>),
     /// Memoization result is pending, i.e. the function call is not finished yet.
+    #[default]
     Pending,
     /// Memoization result is ready. None means memoization is disabled, e.g. it mounts child components.
     Ready(Option<FnCallMemo<Prof>>),
-}
-
-impl<Prof: EngineProfile> Default for FnCallMemoEntry<Prof> {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// In-memory cache of all function-memoization entries for a single
@@ -476,9 +472,7 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
         *entry = FnCallMemoEntry::Ready(None);
         return Ok(());
     }
-    let return_value_bytes = match decoded.return_value {
-        db_schema::MemoizedValue::Inlined(b) => b,
-    };
+    let db_schema::MemoizedValue::Inlined(return_value_bytes) = decoded.return_value;
     let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
     let memo_states = deserialize_memo_values::<Prof>(&decoded.memo_states)?;
     let context_memo_states =
@@ -734,6 +728,10 @@ pub(crate) enum ComponentProcessingMode {
     Delete,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one per component run, matched once; boxing would only add an allocation"
+)]
 pub(crate) enum ComponentProcessingAction<Prof: EngineProfile> {
     Build(ComponentBuildContext<Prof>),
     Delete(ComponentDeleteContext<Prof>),

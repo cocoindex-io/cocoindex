@@ -23,13 +23,15 @@ from typing import (
     cast,
 )
 
+from cocoindex._internal.extras import install_hint
 
 try:
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as qdrant_models
 except ImportError as e:
     raise ImportError(
-        "qdrant-client is required to use the Qdrant connector. Please install cocoindex[qdrant]."
+        "qdrant-client is required to use the Qdrant connector. "
+        + install_hint("qdrant")
     ) from e
 
 import cocoindex as coco

@@ -760,7 +760,7 @@ pub async fn reconcile_child_existence(
     component_path: &StablePath,
     child_path_set: Option<&ChildStablePathSet>,
 ) -> Result<()> {
-    let plan = plan_child_existence(&***wtxn, app_store, component_path, child_path_set, false)?;
+    let plan = plan_child_existence(wtxn, app_store, component_path, child_path_set, false)?;
     for (parent, key) in &plan.removals {
         app_store.delete_child_existence(wtxn, parent, key).await?;
     }

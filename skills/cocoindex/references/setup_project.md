@@ -12,7 +12,7 @@ cd my-project
 This creates: `main.py`, `pyproject.toml`, `README.md`. The generated `main.py` sets the internal database location in its lifespan via `builder.settings.db_path = pathlib.Path("./cocoindex.db")`.
 
 ```bash
-uv run cocoindex update main.py   # or: pip install -e . && cocoindex update main.py
+uv run cocoindex update main.py   # installs dependencies, then runs
 ```
 
 ## Dependencies by Use Case
@@ -130,12 +130,14 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 ## Running Your Pipeline
 
 ```bash
-pip install -e .                    # Install dependencies
-cocoindex update main.py            # Run pipeline
-cocoindex update main.py -L         # Run in live mode
-cocoindex show main.py              # Show component paths
-cocoindex drop main.py -f           # Reset everything
+uv sync                             # Install dependencies
+uv run cocoindex update main.py     # Run pipeline
+uv run cocoindex update main.py -L  # Run in live mode
+uv run cocoindex show main.py       # Show component paths
+uv run cocoindex drop main.py -f    # Reset everything
 ```
+
+If `pyproject.toml` has `[tool.uv.sources]` or `[[tool.uv.index]]` tables, install with uv. pip ignores those tables, so it would fetch the packages they pin from PyPI instead.
 
 ---
 
@@ -144,7 +146,7 @@ cocoindex drop main.py -f           # Reset everything
 ### Import Errors
 
 ```bash
-pip install -e .
+uv sync
 ```
 
 ### Database Connection Errors

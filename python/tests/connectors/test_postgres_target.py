@@ -48,6 +48,8 @@ except ImportError:
 
 _PG_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_postgres_target_pg_db")
 
+_PG_IMAGE = "pgvector/pgvector:pg16"
+
 pytestmark = [
     pytest.mark.skipif(
         not DEPS_AVAILABLE, reason="postgres dependencies not installed"
@@ -55,7 +57,7 @@ pytestmark = [
     pytest.mark.skipif(
         not TESTCONTAINERS_AVAILABLE, reason="testcontainers not installed"
     ),
-    pytest.mark.requires_docker,
+    pytest.mark.requires_docker(_PG_IMAGE),
     pytest.mark.timeout(120),
 ]
 
@@ -143,7 +145,7 @@ async def _drop_index(pool: "asyncpg.Pool", index_name: str) -> None:
 def pg_dsn() -> Any:
     from testcontainers.community.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-    with PostgresContainer("pgvector/pgvector:pg16") as pg:
+    with PostgresContainer(_PG_IMAGE) as pg:
         dsn = pg.get_connection_url()
         # testcontainers may return a SQLAlchemy-style URL; normalize for asyncpg.
         dsn = dsn.replace("postgresql+psycopg2://", "postgresql://")

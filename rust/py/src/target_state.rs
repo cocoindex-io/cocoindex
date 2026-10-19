@@ -124,10 +124,10 @@ impl SinkKeeperRegistry {
         key: SinkKeeperKey,
         make: impl FnOnce() -> PyTargetActionSinkInner,
     ) -> TargetActionSinkKeeper<PyEngineProfile> {
-        if let Some(weak) = self.map.get(&key) {
-            if let Some(keeper) = weak.upgrade() {
-                return keeper;
-            }
+        if let Some(weak) = self.map.get(&key)
+            && let Some(keeper) = weak.upgrade()
+        {
+            return keeper;
         }
         let keeper = TargetActionSinkKeeper::new(make());
         if self.map.len() >= self.prune_at {
@@ -661,7 +661,7 @@ static ROOT_TARGET_STATE_PROVIDER_REGISTRY: LazyLock<
 
 pub fn root_target_states_provider_registry()
 -> &'static Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>> {
-    &**ROOT_TARGET_STATE_PROVIDER_REGISTRY
+    &ROOT_TARGET_STATE_PROVIDER_REGISTRY
 }
 
 #[pyfunction]

@@ -292,6 +292,7 @@ impl PyApp {
     }
 
     #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false, *, deadline))]
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
         py: Python<'_>,

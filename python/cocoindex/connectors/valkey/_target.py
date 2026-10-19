@@ -19,7 +19,7 @@ from typing import (
 import msgspec
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from cocoindex._internal.extras import install_hint
 
 try:
     from glide import (
@@ -45,7 +45,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "valkey-glide>=2.5.2 is required to use the Valkey connector. "
-        "Please install cocoindex[valkey]."
+        + install_hint("valkey")
     ) from e
 
 import cocoindex as coco
@@ -54,6 +54,8 @@ from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import TypeChecker
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

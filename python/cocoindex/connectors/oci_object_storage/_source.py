@@ -32,12 +32,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import PurePath
 from typing import Any, Iterator, cast
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from oci.exceptions import ServiceError  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
         "oci is required to use the Oracle Cloud Infrastructure Object "
-        "Storage source connector. Please install cocoindex[oci]."
+        "Storage source connector. " + install_hint("oci")
     ) from e
 
 from cocoindex._internal.live_component import (

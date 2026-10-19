@@ -10,7 +10,7 @@ tags: [multimodal, text-to-speech]
 
 A slide deck is a great outline and a terrible thing to *listen to* or *search*. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that fixes both: for each slide, a vision LLM writes natural speaker notes, [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) synthesizes them to audio locally on the CPU, and the notes are embedded into [LanceDB](https://lancedb.com/) so you can search the deck by meaning and play back the narration for any hit.
 
-The whole pipeline is ordinary `async` Python. The vision and TTS steps run on a [`coco.GPU` runner](https://cocoindex.io/docs/programming_guide/function/) that offloads each blocking call off the event loop and serializes it — Pocket TTS is CPU-only, so no GPU is required — and the Rust engine handles [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) — add a deck and only its slides get processed.
+The whole pipeline is ordinary `async` Python. The vision and TTS steps run on a [`coco.GPU` runner](/docs/programming_guide/function/) that offloads each blocking call off the event loop and serializes it — Pocket TTS is CPU-only, so no GPU is required — and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — add a deck and only its slides get processed.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/slides_to_speech)
 
@@ -48,7 +48,7 @@ async def extract_speaker_notes(image: bytes) -> str:
     return result.speaker_notes
 ```
 
-> **A note on the port.** The v0 example pulled slides from Google Drive and used BAML for the vision call; this v1 port reads slides from a local folder and uses DSPy (any vision model — Gemini, GPT-4o, …). Point the source at a [Google Drive folder](https://cocoindex.io/docs/connectors/google_drive/) to reproduce the original.
+> **A note on the port.** The v0 example pulled slides from Google Drive and used BAML for the vision call; this v1 port reads slides from a local folder and uses DSPy (any vision model — Gemini, GPT-4o, …). Point the source at a [Google Drive folder](/docs/connectors/google_drive/) to reproduce the original.
 
 ## Narrate locally with Pocket TTS
 
@@ -114,6 +114,6 @@ On the sample deck, that query ranks the **Engineering Priorities** slide first 
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/slides_to_speech](https://github.com/cocoindex-io/cocoindex/tree/main/examples/slides_to_speech). For transcribing existing audio instead of generating it, see [Audio → Text](https://cocoindex.io/docs/examples/audio-to-text/).
+The full, runnable example is in the CocoIndex repo: [examples/slides_to_speech](https://github.com/cocoindex-io/cocoindex/tree/main/examples/slides_to_speech). For transcribing existing audio instead of generating it, see [Audio → Text](/docs/examples/audio-to-text/).
 
 Got a deck library you want to narrate and search? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

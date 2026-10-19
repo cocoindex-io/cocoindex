@@ -36,7 +36,7 @@ from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-from models import AuthorModel, PaperMetadataModel
+from models import PaperMetadataModel
 
 
 TABLE_METADATA = "paper_metadata"

@@ -31,12 +31,14 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import asyncpg  # type: ignore
 except ImportError as e:
     raise ImportError(
         "asyncpg is required to use the PostgreSQL connector. "
-        "Please install cocoindex[postgres]."
+        + install_hint("postgres")
     ) from e
 
 import numpy as np

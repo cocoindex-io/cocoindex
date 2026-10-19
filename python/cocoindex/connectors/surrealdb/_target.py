@@ -23,7 +23,8 @@ import re
 import threading
 import uuid
 import weakref
-from dataclasses import dataclass, field
+import dataclasses
+from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
@@ -38,12 +39,14 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import surrealdb as _surrealdb  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "surrealdb is required to use the SurrealDB connector. "
-        "Please install cocoindex[surrealdb]."
+        + install_hint("surrealdb")
     ) from e
 
 if TYPE_CHECKING:
@@ -110,7 +113,7 @@ def _to_record_id(table: str, value: Any) -> Any:
 class _LoopConnection:
     """The connection of one event loop, and the lock that opens it once."""
 
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
     conn: AsyncSurreal | None = None
 
 

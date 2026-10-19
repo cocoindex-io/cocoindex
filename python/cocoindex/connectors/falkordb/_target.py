@@ -37,13 +37,15 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import falkordb as _falkordb  # noqa: F401  # type: ignore[import-untyped]
     import falkordb.asyncio as _falkordb_asyncio  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "falkordb is required to use the FalkorDB connector. "
-        "Please install cocoindex[falkordb]."
+        + install_hint("falkordb")
     ) from e
 
 if TYPE_CHECKING:

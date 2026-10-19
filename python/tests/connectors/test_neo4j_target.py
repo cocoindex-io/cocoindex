@@ -10,9 +10,9 @@ Unit tests run without a server. Integration tests require a running Neo4j
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 import pytest_asyncio
@@ -59,10 +59,19 @@ requires_neo4j = pytest.mark.skipif(not HAS_NEO4J, reason="neo4j is not installe
 
 _HAS_NEO4J_SERVER = bool(os.environ.get("NEO4J_TEST_SERVER"))
 
-requires_neo4j_server = pytest.mark.skipif(
-    not (HAS_NEO4J and _HAS_NEO4J_SERVER),
-    reason="NEO4J_TEST_SERVER is not set",
-)
+_NEO4J_IMAGE = "neo4j:5.26-community"
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def requires_neo4j_server(fn: _F) -> _F:
+    fn = pytest.mark.requires_docker(_NEO4J_IMAGE)(fn)
+    fn = pytest.mark.skipif(
+        not (HAS_NEO4J and _HAS_NEO4J_SERVER),
+        reason="NEO4J_TEST_SERVER is not set",
+    )(fn)
+    return fn
+
 
 if HAS_NEO4J:
     from cocoindex.connectors import neo4j as neo  # type: ignore[attr-defined]
@@ -769,9 +778,7 @@ def neo4j_uri_auth() -> Iterator[tuple[str, tuple[str, str]]]:
 
     from testcontainers.community.neo4j import Neo4jContainer  # type: ignore[import-untyped]
 
-    container = Neo4jContainer(
-        "neo4j:5.26-community", username="neo4j", password="cocoindex"
-    )
+    container = Neo4jContainer(_NEO4J_IMAGE, username="neo4j", password="cocoindex")
     container.start()
     try:
         uri = container.get_connection_url()

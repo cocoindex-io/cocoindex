@@ -41,6 +41,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
+from cocoindex._internal.extras import install_hint
 from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
@@ -405,7 +406,7 @@ def _connect(config: ConnectionConfig) -> Iterator[Any]:
     except ImportError as e:
         raise ImportError(
             "google-cloud-bigquery is required to use the BigQuery connector. "
-            "Please install cocoindex[bigquery]."
+            + install_hint("bigquery")
         ) from e
 
     credentials = None
@@ -433,7 +434,7 @@ def _bigquery_query_param(param: QueryParam) -> Any:
     except ImportError as e:
         raise ImportError(
             "google-cloud-bigquery is required to use the BigQuery connector. "
-            "Please install cocoindex[bigquery]."
+            + install_hint("bigquery")
         ) from e
 
     if param.type.startswith("ARRAY<") and param.type.endswith(">"):
@@ -448,7 +449,7 @@ def _run_query(client: Any, sql: str, params: Sequence[QueryParam] = ()) -> Any:
     except ImportError as e:
         raise ImportError(
             "google-cloud-bigquery is required to use the BigQuery connector. "
-            "Please install cocoindex[bigquery]."
+            + install_hint("bigquery")
         ) from e
 
     job_config = None

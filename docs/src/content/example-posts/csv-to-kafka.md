@@ -10,7 +10,7 @@ tags: [streaming, kafka]
 
 We'll take a folder of CSV files and turn it into a live [Kafka](https://kafka.apache.org/) stream — each row published as a JSON message, keyed by its primary key. Edit a cell and, within a second, exactly one message for that one row lands on the topic. Add a row, get one new message. Delete a file, and every row from it is tombstoned.
 
-The whole pipeline is ordinary `async` Python, and the Kafka topic is just a [target](https://cocoindex.io/docs/connectors/kafka/) you declare — the same way you'd declare a Postgres table or a vector index. CocoIndex's Rust engine does the [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) underneath: it tracks what each row last looked like and produces a message only for rows that *actually changed* — no producer loop, no dedup bookkeeping, no "did I already send this?" logic.
+The whole pipeline is ordinary `async` Python, and the Kafka topic is just a [target](/docs/connectors/kafka/) you declare — the same way you'd declare a Postgres table or a vector index. CocoIndex's Rust engine does the [incremental processing](/docs/programming_guide/core_concepts/) underneath: it tracks what each row last looked like and produces a message only for rows that *actually changed* — no producer loop, no dedup bookkeeping, no "did I already send this?" logic.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka)
 
@@ -22,9 +22,9 @@ From a high level, these are the steps:
 
 1. Watch a local directory of CSV files (live).
 2. For each file, parse rows with `csv.DictReader` and turn each row into a JSON value keyed by its first column.
-3. Declare each row as a [target state](https://cocoindex.io/docs/programming_guide/target_state/) on a Kafka topic — CocoIndex produces the upserts and deletes.
+3. Declare each row as a [target state](/docs/programming_guide/target_state/) on a Kafka topic — CocoIndex produces the upserts and deletes.
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 > **Why CSV?** It's the format that shows up everywhere and gets respect nowhere — BI exports, vendor dumps, spreadsheets parked in a shared drive. CSV files look structured but live like unstructured assets: dropped into a folder, edited at random, with no notifications and no schema contract. Turning a directory of them into a clean, row-keyed, diff-only Kafka stream is the same pattern that carries over to PDFs, codebases, and wikis — CSV just keeps the parser out of the way.
 
@@ -61,7 +61,7 @@ You [declare the transformation logic](https://cocoindex.io/docs/programming_gui
 
 ## Shared resources: the Kafka producer
 
-The Kafka producer is created once at app startup in a [`lifespan`](https://cocoindex.io/docs/programming_guide/context/) hook and stashed in a [`ContextKey`](https://cocoindex.io/docs/programming_guide/context/), so the rest of the pipeline can grab it without threading it through every call:
+The Kafka producer is created once at app startup in a [`lifespan`](/docs/programming_guide/context/) hook and stashed in a [`ContextKey`](/docs/programming_guide/context/), so the rest of the pipeline can grab it without threading it through every call:
 
 ```python title="main.py"
 import cocoindex as coco
@@ -112,7 +112,7 @@ async def process_csv(file: FileLike, topic_target: kafka.KafkaTopicTarget) -> N
             topic_target.declare_target_state(key=key_value, value=value)
 ```
 
-[`@coco.fn(memo=True)`](https://cocoindex.io/docs/programming_guide/function/) makes the per-file work [incremental](https://cocoindex.io/docs/advanced_topics/memoization_keys/): if a file's contents and this function's code are both unchanged, `process_csv` doesn't even run. Each file runs as its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) (mounted below), so the engine tracks each file's rows independently — and when a file disappears, its rows are cleaned off the topic automatically.
+[`@coco.fn(memo=True)`](/docs/programming_guide/function/) makes the per-file work [incremental](/docs/advanced_topics/memoization_keys/): if a file's contents and this function's code are both unchanged, `process_csv` doesn't even run. Each file runs as its own [processing component](/docs/programming_guide/processing_component/) (mounted below), so the engine tracks each file's rows independently — and when a file disappears, its rows are cleaned off the topic automatically.
 
 ## Declare states, not messages
 
@@ -122,7 +122,7 @@ The one line worth pausing on is `declare_target_state` — deliberately *not* `
 topic_target.declare_target_state(key=key, value=value)
 ```
 
-CocoIndex is [state-driven](https://cocoindex.io/docs/programming_guide/core_concepts/): like a spreadsheet cell or a SQL materialized view, you describe what the target *should be* as a function of the source, and the engine figures out the transitions. You don't compute deltas, and you don't write separate insert / update / delete code paths.
+CocoIndex is [state-driven](/docs/programming_guide/core_concepts/): like a spreadsheet cell or a SQL materialized view, you describe what the target *should be* as a function of the source, and the engine figures out the transitions. You don't compute deltas, and you don't write separate insert / update / delete code paths.
 
 ![Declared target states above the line and the Kafka messages they produce below: editing one CSV cell, adding a row, and removing a row yield exactly the upsert and delete messages needed — the unchanged row produces nothing](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/state-vs-messages.svg)
 
@@ -132,7 +132,7 @@ Kafka makes this vivid because its wire model is the opposite of state: a topic 
 - **`k` was declared before but isn't this time** → it produces a **delete** message `(k, None)` (or a tombstone if you supplied a `deletion_value_fn`).
 - **`k` was declared with the same `v`** → **nothing is sent.** No message, no broker round-trip, no consumer wakeup.
 
-Messages are derived from state transitions; you only ever talk about states. It's the same shape as the [Postgres target](https://cocoindex.io/docs/connectors/postgres/) (`declare_target_state` → INSERT / UPDATE / DELETE) — the wire ops differ, the API doesn't, because the semantics are the same. The payoff: one `process_csv` is correct on the first run, every subsequent run, and after a crash-restart — there's no separate "initial load" versus "incremental update" path.
+Messages are derived from state transitions; you only ever talk about states. It's the same shape as the [Postgres target](/docs/connectors/postgres/) (`declare_target_state` → INSERT / UPDATE / DELETE) — the wire ops differ, the API doesn't, because the semantics are the same. The payoff: one `process_csv` is correct on the first run, every subsequent run, and after a crash-restart — there's no separate "initial load" versus "incremental update" path.
 
 ## Define the main function
 
@@ -157,13 +157,13 @@ app = coco.App(coco.AppConfig(name="CsvToKafka"), app_main)
 Two things to notice:
 
 1. `mount_kafka_topic_target(...)` resolves the producer from the context key and hands back a target handle. The topic itself is **user-managed** — CocoIndex never creates or deletes topics, it just produces into one you already own.
-2. `localfs.walk_dir(..., live=True)` makes the [filesystem source](https://cocoindex.io/docs/connectors/localfs/) a [live source](https://cocoindex.io/docs/programming_guide/live_mode/): it scans once, then keeps watching `./data` (via [`watchfiles`](https://github.com/samuelcolvin/watchfiles)) and pushes incremental updates downstream. [`mount_each`](https://cocoindex.io/docs/programming_guide/app/) runs one `process_csv` component per file.
+2. `localfs.walk_dir(..., live=True)` makes the [filesystem source](/docs/connectors/localfs/) a [live source](/docs/programming_guide/live_mode/): it scans once, then keeps watching `./data` (via [`watchfiles`](https://github.com/samuelcolvin/watchfiles)) and pushes incremental updates downstream. [`mount_each`](/docs/programming_guide/app/) runs one `process_csv` component per file.
 
 That's the whole pipeline — one file, ~60 lines.
 
 ## Run the pipeline
 
-Copy `.env.example` to `.env` and fill in your Kafka bootstrap (and SASL creds if your broker needs them), then run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/). Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
+Copy `.env.example` to `.env` and fill in your Kafka bootstrap (and SASL creds if your broker needs them), then run the [`cocoindex` CLI](/docs/cli/). Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
 
 ```sh
 # Catch-up run: reconcile the topic up to now, then exit
@@ -185,7 +185,7 @@ Keys are the row's first column (`SKU001`, `SKU002`, …); values are the JSON-e
 
 ## Incremental updates
 
-This is where the declarative model pays for itself. You never compute a diff or write produce logic — change something, and CocoIndex works out the minimum set of messages to bring the topic in line. It keeps an [internal state store](https://cocoindex.io/docs/advanced_topics/internal_storage/) remembering the last value sent for every key, and that store survives restarts, so stopping and restarting never re-broadcasts unchanged rows.
+This is where the declarative model pays for itself. You never compute a diff or write produce logic — change something, and CocoIndex works out the minimum set of messages to bring the topic in line. It keeps an [internal state store](/docs/advanced_topics/internal_storage/) remembering the last value sent for every key, and that store survives restarts, so stopping and restarting never re-broadcasts unchanged rows.
 
 - **Edit one cell** — exactly one upsert message, for that one row. Every other row is silent.
 - **Add a row** — one new upsert message.
