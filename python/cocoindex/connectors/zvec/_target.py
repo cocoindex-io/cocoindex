@@ -626,12 +626,12 @@ def _build_doc(value: _DocValue) -> Any:
 class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     """Handler for document-level target states within a collection."""
 
-    _db_key: str
+    _conn: ManagedConnection
     _collection_name: str
     _sink: coco.TargetActionSink[_DocAction]
 
-    def __init__(self, db_key: str, collection_name: str) -> None:
-        self._db_key = db_key
+    def __init__(self, conn: ManagedConnection, collection_name: str) -> None:
+        self._conn = conn
         self._collection_name = collection_name
         self._sink = coco.TargetActionSink[_DocAction].from_fn(self._apply_actions)
 
@@ -640,8 +640,7 @@ class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     ) -> None:
         if not actions:
             return
-        conn = context_provider.get(self._db_key, ManagedConnection)
-        col = conn.open_existing(self._collection_name)
+        col = self._conn.open_existing(self._collection_name)
 
         upserts: list[Any] = []
         deletes: list[str] = []
@@ -765,7 +764,10 @@ def _doc_handler(
     context_provider: ContextProvider, action: _CollectionAction, /
 ) -> _DocHandler:
     """The doc handler for a created or updated collection's docs."""
-    return _DocHandler(action.key.db_key, action.key.collection_name)
+    return _DocHandler(
+        context_provider.get(action.key.db_key, ManagedConnection),
+        action.key.collection_name,
+    )
 
 
 def _apply_collection_actions(

@@ -518,36 +518,3 @@ fn describe_files(actions: &[PreviewAction]) -> Vec<String> {
     described.sort();
     described
 }
-
-/// An update deletes the components it no longer mounts, through its commit;
-/// a preview plans those deletes too, without applying or recording them.
-#[tokio::test]
-async fn preview_plans_deletes_of_removed_components() {
-    let (app, dir) = temp_app("preview_removed_components").await;
-    let out = dir.path().join("out");
-    let body = |names: Vec<&'static str>| {
-        let out = out.clone();
-        move |ctx: Ctx| async move {
-            let target = DirTarget::mount(&ctx, &out)?;
-            let items: Vec<(String, String)> = names
-                .iter()
-                .map(|name| (name.to_string(), name.to_string()))
-                .collect();
-            mount_each!(items, |name| write_file(ctx, name, target)).await?;
-            Ok::<(), cocoindex::Error>(())
-        }
-    };
-    app.update(body(vec!["a", "b"])).await.unwrap();
-
-    let actions = app.preview(body(vec!["a"])).await.unwrap();
-    assert_eq!(describe_files(&actions), vec!["delete b.txt"]);
-    assert!(out.join("b.txt").exists(), "preview deleted the file");
-    // The preview recorded nothing (no tombstone, no deleted state): the
-    // next preview plans the same delete.
-    let actions = app.preview(body(vec!["a"])).await.unwrap();
-    assert_eq!(describe_files(&actions), vec!["delete b.txt"]);
-
-    app.update(body(vec!["a"])).await.unwrap();
-    assert!(!out.join("b.txt").exists());
-    assert!(app.preview(body(vec!["a"])).await.unwrap().is_empty());
-}

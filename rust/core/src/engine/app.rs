@@ -245,7 +245,6 @@ impl<Prof: EngineProfile> App<Prof> {
             processing_stats.clone(),
             host_ctx,
             Some(raise_on_error),
-            None,
         );
 
         let root_component = self.root_component.clone();

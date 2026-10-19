@@ -561,11 +561,11 @@ impl AppStore {
     /// All child-existence entries for `parent`, in sorted-key order (which
     /// matches `BTreeMap<StableKey, _>` iteration order because the on-disk
     /// encoding via `storekey` is order-preserving). Used by
-    /// `plan_child_existence` for the sorted-merge against the in-memory
-    /// declared children, in a write txn (commit) or a read txn (preview).
-    pub fn list_child_existence(
+    /// `Committer::update_existence` for the sorted-merge against the
+    /// in-memory declared children.
+    pub async fn list_child_existence_in_txn(
         &self,
-        txn: &heed::RoTxn<'_>,
+        txn: &mut WriteTxn<'_>,
         parent: &StablePath,
     ) -> Result<Vec<(StableKey, ChildExistenceInfo)>> {
         let prefix = key_child_existence_prefix(parent)?;
@@ -722,19 +722,6 @@ impl AppStore {
         let db_key = key_id_sequencer(key)?;
         let data = self.db().get(txn, &db_key)?;
         match data {
-            None => Ok(None),
-            Some(bytes) => {
-                let info: IdSequencerInfo = from_msgpack_slice(bytes)?;
-                Ok(Some(info.next_id))
-            }
-        }
-    }
-
-    /// The persisted next id of `key`'s sequencer, if it has one. Read-only.
-    pub async fn read_id_sequence(&self, key: &StableKey) -> Result<Option<u64>> {
-        let rtxn = self.read_txn().await?;
-        let db_key = key_id_sequencer(key)?;
-        match self.db().get(&rtxn, &db_key)? {
             None => Ok(None),
             Some(bytes) => {
                 let info: IdSequencerInfo = from_msgpack_slice(bytes)?;

@@ -174,27 +174,16 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
-    /// Components take ids through [`ComponentProcessorContext::next_id`], which a preview
-    /// serves without reserving any.
-    pub(crate) async fn next_id(
-        &self,
-        key: Option<&StableKey>,
-        deadline: DeadlineContext,
-    ) -> Result<u64> {
+    /// A preview reserves ids like an update: ids are opaque, so the gap its
+    /// unused ids leave costs nothing, and the sequencer is the one state a
+    /// preview writes.
+    pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
             .next_id(self.inner.env.storage(), &self.inner.app_store, key)
-            .await
-    }
-
-    /// The id [`Self::next_id`] would return next for `key`, reserving none.
-    async fn peek_next_id(&self, key: &StableKey) -> Result<u64> {
-        self.inner
-            .id_sequencer_manager
-            .peek_next_id(&self.inner.app_store, key)
             .await
     }
 }
@@ -641,46 +630,16 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub user_states: UserStateCache<Prof::FunctionData>,
 }
 
-/// Actions, plus the state a real update would persist, shared by all
-/// components of one preview. A preview writes nothing, so it keeps here what
-/// a later component of the same preview must see:
-/// - which component claimed a target, so a removed component does not delete
-///   a target another component took over;
-/// - which component released a target (planned its delete), so a component
-///   taking it over plans a create rather than reading the released owner's
-///   record from the store;
-/// - which components' deletes are planned, so no delete is planned twice;
-/// - the ids handed out, so ids continue where a real update's would.
+/// The actions planned by all components of one preview.
 pub struct PreviewActions<Prof: EngineProfile> {
     pub actions: std::sync::Mutex<Vec<Prof::TargetAction>>,
-    pub(crate) claimed_targets: std::sync::Mutex<HashMap<TargetStatePath, StablePath>>,
-    pub(crate) released_targets: std::sync::Mutex<HashMap<TargetStatePath, StablePath>>,
-    deleted_components: std::sync::Mutex<HashSet<StablePath>>,
-    next_ids: tokio::sync::Mutex<HashMap<StableKey, u64>>,
 }
 
 impl<Prof: EngineProfile> Default for PreviewActions<Prof> {
     fn default() -> Self {
         Self {
             actions: std::sync::Mutex::new(Vec::new()),
-            claimed_targets: std::sync::Mutex::new(HashMap::new()),
-            released_targets: std::sync::Mutex::new(HashMap::new()),
-            deleted_components: std::sync::Mutex::new(HashSet::new()),
-            next_ids: tokio::sync::Mutex::new(HashMap::new()),
         }
-    }
-}
-
-impl<Prof: EngineProfile> PreviewActions<Prof> {
-    /// Whether `owner` planned the delete of `path` earlier in this preview.
-    pub(crate) fn released_by(&self, path: &TargetStatePath, owner: &StablePath) -> bool {
-        self.released_targets.lock().unwrap().get(path) == Some(owner)
-    }
-
-    /// Records that this preview plans the delete of the component at `path`.
-    /// False if one is already planned: a real run deletes a component once.
-    pub(crate) fn plan_component_delete(&self, path: &StablePath) -> bool {
-        self.deleted_components.lock().unwrap().insert(path.clone())
     }
 }
 
@@ -708,18 +667,6 @@ pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     ///
     /// See `specs/core/error_handling.md` for the unified principle.
     pub on_error: Option<crate::engine::component::OnError>,
-    /// Set when the delete runs inside a preview: it collects its actions
-    /// instead of applying them.
-    pub preview: Option<DeletePreview<Prof>>,
-}
-
-/// A delete-mode run inside a preview.
-pub struct DeletePreview<Prof: EngineProfile> {
-    pub(crate) collector: PreviewActionCollector<Prof>,
-    /// Whether the component's child components stay: it was demoted to a
-    /// directory whose children the parent still declares, so only its own
-    /// target states go (as with `ChildExistenceAction::Keep` in a commit).
-    pub(crate) keep_children: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -765,12 +712,10 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
     pub fn new_delete(
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         on_error: Option<crate::engine::component::OnError>,
-        preview: Option<DeletePreview<Prof>>,
     ) -> Self {
         Self::Delete(ComponentDeleteContext {
             providers,
             on_error,
-            preview,
         })
     }
 }
@@ -1182,6 +1127,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.operation_generation
     }
 
+    /// Whether this is a preview run. Only a build runs as a preview: a
+    /// preview plans no deletes of components.
     pub fn preview(&self) -> bool {
         self.preview_collector().is_some()
     }
@@ -1189,41 +1136,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
-            ComponentProcessingAction::Delete(delete_ctx) => delete_ctx
-                .preview
-                .as_ref()
-                .map(|preview| &preview.collector),
+            ComponentProcessingAction::Delete(_) => None,
         }
-    }
-
-    /// For a previewed delete: whether the component's child components stay
-    /// (see [`DeletePreview::keep_children`]).
-    pub(crate) fn preview_keeps_children(&self) -> bool {
-        match &self.inner.processing_action {
-            ComponentProcessingAction::Build(_) => false,
-            ComponentProcessingAction::Delete(delete_ctx) => delete_ctx
-                .preview
-                .as_ref()
-                .is_some_and(|preview| preview.keep_children),
-        }
-    }
-
-    /// The next id of `key`'s sequencer (the default one for `None`). A preview
-    /// reserves none: it hands out ids from its own counter, starting where a
-    /// real update would.
-    pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
-        let Some(preview) = self.preview_collector() else {
-            return self.app_ctx().next_id(key, deadline).await;
-        };
-        deadline.check()?;
-        let key = key.cloned().unwrap_or(StableKey::Null);
-        let mut next_ids = preview.next_ids.lock().await;
-        let id = match next_ids.get(&key) {
-            Some(id) => *id,
-            None => self.app_ctx().peek_next_id(&key).await?,
-        };
-        next_ids.insert(key, id + 1);
-        Ok(id)
     }
 
     pub fn live(&self) -> bool {

@@ -7,7 +7,7 @@ use std::sync::Weak;
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
     AppContext, ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeletePreview, MemoStatesPayload, PreviewActionCollector,
+    MemoStatesPayload, PreviewActionCollector,
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
@@ -1488,14 +1488,13 @@ impl<Prof: EngineProfile> Component<Prof> {
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
-        preview: Option<DeletePreview<Prof>>,
     ) -> ComponentProcessorContext<Prof> {
         ComponentProcessorContext::new(
             self.clone(),
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::new_delete(providers, on_error, preview),
+            ComponentProcessingAction::new_delete(providers, on_error),
         )
     }
 }
@@ -1644,10 +1643,6 @@ mod tests {
             self.children
                 .as_ref()
                 .map_or(ChildHandling::Leaf, |(child_handling, _)| *child_handling)
-        }
-
-        fn apply_in_preview(&self) -> bool {
-            false
         }
 
         async fn child_handlers(
@@ -2875,16 +2870,14 @@ mod tests {
         );
     }
 
-    /// After a real update, a preview that takes ids and meets a memo hit whose
-    /// reusable states moved writes nothing: not the id sequencer, not the
-    /// memo states. Its ids are the ones the next real update hands out.
+    /// After a real update, a preview that meets a memo hit whose reusable
+    /// states moved leaves the stored memo states in place: it writes nothing.
     #[tokio::test]
     async fn preview_after_an_update_writes_nothing() {
-        const IDS_PER_RUN: usize = 3;
         let (app, _dir) = test_app("preview_after_update").await;
-        // The root re-runs every time (a new memo key per run), taking ids,
-        // then mounts a memoized child whose memo hit reports moved states.
-        let root = |run: &str, ids: Arc<Mutex<Vec<u64>>>| {
+        // The root re-runs every time (a new memo key per run) and mounts a
+        // memoized child whose memo hit reports moved states.
+        let root = |run: &str| {
             TestProcessor::new(
                 "root",
                 Fingerprint::from(&format!("preview_after_update/{run}")).unwrap(),
@@ -2892,12 +2885,7 @@ mod tests {
                 false,
             )
             .with_on_process(Arc::new(move |ctx| {
-                let ids = ids.clone();
                 Box::pin(async move {
-                    for _ in 0..IDS_PER_RUN {
-                        let id = ctx.next_id(None, DeadlineContext::NONE).await?;
-                        ids.lock().unwrap().push(id);
-                    }
                     let child_path =
                         StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
                     let child = ctx
@@ -2920,125 +2908,24 @@ mod tests {
         let run = |run: &'static str, preview: bool| {
             let app = &app;
             async move {
-                let ids = Arc::new(Mutex::new(Vec::new()));
                 let (handle, _) = app
                     .update(
-                        root(run, ids.clone()),
+                        root(run),
                         AppUpdateOptions::default(),
                         Arc::new(()),
                         preview.then(PreviewActionCollector::<TestProfile>::default),
                     )
                     .unwrap();
                 handle.result().await.unwrap();
-                ids.lock().unwrap().clone()
             }
         };
 
-        assert_eq!(run("v1", false).await, vec![1, 2, 3]);
-        // Twice: the ids come from the process's buffer (4) and past it (5, 6).
+        run("v1", false).await;
         let contents_before = app_store_contents(&app).await;
-        assert_eq!(run("v2", true).await, vec![4, 5, 6]);
-        assert_eq!(run("v2", true).await, vec![4, 5, 6]);
+        run("v2", true).await;
         assert!(
             app_store_contents(&app).await == contents_before,
-            "preview must not reserve ids or rewrite memo states"
-        );
-        assert_eq!(run("v2", false).await, vec![4, 5, 6]);
-    }
-
-    /// A root mounting one child component per name; each child declares one
-    /// target state, through a handler counting into `reconcile_calls`.
-    fn children_root(
-        names: &'static [&'static str],
-        reconcile_calls: Arc<AtomicUsize>,
-    ) -> TestProcessor {
-        TestProcessor::new(
-            "root",
-            Fingerprint::from(&"children_root").unwrap(),
-            Arc::new(AtomicBool::new(false)),
-            false,
-        )
-        .with_on_process(Arc::new(move |ctx| {
-            let reconcile_calls = reconcile_calls.clone();
-            Box::pin(async move {
-                let items = register_root_target_state_provider(
-                    &ctx,
-                    "items".to_string(),
-                    CountingHandler {
-                        reconcile_calls,
-                        sink: TargetActionSinkKeeper::new(NoopSink::default()),
-                        reject: false,
-                    },
-                )?;
-                for name in names {
-                    let items = items.clone();
-                    let child = TestProcessor::new(
-                        "child",
-                        Fingerprint::from(&format!("children_root/{name}")).unwrap(),
-                        Arc::new(AtomicBool::new(false)),
-                        false,
-                    )
-                    .with_on_process(Arc::new(move |ctx| {
-                        let items = items.clone();
-                        Box::pin(async move {
-                            declare_target_state(
-                                &ctx,
-                                &FnCallContext::default(),
-                                items,
-                                StableKey::Str(Arc::from(*name)),
-                                (),
-                            )?;
-                            Ok(TestData(Vec::new()))
-                        })
-                    }));
-                    ctx.component()
-                        .mount_child(&FnCallContext::new(true), key_path(ctx.component(), name))?
-                        .use_mount(&ctx, child, DeadlineContext::NONE)
-                        .await?
-                        .result(Some(&ctx))
-                        .await?;
-                }
-                Ok(TestData(Vec::new()))
-            })
-        }))
-    }
-
-    /// A commit deletes the child components an update no longer mounts; a
-    /// preview plans those deletes (the removed child's state is reconciled
-    /// away) and writes nothing — no tombstone, no removed existence row.
-    #[tokio::test]
-    async fn preview_plans_deletes_of_removed_child_components() {
-        let (app, _dir) = test_app("preview_removed_children").await;
-        let reconcile_calls = Arc::new(AtomicUsize::new(0));
-        let (handle, _) = app
-            .update(
-                children_root(&["a", "b"], reconcile_calls.clone()),
-                AppUpdateOptions::default(),
-                Arc::new(()),
-                None,
-            )
-            .unwrap();
-        handle.result().await.unwrap();
-
-        let contents_before = app_store_contents(&app).await;
-        reconcile_calls.store(0, Ordering::SeqCst);
-        let (handle, _) = app
-            .update(
-                children_root(&["a"], reconcile_calls.clone()),
-                AppUpdateOptions::default(),
-                Arc::new(()),
-                Some(PreviewActionCollector::<TestProfile>::default()),
-            )
-            .unwrap();
-        handle.result().await.unwrap();
-        assert_eq!(
-            reconcile_calls.load(Ordering::SeqCst),
-            2,
-            "child a's state and removed child b's state are reconciled"
-        );
-        assert!(
-            app_store_contents(&app).await == contents_before,
-            "preview must not write to the state store"
+            "preview must not rewrite memo states"
         );
     }
 

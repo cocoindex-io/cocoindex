@@ -494,21 +494,6 @@ def _canonical_child_handler(
     return canonical
 
 
-def process_memory_sink_from_async_fn(
-    fn: AsyncTargetActionSinkFn[ActionT_contra],
-) -> "TargetActionSink[ActionT_contra, Any]":
-    """Like :meth:`TargetActionSink.from_async_fn`, for a leaf sink that
-    writes nothing but process memory scoped to the run (a ``LiveMap``'s
-    entries): a preview applies it too, so the components reading that memory
-    see what an update gives them."""
-    canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
-    return TargetActionSink(
-        core.TargetActionSink.new_async(
-            canonical, with_children=False, apply_in_preview=True
-        )
-    )
-
-
 class TargetReconcileOutput(
     Generic[ActionT, TrackingRecordT_co, OptChildHandlerT_co], NamedTuple
 ):

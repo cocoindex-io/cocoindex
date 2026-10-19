@@ -598,6 +598,7 @@ impl Ctx {
             ));
         };
         comp_ctx
+            .app_ctx()
             .next_id(None, self.deadline)
             .await
             .map_err(Error::from)

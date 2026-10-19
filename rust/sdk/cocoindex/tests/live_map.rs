@@ -24,10 +24,10 @@ fn live_map_create_and_declare() {
     .unwrap();
 }
 
-/// Preview plans the container and its entries, and fills the map: its
-/// entries are this run's process memory, which the map's consumers read.
+/// Preview plans the container and its entries without applying them: the
+/// map stays empty.
 #[tokio::test]
-async fn live_map_preview_fills_the_map() {
+async fn live_map_preview_applies_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let app = App::open("live_map_preview", dir.path().join("lmdb"))
         .await
@@ -76,15 +76,7 @@ async fn live_map_preview_fills_the_map() {
         ]
     );
     let lm = created.lock().unwrap().take().unwrap();
-    let mut entries = lm.scan().await.unwrap();
-    entries.sort();
-    assert_eq!(
-        entries,
-        vec![
-            ("a".to_string(), "alpha".to_string()),
-            ("b".to_string(), "beta".to_string()),
-        ]
-    );
+    assert!(lm.scan().await.unwrap().is_empty());
 }
 
 mod live {

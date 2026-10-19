@@ -20,10 +20,7 @@ import decimal
 import logging
 import random
 import re
-import threading
 import uuid
-import weakref
-import dataclasses
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -75,6 +72,7 @@ import msgspec
 
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+from cocoindex.connectorkits.per_loop_connections import PerLoopConnections
 
 _logger = logging.getLogger(__name__)
 
@@ -109,14 +107,6 @@ def _to_record_id(table: str, value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _LoopConnection:
-    """The connection of one event loop, and the lock that opens it once."""
-
-    lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
-    conn: AsyncSurreal | None = None
-
-
 class ConnectionFactory:
     """
     Connection factory for SurrealDB.
@@ -147,10 +137,9 @@ class ConnectionFactory:
         self._namespace = namespace
         self._database = database
         self._credentials = credentials
-        self._lock = threading.Lock()
-        self._conns: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, _LoopConnection
-        ] = weakref.WeakKeyDictionary()
+        self._connections: PerLoopConnections[AsyncSurreal] = PerLoopConnections(
+            self._connect, _close_connection, owner="SurrealDB ConnectionFactory"
+        )
 
     async def acquire(self) -> AsyncSurreal:
         """Return the authenticated connection for the current event loop.
@@ -161,16 +150,7 @@ class ConnectionFactory:
         """
         # ponytail: one shared connection per loop; add a pool if a single
         # WebSocket becomes the throughput limit.
-        loop = asyncio.get_running_loop()
-        with self._lock:
-            entry = self._conns.get(loop)
-            if entry is None:
-                entry = self._conns[loop] = _LoopConnection()
-        # Sinks apply concurrently: open the connection once, not once per caller.
-        async with entry.lock:
-            if entry.conn is None:
-                entry.conn = await self._connect()
-            return entry.conn
+        return await self._connections.acquire()
 
     async def _connect(self) -> AsyncSurreal:
         conn = AsyncSurreal(self._url)
@@ -189,28 +169,11 @@ class ConnectionFactory:
         the loop that used the factory (e.g. in the lifespan, after ``yield``);
         a later ``acquire()`` opens a new connection. Connections of other
         loops can't be closed here; they are left open, with a warning."""
-        loop = asyncio.get_running_loop()
-        with self._lock:
-            entry = self._conns.get(loop)
-            num_others = sum(
-                1
-                for other_loop, other in self._conns.items()
-                if other_loop is not loop and other.conn is not None
-            )
-        if num_others:
-            _logger.warning(
-                "SurrealDB ConnectionFactory.close(): %d connection(s) opened on "
-                "other event loops were not closed; close() must run on the "
-                "event loop that opened them",
-                num_others,
-            )
-        if entry is None:
-            return
-        # Waits for a connect in progress, so its connection is closed too.
-        async with entry.lock:
-            conn, entry.conn = entry.conn, None
-        if conn is not None:
-            await conn.close()
+        await self._connections.close()
+
+
+async def _close_connection(conn: AsyncSurreal) -> None:
+    await conn.close()
 
 
 # ---------------------------------------------------------------------------

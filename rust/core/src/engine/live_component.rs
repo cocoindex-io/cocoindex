@@ -7,8 +7,7 @@ use crate::engine::component::{
     OnError,
 };
 use crate::engine::context::{
-    ComponentProcessingAction, ComponentProcessorContext, DeletePreview, FnCallContext,
-    PreviewActionCollector,
+    ComponentProcessingAction, ComponentProcessorContext, FnCallContext, PreviewActionCollector,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -653,8 +652,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// returned handle. The tombstone always remains in the DB, so even
     /// a failed delete is retried by the next reconcile's GC sweep.
     ///
-    /// A preview writes no tombstone and runs the delete as a preview: it
-    /// plans the child's delete actions without applying them.
+    /// A preview writes no tombstone and deletes nothing: like the deletes of
+    /// the components an update no longer mounts, a live delete is not
+    /// previewed.
     pub async fn delete(
         &self,
         subpath: StablePath,
@@ -1247,10 +1247,9 @@ async fn run_op<Prof: EngineProfile>(
             inner_handle.ready().await
         }
         Op::Delete { on_error } => {
-            // A full update's walk may already have planned this delete.
-            if let Some(collector) = &preview_collector
-                && !collector.plan_component_delete(child.stable_path())
-            {
+            // A preview previews no deletes of components (see
+            // `LiveComponentController::delete`).
+            if preview_collector.is_some() {
                 return Ok(());
             }
             let context = ComponentProcessorContext::new_borrowing_from(
@@ -1259,14 +1258,7 @@ async fn run_op<Prof: EngineProfile>(
                 Some(lender.clone()),
                 processing_stats.clone(),
                 host_ctx.clone(),
-                ComponentProcessingAction::new_delete(
-                    providers.clone(),
-                    on_error,
-                    preview_collector.clone().map(|collector| DeletePreview {
-                        collector,
-                        keep_children: false,
-                    }),
-                ),
+                ComponentProcessingAction::new_delete(providers.clone(), on_error),
             );
             let inner_handle = child.delete(context)?;
             inner_handle.ready().await

@@ -12,11 +12,7 @@ import cocoindex as coco
 from cocoindex.resources.live_map import LiveMap
 
 from tests import common
-from tests.common.target_states import (
-    AsyncGlobalDictTarget,
-    DictDataWithPrev,
-    GlobalDictTarget,
-)
+from tests.common.target_states import AsyncGlobalDictTarget, GlobalDictTarget
 
 
 # A value that carries its own key, so the consumer (which only receives the value from
@@ -282,54 +278,6 @@ def test_restart_same_inputs_refill() -> None:
     assert _data() == {"a": "1", "b": "2"}
     app.update_blocking()  # same inputs, fresh LiveMap: must still refill, not empty out.
     assert _data() == {"a": "1", "b": "2"}
-
-
-_preview_desired: dict[str, Any] = {}
-
-
-def _downstream(actions: list[Any] | None) -> list[Any]:
-    """The planned `GlobalDictTarget` actions (plain `(key, value)` tuples), sorted."""
-    assert actions is not None
-    return sorted((a for a in actions if type(a) is tuple), key=lambda a: a[0])
-
-
-def test_preview_fills_the_map_for_its_consumers() -> None:
-    """A preview applies a LiveMap's entries (this run's process memory, a new map per
-    run), so the map's consumers mount them and the preview plans what an update does
-    downstream: no false deletes of what the last update wrote."""
-    GlobalDictTarget.store.clear()
-    env = common.create_test_env(__file__, suffix="preview")
-
-    @coco.fn
-    async def app_main() -> None:
-        lm: LiveMap[str, Val] = await LiveMap.create()
-        handle = await coco.mount(produce, lm, dict(_preview_desired))
-        await handle.ready()
-        await coco.mount_each(process_entry, lm)
-
-    app = coco.App(
-        coco.AppConfig(name="test_live_map_preview", environment=env), app_main
-    )
-    _preview_desired.clear()
-    _preview_desired.update({"a": "1", "b": "2"})
-
-    assert _downstream(app.update_blocking(preview=True)) == [
-        ("a", DictDataWithPrev(data="1", prev=[], prev_may_be_missing=True)),
-        ("b", DictDataWithPrev(data="2", prev=[], prev_may_be_missing=True)),
-    ]
-    assert _data() == {}
-
-    app.update_blocking()
-    assert _data() == {"a": "1", "b": "2"}
-    GlobalDictTarget.store.metrics.clear()
-
-    # Same inputs: nothing changes downstream.
-    assert _downstream(app.update_blocking(preview=True)) == []
-    # A dropped entry: only its consumer's target is deleted.
-    del _preview_desired["b"]
-    assert _downstream(app.update_blocking(preview=True)) == [("b", coco.NON_EXISTENCE)]
-    assert _data() == {"a": "1", "b": "2"}
-    assert GlobalDictTarget.store.metrics.collect() == {}
 
 
 def test_single_watcher_raises() -> None:

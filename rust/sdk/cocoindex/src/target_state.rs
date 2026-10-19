@@ -268,22 +268,6 @@ where
         Self::from_async_fn_with_ctx(move |_host_ctx, actions| f(actions))
     }
 
-    /// Like [`Self::from_async_fn`], for a sink that writes nothing but process
-    /// memory scoped to the run (a LiveMap's entries): a preview applies it
-    /// too, so the components reading that memory see what an update gives
-    /// them.
-    pub(crate) fn from_async_fn_applied_in_preview<F, Fut>(f: F) -> Self
-    where
-        F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<()>> + Send + 'static,
-    {
-        Self::new(
-            move |_host_ctx, actions| Ok(f(decode_leaf_actions::<A>(actions)?)),
-            SinkChildren::Leaf,
-            true,
-        )
-    }
-
     /// Build a sink for a *container* target, whose actions may carry child
     /// target states (those declared with [`declare_target_state_with_child`] /
     /// [`mount_target`]).
@@ -320,7 +304,6 @@ where
         Self::new(
             move |_host_ctx, actions| Ok(f(decode_actions_with_children::<A>(actions)?)),
             SinkChildren::LegacySlots,
-            false,
         )
     }
 
@@ -384,7 +367,6 @@ where
         Self::new(
             move |host_ctx, actions| Ok(f(host_ctx, decode_leaf_actions::<A>(actions)?)),
             SinkChildren::Leaf,
-            false,
         )
     }
 
@@ -415,13 +397,12 @@ where
         Self::new(
             move |host_ctx, actions| Ok(apply(host_ctx, decode_leaf_actions::<A>(actions)?)),
             SinkChildren::Factory(child_handler),
-            false,
         )
     }
 
     /// Wrap a closure that decodes the engine's batch and starts the apply
     /// future; a decode failure becomes a failed future.
-    fn new<F, Fut>(f: F, children: SinkChildren, apply_in_preview: bool) -> Self
+    fn new<F, Fut>(f: F, children: SinkChildren) -> Self
     where
         F: Fn(Arc<ContextStore>, Vec<TargetActionWithChildSlot<RustProfile>>) -> Result<Fut>
             + Send
@@ -438,7 +419,6 @@ where
                 fut
             },
             children,
-            apply_in_preview,
         );
         Self {
             inner: TargetActionSinkKeeper::new(sink),

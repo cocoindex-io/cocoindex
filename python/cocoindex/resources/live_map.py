@@ -33,7 +33,6 @@ from typing import TypeVar as _TypeVar
 import msgspec as _msgspec
 
 import cocoindex as _coco
-from cocoindex._internal import target_state as _target_state
 
 __all__ = ["LiveMap"]
 
@@ -78,8 +77,8 @@ class _EntryRecord(_msgspec.Struct, frozen=True):
 
 
 class _ContainerAction(_NamedTuple):
+    # None for a deleted container, and if the LiveMap was garbage-collected.
     live_map: "LiveMap[_Any, _Any] | None"
-    deleted: bool
 
 
 class _EntryAction(_NamedTuple):
@@ -154,13 +153,13 @@ class _ContainerHandler(
     ) -> "_coco.TargetReconcileOutput[_ContainerAction, _ContainerRecord, _EntryHandler] | None":
         if _coco.is_non_existence(desired_state):
             return _coco.TargetReconcileOutput(
-                action=_ContainerAction(None, True),
+                action=_ContainerAction(None),
                 sink=_CONTAINER_SINK,
                 tracking_record=_coco.NON_EXISTENCE,
             )
         assert isinstance(key, _uuid.UUID)
         return _coco.TargetReconcileOutput(
-            action=_ContainerAction(_REGISTRY.get(key), False),
+            action=_ContainerAction(_REGISTRY.get(key)),
             sink=_CONTAINER_SINK,
             tracking_record=_ContainerRecord(),
         )
@@ -192,8 +191,14 @@ def _container_entry_handler(
     context_provider: _coco.ContextProvider, action: _ContainerAction, /
 ) -> _EntryHandler:
     """The entry handler for a declared container's entries."""
-    # `live_map` is None only if the LiveMap was garbage-collected.
-    assert action.live_map is not None
+    if action.live_map is None:
+        # The registry holds the map weakly: its creator dropped it before
+        # its entries were reconciled.
+        raise RuntimeError(
+            "the LiveMap was garbage-collected before its entries were "
+            "reconciled; keep a reference to it while its producers and "
+            "consumers run"
+        )
     return _EntryHandler(action.live_map)
 
 
@@ -205,10 +210,8 @@ async def _apply_container_actions(
     """A container is the in-memory map itself, so there is nothing to apply."""
 
 
-# The entries are this run's process memory, so a preview applies them too: the
-# map's consumers then mount what an update would give them.
 _ENTRY_SINK: _coco.TargetActionSink[_EntryAction] = (
-    _target_state.process_memory_sink_from_async_fn(_apply_entry_actions)
+    _coco.TargetActionSink.from_async_fn(_apply_entry_actions)
 )
 _CONTAINER_SINK: _coco.TargetActionSink[_ContainerAction] = (
     _coco.TargetActionSink.from_async_fn(

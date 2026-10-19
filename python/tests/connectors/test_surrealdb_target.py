@@ -959,7 +959,7 @@ async def test_preview_plans_tables_and_records(
     likes_rows = [("alice", "bob", Likes(id="like1", rating=5))]
     tables, records = _planned(await app.update(preview=True))
     # Building the record handlers opened no connection.
-    assert not factory._conns
+    assert not factory._connections._entries
     assert {name: a.main_action for name, a in tables.items()} == {
         "person": "insert",
         "likes": "insert",

@@ -131,18 +131,4 @@ impl IdSequencerManager {
 
         Ok(state.take_id())
     }
-
-    /// The id [`Self::next_id`] would return next for `key`, without taking it
-    /// or reserving any: the next one in the local buffer, else the persisted
-    /// next id (which a refill would reserve from).
-    pub async fn peek_next_id(&self, app_store: &AppStore, key: &StableKey) -> Result<u64> {
-        let state_arc = self.sequencers.lock().unwrap().get(key).cloned();
-        if let Some(state_arc) = state_arc {
-            let state = state_arc.lock().await;
-            if !state.needs_refill() {
-                return Ok(state.next_local_id);
-            }
-        }
-        Ok(app_store.read_id_sequence(key).await?.unwrap_or(1))
-    }
 }

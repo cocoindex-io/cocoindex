@@ -1412,41 +1412,6 @@ def test_preview_child_target_providers() -> None:
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
 
-def test_preview_plans_deletes_of_removed_components() -> None:
-    """An update deletes the components it no longer mounts (here: the one
-    holding container D2), through its commit; a preview plans those deletes
-    too, without applying or recording them."""
-    DictsTarget.store.clear()
-    _source_data.clear()
-
-    app = coco.App(
-        coco.AppConfig(
-            name="test_preview_plans_deletes_of_removed_components",
-            environment=coco_env,
-        ),
-        _declare_dicts_data_together,
-    )
-    _source_data["D1"] = {"a": 1}
-    _source_data["D2"] = {"b": 2}
-    app.update_blocking()
-    DictsTarget.store.metrics.clear()
-
-    del _source_data["D2"]
-    for _ in range(2):
-        # Recorded nothing: a second preview plans the same delete.
-        actions = app.update_blocking(preview=True)
-        assert actions is not None
-        assert sorted((a.name, a.action or "noop") for a in actions) == [
-            ("D1", "noop"),
-            ("D2", "delete"),
-        ]
-        assert set(DictsTarget.store.data) == {"D1", "D2"}
-        assert DictsTarget.store.metrics.collect() == {}
-
-    app.update_blocking()
-    assert set(DictsTarget.store.data) == {"D1"}
-
-
 ##################################################################################
 # Test: Directory -> Component transition child existence reconciliation
 ##################################################################################
@@ -1725,52 +1690,3 @@ def test_typed_component_path_create_update_unmount() -> None:
     assert GlobalDictTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
     assert common.list_target_state_owners_sync(app) == {}
-
-
-@pytest.mark.parametrize("nested", [False, True])
-@pytest.mark.parametrize("changed", [False, True])
-def test_preview_removed_component_does_not_delete_transferred_target(
-    nested: bool, changed: bool
-) -> None:
-    """Moving a target preserves it, including through recursive component GC."""
-    GlobalDictTarget.store.clear()
-    owner = "old"
-    value = 1
-
-    async def declare_row() -> None:
-        coco.declare_target_state(GlobalDictTarget.target_state("transferred", value))
-
-    async def declare_owner() -> None:
-        if nested:
-            await coco.use_mount(coco.component_subpath("leaf"), declare_row)
-        else:
-            await declare_row()
-
-    async def main() -> None:
-        await coco.use_mount(coco.component_subpath(owner), declare_owner)
-
-    app = coco.App(
-        coco.AppConfig(
-            name=f"preview_transfer_{nested}_{changed}", environment=coco_env
-        ),
-        main,
-    )
-    app.update_blocking()
-    GlobalDictTarget.store.metrics.clear()
-    owner = "new"
-    value = 2 if changed else 1
-    expected = (
-        [("transferred", DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=False))]
-        if changed
-        else []
-    )
-    for _ in range(2):
-        assert app.update_blocking(preview=True) == expected
-        assert GlobalDictTarget.store.data["transferred"].data == 1
-        assert GlobalDictTarget.store.metrics.collect() == {}
-
-    app.update_blocking()
-    assert GlobalDictTarget.store.data["transferred"].data == value
-    metrics = GlobalDictTarget.store.metrics.collect()
-    assert metrics.get("delete", 0) == 0
-    assert metrics.get("upsert", 0) == int(changed)

@@ -342,7 +342,6 @@ pub(crate) enum SinkChildren {
 pub(crate) struct BoxedSink {
     apply_fn: SinkFn,
     children: SinkChildren,
-    apply_in_preview: bool,
 }
 
 impl BoxedSink {
@@ -352,12 +351,10 @@ impl BoxedSink {
         + Sync
         + 'static,
         children: SinkChildren,
-        apply_in_preview: bool,
     ) -> Self {
         Self {
             apply_fn: Arc::new(f),
             children,
-            apply_in_preview,
         }
     }
 }
@@ -370,10 +367,6 @@ impl TargetActionSink<RustProfile> for BoxedSink {
             SinkChildren::LegacySlots => ChildHandling::LegacySlots,
             SinkChildren::Factory(_) => ChildHandling::Factory,
         }
-    }
-
-    fn apply_in_preview(&self) -> bool {
-        self.apply_in_preview
     }
 
     async fn child_handlers(

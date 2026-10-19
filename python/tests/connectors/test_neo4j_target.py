@@ -1257,7 +1257,7 @@ async def test_preview_plans_tables_and_records(
     )
     tables, records = _planned(await app.update(preview=True))
     # Building the record handlers opened no connection.
-    assert not factory._drivers
+    assert not factory._connections._entries
     assert {name: a.main_action for name, a in tables.items()} == {
         "Entity": "insert",
         "REL": "insert",

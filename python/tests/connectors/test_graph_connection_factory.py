@@ -120,9 +120,7 @@ def test_each_event_loop_gets_its_own_connection(
     # The first close() left the other loop's connection open and said so;
     # the second found nothing else to warn about.
     warnings = [
-        r.getMessage()
-        for r in caplog.records
-        if r.name.startswith("cocoindex.connectors.")
+        r.getMessage() for r in caplog.records if r.name.startswith("cocoindex.")
     ]
     assert len(warnings) == 1
     assert "1 " in warnings[0] and "other event loops" in warnings[0]

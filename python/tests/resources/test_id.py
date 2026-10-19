@@ -78,9 +78,10 @@ async def _app_main_generate_id_for_preview_deps() -> None:
         _generate_id_results[dep] = await generate_id(dep)
 
 
-def test_generate_id_in_preview_reserves_nothing() -> None:
-    """A preview gives new dependencies the IDs the next update gives them, and
-    reserves none: a second preview gives the same IDs again."""
+def test_generate_id_in_preview() -> None:
+    """A preview reserves ids like an update (the ids it shows are not the ones
+    the next update assigns, and the gap is harmless), and reads memoized ids
+    without changing them."""
     _generate_id_results.clear()
     app = coco.App(
         coco.AppConfig(name="test_generate_id_in_preview", environment=coco_env),
@@ -91,14 +92,21 @@ def test_generate_id_in_preview_reserves_nothing() -> None:
     assert _generate_id_results == {"A": 1}
 
     _preview_deps[:] = ["A", "B", "C"]
-    for _ in range(2):
-        _generate_id_results.clear()
-        app.update_blocking(preview=True)
-        assert _generate_id_results == {"A": 1, "B": 2, "C": 3}
+    _generate_id_results.clear()
+    app.update_blocking(preview=True)
+    previewed = dict(_generate_id_results)
+    assert previewed["A"] == 1
+    assert len({previewed["B"], previewed["C"]} - {1}) == 2
 
     _generate_id_results.clear()
     app.update_blocking()
-    assert _generate_id_results == {"A": 1, "B": 2, "C": 3}
+    assert _generate_id_results["A"] == 1
+    assert len(set(_generate_id_results.values())) == 3
+    # The update's new ids are stable from then on.
+    final = dict(_generate_id_results)
+    _generate_id_results.clear()
+    app.update_blocking()
+    assert _generate_id_results == final
 
 
 @coco.fn

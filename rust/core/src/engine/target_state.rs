@@ -131,12 +131,6 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     /// fields: the engine asks it inside the precommit txn.
     fn child_handling(&self) -> ChildHandling;
 
-    /// Whether a preview applies this sink's actions too. Only for a sink that
-    /// writes nothing but process memory scoped to the run (e.g. a LiveMap's
-    /// entries), so the components reading that memory see what a real update
-    /// would give them. Answered from the sink's own fields.
-    fn apply_in_preview(&self) -> bool;
-
     /// For a [`ChildHandling::Factory`] sink: the child handler of each of
     /// `actions`, in order. Must be free of side effects: it runs for previews
     /// too, and before `apply` in a real update.
@@ -196,25 +190,6 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
 
     pub fn child_handling(&self) -> ChildHandling {
         self.inner.sink.child_handling()
-    }
-
-    /// See [`TargetActionSink::apply_in_preview`].
-    pub fn apply_in_preview(&self) -> bool {
-        self.inner.sink.apply_in_preview()
-    }
-
-    /// Applies `actions` for a preview: directly, as previews share no sink
-    /// call with other components.
-    pub(crate) async fn apply_for_preview(
-        &self,
-        host_runtime_ctx: &Prof::HostRuntimeCtx,
-        host_ctx: Arc<Prof::HostCtx>,
-        actions: &[TargetActionWithChildSlot<Prof>],
-    ) -> Result<()> {
-        self.inner
-            .sink
-            .apply(host_runtime_ctx, host_ctx, actions)
-            .await
     }
 
     /// See [`TargetActionSink::child_handlers`]. Not batched: nothing is

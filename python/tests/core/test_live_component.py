@@ -519,9 +519,9 @@ class _DeleteOnRequestLiveComponent:
 
 
 def test_live_component_delete_in_preview_applies_nothing() -> None:
-    """In a preview, operator.delete() plans the child's deletes without
-    applying them or leaving a tombstone: the next real update keeps the
-    child."""
+    """In a preview, operator.delete() neither deletes the child nor leaves a
+    tombstone, and (like the deletes of components an update no longer mounts)
+    it is not previewed: the next real update keeps the child."""
     GlobalDictTarget.store.clear()
     _source_data.clear()
     _DeleteOnRequestLiveComponent.delete_b = False
@@ -547,8 +547,8 @@ def test_live_component_delete_in_preview_applies_nothing() -> None:
         actions = app.update_blocking(preview=True)
     finally:
         _DeleteOnRequestLiveComponent.delete_b = False
-    # The delete is planned, not applied.
-    assert actions == [("b", coco.NON_EXISTENCE)]
+    # Neither applied nor planned.
+    assert actions == []
     assert set(GlobalDictTarget.store.data) == {"a", "b"}
     assert GlobalDictTarget.store.metrics.collect() == {}
 

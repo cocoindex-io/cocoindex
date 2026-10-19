@@ -33,7 +33,6 @@ pub struct PyTargetActionSink {
 pub struct PyTargetActionSinkInner {
     callback: PyCallback,
     convention: SinkConvention,
-    apply_in_preview: bool,
 }
 
 /// How a sink's callback is called, and where child handlers come from.
@@ -75,7 +74,6 @@ struct SinkKeeperRegistry {
 struct SinkKeeperKey {
     callback_ptr: usize,
     convention: SinkConventionKey,
-    apply_in_preview: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,7 +158,6 @@ impl PyTargetActionSink {
         let key = SinkKeeperKey {
             callback_ptr: callback.as_ptr() as usize,
             convention: convention.key(),
-            apply_in_preview: false,
         };
         let keeper =
             SYNC_SINK_REGISTRY
@@ -169,26 +166,21 @@ impl PyTargetActionSink {
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Sync(Arc::new(callback)),
                     convention,
-                    apply_in_preview: false,
                 });
         Ok(Self { keeper })
     }
 
     #[staticmethod]
-    /// `apply_in_preview`: see `TargetActionSink::apply_in_preview` in the
-    /// engine.
-    #[pyo3(signature = (callback, with_children, child_handler=None, apply_in_preview=false))]
+    #[pyo3(signature = (callback, with_children, child_handler=None))]
     pub fn new_async(
         callback: Py<PyAny>,
         with_children: bool,
         child_handler: Option<Py<PyAny>>,
-        apply_in_preview: bool,
     ) -> PyResult<Self> {
         let convention = SinkConvention::new(with_children, child_handler)?;
         let key = SinkKeeperKey {
             callback_ptr: callback.as_ptr() as usize,
             convention: convention.key(),
-            apply_in_preview,
         };
         let keeper =
             ASYNC_SINK_REGISTRY
@@ -197,7 +189,6 @@ impl PyTargetActionSink {
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Async(Arc::new(callback)),
                     convention,
-                    apply_in_preview,
                 });
         Ok(Self { keeper })
     }
@@ -233,10 +224,6 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
             SinkConvention::Leaf | SinkConvention::LegacySlots => ChildHandling::LegacySlots,
             SinkConvention::Factory(_) => ChildHandling::Factory,
         }
-    }
-
-    fn apply_in_preview(&self) -> bool {
-        self.apply_in_preview
     }
 
     async fn child_handlers(

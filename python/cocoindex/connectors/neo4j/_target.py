@@ -19,14 +19,11 @@ that shipped in 5.18; older Neo4j 5 servers will reject the DDL.
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import decimal
 import logging
 import re
-import threading
 import uuid as uuid_mod
-import weakref
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -61,6 +58,7 @@ import numpy as np
 import cocoindex as coco
 from cocoindex._internal import deadline
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+from cocoindex.connectorkits.per_loop_connections import PerLoopConnections
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
@@ -153,9 +151,6 @@ class ConnectionFactory:
         builder.provide(NEO4J_DB, factory)
     """
 
-    _lock: threading.Lock
-    _drivers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncDriver]
-
     def __init__(
         self,
         uri: str,
@@ -174,8 +169,9 @@ class ConnectionFactory:
         self._uri = uri
         self._auth = auth
         self._database = database
-        self._lock = threading.Lock()
-        self._drivers = weakref.WeakKeyDictionary()
+        self._connections: PerLoopConnections[AsyncDriver] = PerLoopConnections(
+            self._open_driver, _close_driver, owner="Neo4j ConnectionFactory"
+        )
 
     @property
     def database(self) -> str:
@@ -188,31 +184,21 @@ class ConnectionFactory:
         loop it is used on), created on the loop's first ``acquire()`` and
         reused after.
         """
-        loop = asyncio.get_running_loop()
-        with self._lock:
-            driver = self._drivers.get(loop)
-            if driver is None:
-                driver = _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
-                self._drivers[loop] = driver
-        return _GraphHandle(driver, self._database)
+        return _GraphHandle(await self._connections.acquire(), self._database)
+
+    async def _open_driver(self) -> AsyncDriver:
+        return _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
 
     async def close(self) -> None:
         """Close the driver of the running event loop, if any. Call it on the
         loop that used the factory (e.g. in the lifespan, after ``yield``); a
         later ``acquire()`` creates a new driver. Drivers of other loops can't
         be closed here; they are left open, with a warning."""
-        with self._lock:
-            driver = self._drivers.pop(asyncio.get_running_loop(), None)
-            num_others = len(self._drivers)
-        if num_others:
-            _logger.warning(
-                "Neo4j ConnectionFactory.close(): %d driver(s) opened on other "
-                "event loops were not closed; close() must run on the event "
-                "loop that opened them",
-                num_others,
-            )
-        if driver is not None:
-            await driver.close()
+        await self._connections.close()
+
+
+async def _close_driver(driver: AsyncDriver) -> None:
+    await driver.close()
 
 
 # ---------------------------------------------------------------------------
