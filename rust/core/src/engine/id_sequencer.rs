@@ -6,9 +6,11 @@
 //! - IDs are allocated in batches to minimize database transactions
 //! - Batch sizes grow exponentially (2, 4, 8, ..., 256) for better performance
 //!
-//! Storage I/O goes through methods on `AppStore` / `Storage`; this module
-//! is the in-memory caching half and never touches the storage backend
-//! directly.
+//! Storage I/O goes through methods on `AppStore`; this module is the
+//! in-memory caching half and never touches the storage backend directly.
+//! The `AppStore` it is given must apply its writes: a preview reserves ids
+//! like an update (see `AppContext::next_id`), so a reservation made through
+//! a handle that discards writes would hand out ids the store never saw.
 //!
 //! `pre_commit` bypasses this cache: it reserves a child provider's fresh
 //! generation ID (under `TARGET_ID_KEY`) with
@@ -20,7 +22,7 @@ use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
-use crate::state_store::{AppStore, Storage};
+use crate::state_store::AppStore;
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -90,12 +92,7 @@ impl IdSequencerManager {
     /// This function is thread-safe and handles concurrent access properly.
     /// Different keys can be processed in parallel, while same-key operations
     /// are serialized.
-    pub async fn next_id(
-        &self,
-        storage: &Storage,
-        app_store: &AppStore,
-        key: &StableKey,
-    ) -> Result<u64> {
+    pub async fn next_id(&self, app_store: &AppStore, key: &StableKey) -> Result<u64> {
         // Get or create the per-key state (brief lock on main map)
         let state_arc = {
             let mut sequencers = self.sequencers.lock().unwrap();
@@ -110,14 +107,14 @@ impl IdSequencerManager {
 
         if state.needs_refill() {
             let batch_size = state.next_batch_size;
-            let app_store = app_store.clone();
+            let app_store_in_txn = app_store.clone();
             let key = key.clone();
             // `reserve_id_range_in_txn` is idempotent under retry: each
             // attempt reads the current counter, computes `start_id`, writes
             // `start_id + batch_size`.
-            let start_id = storage
+            let start_id = app_store
                 .run_txn(move |wtxn| {
-                    let app_store = app_store.clone();
+                    let app_store = app_store_in_txn.clone();
                     let key = key.clone();
                     Box::pin(async move {
                         app_store

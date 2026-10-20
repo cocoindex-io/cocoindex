@@ -131,6 +131,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         &self.inner.env
     }
 
+    /// The app's state store, applying every write. A component run writes
+    /// through [`ComponentProcessorContext::app_store`] instead, which
+    /// discards writes in a preview.
     pub fn app_store(&self) -> &AppStore {
         &self.inner.app_store
     }
@@ -176,14 +179,15 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
     /// A preview reserves ids like an update: ids are opaque, so the gap its
     /// unused ids leave costs nothing, and the sequencer is the one state a
-    /// preview writes.
+    /// preview writes — through the app's own store here, not the run's
+    /// discarding handle.
     pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
-            .next_id(self.inner.env.storage(), &self.inner.app_store, key)
+            .next_id(&self.inner.app_store, key)
             .await
     }
 }
@@ -713,6 +717,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
+    /// See [`ComponentProcessorContext::app_store`].
+    app_store: AppStore,
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
 
@@ -791,11 +797,23 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             None => component.app_ctx().next_operation_generation(),
         };
         let admission = Admission::new(component.app_ctx().admission_pool().clone(), lender);
+        let app_store = component.app_ctx().app_store();
+        let app_store = match &processing_action {
+            ComponentProcessingAction::Build(build_ctx)
+                if build_ctx.preview_collector.is_some() =>
+            {
+                app_store.discarding_writes()
+            }
+            ComponentProcessingAction::Build(_) | ComponentProcessingAction::Delete(_) => {
+                app_store.clone()
+            }
+        };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
+                app_store,
                 operation_generation,
                 admission,
                 logic_deps: Mutex::new(HashSet::new()),
@@ -847,6 +865,15 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.component.app_ctx()
     }
 
+    /// The app's state store as this run writes it. In a preview the handle
+    /// discards every write (see [`AppStore::discarding_writes`]), which is
+    /// what makes a preview write nothing: the run's write paths need no
+    /// check of their own. Component runs reach the store through here, not
+    /// through [`AppContext::app_store`].
+    pub fn app_store(&self) -> &AppStore {
+        &self.inner.app_store
+    }
+
     pub fn stable_path(&self) -> &StablePath {
         self.inner.component.stable_path()
     }
@@ -884,7 +911,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             return Ok(());
         }
         let (fn_memo_rows, user_state_rows) = self
-            .app_ctx()
             .app_store()
             .prefetch_fn_processing_states(self.stable_path())
             .await?;

@@ -1222,9 +1222,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // that existence ⊇ tracked state and eliminates the
                 // dual-writer conflict with the parent's commit-time
                 // existence reconciliation. See `internal_states.md` §3.1.
-                if processor_context.mode() == ComponentProcessingMode::Build
-                    && !processor_context.preview()
-                {
+                if processor_context.mode() == ComponentProcessingMode::Build {
                     eager_existence_upsert(processor_context).await?;
                 }
 
@@ -2637,14 +2635,16 @@ mod tests {
         // preview's precommit first, then a write that overflows the map.
         let mut preview = std::pin::pin!(submit(&ctx, Some(&processor), |_| {}));
         assert!(futures::poll!(preview.as_mut()).is_pending());
-        let mut overflow = std::pin::pin!(env.run_txn(move |wtxn| {
+        let mut overflow = std::pin::pin!(env.storage().run_txn(move |wtxn| {
             let overflow_store = overflow_store.clone();
             Box::pin(async move {
                 let value = vec![0u8; 16 * 1024];
                 for i in 0..64 {
-                    overflow_store
-                        .db()
-                        .put(wtxn, format!("key_{i:02}").as_bytes(), &value)?;
+                    wtxn.put(
+                        overflow_store.db(),
+                        format!("key_{i:02}").as_bytes(),
+                        &value,
+                    )?;
                 }
                 Ok(())
             })

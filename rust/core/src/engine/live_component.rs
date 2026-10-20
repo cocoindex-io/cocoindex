@@ -15,6 +15,7 @@ use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
+use crate::state_store::AppStore;
 use cocoindex_utils::error::{SharedError, SharedResult};
 
 use tokio::sync::oneshot;
@@ -458,9 +459,13 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     preview_collector: Option<PreviewActionCollector<Prof>>,
     /// What a preview "committed" through [`Self::write_committed_state`]:
     /// kept for this run only, so a later read in the same run sees it as
-    /// an update's would, and nothing persists. Shared by the clones of
-    /// this controller, as the preview collector is.
+    /// an update's would (the store discards the write). Shared by the
+    /// clones of this controller, as the preview collector is.
     preview_committed_state: Arc<parking_lot::Mutex<HashMap<StableKey, Vec<u8>>>>,
+    /// The app's state store as this component's runs write it: discarding
+    /// every write in a preview (see
+    /// [`ComponentProcessorContext::app_store`]).
+    app_store: AppStore,
 
     /// Providers inherited from the parent component context at creation time.
     /// Immutable — process() may not call use_mount(), so no new providers are created.
@@ -487,6 +492,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
     ) -> Self {
+        let app_store = component.app_ctx().app_store();
+        let app_store = match preview_collector {
+            Some(_) => app_store.discarding_writes(),
+            None => app_store.clone(),
+        };
         Self {
             component,
             state,
@@ -496,6 +506,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             live,
             preview_collector,
             preview_committed_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            app_store,
             providers,
             lender,
         }
@@ -531,9 +542,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         {
             return Ok(Some(value.clone()));
         }
-        self.component
-            .app_ctx()
-            .app_store()
+        self.app_store
             .read_user_state(
                 self.component.stable_path(),
                 db_schema::StateKind::Live,
@@ -549,19 +558,17 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// persist a bootstrap flag / logic version without going through
     /// `coco.use_state` (which targets the prune-eligible `Regular` keyspace).
     ///
-    /// A preview persists nothing: a marker it committed would make the next
-    /// real run skip work the preview never did. It keeps the value for this
-    /// run, so a later [`Self::read_committed_state`] reads it back.
+    /// In a preview the store discards the write: a marker the preview
+    /// committed would make the next real run skip work the preview never did.
+    /// The preview keeps the value for this run instead, so a later
+    /// [`Self::read_committed_state`] reads it back.
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
         if self.preview_collector.is_some() {
             self.preview_committed_state
                 .lock()
-                .insert(key.clone(), value);
-            return Ok(());
+                .insert(key.clone(), value.clone());
         }
-        self.component
-            .app_ctx()
-            .app_store()
+        self.app_store
             .write_user_state_standalone(
                 self.component.stable_path(),
                 db_schema::StateKind::Live,
@@ -667,9 +674,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// returned handle. The tombstone always remains in the DB, so even
     /// a failed delete is retried by the next reconcile's GC sweep.
     ///
-    /// A preview writes no tombstone and deletes nothing: like the deletes of
-    /// the components an update no longer mounts, a live delete is not
-    /// previewed.
+    /// A preview deletes nothing: like the deletes of the components an update
+    /// no longer mounts, a live delete is not previewed (the store discards the
+    /// tombstone, and the drain task skips the op).
     pub async fn delete(
         &self,
         subpath: StablePath,
@@ -677,18 +684,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     ) -> Result<ComponentExecutionHandle> {
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract.
-        if self.preview_collector.is_none()
-            && let Some((parent_ref, child_key)) = subpath.as_ref().split_parent()
-        {
-            let app_store = self.component.app_ctx().app_store().clone();
+        if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
+            let app_store = self.app_store.clone();
             let parent_path: StablePath = parent_ref.into();
             let child_key = child_key.clone();
             let component_path = self.component.stable_path().clone();
             let relative_child = subpath.as_ref().strip_parent(component_path.as_ref())?;
             let relative_child: StablePath = relative_child.into();
-            self.component
-                .app_ctx()
-                .env()
+            self.app_store
                 .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
                     let parent_path = parent_path.clone();
@@ -950,17 +953,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // tombstone scan can't see this child and won't reconcile its
         // target states on parent re-runs that DON'T re-issue this
         // operator.update call. With this row, the install/tombstone
-        // state machine is symmetric across both installer paths. A preview
-        // writes no state, so it skips this as submit/commit does.
-        if self.preview_collector.is_none()
-            && let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent()
-        {
-            let app_store = self.component.app_ctx().app_store().clone();
+        // state machine is symmetric across both installer paths.
+        if let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent() {
+            let app_store = self.app_store.clone();
             let parent_path: StablePath = parent_path_ref.into();
             let child_key = child_key.clone();
-            self.component
-                .app_ctx()
-                .env()
+            self.app_store
                 .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
                     let parent_path = parent_path.clone();

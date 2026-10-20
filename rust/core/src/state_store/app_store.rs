@@ -35,11 +35,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::txn::{ReadTxn, WriteTxn};
-
-/// LMDB database handle. Keys and values are opaque bytes; logical
-/// key/value schemas live in [`crate::state::db_schema`].
-pub(crate) type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
+use crate::state_store::txn::{Database, ReadTxn, WriteMode, WriteTxn};
 
 /// Per-app handle within a `Storage`. Carries the `Database` and a clone
 /// of the parent `Storage`, which owns the env (so standalone read methods
@@ -47,15 +43,37 @@ pub(crate) type Database = heed::Database<heed::types::Bytes, heed::types::Bytes
 /// whose single-writer batcher the session backend routes writes through
 /// (bypassing it would serialize every per-session write through heed's
 /// writer mutex with no amortization).
+///
+/// A handle also carries the [`WriteMode`] of every write made through it,
+/// which the batcher applies to each body it runs. [`Self::discarding_writes`]
+/// derives a handle that persists nothing: the engine hands one to a preview
+/// run, so no write path has to check for a preview itself.
 #[derive(Clone)]
 pub struct AppStore {
     pub(crate) db: Database,
     pub(crate) storage: super::storage::Storage,
+    write_mode: WriteMode,
 }
 
 impl AppStore {
     pub(crate) fn new(db: Database, storage: super::storage::Storage) -> Self {
-        Self { db, storage }
+        Self {
+            db,
+            storage,
+            write_mode: WriteMode::Apply,
+        }
+    }
+
+    /// A handle to the same store whose writes are all dropped: a body run
+    /// through it (`run_txn`, `precommit`, `commit`, the standalone writers)
+    /// reads the store as any other but persists nothing. The handle is what
+    /// makes a preview write nothing.
+    pub fn discarding_writes(&self) -> Self {
+        Self {
+            db: self.db,
+            storage: self.storage.clone(),
+            write_mode: WriteMode::Discard,
+        }
     }
 
     /// A clone of the parent env, for tests that open LMDB transactions
@@ -74,21 +92,24 @@ impl AppStore {
         self.db
     }
 
-    /// Run `body` inside a write txn driven by the single-writer
-    /// batcher. Concurrent callers coalesce into one underlying
-    /// `heed::RwTxn`; bodies within a batch are awaited sequentially.
-    /// Ordinary application data writes go through this (or
-    /// [`crate::state_store::Storage::run_txn`]) so they participate in
-    /// `MDB_MAP_FULL` auto-resize; bypassing the batcher would serialize
-    /// each call through heed's writer mutex with no amortization.
-    pub(super) async fn run_in_batcher<F>(&self, body: F) -> Result<()>
+    /// Run `body` inside a write txn driven by the single-writer batcher,
+    /// with its writes in this handle's [`WriteMode`]. See
+    /// [`crate::state_store::Storage::run_txn`] for the batching contract:
+    /// concurrent callers coalesce into one underlying `heed::RwTxn`, bodies
+    /// within a batch are awaited sequentially, and a body may run more than
+    /// once. Every write to this app's data goes through here so it runs in
+    /// the handle's mode and participates in `MDB_MAP_FULL` auto-resize;
+    /// bypassing the batcher would serialize each call through heed's writer
+    /// mutex with no amortization.
+    pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
-        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
+        T: Send + 'static,
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
             + Sync
             + 'static,
     {
-        self.storage.run_txn(body).await
+        self.storage.run_txn_with(self.write_mode, body).await
     }
 
     /// Open a fresh LMDB read transaction with `MDB_READERS_FULL` retry
@@ -255,7 +276,7 @@ impl AppStore {
         encoded: &[u8],
     ) -> Result<()> {
         let key = key_tracking_info(path)?;
-        self.db().put(txn, &key, encoded)?;
+        txn.put(self.db(), &key, encoded)?;
         Ok(())
     }
 
@@ -265,7 +286,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<()> {
         let key = key_tracking_info(path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -276,7 +297,7 @@ impl AppStore {
     pub async fn clear_staged_tracking(&self, path: &StablePath, self_token: u128) -> Result<()> {
         let app_store = self.clone();
         let path = path.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             Box::pin(async move {
@@ -291,7 +312,7 @@ impl AppStore {
                 }
                 info.pending_process_token = None;
                 let new_bytes = rmp_serde::to_vec_named(&info)?;
-                app_store.db().put(wtxn, &key, &new_bytes)?;
+                wtxn.put(app_store.db(), &key, &new_bytes)?;
                 Ok(())
             })
         })
@@ -312,7 +333,7 @@ impl AppStore {
         let app_store = self.clone();
         let parent = parent.clone();
         let relative = relative.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let parent = parent.clone();
             let relative = relative.clone();
@@ -335,7 +356,7 @@ impl AppStore {
         };
         let app_store = self.clone();
         let path = path.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             Box::pin(async move {
@@ -367,7 +388,7 @@ impl AppStore {
         let app_store = self.clone();
         let path = component_path.clone();
         let encoded = encoded.to_vec();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             let encoded = encoded.clone();
@@ -389,7 +410,7 @@ impl AppStore {
     pub async fn delete_component_memo(&self, path: &StablePath) -> Result<()> {
         let app_store = self.clone();
         let path = path.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
@@ -447,7 +468,7 @@ impl AppStore {
         encoded: &[u8],
     ) -> Result<()> {
         let key = key_component_memo(path)?;
-        self.db().put(txn, &key, encoded)?;
+        txn.put(self.db(), &key, encoded)?;
         Ok(())
     }
 
@@ -457,7 +478,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<()> {
         let key = key_component_memo(path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 }
@@ -484,7 +505,7 @@ impl AppStore {
         encoded: &[u8],
     ) -> Result<()> {
         let key = key_fn_memo(path, fp)?;
-        self.db().put(txn, &key, encoded)?;
+        txn.put(self.db(), &key, encoded)?;
         Ok(())
     }
 
@@ -495,7 +516,7 @@ impl AppStore {
         fp: Fingerprint,
     ) -> Result<()> {
         let key = key_fn_memo(path, fp)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -508,14 +529,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<()> {
         let prefix = key_fn_memo_prefix(path)?;
-        let db = self.db();
-        let mut iter = db.prefix_iter_mut(txn, &prefix)?;
-        while iter.next().transpose()?.is_some() {
-            // Safety: we drop the borrowed key/value before the next `next()`.
-            unsafe {
-                iter.del_current()?;
-            }
-        }
+        txn.delete_prefix(self.db(), &prefix)?;
         Ok(())
     }
 }
@@ -543,7 +557,7 @@ impl AppStore {
     ) -> Result<()> {
         let key = key_child_existence(parent, child_key)?;
         let value = rmp_serde::to_vec_named(info)?;
-        self.db().put(txn, &key, &value)?;
+        txn.put(self.db(), &key, &value)?;
         Ok(())
     }
 
@@ -554,7 +568,7 @@ impl AppStore {
         child_key: &StableKey,
     ) -> Result<()> {
         let key = key_child_existence(parent, child_key)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -590,7 +604,7 @@ impl AppStore {
         relative_path: &StablePath,
     ) -> Result<()> {
         let key = key_tombstone(parent, relative_path)?;
-        self.db().put(txn, &key, &[])?;
+        txn.put(self.db(), &key, &[])?;
         Ok(())
     }
 
@@ -601,7 +615,7 @@ impl AppStore {
         relative_path: &StablePath,
     ) -> Result<()> {
         let key = key_tombstone(parent, relative_path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -660,7 +674,7 @@ impl AppStore {
         let value = rmp_serde::to_vec_named(&TargetStateOwnerInfo {
             component_path: owner.clone(),
         })?;
-        self.db().put(txn, &key, &value)?;
+        txn.put(self.db(), &key, &value)?;
         Ok(())
     }
 
@@ -670,7 +684,7 @@ impl AppStore {
         path: &TargetStatePath,
     ) -> Result<()> {
         let key = key_target_state_owner(path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -689,7 +703,7 @@ impl AppStore {
             return Ok(());
         }
         let value = rmp_serde::to_vec_named(segment_key)?;
-        self.db().put(txn, &key, &value)?;
+        txn.put(self.db(), &key, &value)?;
         Ok(())
     }
 
@@ -699,14 +713,7 @@ impl AppStore {
     #[cfg(feature = "bench-support")]
     pub async fn delete_all_target_segment_names(&self, txn: &mut WriteTxn<'_>) -> Result<()> {
         let prefix = DbEntryKey::TargetSegmentNamePrefix.encode()?;
-        let db = self.db();
-        let mut iter = db.prefix_iter_mut(txn, &prefix)?;
-        while iter.next().transpose()?.is_some() {
-            // Safety: we drop the borrowed key/value before the next `next()`.
-            unsafe {
-                iter.del_current()?;
-            }
-        }
+        txn.delete_prefix(self.db(), &prefix)?;
         Ok(())
     }
 }
@@ -714,7 +721,9 @@ impl AppStore {
 // --- ID sequencer --------------------------------------------------------
 
 impl AppStore {
-    pub async fn peek_id_sequence_in_txn(
+    // `&mut` although it only reads: a `&WriteTxn` held across the await
+    // would need `RwTxn: Sync`, which heed does not provide.
+    async fn peek_id_sequence_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
         key: &StableKey,
@@ -730,7 +739,7 @@ impl AppStore {
         }
     }
 
-    pub async fn write_id_sequence(
+    async fn write_id_sequence(
         &self,
         txn: &mut WriteTxn<'_>,
         key: &StableKey,
@@ -739,13 +748,14 @@ impl AppStore {
         let db_key = key_id_sequencer(key)?;
         let info = IdSequencerInfo { next_id };
         let value = rmp_serde::to_vec_named(&info)?;
-        self.db().put(txn, &db_key, &value)?;
+        txn.put(self.db(), &db_key, &value)?;
         Ok(())
     }
 
     /// Atomically reserve `count` consecutive IDs starting from the next
     /// available ID. Returns the first reserved ID. IDs start at 1
-    /// (0 is reserved).
+    /// (0 is reserved). Through a handle from [`Self::discarding_writes`]
+    /// nothing is reserved: the ids returned stay available.
     pub async fn reserve_id_range_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
@@ -856,7 +866,7 @@ impl AppStore {
         value: &[u8],
     ) -> Result<()> {
         let key = key_user_state(path, kind, user_key)?;
-        self.db().put(txn, &key, value)?;
+        txn.put(self.db(), &key, value)?;
         Ok(())
     }
 
@@ -876,7 +886,7 @@ impl AppStore {
         let path = path.clone();
         let user_key = user_key.clone();
         let value = value.to_vec();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             let user_key = user_key.clone();
@@ -898,7 +908,7 @@ impl AppStore {
         user_key: &StableKey,
     ) -> Result<()> {
         let key = key_user_state(path, kind, user_key)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -912,14 +922,7 @@ impl AppStore {
         kind: StateKind,
     ) -> Result<()> {
         let prefix = key_user_state_prefix(path, kind)?;
-        let db = self.db();
-        let mut iter = db.prefix_iter_mut(txn, &prefix)?;
-        while iter.next().transpose()?.is_some() {
-            // Safety: key/value borrows are dropped before the next iteration.
-            unsafe {
-                iter.del_current()?;
-            }
-        }
+        txn.delete_prefix(self.db(), &prefix)?;
         Ok(())
     }
 }
