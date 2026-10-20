@@ -28,6 +28,12 @@ impl PyComponentProcessorContext {
         PyStablePath(self.0.stable_path().clone())
     }
 
+    /// Name of the app this component runs under (`AppConfig.name`).
+    #[getter]
+    fn app_name(&self) -> &str {
+        self.0.app_ctx().app_reg().name()
+    }
+
     #[getter]
     fn live(&self) -> bool {
         self.0.live()
