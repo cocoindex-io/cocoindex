@@ -55,6 +55,8 @@ pub fn format_component_line(
     let icon = if in_flight > 0 {
         let ch = SPINNER_CHARS[spinner_idx % SPINNER_CHARS.len()];
         format!("{ch} ")
+    } else if group.has_errors() {
+        "⚠️".to_string()
     } else {
         "✅".to_string()
     };
@@ -660,7 +662,7 @@ mod tests {
             ..Default::default()
         };
         let line = format_component_line("proc", &group, 0);
-        assert!(line.starts_with("✅"));
+        assert!(line.starts_with("⚠️"));
         assert!(line.contains("3 ⚠️ errors"));
     }
 

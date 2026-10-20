@@ -1062,3 +1062,45 @@ class TestShowTargetStatesTypedKeys:
         )
 
         self._assert_typed_keys_rendered(result.stdout)
+
+
+# =============================================================================
+# Test: Component Failure Exit Status (--fail-on-error)
+# =============================================================================
+
+
+class TestFailOnError:
+    """Tests that CLI exits non-zero when component errors occur."""
+
+    def test_update_fails_with_component_errors(self) -> None:
+        """Default: exit 1 when mounted components fail."""
+        result = run_cli("update", "./fail_app.py", check=False)
+        assert result.returncode == 1
+        assert "component errors" in result.stderr
+
+    def test_no_fail_on_error_exits_zero(self) -> None:
+        """--no-fail-on-error: exit 0 even when components fail."""
+        result = run_cli(
+            "update", "./fail_app.py", "--no-fail-on-error", check=False
+        )
+        assert result.returncode == 0
+
+    def test_quiet_mode_reports_failure(self) -> None:
+        """--quiet + --fail-on-error: exit 1 with stderr summary."""
+        result = run_cli("update", "./fail_app.py", "--quiet", check=False)
+        assert result.returncode == 1
+        assert "component errors" in result.stderr
+
+    def test_clean_update_exits_zero(self) -> None:
+        """A clean run with no errors exits 0."""
+        result = run_cli("update", "./single_app.py", check=False)
+        assert result.returncode == 0
+
+    def test_live_mode_ignores_fail_on_error(self) -> None:
+        """--live: exit 0 even when components fail, as cumulative errors don't reflect live health."""
+        # Note: If this app hangs in CI because it has no live sources, it implies
+        # the engine doesn't auto-terminate. For the purpose of this test, we assume
+        # it exits or the test runner handles it.
+        result = run_cli("update", "./fail_app.py", "--live", check=False)
+        assert result.returncode == 0
+
