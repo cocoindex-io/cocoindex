@@ -1,5 +1,6 @@
 """Tests for serialization/deserialization in cocoindex._internal.serde."""
 
+import io
 import pathlib
 import pickle
 import uuid
@@ -9,7 +10,6 @@ from typing import Any, NamedTuple
 import msgspec.msgpack
 import pytest
 
-import cocoindex._internal.serde as serde
 from cocoindex._internal.serde import (
     _add_unpickle_safe_global,
     deserialize,
@@ -250,27 +250,23 @@ class TestNumpyScalarClasses:
         assert restored.dtype == np.dtype("float32")
         assert restored == VectorSchema(dtype=np.dtype(np.float32), size=384)
 
-    def test_scalar_instance_round_trip(self) -> None:
-        """Scalar *instances* became picklable; they must round-trip too."""
+    def test_scalar_instance_still_fails_on_write(self) -> None:
+        """Scalar *instances* are not picklable: fail on run 1, as on main.
+
+        The scalar classes are allow-listed for the reader only (to recover
+        pre-fix records); instances reduce via numpy._core.multiarray.scalar,
+        which is not registered, so the writer must refuse them.
+        """
         np = pytest.importorskip("numpy")
-        value = np.float32(1.5)
-        result = deserialize(serialize(value))
-        assert isinstance(result, np.float32)
-        assert result == value
+        with pytest.raises(NotImplementedError, match="Cannot serialize"):
+            serialize(np.float32(1.5))
 
-    def test_writer_refuses_class_reader_would_reject(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_writer_refuses_class_reader_would_reject(self) -> None:
         """Fail on run 1: the writer refuses a class the reader would reject."""
-        # Force the legacy non-strict writer path so this test is meaningful
-        # even where strict mode was historically opt-in.
-        monkeypatch.setattr(serde, "_strict_serialize", False, raising=False)
         with pytest.raises(pickle.PicklingError, match="not registered"):
-            serialize(pickle.PickleError)
+            serialize(ValueError)
 
-    def test_writer_refuses_unallowlisted_class_nested(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_writer_refuses_unallowlisted_class_nested(self) -> None:
         """The write-time refusal also applies to classes nested in structs."""
 
         @dataclass
@@ -278,6 +274,33 @@ class TestNumpyScalarClasses:
             label: str
             obj: Any
 
-        monkeypatch.setattr(serde, "_strict_serialize", False, raising=False)
         with pytest.raises(pickle.PicklingError, match="not registered"):
-            serialize(_Holder(label="x", obj=pickle.PickleError))
+            serialize(_Holder(label="x", obj=ValueError))
+
+    def test_strict_writer_refuses_reduce_function_reader_would_reject(self) -> None:
+        """The strict writer checks reduce callables by (module, qualname).
+
+        A non-contiguous array pickles via numpy._core.multiarray._reconstruct,
+        which the restricted reader rejects — the strict writer must refuse it
+        on the writing run instead.
+        """
+        np = pytest.importorskip("numpy")
+        from cocoindex._internal.serde import _StrictPickler
+
+        arr = np.arange(6).reshape(2, 3)[:, 0]
+        assert not arr.flags["C_CONTIGUOUS"]
+        with pytest.raises(pickle.PicklingError, match="not registered"):
+            _StrictPickler(io.BytesIO(), 5).dump(arr)
+
+    def test_strict_writer_accepts_registered_reduce_function(self) -> None:
+        """Contiguous arrays reduce via the registered _frombuffer: writer and
+        reader agree, so they keep round-tripping under strict mode."""
+        np = pytest.importorskip("numpy")
+        from cocoindex._internal.serde import _RestrictedUnpickler, _StrictPickler
+
+        arr = np.array([1.0, 2.0], dtype=np.float32)
+        buf = io.BytesIO()
+        _StrictPickler(buf, 5).dump(arr)  # must not raise
+        result = _RestrictedUnpickler(io.BytesIO(buf.getvalue())).load()
+        np.testing.assert_array_equal(result, arr)
+        assert result.dtype == arr.dtype
