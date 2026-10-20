@@ -1689,7 +1689,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 child_provider.fulfill_handler(handler, registry)?;
             }
         }
-        collector.actions.lock().unwrap().extend(
+        collector.lock().unwrap().extend(
             pre_commit_out
                 .actions_by_sinks
                 .into_values()

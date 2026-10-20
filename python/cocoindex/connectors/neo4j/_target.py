@@ -58,7 +58,7 @@ import numpy as np
 import cocoindex as coco
 from cocoindex._internal import deadline
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
-from cocoindex.connectorkits.per_loop_connections import PerLoopConnections
+from cocoindex.connectorkits._per_loop_connections import PerLoopConnections
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,

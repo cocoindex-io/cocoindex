@@ -1365,9 +1365,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         // GC sweep — see `execution.rs::launch_child_component_gc`.
                         // That's the single, unified error-handling
                         // channel; this branch just preserves metadata.
-                        // A preview left the tombstone unwritten (and writes
-                        // nothing), so it has none to clean up.
-                        if !children_outcome.has_exception && !processor_context.preview() {
+                        if !children_outcome.has_exception {
                             cleanup_tombstone(processor_context).await?;
                         }
                         None
@@ -2661,7 +2659,7 @@ mod tests {
             reconcile_calls.load(Ordering::SeqCst) >= 2 * NUM_TARGET_STATES,
             "the overflowing write must make the batch re-run the preview's precommit"
         );
-        assert_eq!(collector.actions.lock().unwrap().len(), NUM_TARGET_STATES);
+        assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
     }
 
     /// A root in the `mount_target` shape: a child component declares one
@@ -2776,7 +2774,7 @@ mod tests {
             .unwrap();
         handle.result().await.unwrap();
         assert_eq!(
-            collector.actions.lock().unwrap().len(),
+            collector.lock().unwrap().len(),
             1 + NUM_ROWS as usize,
             "the container's action and one per row"
         );
@@ -2823,10 +2821,7 @@ mod tests {
             )
             .unwrap();
         handle.result().await.unwrap();
-        assert_eq!(
-            collector.actions.lock().unwrap().len(),
-            1 + NUM_ROWS as usize
-        );
+        assert_eq!(collector.lock().unwrap().len(), 1 + NUM_ROWS as usize);
         assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
     }
 

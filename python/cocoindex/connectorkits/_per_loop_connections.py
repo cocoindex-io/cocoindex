@@ -1,34 +1,34 @@
-"""One connection per event loop, for clients bound to the loop that created them."""
+"""One connection per event loop, for clients bound to the loop that created them.
+
+Internal: shared by the built-in graph connectors' ``ConnectionFactory``.
+"""
 
 from __future__ import annotations
 
-__all__ = ["PerLoopConnections"]
+import asyncio
+import logging
+import threading
+import weakref
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Generic
 
-import asyncio as _asyncio
-import logging as _logging
-import threading as _threading
-import weakref as _weakref
-from collections.abc import Awaitable as _Awaitable
-from collections.abc import Callable as _Callable
-from dataclasses import dataclass as _dataclass
-from dataclasses import field as _field
-from typing import Generic as _Generic
-from typing_extensions import TypeVar as _TypeVar
+from typing_extensions import TypeVar
 
-_T = _TypeVar("_T")
+_T = TypeVar("_T")
 
-_logger = _logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
-@_dataclass
-class _LoopEntry(_Generic[_T]):
+@dataclass
+class _LoopEntry(Generic[_T]):
     """The connection of one event loop, and the lock that opens it once."""
 
-    lock: _asyncio.Lock = _field(default_factory=_asyncio.Lock)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     conn: _T | None = None
 
 
-class PerLoopConnections(_Generic[_T]):
+class PerLoopConnections(Generic[_T]):
     """Connections keyed by event loop, for a client that is bound to the loop
     it was created on (an async driver, a WebSocket).
 
@@ -38,29 +38,37 @@ class PerLoopConnections(_Generic[_T]):
     running loop's connection only. ``owner`` names the factory in the warning
     about connections of other loops left open.
 
-    Entries are held weakly by loop. An open connection references its loop,
-    so an entry is only freed once nothing else references the loop either.
+    An entry lives until its loop is closed: the connection references the
+    loop, so the loop cannot be collected first. :meth:`acquire` and
+    :meth:`close` drop the entries of closed loops; their connection cannot be
+    closed on its loop anymore, so it is dropped unclosed, without a warning.
     """
 
     def __init__(
         self,
-        open: _Callable[[], _Awaitable[_T]],
-        close: _Callable[[_T], _Awaitable[None]],
+        open: Callable[[], Awaitable[_T]],
+        close: Callable[[_T], Awaitable[None]],
         *,
         owner: str,
     ) -> None:
         self._open = open
         self._close = close
         self._owner = owner
-        self._lock = _threading.Lock()
-        self._entries: _weakref.WeakKeyDictionary[
-            _asyncio.AbstractEventLoop, _LoopEntry[_T]
-        ] = _weakref.WeakKeyDictionary()
+        self._lock = threading.Lock()
+        self._entries: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, _LoopEntry[_T]
+        ] = weakref.WeakKeyDictionary()
+
+    def _drop_closed_loops(self) -> None:
+        """Under ``self._lock``."""
+        for closed_loop in [loop for loop in self._entries if loop.is_closed()]:
+            del self._entries[closed_loop]
 
     async def acquire(self) -> _T:
         """The running event loop's connection, opened on its first call."""
-        loop = _asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         with self._lock:
+            self._drop_closed_loops()
             entry = self._entries.get(loop)
             if entry is None:
                 entry = self._entries[loop] = _LoopEntry()
@@ -74,8 +82,9 @@ class PerLoopConnections(_Generic[_T]):
         """Close the running event loop's connection, if any; a later
         :meth:`acquire` opens a new one. Connections of other loops can't be
         closed here: they are left open, with a warning."""
-        loop = _asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         with self._lock:
+            self._drop_closed_loops()
             entry = self._entries.get(loop)
             # A held lock is an open in progress: that connection stays too.
             num_others = sum(

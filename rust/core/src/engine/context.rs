@@ -630,20 +630,9 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub user_states: UserStateCache<Prof::FunctionData>,
 }
 
-/// The actions planned by all components of one preview.
-pub struct PreviewActions<Prof: EngineProfile> {
-    pub actions: std::sync::Mutex<Vec<Prof::TargetAction>>,
-}
-
-impl<Prof: EngineProfile> Default for PreviewActions<Prof> {
-    fn default() -> Self {
-        Self {
-            actions: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-}
-
-pub(crate) type PreviewActionCollector<Prof> = Arc<PreviewActions<Prof>>;
+/// Shared collector for preview actions across all components in a single update.
+pub(crate) type PreviewActionCollector<Prof> =
+    Arc<std::sync::Mutex<Vec<<Prof as EngineProfile>::TargetAction>>>;
 
 pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub state: Mutex<Option<ComponentBuildingState<Prof>>>,

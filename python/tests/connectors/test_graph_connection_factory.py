@@ -124,3 +124,28 @@ def test_each_event_loop_gets_its_own_connection(
     ]
     assert len(warnings) == 1
     assert "1 " in warnings[0] and "other event loops" in warnings[0]
+
+
+@_FACTORIES
+def test_closed_loops_are_dropped(
+    make_factory: Callable[..., tuple[Any, Callable[[Any], Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A factory outliving its event loops (one per ``asyncio.run``, per test)
+    drops the entries of closed loops, so they neither accumulate nor count
+    as connections left open."""
+    factory, _ = make_factory(monkeypatch)
+    # Kept referenced, as a real driver would keep its loop referenced.
+    loops = [asyncio.new_event_loop() for _ in range(3)]
+    entries = factory._connections._entries
+    for loop in loops:
+        loop.run_until_complete(factory.acquire())
+        loop.close()
+        # Each acquire() dropped the previous loop's entry, closed by then.
+        assert list(entries) == [loop]
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(factory.close())
+    assert not entries
+    assert not [r for r in caplog.records if r.name.startswith("cocoindex.")]

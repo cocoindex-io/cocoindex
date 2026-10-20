@@ -2,7 +2,6 @@ use crate::prelude::*;
 
 use cocoindex_core::engine::{
     app::{App, AppOpHandle, AppUpdateOptions},
-    context::PreviewActions,
     progress_display::{ProgressDisplayOptions, show_progress as rust_show_progress},
     runtime::get_runtime,
     stats::{ProcessingStats, VersionedProcessingStats},
@@ -35,7 +34,7 @@ fn snapshot_to_py<'py>(
     Ok(dict)
 }
 
-type PyPreviewCollector = Arc<PreviewActions<crate::profile::PyEngineProfile>>;
+type PyPreviewCollector = Arc<std::sync::Mutex<Vec<PyTargetAction>>>;
 
 fn preview_actions_to_list<'py>(
     py: Python<'py>,
@@ -122,7 +121,7 @@ impl PyUpdateHandle {
         let actions = self
             .preview_collector
             .as_ref()
-            .map(|c| std::mem::take(&mut *c.actions.lock().unwrap()))
+            .map(|c| std::mem::take(&mut *c.lock().unwrap()))
             .unwrap_or_default();
         preview_actions_to_list(py, &actions)
     }
@@ -278,7 +277,7 @@ impl PyApp {
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {
-            Some(Arc::new(PreviewActions::default()))
+            Some(Arc::new(std::sync::Mutex::new(Vec::new())))
         } else {
             None
         };
@@ -313,7 +312,7 @@ impl PyApp {
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {
-            Some(Arc::new(PreviewActions::default()))
+            Some(Arc::new(std::sync::Mutex::new(Vec::new())))
         } else {
             None
         };
@@ -326,7 +325,7 @@ impl PyApp {
                 if preview {
                     handle.result().await.into_py_result()?;
                     let actions = preview_collector
-                        .map(|c| std::mem::take(&mut *c.actions.lock().unwrap()))
+                        .map(|c| std::mem::take(&mut *c.lock().unwrap()))
                         .unwrap_or_default();
                     Python::attach(|py| {
                         Ok(preview_actions_to_list(py, &actions)?.unbind().into_any())

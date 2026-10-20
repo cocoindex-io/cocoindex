@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import decimal
-import logging
 import random
 import re
 import uuid
@@ -72,9 +71,7 @@ import msgspec
 
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
-from cocoindex.connectorkits.per_loop_connections import PerLoopConnections
-
-_logger = logging.getLogger(__name__)
+from cocoindex.connectorkits._per_loop_connections import PerLoopConnections
 
 # ---------------------------------------------------------------------------
 # Identifier validation & record ID formatting

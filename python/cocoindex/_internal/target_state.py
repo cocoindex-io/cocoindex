@@ -396,12 +396,12 @@ class _CanonicalKey:
     get: weakref.ref[Any]
     _hash: int
 
-    def __init__(self, obj: Any) -> None:
+    def __init__(self, obj: Any, noun: str) -> None:
         try:
             self.get = weakref.ref(obj)
         except TypeError:
             raise TypeError(
-                f"target action sink callback of type {qualified_name(type(obj))} "
+                f"{noun} of type {qualified_name(type(obj))} "
                 "must support weak references; define it as a frozen dataclass "
                 "(with weakref_slot=True if it uses slots=True) rather than a "
                 "tuple/NamedTuple"
@@ -442,12 +442,15 @@ class _ObjectDeduper:
 
     _MIN_PRUNE_AT = 64
 
-    __slots__ = ("_lock", "_map", "_prune_at")
+    __slots__ = ("_noun", "_lock", "_map", "_prune_at")
+    _noun: str
     _lock: threading.Lock
     _map: dict[_CanonicalKey, _CanonicalKey]
     _prune_at: int
 
-    def __init__(self) -> None:
+    def __init__(self, noun: str) -> None:
+        """``noun`` names the deduplicated object in the weak-reference error."""
+        self._noun = noun
         self._lock = threading.Lock()
         self._map = {}
         self._prune_at = self._MIN_PRUNE_AT
@@ -460,7 +463,7 @@ class _ObjectDeduper:
                 if value is not None:
                     return value
 
-            key = _CanonicalKey(obj)
+            key = _CanonicalKey(obj, self._noun)
             if len(self._map) >= self._prune_at:
                 self._map = {k: k for k in self._map if k.get() is not None}
                 self._prune_at = max(self._MIN_PRUNE_AT, 2 * len(self._map))
@@ -468,11 +471,11 @@ class _ObjectDeduper:
             return obj
 
 
-_SYNC_FN_DEDUPER = _ObjectDeduper()
-_ASYNC_FN_DEDUPER = _ObjectDeduper()
+_SYNC_FN_DEDUPER = _ObjectDeduper("target action sink callback")
+_ASYNC_FN_DEDUPER = _ObjectDeduper("target action sink callback")
 # A `child_handler` factory is part of a sink's identity too (see
 # `SinkKeeperKey` in `rust/py/src/target_state.rs`).
-_CHILD_HANDLER_FN_DEDUPER = _ObjectDeduper()
+_CHILD_HANDLER_FN_DEDUPER = _ObjectDeduper("child_handler")
 
 
 def _canonical_child_handler(

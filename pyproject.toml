@@ -91,7 +91,7 @@ google_drive = [
 amazon_s3 = ["aiobotocore>=2.0.0"]
 azure_blob = ["azure-identity>=1.15.0", "azure-storage-blob>=12.19.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
-falkordb = ["falkordb>=1.1.0"]
+falkordb = ["falkordb>=1.6.0"]
 neo4j = ["neo4j>=5.18.0"]
 kafka = ["confluent_kafka>=2.6"]
 iggy = ["apache-iggy>=0.8.0"]
@@ -128,7 +128,7 @@ all = [
     "aiohttp>=3.9.0",
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
-    "falkordb>=1.1.0",
+    "falkordb>=1.6.0",
     "neo4j>=5.18.0",
     "confluent_kafka>=2.6",
     "apache-iggy>=0.8.0",
