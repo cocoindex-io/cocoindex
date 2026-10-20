@@ -1,0 +1,189 @@
+---
+title: "*Apache Pulsar* connector"
+sidebar_label: Pulsar
+description: >
+  Produce keyed messages to Apache Pulsar topics as incremental target states,
+  including native null-value tombstones and custom deletion payloads.
+---
+
+The `pulsar` connector supports [Apache Pulsar](https://pulsar.apache.org/docs/)
+as a **target**. It produces a message only when a declared target state changes,
+using the target-state key as the Pulsar partition key.
+
+```python
+from cocoindex.connectors import pulsar as coco_pulsar
+```
+
+:::note[Dependencies]
+Install the optional dependency with:
+
+```bash
+pip install cocoindex[pulsar]
+```
+
+The Pulsar extra requires `pulsar-client>=3.13.0,<4`. It supports standard
+CPython 3.11 through 3.14. Free-threaded CPython 3.14t is not supported because
+the native Pulsar SDK does not publish a compatible wheel; this does not affect
+using CocoIndex without the Pulsar extra on 3.14t.
+
+The acceptance environment uses `pulsar-client==3.13.0` with an Apache Pulsar
+4.0.13 broker. Other broker versions are outside the connector's current
+acceptance matrix; use versions compatible with the supported native client.
+
+:::
+
+Topics are user-managed: CocoIndex does not create or drop them. Broker-side
+automatic topic creation, if enabled, is independent of this connector.
+
+## Setting up a client
+
+Create a native `pulsar.Client`, associate it with a stable `ContextKey`, and
+provide it for the environment lifetime:
+
+```python
+import asyncio
+from collections.abc import AsyncIterator
+
+import cocoindex as coco
+import pulsar
+
+
+PULSAR_CLIENT = coco.ContextKey[pulsar.Client]("derived_events_pulsar")
+
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    client = await asyncio.to_thread(
+        pulsar.Client,
+        "pulsar://localhost:6650",
+        operation_timeout_seconds=30,
+    )
+    builder.provide(PULSAR_CLIENT, client)
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(client.close)
+```
+
+The key name is persisted as part of the target identity. Reuse it across runs;
+renaming it makes CocoIndex treat the topic as a different target. See
+[ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity).
+
+The connector does not close the supplied client. On each desired-state
+action batch, it groups changed messages by client and topic in first-seen order.
+It creates one producer for each group, sends that topic's messages in
+the engine-provided action order off the event loop, and closes the producer
+before moving to the next group. At most one native send is in flight, and the
+connector creates no fire-and-forget delivery queue. The action list itself is
+supplied by CocoIndex and is not size-limited by this connector. Ordering is
+preserved within a topic group; no ordering is promised across topics or between
+separate target invocations.
+
+Configure authentication, TLS, and network timeouts on the native client before
+providing it. The connector adds no separate authentication or TLS layer and
+persists only the `ContextKey` name—not the client object, endpoints, or
+credentials. Use a finite `operation_timeout_seconds` appropriate for the
+application's shutdown budget. Synchronous sends also use the native producer's
+send timeout; the connector uses the SDK's default producer settings and does
+not override that timeout.
+
+Delivery is at least once. Pulsar SDK failures are surfaced to the application;
+the connector has no internal retry loop. If any producer operation or the
+target-state commit fails, a later CocoIndex update or application rerun retries
+the full uncommitted batch. Messages acknowledged before the failure can
+therefore be duplicated.
+
+If the action task is cancelled while a native operation is running, cancellation
+is deferred until that worker operation finishes and connector-owned producers
+are closed. The SDK producer send timeout and the client operation timeout bound
+their respective native calls. Tracking for the cancelled batch remains
+uncommitted, so even a message acknowledged before cancellation can be
+published again on the next update.
+
+The connector does not provide transactions, broker deduplication, or
+exactly-once effects. Configure application-level version handling when older or
+duplicate events must be rejected.
+
+## Declaring messages
+
+Mount a topic target and declare keyed byte or string values:
+
+```python
+from cocoindex.connectors import pulsar as coco_pulsar
+
+
+@coco.fn
+async def app_main() -> None:
+    target = await coco_pulsar.mount_pulsar_topic_target(
+        PULSAR_CLIENT,
+        "persistent://public/default/derived-events",
+    )
+    target.declare_target_state(
+        key="order-123",
+        value=b'{"status":"ready"}',
+    )
+```
+
+Keys must be strings because they are sent as Pulsar partition keys. Values may
+be `bytes` or `str`; strings are UTF-8 encoded. Equality is based on canonical
+wire bytes, so `"value"` and `b"value"` represent the same desired state.
+Replacing the runtime client object while retaining the same stable
+`ContextKey` name and topic does not change target identity.
+
+## Deletion handling
+
+When a previously declared key is no longer declared, the default behavior is
+to send a native Pulsar null-value message. This is a tombstone and is distinct
+from an empty byte payload. It can be used with
+[topic compaction](https://pulsar.apache.org/docs/concepts-topic-compaction/).
+
+Pass `deletion_value_fn` when consumers expect an application-level delete
+record instead:
+
+```python
+target = await coco_pulsar.mount_pulsar_topic_target(
+    PULSAR_CLIENT,
+    "persistent://public/default/derived-events",
+    deletion_value_fn=lambda key: f"DELETE:{key}",
+)
+```
+
+The callback receives the string key and must deterministically return `bytes`
+or `str`. It is evaluated on every desired-state reconciliation, before any
+broker I/O, and its UTF-8-normalized result is persisted for a future deletion.
+Exceptions and invalid return types fail reconciliation without publishing.
+
+Changing only the callback result updates this persisted deletion policy
+without republishing the unchanged value. If deletion encounters conflicting
+persisted policies from uncertain prior histories, reconciliation fails before
+broker I/O instead of choosing one. If prior state may exist but no policy is
+available, CocoIndex sends a policy-independent null tombstone.
+
+A default deletion publishes a true Pulsar null value: its data reads as empty
+bytes but `has_null_value()` is true. This is distinct from declaring `b""`,
+which remains a non-null message. Null tombstones remove a keyed value from the
+compacted topic view. A custom deletion payload is an ordinary retained record,
+not a compaction tombstone.
+
+## Target APIs
+
+```python
+def declare_pulsar_topic_target(
+    client: ContextKey[pulsar.Client],
+    topic: str,
+    *,
+    deletion_value_fn: DeletionValueFn | None = None,
+) -> PulsarTopicTarget[PendingS]
+```
+
+Use `declare_pulsar_topic_target()` with `use_mount()` inside a component, or
+use the convenience wrapper:
+
+```python
+async def mount_pulsar_topic_target(
+    client: ContextKey[pulsar.Client],
+    topic: str,
+    *,
+    deletion_value_fn: DeletionValueFn | None = None,
+) -> PulsarTopicTarget[ResolvedS]
+```
