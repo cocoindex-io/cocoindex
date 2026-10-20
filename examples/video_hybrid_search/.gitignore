@@ -1,0 +1,11 @@
+.env
+.venv/
+uv.lock
+cocoindex.db
+zvec_data/
+videos/*.mp4
+videos/*.mov
+videos/*.mkv
+videos/*.webm
+*.egg-info/
+__pycache__/
