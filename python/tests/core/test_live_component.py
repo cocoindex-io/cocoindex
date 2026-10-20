@@ -572,13 +572,18 @@ class _CommittedStateLiveComponent:
             await operator.read_committed_state("marker")
         )
         await operator.write_committed_state("marker", "done")
+        # Read back within the run: also in a preview, which persists nothing.
+        _CommittedStateLiveComponent.seen.append(
+            await operator.read_committed_state("marker")
+        )
         await operator.update_full()
         await operator.mark_ready()
 
 
 def test_live_component_preview_commits_no_state() -> None:
     """write_committed_state() in a preview is not persisted, so the next real
-    run does not skip work the preview never did."""
+    run does not skip work the preview never did; within the preview, a later
+    read sees it, as in a real run."""
     _CommittedStateLiveComponent.seen = []
 
     async def _main() -> None:
@@ -594,7 +599,14 @@ def test_live_component_preview_commits_no_state() -> None:
     app.update_blocking(live=True, preview=True)
     app.update_blocking(live=True)
     app.update_blocking(live=True)
-    assert _CommittedStateLiveComponent.seen == [None, None, "done"]
+    assert _CommittedStateLiveComponent.seen == [
+        None,
+        "done",  # preview: read back in the run, not persisted
+        None,
+        "done",  # first real run
+        "done",
+        "done",  # persisted
+    ]
 
 
 class _IncrementalDeleteNoStaleComponent:

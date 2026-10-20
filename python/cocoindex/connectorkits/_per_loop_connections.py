@@ -38,6 +38,10 @@ class PerLoopConnections(Generic[_T]):
     running loop's connection only. ``owner`` names the factory in the warning
     about connections of other loops left open.
 
+    :meth:`close` closes the running loop's connection under the caller's
+    feet: call it once every user of the factory is done (in a lifespan,
+    after ``yield``), not while components are still applying.
+
     An entry lives until its loop is closed: the connection references the
     loop, so the loop cannot be collected first. :meth:`acquire` and
     :meth:`close` drop the entries of closed loops; their connection cannot be

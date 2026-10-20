@@ -456,6 +456,11 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// The mounting run's preview collector: in a preview, this component's
     /// runs preview too rather than apply.
     preview_collector: Option<PreviewActionCollector<Prof>>,
+    /// What a preview "committed" through [`Self::write_committed_state`]:
+    /// kept for this run only, so a later read in the same run sees it as
+    /// an update's would, and nothing persists. Shared by the clones of
+    /// this controller, as the preview collector is.
+    preview_committed_state: Arc<parking_lot::Mutex<HashMap<StableKey, Vec<u8>>>>,
 
     /// Providers inherited from the parent component context at creation time.
     /// Immutable — process() may not call use_mount(), so no new providers are created.
@@ -490,6 +495,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             full_reprocess,
             live,
             preview_collector,
+            preview_committed_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             providers,
             lender,
         }
@@ -520,6 +526,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// set-reduces, and not participating in any commit, so it is safe in the
     /// non-committing `process_live` context.
     pub async fn read_committed_state(&self, key: &StableKey) -> Result<Option<Vec<u8>>> {
+        if self.preview_collector.is_some()
+            && let Some(value) = self.preview_committed_state.lock().get(key)
+        {
+            return Ok(Some(value.clone()));
+        }
         self.component
             .app_ctx()
             .app_store()
@@ -538,10 +549,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// persist a bootstrap flag / logic version without going through
     /// `coco.use_state` (which targets the prune-eligible `Regular` keyspace).
     ///
-    /// A preview writes nothing: a marker it committed would make the next real
-    /// run skip work the preview never did.
+    /// A preview persists nothing: a marker it committed would make the next
+    /// real run skip work the preview never did. It keeps the value for this
+    /// run, so a later [`Self::read_committed_state`] reads it back.
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
         if self.preview_collector.is_some() {
+            self.preview_committed_state
+                .lock()
+                .insert(key.clone(), value);
             return Ok(());
         }
         self.component

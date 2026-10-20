@@ -3,7 +3,7 @@ target states whose declared value is unchanged."""
 
 from __future__ import annotations
 
-from typing import Any, Collection, Iterator, Literal, Mapping, NamedTuple
+from typing import Any, Collection, Iterator, Literal, NamedTuple
 
 import pytest
 
@@ -100,7 +100,8 @@ class _UntrackedFingerprintStore(_FingerprintStore):
 class _TableStore(coco.TargetHandler[None, bytes, _FingerprintStore]):
     """A container whose child rows are tracked by `_FingerprintStore`.
 
-    It opts in too, yet must be reconciled on every run to fulfill its child slot.
+    It opts in too, yet must be reconciled on every run to provide its child
+    handler.
     """
 
     tracks_value_fingerprint = True
@@ -110,17 +111,19 @@ class _TableStore(coco.TargetHandler[None, bytes, _FingerprintStore]):
 
     def __init__(self) -> None:
         self.rows = _FingerprintStore()
-        self._sink = coco.TargetActionSink.from_fn_with_children(self._apply)
+        self._sink = coco.TargetActionSink.from_fn(
+            self._apply, child_handler=self._row_handler
+        )
 
     def _apply(
-        self,
-        context_provider: coco.ContextProvider,
-        actions: Collection[None],
-        child_slots: Mapping[int, coco.ChildSlot[_FingerprintStore]],
-        /,
+        self, context_provider: coco.ContextProvider, actions: Collection[None], /
     ) -> None:
-        for slot in child_slots.values():
-            slot.fulfill(self.rows)
+        pass
+
+    def _row_handler(
+        self, context_provider: coco.ContextProvider, action: None, /
+    ) -> _FingerprintStore:
+        return self.rows
 
     def reconcile(
         self,

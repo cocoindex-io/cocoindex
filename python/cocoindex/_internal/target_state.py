@@ -71,6 +71,14 @@ class _TypedTargetHandlerWrapper:
     __slots__ = ("_handler", "_deserializer", "tracks_value_fingerprint")
 
     def __init__(self, handler: Any) -> None:
+        # A factory that forgot its `return` hands over `None`: name the
+        # problem here rather than fail on the missing `reconcile` below.
+        if not callable(getattr(type(handler), "reconcile", None)):
+            raise TypeError(
+                f"{qualified_name(type(handler))} is not a target handler: it "
+                "has no reconcile() method. A child_handler must return a "
+                "TargetHandler, and so must a root target states provider."
+            )
         self._handler = handler
         self.tracks_value_fingerprint: bool = getattr(
             handler, "tracks_value_fingerprint", False

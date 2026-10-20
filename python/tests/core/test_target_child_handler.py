@@ -24,7 +24,11 @@ _RowAction = tuple[str, str]
 
 _calls: list[str] = []
 _calls_lock = threading.Lock()
-_mode: dict[str, Any] = {"factory_raises": False, "apply_returns": None}
+_mode: dict[str, Any] = {
+    "factory_raises": False,
+    "factory_returns_none": False,
+    "apply_returns": None,
+}
 
 
 def _record(call: str) -> None:
@@ -81,6 +85,8 @@ def _row_handler(
     _record(f"factory:{key}")
     if _mode["factory_raises"]:
         raise ValueError("factory failed")
+    if _mode["factory_returns_none"]:
+        return None  # type: ignore[return-value]
     return _RowHandler(key)
 
 
@@ -129,7 +135,7 @@ async def _declare_containers() -> None:
 def _reset() -> Any:
     _calls.clear()
     _rows.clear()
-    _mode.update(factory_raises=False, apply_returns=None)
+    _mode.update(factory_raises=False, factory_returns_none=False, apply_returns=None)
     yield
 
 
@@ -172,6 +178,16 @@ def test_factory_error_fails_the_component_before_apply_then_recovers() -> None:
     _mode["factory_raises"] = False
     app.update_blocking()
     assert _calls == ["factory:c", "apply:c", "row:c/r1"]
+
+
+def test_factory_returning_no_handler_fails_with_a_clear_error() -> None:
+    _rows["c"] = ["r1"]
+    _mode["factory_returns_none"] = True
+    app = _app("test_child_handler_factory_returns_none")
+
+    with pytest.raises(Exception, match="NoneType is not a target handler"):
+        app.update_blocking()
+    assert _calls == ["factory:c"]
 
 
 def test_child_handler_sink_returning_a_value_fails() -> None:
