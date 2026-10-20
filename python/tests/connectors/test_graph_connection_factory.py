@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from cocoindex._internal.memo_fingerprint import memo_fingerprint
+
 
 class _FakeConnection:
     """Stands in for a Neo4j driver, a FalkorDB client and a SurrealDB
@@ -149,3 +151,57 @@ def test_closed_loops_are_dropped(
         asyncio.run(factory.close())
     assert not entries
     assert not [r for r in caplog.records if r.name.startswith("cocoindex.")]
+
+
+def _neo4j_factories() -> tuple[Any, Any, Any]:
+    pytest.importorskip("neo4j")
+    from cocoindex.connectors import neo4j
+
+    return (
+        neo4j.ConnectionFactory("bolt://h:7687", auth=("u", "p1")),
+        neo4j.ConnectionFactory("bolt://h:7687", auth=("u", "p2")),
+        neo4j.ConnectionFactory("bolt://h:7687", database="other"),
+    )
+
+
+def _falkordb_factories() -> tuple[Any, Any, Any]:
+    pytest.importorskip("falkordb")
+    from cocoindex.connectors import falkordb
+
+    return (
+        falkordb.ConnectionFactory("falkor://u:p1@h:6379", graph="g"),
+        falkordb.ConnectionFactory("falkor://u:p2@h:6379?password=x", graph="g"),
+        falkordb.ConnectionFactory("falkor://u:p1@h:6379", graph="g2"),
+    )
+
+
+def _surrealdb_factories() -> tuple[Any, Any, Any]:
+    pytest.importorskip("surrealdb")
+    from cocoindex.connectors import surrealdb
+
+    def factory(password: str, namespace: str = "n", database: str = "d") -> Any:
+        return surrealdb.ConnectionFactory(
+            "ws://h:8000/rpc",
+            namespace=namespace,
+            database=database,
+            credentials={"username": "u", "password": password},
+        )
+
+    return (factory("p1"), factory("p2"), factory("p1", "n/d", "x"))
+
+
+@pytest.mark.parametrize(
+    "factories",
+    [_neo4j_factories, _falkordb_factories, _surrealdb_factories],
+    ids=lambda f: f.__name__[1:].removesuffix("_factories"),
+)
+def test_factory_is_memo_keyable_without_its_credentials(
+    factories: Callable[[], tuple[Any, Any, Any]],
+) -> None:
+    """A factory can be a memo key (e.g. a `detect_change=True` context value):
+    its fingerprint follows where the data lives, not the credentials (also
+    when the URI carries them) or the open connections."""
+    same, other_credentials, other_place = factories()
+    fp = memo_fingerprint(same)
+    assert memo_fingerprint(other_credentials) == fp
+    assert memo_fingerprint(other_place) != fp

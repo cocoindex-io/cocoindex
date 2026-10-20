@@ -21,6 +21,7 @@ import decimal
 import logging
 import uuid as uuid_mod
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from typing import (
     Any,
     Callable,
@@ -122,6 +123,13 @@ class ConnectionFactory:
     @property
     def graph(self) -> str:
         return self._graph
+
+    def __coco_memo_key__(self) -> tuple[str, str | None, int | None, str, str]:
+        # Where the data lives, not how to sign in: the URI's user info and
+        # query (either can carry the password) and the open clients are
+        # not part of it.
+        parts = urlsplit(self._uri)
+        return (parts.scheme, parts.hostname, parts.port, parts.path, self._graph)
 
     async def acquire(self) -> Any:
         """Return an AsyncGraph handle ready to issue ``query(cypher, params)``.

@@ -705,6 +705,57 @@ class _FakeDriver:
         return _FakeSession(self._log, self._failures)
 
 
+class _ScriptedDriver:
+    """A fake driver whose ``fail(tx_number, runs_in_tx)`` decides, at every
+    run, whether that run raises."""
+
+    def __init__(
+        self, log: list[str], fail: Callable[[int, int], BaseException | None]
+    ) -> None:
+        self.log = log
+        self.fail = fail
+        self.txs = 0
+
+    def session(self, database: str) -> _ScriptedSession:
+        return _ScriptedSession(self)
+
+
+class _ScriptedSession:
+    def __init__(self, driver: _ScriptedDriver) -> None:
+        self._driver = driver
+
+    async def __aenter__(self) -> _ScriptedSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def begin_transaction(self) -> _ScriptedTx:
+        self._driver.txs += 1
+        self._driver.log.append("begin")
+        return _ScriptedTx(self._driver, self._driver.txs)
+
+
+class _ScriptedTx:
+    def __init__(self, driver: _ScriptedDriver, number: int) -> None:
+        self._driver = driver
+        self._number = number
+        self._runs = 0
+
+    async def run(self, cypher: str, **params: Any) -> None:
+        self._runs += 1
+        self._driver.log.append("run")
+        err = self._driver.fail(self._number, self._runs)
+        if err is not None:
+            raise err
+
+    async def commit(self) -> None:
+        self._driver.log.append("commit")
+
+    async def rollback(self) -> None:
+        self._driver.log.append("rollback")
+
+
 @requires_neo4j
 class TestApplyBatchRetry:
     @pytest.fixture(autouse=True)
@@ -763,6 +814,76 @@ class TestApplyBatchRetry:
             await applier(None, [self._node_upsert()])
         assert log.count("begin") == neo_target._TXN_MAX_ATTEMPTS
         assert "commit" not in log
+
+    @staticmethod
+    def _scripted_applier(
+        log: list[str], fail: Callable[[int, int], BaseException | None]
+    ) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        graph = neo_target._GraphHandle(_ScriptedDriver(log, fail), "neo4j")
+
+        class _FakeFactory(neo_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return graph
+
+        return neo_target._SharedRecordApplier(
+            _FakeFactory(uri="bolt://localhost:7687")
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_chunk_stops_the_batch_after_earlier_commits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_MAX_ACTIONS_PER_TXN", 2)
+        log: list[str] = []
+        applier = self._scripted_applier(
+            log,
+            lambda tx, run: _neo4j.exceptions.ClientError("constraint")
+            if tx == 2
+            else None,
+        )
+        with pytest.raises(_neo4j.exceptions.ClientError):
+            await applier(None, [self._node_upsert() for _ in range(5)])
+        # The first chunk stays committed, the second rolls back, the third is
+        # never attempted, and the error fails the batch.
+        assert log == ["begin", "run", "run", "commit", "begin", "run", "rollback"]
+
+    @pytest.mark.asyncio
+    async def test_chunk_over_the_memory_limit_is_split_not_retried(self) -> None:
+        class _MemoryLimit(_neo4j.exceptions.TransientError):
+            code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+        log: list[str] = []
+        # The server takes at most 2 writes per transaction.
+        applier = self._scripted_applier(
+            log, lambda tx, run: _MemoryLimit("too big") if run > 2 else None
+        )
+        await applier(None, [self._node_upsert() for _ in range(5)])
+        # 5 → (2, 3) → (2, (1, 2)): every action is committed, in 3
+        # transactions, and no failing transaction is retried as it was.
+        assert log.count("commit") == 3
+        assert log.count("begin") == 5
+        assert log.count("run") - log.count("rollback") * 3 == 5
+
+    @pytest.mark.asyncio
+    async def test_large_batch_commits_in_bounded_transactions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_MAX_ACTIONS_PER_TXN", 2)
+        log: list[str] = []
+        applier = self._applier(log, failures=0)
+        await applier(None, [self._node_upsert() for _ in range(5)])
+        # 5 actions in transactions of at most 2: 2 + 2 + 1, in order.
+        assert log == ["begin", "run", "run", "commit"] * 2 + [
+            "begin",
+            "run",
+            "commit",
+        ]
 
 
 # =============================================================================

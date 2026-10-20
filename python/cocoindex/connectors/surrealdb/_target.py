@@ -138,6 +138,11 @@ class ConnectionFactory:
             self._connect, _close_connection, owner="SurrealDB ConnectionFactory"
         )
 
+    def __coco_memo_key__(self) -> tuple[str, str, str]:
+        # Where the data lives, not how to sign in: the credentials and the
+        # open connections are not part of it.
+        return (self._url, self._namespace, self._database)
+
     async def acquire(self) -> AsyncSurreal:
         """Return the authenticated connection for the current event loop.
 

@@ -80,6 +80,26 @@ _logger = logging.getLogger(__name__)
 # Retry policy for an apply batch that hits a transient error (deadlock
 # between concurrent batches): a handful of attempts, sub-second backoff.
 _TXN_MAX_ATTEMPTS = 8
+# One transaction applies at most this many record actions: a merged batch
+# of every table of a database is otherwise unbounded. A chunk can still go
+# over `db.memory.transaction.max` (large properties); it is then split.
+_MAX_ACTIONS_PER_TXN = 1000
+
+
+def _is_memory_limit(err: BaseException) -> bool:
+    """A transaction over the server's memory limit. Neo4j reports it as a
+    TransientError, but retrying the same transaction fails the same way."""
+    return isinstance(err, _neo4j.exceptions.TransientError) and "Memory" in (
+        err.code or ""
+    )
+
+
+def _is_retryable(err: Exception) -> bool:
+    return isinstance(err, _neo4j.exceptions.TransientError) and not _is_memory_limit(
+        err
+    )
+
+
 _TXN_RETRY_INITIAL_BACKOFF_SECONDS = 0.05
 _TXN_RETRY_MAX_BACKOFF_SECONDS = 2.0
 
@@ -176,6 +196,11 @@ class ConnectionFactory:
     @property
     def database(self) -> str:
         return self._database
+
+    def __coco_memo_key__(self) -> tuple[str, str]:
+        # Where the data lives, not how to sign in: the open drivers are
+        # not part of it, and a credential change keeps the memos.
+        return (self._uri, self._database)
 
     async def acquire(self) -> _GraphHandle:
         """Return a graph handle ready to issue ``query(cypher, params)``.
@@ -527,9 +552,11 @@ class _SharedRecordApplier:
     upserts → relation deletes → node deletes, so an edge is never written
     before its endpoints exist.
 
-    Unlike FalkorDB which can't multi-statement transact, each apply batch is
-    one Neo4j transaction (:meth:`_apply_batch`), so partial writes roll back
-    on failure.
+    Unlike FalkorDB which can't multi-statement transact, a batch is applied
+    in Neo4j transactions of at most ``_MAX_ACTIONS_PER_TXN`` actions each, in
+    order (:meth:`_apply_batch`). A failed transaction rolls back and raises,
+    so the batch's components are retried; earlier transactions stay
+    committed, which is safe as the writes are idempotent (``MERGE``).
     """
 
     factory: ConnectionFactory
@@ -566,8 +593,17 @@ class _SharedRecordApplier:
     async def _apply_batch(
         cls, graph: _GraphHandle, ordered: Sequence[_RecordAction]
     ) -> None:
-        """Apply ``ordered`` (already in dependency order) in one transaction,
-        retried on a transient error."""
+        """Apply ``ordered`` (already in dependency order) in transactions of
+        at most ``_MAX_ACTIONS_PER_TXN`` actions, one after the other."""
+        for start in range(0, len(ordered), _MAX_ACTIONS_PER_TXN):
+            await cls._apply_chunk(graph, ordered[start : start + _MAX_ACTIONS_PER_TXN])
+
+    @classmethod
+    async def _apply_chunk(
+        cls, graph: _GraphHandle, chunk: Sequence[_RecordAction]
+    ) -> None:
+        """Apply ``chunk`` in one transaction, retried on a transient error;
+        split in two when it goes over the server's transaction memory limit."""
 
         async def apply_in_txn() -> None:
             async with graph._driver.session(  # noqa: SLF001
@@ -575,7 +611,7 @@ class _SharedRecordApplier:
             ) as session:
                 tx = await session.begin_transaction()
                 try:
-                    for action in ordered:
+                    for action in chunk:
                         if action.value is not None:
                             if action.is_relation:
                                 await cls._apply_relation_upsert(tx, action)
@@ -590,21 +626,29 @@ class _SharedRecordApplier:
                     await tx.rollback()
                     raise
 
-        # Concurrent batches that touch the same nodes — many components
-        # merging edges onto one endpoint — can deadlock. Neo4j reports that
-        # as a TransientError and expects the client to retry the transaction.
-        await deadline.retry_transient(
-            apply_in_txn,
-            retry_on=(_neo4j.exceptions.TransientError,),
-            max_attempts=_TXN_MAX_ATTEMPTS,
-            backoff=deadline.exponential_backoff(
-                initial=_TXN_RETRY_INITIAL_BACKOFF_SECONDS,
-                multiplier=2.0,
-                max_delay=_TXN_RETRY_MAX_BACKOFF_SECONDS,
-                jitter=0.5,
-            ),
-            operation_name="neo4j apply batch",
-        )
+        # Neo4j reports a deadlock as a TransientError and expects the client
+        # to retry the transaction. All record writes of one database share
+        # this sink, which applies one batch at a time, so a deadlock comes
+        # from another client writing the same nodes.
+        try:
+            await deadline.retry_transient(
+                apply_in_txn,
+                retry_on=_is_retryable,
+                max_attempts=_TXN_MAX_ATTEMPTS,
+                backoff=deadline.exponential_backoff(
+                    initial=_TXN_RETRY_INITIAL_BACKOFF_SECONDS,
+                    multiplier=2.0,
+                    max_delay=_TXN_RETRY_MAX_BACKOFF_SECONDS,
+                    jitter=0.5,
+                ),
+                operation_name="neo4j apply batch",
+            )
+        except _neo4j.exceptions.TransientError as err:
+            if not _is_memory_limit(err) or len(chunk) == 1:
+                raise
+            mid = len(chunk) // 2
+            await cls._apply_chunk(graph, chunk[:mid])
+            await cls._apply_chunk(graph, chunk[mid:])
 
     @staticmethod
     async def _apply_node_upsert(tx: Any, action: _RecordAction) -> None:
