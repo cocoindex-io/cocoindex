@@ -144,7 +144,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         //   - For `coco.mount(LiveCompClass)` from inside `process()`: by
         //     submit/commit, via `update_building_state`'s `child_path_set`.
         //   - For `operator.update(LiveCompClass)` from `process_live`: by
-        //     `mount_inner_live` directly via `Storage::run_txn`, just below this
+        //     `mount_inner_live` directly via `AppStore::run_txn`, just below this
         //     `complete()` call. (See `LiveComponentController::mount_inner_live`.)
         // Both paths produce the same on-disk state.
         //

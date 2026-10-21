@@ -447,7 +447,25 @@ impl Storage {
         Ok(())
     }
 
-    /// Run `body` inside a batched write transaction.
+    /// [`Self::run_txn_with`] applying every write. Writes to an app's data go
+    /// through [`AppStore::run_txn`], which runs the body in the handle's write
+    /// mode; a body run through here applies its writes even in a preview, so
+    /// only tests use it.
+    #[cfg(test)]
+    pub(crate) async fn run_txn<T, F>(&self, body: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.run_txn_with(WriteMode::Apply, body).await
+    }
+
+    /// Run `body` inside a batched write transaction, with its writes in
+    /// `write_mode`. [`AppStore::run_txn`] is the entry point for an app's data;
+    /// it passes its handle's mode.
     ///
     /// `body` receives `&mut WriteTxn` and returns a `Send` future (typically
     /// `Box::pin(async move { … })`). Multiple concurrent callers' bodies are
@@ -482,24 +500,9 @@ impl Storage {
     /// Send + 'a>>`) because stable Rust can't yet express a `Send` bound on
     /// the future returned by an `AsyncFnOnce` borrowing from the txn.
     ///
-    /// Writes to an app's data go through [`AppStore::run_txn`] instead, which
-    /// runs the body in the handle's write mode: a body run through here
-    /// applies its writes even in a preview.
-    pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.run_txn_with(WriteMode::Apply, body).await
-    }
-
-    /// [`Self::run_txn`] with `body`'s writes in `write_mode`. In
-    /// [`WriteMode::Discard`] the body runs in the shared txn like any other,
-    /// reading what the bodies ahead of it wrote, but its own writes are
-    /// dropped (see [`WriteTxn`]), so the txn commits without them.
+    /// In [`WriteMode::Discard`] the body runs in the shared txn like any
+    /// other, reading what the bodies ahead of it wrote, but its own writes
+    /// are dropped (see [`WriteTxn`]), so the txn commits without them.
     pub(crate) async fn run_txn_with<T, F>(&self, write_mode: WriteMode, body: F) -> Result<T>
     where
         T: Send + 'static,

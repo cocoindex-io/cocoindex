@@ -65,7 +65,7 @@ pub(crate) enum WriteMode {
     Discard,
 }
 
-/// Write transaction wrapper. Threaded through `Storage::run_txn` closures.
+/// Write transaction wrapper. Threaded through `AppStore::run_txn` closures.
 ///
 /// It is the one way to write to LMDB inside a batched write txn: it derefs
 /// to the read-only `RwTxn` for reads, and every write goes through its own
@@ -75,6 +75,11 @@ pub(crate) enum WriteMode {
 pub struct WriteTxn<'env> {
     txn: heed::RwTxn<'env>,
     write_mode: WriteMode,
+    /// The id-sequence counters the running body advanced in
+    /// [`WriteMode::Discard`], by encoded db key: the one dropped write a
+    /// body reads back, so that successive reservations in one body get
+    /// distinct ids. Cleared when the next body starts.
+    discarded_id_sequences: HashMap<Vec<u8>, u64>,
 }
 
 impl<'env> WriteTxn<'env> {
@@ -82,6 +87,7 @@ impl<'env> WriteTxn<'env> {
         Self {
             txn: inner,
             write_mode: WriteMode::Apply,
+            discarded_id_sequences: HashMap::new(),
         }
     }
 
@@ -89,8 +95,28 @@ impl<'env> WriteTxn<'env> {
         self.txn
     }
 
+    /// The mode the body now running writes in.
+    pub(crate) fn write_mode(&self) -> WriteMode {
+        self.write_mode
+    }
+
+    /// Starts a body: sets its mode and forgets the previous body's
+    /// discarded id sequences.
     pub(crate) fn set_write_mode(&mut self, write_mode: WriteMode) {
         self.write_mode = write_mode;
+        self.discarded_id_sequences.clear();
+    }
+
+    /// The counter the running body set under `db_key` with
+    /// [`Self::note_discarded_id_sequence`], if any.
+    pub(crate) fn discarded_id_sequence(&self, db_key: &[u8]) -> Option<u64> {
+        self.discarded_id_sequences.get(db_key).copied()
+    }
+
+    /// Remembers, for the rest of the running body, that it advanced the id
+    /// sequence under `db_key` to `next_id` in [`WriteMode::Discard`].
+    pub(crate) fn note_discarded_id_sequence(&mut self, db_key: Vec<u8>, next_id: u64) {
+        self.discarded_id_sequences.insert(db_key, next_id);
     }
 
     /// Store `value` under `key` in `db`, or drop the write in

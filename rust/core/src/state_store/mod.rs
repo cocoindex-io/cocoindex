@@ -22,4 +22,5 @@ pub use submit_session::{
     PrecommitClaimTargetsResult, PrecommitReadPlan, PrecommitReadResult, PrecommitSession,
     PrecommitWritePlan, reconcile_child_existence,
 };
+pub(crate) use txn::WriteMode;
 pub use txn::{ReadTxn, WriteTxn};

@@ -384,7 +384,7 @@ impl AppStore {
     /// writes if the callback returns `None` (PendingRetry; the batched
     /// WTxn still commits whatever other bodies wrote).
     ///
-    /// Routes through [`crate::state_store::Storage::run_txn`] so
+    /// Routes through [`AppStore::run_txn`] so
     /// concurrent precommits coalesce into one WTxn → one fsync (per
     /// AGENTS.md "LMDB write paths"). LMDB has no savepoints — to
     /// "abort" on PendingRetry, the body contributes no writes.

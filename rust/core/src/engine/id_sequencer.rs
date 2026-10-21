@@ -8,9 +8,10 @@
 //!
 //! Storage I/O goes through methods on `AppStore`; this module is the
 //! in-memory caching half and never touches the storage backend directly.
-//! The `AppStore` it is given must apply its writes: a preview reserves ids
-//! like an update (see `AppContext::next_id`), so a reservation made through
-//! a handle that discards writes would hand out ids the store never saw.
+//! The `AppStore` it is given must apply its writes, and `next_id` checks
+//! that it does: a preview reserves ids like an update (see
+//! `AppContext::next_id`), and a reservation through a handle that discards
+//! writes would cache ids the store never saw.
 //!
 //! `pre_commit` bypasses this cache: it reserves a child provider's fresh
 //! generation ID (under `TARGET_ID_KEY`) with
@@ -22,7 +23,7 @@ use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
-use crate::state_store::AppStore;
+use crate::state_store::{AppStore, WriteMode};
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -93,6 +94,12 @@ impl IdSequencerManager {
     /// Different keys can be processed in parallel, while same-key operations
     /// are serialized.
     pub async fn next_id(&self, app_store: &AppStore, key: &StableKey) -> Result<u64> {
+        if app_store.write_mode() == WriteMode::Discard {
+            return Err(internal_error!(
+                "the id sequencer needs a store that applies its writes; \
+                 a reservation made through a discarding handle would cache ids the store never saw"
+            ));
+        }
         // Get or create the per-key state (brief lock on main map)
         let state_arc = {
             let mut sequencers = self.sequencers.lock().unwrap();

@@ -1207,11 +1207,10 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                         // in-txn variant to avoid nesting another
                         // batched WTxn on LMDB (would deadlock). In a
                         // preview the store discards the reservation, so
-                        // this yields the next unreserved id: in no
-                        // tracking record, as a fresh one must be, and
-                        // persisted by nothing. Every fresh generation of
-                        // one preview pass gets that same id, which the
-                        // preview's actions never tell apart by id.
+                        // this yields an unreserved id: in no tracking
+                        // record, as a fresh one must be, distinct from the
+                        // other fresh generations of this pass, and
+                        // persisted by nothing.
                         let new_id = app_store
                             .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
                             .await?;

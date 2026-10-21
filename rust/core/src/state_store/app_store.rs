@@ -68,12 +68,20 @@ impl AppStore {
     /// through it (`run_txn`, `precommit`, `commit`, the standalone writers)
     /// reads the store as any other but persists nothing. The handle is what
     /// makes a preview write nothing.
+    ///
+    /// The mode belongs to the body: the `*_in_txn` writers follow the mode
+    /// of the `WriteTxn` they are given, whichever handle they are called on.
     pub fn discarding_writes(&self) -> Self {
         Self {
             db: self.db,
             storage: self.storage.clone(),
             write_mode: WriteMode::Discard,
         }
+    }
+
+    /// The mode a body run through this handle writes in.
+    pub(crate) fn write_mode(&self) -> WriteMode {
+        self.write_mode
     }
 
     /// A clone of the parent env, for tests that open LMDB transactions
@@ -94,7 +102,7 @@ impl AppStore {
 
     /// Run `body` inside a write txn driven by the single-writer batcher,
     /// with its writes in this handle's [`WriteMode`]. See
-    /// [`crate::state_store::Storage::run_txn`] for the batching contract:
+    /// [`super::Storage::run_txn_with`] for the batching contract:
     /// concurrent callers coalesce into one underlying `heed::RwTxn`, bodies
     /// within a batch are awaited sequentially, and a body may run more than
     /// once. Every write to this app's data goes through here so it runs in
@@ -729,6 +737,9 @@ impl AppStore {
         key: &StableKey,
     ) -> Result<Option<u64>> {
         let db_key = key_id_sequencer(key)?;
+        if let Some(next_id) = txn.discarded_id_sequence(&db_key) {
+            return Ok(Some(next_id));
+        }
         let data = self.db().get(txn, &db_key)?;
         match data {
             None => Ok(None),
@@ -746,16 +757,23 @@ impl AppStore {
         next_id: u64,
     ) -> Result<()> {
         let db_key = key_id_sequencer(key)?;
-        let info = IdSequencerInfo { next_id };
-        let value = rmp_serde::to_vec_named(&info)?;
-        txn.put(self.db(), &db_key, &value)?;
+        match txn.write_mode() {
+            WriteMode::Apply => {
+                let info = IdSequencerInfo { next_id };
+                let value = rmp_serde::to_vec_named(&info)?;
+                txn.put(self.db(), &db_key, &value)?;
+            }
+            WriteMode::Discard => txn.note_discarded_id_sequence(db_key, next_id),
+        }
         Ok(())
     }
 
     /// Atomically reserve `count` consecutive IDs starting from the next
     /// available ID. Returns the first reserved ID. IDs start at 1
-    /// (0 is reserved). Through a handle from [`Self::discarding_writes`]
-    /// nothing is reserved: the ids returned stay available.
+    /// (0 is reserved). In a body that discards its writes (see
+    /// [`WriteMode::Discard`]) the reservation lasts for that body only:
+    /// its later calls get the ids after it, and nothing persists, so the
+    /// ids stay available.
     pub async fn reserve_id_range_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
@@ -1030,6 +1048,41 @@ mod tests {
     use crate::state_store::txn::WriteTxn;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// A body that discards its writes still gets distinct ids from
+    /// successive reservations, and leaves the persisted counter untouched.
+    #[tokio::test]
+    async fn discarding_body_reserves_distinct_ids_without_persisting() {
+        let (store, _dir) = make_test_store().await;
+        let key = StableKey::Str(Arc::from("provider"));
+
+        let reserve_twice = |store: AppStore| {
+            let key = key.clone();
+            async move {
+                let store_in_txn = store.clone();
+                store
+                    .run_txn(move |wtxn| {
+                        let (store, key) = (store_in_txn.clone(), key.clone());
+                        Box::pin(async move {
+                            let first = store.reserve_id_range_in_txn(wtxn, &key, 1).await?;
+                            let second = store.reserve_id_range_in_txn(wtxn, &key, 2).await?;
+                            Ok((first, second))
+                        })
+                    })
+                    .await
+            }
+        };
+        assert_eq!(
+            reserve_twice(store.discarding_writes()).await.unwrap(),
+            (1, 2)
+        );
+        assert_eq!(reserve_twice(store.clone()).await.unwrap(), (1, 2));
+        assert_eq!(
+            reserve_twice(store.discarding_writes()).await.unwrap(),
+            (4, 5)
+        );
+        assert_eq!(reserve_twice(store).await.unwrap(), (4, 5));
+    }
 
     fn comp_path(name: &str) -> StablePath {
         StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
