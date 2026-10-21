@@ -167,6 +167,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.full_reprocess(),
             live,
             parent_ctx.preview_collector().cloned(),
+            parent_ctx.app_store().clone(),
             providers,
             parent_ctx.admission().lender().clone(),
         );
@@ -462,9 +463,8 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// an update's would (the store discards the write). Shared by the
     /// clones of this controller, as the preview collector is.
     preview_committed_state: Arc<parking_lot::Mutex<HashMap<StableKey, Vec<u8>>>>,
-    /// The app's state store as this component's runs write it: discarding
-    /// every write in a preview (see
-    /// [`ComponentProcessorContext::app_store`]).
+    /// The mounting run's store handle, which discards every write in a
+    /// preview (see [`ComponentProcessorContext::app_store`]).
     app_store: AppStore,
 
     /// Providers inherited from the parent component context at creation time.
@@ -489,14 +489,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         full_reprocess: bool,
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
+        app_store: AppStore,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
     ) -> Self {
-        let app_store = component.app_ctx().app_store();
-        let app_store = match preview_collector {
-            Some(_) => app_store.discarding_writes(),
-            None => app_store.clone(),
-        };
         Self {
             component,
             state,
@@ -558,15 +554,18 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// persist a bootstrap flag / logic version without going through
     /// `coco.use_state` (which targets the prune-eligible `Regular` keyspace).
     ///
-    /// In a preview the store discards the write: a marker the preview
-    /// committed would make the next real run skip work the preview never did.
-    /// The preview keeps the value for this run instead, so a later
-    /// [`Self::read_committed_state`] reads it back.
+    /// A preview persists nothing: a marker it committed would make the next
+    /// real run skip work the preview never did. It keeps the value for this
+    /// run instead, so a later [`Self::read_committed_state`] reads it back —
+    /// the one write path with a preview branch of its own, since the store
+    /// would discard the write and a read could not see it. See AGENTS.md
+    /// "LMDB write paths".
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
         if self.preview_collector.is_some() {
             self.preview_committed_state
                 .lock()
-                .insert(key.clone(), value.clone());
+                .insert(key.clone(), value);
+            return Ok(());
         }
         self.app_store
             .write_user_state_standalone(

@@ -1209,7 +1209,9 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                         // preview the store discards the reservation, so
                         // this yields the next unreserved id: in no
                         // tracking record, as a fresh one must be, and
-                        // persisted by nothing.
+                        // persisted by nothing. Every fresh generation of
+                        // one preview pass gets that same id, which the
+                        // preview's actions never tell apart by id.
                         let new_id = app_store
                             .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
                             .await?;
