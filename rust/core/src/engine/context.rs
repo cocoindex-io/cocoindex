@@ -174,6 +174,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
+    /// A preview reserves ids like an update: ids are opaque, so the gap its
+    /// unused ids leave costs nothing, and the sequencer is the one state a
+    /// preview writes.
     pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
@@ -1113,17 +1116,16 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.operation_generation
     }
 
+    /// Whether this is a preview run. Only a build runs as a preview: a
+    /// preview plans no deletes of components.
     pub fn preview(&self) -> bool {
-        match &self.inner.processing_action {
-            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.is_some(),
-            ComponentProcessingAction::Delete { .. } => false,
-        }
+        self.preview_collector().is_some()
     }
 
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
-            ComponentProcessingAction::Delete { .. } => None,
+            ComponentProcessingAction::Delete(_) => None,
         }
     }
 

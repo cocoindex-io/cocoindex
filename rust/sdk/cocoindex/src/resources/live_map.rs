@@ -32,7 +32,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetStateProvider, declare_target_state, mount_target,
     register_root_target_states_provider,
 };
@@ -158,6 +158,7 @@ impl<V: LiveMapValue> LiveMap<V> {
             format!("cocoindex/livemap/{id}"),
             ContainerHandler {
                 inner: inner.clone(),
+                sink: SinkCache::default(),
             },
         )?;
         let container = container_provider.target_state("container", ContainerSpec);
@@ -241,10 +242,9 @@ struct ContainerSpec;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ContainerRecord;
 
+/// The container itself has nothing to apply: its entries live in the map.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct ContainerAction {
-    deleted: bool,
-}
+struct ContainerAction;
 
 /// Existence marker for an entry tracking record (never read — its only job is to
 /// be present so the engine can drive a delete when the producer stops declaring
@@ -261,6 +261,7 @@ struct EntryAction<V> {
 
 struct ContainerHandler<V> {
     inner: Arc<LiveMapInner<V>>,
+    sink: SinkCache<ContainerAction>,
 }
 
 impl<V: LiveMapValue> TargetHandler<ContainerSpec> for ContainerHandler<V> {
@@ -276,13 +277,13 @@ impl<V: LiveMapValue> TargetHandler<ContainerSpec> for ContainerHandler<V> {
     ) -> Result<Option<TargetReconcileOutput<ContainerAction, ContainerRecord>>> {
         match desired {
             Some(_) => Ok(Some(TargetReconcileOutput {
-                action: TargetAction::Update(ContainerAction { deleted: false }),
+                action: TargetAction::Update(ContainerAction),
                 sink: self.sink(),
                 tracking_record: Some(ContainerRecord),
                 child_invalidation: None,
             })),
             None => Ok(Some(TargetReconcileOutput {
-                action: TargetAction::Delete(ContainerAction { deleted: true }),
+                action: TargetAction::Delete(ContainerAction),
                 sink: self.sink(),
                 tracking_record: None,
                 child_invalidation: Some(TargetChildInvalidation::Destructive),
@@ -293,30 +294,17 @@ impl<V: LiveMapValue> TargetHandler<ContainerSpec> for ContainerHandler<V> {
 
 impl<V: LiveMapValue> ContainerHandler<V> {
     fn sink(&self) -> TargetActionSink<ContainerAction> {
-        let inner = self.inner.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<(TargetAction<ContainerAction>, Option<ChildSlot>)>| {
-                let inner = inner.clone();
-                async move {
-                    for (action, child_slot) in actions {
-                        let a = match action {
-                            TargetAction::Create(a)
-                            | TargetAction::Update(a)
-                            | TargetAction::Delete(a) => a,
-                        };
-                        if a.deleted {
-                            continue;
-                        }
-                        if let Some(slot) = child_slot {
-                            slot.fulfill(ChildTargetDef::new::<V, _>(EntryHandler {
-                                inner: inner.clone(),
-                            }))?;
-                        }
-                    }
-                    Ok(())
-                }
-            },
-        )
+        self.sink.get(|| {
+            let inner = self.inner.clone();
+            TargetActionSink::from_async_fn_with_child_handler(
+                |_actions| async { Ok(()) },
+                move |_: &ContainerAction| {
+                    Ok(ChildTargetDef::new::<V, _>(EntryHandler {
+                        inner: inner.clone(),
+                    }))
+                },
+            )
+        })
     }
 }
 

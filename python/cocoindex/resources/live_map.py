@@ -23,7 +23,6 @@ import uuid as _uuid
 import weakref as _weakref
 from collections.abc import AsyncIterator as _AsyncIterator
 from collections.abc import Collection as _Collection
-from collections.abc import Mapping as _Mapping
 from collections.abc import Sequence as _Sequence
 from dataclasses import dataclass as _dataclass
 from typing import Any as _Any
@@ -78,8 +77,8 @@ class _EntryRecord(_msgspec.Struct, frozen=True):
 
 
 class _ContainerAction(_NamedTuple):
+    # None for a deleted container, and if the LiveMap was garbage-collected.
     live_map: "LiveMap[_Any, _Any] | None"
-    deleted: bool
 
 
 class _EntryAction(_NamedTuple):
@@ -106,8 +105,8 @@ class _Change(_NamedTuple):
 class _EntryHandler:
     """Per-instance target handler for entries; closes over one ``LiveMap``.
 
-    Constructed by the container sink (bound to the instance recovered from the registry) and
-    reused for every entry declared into that map.
+    Constructed by ``_container_entry_handler`` (bound to the instance recovered from the
+    registry) and reused for every entry declared into that map.
     """
 
     __slots__ = ("_live_map",)
@@ -154,13 +153,13 @@ class _ContainerHandler(
     ) -> "_coco.TargetReconcileOutput[_ContainerAction, _ContainerRecord, _EntryHandler] | None":
         if _coco.is_non_existence(desired_state):
             return _coco.TargetReconcileOutput(
-                action=_ContainerAction(None, True),
+                action=_ContainerAction(None),
                 sink=_CONTAINER_SINK,
                 tracking_record=_coco.NON_EXISTENCE,
             )
         assert isinstance(key, _uuid.UUID)
         return _coco.TargetReconcileOutput(
-            action=_ContainerAction(_REGISTRY.get(key), False),
+            action=_ContainerAction(_REGISTRY.get(key)),
             sink=_CONTAINER_SINK,
             tracking_record=_ContainerRecord(),
         )
@@ -188,23 +187,36 @@ async def _apply_entry_actions(
                 live_map._emit(_Change(action.key, action.value, False, live_map._seq))
 
 
+def _container_entry_handler(
+    context_provider: _coco.ContextProvider, action: _ContainerAction, /
+) -> _EntryHandler:
+    """The entry handler for a declared container's entries."""
+    if action.live_map is None:
+        # The registry holds the map weakly: its creator dropped it before
+        # its entries were reconciled.
+        raise RuntimeError(
+            "the LiveMap was garbage-collected before its entries were "
+            "reconciled; keep a reference to it while its producers and "
+            "consumers run"
+        )
+    return _EntryHandler(action.live_map)
+
+
 async def _apply_container_actions(
     context_provider: _coco.ContextProvider,
     actions: _Sequence[_ContainerAction],
-    child_slots: _Mapping[int, _coco.ChildSlot[_EntryHandler]],
     /,
 ) -> None:
-    for i, action in enumerate(actions):
-        if action.deleted or action.live_map is None:
-            continue
-        child_slots[i].fulfill(_EntryHandler(action.live_map))
+    """A container is the in-memory map itself, so there is nothing to apply."""
 
 
 _ENTRY_SINK: _coco.TargetActionSink[_EntryAction] = (
     _coco.TargetActionSink.from_async_fn(_apply_entry_actions)
 )
 _CONTAINER_SINK: _coco.TargetActionSink[_ContainerAction] = (
-    _coco.TargetActionSink.from_async_fn_with_children(_apply_container_actions)
+    _coco.TargetActionSink.from_async_fn(
+        _apply_container_actions, child_handler=_container_entry_handler
+    )
 )
 _CONTAINER_PROVIDER = _coco.register_root_target_states_provider(
     "cocoindex/livemap", _ContainerHandler()

@@ -69,6 +69,46 @@ def test_generate_id_different_deps() -> None:
     assert _generate_id_results == {"X": 1, "Y": 2}
 
 
+_preview_deps: list[str] = []
+
+
+@coco.fn
+async def _app_main_generate_id_for_preview_deps() -> None:
+    for dep in _preview_deps:
+        _generate_id_results[dep] = await generate_id(dep)
+
+
+def test_generate_id_in_preview() -> None:
+    """A preview reserves ids like an update (the ids it shows are not the ones
+    the next update assigns, and the gap is harmless), and reads memoized ids
+    without changing them."""
+    _generate_id_results.clear()
+    app = coco.App(
+        coco.AppConfig(name="test_generate_id_in_preview", environment=coco_env),
+        _app_main_generate_id_for_preview_deps,
+    )
+    _preview_deps[:] = ["A"]
+    app.update_blocking()
+    assert _generate_id_results == {"A": 1}
+
+    _preview_deps[:] = ["A", "B", "C"]
+    _generate_id_results.clear()
+    app.update_blocking(preview=True)
+    previewed = dict(_generate_id_results)
+    assert previewed["A"] == 1
+    assert len({previewed["B"], previewed["C"]} - {1}) == 2
+
+    _generate_id_results.clear()
+    app.update_blocking()
+    assert _generate_id_results["A"] == 1
+    assert len(set(_generate_id_results.values())) == 3
+    # The update's new ids are stable from then on.
+    final = dict(_generate_id_results)
+    _generate_id_results.clear()
+    app.update_blocking()
+    assert _generate_id_results == final
+
+
 @coco.fn
 def _app_main_generate_uuid(deps: list[str]) -> None:
     """App main that generates UUIDs for each dependency."""

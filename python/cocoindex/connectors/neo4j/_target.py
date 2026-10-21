@@ -31,7 +31,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     TYPE_CHECKING,
@@ -59,6 +58,7 @@ import numpy as np
 import cocoindex as coco
 from cocoindex._internal import deadline
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+from cocoindex.connectorkits._per_loop_connections import PerLoopConnections
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
@@ -80,6 +80,26 @@ _logger = logging.getLogger(__name__)
 # Retry policy for an apply batch that hits a transient error (deadlock
 # between concurrent batches): a handful of attempts, sub-second backoff.
 _TXN_MAX_ATTEMPTS = 8
+# One transaction applies at most this many record actions: a merged batch
+# of every table of a database is otherwise unbounded. A chunk can still go
+# over `db.memory.transaction.max` (large properties); it is then split.
+_MAX_ACTIONS_PER_TXN = 1000
+
+
+def _is_memory_limit(err: BaseException) -> bool:
+    """A transaction over the server's memory limit. Neo4j reports it as a
+    TransientError, but retrying the same transaction fails the same way."""
+    return isinstance(err, _neo4j.exceptions.TransientError) and "Memory" in (
+        err.code or ""
+    )
+
+
+def _is_retryable(err: Exception) -> bool:
+    return isinstance(err, _neo4j.exceptions.TransientError) and not _is_memory_limit(
+        err
+    )
+
+
 _TXN_RETRY_INITIAL_BACKOFF_SECONDS = 0.05
 _TXN_RETRY_MAX_BACKOFF_SECONDS = 2.0
 
@@ -133,10 +153,13 @@ class ConnectionFactory:
     """
     Connection factory for Neo4j.
 
-    Holds connection parameters and creates an authenticated, pooled async
-    driver on demand. The database name is part of the factory (not the
-    table key) — different databases on the same Neo4j cluster are
-    addressed via separate ``ConnectionFactory`` / ``ContextKey`` pairs.
+    Holds connection parameters and lazily creates an authenticated,
+    connection-pooled async driver per event loop, shared by every table and
+    apply batch on that loop.
+    The database name is part of the factory (not the table key) — different
+    databases on the same Neo4j cluster are addressed via separate
+    ``ConnectionFactory`` / ``ContextKey`` pairs. Call :meth:`close` at
+    shutdown to close the driver.
 
     Example::
 
@@ -166,15 +189,41 @@ class ConnectionFactory:
         self._uri = uri
         self._auth = auth
         self._database = database
+        self._connections: PerLoopConnections[AsyncDriver] = PerLoopConnections(
+            self._open_driver, _close_driver, owner="Neo4j ConnectionFactory"
+        )
 
     @property
     def database(self) -> str:
         return self._database
 
+    def __coco_memo_key__(self) -> tuple[str, str]:
+        # Where the data lives, not how to sign in: the open drivers are
+        # not part of it, and a credential change keeps the memos.
+        return (self._uri, self._database)
+
     async def acquire(self) -> _GraphHandle:
-        """Return a graph handle ready to issue ``query(cypher, params)``."""
-        driver = _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
-        return _GraphHandle(driver, self._database)
+        """Return a graph handle ready to issue ``query(cypher, params)``.
+
+        The factory keeps one driver per event loop (a driver is bound to the
+        loop it is used on), created on the loop's first ``acquire()`` and
+        reused after.
+        """
+        return _GraphHandle(await self._connections.acquire(), self._database)
+
+    async def _open_driver(self) -> AsyncDriver:
+        return _neo4j.AsyncGraphDatabase.driver(self._uri, auth=self._auth)
+
+    async def close(self) -> None:
+        """Close the driver of the running event loop, if any. Call it on the
+        loop that used the factory (e.g. in the lifespan, after ``yield``); a
+        later ``acquire()`` creates a new driver. Drivers of other loops can't
+        be closed here; they are left open, with a warning."""
+        await self._connections.close()
+
+
+async def _close_driver(driver: AsyncDriver) -> None:
+    await driver.close()
 
 
 # ---------------------------------------------------------------------------
@@ -491,24 +540,28 @@ class _RecordAction(NamedTuple):
     to_id: Any | None
 
 
+@dataclass(frozen=True)
 class _SharedRecordApplier:
-    """Owns a TargetActionSink shared by all record handlers for one
-    Neo4j database.
+    """The record sink callback shared by every record handler of one Neo4j
+    database.
 
-    Unlike FalkorDB which can't multi-statement transact, we wrap each
-    apply batch in a single Neo4j transaction so partial writes roll back
-    on failure. Actions are still grouped into the four-bucket ordering
-    so an edge is never written before its endpoints exist.
+    Equal for the same ``ConnectionFactory``, so the record sinks of all tables
+    of one database — node and relation tables alike — share one identity
+    (see ``coco.TargetActionSink``) and the engine batches their actions
+    together. That is what lets one batch order node upserts → relation
+    upserts → relation deletes → node deletes, so an edge is never written
+    before its endpoints exist.
+
+    Unlike FalkorDB which can't multi-statement transact, a batch is applied
+    in Neo4j transactions of at most ``_MAX_ACTIONS_PER_TXN`` actions each, in
+    order (:meth:`_apply_batch`). A failed transaction rolls back and raises,
+    so the batch's components are retried; earlier transactions stay
+    committed, which is safe as the writes are idempotent (``MERGE``).
     """
 
-    _graph: _GraphHandle
-    sink: coco.TargetActionSink[_RecordAction]
+    factory: ConnectionFactory
 
-    def __init__(self, graph: _GraphHandle) -> None:
-        self._graph = graph
-        self.sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
+    async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[_RecordAction]
     ) -> None:
         if not actions:
@@ -531,40 +584,71 @@ class _SharedRecordApplier:
                 else:
                     delete_normal.append(action)
 
+        graph = await self.factory.acquire()
+        await self._apply_batch(
+            graph, upsert_normal + upsert_relation + delete_relation + delete_normal
+        )
+
+    @classmethod
+    async def _apply_batch(
+        cls, graph: _GraphHandle, ordered: Sequence[_RecordAction]
+    ) -> None:
+        """Apply ``ordered`` (already in dependency order) in transactions of
+        at most ``_MAX_ACTIONS_PER_TXN`` actions, one after the other."""
+        for start in range(0, len(ordered), _MAX_ACTIONS_PER_TXN):
+            await cls._apply_chunk(graph, ordered[start : start + _MAX_ACTIONS_PER_TXN])
+
+    @classmethod
+    async def _apply_chunk(
+        cls, graph: _GraphHandle, chunk: Sequence[_RecordAction]
+    ) -> None:
+        """Apply ``chunk`` in one transaction, retried on a transient error;
+        split in two when it goes over the server's transaction memory limit."""
+
         async def apply_in_txn() -> None:
-            async with self._graph._driver.session(  # noqa: SLF001
-                database=self._graph.database
+            async with graph._driver.session(  # noqa: SLF001
+                database=graph.database
             ) as session:
                 tx = await session.begin_transaction()
                 try:
-                    for action in upsert_normal:
-                        await self._apply_node_upsert(tx, action)
-                    for action in upsert_relation:
-                        await self._apply_relation_upsert(tx, action)
-                    for action in delete_relation:
-                        await self._apply_relation_delete(tx, action)
-                    for action in delete_normal:
-                        await self._apply_node_delete(tx, action)
+                    for action in chunk:
+                        if action.value is not None:
+                            if action.is_relation:
+                                await cls._apply_relation_upsert(tx, action)
+                            else:
+                                await cls._apply_node_upsert(tx, action)
+                        elif action.is_relation:
+                            await cls._apply_relation_delete(tx, action)
+                        else:
+                            await cls._apply_node_delete(tx, action)
                     await tx.commit()
                 except BaseException:
                     await tx.rollback()
                     raise
 
-        # Concurrent batches that touch the same nodes — many components
-        # merging edges onto one endpoint — can deadlock. Neo4j reports that
-        # as a TransientError and expects the client to retry the transaction.
-        await deadline.retry_transient(
-            apply_in_txn,
-            retry_on=(_neo4j.exceptions.TransientError,),
-            max_attempts=_TXN_MAX_ATTEMPTS,
-            backoff=deadline.exponential_backoff(
-                initial=_TXN_RETRY_INITIAL_BACKOFF_SECONDS,
-                multiplier=2.0,
-                max_delay=_TXN_RETRY_MAX_BACKOFF_SECONDS,
-                jitter=0.5,
-            ),
-            operation_name="neo4j apply batch",
-        )
+        # Neo4j reports a deadlock as a TransientError and expects the client
+        # to retry the transaction. All record writes of one database share
+        # this sink, which applies one batch at a time, so a deadlock comes
+        # from another client writing the same nodes.
+        try:
+            await deadline.retry_transient(
+                apply_in_txn,
+                retry_on=_is_retryable,
+                max_attempts=_TXN_MAX_ATTEMPTS,
+                backoff=deadline.exponential_backoff(
+                    initial=_TXN_RETRY_INITIAL_BACKOFF_SECONDS,
+                    multiplier=2.0,
+                    max_delay=_TXN_RETRY_MAX_BACKOFF_SECONDS,
+                    jitter=0.5,
+                ),
+                operation_name="neo4j apply batch",
+            )
+        except _neo4j.exceptions.TransientError as err:
+            if not _is_memory_limit(err) or len(chunk) == 1:
+                raise
+            mid = len(chunk) // 2
+            await cls._apply_chunk(graph, chunk[:mid])
+            await cls._apply_chunk(graph, chunk[mid:])
 
     @staticmethod
     async def _apply_node_upsert(tx: Any, action: _RecordAction) -> None:
@@ -661,27 +745,25 @@ class _VectorIndexAction(NamedTuple):
 _VectorIndexTrackingRecord = _VectorIndexSpec
 
 
-class _VectorIndexHandler:
-    """Attachment handler for vector indexes on a Neo4j node label."""
+@dataclass(frozen=True)
+class _VectorIndexApplier:
+    """The vector index sink callback of one Neo4j database (equal for the
+    same ``ConnectionFactory``, so one sink identity per database)."""
 
-    _graph: _GraphHandle
-    _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction]
+    factory: ConnectionFactory
 
-    def __init__(self, graph: _GraphHandle, table_name: str) -> None:
-        self._graph = graph
-        self._table_name = table_name
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
+    async def __call__(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_VectorIndexAction],
     ) -> None:
+        if not actions:
+            return
+        graph = await self.factory.acquire()
         for action in actions:
             if action.spec is None:
                 try:
-                    await self._graph.query(
+                    await graph.query(
                         _cypher.build_vector_index_drop(action.index_name)
                     )
                 except Exception as e:  # noqa: BLE001
@@ -694,15 +776,13 @@ class _VectorIndexHandler:
 
             # Drop-and-recreate so a metric/dimension change takes effect.
             try:
-                await self._graph.query(
-                    _cypher.build_vector_index_drop(action.index_name)
-                )
+                await graph.query(_cypher.build_vector_index_drop(action.index_name))
             except Exception as e:  # noqa: BLE001
                 _logger.debug(
                     "Neo4j DROP VECTOR INDEX (pre-create best-effort) failed: %s",
                     e,
                 )
-            await self._graph.query(
+            await graph.query(
                 _cypher.build_vector_index_create(
                     name=action.index_name,
                     label=action.table_name,
@@ -711,6 +791,17 @@ class _VectorIndexHandler:
                     metric=_METRIC_TO_NEO4J.get(action.spec.metric, action.spec.metric),
                 )
             )
+
+
+class _VectorIndexHandler:
+    """Attachment handler for vector indexes on a Neo4j node label."""
+
+    _table_name: str
+    _sink: coco.TargetActionSink[_VectorIndexAction]
+
+    def __init__(self, factory: ConnectionFactory, table_name: str) -> None:
+        self._table_name = table_name
+        self._sink = coco.TargetActionSink.from_async_fn(_VectorIndexApplier(factory))
 
     def reconcile(
         self,
@@ -772,7 +863,11 @@ class _VectorIndexHandler:
 
 
 class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
-    """Handler for record-level target states within a Neo4j table."""
+    """Handler for record-level target states within a Neo4j table.
+
+    Built by the table sink's ``child_handler`` factory, so it holds no
+    connection: its sinks acquire one when they apply.
+    """
 
     tracks_value_fingerprint = True
 
@@ -780,7 +875,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _is_relation: bool
     _pk_field: str
     _table_schema: TableSchema[Any] | None
-    _graph: _GraphHandle
+    _factory: ConnectionFactory
     _sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(
@@ -789,21 +884,20 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         is_relation: bool,
         pk_field: str,
         table_schema: TableSchema[Any] | None,
-        graph: _GraphHandle,
-        sink: coco.TargetActionSink[_RecordAction],
+        factory: ConnectionFactory,
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
         self._pk_field = pk_field
         self._table_schema = table_schema
-        self._graph = graph
-        self._sink = sink
+        self._factory = factory
+        self._sink = coco.TargetActionSink.from_async_fn(_SharedRecordApplier(factory))
 
     def attachments(self) -> dict[str, _VectorIndexHandler]:
         # Eagerly declare all attachment types so the engine can clean up
         # orphaned attachments even on runs that don't re-declare them.
         return {
-            "vector_index": _VectorIndexHandler(self._graph, self._table_name),
+            "vector_index": _VectorIndexHandler(self._factory, self._table_name),
         }
 
     def _encode_row(self, row_dict: dict[str, Any]) -> dict[str, Any]:
@@ -1005,8 +1099,23 @@ class _TableHandler(
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._record_handler
+        )
+
+    @staticmethod
+    def _record_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RecordHandler:
+        """The record handler for a created or updated table's records."""
+        spec = action.spec
+        assert not coco.is_non_existence(spec)
+        return _RecordHandler(
+            table_name=action.key.table_name,
+            is_relation=spec.is_relation,
+            pk_field=spec.primary_key,
+            table_schema=spec.table_schema,
+            factory=context_provider.get(action.key.db_key, ConnectionFactory),
         )
 
     def reconcile(
@@ -1100,42 +1209,37 @@ class _TableHandler(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RecordHandler]],
         /,
     ) -> None:
-        # Group by db_key so each Neo4j driver is acquired once per batch.
-        by_db: dict[str, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_db.setdefault(action.key.db_key, []).append(i)
+        # Group by db_key so each database's graph is acquired once per batch.
+        by_db: dict[str, list[_TableAction]] = {}
+        for action in actions:
+            by_db.setdefault(action.key.db_key, []).append(action)
 
-        for db_key, idxs in by_db.items():
-            factory: ConnectionFactory = context_provider.get(db_key)  # type: ignore[assignment]
-            graph = await factory.acquire()
-            shared_applier = _SharedRecordApplier(graph)
+        for db_key, db_actions in by_db.items():
+            graph = await context_provider.get(db_key, ConnectionFactory).acquire()
 
             # Order: create nodes → create relations → drop relations → drop nodes.
-            create_normal: list[int] = []
-            create_relation: list[int] = []
-            remove_relation: list[int] = []
-            remove_normal: list[int] = []
+            create_normal: list[_TableAction] = []
+            create_relation: list[_TableAction] = []
+            remove_relation: list[_TableAction] = []
+            remove_normal: list[_TableAction] = []
 
-            for i in idxs:
-                action = actions[i]
+            for action in db_actions:
                 if coco.is_non_existence(action.spec):
                     if action.is_relation:
-                        remove_relation.append(i)
+                        remove_relation.append(action)
                     else:
-                        remove_normal.append(i)
+                        remove_normal.append(action)
                 else:
                     if action.is_relation:
-                        create_relation.append(i)
+                        create_relation.append(action)
                     else:
-                        create_normal.append(i)
+                        create_normal.append(action)
 
-            ordered = create_normal + create_relation + remove_relation + remove_normal
-
-            for i in ordered:
-                action = actions[i]
+            for action in (
+                create_normal + create_relation + remove_relation + remove_normal
+            ):
                 spec = action.spec
 
                 if action.main_action in ("replace", "delete"):
@@ -1148,17 +1252,6 @@ class _TableHandler(
                     await self._create_table(graph, action.key, spec)
                 # No incremental column DDL — column_actions are tracked
                 # for fingerprint stability but not applied here.
-
-                child_slots[i].fulfill(
-                    _RecordHandler(
-                        table_name=action.key.table_name,
-                        is_relation=spec.is_relation,
-                        pk_field=spec.primary_key,
-                        table_schema=spec.table_schema,
-                        graph=graph,
-                        sink=shared_applier.sink,
-                    )
-                )
 
     @staticmethod
     async def _create_table(

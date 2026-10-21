@@ -22,7 +22,8 @@ enum ChildTargetSlotState<H> {
     Consumed,
 }
 
-/// Fulfillment handle for the child target provider of one action.
+/// Fulfillment handle for the child target provider of one action, for a
+/// deprecated [`ChildHandling::LegacySlots`] sink.
 ///
 /// The engine mints one slot per action whose target state was declared with
 /// `declare_target_state_with_child`, hands it to the sink alongside the action,
@@ -104,13 +105,45 @@ pub type TargetActionWithChildSlot<Prof> = (
     Option<ChildTargetSlot<Prof>>,
 );
 
+/// How a sink provides the handlers for the child target states of its
+/// actions (the actions whose target state was declared with a child).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildHandling {
+    /// The sink takes no child-bearing actions; declaring a child under it is
+    /// an error. Python sinks never report it: a Python leaf sink may still
+    /// return the deprecated child-definition list, so it reports
+    /// [`ChildHandling::LegacySlots`].
+    Leaf,
+    /// Deprecated: [`TargetActionSink::apply`] fulfills a [`ChildTargetSlot`]
+    /// per child-bearing action. Such a sink cannot be previewed.
+    LegacySlots,
+    /// [`TargetActionSink::child_handlers`] builds the handlers from the
+    /// actions alone. The engine calls it before `apply`, and in preview in
+    /// place of `apply`.
+    Factory,
+}
+
 #[async_trait]
 pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    /// Apply `actions` to the external system as one unit. Every child slot
-    /// handed over must be fulfilled before this returns; the engine reads
-    /// them back afterwards.
+    /// How this sink provides child handlers. Answered from the sink's own
+    /// fields: the engine asks it inside the precommit txn.
+    fn child_handling(&self) -> ChildHandling;
+
+    /// For a [`ChildHandling::Factory`] sink: the child handler of each of
+    /// `actions`, in order. Must be free of side effects: it runs for previews
+    /// too, and before `apply` in a real update.
+    async fn child_handlers(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: &[&Prof::TargetAction],
+    ) -> Result<Vec<Prof::TargetHdl>>;
+
+    /// Apply `actions` to the external system as one unit. A
+    /// [`ChildHandling::LegacySlots`] sink must fulfill every child slot handed
+    /// over before this returns; the engine reads them back afterwards.
     ///
     /// One call may carry the actions of several processing components: the
     /// engine merges the actions of components that finish while an earlier
@@ -136,6 +169,7 @@ pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
 }
 
 struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
+    sink: Arc<Prof::TargetActionSink>,
     batcher: Batcher<TargetActionRunner<Prof>>,
 }
 
@@ -144,6 +178,7 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         let sink = Arc::new(sink);
         Self {
             inner: Arc::new(TargetActionSinkKeeperInner {
+                sink: Arc::clone(&sink),
                 batcher: Batcher::new(
                     TargetActionRunner { sink },
                     Arc::new(BatchQueue::new()),
@@ -151,6 +186,24 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
                 ),
             }),
         }
+    }
+
+    pub fn child_handling(&self) -> ChildHandling {
+        self.inner.sink.child_handling()
+    }
+
+    /// See [`TargetActionSink::child_handlers`]. Not batched: nothing is
+    /// applied, so there is no sink call to share.
+    pub async fn child_handlers(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: &[&Prof::TargetAction],
+    ) -> Result<Vec<Prof::TargetHdl>> {
+        self.inner
+            .sink
+            .child_handlers(host_runtime_ctx, host_ctx, actions)
+            .await
     }
 
     pub async fn apply(
@@ -506,6 +559,16 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
 
     pub fn stable_key(&self) -> &StableKey {
         &self.inner.stable_key
+    }
+
+    /// The stable keys from the root provider down to this one, joined with
+    /// `/`: how messages name a target state (its path is fingerprints).
+    pub fn display_name(&self) -> String {
+        self.stable_key_chain()
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     pub fn stable_key_chain(&self) -> Vec<StableKey> {

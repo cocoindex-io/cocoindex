@@ -3056,7 +3056,8 @@ async fn ctx_auto_refresh_live_continues_after_post_ready_cycle_error() {
                             return Err(cocoindex::Error::engine("cycle failed"));
                         }
                         if call >= 3 {
-                            notify.notify_waiters();
+                            // Keeps a permit if the test is not waiting yet.
+                            notify.notify_one();
                         }
                         Ok(())
                     }

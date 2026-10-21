@@ -24,7 +24,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -1161,32 +1160,42 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RowHandler:
+        """The row handler for a created or updated table's rows."""
+        key = action.key
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            pool=context_provider.get(key.db_key, asyncpg.Pool),
+            table_name=key.table_name,
+            pg_schema_name=key.pg_schema_name,
+            table_schema=action.spec.table_schema,
         )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
         /,
     ) -> None:
-        """Apply table actions (DDL) and fulfill the child row handlers."""
+        """Apply table actions (DDL)."""
         # Group actions by table key so we can apply all DDL for the same table
         # within a single transaction/connection.
-        by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_key.setdefault(action.key, []).append(i)
+        by_key: dict[_TableKey, list[_TableAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             pool = context_provider.get(key.db_key, asyncpg.Pool)
             async with pool.acquire() as conn:
                 async with conn.transaction():
-                    for i in idxs:
-                        action = actions[i]
-                        assert action.key == key
-
+                    for action in key_actions:
                         if action.main_action in ("replace", "delete"):
                             await self._drop_table(
                                 conn, key.table_name, key.pg_schema_name
@@ -1196,15 +1205,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                             continue
 
                         spec = action.spec
-                        child_slots[i].fulfill(
-                            _RowHandler(
-                                pool=pool,
-                                table_name=key.table_name,
-                                pg_schema_name=key.pg_schema_name,
-                                table_schema=spec.table_schema,
-                            )
-                        )
-
                         if action.main_action in ("insert", "upsert", "replace"):
                             await self._create_table(
                                 conn,

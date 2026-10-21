@@ -9,7 +9,7 @@ This module provides a two-level target state system for Iggy:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Collection, Generic, Mapping, NamedTuple, Sequence
+from typing import Callable, Collection, Generic, NamedTuple, Sequence
 
 from cocoindex._internal.extras import install_hint
 
@@ -165,30 +165,31 @@ class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
     _sink: coco.TargetActionSink[_TopicAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._message_handler
+        )
+
+    @staticmethod
+    def _message_handler(
+        context_provider: ContextProvider, action: _TopicAction, /
+    ) -> _MessageHandler:
+        """The message handler for a declared topic's messages."""
+        assert not coco.is_non_existence(action.spec)
+        return _MessageHandler(
+            client=context_provider.get(action.key.client_key, IggyClient),
+            topic=action.key.topic,
+            stream=action.key.stream,
+            partition=action.key.partition,
+            deletion_value_fn=action.spec.deletion_value_fn,
         )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TopicAction],
-        child_slots: Mapping[int, coco.ChildSlot[_MessageHandler]],
         /,
     ) -> None:
-        for i, action in enumerate(actions):
-            if coco.is_non_existence(action.spec):
-                continue
-            client = context_provider.get(action.key.client_key, IggyClient)
-            child_slots[i].fulfill(
-                _MessageHandler(
-                    client=client,
-                    topic=action.key.topic,
-                    stream=action.key.stream,
-                    partition=action.key.partition,
-                    deletion_value_fn=action.spec.deletion_value_fn,
-                )
-            )
+        """Topics are not created or deleted, so there is nothing to apply."""
 
     def reconcile(
         self,

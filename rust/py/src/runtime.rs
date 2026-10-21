@@ -18,6 +18,9 @@ pub struct PythonObjects {
     pub serialize_fn: Py<PyAny>,
     /// `ChildSlot(core_slot)`: wraps a `ChildTargetSlot` for a container sink.
     pub child_slot_wrapper_fn: Py<PyAny>,
+    /// `_TypedTargetHandlerWrapper(handler)`: what a child handler is held as,
+    /// whether a slot or a `child_handler=` factory provided it.
+    pub typed_target_handler_wrapper_fn: Py<PyAny>,
     pub non_existence: Py<PyAny>,
     pub target_state_codec: crate::target_state_codec::TargetStateCodec,
 }
@@ -46,6 +49,7 @@ pub fn init_runtime(
     lang: String,
     serialize_fn: Py<PyAny>,
     child_slot_wrapper_fn: Py<PyAny>,
+    typed_target_handler_wrapper_fn: Py<PyAny>,
     non_existence: Py<PyAny>,
     target_state_codec: Bound<'_, PyAny>,
 ) -> PyResult<()> {
@@ -60,6 +64,7 @@ pub fn init_runtime(
         .set(std::mem::ManuallyDrop::new(PythonObjects {
             serialize_fn,
             child_slot_wrapper_fn,
+            typed_target_handler_wrapper_fn,
             non_existence,
             target_state_codec,
         }))

@@ -15,7 +15,6 @@ import cocoindex as coco
 from cocoindex.connectorkits import target
 from cocoindex.connectors import snowflake
 from cocoindex.connectors.snowflake import _target
-from tests.common.target_states import RecordingChildSlot
 
 SNOWFLAKE_DB = coco.ContextKey[snowflake.ConnectionConfig]("snowflake_test_db")
 
@@ -320,12 +319,11 @@ def test_table_handler_creates_database_schema_and_table(
         column_actions={},
     )
 
-    slot = RecordingChildSlot()
-    _target._TableHandler()._apply_actions(
-        cast(Any, FakeContextProvider(_connection_config())), [action], {0: slot}
-    )
+    ctx = cast(Any, FakeContextProvider(_connection_config()))
+    handler = _target._TableHandler()
+    handler._apply_actions(ctx, [action])
 
-    assert isinstance(slot.handler, _target._RowHandler)
+    assert isinstance(handler._row_handler(ctx, action), _target._RowHandler)
     assert conn.cursor_obj.calls == [
         ('CREATE DATABASE IF NOT EXISTS "analytics"', None),
         ('CREATE SCHEMA IF NOT EXISTS "analytics"."public"', None),
@@ -393,7 +391,6 @@ def test_live_snowflake_upsert_and_delete() -> None:
                     column_actions={},
                 )
             ],
-            {0: RecordingChildSlot()},
         )
         _target._RowHandler(
             db_key=SNOWFLAKE_DB.key,

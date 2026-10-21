@@ -630,6 +630,29 @@ class TestTableReconcile:
         assert out_pk.action.prev_pk_field == "id"
 
 
+@requires_neo4j
+def test_record_sinks_shared_per_connection_factory() -> None:
+    """Every table's record handler of one database — node and relation tables
+    alike — reconciles to one record sink (and one vector index sink), so a
+    batch can order node writes around relation writes. Another factory gets
+    its own sinks."""
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    factory = neo.ConnectionFactory(uri="bolt://localhost:7687")
+    node = neo_target._RecordHandler("A", False, "id", None, factory)
+    relation = neo_target._RecordHandler("R", True, "id", None, factory)
+    other = neo_target._RecordHandler(
+        "A", False, "id", None, neo.ConnectionFactory(uri="bolt://localhost:7687")
+    )
+
+    assert node._sink._core == relation._sink._core
+    assert node._sink._core != other._sink._core
+    assert (
+        node.attachments()["vector_index"]._sink._core
+        == relation.attachments()["vector_index"]._sink._core
+    )
+
+
 # =============================================================================
 # Apply-batch retry on transient errors — fake driver, no server
 # =============================================================================
@@ -682,6 +705,57 @@ class _FakeDriver:
         return _FakeSession(self._log, self._failures)
 
 
+class _ScriptedDriver:
+    """A fake driver whose ``fail(tx_number, runs_in_tx)`` decides, at every
+    run, whether that run raises."""
+
+    def __init__(
+        self, log: list[str], fail: Callable[[int, int], BaseException | None]
+    ) -> None:
+        self.log = log
+        self.fail = fail
+        self.txs = 0
+
+    def session(self, database: str) -> _ScriptedSession:
+        return _ScriptedSession(self)
+
+
+class _ScriptedSession:
+    def __init__(self, driver: _ScriptedDriver) -> None:
+        self._driver = driver
+
+    async def __aenter__(self) -> _ScriptedSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def begin_transaction(self) -> _ScriptedTx:
+        self._driver.txs += 1
+        self._driver.log.append("begin")
+        return _ScriptedTx(self._driver, self._driver.txs)
+
+
+class _ScriptedTx:
+    def __init__(self, driver: _ScriptedDriver, number: int) -> None:
+        self._driver = driver
+        self._number = number
+        self._runs = 0
+
+    async def run(self, cypher: str, **params: Any) -> None:
+        self._runs += 1
+        self._driver.log.append("run")
+        err = self._driver.fail(self._number, self._runs)
+        if err is not None:
+            raise err
+
+    async def commit(self) -> None:
+        self._driver.log.append("commit")
+
+    async def rollback(self) -> None:
+        self._driver.log.append("rollback")
+
+
 @requires_neo4j
 class TestApplyBatchRetry:
     @pytest.fixture(autouse=True)
@@ -696,7 +770,14 @@ class TestApplyBatchRetry:
         from cocoindex.connectors.neo4j import _target as neo_target
 
         graph = neo_target._GraphHandle(_FakeDriver(log, [failures]), "neo4j")
-        return neo_target._SharedRecordApplier(graph)
+
+        class _FakeFactory(neo_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return graph
+
+        return neo_target._SharedRecordApplier(
+            _FakeFactory(uri="bolt://localhost:7687")
+        )
 
     @staticmethod
     def _node_upsert() -> Any:
@@ -720,7 +801,7 @@ class TestApplyBatchRetry:
     async def test_deadlock_is_rolled_back_and_retried(self) -> None:
         log: list[str] = []
         applier = self._applier(log, failures=2)
-        await applier._apply_actions(None, [self._node_upsert()])
+        await applier(None, [self._node_upsert()])
         assert log == ["begin", "run", "rollback"] * 2 + ["begin", "run", "commit"]
 
     @pytest.mark.asyncio
@@ -730,9 +811,79 @@ class TestApplyBatchRetry:
         log: list[str] = []
         applier = self._applier(log, failures=10**6)
         with pytest.raises(_neo4j.exceptions.TransientError):
-            await applier._apply_actions(None, [self._node_upsert()])
+            await applier(None, [self._node_upsert()])
         assert log.count("begin") == neo_target._TXN_MAX_ATTEMPTS
         assert "commit" not in log
+
+    @staticmethod
+    def _scripted_applier(
+        log: list[str], fail: Callable[[int, int], BaseException | None]
+    ) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        graph = neo_target._GraphHandle(_ScriptedDriver(log, fail), "neo4j")
+
+        class _FakeFactory(neo_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return graph
+
+        return neo_target._SharedRecordApplier(
+            _FakeFactory(uri="bolt://localhost:7687")
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_chunk_stops_the_batch_after_earlier_commits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_MAX_ACTIONS_PER_TXN", 2)
+        log: list[str] = []
+        applier = self._scripted_applier(
+            log,
+            lambda tx, run: _neo4j.exceptions.ClientError("constraint")
+            if tx == 2
+            else None,
+        )
+        with pytest.raises(_neo4j.exceptions.ClientError):
+            await applier(None, [self._node_upsert() for _ in range(5)])
+        # The first chunk stays committed, the second rolls back, the third is
+        # never attempted, and the error fails the batch.
+        assert log == ["begin", "run", "run", "commit", "begin", "run", "rollback"]
+
+    @pytest.mark.asyncio
+    async def test_chunk_over_the_memory_limit_is_split_not_retried(self) -> None:
+        class _MemoryLimit(_neo4j.exceptions.TransientError):
+            code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+        log: list[str] = []
+        # The server takes at most 2 writes per transaction.
+        applier = self._scripted_applier(
+            log, lambda tx, run: _MemoryLimit("too big") if run > 2 else None
+        )
+        await applier(None, [self._node_upsert() for _ in range(5)])
+        # 5 → (2, 3) → (2, (1, 2)): every action is committed, in 3
+        # transactions, and no failing transaction is retried as it was.
+        assert log.count("commit") == 3
+        assert log.count("begin") == 5
+        assert log.count("run") - log.count("rollback") * 3 == 5
+
+    @pytest.mark.asyncio
+    async def test_large_batch_commits_in_bounded_transactions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_MAX_ACTIONS_PER_TXN", 2)
+        log: list[str] = []
+        applier = self._applier(log, failures=0)
+        await applier(None, [self._node_upsert() for _ in range(5)])
+        # 5 actions in transactions of at most 2: 2 + 2 + 1, in order.
+        assert log == ["begin", "run", "run", "commit"] * 2 + [
+            "begin",
+            "run",
+            "commit",
+        ]
 
 
 # =============================================================================
@@ -1188,6 +1339,93 @@ async def test_relationship_upsert_with_endpoint_merge(
     assert pairs == {("alice", "bob"), ("bob", "carol")}
     for _, _, rel in edges:
         assert rel["predicate"] == "connects"
+
+
+def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], Any]]:
+    """Split preview actions into table actions by table name and record
+    actions by ``(table name, record id)``."""
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    tables = {
+        a.key.table_name: a for a in actions if isinstance(a, neo_target._TableAction)
+    }
+    records = {
+        (a.table_name, a.record_id): a
+        for a in actions
+        if isinstance(a, neo_target._RecordAction)
+    }
+    assert len(actions) == len(tables) + len(records)
+    return tables, records
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_preview_plans_tables_and_records(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Preview plans the tables and their records without touching the
+    database; a real update then applies them."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    uri, auth = neo4j_clean
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    factory = neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    coco_env.context_provider.provide(KG_DB, factory)
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_preview", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    tables, records = _planned(await app.update(preview=True))
+    # Building the record handlers opened no connection.
+    assert not factory._connections._entries
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "Entity": "insert",
+        "REL": "insert",
+    }
+    assert {k: a.value for k, a in records.items()} == {
+        ("Entity", "alice"): {"value": "alice"},
+        ("Entity", "bob"): {"value": "bob"},
+        ("REL", "alice->bob"): {"predicate": "connects"},
+    }
+    rel = records[("REL", "alice->bob")]
+    assert (rel.from_label, rel.from_id, rel.to_label, rel.to_id) == (
+        "Entity",
+        "alice",
+        "Entity",
+        "bob",
+    )
+    # Nothing is written: no nodes, no constraints or indexes.
+    assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 0
+    assert await _coco_schema_names(uri, auth) == set()
+
+    await app.update()
+    assert {n["value"] for n in await _read_nodes(uri, auth, "Entity")} == {
+        "alice",
+        "bob",
+    }
+    assert len(await _read_relationships(uri, auth, "REL")) == 1
+    assert await _coco_schema_names(uri, auth) == {
+        "coco_uniq_Entity__value",
+        "coco_idx_rel_REL__id",
+    }
+
+    # Against the applied state: the container actions are retained, alongside the new edge and
+    # its new endpoint; the unchanged records are not planned. Nothing is
+    # applied.
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: action.main_action for name, action in tables.items()} == {
+        "Entity": None,
+        "REL": None,
+    }
+    assert set(records) == {("Entity", "carol"), ("REL", "bob->carol")}
+    assert len(await _read_nodes(uri, auth, "Entity")) == 2
+    assert len(await _read_relationships(uri, auth, "REL")) == 1
+
+    await app.update()
+    assert len(await _read_nodes(uri, auth, "Entity")) == 3
+    assert len(await _read_relationships(uri, auth, "REL")) == 2
 
 
 @requires_neo4j_server
