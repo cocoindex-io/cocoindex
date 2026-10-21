@@ -52,6 +52,9 @@ deletes (the engine logs a warning per path) and clears the state only.
 
 # JSON output (for piping into something)
 ./run.sh --format json
+
+# Include every requested cell and phase, including failures
+./run.sh --n 100,1000 --report results.json
 ```
 
 ## Requirements
@@ -125,4 +128,16 @@ benchmarks/state_store/
 └─ rust/              ← the same pipeline on the Rust SDK (Cargo crate)
    ├─ Cargo.toml
    └─ src/main.rs
+```
+
+## Failure reporting
+
+Progress and child-process diagnostics go to stderr; JSON stdout contains only the existing list of complete successful cells. A failed phase stops that cell, records later phases as `not_run`, and returns a nonzero process status after attempting the other cells. Check the exit status before treating the successful rows as a complete benchmark.
+
+`--report` writes a versioned JSON object with the requested matrix (N, M, SDKs), Python executable, and explicit status for every cell and phase. A failed or unrun phase has no timing. Empty or duplicate count lists and negative counts are rejected before launching any workload. This report establishes execution completeness; it does not establish artifact identity or a performance improvement.
+
+Wrapper regression tests use isolated child-process fixtures and need no native build:
+
+```sh
+python python/tests/test_benchmark_state_store_runner.py
 ```
