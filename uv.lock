@@ -556,11 +556,11 @@ wheels = [
 
 [[package]]
 name = "certifi"
-version = "2026.7.22"
+version = "2026.10.19"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz", hash = "sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55", size = 138112, upload-time = "2026-07-22T03:35:12.644Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz", hash = "sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae", size = 137598, upload-time = "2026-10-20T02:24:16.604Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/a7/71ac2cff56fec219ed242bb11b8efb69fcc4bec75db06fb7bfe35de520e6/certifi-2026.7.22-py3-none-any.whl", hash = "sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775", size = 136983, upload-time = "2026-07-22T03:35:11.276Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464, upload-time = "2026-10-20T02:24:15.072Z" },
 ]
 
 [[package]]
@@ -1322,37 +1322,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cublas" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-runtime" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cufft" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-cupti" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-curand" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusolver" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvtx" },
 ]
 
 [[package]]
@@ -1381,7 +1381,7 @@ name = "docker"
 version = "7.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "pywin32", marker = "python_version < '0'" },
     { name = "requests" },
     { name = "urllib3" },
 ]
@@ -4614,7 +4614,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4691,7 +4691,7 @@ resolution-markers = [
     "python_full_version == '3.12.*'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
