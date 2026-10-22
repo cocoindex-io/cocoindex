@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Literal
 
 import cocoindex as coco
+from cocoindex.connectors import localfs
+from cocoindex.resources.file import FileLike
 import pytest
+from watchdog.observers.polling import PollingObserver
 
 from examples.faststream_sink.projection import Projection
 from examples.faststream_sink.protocol import (
@@ -62,6 +65,7 @@ def test_reconcile_all_possible_records_and_uncertainty() -> None:
 @dataclass
 class RecordingPublisher:
     events: list[Event] = field(default_factory=list)
+    confirmed: list[Event] = field(default_factory=list)
     entered: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event | None = None
     fail_after_accept: bool = False
@@ -88,6 +92,7 @@ class RecordingPublisher:
         if self.fail_after_accept:
             self.fail_after_accept = False
             raise OSError("simulated lost confirmation after broker acceptance")
+        self.confirmed.append(event)
         return object()
 
 
@@ -104,6 +109,77 @@ async def test_provider_repoint_rejected_before_batch_effects() -> None:
     with pytest.raises(ValueError, match="different Kafka cluster"):
         await _publish(provider, actions)
     assert publisher.events == []
+
+
+async def test_independent_snapshot_failure_stats_and_unchanged_retry(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("watchdog.observers.Observer", PollingObserver)
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    publisher = RecordingPublisher(fail_after_accept=True)
+    env.context_provider.provide(DESTINATION, KafkaDestination(publisher, "cluster"))
+    source = tmp_path / "source"
+    source.mkdir()
+    snapshot = source / "snapshot.json"
+    snapshot.write_text("A")
+    original = snapshot.stat()
+
+    @coco.fn
+    async def process_snapshot(file: FileLike) -> None:
+        KafkaTarget(DESTINATION, "cluster", "topic").declare(
+            "record", 1, await file.read_text()
+        )
+
+    @coco.fn
+    async def root() -> str:
+        files = localfs.walk_dir(source, live=True)
+        await coco.mount_each(process_snapshot, files.items())
+        return "root returned"
+
+    app = coco.App(
+        coco.AppConfig(name="IndependentSnapshotRetry", environment=env), root
+    )
+    try:
+        failed = app.update()
+        assert await failed == "root returned"
+        stats = failed.stats()
+        assert stats is not None
+        assert stats.total.num_errors == 1
+        assert stats.total.num_in_progress == 0
+        processor = next(
+            name for name in stats.by_component if name.endswith("process_snapshot")
+        )
+        child = stats.by_component[processor]
+        assert child.num_errors == 1
+        assert child.num_processed == 0
+        assert "simulated lost confirmation" in caplog.text
+        assert len(publisher.events) == 1
+        assert publisher.confirmed == []
+        unconfirmed = publisher.events[0]
+
+        recovered = app.update()
+        await recovered
+        stats = recovered.stats()
+        assert stats is not None
+        assert stats.total.num_errors == 0
+        assert stats.total.num_in_progress == 0
+        assert stats.by_component[processor].num_processed == 1
+        assert publisher.events == [unconfirmed, unconfirmed]
+        assert publisher.confirmed == [unconfirmed]
+
+        unchanged = app.update()
+        await unchanged
+        stats = unchanged.stats()
+        assert stats is not None and stats.total.num_errors == 0
+        assert publisher.events == [unconfirmed, unconfirmed]
+        assert publisher.confirmed == [unconfirmed]
+        assert snapshot.read_text() == "A"
+        assert snapshot.stat().st_mtime_ns == original.st_mtime_ns
+    finally:
+        env.close()
 
 
 async def test_native_ack_boundary_retry_noop_and_fresh_environment_drop(

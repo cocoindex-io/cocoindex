@@ -51,7 +51,8 @@ The supplied broker is for local development and binds only to loopback.
      cocoindex update -L examples.faststream_sink.main
    ```
 
-   Omit `-L` for a catch-up update that exits after confirmation. Live mode watches
+   Omit `-L` for a catch-up update that exits after processing finishes. Check the
+   component error counts and logs as described below. Live mode watches
    `examples/faststream_sink/snapshot.json` and keeps the metrics endpoint running.
    Scrape `http://127.0.0.1:8001/metrics` while the pipeline runs.
 5. Change a row's value **and increment its revision**. Remove the row to publish
@@ -99,13 +100,46 @@ publish to the original topic.
 
 Each publisher call uses `no_confirm=False` and `acks="all"`. Kafka producer
 idempotence is disabled so retriable batches expire; the consumer provides the
-application's revision and replay handling. At most eight calls per provided destination are admitted concurrently;
-each admitted call has a 15-second timeout. A successful CocoIndex update means
-**broker confirmation**, not successful consumption or visibility in SQLite.
+application's revision and replay handling. At most eight calls per provided
+destination are admitted concurrently; each admitted call has a 15-second timeout.
+A returned publisher call means **broker confirmation**, not successful
+consumption or visibility in SQLite.
 A timeout or crash can happen after the broker accepted a message but before
 CocoIndex records success. Retrying therefore has **at-least-once** delivery:
 stable IDs and consumer revision fences handle replays. A multi-message action
-batch is not a Kafka transaction; partial failure propagates so it can be retried.
+batch is not a Kafka transaction; partial failure fails the owning component so
+it can be retried.
+
+`process_snapshot` is an independent `mount_each` child. By default a child
+failure is logged and counted in update statistics; **a returned root await is
+not proof that the snapshot succeeded**. The current `cocoindex update` CLI
+awaits that root result without converting child error counts into a nonzero exit
+status, including with `--quiet`. Inspect its component error counts and logs.
+For a programmatic catch-up run, retain the public update handle and check its
+statistics before reporting success:
+
+```python
+import asyncio
+import cocoindex as coco
+from examples.faststream_sink.main import app
+
+async def publish_snapshot() -> None:
+    async with coco.runtime():
+        handle = app.update()
+        await handle
+        stats = handle.stats()
+        if stats is None or stats.total.num_errors:
+            raise RuntimeError(f"Snapshot processing failed; inspect component errors: {stats}")
+
+asyncio.run(publish_snapshot())
+```
+
+Live runs also need monitoring for child failures as updates continue. A timeout
+records failed processing rather than a successfully committed snapshot. The
+engine can retain uncertain target records for recovery. Once the broker is
+available, rerun with the unchanged snapshot and the same state store; it retries
+the unconfirmed event with its original event ID. A delivery retry does not
+require a new source revision.
 
 Shutdown drains the one owned broker-stop task before propagating cancellation.
 The producer uses a 10-second request timeout, which also expires its retryable
@@ -156,7 +190,10 @@ uv run --project examples/faststream_sink --group test --with-editable "$PWD" \
 The repository-wide hooks do not collect example tests. The focused tests cover
 revision conflicts and reordering, persistence and corruption checks, the actual
 CocoIndex confirmation boundary, replay after a lost confirmation, unchanged
-updates, and cleanup after reopening the state store.
+updates, and cleanup after reopening the state store. The outage test holds the
+broker paused until the publisher has exited normally, checks the failed child's
+statistics and lack of confirmation, then verifies an unchanged-source retry
+with the same event ID after the broker resumes.
 
 FastStream publisher metrics are exported through its
 [Prometheus middleware](https://faststream.ag2.ai/latest/getting-started/observability/prometheus/).
