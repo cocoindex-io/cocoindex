@@ -1,0 +1,4 @@
+[
+  {"key": "tea", "revision": 1, "value": {"name": "Green tea", "price": 8}},
+  {"key": "coffee", "revision": 1, "value": {"name": "Coffee", "price": 12}}
+]

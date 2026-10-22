@@ -1,0 +1,24 @@
+[project]
+name = "cocoindex-faststream-kafka-example"
+version = "0.1.0"
+description = "A revisioned Kafka projection using a custom CocoIndex target and FastStream"
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex>=1.0.7",
+    "faststream[kafka,prometheus]>=0.7.7,<0.8",
+    "python-dotenv>=1.1.0",
+]
+
+[dependency-groups]
+test = ["pytest>=9.0.3", "pytest-asyncio", "pytest-timeout", "testcontainers>=4.15.0,<5"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["../..", "../../python"]
+asyncio_mode = "auto"
+timeout = 30
+testpaths = ["tests"]
+
+markers = ["requires_docker(*images): requires an owned local Docker service"]
