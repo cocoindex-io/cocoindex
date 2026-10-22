@@ -640,6 +640,13 @@ def index_terms(
     language: str | None = None,
     min_len: int = 3,
 ) -> list[str]: ...
+def extract_code_graph(
+    source: CodeSource,
+) -> tuple[
+    list[tuple[str, str, str, int, int, int | None]],
+    list[tuple[str, str, int, int, int | None]],
+    bool,
+]: ...
 
 ########################################################
 # Synchronization Primitives

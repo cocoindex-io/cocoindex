@@ -694,6 +694,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     title: 'Knowledge graphs',
     blurb: 'Extract entities and relationships into graph databases that stay in sync.',
     entries: [
+      { dir: 'code_graph_neo4j', title: 'C/C++ Syntax Graph · Neo4j', description: 'Incrementally index native parser declarations, lexical containment, and unresolved call/inheritance spellings for code retrieval.' },
       { dir: 'meeting_notes_graph_falkordb', title: 'Meeting Notes → Knowledge Graph · FalkorDB', description: 'Extract structured info from Google Drive meeting notes into a FalkorDB knowledge graph.' },
       { dir: 'product_recommendation', docs: 'product-recommendation', title: 'Product Recommendation Graph', description: 'LLM-extract what each product is and what pairs with it from product docs, into a Neo4j graph of products and taxonomies that powers recommendations.', run: RUN_MAIN },
     ],
