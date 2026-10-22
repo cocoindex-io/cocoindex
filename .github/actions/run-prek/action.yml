@@ -1,0 +1,78 @@
+name: Run prek hooks
+description: >-
+  Run the repo's prek hooks the way CI needs them: every file on a push, the
+  PR diff on a pull request, with each hook's start and finish streamed into
+  the step log so a hook that hangs is visible.
+
+inputs:
+  hooks:
+    description: >-
+      Space-separated hook ids to run. Empty runs every hook except those in
+      `skip`.
+    default: ""
+  skip:
+    description: Comma-separated hook ids to skip (prek's PREK_SKIP).
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PREK_SKIP: ${{ inputs.skip }}
+        PREK_HOOKS: ${{ inputs.hooks }}
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
+        HEAD_SHA: ${{ github.sha }}
+      run: |
+        set +e
+
+        # prek renders a project's hook results only once the whole run
+        # finishes when stdout is not a TTY, so a hook that hangs leaves
+        # this step's log empty with no hint of which hook is stuck. No
+        # flag changes that, but prek always writes a trace log; tail its
+        # hook start/finish events into the step log. RUNNER_TEMP is
+        # backslash-separated on Windows, which bash would mangle, and
+        # prek refuses to start at all if it cannot open the log, so
+        # make sure the directory exists before pointing prek at it.
+        prek_log_dir="${RUNNER_TEMP:-/tmp}"
+        prek_log="${prek_log_dir//\\//}/prek.log"
+        mkdir -p "${prek_log%/*}"
+        : > "$prek_log"
+        tail -n +1 -F "$prek_log" 2>/dev/null \
+          > >(grep --line-buffered -E 'Running priority group|run\{hook_id=[^}]*\}: close time') &
+        tail_pid=$!
+
+        # Explicit hook ids are positional arguments; an empty list means
+        # "every hook".
+        read -ra hooks <<< "$PREK_HOOKS"
+
+        if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          echo "Running prek on PR diff against target branch: $BASE_REF"
+          # Fetch both diff endpoints: origin/<base> and the to-ref commit.
+          # The shallow checkout only guarantees the to-ref's tree, not the
+          # commit as a named object; without fetching <sha> explicitly,
+          # prek's `git diff origin/<base>..<sha>` can fail with "bad
+          # revision" (e.g. when the PR merges while this run is in flight).
+          git fetch --no-tags --prune --depth=1 origin \
+            "$BASE_REF:refs/remotes/origin/$BASE_REF" \
+            "$HEAD_SHA"
+
+          prek --log-file "$prek_log" run "${hooks[@]}" \
+            --from-ref "origin/$BASE_REF" \
+            --to-ref "$HEAD_SHA" \
+            --show-diff-on-failure
+          status=$?
+        else
+          echo "Running prek on all files (event: $EVENT_NAME)"
+          prek --log-file "$prek_log" run "${hooks[@]}" --all-files --show-diff-on-failure
+          status=$?
+        fi
+
+        kill "$tail_pid" 2>/dev/null
+        wait "$tail_pid" 2>/dev/null
+
+        if [ $status -ne 0 ]; then
+          echo "::error::prek hooks failed. Please run 'prek run --all-files' locally."
+          exit $status
+        fi
