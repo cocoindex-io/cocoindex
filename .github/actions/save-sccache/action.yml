@@ -11,6 +11,13 @@ runs:
       id: prune
       shell: bash
       run: |
+        if [[ "$GITHUB_EVENT_NAME" == merge_group ]]; then
+          # A merge-group run's caches are scoped to the queue's temporary
+          # branch, which no later run reads.
+          echo "a merge-group run saves no caches"
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         if [[ -z "${SCCACHE_SAVE_KEY:-}" ]]; then
           echo "setup-ci did not get as far as configuring sccache"
           echo "save=false" >> "$GITHUB_OUTPUT"
