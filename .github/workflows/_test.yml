@@ -88,6 +88,14 @@ jobs:
 
         - run: rustup toolchain install stable --profile minimal
 
+        # Nothing this job builds with cargo needs `protoc`, but `uv sync`
+        # below builds valkey-glide from source on the free-threaded legs (no
+        # cp314t wheel on PyPI) and its build script compiles protobufs.
+        - name: Install protoc
+          uses: arduino/setup-protoc@v3
+          with:
+            repo-token: ${{ secrets.GITHUB_TOKEN }}
+
         - uses: actions/setup-python@v7
           id: setup_python
           with:
@@ -215,8 +223,7 @@ jobs:
 
         # `protoc` is needed by the SDK's Qdrant feature (`qdrant-client`) and
         # by the Rust examples that enable it or LanceDB (`lance-encoding`),
-        # which compile protobufs via `prost-build`. Nothing in `build-test`
-        # enables those features.
+        # which compile protobufs via `prost-build`.
         - name: Install protoc
           uses: arduino/setup-protoc@v3
           with:
