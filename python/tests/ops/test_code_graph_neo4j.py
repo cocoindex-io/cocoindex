@@ -15,7 +15,9 @@ from cocoindex.connectors import neo4j
 from tests import common
 
 _IMAGE = "neo4j:5-community"
-pytestmark = [pytest.mark.requires_docker(_IMAGE)]
+# This exercises a real JVM startup plus index creation, updates and full drop.
+# A healthy local run takes ~35 seconds, exceeding the 30-second unit default.
+pytestmark = [pytest.mark.requires_docker(_IMAGE), pytest.mark.timeout(120)]
 
 
 @pytest.fixture(scope="module")
