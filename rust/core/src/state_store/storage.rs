@@ -25,16 +25,19 @@ const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
 const MAP_SIZE_GROWTH_FACTOR: usize = 2;
 
-/// Sync sibling of [`AppStore::read_txn`]'s `MDB_READERS_FULL` retry,
+/// Sync sibling of [`Storage::read_txn`]'s `MDB_READERS_FULL` retry,
 /// for use inside `spawn_blocking` where the async retry helper isn't
-/// reachable. Same two-phase policy. Caller must already hold a coordinator
+/// reachable. Same two-phase policy, with the same timings. Caller must already hold a coordinator
 /// read guard before opening the LMDB read transaction.
 fn open_read_txn_on_env_with_retry(env: &Env) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
     use std::time::{Duration, Instant};
 
-    const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
-    const MAX_BACKOFF: Duration = Duration::from_secs(1);
-    const PHASE1_TIMEOUT: Duration = Duration::from_secs(3);
+    const INITIAL_BACKOFF: Duration = READ_TXN_RETRY_PHASE1.initial_backoff;
+    const MAX_BACKOFF: Duration = READ_TXN_RETRY_PHASE1.max_backoff;
+    const PHASE1_TIMEOUT: Duration = match READ_TXN_RETRY_PHASE1.retry_timeout {
+        Some(timeout) => timeout,
+        None => Duration::MAX,
+    };
 
     // Phase 1: short timeout for transient concurrency.
     let phase1_start = Instant::now();
@@ -505,11 +508,11 @@ impl Storage {
 
     /// Run `body` once against a read snapshot under `overlay`, which takes
     /// every write the body makes once the body succeeds: how a handle from
-    /// [`AppStore::discarding_writes`] runs its bodies. The body reads the
-    /// run's earlier writes through the overlay as a batched body reads its
-    /// txn's, and a failing body's writes are dropped as an aborted txn's;
-    /// no writer lock is taken, nothing reaches LMDB, and nothing makes the
-    /// body run again.
+    /// [`AppStore::discarding_writes`] runs its bodies. The run's bodies take
+    /// turns, as a batch's do, so each reads the run's earlier writes through
+    /// the overlay as a batched body reads its txn's, and a failing body's
+    /// writes are dropped as an aborted txn's. No writer lock is taken,
+    /// nothing reaches LMDB, and nothing makes the body run again.
     pub(crate) async fn run_discarding<T, F>(&self, overlay: Arc<Overlay>, body: F) -> Result<T>
     where
         T: Send + 'static,
@@ -518,7 +521,8 @@ impl Storage {
             + Sync
             + 'static,
     {
-        let mut wtxn = WriteTxn::discarding(self.read_txn(Some(overlay)).await?)?;
+        let _turn = overlay.body_turn().await;
+        let mut wtxn = WriteTxn::discarding(self.read_txn(Some(overlay.clone())).await?)?;
         let output = body(&mut wtxn).await?;
         wtxn.commit()?;
         Ok(output)
@@ -782,6 +786,7 @@ static READ_TXN_RETRY_PHASE2: cocoindex_utils::retryable::RetryOptions =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::stable_path::StableKey;
     use crate::state_store::test_support::{hold_write_batch, make_test_store};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -1245,6 +1250,40 @@ mod tests {
             write_then_list(app_store, false).await,
             ["k/committed", "k/z"]
         );
+    }
+
+    /// Bodies of one discarding run take turns, as a batch's do: two bodies
+    /// started together each reserve an id and hold their body open, and
+    /// still get distinct ids, because the second reads the first's writes.
+    #[tokio::test]
+    async fn concurrent_discarding_bodies_of_one_run_take_turns() {
+        let (app_store, _dir) = make_test_store().await;
+        let discarding = app_store.discarding_writes();
+        let key = StableKey::Str(Arc::from("provider"));
+        let reserve = |store: AppStore| {
+            let key = key.clone();
+            async move {
+                let store_in_txn = store.clone();
+                store
+                    .run_txn(move |wtxn| {
+                        let (store, key) = (store_in_txn.clone(), key.clone());
+                        Box::pin(async move {
+                            let id = store.reserve_id_range_in_txn(wtxn, &key, 1).await?;
+                            // Keep the body open so a sibling started with it
+                            // would overlap it if bodies did not take turns.
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            Ok(id)
+                        })
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+        let (first, second) =
+            tokio::join!(reserve(discarding.clone()), reserve(discarding.clone()));
+        let mut ids = [first, second];
+        ids.sort();
+        assert_eq!(ids, [1, 2]);
     }
 
     /// Regression test for #2424. LMDB's writer lock belongs to the OS thread

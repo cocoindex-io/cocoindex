@@ -2821,6 +2821,87 @@ mod tests {
         );
     }
 
+    /// Within one preview, a component declaring a target state that another
+    /// component of the run declared earlier plans to take it over, as an
+    /// update would: the earlier component committed into the run's handle,
+    /// so its tracking record is not left staged for the later one to wait on
+    /// until it gives up.
+    #[tokio::test]
+    async fn preview_takes_over_a_target_state_declared_earlier_in_the_run() {
+        let (app, _dir) = test_app("preview_takeover").await;
+        let contents_before = app_store_contents(&app).await;
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let root = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+            .new_processor_context_for_build(
+                None,
+                ProcessingStats::new(),
+                false,
+                false,
+                Some(collector.clone()),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let provider = register_root_target_state_provider(
+            &root,
+            "preview_takeover".to_string(),
+            CountingHandler {
+                reconcile_calls: Arc::new(AtomicUsize::new(0)),
+                sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                reject: false,
+            },
+        )
+        .unwrap();
+        let processor = TestProcessor::new(
+            "preview_takeover",
+            Fingerprint::from(&"preview_takeover").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+
+        for name in ["a", "b"] {
+            let child = root
+                .component()
+                .get_child(StablePath::root().concat_part(StableKey::Str(Arc::from(name))));
+            let ctx = child
+                .new_processor_context_for_build(
+                    Some(&root),
+                    ProcessingStats::new(),
+                    false,
+                    false,
+                    Some(collector.clone()),
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            declare_target_state(
+                &ctx,
+                &FnCallContext::default(),
+                provider.clone(),
+                StableKey::Int(0),
+                (),
+            )
+            .unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                submit(&ctx, Some(&processor), |_| {}),
+            )
+            .await
+            .expect("the preview's submit must not hang")
+            .unwrap();
+        }
+
+        assert_eq!(
+            collector.lock().unwrap().len(),
+            2,
+            "both components plan an action for the target state"
+        );
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not write to the state store"
+        );
+    }
+
     /// A preview that finds the stored memo invalid (here: a changed memo key)
     /// re-runs the component but leaves the memo in place, as everything else
     /// it reads: it writes nothing.

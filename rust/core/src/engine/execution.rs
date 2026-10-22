@@ -430,16 +430,29 @@ impl<Prof: EngineProfile> Committer<Prof> {
         })
     }
 
+    /// Phase 4 commit ([`Self::commit_writes`]), then Phase 5 GC: the
+    /// deletes of the child components this run no longer declares.
+    async fn commit(
+        self,
+        child_existence: ChildExistenceAction,
+        fn_memos: FnMemoCache<Prof>,
+        user_states: UserStateCache<Prof::FunctionData>,
+        curr_version: Option<u64>,
+    ) -> Result<()> {
+        self.commit_writes(child_existence, fn_memos, user_states, curr_version)
+            .await?;
+        self.launch_child_component_gc().await
+    }
+
     /// Build the engine-side decisions for Phase 4 commit and run
     /// them through [`AppStore::commit`](crate::state_store::AppStore::commit).
     /// The AppStore opens its own write txn, applies the plan's writes
     /// (tracking-info, fn-memo flush, user-state flush, target-owner cleanup),
     /// and — unless `child_existence` is [`ChildExistenceAction::Keep`] —
     /// invokes the `ExistenceReconciler` callback to walk the
-    /// child-existence tree atomically inside the same txn. Then launches
-    /// Phase 5 GC.
-    async fn commit(
-        self,
+    /// child-existence tree atomically inside the same txn.
+    async fn commit_writes(
+        &self,
         child_existence: ChildExistenceAction,
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
@@ -493,12 +506,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
         self.app_store
             .commit(&self.component_path, plan, existence_reconciler)
-            .await?;
-
-        // Phase 5 GC: snapshot-read tombstones and spawn child delete
-        // operations. Outside the commit txn — tombstones are durable
-        // and the GC sweep is idempotent.
-        self.launch_child_component_gc().await
+            .await
     }
 
     /// Closure that walks `declared_children` (`None`: nothing declared)
@@ -633,6 +641,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
         Ok((Some(data_bytes), owners_to_delete))
     }
 
+    /// Phase 5 GC: snapshot-read tombstones and spawn child delete
+    /// operations. Outside the commit txn — tombstones are durable and the
+    /// GC sweep is idempotent.
     async fn launch_child_component_gc(&self) -> Result<()> {
         // Cascade the parent's on_error to descendant orphan deletes.
         //
@@ -1712,26 +1723,40 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         child_provider.set_provider_generation(new_gen)?;
     }
 
-    // A preview plans its actions like a real submit — the pre-commit's
-    // writes went to the run's own handle — but applies and commits nothing.
-    // It still readies the child providers from each sink's child handler
-    // factory, so the components declaring child target states can preview
-    // theirs, then hands its actions to the shared collector. A commit also
-    // deletes the child components this run no longer declares; a preview
-    // skips the commit, and previews no such delete.
+    // A preview plans its actions like a real submit and applies none of
+    // them. It still readies the child providers from each sink's child
+    // handler factory, so the components declaring child target states can
+    // preview theirs, and commits into its run's handle, where the run's
+    // later reads find the component committed as an update would leave it,
+    // and nothing persists. The commit's Phase 5 deletes of the child
+    // components this run no longer declares are not previewed.
     if let Some(collector) = comp_ctx.preview_collector() {
-        if let Some((child_provider, _)) = actions_by_sinks
-            .values()
-            .find_map(|input| input.pending_children.first())
-        {
-            client_bail!(
-                "the target action sink for {} does not support preview of child target \
-                 states: build it with a child handler factory (`child_handler=` in Python, \
-                 `from_async_fn_with_child_handler` in Rust)",
-                child_provider.display_name()
-            );
+        let planned: Result<Vec<_>> = async {
+            if let Some((child_provider, _)) = actions_by_sinks
+                .values()
+                .find_map(|input| input.pending_children.first())
+            {
+                client_bail!(
+                    "the target action sink for {} does not support preview of child target \
+                     states: build it with a child handler factory (`child_handler=` in Python, \
+                     `from_async_fn_with_child_handler` in Rust)",
+                    child_provider.display_name()
+                );
+            }
+            let children = build_factory_children(comp_ctx, &actions_by_sinks).await?;
+            Committer::new(comp_ctx, target_states_providers)?
+                .commit_writes(child_existence, fn_memos, user_states, curr_version)
+                .await?;
+            Ok(children)
         }
-        let children = build_factory_children(comp_ctx, &actions_by_sinks).await?;
+        .await;
+        let children = match planned {
+            Ok(children) => children,
+            Err(e) => {
+                cleanup_pending_token(comp_ctx, process_token).await;
+                return Err(e);
+            }
+        };
         if let Some(ref mut registry) = built_target_states_providers {
             for (child_provider, handler) in children {
                 child_provider.fulfill_handler(handler, registry)?;

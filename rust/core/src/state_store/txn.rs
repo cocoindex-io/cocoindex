@@ -32,16 +32,6 @@ pub(crate) fn opened_env(slot: &Option<Env>) -> Result<&Env> {
         .ok_or_else(|| client_error!("The CocoIndex environment is closed"))
 }
 
-/// The writes of one run that persists nothing, by encoded key: `Some` for a
-/// value put, `None` for a key deleted. Shared by every transaction the run
-/// opens, so the run reads its own writes back; dropped with the run, so
-/// nothing reaches LMDB. One overlay belongs to one database: the handle that
-/// owns it reads and writes a single [`Database`].
-#[derive(Default)]
-pub(crate) struct Overlay {
-    entries: parking_lot::Mutex<BTreeMap<Vec<u8>, Option<Vec<u8>>>>,
-}
-
 /// Writes by encoded key: `Some` for a value put, `None` for a key deleted.
 type Writes = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
 
@@ -57,7 +47,27 @@ fn writes_with_prefix(writes: &Writes, prefix: &[u8]) -> WriteEntries {
         .collect()
 }
 
+/// The writes of one run that persists nothing, by encoded key: `Some` for a
+/// value put, `None` for a key deleted. Shared by every transaction the run
+/// opens, so the run reads its own writes back; dropped with the run, so
+/// nothing reaches LMDB. One overlay belongs to one database: the handle that
+/// owns it reads and writes a single [`Database`].
+#[derive(Default)]
+pub(crate) struct Overlay {
+    entries: parking_lot::Mutex<Writes>,
+    /// Held for each body the run executes, so the run's bodies take turns
+    /// as a batch's do: a body reads the overlay as the bodies before it left
+    /// it, and no two bodies' read-modify-writes interleave.
+    body_turn: tokio::sync::Mutex<()>,
+}
+
 impl Overlay {
+    /// Waits for the run's turn to execute a body; the turn lasts as long as
+    /// the returned guard.
+    pub(crate) async fn body_turn(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.body_turn.lock().await
+    }
+
     /// The overlay's entries under `prefix`, in key order.
     fn entries_with_prefix(&self, prefix: &[u8]) -> WriteEntries {
         writes_with_prefix(&self.entries.lock(), prefix)
@@ -89,7 +99,7 @@ fn get_through_overlay<'txn>(
 /// order, if any) layered over it.
 fn for_each_prefix_through_overlay(
     snapshot: &heed::RoTxn<'_, heed::WithoutTls>,
-    overlaid: Option<WriteEntries>,
+    overlaid: Option<impl IntoIterator<Item = (Vec<u8>, Option<Vec<u8>>)>>,
     db: Database,
     prefix: &[u8],
     mut f: impl FnMut(&[u8], &[u8]) -> Result<()>,
@@ -278,7 +288,7 @@ impl<'env> WriteTxn<'env> {
     ) -> Result<()> {
         match &self.inner {
             WriteTxnInner::Applying(txn) => {
-                for_each_prefix_through_overlay(txn, None, db, prefix, f)
+                for_each_prefix_through_overlay(txn, None::<WriteEntries>, db, prefix, f)
             }
             WriteTxnInner::Discarding {
                 snapshot,
@@ -289,13 +299,7 @@ impl<'env> WriteTxn<'env> {
                 let mut overlaid: Writes =
                     overlay.entries_with_prefix(prefix).into_iter().collect();
                 overlaid.extend(writes_with_prefix(pending, prefix));
-                for_each_prefix_through_overlay(
-                    &snapshot.txn,
-                    Some(overlaid.into_iter().collect()),
-                    db,
-                    prefix,
-                    f,
-                )
+                for_each_prefix_through_overlay(&snapshot.txn, Some(overlaid), db, prefix, f)
             }
         }
     }
