@@ -59,10 +59,13 @@ jobs:
       - id: mode
         uses: cocoindex-io/.github/actions/ci-mode@v1
       # A skipped filter leaves its outputs empty, and an empty output runs
-      # the job: manual and scheduled runs test everything.
+      # the job: manual and scheduled runs test everything. So does a
+      # stack's top layer: on a pull request the filter lists the files the
+      # layer itself changed, but its run stands in for the whole stack.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: >-
           steps.mode.outputs.full == 'true'
+          && !github.event.pull_request.stack
           && contains(fromJSON('["pull_request", "push", "merge_group"]'), github.event_name)
         id: filter
         with:
