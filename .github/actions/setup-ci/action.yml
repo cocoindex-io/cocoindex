@@ -76,10 +76,33 @@ runs:
     # builds valkey-glide from source on the free-threaded legs (no cp314t
     # wheel on PyPI), whose build script compiles protobufs too. It is
     # installed unconditionally so a job can't lose it by accident.
+    #
+    # Not arduino/setup-protoc: it resolves even an exact version by paging
+    # the GitHub releases API and takes an empty page as the end of the
+    # list. The API sometimes returns empty pages, and the step then fails
+    # with "unable to get latest version". The release asset URL needs no
+    # API call. 23.4 is what the action's "23.x" resolved to.
     - name: Install protoc
-      uses: arduino/setup-protoc@v3
-      with:
-        repo-token: ${{ github.token }}
+      shell: bash
+      env:
+        PROTOC_VERSION: "23.4"
+      run: |
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) asset=linux-x86_64 ;;
+          Linux-ARM64) asset=linux-aarch_64 ;;
+          macOS-ARM64) asset=osx-aarch_64 ;;
+          macOS-X64) asset=osx-x86_64 ;;
+          Windows-X64) asset=win64 ;;
+          *) echo "::error::No protoc build for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        # RUNNER_TEMP has backslashes on Windows; forward slashes work for
+        # both Git Bash and the Windows PATH.
+        dest="${RUNNER_TEMP//\\//}/protoc"
+        curl -fsSL --retry 5 -o "$dest.zip" \
+          "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-$asset.zip"
+        unzip -q -o "$dest.zip" -d "$dest"
+        echo "$dest/bin" >> "$GITHUB_PATH"
+        "$dest/bin/protoc" --version
 
     - name: Set up Python
       if: inputs.python-version != ''
