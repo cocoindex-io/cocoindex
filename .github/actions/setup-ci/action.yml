@@ -1,0 +1,163 @@
+name: Set up a CI job
+description: >-
+  Set up a runner for the `_test.yml` jobs: disk space, sccache, Rust, protoc,
+  Python, the Rust and uv caches, the `ci` dependency group, and prek. Run it
+  right after checkout; a local action is only available once the repo is.
+
+inputs:
+  python-version:
+    description: >-
+      Python to set up with actions/setup-python. Empty sets up none: the
+      job's hooks must then not build `rust/py` or run through `uv`.
+    default: ""
+  free-threaded:
+    description: Set up the free-threaded build of `python-version`, and check that it is.
+    default: "false"
+  rust-cache-key:
+    description: Swatinem/rust-cache `key`. One per leg, so legs never share a cache.
+    required: true
+  rust-cache-per-python:
+    description: >-
+      Append the resolved Python version and `free-threaded` to
+      `rust-cache-key`, for a job with several interpreters on one runner.
+      A Python patch release then starts the leg's cache afresh.
+    default: "false"
+  uv-cache-suffix:
+    description: >-
+      Install uv with this cache suffix and sync the `ci` dependency group
+      into `.venv`; needs `python-version`. Empty skips both, for a job whose
+      hooks don't run through `uv`.
+    default: ""
+  clippy:
+    description: Install the clippy component with the Rust toolchain.
+    default: "false"
+  free-disk-space:
+    description: On Linux, delete preinstalled runtimes the jobs never use.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
+    # release branch runs every hook over all files, so `target/` crowds
+    # the root volume. `CARGO_INCREMENTAL=0` and `-C debuginfo=0` in the jobs
+    # already keep `target/` as small as it gets, so the remaining headroom
+    # has to come from the runner image itself. Reclaiming the preinstalled
+    # runtimes we never use buys ~20 GB.
+    #
+    # `large-packages` is the apt-get path: it dominates this action's
+    # runtime for a comparatively small win, so it stays off. `tool-cache`
+    # (default false) must stay off too -- it deletes $AGENT_TOOLSDIRECTORY,
+    # which is where the sccache/protoc/Python/prek steps below live.
+    - name: Free disk space
+      if: runner.os == 'Linux' && inputs.free-disk-space == 'true'
+      uses: jlumbroso/free-disk-space@v2.0.0
+      with:
+        android: true
+        dotnet: true
+        haskell: true
+        docker-images: true
+        large-packages: false
+        tool-cache: false
+
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.11
+      with:
+        # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
+        version: "v0.12.0"
+
+    - name: Install Rust toolchain
+      shell: bash
+      run: rustup toolchain install stable --profile minimal${{ inputs.clippy == 'true' && ' --component clippy' || '' }}
+
+    # Every job needs `protoc` on some leg: the SDK's Qdrant feature
+    # (`qdrant-client`) and the Rust examples that enable it or LanceDB
+    # (`lance-encoding`) compile protobufs via `prost-build`, and `uv sync`
+    # builds valkey-glide from source on the free-threaded legs (no cp314t
+    # wheel on PyPI), whose build script compiles protobufs too. It is
+    # installed unconditionally so a job can't lose it by accident.
+    #
+    # Not arduino/setup-protoc: it resolves even an exact version by paging
+    # the GitHub releases API and takes an empty page as the end of the
+    # list. The API sometimes returns empty pages, and the step then fails
+    # with "unable to get latest version". The release asset URL needs no
+    # API call. 23.4 is what the action's "23.x" resolved to.
+    - name: Install protoc
+      shell: bash
+      env:
+        PROTOC_VERSION: "23.4"
+      run: |
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) asset=linux-x86_64 ;;
+          Linux-ARM64) asset=linux-aarch_64 ;;
+          macOS-ARM64) asset=osx-aarch_64 ;;
+          macOS-X64) asset=osx-x86_64 ;;
+          Windows-X64) asset=win64 ;;
+          *) echo "::error::No protoc build for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        # RUNNER_TEMP has backslashes on Windows; forward slashes work for
+        # both Git Bash and the Windows PATH.
+        dest="${RUNNER_TEMP//\\//}/protoc"
+        curl -fsSL --retry 5 -o "$dest.zip" \
+          "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-$asset.zip"
+        unzip -q -o "$dest.zip" -d "$dest"
+        echo "$dest/bin" >> "$GITHUB_PATH"
+        "$dest/bin/protoc" --version
+
+    - name: Set up Python
+      if: inputs.python-version != ''
+      uses: actions/setup-python@v7
+      id: setup_python
+      with:
+        python-version: ${{ inputs.python-version }}
+        freethreaded: ${{ inputs.free-threaded }}
+        # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
+        # cache: 'pip'
+
+    - name: Verify free-threaded interpreter
+      if: inputs.free-threaded == 'true'
+      shell: bash
+      run: |
+        python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
+
+    - name: Setup Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ inputs.rust-cache-key }}${{ inputs.rust-cache-per-python == 'true' && format('-{0}-{1}', steps.setup_python.outputs.python-version, inputs.free-threaded) || '' }}
+        cache-targets: 'true'
+        cache-all-crates: 'false'
+        cache-workspace-crates: 'false'
+        # Only dependency artifacts are cached (workspace crates are
+        # cleaned out), and a failed test doesn't spoil those. Saving on
+        # failure keeps a leg warm across a flaky run; with the default, a
+        # cold leg that flakes starts cold again on the next push.
+        cache-on-failure: 'true'
+
+    - name: Install uv
+      if: inputs.uv-cache-suffix != ''
+      uses: astral-sh/setup-uv@v7
+      with:
+        # setup-uv keys its cache on the Python it finds via `uv python
+        # find`, which is "unknown" for a free-threaded interpreter and the
+        # system Python on macOS, so without a suffix the legs share keys
+        # with each other and with the e2e_type_check / fast_check jobs.
+        # Whichever job saves first wins, and the uv cache is only saved
+        # on a key miss, so a leg whose dependencies need building from
+        # source (valkey-glide has no free-threaded wheel: 3-6 min per
+        # run) never gets its built wheel persisted. One key per leg.
+        cache-suffix: ${{ inputs.uv-cache-suffix }}
+
+    - name: Sync Python dependencies
+      if: inputs.uv-cache-suffix != ''
+      shell: bash
+      run: |
+        uv sync \
+          --python "$(python -c 'import sys; print(sys.executable)')" \
+          --no-dev \
+          --group ci \
+          --no-install-project
+
+    - name: Install prek
+      uses: j178/prek-action@v2
+      with:
+        install-only: true

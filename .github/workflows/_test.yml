@@ -49,28 +49,7 @@ jobs:
           RUSTC_WRAPPER: "sccache"
 
         steps:
-        # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
-        # release branch runs every hook over all files, so `target/` crowds
-        # the root volume. `CARGO_INCREMENTAL=0` and `-C debuginfo=0` below
-        # already keep `target/` as small as it gets, so the remaining headroom
-        # has to come from the runner image itself. Reclaiming the preinstalled
-        # runtimes we never use buys ~20 GB.
-        #
-        # `large-packages` is the apt-get path: it dominates this action's
-        # runtime for a comparatively small win, so it stays off. `tool-cache`
-        # (default false) must stay off too -- it deletes $AGENT_TOOLSDIRECTORY,
-        # which is where the sccache/protoc/Python/prek steps below live.
-        - name: Free disk space
-          if: runner.os == 'Linux'
-          uses: jlumbroso/free-disk-space@v2.0.0
-          with:
-            android: true
-            dotnet: true
-            haskell: true
-            docker-images: true
-            large-packages: false
-            tool-cache: false
-
+        # Before checkout, which writes the files with the line endings this sets.
         - name: Disable Git autocrlf on Windows
           if: runner.os == 'Windows'
           shell: bash
@@ -80,74 +59,13 @@ jobs:
           with:
             fetch-depth: 1
 
-        - name: Setup sccache
-          uses: mozilla-actions/sccache-action@v0.0.11
-          with:
-            # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
-            version: "v0.12.0"
-
-        - run: rustup toolchain install stable --profile minimal
-
-        # Nothing this job builds with cargo needs `protoc`, but `uv sync`
-        # below builds valkey-glide from source on the free-threaded legs (no
-        # cp314t wheel on PyPI) and its build script compiles protobufs.
-        - name: Install protoc
-          uses: arduino/setup-protoc@v3
-          with:
-            repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-        - uses: actions/setup-python@v7
-          id: setup_python
+        - uses: ./.github/actions/setup-ci
           with:
             python-version: ${{ matrix.platform.python-version }}
-            freethreaded: ${{ matrix.platform.free-threaded }}
-            # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
-            # cache: 'pip'
-
-        - name: Verify free-threaded interpreter
-          if: matrix.platform.free-threaded
-          run: |
-            python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
-
-        - name: Setup Rust Cache
-          uses: Swatinem/rust-cache@v2
-          with:
-            key: rust-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ matrix.platform.free-threaded }}
-            cache-targets: 'true'
-            cache-all-crates: 'false'
-            cache-workspace-crates: 'false'
-            # Only dependency artifacts are cached (workspace crates are
-            # cleaned out), and a failed test doesn't spoil those. Saving on
-            # failure keeps a leg warm across a flaky run; with the default, a
-            # cold leg that flakes starts cold again on the next push.
-            cache-on-failure: 'true'
-
-        - name: Install uv
-          uses: astral-sh/setup-uv@v7
-          with:
-            # setup-uv keys its cache on the Python it finds via `uv python
-            # find`, which is "unknown" for a free-threaded interpreter and the
-            # system Python on macOS, so without a suffix the legs share keys
-            # with each other and with the e2e_type_check / fast_check jobs.
-            # Whichever job saves first wins, and the uv cache is only saved
-            # on a key miss, so a leg whose dependencies need building from
-            # source (valkey-glide has no free-threaded wheel: 3-6 min per
-            # run) never gets its built wheel persisted. One key per leg.
-            cache-suffix: ${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}
-
-        - name: Sync Python dependencies
-          shell: bash
-          run: |
-            uv sync \
-              --python "$(python -c 'import sys; print(sys.executable)')" \
-              --no-dev \
-              --group ci \
-              --no-install-project
-
-        - name: Install prek
-          uses: j178/prek-action@v2
-          with:
-            install-only: true
+            free-threaded: ${{ matrix.platform.free-threaded }}
+            rust-cache-key: rust-${{ matrix.platform.runner }}
+            rust-cache-per-python: true
+            uv-cache-suffix: ${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}
 
         - name: Run build-test hooks
           uses: ./.github/actions/run-prek
@@ -164,8 +82,7 @@ jobs:
     # `cargo check` of the external example/benchmark workspaces. Each ran on
     # every `build-test` leg and rebuilt the same code per interpreter; the SDK
     # all-features build alone was 2-5 min of every leg. They run here once per
-    # platform instead, on one Python (clippy lints `rust/py`, which needs a
-    # libpython to link against).
+    # platform instead.
     #
     # Clippy and the external-workspace check run on Linux x86_64 only. The
     # lints are the same on every platform bar a few `cfg(not(unix))` lines,
@@ -175,14 +92,21 @@ jobs:
     # features skip macOS Intel, the slowest runner: x86_64 is covered by
     # Linux and Darwin by the arm64 leg.
     rust-checks:
+        # The default name would list the matrix's hook list.
+        name: rust-checks (${{ matrix.platform.runner }})
         strategy:
             fail-fast: ${{ github.event_name == 'pull_request' }}
             matrix:
                 platform:
-                  - { runner: ubuntu-latest }
-                  - { runner: ubuntu-24.04-arm }
-                  - { runner: macos-latest, extra_rustflags: "-C split-debuginfo=off" }
-                  - { runner: windows-latest }
+                  - runner: ubuntu-latest
+                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3 cargo-clippy update-rust-extern-locks cargo-test-rust-externs
+                  - runner: ubuntu-24.04-arm
+                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3
+                  - runner: macos-latest
+                    extra_rustflags: "-C split-debuginfo=off"
+                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3
+                  - runner: windows-latest
+                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3
         runs-on: ${{ matrix.platform.runner }}
         timeout-minutes: 60
         env:
@@ -192,19 +116,6 @@ jobs:
           RUSTC_WRAPPER: "sccache"
 
         steps:
-        # See `build-test`: the SDK all-features build plus the external
-        # workspaces' `target/` need more than the ~14 GB a Linux runner has.
-        - name: Free disk space
-          if: runner.os == 'Linux'
-          uses: jlumbroso/free-disk-space@v2.0.0
-          with:
-            android: true
-            dotnet: true
-            haskell: true
-            docker-images: true
-            large-packages: false
-            tool-cache: false
-
         - name: Disable Git autocrlf on Windows
           if: runner.os == 'Windows'
           shell: bash
@@ -214,60 +125,23 @@ jobs:
           with:
             fetch-depth: 1
 
-        - name: Setup sccache
-          uses: mozilla-actions/sccache-action@v0.0.11
+        # Only clippy needs Python: it lints `rust/py`, which links libpython,
+        # and it runs through `uv run`, so the venv has to exist. The SDK
+        # hooks build nothing that touches Python (the SDK must not depend on
+        # pyo3).
+        - uses: ./.github/actions/setup-ci
           with:
-            version: "v0.12.0"
-
-        - run: rustup toolchain install stable --profile minimal --component clippy
-
-        # `protoc` is needed by the SDK's Qdrant feature (`qdrant-client`) and
-        # by the Rust examples that enable it or LanceDB (`lance-encoding`),
-        # which compile protobufs via `prost-build`.
-        - name: Install protoc
-          uses: arduino/setup-protoc@v3
-          with:
-            repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-        - uses: actions/setup-python@v7
-          with:
-            python-version: "3.11"
-
-        - name: Setup Rust Cache
-          uses: Swatinem/rust-cache@v2
-          with:
-            key: rust-checks-${{ matrix.platform.runner }}
-            cache-targets: 'true'
-            cache-all-crates: 'false'
-            cache-workspace-crates: 'false'
-            cache-on-failure: 'true'
-
-        - name: Install uv
-          uses: astral-sh/setup-uv@v7
-          with:
-            cache-suffix: rust-checks-${{ matrix.platform.runner }}
-
-        # `cargo-clippy` runs through `uv run`, so the venv has to exist.
-        - name: Sync Python dependencies
-          shell: bash
-          run: |
-            uv sync \
-              --python "$(python -c 'import sys; print(sys.executable)')" \
-              --no-dev \
-              --group ci \
-              --no-install-project
-
-        - name: Install prek
-          uses: j178/prek-action@v2
-          with:
-            install-only: true
+            python-version: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && '3.11' || '' }}
+            rust-cache-key: rust-checks-${{ matrix.platform.runner }}
+            uv-cache-suffix: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && format('rust-checks-{0}', matrix.platform.runner) || '' }}
+            clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy') }}
 
         - name: Run rust-checks hooks
           uses: ./.github/actions/run-prek
           env:
             UV_NO_SYNC: "1"
           with:
-            hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3${{ matrix.platform.runner == 'ubuntu-latest' && ' cargo-clippy update-rust-extern-locks cargo-test-rust-externs' || '' }}
+            hooks: ${{ matrix.platform.hooks }}
 
     validate-3p-notices:
         runs-on: ubuntu-latest
