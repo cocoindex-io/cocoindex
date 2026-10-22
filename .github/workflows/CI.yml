@@ -7,6 +7,8 @@ on:
       - rust/**
       - python/**
       - "*.toml"
+      - "Cargo.lock"
+      - "uv.lock"
       - ".github/workflows/*.yml"
       - ".github/actions/**"
       - "docs/docs/cli.mdx"
@@ -16,6 +18,8 @@ on:
       - rust/**
       - python/**
       - "*.toml"
+      - "Cargo.lock"
+      - "uv.lock"
       - ".github/workflows/*.yml"
       - ".github/actions/**"
       - "docs/docs/cli.mdx"
