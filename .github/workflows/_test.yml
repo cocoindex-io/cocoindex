@@ -65,6 +65,7 @@ jobs:
             free-threaded: ${{ matrix.platform.free-threaded }}
             rust-cache-key: rust-${{ matrix.platform.runner }}
             rust-cache-per-python: true
+            min-free-disk-gib: 20
             uv-cache-suffix: ${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}
 
         - name: Run build-test hooks
@@ -133,6 +134,7 @@ jobs:
           with:
             python-version: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && '3.11' || '' }}
             rust-cache-key: rust-checks-${{ matrix.platform.runner }}
+            min-free-disk-gib: 30
             uv-cache-suffix: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && format('rust-checks-{0}', matrix.platform.runner) || '' }}
             clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy') }}
 

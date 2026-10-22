@@ -31,34 +31,56 @@ inputs:
   clippy:
     description: Install the clippy component with the Rust toolchain.
     default: "false"
-  free-disk-space:
-    description: On Linux, delete preinstalled runtimes the jobs never use.
-    default: "true"
+  min-free-disk-gib:
+    description: >-
+      Free space, in GiB, the job needs on `/`. On Linux, if less is free,
+      preinstalled software the jobs never use is deleted, cheapest first,
+      until that much is. 0 deletes nothing.
+    default: "0"
 
 runs:
   using: composite
   steps:
-    # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
-    # release branch runs every hook over all files, so `target/` crowds
-    # the root volume. `CARGO_INCREMENTAL=0` and `-C debuginfo=0` in the jobs
-    # already keep `target/` as small as it gets, so the remaining headroom
-    # has to come from the runner image itself. Reclaiming the preinstalled
-    # runtimes we never use buys ~20 GB.
+    # Free space on `/` differs by runner: about 14 GiB on a private repo's
+    # standard runner, about 88 GiB on a public repo's. Each job asks for
+    # its measured peak plus a margin, so a runner that already has that
+    # much deletes nothing. On the private runner (October 2026),
+    # `build-test` used about 10 GiB and `rust-checks` 18 GiB (`target/`
+    # alone is 16 GiB), and saving a missed Rust cache writes its tarball
+    # too (0.7 and 2.7 GiB); the jobs ask for 20 and 30.
     #
-    # `large-packages` is the apt-get path: it dominates this action's
-    # runtime for a comparatively small win, so it stays off. `tool-cache`
-    # (default false) must stay off too -- it deletes $AGENT_TOOLSDIRECTORY,
-    # which is where the sccache/protoc/Python/prek steps below live.
+    # Deleting costs time per file, not per byte, so the groups go in
+    # measured order of seconds per GiB: the first frees 12 GiB in 3-10 s,
+    # .NET 5.7 GiB in 7-27 s, the Docker images 2.9 GiB in 10-34 s, and
+    # Android 11 GiB in 40-150 s. The tool cache stays: the Python,
+    # sccache and protoc steps below install into it.
     - name: Free disk space
-      if: runner.os == 'Linux' && inputs.free-disk-space == 'true'
-      uses: jlumbroso/free-disk-space@v2.0.0
-      with:
-        android: true
-        dotnet: true
-        haskell: true
-        docker-images: true
-        large-packages: false
-        tool-cache: false
+      if: runner.os == 'Linux' && inputs.min-free-disk-gib != '0'
+      shell: bash
+      env:
+        MIN_FREE_GIB: ${{ inputs.min-free-disk-gib }}
+      run: |
+        free_kib() { df -k --output=avail / | tail -1; }
+        need_kib=$((MIN_FREE_GIB * 1024 * 1024))
+        echo "Free on /: $(($(free_kib) / 1048576)) GiB; the job needs $MIN_FREE_GIB GiB"
+        for group in swift-haskell-jvm-browsers dotnet docker-images android; do
+          [ "$(free_kib)" -ge "$need_kib" ] && break
+          start=$SECONDS
+          case $group in
+            swift-haskell-jvm-browsers)
+              sudo rm -rf /usr/share/swift /usr/local/.ghcup /usr/lib/jvm \
+                /usr/local/share/powershell /opt/microsoft \
+                /usr/local/share/chromium /opt/google /usr/lib/firefox ;;
+            dotnet) sudo rm -rf /usr/share/dotnet ;;
+            docker-images) sudo docker image prune --all --force > /dev/null ;;
+            android) sudo rm -rf /usr/local/lib/android ;;
+          esac
+          echo "Deleted $group in $((SECONDS - start)) s"
+        done
+        df -h /
+        if [ "$(free_kib)" -lt "$need_kib" ]; then
+          echo "::warning::Only $(($(free_kib) / 1048576)) GiB free on /; the job needs $MIN_FREE_GIB GiB"
+        fi
 
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.11
