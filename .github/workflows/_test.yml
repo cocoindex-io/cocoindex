@@ -65,6 +65,8 @@ jobs:
             free-threaded: ${{ matrix.platform.free-threaded }}
             rust-cache-key: rust-${{ matrix.platform.runner }}
             rust-cache-per-python: true
+            # Peak use on a 14 GiB runner: about 10 GiB, plus 0.7 GiB when
+            # it saves a missed Rust cache.
             min-free-disk-gib: 20
             uv-cache-suffix: ${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}
 
@@ -134,6 +136,8 @@ jobs:
           with:
             python-version: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && '3.11' || '' }}
             rust-cache-key: rust-checks-${{ matrix.platform.runner }}
+            # Peak use on a 14 GiB runner: about 18 GiB (`target/` is
+            # 16 GiB), plus 2.7 GiB when it saves a missed Rust cache.
             min-free-disk-gib: 30
             uv-cache-suffix: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && format('rust-checks-{0}', matrix.platform.runner) || '' }}
             clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy') }}

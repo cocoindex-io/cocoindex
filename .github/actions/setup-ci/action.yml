@@ -44,10 +44,7 @@ runs:
     # Free space on `/` differs by runner: about 14 GiB on a private repo's
     # standard runner, about 88 GiB on a public repo's. Each job asks for
     # its measured peak plus a margin, so a runner that already has that
-    # much deletes nothing. On the private runner (October 2026),
-    # `build-test` used about 10 GiB and `rust-checks` 18 GiB (`target/`
-    # alone is 16 GiB), and saving a missed Rust cache writes its tarball
-    # too (0.7 and 2.7 GiB); the jobs ask for 20 and 30.
+    # much deletes nothing.
     #
     # Deleting costs time per file, not per byte, so the groups go in
     # measured order of seconds per GiB: the first frees 12 GiB in 3-10 s,
