@@ -43,7 +43,6 @@ jobs:
         # GitHub's 6-hour limit while reporting nothing.
         timeout-minutes: 60
         env:
-          SCCACHE_GHA_ENABLED: "true"
           RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: "sccache"
@@ -79,6 +78,11 @@ jobs:
             # platform-only hooks that `rust-checks` runs.
             skip: mypy-check,cargo-test-sdk-features,cargo-clippy,update-rust-extern-locks,cargo-test-rust-externs,cargo-tree-sdk-no-pyo3
 
+        # Last, so it sees every object the job's hooks compiled.
+        - name: Save sccache's local cache
+          if: ${{ !cancelled() }}
+          uses: ./.github/actions/save-sccache
+
     # Hooks whose result depends on the platform but not on the Python
     # interpreter: the SDK's optional-features build and tests (the SDK must
     # not depend on pyo3, and a hook below enforces that), clippy, and the
@@ -113,7 +117,6 @@ jobs:
         runs-on: ${{ matrix.platform.runner }}
         timeout-minutes: 60
         env:
-          SCCACHE_GHA_ENABLED: "true"
           RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: "sccache"
@@ -148,6 +151,11 @@ jobs:
             UV_NO_SYNC: "1"
           with:
             hooks: ${{ matrix.platform.hooks }}
+
+        # Last, so it sees every object the job's hooks compiled.
+        - name: Save sccache's local cache
+          if: ${{ !cancelled() }}
+          uses: ./.github/actions/save-sccache
 
     validate-3p-notices:
         runs-on: ubuntu-latest

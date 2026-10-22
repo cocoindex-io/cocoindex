@@ -1,8 +1,9 @@
 name: Set up a CI job
 description: >-
   Set up a runner for the `_test.yml` jobs: disk space, sccache, Rust, protoc,
-  Python, the Rust and uv caches, the `ci` dependency group, and prek. Run it
-  right after checkout; a local action is only available once the repo is.
+  Python, the Rust, sccache and uv caches, the `ci` dependency group, and
+  prek. Run it right after checkout; a local action is only available once
+  the repo is. A job that compiles Rust ends with `save-sccache`.
 
 inputs:
   python-version:
@@ -139,10 +140,66 @@ runs:
       run: |
         python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
 
+    - name: Compute the leg's cache key
+      id: leg
+      shell: bash
+      env:
+        KEY: ${{ inputs.rust-cache-key }}${{ inputs.rust-cache-per-python == 'true' && format('-{0}-{1}', steps.setup_python.outputs.python-version, inputs.free-threaded) || '' }}
+      run: echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+    # sccache keeps its objects on local disk, and `save-sccache` at the
+    # end of the job saves the directory as one Actions cache entry per
+    # leg. sccache's GitHub Actions backend (`SCCACHE_GHA_ENABLED`) makes
+    # a cache API call per compilation unit instead, hundreds per leg even
+    # on a warm Rust cache, and the cache service allows a repository 1500
+    # downloads and 200 uploads a minute. A burst of concurrent runs used
+    # up that quota, and the other restores in the repository then failed
+    # with HTTP 429: `@actions/cache` does not retry one, so rust-cache,
+    # setup-uv and prek restored nothing and the leg ran cold. sccache lost
+    # most of its own uploads to the same limit.
+    - name: Configure sccache's local cache
+      id: sccache
+      shell: bash
+      env:
+        KEY_PREFIX: sccache-${{ steps.leg.outputs.key }}-${{ runner.os }}-${{ runner.arch }}-
+      run: |
+        # RUNNER_TEMP has backslashes on Windows; sccache takes forward
+        # slashes there too.
+        dir="${RUNNER_TEMP//\\//}/sccache"
+        mkdir -p "$dir"
+        {
+          echo "SCCACHE_DIR=$dir"
+          # Bounds the disk a cold leg uses, when every dependency goes
+          # through sccache too. A warm leg stores well under this.
+          echo "SCCACHE_CACHE_SIZE=3G"
+          # The preprocessor cache mode, on by default for local storage
+          # only, missed 11 C objects per build-test leg on every run that
+          # the plain mode hits.
+          echo "SCCACHE_DIRECT=false"
+          echo "SCCACHE_SAVE_KEY=$KEY_PREFIX$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        } >> "$GITHUB_ENV"
+        echo "key-prefix=$KEY_PREFIX" >> "$GITHUB_OUTPUT"
+
+    # Restores the newest save of this leg: from this branch, else from
+    # the default branch. Before the first compile, which starts the
+    # sccache server: the server indexes the directory when it starts.
+    - name: Restore sccache's local cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ env.SCCACHE_SAVE_KEY }}
+        restore-keys: ${{ steps.sccache.outputs.key-prefix }}
+
+    # sccache sets an object's mtime when it reads or writes it, so the
+    # objects not newer than this marker at the end of the job went unused.
+    - name: Mark the sccache restore time
+      shell: bash
+      run: touch "$SCCACHE_DIR.restored"
+
     - name: Setup Rust Cache
       uses: Swatinem/rust-cache@v2
       with:
-        key: ${{ inputs.rust-cache-key }}${{ inputs.rust-cache-per-python == 'true' && format('-{0}-{1}', steps.setup_python.outputs.python-version, inputs.free-threaded) || '' }}
+        key: ${{ steps.leg.outputs.key }}
         cache-targets: 'true'
         cache-all-crates: 'false'
         cache-workspace-crates: 'false'
