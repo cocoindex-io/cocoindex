@@ -208,6 +208,10 @@ runs:
         # failure keeps a leg warm across a flaky run; with the default, a
         # cold leg that flakes starts cold again on the next push.
         cache-on-failure: 'true'
+        # A merge-group run's caches are scoped to the queue's temporary
+        # branch, which no later run reads; saving them would only crowd out
+        # main's caches.
+        save-if: ${{ github.event_name != 'merge_group' }}
 
     - name: Install uv
       if: inputs.uv-cache-suffix != ''
@@ -222,6 +226,7 @@ runs:
         # source (valkey-glide has no free-threaded wheel: 3-6 min per
         # run) never gets its built wheel persisted. One key per leg.
         cache-suffix: ${{ inputs.uv-cache-suffix }}
+        save-cache: ${{ github.event_name != 'merge_group' }}
 
     - name: Sync Python dependencies
       if: inputs.uv-cache-suffix != ''

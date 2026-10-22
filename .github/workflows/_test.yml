@@ -21,10 +21,11 @@ jobs:
     # `rust-checks` below, concurrently with this job.
     build-test:
         strategy:
-            # A failing leg cancels the rest on a PR, to stop a broken change
-            # early. On a push there is nothing to stop, and a cancelled leg
-            # skips its Rust cache save, so the next push starts it cold.
-            fail-fast: ${{ github.event_name == 'pull_request' }}
+            # A failing leg cancels the rest on a PR or in the merge queue,
+            # to stop a broken change early. On a push there is nothing to
+            # stop, and a cancelled leg skips its Rust cache save, so the
+            # next push starts it cold.
+            fail-fast: ${{ contains(fromJSON('["pull_request", "merge_group"]'), github.event_name) }}
             matrix:
                 platform:
                   # Standard builds (Python 3.11)
@@ -102,7 +103,7 @@ jobs:
         # The default name would list the matrix's hook list.
         name: rust-checks (${{ matrix.platform.runner }})
         strategy:
-            fail-fast: ${{ github.event_name == 'pull_request' }}
+            fail-fast: ${{ contains(fromJSON('["pull_request", "merge_group"]'), github.event_name) }}
             matrix:
                 platform:
                   - runner: ubuntu-latest

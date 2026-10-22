@@ -22,7 +22,9 @@ runs:
         PREK_SKIP: ${{ inputs.skip }}
         PREK_HOOKS: ${{ inputs.hooks }}
         EVENT_NAME: ${{ github.event_name }}
-        BASE_REF: ${{ github.base_ref }}
+        # A stack layer's base is the layer below it; its run stands in for
+        # the whole stack, so diff against the stack's base.
+        BASE_REF: ${{ github.event.pull_request.stack.base.ref || github.base_ref }}
         HEAD_SHA: ${{ github.sha }}
       run: |
         set +e
