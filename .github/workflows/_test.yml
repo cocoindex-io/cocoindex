@@ -14,6 +14,11 @@ env:
   TESTCONTAINERS_RYUK_DISABLED: "true"
 
 jobs:
+    # Everything whose result depends on the Python interpreter: the
+    # extension build, the workspace tests (the `rust/py` crate links
+    # libpython), and the Python test suite. Runs on every (platform, Python)
+    # pair. Hooks that only depend on the platform run once per platform in
+    # `rust-checks` below, concurrently with this job.
     build-test:
         strategy:
             # A failing leg cancels the rest on a PR, to stop a broken change
@@ -45,13 +50,11 @@ jobs:
 
         steps:
         # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
-        # release branch runs `prek --all-files` -- every hook: the SDK's
-        # all-features build on every leg, plus the `cargo check` over the
-        # external example/benchmark workspaces on the x86_64 3.11 leg -- so the
-        # combined `target/` trees crowd the root volume. `CARGO_INCREMENTAL=0`
-        # and `-C debuginfo=0` below already keep `target/` as small as it gets,
-        # so the remaining headroom has to come from the runner image itself.
-        # Reclaiming the preinstalled runtimes we never use buys ~20 GB.
+        # release branch runs every hook over all files, so `target/` crowds
+        # the root volume. `CARGO_INCREMENTAL=0` and `-C debuginfo=0` below
+        # already keep `target/` as small as it gets, so the remaining headroom
+        # has to come from the runner image itself. Reclaiming the preinstalled
+        # runtimes we never use buys ~20 GB.
         #
         # `large-packages` is the apt-get path: it dominates this action's
         # runtime for a comparatively small win, so it stays off. `tool-cache`
@@ -83,11 +86,11 @@ jobs:
             # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
             version: "v0.12.0"
 
-        - run: rustup toolchain install stable --profile minimal --component clippy
+        - run: rustup toolchain install stable --profile minimal
 
-        # `protoc` is needed to build the Rust examples that enable the LanceDB
-        # (`lance-encoding`) and Qdrant (`qdrant-client`) features, which compile
-        # protobufs via `prost-build`. Cross-platform across the test matrix.
+        # Nothing this job builds with cargo needs `protoc`, but `uv sync`
+        # below builds valkey-glide from source on the free-threaded legs (no
+        # cp314t wheel on PyPI) and its build script compiles protobufs.
         - name: Install protoc
           uses: arduino/setup-protoc@v3
           with:
@@ -121,6 +124,16 @@ jobs:
 
         - name: Install uv
           uses: astral-sh/setup-uv@v7
+          with:
+            # setup-uv keys its cache on the Python it finds via `uv python
+            # find`, which is "unknown" for a free-threaded interpreter and the
+            # system Python on macOS, so without a suffix the legs share keys
+            # with each other and with the e2e_type_check / fast_check jobs.
+            # Whichever job saves first wins, and the uv cache is only saved
+            # on a key miss, so a leg whose dependencies need building from
+            # source (valkey-glide has no free-threaded wheel: 3-6 min per
+            # run) never gets its built wheel persisted. One key per leg.
+            cache-suffix: ${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}
 
         - name: Sync Python dependencies
           shell: bash
@@ -137,72 +150,124 @@ jobs:
             install-only: true
 
         - name: Run build-test hooks
+          uses: ./.github/actions/run-prek
           env:
             UV_NO_SYNC: "1"
-            # - mypy-check runs in the e2e_type_check workflow.
-            # - cargo-clippy and cargo-test-rust-externs run on one leg, Linux
-            #   x86_64 on Python 3.11. The lints don't depend on the
-            #   interpreter, and the other legs would rebuild to lint the same
-            #   code, bar a few `cfg(not(unix))` lines. The `cargo check` of
-            #   the external example/benchmark workspaces catches SDK API
-            #   breakage in consumer crates, which is the same on every
-            #   platform; it costs 13-28 min on a leg with a cold Rust cache
-            #   (every leg is cold after a rustc release), which pushed the
-            #   macOS Intel and Windows legs past `timeout-minutes`.
-            # - cargo-test-sdk-features also skips macOS Intel, the slowest
-            #   runner: the SDK's optional features are type-checked and
-            #   tested on x86_64 by the Linux legs and on Darwin by the arm64
-            #   legs.
-            PREK_SKIP: mypy-check${{ (matrix.platform.runner != 'ubuntu-latest' || matrix.platform.free-threaded) && ',cargo-clippy,cargo-test-rust-externs' || '' }}${{ matrix.platform.runner == 'macos-15-intel' && ',cargo-test-sdk-features' || '' }}
+          with:
+            # mypy-check runs in the e2e_type_check workflow. The rest are the
+            # platform-only hooks that `rust-checks` runs.
+            skip: mypy-check,cargo-test-sdk-features,cargo-clippy,update-rust-extern-locks,cargo-test-rust-externs,cargo-tree-sdk-no-pyo3
+
+    # Hooks whose result depends on the platform but not on the Python
+    # interpreter: the SDK's optional-features build and tests (the SDK must
+    # not depend on pyo3, and a hook below enforces that), clippy, and the
+    # `cargo check` of the external example/benchmark workspaces. Each ran on
+    # every `build-test` leg and rebuilt the same code per interpreter; the SDK
+    # all-features build alone was 2-5 min of every leg. They run here once per
+    # platform instead, on one Python (clippy lints `rust/py`, which needs a
+    # libpython to link against).
+    #
+    # Clippy and the external-workspace check run on Linux x86_64 only. The
+    # lints are the same on every platform bar a few `cfg(not(unix))` lines,
+    # and the external check costs 13-28 min on a cold Rust cache (every leg
+    # is cold after a rustc release), which pushed the macOS Intel and Windows
+    # legs past `timeout-minutes` when it ran there. The SDK's optional
+    # features skip macOS Intel, the slowest runner: x86_64 is covered by
+    # Linux and Darwin by the arm64 leg.
+    rust-checks:
+        strategy:
+            fail-fast: ${{ github.event_name == 'pull_request' }}
+            matrix:
+                platform:
+                  - { runner: ubuntu-latest }
+                  - { runner: ubuntu-24.04-arm }
+                  - { runner: macos-latest, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: windows-latest }
+        runs-on: ${{ matrix.platform.runner }}
+        timeout-minutes: 60
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: "sccache"
+
+        steps:
+        # See `build-test`: the SDK all-features build plus the external
+        # workspaces' `target/` need more than the ~14 GB a Linux runner has.
+        - name: Free disk space
+          if: runner.os == 'Linux'
+          uses: jlumbroso/free-disk-space@v2.0.0
+          with:
+            android: true
+            dotnet: true
+            haskell: true
+            docker-images: true
+            large-packages: false
+            tool-cache: false
+
+        - name: Disable Git autocrlf on Windows
+          if: runner.os == 'Windows'
+          shell: bash
+          run: git config --global core.autocrlf false
+
+        - uses: actions/checkout@v7
+          with:
+            fetch-depth: 1
+
+        - name: Setup sccache
+          uses: mozilla-actions/sccache-action@v0.0.11
+          with:
+            version: "v0.12.0"
+
+        - run: rustup toolchain install stable --profile minimal --component clippy
+
+        # `protoc` is needed by the SDK's Qdrant feature (`qdrant-client`) and
+        # by the Rust examples that enable it or LanceDB (`lance-encoding`),
+        # which compile protobufs via `prost-build`.
+        - name: Install protoc
+          uses: arduino/setup-protoc@v3
+          with:
+            repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+        - uses: actions/setup-python@v7
+          with:
+            python-version: "3.11"
+
+        - name: Setup Rust Cache
+          uses: Swatinem/rust-cache@v2
+          with:
+            key: rust-checks-${{ matrix.platform.runner }}
+            cache-targets: 'true'
+            cache-all-crates: 'false'
+            cache-workspace-crates: 'false'
+            cache-on-failure: 'true'
+
+        - name: Install uv
+          uses: astral-sh/setup-uv@v7
+          with:
+            cache-suffix: rust-checks-${{ matrix.platform.runner }}
+
+        # `cargo-clippy` runs through `uv run`, so the venv has to exist.
+        - name: Sync Python dependencies
           shell: bash
           run: |
-            set +e
+            uv sync \
+              --python "$(python -c 'import sys; print(sys.executable)')" \
+              --no-dev \
+              --group ci \
+              --no-install-project
 
-            # prek renders a project's hook results only once the whole run
-            # finishes when stdout is not a TTY, so a hook that hangs leaves
-            # this step's log empty with no hint of which hook is stuck. No
-            # flag changes that, but prek always writes a trace log; tail its
-            # hook start/finish events into the step log. RUNNER_TEMP is
-            # backslash-separated on Windows, which bash would mangle, and
-            # prek refuses to start at all if it cannot open the log, so
-            # make sure the directory exists before pointing prek at it.
-            prek_log_dir="${RUNNER_TEMP:-/tmp}"
-            prek_log="${prek_log_dir//\\//}/prek.log"
-            mkdir -p "${prek_log%/*}"
-            : > "$prek_log"
-            tail -n +1 -F "$prek_log" 2>/dev/null \
-              > >(grep --line-buffered -E 'Running priority group|run\{hook_id=[^}]*\}: close time') &
-            tail_pid=$!
+        - name: Install prek
+          uses: j178/prek-action@v2
+          with:
+            install-only: true
 
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              echo "Running prek on PR diff against target branch: ${{ github.base_ref }}"
-              # Fetch both diff endpoints: origin/<base> and the to-ref commit.
-              # The shallow checkout only guarantees the to-ref's tree, not the
-              # commit as a named object; without fetching <sha> explicitly,
-              # prek's `git diff origin/<base>..<sha>` can fail with "bad
-              # revision" (e.g. when the PR merges while this run is in flight).
-              git fetch --no-tags --prune --depth=1 origin \
-                "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}" \
-                "${{ github.sha }}"
-
-              prek --log-file "$prek_log" run \
-                --from-ref "origin/${{ github.base_ref }}" \
-                --to-ref "${{ github.sha }}" \
-                --show-diff-on-failure
-              status=$?
-            else
-              echo "Running prek on all files (event: ${{ github.event_name }})"
-              prek --log-file "$prek_log" run --all-files --show-diff-on-failure
-              status=$?
-            fi
-
-            kill "$tail_pid" 2>/dev/null
-            wait "$tail_pid" 2>/dev/null
-
-            if [ $status -ne 0 ]; then
-              echo "::error::Build-test checks failed. Please run 'prek run --all-files' locally."
-              exit $status
-            fi
+        - name: Run rust-checks hooks
+          uses: ./.github/actions/run-prek
+          env:
+            UV_NO_SYNC: "1"
+          with:
+            hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3${{ matrix.platform.runner == 'ubuntu-latest' && ' cargo-clippy update-rust-extern-locks cargo-test-rust-externs' || '' }}
 
     validate-3p-notices:
         runs-on: ubuntu-latest

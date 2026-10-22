@@ -8,6 +8,7 @@ on:
       - python/**
       - "*.toml"
       - ".github/workflows/*.yml"
+      - ".github/actions/**"
       - "docs/docs/cli.mdx"
   push:
     branches: [main, v1]
@@ -16,6 +17,7 @@ on:
       - python/**
       - "*.toml"
       - ".github/workflows/*.yml"
+      - ".github/actions/**"
       - "docs/docs/cli.mdx"
   workflow_dispatch:
 
