@@ -46,29 +46,58 @@ Probed revision: `6593232b559628bf52872736a210c19d606b1d18`.
 | `cargo check --offline --locked -p cocoindex --no-default-features --lib --target wasm32-unknown-unknown` | Exit 101; `serde_core` fails with the same `E0463` |
 | Probe script | Exit 2 on both runs; approximately 4.5MB output on the final run (31.5MB on the initial run); over 23GB disk free |
 
-The missing `wasm32-unknown-unknown` standard library is the first measured
-blocker. No target was installed in the restricted environment. Neither the SDK
-nor its runtime/storage was successfully compiled for wasm32. This run does
-**not** measure downstream portability errors, wasm size, startup time, browser
-compatibility, or performance. Preserve the generated logs with the review;
-absolute machine paths and build artifacts do not belong in the repository.
+The initial runs above stopped at a missing standard-library prerequisite. They
+neither compiled the SDK nor reached its downstream portability checks.
 
-On a machine where target installation is permitted, install that target in the
-normal toolchain setup, then rerun into a fresh output directory. Do not infer
-success from installing the target alone. The Rust target documentation also
-distinguishes compilation from host capability: ordinary filesystem operations
-are unsupported and native thread spawning cannot be used as on the host.
-See the [rustc target documentation](https://doc.rust-lang.org/rustc/platform-support/wasm32-unknown-unknown.html).
+### Follow-up with the wasm target installed
+
+A separate, task-owned Rust 1.95.0 toolchain was prepared with the
+`wasm32-unknown-unknown` target, then the same probe was rerun against
+`edd024f730f747808bbdda5e57ac5bb3a37ce35a` (the probe commit; SDK runtime source
+is unchanged from the base above). This did not replace the user's global
+Rust toolchain.
+
+| Check | Follow-up result |
+| --- | --- |
+| Compiler | `rustc 1.95.0 (59807616e 2026-04-14)`, host `aarch64-apple-darwin` |
+| Installed targets | `aarch64-apple-darwin` and `wasm32-unknown-unknown` |
+| Offline locked SDK dependency inventory | Exit 0 |
+| Standard-library canary | Exit 0; the target prerequisite is now established |
+| SDK `cargo check` | Exit 101; the first error is Mio 1.2.2's explicit rejection of `wasm32-unknown-unknown` with networking enabled |
+| Probe exit | 1, correctly distinguishing an SDK/dependency failure from prerequisite exit 2 |
+
+The first compiler diagnostic is:
+
+```text
+This wasm target is unsupported by mio. If using Tokio, disable the net feature.
+```
+
+The compiler then reports missing platform networking symbols in Mio. This is
+**actual downstream compilation evidence**, not just a source-based prediction.
+It does not establish that simply disabling networking would make the SDK
+portable: later native runtime/storage dependencies were not fully checked,
+and no browser execution, JS binding, persistence, PGlite, or TransformersJS
+integration was demonstrated. In particular, no LMDB compiler failure is
+claimed from this run.
+
+To reproduce with an appropriately prepared toolchain, use a fresh output
+location and set `RUSTUP_TOOLCHAIN=1.95.0` when invoking the probe. Keep the
+failed output and its exact dependency/compiler versions with the review.
+The Rust target documentation also distinguishes compilation from host
+capability: ordinary filesystem operations are unsupported and native thread
+spawning cannot be used as on the host. See the
+[rustc target documentation](https://doc.rust-lang.org/rustc/platform-support/wasm32-unknown-unknown.html).
 
 ## Source-grounded boundaries
 
-These are architectural observations and migration risks, **not downstream
-compiler diagnostics from this run**.
+These are architectural observations and migration risks. The Mio networking
+blocker above was reached by compilation; the other entries are not claims of
+compiler diagnostics reached by that run.
 
 | Area | Current implementation | Implication for browser work |
 | --- | --- | --- |
 | Smallest SDK | [SDK manifest](../../rust/sdk/cocoindex/Cargo.toml) unconditionally depends on core and utils; text/matching/fastembed and database connectors are optional | `--no-default-features` does not remove the engine, LMDB, native filesystem facade, or runtime. A chunking-only package would need a separate entry point. |
-| Runtime | [workspace Tokio configuration](../../Cargo.toml) enables `full`, filesystem, and the multithread runtime; [engine runtime](../../rust/core/src/engine/runtime.rs) creates `Runtime::new()` | A browser host executor needs a distinct scheduling/timer/cancellation strategy. Merely switching to a current-thread Tokio constructor does not supply browser storage, timers, or host callbacks. The locked [Tokio 1.53.1 source](https://github.com/tokio-rs/tokio/blob/tokio-1.53.1/tokio/src/lib.rs) explicitly restricts wasm feature combinations. This was inspected, not reached by the compile. |
+| Runtime | [workspace Tokio configuration](../../Cargo.toml) enables `full`, filesystem, and the multithread runtime; [engine runtime](../../rust/core/src/engine/runtime.rs) creates `Runtime::new()` | A browser host executor needs a distinct scheduling/timer/cancellation strategy. Merely switching to a current-thread Tokio constructor does not supply browser storage, timers, or host callbacks. The locked [Tokio 1.53.1 source](https://github.com/tokio-rs/tokio/blob/tokio-1.53.1/tokio/src/lib.rs) explicitly restricts wasm feature combinations. Mio's networking rejection was reached by the follow-up compile; this specific Tokio compile guard was inspected, not reached. |
 | Durable state | [Storage](../../rust/core/src/state_store/storage.rs) opens `heed::Env` on a filesystem path, uses map resizing and a blocking transaction runner; [transaction types](../../rust/core/src/state_store/txn.rs) directly wrap heed transactions | State storage is not an interchangeable key/value callback today. A replacement must preserve ordering, atomicity, retries, and interrupted-update recovery. Native LMDB assumptions cannot be removed by wrapping the SDK in JS exports. |
 | Host boundary | [EngineProfile](../../rust/core/src/engine/profile.rs) abstracts host values/processors but requires `Send`/`Sync` in several associated types; [Python bridge](../../rust/py/src/runtime.rs) uses PyO3/task locals; [Rust profile](../../rust/sdk/cocoindex/src/profile.rs) is a separate sealed implementation | A JS profile/bridge needs an explicit ownership and callback model, persistence codecs, and async error/cancellation propagation. Python bindings are not JS bindings. Do not remove engine-wide thread bounds without a design and tests. |
 | Files and networking | [SDK filesystem facade](../../rust/sdk/cocoindex/src/resources/fs.rs) uses `std::fs`, `tokio::fs`, and blocking tasks; [core manifest](../../rust/core/Cargo.toml) and [utils](../../rust/utils/Cargo.toml) include native-oriented dependencies | Browser `File`/`Blob`/fetch sources and permission/error semantics require host adapters or feature boundaries. A Node.js native addon is a different target from a browser wasm32 SDK. |
@@ -76,10 +105,12 @@ compiler diagnostics from this run**.
 
 ## Proposed migration sequence
 
-1. **Establish the build baseline.** Repeat this probe with the wasm standard
-   library installed. Capture the first actual dependency errors; feature-gate
-   native facilities based on evidence. Add a compile job only once it can run
-   predictably. Keep native SDK/core checks as regressions.
+1. **Isolate native networking at the build boundary.** The prepared-target
+   probe now reaches Mio's unsupported-target error. Design a browser-specific
+   dependency/feature boundary without removing networking from native users,
+   then rerun to reveal the next actual blocker. Do not treat the first fix as
+   proof that runtime or storage is portable. Add a compile job once it can run
+   predictably and keep native SDK/core checks as regressions.
 2. **Prove one small browser operation.** If useful independently, expose an
    operation-only entry point without importing core/storage. Test real browser
    loading, UTF-8 byte spans versus JS string offsets, cancellation/cooperative
