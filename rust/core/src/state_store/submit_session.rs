@@ -399,8 +399,8 @@ impl AppStore {
     ///
     /// A callback error fails only this call: none of its writes commit,
     /// while the other bodies of the batch commit without it. On a handle
-    /// from [`AppStore::discarding_writes`] no write commits at all: a
-    /// preview plans its actions through here like a real submit.
+    /// from [`AppStore::discarding_writes`] the writes stay in the run's
+    /// overlay: a preview plans its actions through here like a real submit.
     pub async fn precommit<T, F>(
         &self,
         component_path: &StablePath,

@@ -80,7 +80,7 @@ pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
 
 /// Read the component's stored memo and return it when it was stored under
 /// `processor_fp` and its logic and target-provider dependencies still hold;
-/// otherwise delete it. In a preview the run's store discards the delete (a
+/// otherwise delete it. In a preview the delete stays in the run's handle (a
 /// preview of a lossy schema change would otherwise invalidate memos the next
 /// real run still needs). Whether a stored memo may be consulted at all under
 /// `full_reprocess` is the caller's decision (see `Component::execute_once`).
@@ -166,7 +166,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
 /// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
 /// preserving `processor_fp`, `return_value`, `logic_deps`, and
-/// `target_provider_deps`. In a preview the run's store discards the write.
+/// `target_provider_deps`. In a preview the write stays in the run's handle.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
@@ -1205,11 +1205,10 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     let new_gen = if needs_fresh_generation {
                         // Inside the open precommit WTxn — use the
                         // in-txn variant to avoid nesting another
-                        // batched WTxn on LMDB (would deadlock). In a
-                        // preview the store discards the reservation, so
-                        // this yields an unreserved id: in no tracking
-                        // record, as a fresh one must be, distinct from the
-                        // other fresh generations of this pass, and
+                        // batched WTxn on LMDB (would deadlock). A preview
+                        // reserves in its run's own handle: the id is in no
+                        // tracking record, as a fresh one must be, distinct
+                        // from the preview's other fresh generations, and
                         // persisted by nothing.
                         let new_id = app_store
                             .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
@@ -1713,8 +1712,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         child_provider.set_provider_generation(new_gen)?;
     }
 
-    // A preview plans its actions like a real submit — the run's store
-    // discarded the pre-commit's writes — but applies and commits nothing.
+    // A preview plans its actions like a real submit — the pre-commit's
+    // writes went to the run's own handle — but applies and commits nothing.
     // It still readies the child providers from each sink's child handler
     // factory, so the components declaring child target states can preview
     // theirs, then hands its actions to the shared collector. A commit also
@@ -1856,11 +1855,10 @@ async fn cleanup_pending_token<Prof: EngineProfile>(
     }
 }
 
-/// Store the component's memo, if it is memoized; returns whether it stored
-/// one. A preview stores none — the run's store would discard the write, and a
-/// later real update must not find a memo to reuse and skip declaring the
-/// component's target states — so it reports none stored and skips the
-/// serialization.
+/// Store the component's memo, if it is memoized; returns whether the store
+/// now holds it. A preview's memo stays in its run's handle, where a run queued
+/// behind this one finds it and no later real update does, so a preview
+/// reports none stored and the component records no latest memo.
 #[instrument(name = "post_submit_after_ready", skip_all)]
 pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
@@ -1875,9 +1873,6 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(false);
     };
-    if comp_ctx.preview() {
-        return Ok(false);
-    }
 
     let ret_bytes = ret.to_bytes()?;
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
@@ -1907,7 +1902,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         .app_store()
         .finalize_memoization(comp_ctx.stable_path(), &encoded)
         .await?;
-    Ok(true)
+    Ok(comp_ctx.app_store().persists())
 }
 
 pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(

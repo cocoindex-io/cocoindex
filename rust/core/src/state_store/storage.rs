@@ -11,7 +11,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::AppStore;
-use crate::state_store::txn::{Database, Env, EnvSlot, WriteMode, WriteTxn, opened_env};
+use crate::state_store::txn::{Database, Env, EnvSlot, Overlay, ReadTxn, WriteTxn, opened_env};
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -141,13 +141,6 @@ type TxnBody = Box<
         + Send,
 >;
 
-/// One `run_txn` call as the batcher sees it: the body, and the mode its
-/// writes run in.
-struct TxnRequest {
-    body: TxnBody,
-    write_mode: WriteMode,
-}
-
 /// Outcome of one write-txn pass over a sub-batch of bodies.
 enum TxnPass {
     /// Every body succeeded and the txn committed: one output per body.
@@ -200,10 +193,7 @@ impl TxnRunner {
     ///
     /// A failure that is no one body's doing — opening the txn, growing the
     /// map, committing — goes to every body of that txn.
-    async fn run_isolating_failures(
-        &self,
-        bodies: &[TxnRequest],
-    ) -> Vec<Result<Box<dyn Any + Send>>> {
+    async fn run_isolating_failures(&self, bodies: &[TxnBody]) -> Vec<Result<Box<dyn Any + Send>>> {
         let mut outcomes: Vec<Option<Result<Box<dyn Any + Send>>>> =
             std::iter::repeat_with(|| None).take(bodies.len()).collect();
         // Sub-batches still to run, as index ranges over `bodies`. The
@@ -253,7 +243,7 @@ impl TxnRunner {
 
     /// Runs `bodies` in one write txn, resizing the map and running them all
     /// again on `MDB_MAP_FULL`.
-    async fn run_with_resize_retry(&self, bodies: &[TxnRequest]) -> Result<TxnPass> {
+    async fn run_with_resize_retry(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
         loop {
             match self.try_run_once(bodies).await {
                 Err(e) if is_map_full(&e) => {
@@ -270,14 +260,13 @@ impl TxnRunner {
     /// included) as `Err`; either way the write txn and coordinator read guard
     /// are dropped before this returns. On `MapFull` the caller should resize
     /// (under the coordinator write guard) and retry.
-    async fn try_run_once(&self, bodies: &[TxnRequest]) -> Result<TxnPass> {
+    async fn try_run_once(&self, bodies: &[TxnBody]) -> Result<TxnPass> {
         let env_guard = self.env.read().await;
         let env = opened_env(&env_guard)?;
         let mut outputs = Vec::with_capacity(bodies.len());
-        let mut wtxn = WriteTxn::new(env.write_txn()?);
-        for (index, request) in bodies.iter().enumerate() {
-            wtxn.set_write_mode(request.write_mode);
-            match (request.body)(&mut wtxn).await {
+        let mut wtxn = WriteTxn::applying(env.write_txn()?);
+        for (index, body) in bodies.iter().enumerate() {
+            match body(&mut wtxn).await {
                 Ok(output) => outputs.push(output),
                 // The map filled up under the txn's writes as a whole, not
                 // this body's alone.
@@ -285,7 +274,7 @@ impl TxnRunner {
                 Err(err) => return Ok(TxnPass::BodyFailed { index, err }),
             }
         }
-        wtxn.into_inner().commit()?;
+        wtxn.commit()?;
         Ok(TxnPass::Committed(outputs))
     }
 
@@ -320,7 +309,7 @@ impl TxnRunner {
 
 #[async_trait]
 impl Runner for TxnRunner {
-    type Input = TxnRequest;
+    type Input = TxnBody;
     /// Per-body outcome. Sharing a write txn is an optimization that must not
     /// couple the bodies' fates, so a body's failure is reported to its own
     /// caller rather than as a batch-level `Err`, which the batcher would fan
@@ -338,7 +327,7 @@ impl Runner for TxnRunner {
     /// runtime's workers.
     async fn run(
         &self,
-        inputs: Vec<TxnRequest>,
+        inputs: Vec<TxnBody>,
     ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
         let runner = self.clone();
         let runtime = tokio::runtime::Handle::current();
@@ -402,6 +391,7 @@ impl Storage {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn txn_coordinator(&self) -> Arc<EnvSlot> {
         self.inner.env.clone()
     }
@@ -447,25 +437,10 @@ impl Storage {
         Ok(())
     }
 
-    /// [`Self::run_txn_with`] applying every write. Writes to an app's data go
-    /// through [`AppStore::run_txn`], which runs the body in the handle's write
-    /// mode; a body run through here applies its writes even in a preview, so
-    /// only tests use it.
-    #[cfg(test)]
-    pub(crate) async fn run_txn<T, F>(&self, body: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.run_txn_with(WriteMode::Apply, body).await
-    }
-
-    /// Run `body` inside a batched write transaction, with its writes in
-    /// `write_mode`. [`AppStore::run_txn`] is the entry point for an app's data;
-    /// it passes its handle's mode.
+    /// Run `body` inside a batched write transaction, committing its writes.
+    /// [`AppStore::run_txn`] is the entry point for an app's data: a
+    /// persisting handle comes here, a discarding one to
+    /// [`Self::run_discarding`].
     ///
     /// `body` receives `&mut WriteTxn` and returns a `Send` future (typically
     /// `Box::pin(async move { … })`). Multiple concurrent callers' bodies are
@@ -499,11 +474,7 @@ impl Storage {
     /// The future must be boxed (`BoxFuture<'a, _>` = `Pin<Box<dyn Future +
     /// Send + 'a>>`) because stable Rust can't yet express a `Send` bound on
     /// the future returned by an `AsyncFnOnce` borrowing from the txn.
-    ///
-    /// In [`WriteMode::Discard`] the body runs in the shared txn like any
-    /// other, reading what the bodies ahead of it wrote, but its own writes
-    /// are dropped (see [`WriteTxn`]), so the txn commits without them.
-    pub(crate) async fn run_txn_with<T, F>(&self, write_mode: WriteMode, body: F) -> Result<T>
+    pub(crate) async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
         F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
@@ -525,15 +496,71 @@ impl Storage {
         });
         // The outer `Result` is the batcher's own failure (e.g. a body that
         // panicked); the inner one is this body's outcome.
-        let request = TxnRequest {
-            body: erased,
-            write_mode,
-        };
-        let output = self.inner.batcher.run(request).await??;
+        let output = self.inner.batcher.run(erased).await??;
         output
             .downcast::<T>()
             .map(|b| *b)
             .map_err(|_| internal_error!("Storage::run_txn: output type mismatch"))
+    }
+
+    /// Run `body` once against a read snapshot under `overlay`, which takes
+    /// every write the body makes once the body succeeds: how a handle from
+    /// [`AppStore::discarding_writes`] runs its bodies. The body reads the
+    /// run's earlier writes through the overlay as a batched body reads its
+    /// txn's, and a failing body's writes are dropped as an aborted txn's;
+    /// no writer lock is taken, nothing reaches LMDB, and nothing makes the
+    /// body run again.
+    pub(crate) async fn run_discarding<T, F>(&self, overlay: Arc<Overlay>, body: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut wtxn = WriteTxn::discarding(self.read_txn(Some(overlay)).await?)?;
+        let output = body(&mut wtxn).await?;
+        wtxn.commit()?;
+        Ok(output)
+    }
+
+    /// Open a fresh LMDB read transaction, reading through `overlay` when
+    /// given, with `MDB_READERS_FULL` retry (two-phase: short retry → clear
+    /// stale readers → retry indefinitely).
+    ///
+    /// The returned [`ReadTxn`] holds a coordinator read guard until it is
+    /// dropped, so callers must not keep it open longer than needed.
+    pub(crate) async fn read_txn(&self, overlay: Option<Arc<Overlay>>) -> Result<ReadTxn> {
+        let guard = self.inner.env.clone().read_owned().await;
+        let env = opened_env(&guard)?;
+        let try_open = || async {
+            match env.clone().static_read_txn() {
+                Ok(txn) => cocoindex_utils::retryable::Ok(txn),
+                Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
+                    warn!("LMDB readers full, retrying");
+                    Err(cocoindex_utils::retryable::Error::retryable(
+                        internal_error!("LMDB readers full"),
+                    ))
+                }
+                Err(e) => Err(cocoindex_utils::retryable::Error::not_retryable(e)),
+            }
+        };
+
+        // Phase 1: short timeout for transient concurrency.
+        let txn = match cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE1).await {
+            Ok(txn) => txn,
+            Err(e) if !e.is_retryable => return Err(e.into()),
+            Err(_) => {
+                let cleared = env.clear_stale_readers()?;
+                if cleared > 0 {
+                    warn!("Cleared {cleared} stale LMDB readers");
+                }
+                cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE2)
+                    .await
+                    .map_err(Into::<Error>::into)?
+            }
+        };
+        Ok(ReadTxn::new(guard, txn, overlay))
     }
 
     /// Create the per-app sub-database and wrap it in an `AppStore`.
@@ -737,6 +764,20 @@ impl Storage {
         Ok(names)
     }
 }
+
+static READ_TXN_RETRY_PHASE1: cocoindex_utils::retryable::RetryOptions =
+    cocoindex_utils::retryable::RetryOptions {
+        retry_timeout: Some(std::time::Duration::from_secs(3)),
+        initial_backoff: std::time::Duration::from_millis(10),
+        max_backoff: std::time::Duration::from_secs(1),
+    };
+
+static READ_TXN_RETRY_PHASE2: cocoindex_utils::retryable::RetryOptions =
+    cocoindex_utils::retryable::RetryOptions {
+        retry_timeout: None,
+        initial_backoff: std::time::Duration::from_millis(10),
+        max_backoff: std::time::Duration::from_secs(1),
+    };
 
 #[cfg(test)]
 mod tests {
@@ -1061,7 +1102,7 @@ mod tests {
                         runs.fetch_add(1, Ordering::SeqCst);
                         let mut written = Vec::new();
                         for other in KEYS {
-                            if app_store.db().get(wtxn, other.as_bytes())?.is_some() {
+                            if wtxn.get(app_store.db(), other.as_bytes())?.is_some() {
                                 written.push(other);
                             }
                         }
@@ -1107,48 +1148,103 @@ mod tests {
         assert_eq!(runs, [2, 1, 2, 1, 1], "runs per body of {KEYS:?}");
     }
 
-    /// A body run through an `AppStore::discarding_writes` handle shares the
-    /// batch's write txn — it reads what the bodies ahead of it wrote — but
-    /// none of its own writes commit, nor does it see them itself.
+    /// A body of a discarding handle reads the committed snapshot and its
+    /// run's earlier writes, and writes only to the run's overlay: nothing
+    /// reaches LMDB, and another discarding handle starts from the committed
+    /// state again.
     #[tokio::test]
-    async fn discarded_writes_never_commit() {
+    async fn discarding_bodies_read_their_run_and_persist_nothing() {
         let (app_store, _dir) = make_test_store().await;
-        let storage = app_store.storage.clone();
-        let discarding = app_store.discarding_writes();
-        let batch = hold_write_batch(&storage).await;
-
-        let applying_store = app_store.clone();
-        let mut applied = Box::pin(app_store.run_txn(move |wtxn| {
-            let app_store = applying_store.clone();
-            Box::pin(async move { wtxn.put(app_store.db(), b"applied", b"") })
-        }));
-        let discarding_store = discarding.clone();
-        let mut discarded = Box::pin(discarding.run_txn(move |wtxn| {
-            let app_store = discarding_store.clone();
-            Box::pin(async move {
-                let saw_applied = app_store.db().get(wtxn, b"applied")?.is_some();
-                wtxn.put(app_store.db(), b"discarded", b"")?;
-                wtxn.delete(app_store.db(), b"applied")?;
-                wtxn.delete_prefix(app_store.db(), b"appl")?;
-                let sees_own_write = app_store.db().get(wtxn, b"discarded")?.is_some();
-                Ok((saw_applied, sees_own_write))
+        let store_in_txn = app_store.clone();
+        app_store
+            .run_txn(move |wtxn| {
+                let app_store = store_in_txn.clone();
+                Box::pin(async move {
+                    wtxn.put(app_store.db(), b"k/committed", b"")?;
+                    wtxn.put(app_store.db(), b"k/z", b"")
+                })
             })
-        }));
-        assert!(futures::poll!(applied.as_mut()).is_pending());
-        assert!(futures::poll!(discarded.as_mut()).is_pending());
-        batch.release().await;
+            .await
+            .unwrap();
 
-        applied.await.unwrap();
-        let (saw_applied, sees_own_write) = discarded.await.unwrap();
-        assert!(saw_applied, "a discarding body still reads the shared txn");
-        assert!(
-            !sees_own_write,
-            "a discarded write is dropped, not deferred"
+        /// Every key under `k/` as `store` sees them, in order, after putting
+        /// `k/a` and `k/scratch` and deleting `k/committed` when `write` is
+        /// set: overlay entries before, between and over the stored ones.
+        async fn write_then_list(store: AppStore, write: bool) -> Vec<String> {
+            let store_in_txn = store.clone();
+            store
+                .run_txn(move |wtxn| {
+                    let store = store_in_txn.clone();
+                    Box::pin(async move {
+                        if write {
+                            wtxn.put(store.db(), b"k/scratch", b"")?;
+                            wtxn.put(store.db(), b"k/a", b"")?;
+                            wtxn.delete(store.db(), b"k/committed")?;
+                        }
+                        let mut keys = Vec::new();
+                        wtxn.for_each_prefix(store.db(), b"k/", |key, _| {
+                            keys.push(String::from_utf8(key.to_vec()).unwrap());
+                            Ok(())
+                        })?;
+                        Ok(keys)
+                    })
+                })
+                .await
+                .unwrap()
+        }
+
+        let discarding = app_store.discarding_writes();
+        // A body that fails leaves none of its writes behind, even those it
+        // read back itself before failing.
+        let failing_store = discarding.clone();
+        let failed: Result<()> = discarding
+            .run_txn(move |wtxn| {
+                let store = failing_store.clone();
+                Box::pin(async move {
+                    wtxn.put(store.db(), b"k/failed", b"")?;
+                    assert!(wtxn.get(store.db(), b"k/failed")?.is_some());
+                    client_bail!("rejected")
+                })
+            })
+            .await;
+        assert!(failed.is_err());
+        assert_eq!(
+            write_then_list(discarding.clone(), false).await,
+            ["k/committed", "k/z"]
         );
 
-        let rtxn = app_store.read_txn().await.unwrap();
-        assert!(app_store.db().get(&rtxn, b"applied").unwrap().is_some());
-        assert!(app_store.db().get(&rtxn, b"discarded").unwrap().is_none());
+        assert_eq!(
+            write_then_list(discarding.clone(), true).await,
+            ["k/a", "k/scratch", "k/z"]
+        );
+        // A later body of the same run, and a standalone read, see its writes.
+        assert_eq!(
+            write_then_list(discarding.clone(), false).await,
+            ["k/a", "k/scratch", "k/z"]
+        );
+        let snapshot = discarding.read_txn().await.unwrap();
+        assert!(
+            snapshot
+                .get(discarding.db(), b"k/scratch")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            snapshot
+                .get(discarding.db(), b"k/committed")
+                .unwrap()
+                .is_none()
+        );
+        drop(snapshot);
+        // Another run, and the store itself, never saw them.
+        assert_eq!(
+            write_then_list(app_store.discarding_writes(), false).await,
+            ["k/committed", "k/z"]
+        );
+        assert_eq!(
+            write_then_list(app_store, false).await,
+            ["k/committed", "k/z"]
+        );
     }
 
     /// Regression test for #2424. LMDB's writer lock belongs to the OS thread
