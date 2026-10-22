@@ -18,10 +18,18 @@ __all__ = [
     "read",
 ]
 
+from datetime import datetime as _datetime
 from pathlib import PurePath
 from typing import AsyncIterator, overload
 
 from cocoindex._internal.extras import install_hint
+from cocoindex._internal.live_component import LiveMapView as _LiveMapView
+from cocoindex._internal.live_component import LiveStream as _LiveStream
+from cocoindex._internal.typing import (
+    MemoStateOutcome as _MemoStateOutcome,
+    NonExistenceType as _NonExistenceType,
+    is_non_existence as _is_non_existence,
+)
 
 try:
     from aiobotocore.client import AioBaseClient  # type: ignore[import-untyped]
@@ -119,6 +127,10 @@ class S3File(file.FileLike[str]):
         super().__init__(file_path, _metadata=_metadata)
         self._client = client
 
+    @property
+    def file_path(self) -> S3FilePath:
+        return self._file_path
+
     async def _fetch_metadata(self) -> file.FileMetadata:
         """Fetch metadata via head_object."""
         bucket_name: str = self._file_path.bucket_name
@@ -128,6 +140,24 @@ class S3File(file.FileLike[str]):
             size=int(head["ContentLength"]),
             modified_time=head["LastModified"],
             content_fingerprint=_etag_to_fingerprint(head.get("ETag")),
+        )
+
+    async def __coco_memo_state__(
+        self, prev_state: tuple[_datetime, bytes] | _NonExistenceType
+    ) -> _MemoStateOutcome:
+        """Compare content even when two writes share a modification timestamp.
+
+        S3 timestamps can have coarser resolution than writes. Use the ETag
+        when available, or hash the content, while preserving the existing
+        serialized memo-state shape.
+        """
+        metadata = await self._ensure_metadata()
+        fingerprint = await self.content_fingerprint()
+        return _MemoStateOutcome(
+            state=(metadata.modified_time, fingerprint),
+            memo_valid=(
+                not _is_non_existence(prev_state) and prev_state[1] == fingerprint
+            ),
         )
 
     async def _read_impl(self, size: int = -1) -> bytes:
@@ -363,6 +393,26 @@ class S3Walker:
         """
         async for f in self._aiter_s3files():
             yield (f.file_path.path.as_posix(), f)
+
+    def live_items(self, live_stream: _LiveStream[bytes]) -> _LiveMapView[str, S3File]:
+        """Scan this bucket, then reconcile S3/MinIO notification messages.
+
+        ``live_stream`` supplies JSON notification envelopes, not SNS wrappers.
+        Every watch subscribes before a full scan; a volatile webhook must not
+        skip that scan. Each event re-reads current object metadata rather than
+        replaying a historical version. Operations for one key are serialized
+        through completion; different keys can proceed concurrently.
+
+        The stream must await each returned handle before acknowledging its
+        message and bound its own in-flight messages. Configure a propagating
+        CocoIndex exception handler when acknowledgements must report target
+        failures. Only this view may write its mounted child components while
+        watching. Independent read-only iteration remains available; a second
+        simultaneous watch is rejected.
+        """
+        from ._live import _LiveS3Items
+
+        return _LiveS3Items(self, live_stream)
 
 
 def list_objects(
