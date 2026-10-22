@@ -92,6 +92,8 @@ jobs:
     # features skip macOS Intel, the slowest runner: x86_64 is covered by
     # Linux and Darwin by the arm64 leg.
     rust-checks:
+        # The default name would list the matrix's hook list.
+        name: rust-checks (${{ matrix.platform.runner }})
         strategy:
             fail-fast: ${{ github.event_name == 'pull_request' }}
             matrix:
