@@ -22,6 +22,8 @@ from pathlib import PurePath
 from typing import AsyncIterator, overload
 
 from cocoindex._internal.extras import install_hint
+from cocoindex._internal.live_component import LiveMapView as _LiveMapView
+from cocoindex._internal.live_component import LiveStream as _LiveStream
 
 try:
     from aiobotocore.client import AioBaseClient  # type: ignore[import-untyped]
@@ -349,6 +351,27 @@ class S3Walker:
         """Asynchronously iterate over S3 objects, yielding S3File objects."""
         async for _, f in self.items():
             yield f
+
+    def live_items(self, live_stream: _LiveStream[bytes]) -> _LiveMapView[str, S3File]:
+        """Scan this bucket, then reconcile S3/MinIO notification messages.
+
+        ``live_stream`` supplies JSON notification envelopes, not SNS wrappers.
+        Every watch subscribes before a full scan; a volatile webhook must not
+        skip that scan. Each event re-reads current object metadata rather than
+        replaying a historical version. Event keys match :meth:`items` keys
+        exactly. Operations for one key are serialized through completion;
+        different keys can proceed concurrently.
+
+        The stream must await each returned handle before acknowledging its
+        message and bound its own in-flight messages. Configure a propagating
+        CocoIndex exception handler when acknowledgements must report target
+        failures. Only this view may write its mounted child components while
+        watching. Independent read-only iteration remains available; a second
+        simultaneous watch is rejected.
+        """
+        from ._live import _LiveS3Items
+
+        return _LiveS3Items(self, live_stream)
 
 
 def list_objects(

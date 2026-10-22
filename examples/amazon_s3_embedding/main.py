@@ -1,7 +1,7 @@
 """
 Amazon S3 Text Embedding (v1) - CocoIndex pipeline example.
 
-Index (one-shot catch-up; live mode is not supported for the amazon_s3 source):
+Index (this example uses one-shot catch-up; see minio_webhook for live updates):
     cocoindex update main
 
 Query the index:
