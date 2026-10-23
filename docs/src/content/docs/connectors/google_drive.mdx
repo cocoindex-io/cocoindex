@@ -129,7 +129,7 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 
 `DriveFile` implements [`FileLike`](../common_resources/data_types#filelike) with Google Drive-specific behavior:
 
-- `file_path` — A `DriveFilePath` where `resolve()` returns the Google Drive file ID.
+- `file_path` — A `DriveFilePath` containing the path relative to the configured root folder; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal.
 - `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported.
 
 ### Example

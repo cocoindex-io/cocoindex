@@ -218,7 +218,19 @@ impl FileSourceItem for DriveFile {
     }
 }
 
-crate::memo::impl_file_memo_input!(DriveFile);
+#[async_trait::async_trait]
+impl crate::memo::MemoInput for DriveFile {
+    fn write_memo_key(&self, writer: &mut crate::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&(&self.file_id, self.path()))
+    }
+
+    async fn memo_state(
+        &self,
+        previous: Option<&crate::memo::MemoStateValue>,
+    ) -> Result<Option<crate::memo::MemoStateDecision>> {
+        crate::memo::file_memo_state(self, previous).await.map(Some)
+    }
+}
 
 fn default_file_cache() -> Arc<FileContentCache> {
     Arc::new(FileContentCache::new())
@@ -655,6 +667,7 @@ impl GoogleDriveSource {
             .map(|id| (id, String::new()))
             .collect();
         let mut seen_folders = std::collections::HashSet::new();
+        let mut seen_files = std::collections::HashSet::new();
         let mut out = Vec::new();
         while let Some((folder_id, prefix)) = pending.pop_front() {
             if !seen_folders.insert(folder_id.clone()) {
@@ -674,6 +687,9 @@ impl GoogleDriveSource {
                     if !allowed.iter().any(|m| m == &file.mime_type) {
                         continue;
                     }
+                }
+                if !seen_files.insert(file.file_id.clone()) {
+                    continue;
                 }
                 file.path = path;
                 out.push(file.with_client(self.client.clone()));
