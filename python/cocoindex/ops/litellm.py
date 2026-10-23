@@ -14,6 +14,7 @@ __all__ = [
 ]
 
 import asyncio as _asyncio
+import base64 as _base64
 import contextlib as _contextlib
 import io as _io
 import logging as _logging
@@ -321,7 +322,14 @@ def _aligned_embeddings(data: list[_Any], n: int) -> list[_NDArray[_np.float32]]
                 "litellm embedding response indices are not a permutation of "
                 f"0..{n - 1}: got {[item.get('index') for item in data]}"
             )
-        out[index] = _np.array(item["embedding"], dtype=_np.float32)
+        # `Embedding.embedding` is typed `list[float] | str`, where the `str`
+        # form is the base64 payload `encoding_format="base64"` returns.
+        # Pinning that format also disables the OpenAI SDK's own base64
+        # auto-decode, so the payload arrives here still encoded.
+        emb = item["embedding"]
+        if isinstance(emb, str):
+            emb = _np.frombuffer(_base64.b64decode(emb), dtype=_np.float32)
+        out[index] = _np.array(emb, dtype=_np.float32)
     return _cast(list[_NDArray[_np.float32]], out)
 
 
