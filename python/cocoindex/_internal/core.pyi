@@ -694,8 +694,15 @@ class BatchingOptions:
     """Options for batching behavior."""
 
     max_batch_size: int | None
+    max_in_flight: int | None
+    """Upper bound on batches of the shared queue running at once (the inline
+    first call counts); positive when set. None keeps the idle-queue rule: a
+    full batch starts when it fills, the next partial batch once every running
+    batch has finished. Batchers sharing a queue should agree on it."""
 
-    def __new__(cls, max_batch_size: int | None = None) -> "BatchingOptions": ...
+    def __new__(
+        cls, max_batch_size: int | None = None, max_in_flight: int | None = None
+    ) -> "BatchingOptions": ...
 
 # --- BatchQueue ---
 class BatchQueue:
