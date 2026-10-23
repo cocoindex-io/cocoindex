@@ -6,7 +6,7 @@ import os
 import pathlib
 import shutil
 from dataclasses import dataclass
-from typing import Collection, Generic, Literal, Mapping, NamedTuple, Sequence, cast
+from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
@@ -55,14 +55,8 @@ class _EntrySpec:
     create_parent_dirs: bool
 
 
-def _execute_entry_action(
-    path: pathlib.Path, action: _EntryAction
-) -> pathlib.Path | None:
-    """
-    Execute a single entry action.
-
-    Returns the path for directories (to create child handler), None otherwise.
-    """
+def _execute_entry_action(path: pathlib.Path, action: _EntryAction) -> None:
+    """Execute a single entry action."""
     if action.content is None:
         # Delete
         if action.entry_type == "file":
@@ -70,48 +64,53 @@ def _execute_entry_action(
         else:
             if os.path.isdir(path):
                 shutil.rmtree(path)
-        return None
+        return
 
     if action.entry_type == "file":
         # Write file
         if action.create_parents:
             path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(action.content)
-        return None
+        return
 
     # Create directory
     if action.create_parents:
         path.mkdir(parents=True, exist_ok=True)
     else:
         path.mkdir(exist_ok=True)
-    return path
 
 
-def _apply_actions_with_child(
+def _entry_path(
+    context_provider: ContextProvider, action: _EntryAction
+) -> pathlib.Path:
+    """The absolute path an entry action applies to."""
+    if action.base_dir_key is not None:
+        base = context_provider.get(action.base_dir_key, pathlib.Path)
+        return (base / action.path).resolve()
+    return pathlib.Path(action.path)  # already absolute
+
+
+def _dir_entry_handler(
+    context_provider: ContextProvider, action: _EntryAction, /
+) -> _EntryHandler:
+    """The handler for the entries under a created directory (its path)."""
+    return _EntryHandler(_entry_path(context_provider, action))
+
+
+def _apply_entry_actions(
     context_provider: ContextProvider,
     actions: Sequence[_EntryAction],
-    child_slots: Mapping[int, coco.ChildSlot[_EntryHandler]],
     /,
 ) -> None:
-    """Apply entry actions; a created directory fulfills its child slot.
-
-    Files and directories share this sink: file actions carry no child slot,
-    directory creates do.
-    """
-    for i, action in enumerate(actions):
-        if action.base_dir_key is not None:
-            base = context_provider.get(action.base_dir_key, pathlib.Path)
-            path = (base / action.path).resolve()
-        else:
-            path = pathlib.Path(action.path)  # already absolute
-        result_path = _execute_entry_action(path, action)
-        if result_path is not None:
-            child_slots[i].fulfill(_EntryHandler(result_path))
+    """Apply entry actions."""
+    for action in actions:
+        _execute_entry_action(_entry_path(context_provider, action), action)
 
 
-# Shared action sink
-_action_sink_with_child = coco.TargetActionSink[_EntryAction].from_fn_with_children(
-    _apply_actions_with_child
+# Shared by files and directories: the engine calls `_dir_entry_handler` only
+# for directories, the only entries declared with a child.
+_entry_action_sink = coco.TargetActionSink[_EntryAction].from_fn(
+    _apply_entry_actions, child_handler=_dir_entry_handler
 )
 
 
@@ -135,7 +134,7 @@ def _reconcile_entry(
 
         return coco.TargetReconcileOutput(
             action=_EntryAction(base_dir_key, path_str, entry_type, None, False),
-            sink=_action_sink_with_child,
+            sink=_entry_action_sink,
             tracking_record=coco.NON_EXISTENCE,
         )
 
@@ -146,7 +145,7 @@ def _reconcile_entry(
         # Directory entry (fingerprint=None means directory)
         return coco.TargetReconcileOutput(
             action=_EntryAction(base_dir_key, path_str, "dir", b"", create_parents),
-            sink=_action_sink_with_child,
+            sink=_entry_action_sink,
             tracking_record=_EntryTrackingRecord(fingerprint=None),
         )
 
@@ -161,7 +160,7 @@ def _reconcile_entry(
 
     return coco.TargetReconcileOutput(
         action=_EntryAction(base_dir_key, path_str, "file", entry_spec, create_parents),
-        sink=_action_sink_with_child,
+        sink=_entry_action_sink,
         tracking_record=_EntryTrackingRecord(fingerprint=target_fp),
     )
 

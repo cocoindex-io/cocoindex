@@ -12,7 +12,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::num::NonZeroUsize;
 
-#[pyclass(name = "GPUPool")]
+#[pyclass(name = "GPUPool", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyGPUPool {
     inner: Arc<GPUPool>,
@@ -56,7 +56,7 @@ impl PyGPUPool {
         py: Python<'py>,
         gpu_count: usize,
     ) -> PyResult<Bound<'py, PyAny>> {
-        if gpu_count <= 0 {
+        if gpu_count == 0 {
             return Err(PyValueError::new_err(format!(
                 "gpu_count must be > 0, got {gpu_count}"
             )));
@@ -70,7 +70,7 @@ impl PyGPUPool {
         })
     }
 
-    pub fn release<'py>(&self, gpu_id: usize, fraction: f32) -> PyResult<()> {
+    pub fn release(&self, gpu_id: usize, fraction: f32) -> PyResult<()> {
         let fraction = GPUCapacity::try_from(fraction).into_py_result()?;
         self.inner.release(gpu_id, fraction).into_py_result()
     }

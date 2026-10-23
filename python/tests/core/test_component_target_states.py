@@ -18,6 +18,7 @@ from tests.common.target_states import (
     AtMost,
     GlobalDictTarget,
     Metrics,
+    split_dicts_actions,
 )
 
 coco_env = common.create_test_env(__file__)
@@ -1359,24 +1360,56 @@ def test_mount_target_delete() -> None:
 
 
 ##################################################################################
-# Test: preview rejects child target providers
+# Test: preview of target states under child target providers
 ##################################################################################
 
 
-def test_preview_rejects_child_target_providers() -> None:
+def test_preview_child_target_providers() -> None:
     DictsTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         coco.AppConfig(
-            name="test_preview_rejects_child_target_providers", environment=coco_env
+            name="test_preview_child_target_providers", environment=coco_env
         ),
         _declare_dicts_data_together,
     )
 
-    _source_data["D1"] = {"a": 1}
-    with pytest.raises(Exception, match="child target providers"):
-        app.update_blocking(preview=True)
+    # The container's action and one per entry; nothing applied.
+    _source_data["D1"] = {"a": 1, "b": 2}
+    planned = split_dicts_actions(app.update_blocking(preview=True))
+    assert {n: a.action for n, a in planned.containers.items()} == {"D1": "insert"}
+    assert planned.entries == {
+        "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+    assert DictsTarget.store.data == {}
+    assert DictsTarget.store.metrics.collect() == {}
+
+    # A real update afterwards applies all of it.
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    DictsTarget.store.metrics.clear()
+
+    # The next preview plans the entries against what is now tracked: `b`
+    # updated and `c` inserted; `a` is unchanged. The container action is
+    # retained because tracking-record equality is not a no-op guarantee.
+    _source_data["D1"] = {"a": 1, "b": 3, "c": 4}
+    planned = split_dicts_actions(app.update_blocking(preview=True))
+    assert {n: a.action for n, a in planned.containers.items()} == {"D1": None}
+    assert planned.entries == {
+        "b": DictDataWithPrev(data=3, prev=[2], prev_may_be_missing=False),
+        "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+    }
+    assert DictsTarget.store.data["D1"]["b"].data == 2
+    assert "c" not in DictsTarget.store.data["D1"]
+    assert DictsTarget.store.metrics.collect() == {}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
 
 ##################################################################################

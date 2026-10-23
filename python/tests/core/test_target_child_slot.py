@@ -261,7 +261,7 @@ def _expect_legacy_deprecation() -> contextlib.AbstractContextManager[Any]:
     """
     if getattr(sys.flags, "context_aware_warnings", 0):
         return contextlib.nullcontext()
-    return pytest.warns(DeprecationWarning, match="from_fn_with_children")
+    return pytest.warns(DeprecationWarning, match="child_handler=")
 
 
 def test_child_slots_only_for_child_bearing_actions() -> None:
@@ -305,7 +305,7 @@ def test_leaf_sink_rejects_child_bearing_action() -> None:
     async def declare() -> None:
         coco.declare_target_state_with_child(_misbuilt_provider.target_state("c", "v"))
 
-    with pytest.raises(Exception, match="from_fn_with_children"):
+    with pytest.raises(Exception, match="child_handler="):
         _run("test_child_slot_leaf_sink", declare)
 
 

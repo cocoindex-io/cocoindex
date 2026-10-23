@@ -48,6 +48,8 @@ except ImportError:
 
 _PG_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_postgres_target_pg_db")
 
+_PG_IMAGE = "pgvector/pgvector:pg16"
+
 pytestmark = [
     pytest.mark.skipif(
         not DEPS_AVAILABLE, reason="postgres dependencies not installed"
@@ -55,7 +57,7 @@ pytestmark = [
     pytest.mark.skipif(
         not TESTCONTAINERS_AVAILABLE, reason="testcontainers not installed"
     ),
-    pytest.mark.requires_docker,
+    pytest.mark.requires_docker(_PG_IMAGE),
     pytest.mark.timeout(120),
 ]
 
@@ -143,7 +145,7 @@ async def _drop_index(pool: "asyncpg.Pool", index_name: str) -> None:
 def pg_dsn() -> Any:
     from testcontainers.community.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-    with PostgresContainer("pgvector/pgvector:pg16") as pg:
+    with PostgresContainer(_PG_IMAGE) as pg:
         dsn = pg.get_connection_url()
         # testcontainers may return a SQLAlchemy-style URL; normalize for asyncpg.
         dsn = dsn.replace("postgresql+psycopg2://", "postgresql://")
@@ -1157,6 +1159,76 @@ async def test_postgres_delete_rows_with_composite_key(pg_env: _PgEnv) -> None:
             (r["repo"], r["sha"], tuple(r["path"])) for r in kept_rows
         }
 
+    finally:
+        await _drop_table(pool, table_name)
+
+
+def _planned_actions(actions: list[Any] | None) -> dict[Any, Any]:
+    """Planned preview actions: ``("table", name) -> main action`` and
+    ``("row", key) -> value`` (``None``: delete)."""
+    assert actions is not None
+    plan: dict[Any, Any] = {}
+    for action in actions:
+        if isinstance(action, postgres._target._TableAction):
+            plan[("table", action.key.table_name)] = action.main_action
+        else:
+            assert isinstance(action, postgres._target._RowAction)
+            plan[("row", action.key)] = action.value
+    assert len(plan) == len(actions)
+    return plan
+
+
+@pytest.mark.asyncio
+async def test_postgres_preview_rows(pg_env: _PgEnv) -> None:
+    """Preview plans the table and its rows without creating either."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_preview")
+    schema = await postgres.TableSchema.from_class(TextRow, primary_key=["id"])
+    rows = [TextRow(id="1", content="one"), TextRow(id="2", content="two")]
+
+    async def declare_fn() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            postgres.declare_table_target,
+            _PG_DB_KEY,
+            table_name,
+            schema,
+        )
+        for row in rows:
+            table.declare_row(row=row)
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_preview_{table_name}", environment=pg_env.coco_env),
+        declare_fn,
+    )
+    try:
+        # The table's action and one per row; nothing is created.
+        actions = await app.update(preview=True)
+        assert _planned_actions(actions) == {
+            ("table", table_name): "insert",
+            ("row", ("1",)): {"id": "1", "content": "one"},
+            ("row", ("2",)): {"id": "2", "content": "two"},
+        }
+        assert not await _table_exists(pool, table_name)
+
+        await app.update()
+        assert await _row_count(pool, table_name) == 2
+
+        # Against the applied state: row 2 changed and row 3 added; row 1 is
+        # unchanged, so not planned; the container action is still listed.
+        # Nothing is applied.
+        rows = [
+            TextRow(id="1", content="one"),
+            TextRow(id="2", content="two-updated"),
+            TextRow(id="3", content="three"),
+        ]
+        actions = await app.update(preview=True)
+        assert _planned_actions(actions) == {
+            ("table", table_name): None,
+            ("row", ("2",)): {"id": "2", "content": "two-updated"},
+            ("row", ("3",)): {"id": "3", "content": "three"},
+        }
+        assert await _row_count(pool, table_name) == 2
     finally:
         await _drop_table(pool, table_name)
 

@@ -173,7 +173,7 @@ where
         // calls; the `propagate_children_fn_logic` flag is therefore inert here.
         // Pass `true` (the default) — only the batch impl's own `code_hash`
         // (folded into the memo key above) tracks its logic.
-        crate::memo::cached_by_fingerprint(ctx, fp, true, move |scoped_ctx| async move {
+        crate::memo::cached_by_fingerprint(ctx, fp, None, true, move |scoped_ctx| async move {
             batcher
                 .run(BatchCall {
                     ctx: scoped_ctx,
@@ -207,7 +207,10 @@ where
     #[doc(hidden)]
     pub fn __new(code_hash: u64, max_batch_size: Option<usize>) -> Self {
         Self {
-            options: BatchingOptions { max_batch_size },
+            options: BatchingOptions {
+                max_batch_size,
+                max_in_flight: None,
+            },
             batchers: Mutex::new(HashMap::new()),
             code_hash,
         }

@@ -212,6 +212,19 @@ mod tests {
     }
 
     #[test]
+    fn nix_source_parses_without_errors() {
+        let src = CodeSource::with_language(
+            "{ pkgs, ... }:\nlet package-name = pkgs.hello; in { inherit package-name; }\n",
+            "nix",
+        );
+        let ParseOutcome::Parsed(tree) = src.tree() else {
+            panic!("expected a Nix parse");
+        };
+        assert_eq!(tree.root_node().kind(), "source_code");
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
     fn with_info_matches_with_language() {
         let info = prog_langs::get_language_info("rust").unwrap();
         let src = CodeSource::with_info("fn main() {}", info);

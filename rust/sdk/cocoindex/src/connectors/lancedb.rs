@@ -10,7 +10,7 @@
 //!
 //! Built on the native Rust `lancedb` crate (LanceDB's core is Rust) + Arrow.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use arrow_array::builder::{FixedSizeListBuilder, PrimitiveBuilder};
@@ -35,9 +35,9 @@ use crate::statediff::{
     diff, diff_composite, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    mount_target, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, mount_target, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -336,15 +336,15 @@ pub fn table_target_with_options(
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     table_schema.validate_vector_dimensions()?;
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!("cocoindex/lancedb/table/{}/{}", db.name(), table_name),
-        TableHandler {
-            db_key: db.name().to_string(),
-        },
-    )?;
+    let provider = TABLE_PROVIDER.get(ctx)?;
     Ok(provider.target_state(
-        "default",
+        // Stable connection identity = the ContextKey's name; the database is
+        // resolved at apply time from the host context.
+        TableKey {
+            db_key: db.name().to_string(),
+            table_name: table_name.clone(),
+        }
+        .stable_key(),
         TableSpec {
             table_name,
             table_schema,
@@ -376,6 +376,10 @@ pub fn declare_table_target(
     let spec = target_state.value().clone();
     let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
     declare_target_state(ctx, target_state)?;
+    // The row provider stays run-scoped (its handler holds the spec). Once a
+    // run stops declaring the table, or on `App::drop_state`, the table itself
+    // is dropped (taking its rows and indexes with it), so the engine only
+    // needs to prune this provider's unreachable row tracking, which it does.
     let rows = register_root_target_states_provider(
         ctx,
         format!(
@@ -384,7 +388,7 @@ pub fn declare_table_target(
             table_name,
             schema_fp
         ),
-        RowHandler::new(db.name().to_string(), spec.clone(), HashSet::new()),
+        RowHandler::new(db.name().to_string(), spec.clone(), BTreeSet::new()),
     )?;
     Ok(LanceTableTarget {
         table_name: Arc::from(table_name),
@@ -564,9 +568,15 @@ pub struct TableSpec {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
+    /// The `ContextKey` name of the database the table lives in.
+    db_key: String,
     table_name: String,
     spec: Option<TableSpec>,
     recreate: bool,
+    /// Nullable non-PK columns this action adds to a table that surely exists,
+    /// so its existing rows read null in them (see
+    /// [`RowHandler::legacy_fingerprint_for_null_backfill`]).
+    null_backfilled_columns: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -621,8 +631,45 @@ fn resolve_db(host_ctx: &Arc<ContextStore>, db_key: &str) -> Result<Arc<LanceDat
     })
 }
 
-struct TableHandler {
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TableSpec, TableHandler>("cocoindex/lancedb/table");
+
+/// A table target state's key: the database's `ContextKey` name plus the table
+/// name.
+struct TableKey {
     db_key: String,
+    table_name: String,
+}
+
+impl TableKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.db_key)),
+            StableKey::Str(Arc::from(self.table_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(db_key), StableKey::Str(table_name)] = &parts[..]
+        {
+            return Ok(Self {
+                db_key: db_key.to_string(),
+                table_name: table_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected lancedb table target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every LanceDB table target: stateless, the database is
+/// named by each target state's [`TableKey`].
+#[derive(Default)]
+struct TableHandler {
+    sink: SinkCache<TableAction>,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -631,40 +678,71 @@ impl TargetHandler<TableSpec> for TableHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<TableSpec>,
         prev: Vec<TableTrackingRecord>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
+        let db_key = TableKey::from_stable_key(&key)?.db_key;
         match desired {
-            // Always emit when declared so the sink fulfills the row child.
+            // Always emit when declared so the sink builds the row child.
             Some(spec) => {
                 let tracking =
                     MutualTrackingRecord::new(table_tracking_record(&spec), spec.managed_by);
                 let resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
                 let (main_action, column_transitions) = diff_composite(resolved.as_ref());
-                let check_column_actions = matches!(main_action, None | Some(DiffAction::Upsert));
+                let column_actions: HashMap<String, DiffAction> =
+                    if matches!(main_action, None | Some(DiffAction::Upsert)) {
+                        column_transitions
+                            .into_iter()
+                            .filter_map(|(name, transition)| {
+                                diff(Some(&transition)).map(|action| (name, action))
+                            })
+                            .collect()
+                    } else {
+                        HashMap::new()
+                    };
                 // A pure column *add* is additive (a nullable column added via
                 // `add_columns`, including vectors — see `evolve_existing_table`),
                 // so it never recreates. A column *retype* or *drop* can't be done
                 // in place in LanceDB, so it forces a destructive recreate (matches
                 // Python, which upgrades non-add column actions to a replace).
                 let recreate = matches!(main_action, Some(DiffAction::Replace))
-                    || (check_column_actions
-                        && column_transitions.into_iter().any(|(_name, transition)| {
-                            matches!(
-                                diff(Some(&transition)),
-                                Some(DiffAction::Replace | DiffAction::Delete)
-                            )
-                        }));
+                    || column_actions
+                        .values()
+                        .any(|a| matches!(a, DiffAction::Replace | DiffAction::Delete));
+                // Rows already in the table read null in an added column. Only
+                // when the table surely exists: an `upsert` can recreate an
+                // externally dropped table empty, where those rows are missing.
+                let null_backfilled_columns =
+                    if main_action.is_none() && !recreate && spec.managed_by.is_system() {
+                        let schema = &spec.table_schema;
+                        schema
+                            .columns
+                            .iter()
+                            .filter(|(name, def)| {
+                                def.nullable
+                                    && !schema.primary_key.contains(name)
+                                    && matches!(
+                                        column_actions.get(name),
+                                        Some(DiffAction::Insert | DiffAction::Upsert)
+                                    )
+                            })
+                            .map(|(name, _)| name.clone())
+                            .collect()
+                    } else {
+                        BTreeSet::new()
+                    };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
+                        db_key,
                         table_name: spec.table_name.clone(),
                         spec: Some(spec),
                         recreate,
+                        null_backfilled_columns,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
                     child_invalidation: recreate.then_some(TargetChildInvalidation::Destructive),
                 }))
@@ -681,11 +759,13 @@ impl TargetHandler<TableSpec> for TableHandler {
                     .ok_or_else(|| Error::engine("cannot drop LanceDB table without prior spec"))?;
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
+                        db_key,
                         table_name,
                         spec: None,
                         recreate: false,
+                        null_backfilled_columns: BTreeSet::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -694,45 +774,40 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-impl TableHandler {
-    fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db_key = self.db_key.clone();
-        TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-                let db_key = db_key.clone();
-                async move {
-                    let db = resolve_db(&host_ctx, &db_key)?;
-                    for (action, child_slot) in actions {
-                        match action {
-                            TargetAction::Create(a) | TargetAction::Update(a) => {
-                                let spec = a.spec.ok_or_else(|| {
-                                    Error::engine("LanceDB create/update action missing spec")
-                                })?;
-                                let mut null_backfilled_columns = HashSet::new();
-                                if spec.managed_by.is_system() {
-                                    null_backfilled_columns =
-                                        ensure_table(&db, &spec, a.recreate).await?;
-                                }
-                                if let Some(slot) = child_slot {
-                                    slot.fulfill(ChildTargetDef::new::<RowState, _>(
-                                        RowHandler::new(
-                                            db_key.clone(),
-                                            spec,
-                                            null_backfilled_columns,
-                                        ),
-                                    ))?;
-                                }
-                            }
-                            TargetAction::Delete(a) => {
-                                drop_table(&db, &a.table_name).await?;
-                            }
+fn table_sink() -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        let spec = a.spec.ok_or_else(|| {
+                            Error::engine("LanceDB create/update action missing spec")
+                        })?;
+                        if spec.managed_by.is_system() {
+                            ensure_table(&db, &spec, a.recreate).await?;
                         }
                     }
-                    Ok(())
+                    TargetAction::Delete(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        drop_table(&db, &a.table_name).await?;
+                    }
                 }
-            },
-        )
-    }
+            }
+            Ok(())
+        },
+        |a: &TableAction| {
+            let spec = a
+                .spec
+                .clone()
+                .ok_or_else(|| Error::engine("LanceDB create/update action missing spec"))?;
+            Ok(ChildTargetDef::new::<RowState, _>(RowHandler::new(
+                a.db_key.clone(),
+                spec,
+                a.null_backfilled_columns.clone(),
+            )))
+        },
+    )
 }
 
 async fn table_exists(db: &LanceDatabase, table_name: &str) -> Result<bool> {
@@ -745,34 +820,57 @@ async fn table_exists(db: &LanceDatabase, table_name: &str) -> Result<bool> {
     Ok(names.iter().any(|n| n == table_name))
 }
 
-async fn ensure_table(
-    db: &LanceDatabase,
-    spec: &TableSpec,
-    recreate: bool,
-) -> Result<HashSet<String>> {
+async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> Result<()> {
     let exists = table_exists(db, &spec.table_name).await?;
     if exists && recreate {
         drop_table(db, &spec.table_name).await?;
     } else if exists {
         match evolve_existing_table(db, spec).await? {
-            TableEvolution::Done {
-                null_backfilled_columns,
-            } => return Ok(null_backfilled_columns),
+            TableEvolution::Done => return Ok(()),
             TableEvolution::Recreate => drop_table(db, &spec.table_name).await?,
         }
     }
+    create_empty_table(db, spec).await
+}
+
+async fn create_empty_table(db: &LanceDatabase, spec: &TableSpec) -> Result<()> {
     db.conn
         .create_empty_table(&spec.table_name, spec.table_schema.arrow_schema())
         .execute()
         .await
         .map_err(|e| Error::engine(format!("lancedb create table {:?}: {e}", spec.table_name)))?;
-    Ok(HashSet::new())
+    Ok(())
+}
+
+/// Open the table `table_name` for an index action. A missing table is created
+/// from `create_from` (set when the action creates the index): the engine
+/// applies one commit's sinks in no fixed order, so with
+/// [`declare_table_target`] the index sink can run before the table and row
+/// sinks. Only a missing table is created; schema evolution and recreation stay
+/// with the table sink, which owns them. Returns `None` (nothing to do) for a
+/// drop on a missing table.
+async fn open_table_for_index(
+    db: &LanceDatabase,
+    table_name: &str,
+    create_from: Option<&TableSpec>,
+) -> Result<Option<lancedb::table::Table>> {
+    if !table_exists(db, table_name).await? {
+        let Some(spec) = create_from else {
+            return Ok(None);
+        };
+        create_empty_table(db, spec).await?;
+    }
+    let table = db
+        .conn
+        .open_table(table_name)
+        .execute()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb open table for index: {e}")))?;
+    Ok(Some(table))
 }
 
 enum TableEvolution {
-    Done {
-        null_backfilled_columns: HashSet<String>,
-    },
+    Done,
     Recreate,
 }
 
@@ -788,7 +886,6 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
         .await
         .map_err(|e| Error::engine(format!("lancedb read schema: {e}")))?;
     let mut add_fields = Vec::new();
-    let mut null_backfilled_columns = HashSet::new();
     for (name, def) in &spec.table_schema.columns {
         match existing.field_with_name(name) {
             Ok(field) => {
@@ -804,9 +901,6 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
                 // type, including fixed-size-list vector columns — so adding a
                 // vector column is additive instead of wiping the table.
                 add_fields.push(Field::new(name, def.col_type.arrow_data_type(), true));
-                if def.nullable {
-                    null_backfilled_columns.insert(name.clone());
-                }
             }
         }
     }
@@ -817,9 +911,7 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
             .await
             .map_err(|e| Error::engine(format!("lancedb add columns: {e}")))?;
     }
-    Ok(TableEvolution::Done {
-        null_backfilled_columns,
-    })
+    Ok(TableEvolution::Done)
 }
 
 async fn drop_table(db: &LanceDatabase, table_name: &str) -> Result<()> {
@@ -858,22 +950,24 @@ struct RowAction {
 const TRANSACTIONS_BEFORE_OPTIMIZE: u64 = 50;
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
     /// Shared across this handler's per-batch sinks: a monotonic count of applied
     /// row-batches so the table is optimized every
     /// [`TRANSACTIONS_BEFORE_OPTIMIZE`] batches (see [`apply_rows`]).
     optimize_counter: Arc<std::sync::atomic::AtomicU64>,
-    null_backfilled_columns: HashSet<String>,
+    null_backfilled_columns: BTreeSet<String>,
 }
 
 impl RowHandler {
-    fn new(db_key: String, spec: TableSpec, null_backfilled_columns: HashSet<String>) -> Self {
+    fn new(db_key: String, spec: TableSpec, null_backfilled_columns: BTreeSet<String>) -> Self {
         Self {
             db_key,
             spec,
             optimize_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             null_backfilled_columns,
+            sink: SinkCache::default(),
         }
     }
 
@@ -927,7 +1021,7 @@ impl TargetHandler<RowState> for RowHandler {
         };
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -938,7 +1032,7 @@ impl TargetHandler<RowState> for RowHandler {
             && !prev.is_empty()
             && let Some(desired_state) = desired.as_ref()
             && let Some(legacy_fp) = self.legacy_fingerprint_for_null_backfill(desired_state)?
-            && prev.iter().any(|p| p == &legacy_fp)
+            && prev.iter().all(|p| p == &legacy_fp)
         {
             return Ok(Some(TargetReconcileOutput {
                 action: TargetAction::Update(RowAction {
@@ -946,7 +1040,7 @@ impl TargetHandler<RowState> for RowHandler {
                     state: None,
                     track_only: true,
                 }),
-                sink: self.row_sink(),
+                sink: self.sink.get(|| self.row_sink()),
                 tracking_record: desired_fp,
                 child_invalidation: None,
             }));
@@ -957,7 +1051,7 @@ impl TargetHandler<RowState> for RowHandler {
                 state: desired,
                 track_only: false,
             }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -971,13 +1065,17 @@ impl TargetHandler<RowState> for RowHandler {
             (
                 "vector_index".to_string(),
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
+                    table: self.spec.clone(),
                 }),
             ),
             (
                 "fts_index".to_string(),
                 ChildTargetDef::new::<FtsIndexSpec, _>(FtsIndexHandler {
+                    sink: SinkCache::default(),
                     db_key: self.db_key.clone(),
+                    table: self.spec.clone(),
                 }),
             ),
         ])
@@ -1078,7 +1176,7 @@ async fn apply_rows(
     // count via the atomic `fetch_add` and exactly one in N optimizes — no reset,
     // hence no lost-increment race or double-optimize.
     let count = optimize_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    if count % TRANSACTIONS_BEFORE_OPTIMIZE == 0 {
+    if count.is_multiple_of(TRANSACTIONS_BEFORE_OPTIMIZE) {
         table
             .optimize(lancedb::table::OptimizeAction::All)
             .await
@@ -1120,43 +1218,51 @@ fn build_record_batch(
         let array: ArrayRef = match &def.col_type {
             ColumnType::Bool => Arc::new(BooleanArray::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(JsonValue::as_bool))
+                    .map(|v| typed_value(name, def, v, "a boolean", JsonValue::as_bool))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Int16 => Arc::new(Int16Array::from(
                 values
                     .map(|v| {
-                        nullable_value(name, def, v)
-                            .map(|v| v.as_i64().and_then(|n| i16::try_from(n).ok()))
+                        typed_value(name, def, v, "a 16-bit integer", |v| {
+                            v.as_i64().and_then(|n| i16::try_from(n).ok())
+                        })
                     })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Int32 => Arc::new(Int32Array::from(
                 values
                     .map(|v| {
-                        nullable_value(name, def, v)
-                            .map(|v| v.as_i64().and_then(|n| i32::try_from(n).ok()))
+                        typed_value(name, def, v, "a 32-bit integer", |v| {
+                            v.as_i64().and_then(|n| i32::try_from(n).ok())
+                        })
                     })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Int64 => Arc::new(Int64Array::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_i64()))
+                    .map(|v| typed_value(name, def, v, "a 64-bit integer", JsonValue::as_i64))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Float32 => Arc::new(Float32Array::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_f64().map(|n| n as f32)))
+                    .map(|v| {
+                        typed_value(name, def, v, "a 32-bit float", |v| {
+                            v.as_f64().map(|n| n as f32).filter(|n| n.is_finite())
+                        })
+                    })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Float64 => Arc::new(Float64Array::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_f64()))
+                    .map(|v| typed_value(name, def, v, "a float", JsonValue::as_f64))
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Text => Arc::new(StringArray::from(
                 values
-                    .map(|v| nullable_value(name, def, v).map(|v| v.as_str().map(str::to_string)))
+                    .map(|v| {
+                        typed_value(name, def, v, "a string", |v| v.as_str().map(str::to_string))
+                    })
                     .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Binary => {
@@ -1279,6 +1385,10 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
 // ---------------------------------------------------------------------------
 
 fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, JsonValue>> {
+    // Reject non-finite floats up front: `serde_json` would turn NaN/±Inf into
+    // JSON null, silently storing a null.
+    crate::finite::ensure_finite(row)
+        .map_err(|e| Error::engine(format!("LanceDB target row has a {e}")))?;
     let value = serde_json::to_value(row)
         .map_err(|e| Error::engine(format!("serialize LanceDB target row: {e}")))?;
     let JsonValue::Object(mut fields) = value else {
@@ -1307,6 +1417,26 @@ fn nullable_value<'a>(name: &str, def: &ColumnDef, value: &'a JsonValue) -> Resu
         )));
     }
     Ok(value)
+}
+
+/// A non-null value converted to its column's Arrow type, or an error naming
+/// the column when it does not fit. A mismatch is never stored as null.
+fn typed_value<'a, T>(
+    name: &str,
+    def: &ColumnDef,
+    value: &'a JsonValue,
+    expected: &str,
+    convert: impl FnOnce(&'a JsonValue) -> Option<T>,
+) -> Result<Option<T>> {
+    let value = nullable_value(name, def, value)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    convert(value).map(Some).ok_or_else(|| {
+        Error::engine(format!(
+            "LanceDB column {name:?} expects {expected}, got {value}"
+        ))
+    })
 }
 
 fn validate_identifier(name: &str) -> Result<()> {
@@ -1558,7 +1688,11 @@ struct FtsIndexAction {
 }
 
 struct VectorIndexHandler {
+    sink: SinkCache<VectorIndexAction>,
     db_key: String,
+    /// The indexed table, created from this spec if missing when the index is
+    /// created (see [`open_table_for_index`]).
+    table: TableSpec,
 }
 
 impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
@@ -1574,7 +1708,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
     ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -1596,7 +1730,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
                 table_name,
                 managed_by,
             }),
-            sink: self.sink(),
+            sink: self.sink.get(|| self.sink()),
             tracking_record: desired,
             child_invalidation: None,
         }))
@@ -1606,9 +1740,11 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
 impl VectorIndexHandler {
     fn sink(&self) -> TargetActionSink<VectorIndexAction> {
         let db_key = self.db_key.clone();
+        let table = self.table.clone();
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
                 let db_key = db_key.clone();
+                let table = table.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     for action in actions {
@@ -1617,7 +1753,7 @@ impl VectorIndexHandler {
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        apply_vector_index(&db, action).await?;
+                        apply_vector_index(&db, &table, action).await?;
                     }
                     Ok(())
                 }
@@ -1627,7 +1763,11 @@ impl VectorIndexHandler {
 }
 
 struct FtsIndexHandler {
+    sink: SinkCache<FtsIndexAction>,
     db_key: String,
+    /// The indexed table, created from this spec if missing when the index is
+    /// created (see [`open_table_for_index`]).
+    table: TableSpec,
 }
 
 impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
@@ -1643,7 +1783,7 @@ impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
     ) -> Result<Option<TargetReconcileOutput<FtsIndexAction, FtsIndexSpec>>> {
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -1665,7 +1805,7 @@ impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
                 table_name,
                 managed_by,
             }),
-            sink: self.sink(),
+            sink: self.sink.get(|| self.sink()),
             tracking_record: desired,
             child_invalidation: None,
         }))
@@ -1675,9 +1815,11 @@ impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
 impl FtsIndexHandler {
     fn sink(&self) -> TargetActionSink<FtsIndexAction> {
         let db_key = self.db_key.clone();
+        let table = self.table.clone();
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<FtsIndexAction>>| {
                 let db_key = db_key.clone();
+                let table = table.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     for action in actions {
@@ -1686,7 +1828,7 @@ impl FtsIndexHandler {
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        apply_fts_index(&db, action).await?;
+                        apply_fts_index(&db, &table, action).await?;
                     }
                     Ok(())
                 }
@@ -1722,7 +1864,11 @@ async fn drop_index_if_exists(table: &lancedb::table::Table, name: &str) -> Resu
     Ok(())
 }
 
-async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Result<()> {
+async fn apply_vector_index(
+    db: &LanceDatabase,
+    table_spec: &TableSpec,
+    action: VectorIndexAction,
+) -> Result<()> {
     use lancedb::index::Index;
     use lancedb::index::vector::{IvfHnswPqIndexBuilder, IvfPqIndexBuilder};
 
@@ -1732,15 +1878,15 @@ async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Re
     if action.managed_by.is_user() {
         return Ok(());
     }
-    if !table_exists(db, &action.table_name).await? {
+    let Some(table) = open_table_for_index(
+        db,
+        &action.table_name,
+        (action.spec.is_some() && table_spec.managed_by.is_system()).then_some(table_spec),
+    )
+    .await?
+    else {
         return Ok(());
-    }
-    let table = db
-        .conn
-        .open_table(&action.table_name)
-        .execute()
-        .await
-        .map_err(|e| Error::engine(format!("lancedb open table for vector index: {e}")))?;
+    };
 
     let Some(spec) = action.spec else {
         return drop_index_if_exists(&table, &action.name).await;
@@ -1795,7 +1941,11 @@ async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Re
         .map_err(|e| Error::engine(format!("lancedb create vector index {:?}: {e}", spec.name)))
 }
 
-async fn apply_fts_index(db: &LanceDatabase, action: FtsIndexAction) -> Result<()> {
+async fn apply_fts_index(
+    db: &LanceDatabase,
+    table_spec: &TableSpec,
+    action: FtsIndexAction,
+) -> Result<()> {
     use lancedb::index::Index;
     use lancedb::index::scalar::FtsIndexBuilder;
 
@@ -1804,15 +1954,15 @@ async fn apply_fts_index(db: &LanceDatabase, action: FtsIndexAction) -> Result<(
     if action.managed_by.is_user() {
         return Ok(());
     }
-    if !table_exists(db, &action.table_name).await? {
+    let Some(table) = open_table_for_index(
+        db,
+        &action.table_name,
+        (action.spec.is_some() && table_spec.managed_by.is_system()).then_some(table_spec),
+    )
+    .await?
+    else {
         return Ok(());
-    }
-    let table = db
-        .conn
-        .open_table(&action.table_name)
-        .execute()
-        .await
-        .map_err(|e| Error::engine(format!("lancedb open table for fts index: {e}")))?;
+    };
 
     let Some(spec) = action.spec else {
         return drop_index_if_exists(&table, &action.name).await;
@@ -1953,6 +2103,88 @@ mod tests {
                 .map(|(name, value)| (name.to_string(), value))
                 .collect(),
         }
+    }
+
+    fn docs_spec(columns: &[(&'static str, ColumnDef)], managed_by: ManagedBy) -> TableSpec {
+        TableSpec {
+            table_name: "docs".to_string(),
+            table_schema: TableSchema::new(columns.iter().cloned(), ["id"]).unwrap(),
+            managed_by,
+        }
+    }
+
+    /// The `null_backfilled_columns` the table handler plans for `desired`
+    /// against the previously tracked `prev` specs.
+    fn planned_null_backfill(
+        prev: &[&TableSpec],
+        desired: &TableSpec,
+        prev_may_be_missing: bool,
+    ) -> Vec<String> {
+        let key = TableKey {
+            db_key: "db".to_string(),
+            table_name: "docs".to_string(),
+        }
+        .stable_key();
+        let prev = prev
+            .iter()
+            .map(|spec| MutualTrackingRecord::new(table_tracking_record(spec), spec.managed_by))
+            .collect();
+        let output = TableHandler::default()
+            .reconcile(key, Some(desired.clone()), prev, prev_may_be_missing)
+            .unwrap()
+            .expect("a declared table always emits an action");
+        let (TargetAction::Create(action) | TargetAction::Update(action)) = output.action else {
+            panic!("a declared table emits a create or an update");
+        };
+        action.null_backfilled_columns.into_iter().collect()
+    }
+
+    /// Rows read null in a column added to a table that surely exists — and
+    /// only then: a new, possibly missing, user-managed or recreated table
+    /// gets its rows written again.
+    #[test]
+    fn null_backfill_only_for_nullable_columns_added_to_a_surely_existing_table() {
+        let id = ("id", ColumnDef::new(ColumnType::Int64));
+        let name = ("name", ColumnDef::new(ColumnType::Text));
+        let summary = ("summary", ColumnDef::new(ColumnType::Text).nullable());
+        let base = docs_spec(&[id.clone(), name.clone()], ManagedBy::System);
+        let with_summary = docs_spec(
+            &[id.clone(), name.clone(), summary.clone()],
+            ManagedBy::System,
+        );
+
+        assert_eq!(
+            planned_null_backfill(&[&base], &with_summary, false),
+            vec!["summary"]
+        );
+        // A non-nullable column has no null to backfill.
+        let with_score = docs_spec(
+            &[
+                id.clone(),
+                name.clone(),
+                ("score", ColumnDef::new(ColumnType::Float64)),
+            ],
+            ManagedBy::System,
+        );
+        assert!(planned_null_backfill(&[&base], &with_score, false).is_empty());
+        // The table may be missing (e.g. dropped outside CocoIndex).
+        assert!(planned_null_backfill(&[&base], &with_summary, true).is_empty());
+        // A new table has no rows.
+        assert!(planned_null_backfill(&[], &with_summary, false).is_empty());
+        // A retyped column recreates the table.
+        let retyped = docs_spec(
+            &[
+                id.clone(),
+                ("name", ColumnDef::new(ColumnType::Int64)),
+                summary.clone(),
+            ],
+            ManagedBy::System,
+        );
+        assert!(planned_null_backfill(&[&base], &retyped, false).is_empty());
+        // CocoIndex does not evolve a user-managed table.
+        let user_base = docs_spec(&[id.clone(), name.clone()], ManagedBy::User);
+        let user_with_summary = docs_spec(&[id, name, summary], ManagedBy::User);
+        assert!(planned_null_backfill(&[&user_base], &user_with_summary, false).is_empty());
     }
 
     fn row_handler(null_backfilled_columns: impl IntoIterator<Item = &'static str>) -> RowHandler {
@@ -2194,5 +2426,54 @@ mod tests {
         let batch = build_record_batch(&s, &arrow, &[row]).unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert!(batch.column(1).is_null(0));
+    }
+
+    #[test]
+    fn build_batch_rejects_values_that_do_not_fit_instead_of_storing_null() {
+        let s = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Text)),
+                ("count", ColumnDef::new(ColumnType::Int16).nullable()),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        let arrow = s.arrow_schema();
+        let row = |id: JsonValue, count: JsonValue| {
+            Map::from_iter([("id".to_string(), id), ("count".to_string(), count)])
+        };
+
+        let overflow = build_record_batch(&s, &arrow, &[row("a".into(), 70_000.into())]);
+        assert!(overflow.unwrap_err().to_string().contains("\"count\""));
+        // A numeric primary key for a text column would otherwise be stored as
+        // a null key that no later delete can match.
+        assert!(build_record_batch(&s, &arrow, &[row(42.into(), JsonValue::Null)]).is_err());
+        assert!(build_record_batch(&s, &arrow, &[row("a".into(), 7.into())]).is_ok());
+    }
+
+    #[test]
+    fn row_state_rejects_non_finite_floats() {
+        #[derive(serde::Serialize)]
+        struct Row {
+            id: i64,
+            score: f64,
+        }
+        let s = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Int64)),
+                ("score", ColumnDef::new(ColumnType::Float64).nullable()),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        let err = row_state(
+            &Row {
+                id: 1,
+                score: f64::NAN,
+            },
+            &s,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("LanceDB target row"), "{err}");
     }
 }

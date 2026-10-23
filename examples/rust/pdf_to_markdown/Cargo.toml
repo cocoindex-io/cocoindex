@@ -9,4 +9,4 @@ edition = "2024"
 cocoindex = { path = "../../../rust/sdk/cocoindex" }
 tokio = { version = "1", features = ["full"] }
 # PDF text extraction (Rust-native stand-in for Python's docling converter).
-lopdf = "0.40"
+lopdf = "0.42"

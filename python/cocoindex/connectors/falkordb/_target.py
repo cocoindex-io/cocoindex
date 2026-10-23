@@ -3,7 +3,9 @@ FalkorDB target for CocoIndex.
 
 Two-level state system:
 1. Table level — creates/drops Cypher indexes (and best-effort unique
-   constraints) for node labels and relationship types.
+   constraints) for node labels and relationship types. A system-managed
+   table owns its label / relationship type: dropping it deletes every node
+   or relationship there before the index goes.
 2. Record level — upserts/deletes nodes via Cypher MERGE and edges via
    triple-MERGE (source, target, relationship).
 
@@ -19,13 +21,13 @@ import decimal
 import logging
 import uuid as uuid_mod
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from typing import (
     Any,
     Callable,
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     TYPE_CHECKING,
@@ -33,13 +35,15 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import falkordb as _falkordb  # noqa: F401  # type: ignore[import-untyped]
     import falkordb.asyncio as _falkordb_asyncio  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "falkordb is required to use the FalkorDB connector. "
-        "Please install cocoindex[falkordb]."
+        + install_hint("falkordb")
     ) from e
 
 if TYPE_CHECKING:
@@ -68,6 +72,7 @@ from cocoindex._internal.datatype import (
 
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+from cocoindex.connectorkits._per_loop_connections import PerLoopConnections
 
 from . import _cypher
 
@@ -91,10 +96,12 @@ class ConnectionFactory:
     """
     Connection factory for FalkorDB.
 
-    Holds connection parameters and yields a graph handle on demand. The graph
-    name is part of the factory (not the table key) — different graphs in the
-    same Redis instance are addressed via separate ``ConnectionFactory`` /
-    ``ContextKey`` pairs.
+    Holds connection parameters and lazily creates a connection-pooled async
+    client per event loop, shared by every table and apply batch on that loop,
+    that yields a graph handle on demand. The graph name is part of the factory (not the table key) —
+    different graphs in the same Redis instance are addressed via separate
+    ``ConnectionFactory`` / ``ContextKey`` pairs. Call :meth:`close` at
+    shutdown to close the client.
 
     Example::
 
@@ -109,15 +116,44 @@ class ConnectionFactory:
         _validate_identifier(graph, "graph name")
         self._uri = uri
         self._graph = graph
+        self._connections: PerLoopConnections[AsyncFalkorDB] = PerLoopConnections(
+            self._open_client, _close_client, owner="FalkorDB ConnectionFactory"
+        )
 
     @property
     def graph(self) -> str:
         return self._graph
 
+    def __coco_memo_key__(self) -> tuple[str, str | None, int | None, str, str]:
+        # Where the data lives, not how to sign in: the URI's user info and
+        # query (either can carry the password) and the open clients are
+        # not part of it.
+        parts = urlsplit(self._uri)
+        return (parts.scheme, parts.hostname, parts.port, parts.path, self._graph)
+
     async def acquire(self) -> Any:
-        """Return an AsyncGraph handle ready to issue ``query(cypher, params)``."""
-        client = AsyncFalkorDB.from_url(self._uri)
+        """Return an AsyncGraph handle ready to issue ``query(cypher, params)``.
+
+        The factory keeps one client per event loop (a client is bound to the
+        loop it is used on), created on the loop's first ``acquire()`` and
+        reused after.
+        """
+        client = await self._connections.acquire()
         return client.select_graph(self._graph)
+
+    async def _open_client(self) -> AsyncFalkorDB:
+        return AsyncFalkorDB.from_url(self._uri)
+
+    async def close(self) -> None:
+        """Close the client of the running event loop, if any. Call it on the
+        loop that used the factory (e.g. in the lifespan, after ``yield``); a
+        later ``acquire()`` creates a new client. Clients of other loops can't
+        be closed here; they are left open, with a warning."""
+        await self._connections.close()
+
+
+async def _close_client(client: AsyncFalkorDB) -> None:
+    await client.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -441,8 +477,13 @@ class _RecordAction(NamedTuple):
     to_id: Any | None
 
 
+@dataclass(frozen=True)
 class _SharedRecordApplier:
-    """Owns a TargetActionSink shared by all record handlers for one graph.
+    """The record sink callback shared by every record handler of one graph.
+
+    Equal for the same ``ConnectionFactory``, so the record sinks of all tables
+    of one graph — node and relation tables alike — share one identity (see
+    ``coco.TargetActionSink``) and the engine batches their actions together.
 
     FalkorDB does not support multi-statement Cypher transactions, so each
     action issues its own ``graph.query(cypher, params)`` call. Actions are
@@ -451,14 +492,9 @@ class _SharedRecordApplier:
     incremental updates.
     """
 
-    _graph: Any
-    sink: coco.TargetActionSink[_RecordAction]
+    factory: ConnectionFactory
 
-    def __init__(self, graph: Any) -> None:
-        self._graph = graph
-        self.sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
+    async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[_RecordAction]
     ) -> None:
         if not actions:
@@ -481,16 +517,18 @@ class _SharedRecordApplier:
                 else:
                     delete_normal.append(action)
 
+        graph = await self.factory.acquire()
         for action in upsert_normal:
-            await self._apply_node_upsert(action)
+            await self._apply_node_upsert(graph, action)
         for action in upsert_relation:
-            await self._apply_relation_upsert(action)
+            await self._apply_relation_upsert(graph, action)
         for action in delete_relation:
-            await self._apply_relation_delete(action)
+            await self._apply_relation_delete(graph, action)
         for action in delete_normal:
-            await self._apply_node_delete(action)
+            await self._apply_node_delete(graph, action)
 
-    async def _apply_node_upsert(self, action: _RecordAction) -> None:
+    @staticmethod
+    async def _apply_node_upsert(graph: Any, action: _RecordAction) -> None:
         assert action.value is not None
         # PK is always single-field in v1.0; props are everything except the PK.
         pk_value = action.value.get(action.pk_field, action.record_id)
@@ -503,15 +541,17 @@ class _SharedRecordApplier:
         params: dict[str, Any] = {"key_0": pk_value}
         if props:
             params["props"] = props
-        await self._graph.query(cypher, params)
+        await graph.query(cypher, params)
 
-    async def _apply_node_delete(self, action: _RecordAction) -> None:
+    @staticmethod
+    async def _apply_node_delete(graph: Any, action: _RecordAction) -> None:
         cypher = _cypher.build_node_delete(
             label=action.table_name, pk_fields=[action.pk_field]
         )
-        await self._graph.query(cypher, {"key_0": action.record_id})
+        await graph.query(cypher, {"key_0": action.record_id})
 
-    async def _apply_relation_upsert(self, action: _RecordAction) -> None:
+    @staticmethod
+    async def _apply_relation_upsert(graph: Any, action: _RecordAction) -> None:
         assert action.value is not None
         assert action.from_label is not None and action.from_pk_field is not None
         assert action.to_label is not None and action.to_pk_field is not None
@@ -532,13 +572,14 @@ class _SharedRecordApplier:
         }
         if props:
             params["props"] = props
-        await self._graph.query(cypher, params)
+        await graph.query(cypher, params)
 
-    async def _apply_relation_delete(self, action: _RecordAction) -> None:
+    @staticmethod
+    async def _apply_relation_delete(graph: Any, action: _RecordAction) -> None:
         cypher = _cypher.build_relationship_delete(
             rel_type=action.table_name, pk_fields=[action.pk_field]
         )
-        await self._graph.query(cypher, {"key_0": action.record_id})
+        await graph.query(cypher, {"key_0": action.record_id})
 
 
 # ---------------------------------------------------------------------------
@@ -581,25 +622,23 @@ class _VectorIndexAction(NamedTuple):
 _VectorIndexTrackingRecord = _VectorIndexSpec
 
 
-class _VectorIndexHandler:
-    """Attachment handler for vector indexes on a FalkorDB node label."""
+@dataclass(frozen=True)
+class _VectorIndexApplier:
+    """The vector index sink callback of one graph (equal for the same
+    ``ConnectionFactory``, so one sink identity per graph)."""
 
-    _graph: Any
-    _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction]
+    factory: ConnectionFactory
 
-    def __init__(self, graph: Any, table_name: str) -> None:
-        self._graph = graph
-        self._table_name = table_name
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
+    async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
     ) -> None:
+        if not actions:
+            return
+        graph = await self.factory.acquire()
         for action in actions:
             if action.spec is None:
                 try:
-                    await self._graph.query(
+                    await graph.query(
                         _cypher.build_vector_index_drop(action.table_name, action.field)
                     )
                 except Exception as e:  # noqa: BLE001
@@ -613,7 +652,7 @@ class _VectorIndexHandler:
 
             # Drop-and-recreate so a metric/dimension change takes effect.
             try:
-                await self._graph.query(
+                await graph.query(
                     _cypher.build_vector_index_drop(
                         action.table_name, action.spec.field
                     )
@@ -623,7 +662,7 @@ class _VectorIndexHandler:
                     "FalkorDB DROP VECTOR INDEX (pre-create best-effort) failed: %s",
                     e,
                 )
-            await self._graph.query(
+            await graph.query(
                 _cypher.build_vector_index_create(
                     label=action.table_name,
                     field=action.spec.field,
@@ -633,6 +672,17 @@ class _VectorIndexHandler:
                     ),
                 )
             )
+
+
+class _VectorIndexHandler:
+    """Attachment handler for vector indexes on a FalkorDB node label."""
+
+    _table_name: str
+    _sink: coco.TargetActionSink[_VectorIndexAction]
+
+    def __init__(self, factory: ConnectionFactory, table_name: str) -> None:
+        self._table_name = table_name
+        self._sink = coco.TargetActionSink.from_async_fn(_VectorIndexApplier(factory))
 
     def reconcile(
         self,
@@ -693,7 +743,11 @@ class _VectorIndexHandler:
 
 
 class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
-    """Handler for record-level target states within a FalkorDB table."""
+    """Handler for record-level target states within a FalkorDB table.
+
+    Built by the table sink's ``child_handler`` factory, so it holds no
+    connection: its sinks acquire one when they apply.
+    """
 
     tracks_value_fingerprint = True
 
@@ -701,7 +755,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _is_relation: bool
     _pk_field: str
     _table_schema: TableSchema[Any] | None
-    _graph: Any
+    _factory: ConnectionFactory
     _sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(
@@ -710,21 +764,20 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         is_relation: bool,
         pk_field: str,
         table_schema: TableSchema[Any] | None,
-        graph: Any,
-        sink: coco.TargetActionSink[_RecordAction],
+        factory: ConnectionFactory,
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
         self._pk_field = pk_field
         self._table_schema = table_schema
-        self._graph = graph
-        self._sink = sink
+        self._factory = factory
+        self._sink = coco.TargetActionSink.from_async_fn(_SharedRecordApplier(factory))
 
     def attachments(self) -> dict[str, _VectorIndexHandler]:
         # Eagerly declare all attachment types so the engine can cleanup
         # orphaned attachments even on runs that don't re-declare them.
         return {
-            "vector_index": _VectorIndexHandler(self._graph, self._table_name),
+            "vector_index": _VectorIndexHandler(self._factory, self._table_name),
         }
 
     def _encode_row(self, row_dict: dict[str, Any]) -> dict[str, Any]:
@@ -838,12 +891,18 @@ class _TableSpec:
 
 
 class _TableMainRecord(msgspec.Struct, frozen=True):
-    """Tracking record for table-level properties — change ⇒ DROP+CREATE index."""
+    """Identity-defining table properties.
 
-    has_schema: bool
+    A change here means existing nodes / relationships can no longer be
+    matched record by record (their MERGE key pattern changed), so the table
+    is rebuilt: contents deleted, DDL artifact recreated, children re-declared
+    from scratch. Everything else about the schema is tracked per field —
+    FalkorDB has no server-side property types, so a field change at most
+    re-upserts the records (lossy), never rebuilds.
+    """
+
     is_relation: bool
     primary_key: str
-    pk_type: str | None
     from_label: str | None
     from_pk_field: str | None
     to_label: str | None
@@ -851,9 +910,9 @@ class _TableMainRecord(msgspec.Struct, frozen=True):
 
 
 class _FieldTrackingRecord(msgspec.Struct, frozen=True):
-    """Per-field tracking record. FalkorDB has no per-field DDL, so this is
-    fingerprint-only — schema fingerprint stability lets two flows share a
-    table only if they declare matching columns."""
+    """Per-field tracking record, primary key included. FalkorDB has no
+    per-field DDL, so this is fingerprint-only — schema fingerprint stability
+    lets two flows share a table only if they declare matching columns."""
 
     falkor_type: str
     nullable: bool
@@ -873,9 +932,9 @@ class _TableAction(NamedTuple):
     main_action: statediff.DiffAction | None
     column_actions: dict[str, statediff.DiffAction]
     # Recovered from the most recent system-managed prev tracking record.
-    # Needed on "delete"/"replace" to know what artifact to drop, since
-    # FalkorDB has no IF EXISTS for DROP INDEX and we have to identify the
-    # index by its underlying field set.
+    # Needed on "delete"/"replace" to know what to destroy: FalkorDB has no
+    # IF EXISTS for DROP INDEX, so the index is identified by its underlying
+    # field set.
     prev_pk_field: str | None
     prev_is_relation: bool
 
@@ -883,28 +942,17 @@ class _TableAction(NamedTuple):
 def _table_composite_tracking_record_from_spec(
     spec: _TableSpec,
 ) -> statediff.CompositeTrackingRecord[_TableMainRecord, str, _FieldTrackingRecord]:
-    schema = spec.table_schema
-    has_schema = schema is not None
-    pk_type: str | None = None
     sub: dict[str, _FieldTrackingRecord] = {}
-
-    if schema is not None:
-        pk_col = schema.columns.get(spec.primary_key)
-        if pk_col is not None:
-            pk_type = pk_col.type
-        for col_name, col_def in schema.columns.items():
-            if col_name == spec.primary_key:
-                continue
+    if spec.table_schema is not None:
+        for col_name, col_def in spec.table_schema.columns.items():
             sub[_field_subkey(col_name)] = _FieldTrackingRecord(
                 falkor_type=col_def.type,
                 nullable=col_def.nullable,
             )
 
     main = _TableMainRecord(
-        has_schema=has_schema,
         is_relation=spec.is_relation,
         primary_key=spec.primary_key,
-        pk_type=pk_type,
         from_label=spec.from_label,
         from_pk_field=spec.from_pk_field,
         to_label=spec.to_label,
@@ -931,8 +979,23 @@ class _TableHandler(
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._record_handler
+        )
+
+    @staticmethod
+    def _record_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RecordHandler:
+        """The record handler for a created or updated table's records."""
+        spec = action.spec
+        assert not coco.is_non_existence(spec)
+        return _RecordHandler(
+            table_name=action.key.table_name,
+            is_relation=spec.is_relation,
+            pk_field=spec.primary_key,
+            table_schema=spec.table_schema,
+            factory=context_provider.get(action.key.db_key, ConnectionFactory),
         )
 
     def reconcile(
@@ -1000,7 +1063,7 @@ class _TableHandler(
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if main_action == "replace":
-            # Index is dropped and recreated — all rows lose their tracking.
+            # The table is rebuilt: its contents are deleted and re-declared.
             child_invalidation = "destructive"
         elif any(a != "insert" for a in column_actions.values()):
             # FalkorDB has no per-field DDL so column changes don't actually
@@ -1026,48 +1089,43 @@ class _TableHandler(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RecordHandler]],
         /,
     ) -> None:
-        # Group by db_key so each Redis connection is acquired once per batch.
-        by_db: dict[str, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_db.setdefault(action.key.db_key, []).append(i)
+        # Group by db_key so each graph is acquired once per batch.
+        by_db: dict[str, list[_TableAction]] = {}
+        for action in actions:
+            by_db.setdefault(action.key.db_key, []).append(action)
 
-        for db_key, idxs in by_db.items():
-            factory: ConnectionFactory = context_provider.get(db_key)  # type: ignore[assignment]
-            graph = await factory.acquire()
-            shared_applier = _SharedRecordApplier(graph)
+        for db_key, db_actions in by_db.items():
+            graph = await context_provider.get(db_key, ConnectionFactory).acquire()
 
             # Order: create nodes → create relations → drop relations → drop nodes.
             # Mirrors v0's apply_mutation ordering so dependent edges don't
             # reference indexes that haven't been created (or have been dropped).
-            create_normal: list[int] = []
-            create_relation: list[int] = []
-            remove_relation: list[int] = []
-            remove_normal: list[int] = []
+            create_normal: list[_TableAction] = []
+            create_relation: list[_TableAction] = []
+            remove_relation: list[_TableAction] = []
+            remove_normal: list[_TableAction] = []
 
-            for i in idxs:
-                action = actions[i]
+            for action in db_actions:
                 if coco.is_non_existence(action.spec):
                     if action.is_relation:
-                        remove_relation.append(i)
+                        remove_relation.append(action)
                     else:
-                        remove_normal.append(i)
+                        remove_normal.append(action)
                 else:
                     if action.is_relation:
-                        create_relation.append(i)
+                        create_relation.append(action)
                     else:
-                        create_normal.append(i)
+                        create_normal.append(action)
 
-            ordered = create_normal + create_relation + remove_relation + remove_normal
-
-            for i in ordered:
-                action = actions[i]
+            for action in (
+                create_normal + create_relation + remove_relation + remove_normal
+            ):
                 spec = action.spec
 
                 if action.main_action in ("replace", "delete"):
-                    await self._drop_table_artifacts(graph, action.key, action)
+                    await self._drop_table(graph, action.key, action)
 
                 if coco.is_non_existence(spec):
                     continue
@@ -1076,17 +1134,6 @@ class _TableHandler(
                     await self._create_table(graph, action.key, spec)
                 # FalkorDB has no incremental column DDL — column_actions are
                 # tracked for fingerprint stability but not applied here.
-
-                child_slots[i].fulfill(
-                    _RecordHandler(
-                        table_name=action.key.table_name,
-                        is_relation=spec.is_relation,
-                        pk_field=spec.primary_key,
-                        table_schema=spec.table_schema,
-                        graph=graph,
-                        sink=shared_applier.sink,
-                    )
-                )
 
     @staticmethod
     async def _create_table(graph: Any, key: _TableKey, spec: _TableSpec) -> None:
@@ -1147,10 +1194,19 @@ class _TableHandler(
                 )
 
     @staticmethod
-    async def _drop_table_artifacts(
-        graph: Any, key: _TableKey, action: _TableAction
-    ) -> None:
-        """Drop the supporting Cypher index + unique constraint on table teardown.
+    async def _drop_table(graph: Any, key: _TableKey, action: _TableAction) -> None:
+        """Destroy the table: delete its contents, then its index + constraint.
+
+        A system-managed table owns its label / relationship type the way a
+        Postgres table owns its rows: every node carrying the label (with the
+        relationships attached to it) or every relationship of the type is
+        deleted, whoever wrote it. The engine prunes the records' tracking
+        without reconciling them once their container is gone, so this is
+        where their data goes away. A label shared with data CocoIndex does
+        not own belongs in a ``managed_by="user"`` table, which never gets
+        here.
+        The content delete must succeed; the DDL drops stay best-effort
+        (FalkorDB has no IF EXISTS).
 
         Uses ``prev_pk_field`` recovered during reconcile from the previous
         tracking record — that's what was actually CREATEd, so it's what we
@@ -1165,6 +1221,10 @@ class _TableHandler(
             is_relation = action.spec.is_relation
         if pk_field is None:
             return  # Nothing to drop.
+        if is_relation:
+            await graph.query(_cypher.build_relationship_delete_all(key.table_name))
+        else:
+            await graph.query(_cypher.build_node_delete_all(key.table_name))
         entity_kind = "RELATIONSHIP" if is_relation else "NODE"
         try:
             await _exec_constraint(

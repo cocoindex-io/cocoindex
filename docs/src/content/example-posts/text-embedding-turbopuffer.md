@@ -8,9 +8,9 @@ tags: [vector-index, turbopuffer]
 
 ![Semantic Search with Turbopuffer using CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-turbopuffer/cover.png)
 
-This is the [Semantic Search 101 example](https://cocoindex.io/docs/examples/text-embedding/) with one thing swapped: instead of storing the vectors in Postgres with pgvector, we write them to a [Turbopuffer](https://turbopuffer.com/) namespace — a managed, serverless vector store, so there's no database to run yourself. The chunking and embedding are identical; only the target changes.
+This is the [Semantic Search 101 example](/docs/examples/text-embedding/) with one thing swapped: instead of storing the vectors in Postgres with pgvector, we write them to a [Turbopuffer](https://turbopuffer.com/) namespace — a managed, serverless vector store, so there's no database to run yourself. The chunking and embedding are identical; only the target changes.
 
-Everything else stays the same: ordinary `async` Python and your own types, with [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, and managed targets running in the Rust engine underneath — so when a file changes, only the affected chunks get re-embedded and re-upserted.
+Everything else stays the same: ordinary `async` Python and your own types, with [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and managed targets running in the Rust engine underneath — so when a file changes, only the affected chunks get re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer)
 
@@ -21,16 +21,16 @@ Everything else stays the same: ordinary `async` Python and your own types, with
 From a high level, these are the steps:
 
 1. Read Markdown files from a local directory.
-2. [Split each file into overlapping chunks](https://cocoindex.io/docs/ops/text/), then [embed](https://cocoindex.io/docs/ops/sentence_transformers/) every chunk.
-3. Upsert each chunk and its embedding as a row in a Turbopuffer namespace (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+2. [Split each file into overlapping chunks](/docs/ops/text/), then [embed](/docs/ops/sentence_transformers/) every chunk.
+3. Upsert each chunk and its embedding as a row in a Turbopuffer namespace (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
-For the chunk-and-embed half of the pipeline — `process_file`, `RecursiveSplitter`, and `SentenceTransformerEmbedder` — read the [base walkthrough](https://cocoindex.io/docs/examples/text-embedding/). Here we focus on the one part that differs: the Turbopuffer target.
+For the chunk-and-embed half of the pipeline — `process_file`, `RecursiveSplitter`, and `SentenceTransformerEmbedder` — read the [base walkthrough](/docs/examples/text-embedding/). Here we focus on the one part that differs: the Turbopuffer target.
 
 ## Set up the Turbopuffer client
 
-Turbopuffer is a cloud service, so the [shared resource](https://cocoindex.io/docs/programming_guide/context/) the pipeline needs is an API client rather than a database pool. We provide an `AsyncTurbopuffer` client in the lifespan, alongside the embedder, keyed off the `TURBOPUFFER_API_KEY` env var.
+Turbopuffer is a cloud service, so the [shared resource](/docs/programming_guide/context/) the pipeline needs is an API client rather than a database pool. We provide an `AsyncTurbopuffer` client in the lifespan, alongside the embedder, keyed off the `TURBOPUFFER_API_KEY` env var.
 
 ```python title="main.py"
 TPUF_REGION = os.environ.get("TURBOPUFFER_REGION", "gcp-us-central1")
@@ -79,11 +79,11 @@ async def process_chunk(
     )
 ```
 
-`target.declare_row` declares the row as a target state; CocoIndex handles upserting and deleting it to match. The `id` is [derived from the chunk's text](https://cocoindex.io/docs/common_resources/id_generation/), so unchanged chunks keep their id and embedding across runs.
+`target.declare_row` declares the row as a target state; CocoIndex handles upserting and deleting it to match. The `id` is [derived from the chunk's text](/docs/common_resources/id_generation/), so unchanged chunks keep their id and embedding across runs.
 
 ## Mount the namespace target
 
-`app_main` mounts the namespace, then fans out one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file. The vector schema comes straight from the embedder, so the namespace's dimension matches what we write.
+`app_main` mounts the namespace, then fans out one [processing component](/docs/programming_guide/processing_component/) per file. The vector schema comes straight from the embedder, so the namespace's dimension matches what we write.
 
 ```python title="main.py"
 @coco.fn
@@ -104,7 +104,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     await coco.mount_each(process_file, files.items(), target_namespace)
 ```
 
-`mount_namespace_target` creates and manages the Turbopuffer namespace for you: schema, idempotent upserts, and orphan cleanup when a file disappears. `live=True` makes the [filesystem source](https://cocoindex.io/docs/connectors/localfs/) [watch for changes](https://cocoindex.io/docs/programming_guide/live_mode/), and `mount_each` runs one component per file so the engine can track and update them independently.
+`mount_namespace_target` creates and manages the Turbopuffer namespace for you: schema, idempotent upserts, and orphan cleanup when a file disappears. `live=True` makes the [filesystem source](/docs/connectors/localfs/) [watch for changes](/docs/programming_guide/live_mode/), and `mount_each` runs one component per file so the engine can track and update them independently.
 
 ## Setup and run
 
@@ -122,7 +122,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
 
 - A few `.md` files in a `markdown_files/` directory — grab the [sample file](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer/markdown_files) from the repo or drop in your own.
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build and update the index, then query it from the command line:
+Run the [`cocoindex` CLI](/docs/cli/) to build and update the index, then query it from the command line:
 
 ```sh
 # Catch-up run: scan, sync, exit
@@ -149,4 +149,4 @@ The same machinery covers **logic** changes: tune the chunk size or swap the emb
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/text_embedding_turbopuffer](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer). To swap the store for self-hosted Postgres instead, see the [base Semantic Search 101 example](https://cocoindex.io/docs/examples/text-embedding/). Questions? Come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s), and if this helped, a [star on GitHub](https://github.com/cocoindex-io/cocoindex) goes a long way.
+The full, runnable example is in the CocoIndex repo: [examples/text_embedding_turbopuffer](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer). To swap the store for self-hosted Postgres instead, see the [base Semantic Search 101 example](/docs/examples/text-embedding/). Questions? Come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s), and if this helped, a [star on GitHub](https://github.com/cocoindex-io/cocoindex) goes a long way.

@@ -1,6 +1,6 @@
 import uuid
 import pytest
-from typing import Any, Collection, NamedTuple
+from typing import Any, Collection
 import cocoindex as coco
 from tests import common
 from tests.common.target_states import DictDataWithPrev, Metrics

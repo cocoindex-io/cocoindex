@@ -14,7 +14,7 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass
-from typing import Collection, Mapping, Sequence
+from typing import Collection, Sequence
 
 import cocoindex as coco
 
@@ -117,11 +117,7 @@ class _TransactionalSink:
     db: str
 
     async def __call__(
-        self,
-        context_provider: coco.ContextProvider,
-        actions: Sequence[_Action],
-        child_slots: Mapping[int, coco.ChildSlot[_ChildHandler]],
-        /,
+        self, context_provider: coco.ContextProvider, actions: Sequence[_Action], /
     ) -> None:
         batch = list(actions)
         items = [item for item, _ in batch]
@@ -139,11 +135,15 @@ class _TransactionalSink:
             await _wait_until_others_committed(items[0])
         if poisoned:
             raise ValueError("poisoned batch")
-        for slot in child_slots.values():
-            slot.fulfill(_ChildHandler())
         with _run.lock:
             for item, value in batch:
                 _run.store[item] = value
+
+
+def _child_handler(
+    context_provider: coco.ContextProvider, action: _Action, /
+) -> _ChildHandler:
+    return _ChildHandler()
 
 
 class _ItemHandler(coco.TargetHandler[str, str, _ChildHandler]):
@@ -166,8 +166,8 @@ class _ItemHandler(coco.TargetHandler[str, str, _ChildHandler]):
             return None
         return coco.TargetReconcileOutput(
             action=(key, desired_target_state),
-            sink=coco.TargetActionSink.from_async_fn_with_children(
-                _TransactionalSink("db")
+            sink=coco.TargetActionSink.from_async_fn(
+                _TransactionalSink("db"), child_handler=_child_handler
             ),
             tracking_record=desired_target_state,
         )

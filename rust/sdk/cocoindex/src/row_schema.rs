@@ -28,6 +28,32 @@
 //! * `#[coco(type = "…")]` — a raw connector SQL type, used verbatim (the escape
 //!   hatch matching Python's `PgType`/`SqliteType`/`DorisType`).
 //! * `#[coco(json)]` — force JSON storage for a field.
+//!
+//! Options that would be ignored or contradict each other are compile errors:
+//!
+//! ```compile_fail
+//! #[derive(cocoindex::SchemaFields)]
+//! struct Row {
+//!     #[coco(half)] // `half` without `vector`
+//!     embedding: Vec<f32>,
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! #[derive(cocoindex::SchemaFields)]
+//! struct Row {
+//!     #[coco(type = "jsonb", vector = 3)] // `type` with `vector`
+//!     embedding: Vec<f32>,
+//! }
+//! ```
+//!
+//! ```
+//! #[derive(cocoindex::SchemaFields)]
+//! struct Row {
+//!     #[coco(vector = 3, half)]
+//!     embedding: Vec<f32>,
+//! }
+//! ```
 //! * `#[coco(rename = "…")]` — use a different column name.
 
 #[cfg(any(

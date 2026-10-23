@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import PurePath
 from typing import Any, AsyncIterator, Iterator, Sequence, Self
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import httplib2  # type: ignore
     from google.oauth2.service_account import Credentials  # type: ignore
@@ -23,7 +25,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "google-auth and google-api-python-client are required to use the Google Drive source. "
-        "Please install cocoindex[google_drive]."
+        + install_hint("google_drive")
     ) from e
 
 from cocoindex.resources import file

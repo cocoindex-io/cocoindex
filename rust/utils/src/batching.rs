@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use hashlink::LinkedHashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{oneshot, watch};
 use tokio_util::task::AbortOnDropHandle;
@@ -31,11 +33,58 @@ struct PendingBatchEntry<R: Runner + 'static> {
 
 /// Shared queue state protected by a Mutex.
 struct BatchQueueState<R: Runner + 'static> {
-    /// Per-batcher pending batches, keyed by batcher pointer address.
+    /// Batches that reached `max_batch_size` while the queue was at its
+    /// `max_in_flight` bound, in the order they filled (FIFO across batchers).
+    /// Empty unless a batcher sets `max_in_flight`.
+    sealed_batches: VecDeque<PendingBatchEntry<R>>,
+    /// Per-batcher open (partial) batch, keyed by batcher pointer address.
     /// LinkedHashMap preserves insertion order for FIFO semantics.
-    pending_batches: LinkedHashMap<usize, PendingBatchEntry<R>>,
+    open_batches: LinkedHashMap<usize, PendingBatchEntry<R>>,
     /// Count of batches currently executing across all batchers.
     ongoing_count: usize,
+}
+
+impl<R: Runner + 'static> BatchQueueState<R> {
+    /// Whether a batch that just filled may start now rather than wait sealed.
+    fn has_slot(&self, max_in_flight: Option<NonZeroUsize>) -> bool {
+        max_in_flight.is_none_or(|max| self.ongoing_count < max.get())
+    }
+
+    /// Whether a pending batch may start after another batch finished: under
+    /// a `max_in_flight` bound whenever a slot is free, otherwise only once the
+    /// queue is idle.
+    fn may_start_pending(&self, max_in_flight: Option<NonZeroUsize>) -> bool {
+        match max_in_flight {
+            Some(max) => self.ongoing_count < max.get(),
+            None => self.ongoing_count == 0,
+        }
+    }
+
+    /// The next batch to start: sealed batches first (they filled before any
+    /// open batch of their batcher), then the oldest open batch.
+    fn pop_next_pending(&mut self) -> Option<PendingBatchEntry<R>> {
+        self.sealed_batches
+            .pop_front()
+            .or_else(|| self.open_batches.pop_front().map(|(_, entry)| entry))
+    }
+
+    /// Starts pending batches for as long as `may_start_pending` holds.
+    fn kick_off_pending(&mut self, max_in_flight: Option<NonZeroUsize>) {
+        while self.may_start_pending(max_in_flight) {
+            let Some(entry) = self.pop_next_pending() else {
+                break;
+            };
+            if let Some(batcher_data) = entry.batcher_data.upgrade() {
+                // Batcher still alive - execute this batch
+                self.ongoing_count += 1;
+                tokio::spawn(async move {
+                    batcher_data.run_batch(entry.batch).await;
+                });
+            }
+            // Batcher was dropped - batch will be cancelled automatically
+            // when output_txs are dropped. Continue to next pending batch.
+        }
+    }
 }
 
 /// A shared queue that processes batches in FIFO order.
@@ -51,7 +100,8 @@ impl<R: Runner + 'static> BatchQueue<R> {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(BatchQueueState {
-                pending_batches: LinkedHashMap::new(),
+                sealed_batches: VecDeque::new(),
+                open_batches: LinkedHashMap::new(),
                 ongoing_count: 0,
             }),
         }
@@ -91,7 +141,7 @@ struct BatcherData<R: Runner + 'static> {
 
 impl<R: Runner + 'static> BatcherData<R> {
     async fn run_batch(self: &Arc<Self>, batch: Batch<R::Input, R::Output>) {
-        let _kick_off_next = BatchKickOffNext { queue: &self.queue };
+        let _kick_off_next = BatchKickOffNext { batcher: self };
         let num_inputs = batch.inputs.len();
 
         let mut num_cancelled_rx = batch.num_cancelled_rx;
@@ -154,9 +204,27 @@ enum BatchExecutionAction<R: Runner + 'static> {
     },
 }
 
+/// Options of one batcher.
+///
+/// Batchers sharing a [`BatchQueue`] should carry the same `max_in_flight`:
+/// the queue applies the bound of the batcher whose batch is being submitted
+/// or has just finished, so it is a queue-wide bound only when they agree.
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct BatchingOptions {
+    /// Seal and submit a batch once it holds this many inputs.
     pub max_batch_size: Option<usize>,
+    /// Upper bound on the queue's concurrently running batches; the inline
+    /// first call counts as one.
+    ///
+    /// - `None`: a full batch starts the moment it fills, and the next partial
+    ///   batch starts only once every running batch has finished.
+    /// - `Some(n)`: a batch that fills while `n` batches are running stays
+    ///   sealed in FIFO order, and whenever a batch finishes the next pending
+    ///   batch (sealed or partial) starts as long as fewer than `n` are
+    ///   running.
+    ///
+    /// Either way the first call on an idle queue runs inline at once.
+    pub max_in_flight: Option<NonZeroUsize>,
 }
 impl<R: Runner + 'static> Batcher<R> {
     pub fn new(runner: R, queue: Arc<BatchQueue<R>>, options: BatchingOptions) -> Self {
@@ -180,9 +248,9 @@ impl<R: Runner + 'static> Batcher<R> {
                 queue_state.ongoing_count = 1;
                 BatchExecutionAction::Inline { input }
             } else {
-                // Queue is busy - add to pending batch for this batcher
+                // Queue is busy - add to the open batch for this batcher
                 let entry = queue_state
-                    .pending_batches
+                    .open_batches
                     .entry(batcher_key)
                     .or_insert_with(|| PendingBatchEntry {
                         batcher_data: Arc::downgrade(&self.data),
@@ -199,17 +267,21 @@ impl<R: Runner + 'static> Batcher<R> {
                     .data
                     .options
                     .max_batch_size
-                    .map(|max_size| entry.batch.inputs.len() >= max_size)
-                    .unwrap_or(false);
+                    .is_some_and(|max_size| entry.batch.inputs.len() >= max_size);
 
                 if should_flush {
-                    // Remove and execute immediately
-                    let entry = queue_state.pending_batches.remove(&batcher_key).unwrap();
-                    queue_state.ongoing_count += 1;
-                    let data = self.data.clone();
-                    tokio::spawn(async move {
-                        data.run_batch(entry.batch).await;
-                    });
+                    let entry = queue_state.open_batches.remove(&batcher_key).unwrap();
+                    if queue_state.has_slot(self.data.options.max_in_flight) {
+                        // Execute immediately
+                        queue_state.ongoing_count += 1;
+                        let data = self.data.clone();
+                        tokio::spawn(async move {
+                            data.run_batch(entry.batch).await;
+                        });
+                    } else {
+                        // At the bound - wait sealed for a finishing batch
+                        queue_state.sealed_batches.push_back(entry);
+                    }
                 }
 
                 BatchExecutionAction::Batched {
@@ -222,7 +294,7 @@ impl<R: Runner + 'static> Batcher<R> {
         match batch_exec_action {
             BatchExecutionAction::Inline { input } => {
                 let _kick_off_next = BatchKickOffNext {
-                    queue: &self.data.queue,
+                    batcher: &self.data,
                 };
 
                 let data = self.data.clone();
@@ -251,31 +323,23 @@ impl<R: Runner + 'static> Batcher<R> {
     }
 }
 
+/// Releases the finishing batch's slot on drop and starts what the slot
+/// allows, under the finishing batcher's `max_in_flight`.
 struct BatchKickOffNext<'a, R: Runner + 'static> {
-    queue: &'a Arc<BatchQueue<R>>,
+    batcher: &'a BatcherData<R>,
 }
 
 impl<'a, R: Runner + 'static> Drop for BatchKickOffNext<'a, R> {
     fn drop(&mut self) {
-        let mut queue_state = self.queue.state.lock().unwrap();
+        let mut queue_state = self
+            .batcher
+            .queue
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         queue_state.ongoing_count -= 1;
-
-        if queue_state.ongoing_count == 0 {
-            // Try to pop front pending batch (FIFO)
-            while let Some((_, entry)) = queue_state.pending_batches.pop_front() {
-                if let Some(batcher_data) = entry.batcher_data.upgrade() {
-                    // Batcher still alive - execute this batch
-                    queue_state.ongoing_count = 1;
-                    tokio::spawn(async move {
-                        batcher_data.run_batch(entry.batch).await;
-                    });
-                    break;
-                }
-                // Batcher was dropped - batch will be cancelled automatically
-                // when output_txs are dropped. Continue to next pending batch.
-            }
-        }
+        queue_state.kick_off_pending(self.batcher.options.max_in_flight);
     }
 }
 
@@ -332,11 +396,10 @@ mod tests {
             self.recorded_calls.lock().unwrap().push(values);
 
             // Split into values and receivers so we can await by value (send-before-wait safe)
-            let (vals, rxs): (Vec<i64>, Vec<oneshot::Receiver<()>>) =
-                inputs.into_iter().map(|(v, rx)| (v, rx)).unzip();
+            let (vals, rxs): (Vec<i64>, Vec<oneshot::Receiver<()>>) = inputs.into_iter().unzip();
 
             // Block until every input's signal is fired
-            for (_i, rx) in rxs.into_iter().enumerate() {
+            for rx in rxs.into_iter() {
                 let _ = rx.await;
             }
 
@@ -433,6 +496,7 @@ mod tests {
             queue,
             BatchingOptions {
                 max_batch_size: Some(2),
+                max_in_flight: None,
             },
         ));
 
@@ -537,6 +601,7 @@ mod tests {
             queue,
             BatchingOptions {
                 max_batch_size: Some(2),
+                max_in_flight: None,
             },
         ));
 
@@ -634,6 +699,191 @@ mod tests {
         assert_eq!(calls[2], vec![4, 5]);
         assert_eq!(calls[3], vec![6]);
 
+        Ok(())
+    }
+
+    /// Spawns one `batcher.run` task per value, in order; returns each task's
+    /// handle beside the gate that lets its runner call return.
+    fn spawn_calls(
+        batcher: &Arc<Batcher<TestRunner>>,
+        values: impl IntoIterator<Item = i64>,
+    ) -> (
+        Vec<tokio::task::JoinHandle<Result<i64>>>,
+        Vec<oneshot::Sender<()>>,
+    ) {
+        values
+            .into_iter()
+            .map(|v| {
+                let (tx, rx) = oneshot::channel::<()>();
+                let b = batcher.clone();
+                (tokio::spawn(async move { b.run((v, rx)).await }), tx)
+            })
+            .unzip()
+    }
+
+    fn release(gates: &mut [Option<oneshot::Sender<()>>], range: std::ops::Range<usize>) {
+        for gate in &mut gates[range] {
+            let _ = gate.take().expect("gate released twice").send(());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn max_in_flight_bounds_concurrent_batches() -> Result<()> {
+        let recorded_calls = Arc::new(Mutex::new(Vec::<Vec<i64>>::new()));
+        let runner = TestRunner {
+            recorded_calls: recorded_calls.clone(),
+        };
+        let queue = Arc::new(BatchQueue::<TestRunner>::new());
+        let batcher = Arc::new(Batcher::new(
+            runner,
+            queue,
+            BatchingOptions {
+                max_batch_size: Some(2),
+                max_in_flight: NonZeroUsize::new(2),
+            },
+        ));
+
+        // A burst of 1 + 2 * max_batch_size + 1: inline, two full batches, a remainder.
+        let (mut handles, gates) = spawn_calls(&batcher, [1_i64]);
+        let mut gates: Vec<_> = gates.into_iter().map(Some).collect();
+        wait_until_len(&recorded_calls, 1).await;
+
+        let (more_handles, more_gates) = spawn_calls(&batcher, 2..=6);
+        handles.extend(more_handles);
+        gates.extend(more_gates.into_iter().map(Some));
+
+        // The first full batch [2, 3] starts beside the inline call; the second
+        // full batch [4, 5] fills at the bound and stays sealed; [6] stays open.
+        wait_until_len(&recorded_calls, 2).await;
+        sleep(Duration::from_millis(50)).await;
+        {
+            let calls = recorded_calls.lock().unwrap();
+            assert_eq!(calls.len(), 2, "a third batch must not start at the bound");
+            assert_eq!(calls[1], vec![2, 3]);
+        }
+
+        // The inline call finishes: the sealed [4, 5] takes its slot; [6] still waits.
+        release(&mut gates, 0..1);
+        assert_eq!((&mut handles[0]).await??, 2);
+        wait_until_len(&recorded_calls, 3).await;
+        sleep(Duration::from_millis(50)).await;
+        {
+            let calls = recorded_calls.lock().unwrap();
+            assert_eq!(calls.len(), 3, "the remainder must wait for a free slot");
+            assert_eq!(calls[2], vec![4, 5]);
+        }
+
+        // [2, 3] finishes: the remainder [6] starts.
+        release(&mut gates, 1..3);
+        wait_until_len(&recorded_calls, 4).await;
+        assert_eq!(recorded_calls.lock().unwrap()[3], vec![6]);
+
+        release(&mut gates, 3..6);
+        for (handle, v) in handles.into_iter().zip(1_i64..).skip(1) {
+            assert_eq!(handle.await??, v * 2);
+        }
+        Ok(())
+    }
+
+    /// A burst of 250 at `max_batch_size = 32`: the inline call, seven full
+    /// batches and a remainder of 25. Returns the recorded calls and the
+    /// handles + gates, with the first eight calls already running.
+    async fn start_burst_of_250(
+        max_in_flight: Option<NonZeroUsize>,
+    ) -> (
+        Arc<Mutex<Vec<Vec<i64>>>>,
+        Vec<tokio::task::JoinHandle<Result<i64>>>,
+        Vec<Option<oneshot::Sender<()>>>,
+    ) {
+        let recorded_calls = Arc::new(Mutex::new(Vec::<Vec<i64>>::new()));
+        let runner = TestRunner {
+            recorded_calls: recorded_calls.clone(),
+        };
+        let queue = Arc::new(BatchQueue::<TestRunner>::new());
+        let batcher = Arc::new(Batcher::new(
+            runner,
+            queue,
+            BatchingOptions {
+                max_batch_size: Some(32),
+                max_in_flight,
+            },
+        ));
+
+        let (mut handles, gates) = spawn_calls(&batcher, [1_i64]);
+        let mut gates: Vec<_> = gates.into_iter().map(Some).collect();
+        wait_until_len(&recorded_calls, 1).await;
+
+        let (more_handles, more_gates) = spawn_calls(&batcher, 2..=250);
+        handles.extend(more_handles);
+        gates.extend(more_gates.into_iter().map(Some));
+
+        // Seven full batches start beside the inline call (the bound, if any,
+        // is 8); the remainder of 25 stays open.
+        wait_until_len(&recorded_calls, 8).await;
+        sleep(Duration::from_millis(50)).await;
+        {
+            let calls = recorded_calls.lock().unwrap();
+            assert_eq!(calls.len(), 8, "the remainder must not start on its own");
+            assert_eq!(calls[0], vec![1]);
+            let mut full: Vec<i64> = calls[1..].iter().flatten().copied().collect();
+            full.sort();
+            assert_eq!(full, (2..=225).collect::<Vec<i64>>());
+            assert!(calls[1..].iter().all(|c| c.len() == 32));
+        }
+        (recorded_calls, handles, gates)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn max_in_flight_starts_remainder_when_any_batch_finishes() -> Result<()> {
+        let (recorded_calls, handles, mut gates) = start_burst_of_250(NonZeroUsize::new(8)).await;
+
+        // The inline call finishes while the seven full batches are still
+        // blocked on their gates: the remainder takes the freed slot.
+        release(&mut gates, 0..1);
+        wait_until_len(&recorded_calls, 9).await;
+        assert_eq!(
+            recorded_calls.lock().unwrap()[8],
+            (226..=250).collect::<Vec<i64>>()
+        );
+        assert!(
+            handles[1..225].iter().all(|h| !h.is_finished()),
+            "the full batches are still blocked"
+        );
+
+        release(&mut gates, 1..250);
+        for (handle, v) in handles.into_iter().zip(1_i64..) {
+            assert_eq!(handle.await??, v * 2);
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn without_max_in_flight_remainder_waits_for_idle_queue() -> Result<()> {
+        let (recorded_calls, handles, mut gates) = start_burst_of_250(None).await;
+
+        // The inline call finishes; seven full batches are still running, so
+        // the remainder keeps waiting.
+        release(&mut gates, 0..1);
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(recorded_calls.lock().unwrap().len(), 8);
+
+        // Six of the seven full batches finish; still not idle.
+        release(&mut gates, 1..193);
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(recorded_calls.lock().unwrap().len(), 8);
+
+        // The last full batch finishes: the queue is idle, the remainder starts.
+        release(&mut gates, 193..225);
+        wait_until_len(&recorded_calls, 9).await;
+        assert_eq!(
+            recorded_calls.lock().unwrap()[8],
+            (226..=250).collect::<Vec<i64>>()
+        );
+
+        release(&mut gates, 225..250);
+        for (handle, v) in handles.into_iter().zip(1_i64..) {
+            assert_eq!(handle.await??, v * 2);
+        }
         Ok(())
     }
 }

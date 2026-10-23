@@ -372,8 +372,8 @@ impl TargetHandler<TableSpec> for TableHandler {
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableSpec>>> {
         let name = key_str(&key);
         match desired {
-            // Always emit an output when the table is declared, so the sink runs
-            // and fulfills the child provider.
+            // Always emit an output when the table is declared, so the sink
+            // builds the child handler.
             Some(spec) => {
                 let changed = !prev.is_empty() && !prev.contains(&spec);
                 let action = if prev.is_empty() {
@@ -398,27 +398,50 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-/// Build a container sink that fulfills each create/update's child slot with a
-/// fresh child row handler (recording into `row_log`); deletes carry no slot.
+/// Build a container sink whose child handler factory gives each
+/// created/updated table a fresh child row handler (recording into `row_log`).
 fn table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_handler(
+        move |actions: Vec<TargetAction<TableAction>>| {
+            let table_log = table_log.clone();
+            async move {
+                for action in actions {
+                    log_table_action(&table_log, action);
+                }
+                Ok(())
+            }
+        },
+        move |_: &TableAction| {
+            Ok(ChildTargetDef::new::<String, _>(RowHandler {
+                sink: recording_sink(row_log.clone()),
+            }))
+        },
+    )
+}
+
+fn log_table_action(table_log: &Log, action: TargetAction<TableAction>) {
+    let entry = match action {
+        TargetAction::Create(t) | TargetAction::Update(t) => format!("ensure {}", t.name),
+        TargetAction::Delete(t) => format!("drop {}", t.name),
+    };
+    table_log.lock().unwrap().push(entry);
+}
+
+/// [`table_sink`] written against the deprecated slot-fulfilling shape: the
+/// closure fulfills each action's child slot itself.
+#[allow(deprecated)]
+fn legacy_table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
     TargetActionSink::from_async_fn_with_children(
         move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
             let table_log = table_log.clone();
             let row_log = row_log.clone();
             async move {
                 for (action, child_slot) in actions {
-                    match action {
-                        TargetAction::Create(t) | TargetAction::Update(t) => {
-                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
-                            if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<String, _>(RowHandler {
-                                    sink: recording_sink(row_log.clone()),
-                                }))?;
-                            }
-                        }
-                        TargetAction::Delete(t) => {
-                            table_log.lock().unwrap().push(format!("drop {}", t.name));
-                        }
+                    log_table_action(&table_log, action);
+                    if let Some(slot) = child_slot {
+                        slot.fulfill(ChildTargetDef::new::<String, _>(RowHandler {
+                            sink: recording_sink(row_log.clone()),
+                        }))?;
                     }
                 }
                 Ok(())
@@ -427,31 +450,26 @@ fn table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
     )
 }
 
-/// [`table_sink`] written against the deprecated pre-slot closure shape: the
-/// closure returns the child definitions index-aligned with the actions.
+/// [`table_sink`] written against the oldest deprecated shape: the closure
+/// returns the child definitions index-aligned with the actions.
 #[allow(deprecated)]
-fn legacy_table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
+fn legacy_child_defs_table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
     TargetActionSink::from_async_fn_with_child_defs(
         move |actions: Vec<TargetAction<TableAction>>| {
             let table_log = table_log.clone();
             let row_log = row_log.clone();
             async move {
-                let mut out = Vec::with_capacity(actions.len());
+                let mut defs = Vec::with_capacity(actions.len());
                 for action in actions {
-                    match action {
-                        TargetAction::Create(t) | TargetAction::Update(t) => {
-                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
-                            out.push(Some(ChildTargetDef::new::<String, _>(RowHandler {
-                                sink: recording_sink(row_log.clone()),
-                            })));
-                        }
-                        TargetAction::Delete(t) => {
-                            table_log.lock().unwrap().push(format!("drop {}", t.name));
-                            out.push(None);
-                        }
-                    }
+                    let is_delete = matches!(action, TargetAction::Delete(_));
+                    log_table_action(&table_log, action);
+                    defs.push((!is_delete).then(|| {
+                        ChildTargetDef::new::<String, _>(RowHandler {
+                            sink: recording_sink(row_log.clone()),
+                        })
+                    }));
                 }
-                Ok(out)
+                Ok(defs)
             }
         },
     )
@@ -519,14 +537,220 @@ async fn run_table_with(
     .unwrap();
 }
 
+/// A container handler that wrongly skips an unchanged container, so its
+/// sink never builds the child handler on the second run.
+struct ShortCircuitTableHandler {
+    sink: TargetActionSink<TableAction>,
+}
+
+impl TargetHandler<TableSpec> for ShortCircuitTableHandler {
+    type TrackingRecord = TableSpec;
+    type Action = TableAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<TableSpec>,
+        prev: Vec<TableSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TableAction, TableSpec>>> {
+        let Some(spec) = desired else {
+            return Ok(None);
+        };
+        if prev.contains(&spec) && !prev_may_be_missing {
+            return Ok(None);
+        }
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Create(TableAction {
+                name: key_str(&key),
+                drop: false,
+            }),
+            sink: self.sink.clone(),
+            tracking_record: Some(spec),
+            child_invalidation: None,
+        }))
+    }
+}
+
+/// A container handler that returns no output while the container is declared
+/// leaves the child handler missing, so declaring a child fails the run (the
+/// rule documented on `TargetHandler::reconcile`).
+#[tokio::test]
+async fn container_handler_skipping_its_output_fails_the_run() {
+    let (app, _dir) = temp_app("container_short_circuit").await;
+    let run = || {
+        app.update(|ctx| async move {
+            let table_provider = register_root_target_states_provider(
+                &ctx,
+                "test/short_circuit_table",
+                ShortCircuitTableHandler {
+                    sink: table_sink(new_log(), new_log()),
+                },
+            )?;
+            let child: TargetStateProvider<String> = mount_target(
+                &ctx,
+                table_provider.target_state(
+                    "docs",
+                    TableSpec {
+                        generation: "v1".to_string(),
+                    },
+                ),
+            )
+            .await?;
+            declare_target_state(&ctx, child.target_state("a", "1".to_string()))?;
+            Ok(())
+        })
+    };
+    run().await.unwrap();
+    let second = tokio::time::timeout(std::time::Duration::from_secs(10), run())
+        .await
+        .expect("the second run must fail, not hang");
+    assert!(second.is_err());
+}
+
+/// A container handler that wrongly reconciles a declared container to a
+/// delete: its sink's child handler factory has no handler to give.
+struct DeleteDeclaredTableHandler {
+    sink: TargetActionSink<TableAction>,
+}
+
+impl TargetHandler<TableSpec> for DeleteDeclaredTableHandler {
+    type TrackingRecord = TableSpec;
+    type Action = TableAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        _desired: Option<TableSpec>,
+        _prev: Vec<TableSpec>,
+        _prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TableAction, TableSpec>>> {
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Delete(TableAction {
+                name: key_str(&key),
+                drop: true,
+            }),
+            sink: self.sink.clone(),
+            tracking_record: None,
+            child_invalidation: None,
+        }))
+    }
+}
+
+/// Mount the "docs" table through `handler` and declare one row under it.
+async fn run_one_row_table<H>(app: &App, provider_name: &'static str, handler: H) -> Result<()>
+where
+    H: TargetHandler<TableSpec> + Send + Sync + 'static,
+{
+    let handler = Arc::new(Mutex::new(Some(handler)));
+    app.update(move |ctx| {
+        let handler = handler.lock().unwrap().take().unwrap();
+        async move {
+            let table_provider =
+                register_root_target_states_provider(&ctx, provider_name, handler)?;
+            let child: TargetStateProvider<String> = mount_target(
+                &ctx,
+                table_provider.target_state(
+                    "docs",
+                    TableSpec {
+                        generation: "v1".to_string(),
+                    },
+                ),
+            )
+            .await?;
+            declare_target_state(&ctx, child.target_state("a", "1".to_string()))?;
+            Ok(())
+        }
+    })
+    .await
+}
+
+/// A declared container reconciled to a delete fails the run before any
+/// apply, with an error naming the container and the handler's mistake.
+#[tokio::test]
+async fn container_reconciled_to_delete_fails_before_apply() {
+    let (app, _dir) = temp_app("container_reconciled_to_delete").await;
+    let table_log = new_log();
+    let err = run_one_row_table(
+        &app,
+        "test/delete_declared_table",
+        DeleteDeclaredTableHandler {
+            sink: table_sink(table_log.clone(), new_log()),
+        },
+    )
+    .await
+    .unwrap_err();
+    let message = format!("{err:#}");
+    assert!(message.contains("docs"), "{message}");
+    assert!(
+        message.contains("returned `TargetAction::Delete` for a declared target state"),
+        "{message}"
+    );
+    assert!(drain_sorted(&table_log).is_empty(), "nothing is applied");
+}
+
+/// A child handler factory error fails the run before the container's action
+/// is applied; once the factory succeeds, the next run applies everything.
+#[tokio::test]
+async fn child_handler_error_fails_before_apply_and_the_next_run_recovers() {
+    let (app, _dir) = temp_app("child_handler_error").await;
+    let table_log = new_log();
+    let row_log = new_log();
+    let failing_sink = {
+        let table_log = table_log.clone();
+        TargetActionSink::from_async_fn_with_child_handler(
+            move |actions: Vec<TargetAction<TableAction>>| {
+                let table_log = table_log.clone();
+                async move {
+                    for action in actions {
+                        log_table_action(&table_log, action);
+                    }
+                    Ok(())
+                }
+            },
+            |_: &TableAction| -> Result<ChildTargetDef> {
+                Err(cocoindex::Error::engine("no row handler today"))
+            },
+        )
+    };
+    let err = run_one_row_table(
+        &app,
+        "test/child_handler_error",
+        TableHandler {
+            sink: failing_sink,
+            invalidation: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    let message = format!("{err:#}");
+    assert!(message.contains("no row handler today"), "{message}");
+    assert!(message.contains("docs"), "{message}");
+    assert!(drain_sorted(&table_log).is_empty(), "nothing is applied");
+
+    run_one_row_table(
+        &app,
+        "test/child_handler_error",
+        TableHandler {
+            sink: table_sink(table_log.clone(), row_log.clone()),
+            invalidation: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
+    assert_eq!(drain_sorted(&row_log), vec!["create a=1"]);
+}
+
 // ---------------------------------------------------------------------------
 // Test 3: mount_target child rows — insert / delete
 // ---------------------------------------------------------------------------
 
-/// The deprecated pre-slot closure shape still fulfills the child provider.
+/// The deprecated slot-fulfilling sink still provides the child handler in a
+/// real update.
 #[tokio::test]
-async fn legacy_child_defs_sink_fulfills_children() {
-    let (app, _dir) = temp_app("legacy_child_defs").await;
+async fn legacy_slot_sink_fulfills_children() {
+    let (app, _dir) = temp_app("legacy_slot_sink").await;
     let table_log = new_log();
     let row_log = new_log();
 
@@ -555,6 +779,28 @@ async fn legacy_child_defs_sink_fulfills_children() {
     .await;
     assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
     assert_eq!(drain_sorted(&row_log), vec!["delete r2"]);
+}
+
+/// The deprecated child-definitions sink still provides the child handler in
+/// a real update.
+#[tokio::test]
+async fn legacy_child_defs_sink_fulfills_children() {
+    let (app, _dir) = temp_app("legacy_child_defs_sink").await;
+    let table_log = new_log();
+    let row_log = new_log();
+
+    run_table_with(
+        &app,
+        legacy_child_defs_table_sink,
+        table_log.clone(),
+        row_log.clone(),
+        "g1",
+        None,
+        vec![("r1", "v1"), ("r2", "v1")],
+    )
+    .await;
+    assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
+    assert_eq!(drain_sorted(&row_log), vec!["create r1=v1", "create r2=v1"]);
 }
 
 #[tokio::test]
@@ -1095,30 +1341,21 @@ fn partitioned_table_sink(
     part_log: Log,
     row_log: Log,
 ) -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children(
-        move |actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
+    TargetActionSink::from_async_fn_with_child_handler(
+        move |actions: Vec<TargetAction<TableAction>>| {
             let table_log = table_log.clone();
-            let part_log = part_log.clone();
-            let row_log = row_log.clone();
             async move {
-                for (action, child_slot) in actions {
-                    match action {
-                        TargetAction::Create(t) | TargetAction::Update(t) => {
-                            table_log.lock().unwrap().push(format!("ensure {}", t.name));
-                            if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<TableSpec, _>(TableHandler {
-                                    sink: table_sink(part_log.clone(), row_log.clone()),
-                                    invalidation: Some(TargetChildInvalidation::Destructive),
-                                }))?;
-                            }
-                        }
-                        TargetAction::Delete(t) => {
-                            table_log.lock().unwrap().push(format!("drop {}", t.name));
-                        }
-                    }
+                for action in actions {
+                    log_table_action(&table_log, action);
                 }
                 Ok(())
             }
+        },
+        move |_: &TableAction| {
+            Ok(ChildTargetDef::new::<TableSpec, _>(TableHandler {
+                sink: table_sink(part_log.clone(), row_log.clone()),
+                invalidation: Some(TargetChildInvalidation::Destructive),
+            }))
         },
     )
 }

@@ -207,7 +207,7 @@ mod tests {
     use crate::CodeSource;
 
     /// Frames for the range covering `needle` in `src`, as (rendered, scoped) pairs.
-    fn frames_at<'a>(src: &'a str, language: &str, needle: &str) -> Vec<(String, bool)> {
+    fn frames_at(src: &str, language: &str, needle: &str) -> Vec<(String, bool)> {
         let start = src.find(needle).expect("needle in src");
         let source = CodeSource::with_language(src, language);
         context_frames(&source, TextRange::new(start, start + needle.len()))

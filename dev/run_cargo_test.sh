@@ -69,12 +69,11 @@ if [[ -n "${PYTHONPATH_DETECTED}" ]]; then
   fi
 fi
 
+# The Rust SDK (`cocoindex`) has no default features, so this builds none of
+# its optional connectors and ops; dev/run_cargo_test_sdk_features.sh covers
+# them.
 if [[ "${COCOINDEX_SKIP_UV:-}" == "1" ]]; then
   cargo test "$@"
 else
   uv run cargo test "$@"
 fi
-
-# Plain `cargo test` never compiles bench targets; compile-check (not run)
-# them here to keep them from bit-rotting.
-cargo check -p cocoindex --features bench-support --benches

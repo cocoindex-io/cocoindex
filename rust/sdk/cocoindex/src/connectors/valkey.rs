@@ -24,9 +24,9 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 const VECTOR_FIELD_NAME: &str = "vector";
@@ -349,13 +349,13 @@ pub fn index_target_with_options(
 ) -> Result<TargetState<IndexSpec>> {
     let index_name = index_name.into();
     validate_name(&index_name, "index_name")?;
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!("cocoindex/valkey/index/{}/{}", db.name(), index_name),
-        IndexHandler::new(db.name().to_string()),
-    )?;
+    let provider = INDEX_PROVIDER.get(ctx)?;
     Ok(provider.target_state(
-        "default",
+        IndexKey {
+            db_key: db.name().to_string(),
+            index_name: index_name.clone(),
+        }
+        .stable_key(),
         IndexSpec {
             index_name,
             schema,
@@ -448,21 +448,57 @@ fn tracking_record_core(spec: &IndexSpec) -> IndexTrackingRecordCore {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct IndexAction {
+    /// The `ContextKey` name of the database the index lives in.
+    db_key: String,
     index_name: String,
     spec: Option<IndexSpec>,
     /// `Replace` purges documents + recreates; `Delete` only drops the index.
     main_action: Option<DiffAction>,
 }
 
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static INDEX_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<IndexSpec, IndexHandler>("cocoindex/valkey/index");
+
+/// An index target state's key: the database's `ContextKey` name plus the
+/// index name.
+struct IndexKey {
+    db_key: String,
+    index_name: String,
+}
+
+impl IndexKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.db_key)),
+            StableKey::Str(Arc::from(self.index_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(db_key), StableKey::Str(index_name)] = &parts[..]
+        {
+            return Ok(Self {
+                db_key: db_key.to_string(),
+                index_name: index_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected valkey index target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every Valkey index target: stateless, the database is
+/// named by each target state's [`IndexKey`].
 struct IndexHandler {
     sink: TargetActionSink<IndexAction>,
 }
 
-impl IndexHandler {
-    fn new(db_key: String) -> Self {
-        Self {
-            sink: index_sink(db_key),
-        }
+impl Default for IndexHandler {
+    fn default() -> Self {
+        Self { sink: index_sink() }
     }
 }
 
@@ -472,13 +508,14 @@ impl TargetHandler<IndexSpec> for IndexHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<IndexSpec>,
         prev: Vec<IndexTrackingRecord>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<IndexAction, IndexTrackingRecord>>> {
+        let db_key = IndexKey::from_stable_key(&key)?.db_key;
         match desired {
-            // Always emit when declared so the sink fulfills the document child.
+            // Always emit when declared so the sink builds the document child.
             Some(spec) => {
                 let prev_is_empty = prev.is_empty();
                 let tracking =
@@ -489,6 +526,7 @@ impl TargetHandler<IndexSpec> for IndexHandler {
                 // An index rebuild destroys every document under its prefix.
                 let replace = matches!(main_action, Some(DiffAction::Replace));
                 let action = IndexAction {
+                    db_key,
                     index_name: spec.index_name.clone(),
                     spec: Some(spec),
                     main_action,
@@ -519,6 +557,7 @@ impl TargetHandler<IndexSpec> for IndexHandler {
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(IndexAction {
+                        db_key,
                         index_name,
                         spec: None,
                         main_action: Some(DiffAction::Delete),
@@ -532,70 +571,57 @@ impl TargetHandler<IndexSpec> for IndexHandler {
     }
 }
 
-fn index_sink(db_key: String) -> TargetActionSink<IndexAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<IndexAction>, Option<ChildSlot>)>| {
-            let db_key = db_key.clone();
-            async move {
-                let db = resolve_db(&host_ctx, &db_key)?;
-                for (action, child_slot) in actions {
-                    match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) => {
-                            let spec = a.spec.ok_or_else(|| {
-                                Error::engine("valkey create/update action missing spec")
-                            })?;
-                            if matches!(
-                                a.main_action,
-                                Some(DiffAction::Replace | DiffAction::Delete)
-                            ) {
-                                drop_index(&db, &a.index_name).await?;
-                                if matches!(a.main_action, Some(DiffAction::Replace)) {
-                                    delete_prefix_keys(&db, &a.index_name).await?;
-                                }
-                            }
-                            if spec.managed_by.is_system()
-                                && matches!(
-                                    a.main_action,
-                                    Some(
-                                        DiffAction::Insert
-                                            | DiffAction::Upsert
-                                            | DiffAction::Replace
-                                    )
-                                )
-                            {
-                                create_index(
-                                    &db,
-                                    &a.index_name,
-                                    &spec.schema,
-                                    matches!(a.main_action, Some(DiffAction::Upsert)),
-                                )
-                                .await?;
-                            }
-                            if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<Document, _>(
-                                    DocumentHandler::new(db_key.clone(), a.index_name),
-                                ))?;
+fn index_sink() -> TargetActionSink<IndexAction> {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<IndexAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        let spec = a.spec.ok_or_else(|| {
+                            Error::engine("valkey create/update action missing spec")
+                        })?;
+                        if matches!(
+                            a.main_action,
+                            Some(DiffAction::Replace | DiffAction::Delete)
+                        ) {
+                            drop_index(&db, &a.index_name).await?;
+                            if matches!(a.main_action, Some(DiffAction::Replace)) {
+                                delete_prefix_keys(&db, &a.index_name).await?;
                             }
                         }
-                        TargetAction::Delete(a) => {
-                            drop_index(&db, &a.index_name).await?;
-                            delete_prefix_keys(&db, &a.index_name).await?;
+                        if spec.managed_by.is_system()
+                            && matches!(
+                                a.main_action,
+                                Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace)
+                            )
+                        {
+                            create_index(&db, &a.index_name, &spec.schema).await?;
                         }
                     }
+                    TargetAction::Delete(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        drop_index(&db, &a.index_name).await?;
+                        delete_prefix_keys(&db, &a.index_name).await?;
+                    }
                 }
-                Ok(())
             }
+            Ok(())
+        },
+        |a: &IndexAction| {
+            Ok(ChildTargetDef::new::<Document, _>(DocumentHandler::new(
+                a.db_key.clone(),
+                a.index_name.clone(),
+            )))
         },
     )
 }
 
-async fn create_index(
-    db: &Valkey,
-    index_name: &str,
-    schema: &IndexSchema,
-    if_not_exists: bool,
-) -> Result<()> {
-    if if_not_exists && index_exists(db, index_name).await? {
+/// Create the index unless it exists. An `Insert` (no tracked record) can
+/// still find it in place, e.g. created by an earlier version whose tracking
+/// used a different target-state key; a `Replace` has just dropped it.
+async fn create_index(db: &Valkey, index_name: &str, schema: &IndexSchema) -> Result<()> {
+    if index_exists(db, index_name).await? {
         return Ok(());
     }
     let args = ft_create_args(index_name, schema);

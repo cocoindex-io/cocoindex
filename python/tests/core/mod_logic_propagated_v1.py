@@ -1,6 +1,9 @@
-"""Module v2 for ``coco.logic_tracked`` tests.
+"""Module v1 for ``coco.logic_propagated_to_callers`` tests.
 
-``cb`` and ``acb`` changed (vs v1). ``cb2`` and ``acb2`` are identical to v1.
+Only the callbacks live here; the traverse / higher-level / owner functions are
+defined in ``test_logic_propagated_to_callers.py`` and never change. Across versions:
+v2 edits ``cb`` and ``acb``; v3 edits ``cb2`` and ``acb2``. Everything else is
+identical.
 """
 
 import cocoindex as coco
@@ -18,7 +21,7 @@ def set_metrics(metrics: Metrics) -> None:
 def cb(s: str) -> str:
     assert _metrics is not None
     _metrics.increment("cb")
-    return "cb_v2: " + s
+    return "cb_v1: " + s
 
 
 @coco.fn
@@ -32,7 +35,7 @@ def cb2(s: str) -> str:
 async def acb(s: str) -> str:
     assert _metrics is not None
     _metrics.increment("acb")
-    return "acb_v2: " + s
+    return "acb_v1: " + s
 
 
 @coco.fn

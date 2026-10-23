@@ -46,16 +46,16 @@ use crate::user_state::{IntoStateKey, decode_state, encode_state};
 
 type CoreError = cocoindex_utils::error::Error;
 
-/// Map a core engine error into the SDK error type. Matches the conversion
-/// already used by `Ctx::auto_refresh`.
-pub(crate) fn engine_err(e: impl Display) -> Error {
-    Error::engine(format!("{e}"))
+/// Map a core engine error into the SDK error type, recovering an SDK error
+/// that crossed the engine (see [`Error::into_core`]).
+pub(crate) fn engine_err(e: CoreError) -> Error {
+    Error::from(e)
 }
 
-/// Map an SDK error back into a core engine error, for propagation across the
+/// Map an SDK error into a core engine error, for propagation across the
 /// `controller.start` / `on_error` boundary (both speak the core error type).
 fn to_core_error(e: Error) -> CoreError {
-    CoreError::internal_msg(format!("{e}"))
+    e.into_core()
 }
 
 // ---------------------------------------------------------------------------
@@ -174,9 +174,17 @@ pub struct LiveComponentOperator {
     /// (this component's own handler, if any) runs first.
     handler_chain: Arc<Vec<ExceptionHandler>>,
     name: String,
+    /// Set by [`Self::mark_ready`]: failures after it are background work.
+    ready: std::sync::atomic::AtomicBool,
 }
 
 impl LiveComponentOperator {
+    /// Whether a failure now is background work: post-ready, in live mode.
+    /// The same rule `Ctx::auto_refresh` applies to its cycles.
+    fn is_background(&self) -> bool {
+        self.ready.load(std::sync::atomic::Ordering::Acquire) && self.controller.is_live()
+    }
+
     fn child_path(&self, key: &dyn Display) -> StablePath {
         let key = StableKey::Str(Arc::from(key.to_string().as_str()));
         self.component_path.concat_part(key)
@@ -190,7 +198,7 @@ impl LiveComponentOperator {
             parent_stable_path: None,
             processor_name: Some(self.name.clone()),
             mount_kind,
-            is_background: false,
+            is_background: self.is_background(),
         }
     }
 
@@ -203,14 +211,18 @@ impl LiveComponentOperator {
             parent_stable_path: Some(self.component_path.to_string()),
             processor_name: Some(self.name.clone()),
             mount_kind,
-            is_background: self.controller.is_live(),
+            is_background: self.is_background(),
         }
     }
 
     /// Run a full `process()` pass. Reconciles the complete desired state and
-    /// garbage-collects children no longer declared. Failures route through the
-    /// component's [`ExceptionHandler`] if one was registered (returning the
-    /// handler's verdict), otherwise surface as `Err`.
+    /// garbage-collects children no longer declared.
+    ///
+    /// A failure inside `process()` is background work: it routes through the
+    /// handler chain registered with [`Ctx::mount_live_with_handler`]
+    /// (returning the handlers' verdict), and with no handler registered it is
+    /// logged at error level and this returns `Ok(())`, as in the Python SDK.
+    /// Register a handler that returns `Err` to make failures propagate.
     pub async fn update_full(&self) -> Result<()> {
         let instance = self.instance.clone();
         let state = self.state.clone();
@@ -242,7 +254,8 @@ impl LiveComponentOperator {
 
     /// Incrementally mount (or replace) a single child under `key`, running
     /// `f` to declare its state. Same-key rapid calls coalesce. Awaits until the
-    /// child's state has synced.
+    /// child's state has synced. A failure in `f` follows the same routing as
+    /// [`Self::update_full`]: logged, not returned, unless a handler propagates it.
     pub async fn update<K, F, Fut>(&self, key: K, f: F) -> Result<()>
     where
         K: Display,
@@ -281,7 +294,8 @@ impl LiveComponentOperator {
     }
 
     /// Incrementally remove the child mounted under `key`, cleaning up its
-    /// target states. Awaits until the deletion has synced.
+    /// target states. Awaits until the deletion has synced. Failures follow the
+    /// same routing as [`Self::update_full`].
     pub async fn delete<K: Display>(&self, key: K) -> Result<()> {
         let child_path = self.child_path(&key);
         let on_error = build_chained_on_error(
@@ -301,6 +315,7 @@ impl LiveComponentOperator {
     /// `process_live` body unwinds.
     pub async fn mark_ready(&self) {
         self.controller.mark_ready().await;
+        self.ready.store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Whether the component is running in live mode (`UpdateOptions.live`).
@@ -369,6 +384,7 @@ pub(crate) fn new_operator(
         instance,
         handler_chain,
         name,
+        ready: std::sync::atomic::AtomicBool::new(false),
     }
 }
 
@@ -539,7 +555,8 @@ pub trait LiveMapFeed<K, V>: Send + Sync + 'static {
     /// resume from its persisted cursor instead of rescanning — the Rust
     /// analogue of the OCI source's `logic_version` skip-scan. When it returns
     /// `true`, `watch()` must process the replayed backlog itself rather than
-    /// relying on a scan to cover it.
+    /// relying on a scan to cover it. Consulted only in live mode; a catch-up
+    /// run always scans, since `watch()` does not run there.
     async fn skip_initial_scan(&self, _operator: &LiveComponentOperator) -> Result<bool> {
         Ok(false)
     }
@@ -603,8 +620,10 @@ where
         // mode `mark_ready` terminates the component here, so the `watch` loop
         // below only runs in live mode — matching Python, where a view's
         // `watch` drives `update_all` + `mark_ready` before its event loop.
-        // A durable feed may skip the scan and replay from its committed cursor.
-        if !self.feed.skip_initial_scan(&operator).await? {
+        // A durable feed may skip the scan and replay from its committed cursor,
+        // but only in live mode: in catch-up mode `watch` never runs, so a
+        // skipped scan would leave every change since the last run unprocessed.
+        if !(operator.is_live() && self.feed.skip_initial_scan(&operator).await?) {
             operator.update_full().await?;
         }
         operator.mark_ready().await;

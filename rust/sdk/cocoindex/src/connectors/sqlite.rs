@@ -29,9 +29,9 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -289,18 +289,16 @@ pub fn table_target_with_options(
     if let Some(def) = &options.virtual_table_def {
         validate_vec0(&table_name, &table_schema, def)?;
     }
-    let provider = register_root_target_states_provider(
-        ctx,
+    let provider = TABLE_PROVIDER.get(ctx)?;
+    Ok(provider.target_state(
         // Stable connection identity = the ContextKey's name (`db_key`), never
         // live connection details; the pool is resolved at apply time from the
         // host context (see `design_connectors.md` §5.5).
-        format!("cocoindex/sqlite/table/{}/{}", db.name(), table_name),
-        TableHandler {
+        TableKey {
             db_key: db.name().to_string(),
-        },
-    )?;
-    Ok(provider.target_state(
-        "default",
+            table_name: table_name.clone(),
+        }
+        .stable_key(),
         TableSpec {
             table_name,
             table_schema,
@@ -431,14 +429,10 @@ fn col_subkey(col_name: &str) -> String {
 }
 
 /// The `main` half of a table's composite tracking record. A change here (PK
-/// columns, their types, the virtual-table config, or the table identity)
-/// forces a full table rewrite.
+/// columns, their types, or the virtual-table config) forces a full table
+/// rewrite. The table identity is the target-state key ([`TableKey`]).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct TablePrimaryTrackingRecord {
-    /// Table identity. (Python derives this from the target-state key; the Rust
-    /// provider keys on `"default"`, so we carry it here — it also gives the
-    /// delete path the name to drop.)
-    table_name: String,
     primary_key_columns: Vec<PkColumnInfo>,
     virtual_table_def: Option<Vec0TableDef>,
 }
@@ -465,7 +459,6 @@ fn table_composite_record(spec: &TableSpec) -> TableCompositeRecord {
     let schema = &spec.table_schema;
     let pk: std::collections::HashSet<&String> = schema.primary_key().iter().collect();
     let main = TablePrimaryTrackingRecord {
-        table_name: spec.table_name.clone(),
         primary_key_columns: schema
             .primary_key()
             .iter()
@@ -495,10 +488,12 @@ fn table_composite_record(spec: &TableSpec) -> TableCompositeRecord {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
-    /// `Some` for a create/update (carrying the desired spec).
+    /// The `ContextKey` name of the database the table lives in.
+    db_key: String,
+    table_name: String,
+    /// `Some` for a create/update (carrying the desired spec); `None` for a
+    /// drop of the orphaned table.
     spec: Option<TableSpec>,
-    /// `Some` for a drop (orphaned table name).
-    drop: Option<String>,
     /// Structural action for the table itself (`None` = no structural change,
     /// reconcile columns incrementally instead).
     main_action: Option<DiffAction>,
@@ -517,10 +512,46 @@ struct RowAction {
 // Table container handler (root) + sink yielding row children
 // ---------------------------------------------------------------------------
 
-struct TableHandler {
-    /// Stable connection identity (the `ContextKey` name); the live pool is
-    /// resolved from the host context at apply time.
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TableSpec, TableHandler>("cocoindex/sqlite/table");
+
+/// A table target state's key: the database's `ContextKey` name plus the table
+/// name. Mirrors Python's `_TableKey`.
+struct TableKey {
     db_key: String,
+    table_name: String,
+}
+
+impl TableKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.db_key)),
+            StableKey::Str(Arc::from(self.table_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(db_key), StableKey::Str(table_name)] = &parts[..]
+        {
+            return Ok(Self {
+                db_key: db_key.to_string(),
+                table_name: table_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected sqlite table target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every SQLite table target: stateless, the database and
+/// table are named by each target state's [`TableKey`]; the live pool is
+/// resolved from the host context at apply time.
+#[derive(Default)]
+struct TableHandler {
+    sink: SinkCache<TableAction>,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -529,13 +560,14 @@ impl TargetHandler<TableSpec> for TableHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<TableSpec>,
         prev: Vec<TableTrackingRecord>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
+        let TableKey { db_key, table_name } = TableKey::from_stable_key(&key)?;
         match desired {
-            // Always emit when declared so the sink fulfills the row child.
+            // Always emit when declared so the sink builds the row child.
             Some(spec) => {
                 let tracking =
                     MutualTrackingRecord::new(table_composite_record(&spec), spec.managed_by);
@@ -573,32 +605,32 @@ impl TargetHandler<TableSpec> for TableHandler {
 
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
+                        db_key,
+                        table_name,
                         spec: Some(spec),
-                        drop: None,
                         main_action,
                         column_actions,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
             }
             None => {
-                let resolved = resolve_system_transition(None, prev.clone(), prev_may_be_missing);
-                if resolved.is_none() {
+                let has_system_prev = prev.iter().any(|v| v.managed_by.is_system());
+                let resolved = resolve_system_transition(None, prev, prev_may_be_missing);
+                if resolved.is_none() || !has_system_prev {
                     return Ok(None);
                 }
-                let Some(prev_record) = prev.into_iter().find(|v| v.managed_by.is_system()) else {
-                    return Ok(None);
-                };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
+                        db_key,
+                        table_name,
                         spec: None,
-                        drop: Some(prev_record.tracking_record.main.table_name),
                         main_action: Some(DiffAction::Delete),
                         column_actions: BTreeMap::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
@@ -607,30 +639,29 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 }
 
-impl TableHandler {
-    fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db_key = self.db_key.clone();
-        TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-                let db_key = db_key.clone();
-                async move {
-                    let db = resolve_db(&host_ctx, &db_key)?;
-                    for (action, child_slot) in actions {
-                        let a = match action {
-                            TargetAction::Create(a)
-                            | TargetAction::Update(a)
-                            | TargetAction::Delete(a) => a,
-                        };
-                        let child = apply_table_action(&db, &db_key, a).await?;
-                        if let (Some(slot), Some(child)) = (child_slot, child) {
-                            slot.fulfill(child)?;
-                        }
-                    }
-                    Ok(())
-                }
-            },
-        )
-    }
+fn table_sink() -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                let (TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a)) =
+                    action;
+                let db = resolve_db(&host_ctx, &a.db_key)?;
+                apply_table_action(&db, a).await?;
+            }
+            Ok(())
+        },
+        |a: &TableAction| {
+            let spec = a
+                .spec
+                .clone()
+                .ok_or_else(|| Error::engine("SQLite table action missing spec"))?;
+            Ok(ChildTargetDef::new::<RowState, _>(RowHandler {
+                sink: SinkCache::default(),
+                db_key: a.db_key.clone(),
+                spec,
+            }))
+        },
+    )
 }
 
 /// Resolve the live SQLite [`Database`] from the host context by its stable
@@ -647,17 +678,13 @@ fn resolve_db(
     })
 }
 
-/// Apply one resolved table action and return the row child handler
-/// definition (`None` for a drop), which the sink uses to fulfill the
-/// action's child slot. Mirrors Python's `_apply_table_actions` decision tree.
-async fn apply_table_action(
-    db: &Database,
-    db_key: &str,
-    action: TableAction,
-) -> Result<Option<ChildTargetDef>> {
+/// Apply one resolved table action. Mirrors Python's `_apply_table_actions`
+/// decision tree.
+async fn apply_table_action(db: &Database, action: TableAction) -> Result<()> {
     let TableAction {
+        db_key: _,
+        table_name,
         spec,
-        drop,
         mut main_action,
         mut column_actions,
     } = action;
@@ -678,17 +705,12 @@ async fn apply_table_action(
         main_action,
         Some(DiffAction::Replace) | Some(DiffAction::Delete)
     ) {
-        let table_name = spec
-            .as_ref()
-            .map(|s| s.table_name.clone())
-            .or(drop)
-            .ok_or_else(|| Error::engine("SQLite drop action missing table name"))?;
         drop_table(db, &table_name).await?;
     }
 
     let Some(spec) = spec else {
-        // Pure drop — no row child to provide.
-        return Ok(None);
+        // Pure drop.
+        return Ok(());
     };
 
     if matches!(
@@ -706,11 +728,7 @@ async fn apply_table_action(
         // (Virtual tables never reach here — upgraded to Replace above.)
         apply_column_actions(db, &spec, &column_actions).await?;
     }
-
-    Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        db_key: db_key.to_string(),
-        spec,
-    })))
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +736,7 @@ async fn apply_table_action(
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
 }
@@ -749,7 +768,7 @@ impl TargetHandler<RowState> for RowHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(RowAction { pk, state: desired }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -850,7 +869,12 @@ async fn apply_column_actions(
 
         match action {
             DiffAction::Delete => {
-                run_best_effort(db, &format!("ALTER TABLE {table} DROP COLUMN {col_ident}")).await;
+                // A removed column that cannot be dropped (an index references
+                // it, or SQLite < 3.35) is left in place as unused.
+                let sql = format!("ALTER TABLE {table} DROP COLUMN {col_ident}");
+                if let Err(e) = sqlx::query(&sql).execute(db.pool()).await {
+                    tracing::warn!("SQLite target: could not drop removed column ({sql:?}): {e}");
+                }
             }
             DiffAction::Insert | DiffAction::Upsert => {
                 if let Some(col) = schema.columns().get(col_name) {
@@ -861,31 +885,24 @@ async fn apply_column_actions(
                     // `upsert_sql` then references. This mirrors the Postgres
                     // connector, which also adds columns nullable. The NOT NULL
                     // constraint is only applied on a full table (re)create.
-                    run_best_effort(
-                        db,
-                        &format!(
-                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}",
-                            col.sqlite_type
-                        ),
-                    )
-                    .await;
+                    add_column(db, &table, &col_ident, &col.sqlite_type).await?;
                 }
             }
             DiffAction::Replace => {
                 // SQLite has no `ALTER COLUMN TYPE`; drop then re-add. Re-add as
                 // nullable for the same reason as the Insert/Upsert arm (a NOT
-                // NULL add fails on a populated table).
+                // NULL add fails on a populated table). A failed drop would
+                // leave the old type while the new one is recorded, so it fails
+                // the apply instead, and the change is retried on the next run.
                 if let Some(col) = schema.columns().get(col_name) {
-                    run_best_effort(db, &format!("ALTER TABLE {table} DROP COLUMN {col_ident}"))
-                        .await;
-                    run_best_effort(
-                        db,
-                        &format!(
-                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}",
-                            col.sqlite_type
-                        ),
-                    )
-                    .await;
+                    let sql = format!("ALTER TABLE {table} DROP COLUMN {col_ident}");
+                    sqlx::query(&sql).execute(db.pool()).await.map_err(|e| {
+                        Error::engine(format!(
+                            "SQLite target: cannot change the type of column {col_name:?} \
+                             in {table} ({sql:?}): {e}"
+                        ))
+                    })?;
+                    add_column(db, &table, &col_ident, &col.sqlite_type).await?;
                 }
             }
         }
@@ -893,12 +910,14 @@ async fn apply_column_actions(
     Ok(())
 }
 
-/// Run a DDL statement, tolerating failure (logged at debug). Used for
-/// best-effort `ALTER TABLE` column syncing where SQLite version limits or an
-/// already-applied change make a hard error the wrong outcome.
-async fn run_best_effort(db: &Database, sql: &str) {
-    if let Err(e) = sqlx::query(sql).execute(db.pool()).await {
-        tracing::debug!("sqlite best-effort DDL skipped ({sql:?}): {e}");
+/// Add a column, tolerating only the case where it already exists (an
+/// earlier, interrupted apply added it).
+async fn add_column(db: &Database, table: &str, col_ident: &str, sqlite_type: &str) -> Result<()> {
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {col_ident} {sqlite_type}");
+    match sqlx::query(&sql).execute(db.pool()).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("duplicate column name") => Ok(()),
+        Err(e) => Err(Error::engine(format!("SQLite target: {sql:?} failed: {e}"))),
     }
 }
 
@@ -1057,11 +1076,15 @@ fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
     }
     let mut predicates = Vec::with_capacity(pk.len());
     for (idx, name) in spec.table_schema.primary_key().iter().enumerate() {
-        let col = spec.table_schema.columns().get(name).expect("pk column");
+        let col = spec.table_schema.columns().get(name).ok_or_else(|| {
+            Error::engine(format!(
+                "primary key column {name:?} is not in the table schema"
+            ))
+        })?;
         predicates.push(format!(
             "{} = {}",
             quote_ident(name),
-            sql_literal(&pk[idx], col)?
+            sql_literal(&key_part_value(&pk[idx], col), col)?
         ));
     }
     Ok(format!(
@@ -1140,6 +1163,19 @@ fn stable_key_to_json(key: &StableKey) -> Result<JsonValue> {
             "unsupported SQLite row key: {other:?}"
         ))),
     }
+}
+
+/// A row key stores a boolean key part as the string `"true"`/`"false"` (see
+/// [`json_scalar_to_stable_key`]); turn it back into a boolean for a column
+/// that holds booleans, so a row with a boolean key can be deleted.
+fn key_part_value(value: &JsonValue, col: &ColumnDef) -> JsonValue {
+    if let JsonValue::String(s) = value
+        && let Ok(b) = s.parse::<bool>()
+        && is_integer_type(&col.sqlite_type.to_ascii_lowercase())
+    {
+        return JsonValue::Bool(b);
+    }
+    value.clone()
 }
 
 fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
@@ -1414,6 +1450,27 @@ mod tests {
         assert!(stmts[1].starts_with("INSERT INTO \"items\""), "{stmts:?}");
         // Neither statement contains a `;` separator (so each runs on its own).
         assert!(stmts.iter().all(|s| !s.contains(';')), "{stmts:?}");
+    }
+
+    #[test]
+    fn row_with_boolean_primary_key_can_be_deleted() {
+        let schema = TableSchema::new(
+            [
+                ("tenant", ColumnDef::new("TEXT")),
+                ("active", ColumnDef::new("INTEGER")),
+            ],
+            ["tenant", "active"],
+        )
+        .unwrap();
+        let key = StableKey::Array(Arc::from([
+            json_scalar_to_stable_key(&JsonValue::from("true")).unwrap(),
+            json_scalar_to_stable_key(&JsonValue::Bool(true)).unwrap(),
+        ]));
+        let sql = delete_sql(&spec(schema), &stable_key_to_pk(&key).unwrap()).unwrap();
+        assert_eq!(
+            sql,
+            "DELETE FROM \"items\" WHERE \"tenant\" = 'true' AND \"active\" = 1"
+        );
     }
 
     #[test]

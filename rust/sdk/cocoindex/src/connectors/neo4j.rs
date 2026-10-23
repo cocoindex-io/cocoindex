@@ -6,6 +6,7 @@ use async_trait::async_trait;
 
 use crate::cypher_graph;
 use crate::error::{Error, Result};
+use crate::target_state::{STATIC_ROOT_PROVIDERS, StaticRootProvider};
 
 pub use cypher_graph::{ColumnDef, TableSchema, TableSpec, VectorMetric};
 
@@ -13,7 +14,6 @@ pub use cypher_graph::{ColumnDef, TableSchema, TableSpec, VectorMetric};
 pub struct Graph {
     db: Arc<neo4rs::Graph>,
     database: Arc<str>,
-    state_id: Arc<str>,
 }
 
 fn normalize_uri(uri: &str) -> String {
@@ -39,14 +39,15 @@ impl Graph {
         Ok(Self {
             db: Arc::new(db),
             database: Arc::from(database.to_string()),
-            state_id: Arc::from(format!("{uri}/{database}")),
         })
     }
-
-    pub fn state_id(&self) -> &str {
-        &self.state_id
-    }
 }
+
+/// Root provider for every Neo4j table/relation target; the graph is named by
+/// each target state's key and resolved from the environment at apply time.
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    cypher_graph::table_root_provider::<Graph>("cocoindex/neo4j/table");
 
 #[async_trait]
 impl cypher_graph::CypherExecutor for Graph {
@@ -54,8 +55,8 @@ impl cypher_graph::CypherExecutor for Graph {
         "neo4j"
     }
 
-    fn state_id(&self) -> &str {
-        &self.state_id
+    fn table_provider() -> &'static StaticRootProvider {
+        &TABLE_PROVIDER
     }
 
     async fn execute(&self, cypher: &str) -> Result<()> {
@@ -149,6 +150,57 @@ mod tests {
         name: String,
     }
 
+    #[derive(Serialize)]
+    struct PersonById {
+        id: String,
+        name: String,
+    }
+
+    /// The people graph re-keyed by `id`: an identity change for both the
+    /// node table and the relation whose endpoints it defines.
+    async fn run_people_graph_keyed_by_id(
+        app: &App,
+        person_label: String,
+        relation_label: String,
+    ) -> Result<()> {
+        app.run(move |ctx| {
+            let person_label = person_label.clone();
+            let relation_label = relation_label.clone();
+            async move {
+                let schema = TableSchema::new(
+                    [
+                        ("id", ColumnDef::new("STRING")),
+                        ("name", ColumnDef::new("STRING")),
+                    ],
+                    "id",
+                )?;
+                let people = mount_table_target(&ctx, &GRAPH, person_label, schema).await?;
+                let knows =
+                    mount_relation_target(&ctx, &GRAPH, relation_label, &people, &people).await?;
+                people.declare_record(
+                    &ctx,
+                    "a1",
+                    &PersonById {
+                        id: "a1".to_string(),
+                        name: "alice".to_string(),
+                    },
+                )?;
+                people.declare_record(
+                    &ctx,
+                    "b1",
+                    &PersonById {
+                        id: "b1".to_string(),
+                        name: "bob".to_string(),
+                    },
+                )?;
+                knows.declare_relation(&ctx, "a1", "b1")?;
+                Ok(())
+            }
+        })
+        .await
+        .map(|_| ())
+    }
+
     #[test]
     fn json_to_bolt_maps_json_values() {
         let value = serde_json::json!({
@@ -214,16 +266,20 @@ mod tests {
         person_label: String,
         relation_label: String,
         include_bob: bool,
+        with_indexes: bool,
     ) -> Result<()> {
         app.run(move |ctx| {
             let person_label = person_label.clone();
             let relation_label = relation_label.clone();
             async move {
-                let graph = ctx.get_key(&GRAPH)?;
                 let schema = TableSchema::new([("name", ColumnDef::new("STRING"))], "name")?;
-                let people = mount_table_target(&ctx, graph, person_label, schema).await?;
+                let people = mount_table_target(&ctx, &GRAPH, person_label, schema).await?;
                 let knows =
-                    mount_relation_target(&ctx, graph, relation_label, &people, &people).await?;
+                    mount_relation_target(&ctx, &GRAPH, relation_label, &people, &people).await?;
+                if with_indexes {
+                    people.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
+                    people.declare_node_index(&ctx, &["nickname"])?;
+                }
 
                 people.declare_record(
                     &ctx,
@@ -276,7 +332,14 @@ mod tests {
             .app("Neo4jTargetE2ETest")
             .await?;
 
-        run_people_graph(&app, person_label.clone(), relation_label.clone(), true).await?;
+        run_people_graph(
+            &app,
+            person_label.clone(),
+            relation_label.clone(),
+            true,
+            false,
+        )
+        .await?;
         assert_eq!(
             count(
                 &graph,
@@ -294,7 +357,14 @@ mod tests {
             1
         );
 
-        run_people_graph(&app, person_label.clone(), relation_label.clone(), false).await?;
+        run_people_graph(
+            &app,
+            person_label.clone(),
+            relation_label.clone(),
+            false,
+            false,
+        )
+        .await?;
         assert_eq!(
             count(
                 &graph,
@@ -310,6 +380,237 @@ mod tests {
             )
             .await?,
             0
+        );
+
+        // Revert the constraint and index the targets created.
+        app.drop_state().await?;
+        graph
+            .db
+            .run_on(
+                &graph.database,
+                neo4rs::query(&format!("MATCH (n:`{person_label}`) DETACH DELETE n")),
+            )
+            .await
+            .ok();
+        Ok(())
+    }
+
+    /// Which schema objects owned by the people graph's targets exist: the
+    /// table's uniqueness constraint, the relation's index, and the table's
+    /// vector and node indexes.
+    #[derive(Debug, PartialEq)]
+    struct SchemaObjects {
+        table: bool,
+        relation: bool,
+        vector_index: bool,
+        node_index: bool,
+    }
+
+    impl SchemaObjects {
+        fn all(present: bool) -> Self {
+            Self {
+                table: present,
+                relation: present,
+                vector_index: present,
+                node_index: present,
+            }
+        }
+
+        async fn read(graph: &Graph, person_label: &str, relation_label: &str) -> Result<Self> {
+            let exists = |show: &'static str, name: String| async move {
+                let cypher = format!(
+                    "SHOW {show} YIELD name WHERE name = '{name}' RETURN count(*) AS count"
+                );
+                Ok::<_, Error>(count(graph, &cypher).await? == 1)
+            };
+            Ok(Self {
+                table: exists("CONSTRAINTS", format!("coco_uniq_{person_label}__name")).await?,
+                relation: exists("INDEXES", format!("coco_idx_rel_{relation_label}__id")).await?,
+                vector_index: exists(
+                    "INDEXES",
+                    cypher_graph::vector_index_name(person_label, "embedding"),
+                )
+                .await?,
+                node_index: exists(
+                    "INDEXES",
+                    cypher_graph::node_index_name(person_label, &["nickname".to_string()]),
+                )
+                .await?,
+            })
+        }
+    }
+
+    /// The number of nodes carrying `person_label` and of relationships of
+    /// type `relation_label`.
+    async fn contents(
+        graph: &Graph,
+        person_label: &str,
+        relation_label: &str,
+    ) -> Result<(i64, i64)> {
+        let nodes = count(
+            graph,
+            &format!("MATCH (n:`{person_label}`) RETURN count(n) AS count"),
+        )
+        .await?;
+        let relationships = count(
+            graph,
+            &format!("MATCH ()-[r:`{relation_label}`]->() RETURN count(r) AS count"),
+        )
+        .await?;
+        Ok((nodes, relationships))
+    }
+
+    #[tokio::test]
+    async fn neo4j_undeclared_and_dropped_targets_are_removed_when_available() -> Result<()> {
+        let Some(graph) = try_graph().await else {
+            eprintln!(
+                "skipping live Neo4j target-removal test; NEO4J_URI is not set or unavailable"
+            );
+            return Ok(());
+        };
+        let nonce = nonce();
+        let person_label = format!("Person_{nonce}");
+        let relation_label = format!("KNOWS_{nonce}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(dir.path().join(".cocoindex_db"))
+            .provide_key(&GRAPH, graph.clone())
+            .build()
+            .await?
+            .app("Neo4jTargetRemovalE2ETest")
+            .await?;
+
+        run_people_graph(
+            &app,
+            person_label.clone(),
+            relation_label.clone(),
+            true,
+            true,
+        )
+        .await?;
+        assert_eq!(
+            SchemaObjects::read(&graph, &person_label, &relation_label).await?,
+            SchemaObjects::all(true)
+        );
+        assert_eq!(
+            contents(&graph, &person_label, &relation_label).await?,
+            (2, 1)
+        );
+
+        // A run that no longer declares the table and relation removes them,
+        // with their nodes/relationships and the table's indexes.
+        app.run(|_ctx| async { Ok(()) }).await?;
+        assert_eq!(
+            SchemaObjects::read(&graph, &person_label, &relation_label).await?,
+            SchemaObjects::all(false),
+            "a table/relation no longer declared is removed"
+        );
+        assert_eq!(
+            contents(&graph, &person_label, &relation_label).await?,
+            (0, 0),
+            "a table/relation no longer declared takes its contents along"
+        );
+
+        run_people_graph(
+            &app,
+            person_label.clone(),
+            relation_label.clone(),
+            true,
+            true,
+        )
+        .await?;
+        assert_eq!(
+            SchemaObjects::read(&graph, &person_label, &relation_label).await?,
+            SchemaObjects::all(true)
+        );
+
+        app.drop_state().await?;
+        assert_eq!(
+            SchemaObjects::read(&graph, &person_label, &relation_label).await?,
+            SchemaObjects::all(false),
+            "drop_state removes the table/relation"
+        );
+        assert_eq!(
+            contents(&graph, &person_label, &relation_label).await?,
+            (0, 0),
+            "drop_state removes the table/relation contents"
+        );
+
+        graph
+            .db
+            .run_on(
+                &graph.database,
+                neo4rs::query(&format!("MATCH (n:`{person_label}`) DETACH DELETE n")),
+            )
+            .await
+            .ok();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn neo4j_primary_key_change_rebuilds_table_when_available() -> Result<()> {
+        let Some(graph) = try_graph().await else {
+            eprintln!("skipping live Neo4j rebuild test; NEO4J_URI is not set or unavailable");
+            return Ok(());
+        };
+        let nonce = nonce();
+        let person_label = format!("Person_{nonce}");
+        let relation_label = format!("KNOWS_{nonce}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(dir.path().join(".cocoindex_db"))
+            .provide_key(&GRAPH, graph.clone())
+            .build()
+            .await?
+            .app("Neo4jTargetRebuildE2ETest")
+            .await?;
+
+        run_people_graph(
+            &app,
+            person_label.clone(),
+            relation_label.clone(),
+            true,
+            false,
+        )
+        .await?;
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH (n:`{person_label}`) RETURN count(n) AS count")
+            )
+            .await?,
+            2
+        );
+
+        // Re-keying the table by `id` rebuilds it: the nodes keyed by `name`
+        // (with the relationships hanging on them) are deleted before the
+        // records are declared again under the new key.
+        run_people_graph_keyed_by_id(&app, person_label.clone(), relation_label.clone()).await?;
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH (n:`{person_label}`) RETURN count(n) AS count")
+            )
+            .await?,
+            2
+        );
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH (n:`{person_label}`) WHERE n.id IS NULL RETURN count(n) AS count"),
+            )
+            .await?,
+            0
+        );
+        assert_eq!(
+            count(
+                &graph,
+                &format!("MATCH ()-[r:`{relation_label}`]->() RETURN count(r) AS count"),
+            )
+            .await?,
+            1
         );
 
         graph

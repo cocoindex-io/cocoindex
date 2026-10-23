@@ -198,6 +198,7 @@ impl TxnRunner {
             std::iter::repeat_with(|| None).take(bodies.len()).collect();
         // Sub-batches still to run, as index ranges over `bodies`. The
         // earliest one is on top, so they run (and commit) in input order.
+        #[allow(clippy::single_range_in_vec_init)]
         let mut pending = vec![0..bodies.len()];
         while let Some(sub) = pending.pop() {
             if sub.is_empty() {
@@ -871,11 +872,11 @@ mod tests {
         for key in ["key_0000", "key_0031", "key_0063"] {
             let bytes = app_store
                 .db()
-                .get(&*rtxn, key.as_bytes())
+                .get(&rtxn, key.as_bytes())
                 .unwrap()
                 .unwrap_or_else(|| panic!("{key} should exist after successful commit"));
             assert_eq!(
-                bytes.as_ref(),
+                bytes,
                 payload.as_slice(),
                 "{key} payload should match what was written"
             );
@@ -988,11 +989,11 @@ mod tests {
         for key in ["key_0000", "key_0031", "key_0063"] {
             let bytes = app_store
                 .db()
-                .get(&*rtxn, key.as_bytes())
+                .get(&rtxn, key.as_bytes())
                 .unwrap()
                 .unwrap_or_else(|| panic!("{key} should exist after successful write"));
             assert_eq!(
-                bytes.as_ref(),
+                bytes,
                 payload.as_slice(),
                 "{key} payload should match what was written"
             );
@@ -1023,7 +1024,7 @@ mod tests {
                         runs.fetch_add(1, Ordering::SeqCst);
                         let mut written = Vec::new();
                         for other in KEYS {
-                            if app_store.db().get(&**wtxn, other.as_bytes())?.is_some() {
+                            if app_store.db().get(wtxn, other.as_bytes())?.is_some() {
                                 written.push(other);
                             }
                         }
@@ -1057,11 +1058,7 @@ mod tests {
         let rtxn = app_store.read_txn().await.unwrap();
         for key in KEYS {
             assert_eq!(
-                app_store
-                    .db()
-                    .get(&*rtxn, key.as_bytes())
-                    .unwrap()
-                    .is_some(),
+                app_store.db().get(&rtxn, key.as_bytes()).unwrap().is_some(),
                 key.starts_with("ok"),
                 "{key} must commit iff its body succeeded"
             );

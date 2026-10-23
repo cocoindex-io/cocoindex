@@ -28,9 +28,9 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -214,7 +214,7 @@ fn json_object_keys(info: Option<&JsonValue>, field: &str) -> Vec<String> {
 pub struct TableTarget {
     table_name: Arc<str>,
     managed_by: ManagedBy,
-    table_provider: TargetStateProvider<TableSpec>,
+    /// The table's record provider; also carries its vector-index attachment.
     records: TargetStateProvider<RecordState>,
 }
 
@@ -267,7 +267,7 @@ impl TableTarget {
             .unwrap_or_else(|| format!("idx_{}__{}", self.table_name, field));
         validate_ident(&name, "vector index name")?;
         let provider: TargetStateProvider<VectorIndexSpec> =
-            self.table_provider.attachment(ctx, "vector_index")?;
+            self.records.attachment(ctx, "vector_index")?;
         let spec = VectorIndexSpec {
             table_name: self.table_name.to_string(),
             name: name.clone(),
@@ -436,15 +436,10 @@ fn relation_key_part(value: &str) -> String {
     format!("{}:{value};", value.len())
 }
 
-fn table_handle(
-    spec: TableSpec,
-    table_provider: TargetStateProvider<TableSpec>,
-    records: TargetStateProvider<RecordState>,
-) -> TableTarget {
+fn table_handle(spec: TableSpec, records: TargetStateProvider<RecordState>) -> TableTarget {
     TableTarget {
         table_name: Arc::from(spec.table_name),
         managed_by: spec.managed_by,
-        table_provider,
         records,
     }
 }
@@ -474,18 +469,17 @@ fn table_target_state(
     spec: TableSpec,
 ) -> Result<TargetState<TableSpec>> {
     validate_ident(&spec.table_name, "table name")?;
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!(
-            "cocoindex/surrealdb/table/{}/{}",
-            graph.name(),
-            spec.table_name
-        ),
-        TableHandler {
+    let provider = TABLE_PROVIDER.get(ctx)?;
+    Ok(provider.target_state(
+        // Stable connection identity = the ContextKey's name; the graph is
+        // resolved at apply time from the host context.
+        TableKey {
             graph_key: graph.name().to_string(),
-        },
-    )?;
-    Ok(provider.target_state("default", spec))
+            table_name: spec.table_name.clone(),
+        }
+        .stable_key(),
+        spec,
+    ))
 }
 
 /// Build a composable [`TargetState`] for a schemaless, system-managed
@@ -649,9 +643,8 @@ pub fn declare_table_target_with_schema_and_options(
 ) -> Result<TableTarget> {
     let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
     let spec = ts.value().clone();
-    let table_provider = ts.provider().clone();
     let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    Ok(table_handle(spec, table_provider, records))
+    Ok(table_handle(spec, records))
 }
 
 /// Declare a SurrealDB relation target in the **current** component and return
@@ -780,9 +773,8 @@ pub async fn mount_table_target_with_schema_and_options(
 ) -> Result<TableTarget> {
     let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
     let spec = ts.value().clone();
-    let table_provider = ts.provider().clone();
     let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
-    Ok(table_handle(spec, table_provider, records))
+    Ok(table_handle(spec, records))
 }
 
 pub async fn mount_relation_target(
@@ -1000,6 +992,8 @@ impl RecordIdValue {
 /// Action emitted by the table container handler.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
+    /// The `ContextKey` name of the graph the table lives in.
+    graph_key: String,
     /// `Some` for a define (create/update), carrying the desired spec.
     spec: Option<TableSpec>,
     /// `Some` for a removal (orphaned table), carrying the table name.
@@ -1038,8 +1032,45 @@ fn resolve_graph(host_ctx: &Arc<ContextStore>, graph_key: &str) -> Result<Arc<Gr
     })
 }
 
-struct TableHandler {
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TableSpec, TableHandler>("cocoindex/surrealdb/table");
+
+/// A table (or relation) target state's key: the graph's `ContextKey` name
+/// plus the table name.
+struct TableKey {
     graph_key: String,
+    table_name: String,
+}
+
+impl TableKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.graph_key)),
+            StableKey::Str(Arc::from(self.table_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(graph_key), StableKey::Str(table_name)] = &parts[..]
+        {
+            return Ok(Self {
+                graph_key: graph_key.to_string(),
+                table_name: table_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected surrealdb table target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every SurrealDB table/relation target: stateless, the
+/// graph is named by each target state's [`TableKey`].
+#[derive(Default)]
+struct TableHandler {
+    sink: SinkCache<TableAction>,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -1048,13 +1079,14 @@ impl TargetHandler<TableSpec> for TableHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<TableSpec>,
         prev: Vec<MutualTrackingRecord<TableSpec>>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
+        let graph_key = TableKey::from_stable_key(&key)?.graph_key;
         match desired {
-            // Always emit when declared so the sink fulfills the record child.
+            // Always emit when declared so the sink builds the record child.
             Some(spec) => {
                 let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
                 // The previous system spec drives schema evolution: a change to the
@@ -1113,13 +1145,14 @@ impl TargetHandler<TableSpec> for TableHandler {
 
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
+                        graph_key,
                         spec: Some(spec),
                         drop: None,
                         recreate,
                         drop_fields,
                         retype_fields,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
@@ -1138,88 +1171,74 @@ impl TargetHandler<TableSpec> for TableHandler {
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
+                        graph_key,
                         spec: None,
                         drop: Some(prev_spec.table_name),
                         recreate: false,
                         drop_fields: Vec::new(),
                         retype_fields: Vec::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
             }
         }
     }
-
-    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
-        Ok(vec![(
-            "vector_index".to_string(),
-            ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                graph_key: self.graph_key.clone(),
-            }),
-        )])
-    }
 }
 
-impl TableHandler {
-    fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let graph_key = self.graph_key.clone();
-        TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-                let graph_key = graph_key.clone();
-                async move {
-                    let graph = resolve_graph(&host_ctx, &graph_key)?;
-                    for (action, child_slot) in actions {
-                        match action {
-                            TargetAction::Create(a) | TargetAction::Update(a) => {
-                                let spec = a.spec.ok_or_else(|| {
-                                    Error::engine("SurrealDB table action missing spec")
-                                })?;
-                                // A "main"-shape change can't be applied in place;
-                                // remove and redefine (records replayed via the
-                                // Destructive child invalidation set at reconcile).
-                                if a.recreate && spec.managed_by.is_system() {
-                                    remove_table(&graph, &spec.table_name).await?;
-                                }
-                                define_table(&graph, &spec).await?;
-                                if !a.drop_fields.is_empty() || !a.retype_fields.is_empty() {
-                                    apply_field_changes(
-                                        &graph,
-                                        &spec,
-                                        &a.drop_fields,
-                                        &a.retype_fields,
-                                    )
-                                    .await?;
-                                }
-                                if let Some(slot) = child_slot {
-                                    slot.fulfill(ChildTargetDef::new::<RecordState, _>(
-                                        RecordHandler {
-                                            graph_key: graph_key.clone(),
-                                            spec,
-                                        },
-                                    ))?;
-                                }
-                            }
-                            TargetAction::Delete(a) => {
-                                if let Some(table_name) = a.drop {
-                                    remove_table(&graph, &table_name).await?;
-                                }
-                            }
+fn table_sink() -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let graph = resolve_graph(&host_ctx, &a.graph_key)?;
+                        let spec = a
+                            .spec
+                            .ok_or_else(|| Error::engine("SurrealDB table action missing spec"))?;
+                        // A "main"-shape change can't be applied in place;
+                        // remove and redefine (records replayed via the
+                        // Destructive child invalidation set at reconcile).
+                        if a.recreate && spec.managed_by.is_system() {
+                            remove_table(&graph, &spec.table_name).await?;
+                        }
+                        define_table(&graph, &spec).await?;
+                        if !a.drop_fields.is_empty() || !a.retype_fields.is_empty() {
+                            apply_field_changes(&graph, &spec, &a.drop_fields, &a.retype_fields)
+                                .await?;
                         }
                     }
-                    Ok(())
+                    TargetAction::Delete(a) => {
+                        if let Some(table_name) = a.drop {
+                            let graph = resolve_graph(&host_ctx, &a.graph_key)?;
+                            remove_table(&graph, &table_name).await?;
+                        }
+                    }
                 }
-            },
-        )
-    }
+            }
+            Ok(())
+        },
+        |a: &TableAction| {
+            let spec = a
+                .spec
+                .clone()
+                .ok_or_else(|| Error::engine("SurrealDB table action missing spec"))?;
+            Ok(ChildTargetDef::new::<RecordState, _>(RecordHandler {
+                sink: SinkCache::default(),
+                graph_key: a.graph_key.clone(),
+                spec,
+            }))
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
-// Record handler (child) + sink
+// Record handler (child) + sink + vector-index attachment
 // ---------------------------------------------------------------------------
 
 struct RecordHandler {
+    sink: SinkCache<RecordAction>,
     graph_key: String,
     spec: TableSpec,
 }
@@ -1227,6 +1246,16 @@ struct RecordHandler {
 impl TargetHandler<RecordState> for RecordHandler {
     type TrackingRecord = Fingerprint;
     type Action = RecordAction;
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![(
+            "vector_index".to_string(),
+            ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                sink: SinkCache::default(),
+                graph_key: self.graph_key.clone(),
+            }),
+        )])
+    }
 
     fn reconcile(
         &self,
@@ -1255,7 +1284,7 @@ impl TargetHandler<RecordState> for RecordHandler {
                 record_id,
                 state: desired,
             }),
-            sink: self.record_sink(),
+            sink: self.sink.get(|| self.record_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -1316,6 +1345,7 @@ struct VectorIndexAction {
 }
 
 struct VectorIndexHandler {
+    sink: SinkCache<VectorIndexAction>,
     graph_key: String,
 }
 
@@ -1340,7 +1370,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
         };
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev.iter().any(|p| p == d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -1358,7 +1388,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
                 table_name,
                 spec: desired.clone(),
             }),
-            sink: self.vector_index_sink(),
+            sink: self.sink.get(|| self.vector_index_sink()),
             tracking_record: desired,
             child_invalidation: None,
         }))

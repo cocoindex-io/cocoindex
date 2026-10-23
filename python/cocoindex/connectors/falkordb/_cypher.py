@@ -18,8 +18,10 @@ __all__ = [
     "IDENTIFIER_RE",
     "build_node_upsert",
     "build_node_delete",
+    "build_node_delete_all",
     "build_relationship_upsert",
     "build_relationship_delete",
+    "build_relationship_delete_all",
     "build_node_index_create",
     "build_node_index_drop",
     "build_relationship_index_create",
@@ -95,6 +97,15 @@ def build_node_delete(label: str, pk_fields: Sequence[str]) -> str:
     )
 
 
+def build_node_delete_all(label: str) -> str:
+    """``MATCH (n:`Label`) DETACH DELETE n``.
+
+    Destroys a node table: every node carrying the label goes, together with
+    the relationships attached to it.
+    """
+    return f"MATCH (n:{_quote(label)}) DETACH DELETE n"
+
+
 def build_relationship_upsert(
     rel_type: str,
     from_label: str,
@@ -137,6 +148,15 @@ def build_relationship_delete(rel_type: str, pk_fields: Sequence[str]) -> str:
         f"MATCH ()-[r:{_quote(rel_type)} "
         f"{_key_clause('key', pk_fields, 'r')}]->() DELETE r"
     )
+
+
+def build_relationship_delete_all(rel_type: str) -> str:
+    """``MATCH ()-[r:`RelType`]->() DELETE r``.
+
+    Destroys a relation table: every relationship of the type goes; the
+    endpoints stay, as with the per-record delete.
+    """
+    return f"MATCH ()-[r:{_quote(rel_type)}]->() DELETE r"
 
 
 def build_node_index_create(label: str, fields: Sequence[str]) -> str:

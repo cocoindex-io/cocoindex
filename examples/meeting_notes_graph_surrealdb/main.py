@@ -73,18 +73,16 @@ EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_chang
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    builder.provide(
-        KG_DB,
-        surrealdb.ConnectionFactory(
-            url=os.environ.get("SURREALDB_URL", "ws://localhost:8000/rpc"),
-            namespace=os.environ.get("SURREALDB_NS", "cocoindex"),
-            database=os.environ.get("SURREALDB_DB", "meeting_notes"),
-            credentials={
-                "username": os.environ.get("SURREALDB_USER", "root"),
-                "password": os.environ.get("SURREALDB_PASS", "root"),
-            },
-        ),
+    kg_db = surrealdb.ConnectionFactory(
+        url=os.environ.get("SURREALDB_URL", "ws://localhost:8000/rpc"),
+        namespace=os.environ.get("SURREALDB_NS", "cocoindex"),
+        database=os.environ.get("SURREALDB_DB", "meeting_notes"),
+        credentials={
+            "username": os.environ.get("SURREALDB_USER", "root"),
+            "password": os.environ.get("SURREALDB_PASS", "root"),
+        },
     )
+    builder.provide(KG_DB, kg_db)
     builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     builder.provide(
         RESOLUTION_LLM_MODEL,
@@ -95,6 +93,7 @@ async def coco_lifespan(
         SentenceTransformerEmbedder("Snowflake/snowflake-arctic-embed-xs"),
     )
     yield
+    await kg_db.close()
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ tags: [multimodal, image-search]
 
 This is the multi-vector cousin of the [CLIP image search example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search). Same idea — type *"long neck"*, get the giraffe back, no tags or captions — but instead of squeezing each image into a *single* vector, [ColPali](https://huggingface.co/vidore/colpali-v1.2) emits a *bag* of vectors, one per image patch, and matches a query the same way it reads a document: token against patch. The cost is more vectors per image; the payoff is finer-grained retrieval that holds up on dense, text-heavy, or busy images where a single embedding blurs everything together.
 
-The store does the heavy lifting on the query side. We give [Qdrant](https://qdrant.tech/) a **multivector** collection configured for **MaxSim**, so a query's bag of vectors and an image's bag of patch vectors are scored late-interaction style — each query vector finds its best-matching patch, summed across the query. The whole pipeline is ordinary `async` Python and your own types; [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, and the managed Qdrant collection run in a Rust engine underneath, in [live mode](https://cocoindex.io/docs/programming_guide/live_mode/) inside the API server, so a new photo in the folder is searchable within a second.
+The store does the heavy lifting on the query side. We give [Qdrant](https://qdrant.tech/) a **multivector** collection configured for **MaxSim**, so a query's bag of vectors and an image's bag of patch vectors are scored late-interaction style — each query vector finds its best-matching patch, summed across the query. The whole pipeline is ordinary `async` Python and your own types; [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and the managed Qdrant collection run in a Rust engine underneath, in [live mode](/docs/programming_guide/live_mode/) inside the API server, so a new photo in the folder is searchable within a second.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali)
 
@@ -22,9 +22,9 @@ The indexing path is short — there's no text to chunk, just one multi-vector e
 
 1. Read image files from a local directory (live).
 2. Embed each image with [ColPali](https://huggingface.co/vidore/colpali-v1.2) into a *multi-vector* — a list of 128-d patch vectors, not one fixed vector.
-3. Store it in Qdrant (as a [point](https://cocoindex.io/docs/connectors/qdrant/) in a MaxSim multivector collection, keyed by a stable id, with the filename in the payload).
+3. Store it in Qdrant (as a [point](/docs/connectors/qdrant/) in a MaxSim multivector collection, keyed by a stable id, with the filename in the payload).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## Multi-vector embeddings: a bag of vectors per image
 
@@ -79,7 +79,7 @@ Note the return type: `list[list[float]]`, not `list[float]`. Each image becomes
 
 ## Shared resources: the Qdrant client
 
-The [lifespan](https://cocoindex.io/docs/programming_guide/context/) provides the Qdrant client once at startup, via a [context key](https://cocoindex.io/docs/programming_guide/context/):
+The [lifespan](/docs/programming_guide/context/) provides the Qdrant client once at startup, via a [context key](/docs/programming_guide/context/):
 
 ```python title="pipeline.py"
 QDRANT_DB = coco.ContextKey[QdrantClient]("image_search_colpali")
@@ -111,7 +111,7 @@ async def process_file(file: FileLike, target: qdrant.CollectionTarget) -> None:
     target.declare_point(point)
 ```
 
-[`@coco.fn(memo=True)`](https://cocoindex.io/docs/programming_guide/function/) makes it [incremental](https://cocoindex.io/docs/advanced_topics/memoization_keys/): an unchanged image is never re-embedded. Each image runs as its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/), so the engine tracks them independently — delete an image and its point is removed from Qdrant automatically. `declare_point` declares the point as a [target state](https://cocoindex.io/docs/programming_guide/target_state/); CocoIndex upserts or deletes to match.
+[`@coco.fn(memo=True)`](/docs/programming_guide/function/) makes it [incremental](/docs/advanced_topics/memoization_keys/): an unchanged image is never re-embedded. Each image runs as its own [processing component](/docs/programming_guide/processing_component/), so the engine tracks them independently — delete an image and its point is removed from Qdrant automatically. `declare_point` declares the point as a [target state](/docs/programming_guide/target_state/); CocoIndex upserts or deletes to match.
 
 ## Define the main function
 
@@ -210,6 +210,6 @@ Swap the ColPali model and CocoIndex re-embeds everything against the new space;
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/image_search_colpali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali). For the lighter, single-vector version that fits more images in memory and indexes faster, see the [CLIP image search example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search); for the text equivalent, see [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/).
+The full, runnable example is in the CocoIndex repo: [examples/image_search_colpali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali). For the lighter, single-vector version that fits more images in memory and indexes faster, see the [CLIP image search example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search); for the text equivalent, see [Semantic Search 101](/docs/examples/text-embedding/).
 
 Got a document-image archive, a product catalog, or a screenshot pile you want to search by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

@@ -32,7 +32,6 @@ from typing import (
     Generic,
     Iterator,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -41,11 +40,13 @@ from typing import (
 import numpy as np
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import zvec as _zvec
 except ImportError as e:
     raise ImportError(
-        "zvec is required to use the zvec connector. Please install cocoindex[zvec]."
+        "zvec is required to use the zvec connector. " + install_hint("zvec")
     ) from e
 
 import msgspec
@@ -625,12 +626,12 @@ def _build_doc(value: _DocValue) -> Any:
 class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     """Handler for document-level target states within a collection."""
 
-    _db_key: str
+    _conn: ManagedConnection
     _collection_name: str
     _sink: coco.TargetActionSink[_DocAction]
 
-    def __init__(self, db_key: str, collection_name: str) -> None:
-        self._db_key = db_key
+    def __init__(self, conn: ManagedConnection, collection_name: str) -> None:
+        self._conn = conn
         self._collection_name = collection_name
         self._sink = coco.TargetActionSink[_DocAction].from_fn(self._apply_actions)
 
@@ -639,8 +640,7 @@ class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     ) -> None:
         if not actions:
             return
-        conn = context_provider.get(self._db_key, ManagedConnection)
-        col = conn.open_existing(self._collection_name)
+        col = self._conn.open_existing(self._collection_name)
 
         upserts: list[Any] = []
         deletes: list[str] = []
@@ -760,21 +760,28 @@ class _CollectionAction(NamedTuple):
     main_action: statediff.DiffAction | None
 
 
+def _doc_handler(
+    context_provider: ContextProvider, action: _CollectionAction, /
+) -> _DocHandler:
+    """The doc handler for a created or updated collection's docs."""
+    return _DocHandler(
+        context_provider.get(action.key.db_key, ManagedConnection),
+        action.key.collection_name,
+    )
+
+
 def _apply_collection_actions(
     context_provider: ContextProvider,
     actions: Sequence[_CollectionAction],
-    child_slots: Mapping[int, coco.ChildSlot[_DocHandler]],
     /,
 ) -> None:
-    by_key: dict[_CollectionKey, list[int]] = {}
-    for i, action in enumerate(actions):
-        by_key.setdefault(action.key, []).append(i)
+    by_key: dict[_CollectionKey, list[_CollectionAction]] = {}
+    for action in actions:
+        by_key.setdefault(action.key, []).append(action)
 
-    for key, idxs in by_key.items():
+    for key, key_actions in by_key.items():
         conn = context_provider.get(key.db_key, ManagedConnection)
-        for i in idxs:
-            action = actions[i]
-
+        for action in key_actions:
             # A non-None main action implies a system-managed collection
             # (resolve_system_transition yields None for user-managed ones).
             if action.main_action in ("replace", "delete"):
@@ -784,7 +791,6 @@ def _apply_collection_actions(
                 continue
 
             spec = action.spec
-            child_slots[i].fulfill(_DocHandler(key.db_key, key.collection_name))
 
             if action.main_action in ("insert", "upsert", "replace"):
                 conn.open_or_create(
@@ -793,9 +799,9 @@ def _apply_collection_actions(
                 )
 
 
-_collection_action_sink = coco.TargetActionSink[
-    _CollectionAction
-].from_fn_with_children(_apply_collection_actions)
+_collection_action_sink = coco.TargetActionSink[_CollectionAction].from_fn(
+    _apply_collection_actions, child_handler=_doc_handler
+)
 
 
 class _CollectionHandler(

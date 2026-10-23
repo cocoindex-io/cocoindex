@@ -353,12 +353,14 @@ NEO4J_DB = coco.ContextKey[neo4j.ConnectionFactory]("neo4j_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(NEO4J_DB, neo4j.ConnectionFactory(
+    neo4j_db = neo4j.ConnectionFactory(
         uri="bolt://localhost:7687",
         auth=("neo4j", "cocoindex"),
         database="neo4j",  # Optional, default "neo4j"
-    ))
+    )
+    builder.provide(NEO4J_DB, neo4j_db)
     yield
+    await neo4j_db.close()  # closes the driver the factory opened on this loop
 ```
 
 ### As Target (Nodes + Relationships)
@@ -446,11 +448,13 @@ FALKOR_DB = coco.ContextKey[falkordb.ConnectionFactory]("falkor_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(FALKOR_DB, falkordb.ConnectionFactory(
+    falkor_db = falkordb.ConnectionFactory(
         uri="falkor://localhost:6379",
         graph="knowledge_graph",  # Optional, default "default"
-    ))
+    )
+    builder.provide(FALKOR_DB, falkor_db)
     yield
+    await falkor_db.close()  # closes the client the factory opened on this loop
 ```
 
 ### As Target (Nodes + Relationships)

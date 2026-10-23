@@ -28,6 +28,7 @@ from typing import (
 from . import core
 from . import setting
 from .context_keys import ContextKey, ContextProvider
+from .runner import EmptyContextThreadPoolExecutor
 
 if TYPE_CHECKING:
     from cocoindex._internal.app import App
@@ -61,18 +62,33 @@ class _LoopRunner:
         return self._thread
 
     def ensure_running(self) -> None:
+        """Run the loop on a daemon thread; the loop is running when this returns."""
         if self._loop.is_running() or self._loop.is_closed():
             return
 
+        started = threading.Event()
+
         def _runner(loop: asyncio.AbstractEventLoop) -> None:
             asyncio.set_event_loop(loop)
-            loop.run_forever()
+            # Report from inside the loop, where `is_running()` is already true.
+            loop.call_soon(started.set)
+            try:
+                loop.run_forever()
+            finally:
+                # Also release the starter if the loop never got to run.
+                started.set()
 
         self._thread = threading.Thread(target=_runner, args=(self._loop,), daemon=True)
         # Start it from an empty context: where threads inherit the starter's context
         # (free-threaded 3.14+), a start inside a component would otherwise keep that
         # component's context, and with it the environment, alive for good.
         contextvars.Context().run(self._thread.start)
+        # `Thread.start` only waits for the thread to exist, not for `run_forever`
+        # to begin. Without the GIL the starter can get here first and read the
+        # loop as not running, so a caller such as `Environment.__init__` would
+        # start a second runner on the same loop, which dies with "This event
+        # loop is already running". Wait until the loop is actually running.
+        started.wait()
 
     @classmethod
     def from_running_loop(cls, loop: asyncio.AbstractEventLoop) -> "_LoopRunner":
@@ -82,7 +98,14 @@ class _LoopRunner:
 
     @classmethod
     def create_new_running(cls) -> "_LoopRunner":
-        runner = cls(asyncio.new_event_loop())
+        loop = asyncio.new_event_loop()
+        # The loop is ours, so its default executor (behind `asyncio.to_thread()`) is
+        # too: start its workers in an empty context, like the loop's own thread. A
+        # loop the user passes in keeps the user's executor.
+        loop.set_default_executor(
+            EmptyContextThreadPoolExecutor(thread_name_prefix="asyncio")
+        )
+        runner = cls(loop)
         runner.ensure_running()
         return runner
 
