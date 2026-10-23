@@ -11,8 +11,11 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import PurePath
+from typing import AsyncIterator
 
 import pytest
+import cocoindex as coco
+from tests.common import create_test_env
 
 # ---------------------------------------------------------------------------
 # Optional dependency guard — mirrors the pattern in test_turbopuffer_target.py
@@ -20,7 +23,12 @@ import pytest
 
 try:
     from cocoindex.connectors.google_drive._source import (
+        DriveFile,
+        DriveFileInfo,
         DriveFilePath,
+        GoogleDriveSource,
+        GoogleDriveSourceSpec,
+        list_files,
         _parse_modified_time,
     )
 
@@ -107,3 +115,111 @@ class TestDriveFilePath:
         fp1 = DriveFilePath("a.txt", file_id="abc")
         fp2 = DriveFilePath("b.txt", file_id="abc")
         assert fp1 != fp2
+
+    def test_memo_key_distinguishes_ids_and_paths(self) -> None:
+        first = DriveFilePath("report.txt", file_id="id-1")
+        second = DriveFilePath("report.txt", file_id="id-2")
+        renamed = DriveFilePath("renamed.txt", file_id="id-1")
+        assert first.__coco_memo_key__() != second.__coco_memo_key__()
+        assert first.__coco_memo_key__() != renamed.__coco_memo_key__()
+        assert first != second
+        assert len({first, second}) == 2
+        assert {first: "first", second: "second"}[second] == "second"
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_items_key_same_named_files_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = GoogleDriveSource(
+        service_account_credential_path="unused.json", root_folder_ids=["root"]
+    )
+
+    async def files() -> AsyncIterator[DriveFile]:
+        for file_id in ("id-1", "id-2"):
+            yield DriveFile(
+                None,
+                DriveFileInfo(
+                    file_id=file_id,
+                    name="report.txt",
+                    mime_type="text/plain",
+                    size=0,
+                    modified_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                ),
+            )
+
+    monkeypatch.setattr(source, "files", files)
+    items = [item async for item in source.items()]
+    assert [key for key, _ in items] == ["id-1", "id-2"]
+    assert [file.file_path.path.as_posix() for _, file in items] == [
+        "report.txt",
+        "report.txt",
+    ]
+
+
+@requires_google_drive
+def test_listing_preserves_paths_and_deduplicates_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cocoindex.connectors.google_drive import _source
+
+    now = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    folder = DriveFileInfo("child", "nested", _source._FOLDER_MIME, 0, now)
+    report = DriveFileInfo("report", "report.txt", "text/plain", 1, now)
+    children = {"parent": [folder, report], "child": [report]}
+    monkeypatch.setattr(_source, "_build_service", lambda _: None)
+    monkeypatch.setattr(
+        _source, "_list_children", lambda _, folder_id: children[folder_id]
+    )
+    spec = GoogleDriveSourceSpec("unused.json", ["parent", "child", "parent"])
+    files = list(list_files(spec))
+    assert [file.file_path.resolve() for file in files] == ["report"]
+
+    children["parent"] = [folder]
+    files = list(list_files(GoogleDriveSourceSpec("unused.json", ["parent"])))
+    assert files[0].file_path.as_posix() == "nested/report.txt"
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_memo_distinguishes_drive_ids_and_folder_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    files = [
+        DriveFile(
+            None, DriveFileInfo(file_id, "report.txt", "text/plain", 1, now, path)
+        )
+        for file_id, path in [
+            ("id-1", "a/report.txt"),
+            ("id-2", "a/report.txt"),
+            ("id-2", "b/report.txt"),
+        ]
+    ]
+    calls: list[str] = []
+    index = 0
+
+    async def read(file: DriveFile, size: int = -1) -> bytes:
+        return file.file_path.resolve().encode()
+
+    monkeypatch.setattr(DriveFile, "_read_impl", read)
+
+    @coco.fn(memo=True)
+    async def process(file: DriveFile) -> str:
+        calls.append(file.file_path.resolve())
+        return f"{await file.read_text()}:{file.file_path.as_posix()}"
+
+    @coco.fn
+    async def main() -> str:
+        return await process(files[index])
+
+    env = create_test_env(__file__, suffix="drive_memo_identity")
+    app = coco.App(coco.AppConfig(name="drive_memo_identity", environment=env), main)
+    assert await app.update() == "id-1:a/report.txt"
+    index = 1
+    assert await app.update() == "id-2:a/report.txt"
+    index = 2
+    assert await app.update() == "id-2:b/report.txt"
+    assert await app.update() == "id-2:b/report.txt"
+    assert calls == ["id-1", "id-2", "id-2"]

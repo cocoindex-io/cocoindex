@@ -73,7 +73,7 @@ async def app_main() -> None:
     await coco.mount_each(process_file, source.items(), table)
 ```
 
-`source.items()` yields `(key, file)` pairs keyed by the file's name path, which is exactly the shape [`mount_each`](/docs/programming_guide/processing_component/) expects — so the engine tracks each Drive file as its own component and updates them independently. `mount_table_target` creates and manages the Postgres table: schema, idempotent upserts, and orphan cleanup when a file disappears from the folder.
+`source.items()` yields `(key, file)` pairs keyed by each file's stable Google Drive ID, so [`mount_each`](/docs/programming_guide/processing_component/) tracks same-named files independently. The display path remains available through `file.file_path`. `mount_table_target` creates and manages the Postgres table: schema, idempotent upserts, and orphan cleanup when a file disappears from the folder.
 
 ## Setup
 
