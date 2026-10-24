@@ -129,7 +129,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). A fourth tool, [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers), is for callbacks that cross a `"self"` boundary.
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). Two more tools cover what a decorator parameter cannot: [`coco.LogicDep` / `coco.use_logic_dep`](#per-call-dependencies-logicdep-and-use_logic_dep) for a dependency decided per call, and [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers) for callbacks that cross a `"self"` boundary.
 
 #### `logic_tracking`
 
@@ -192,6 +192,32 @@ The value is canonicalized through the [memoization-key pipeline](../advanced_to
 :::
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
+
+#### Per-call dependencies: `LogicDep` and `use_logic_dep`
+
+`deps` describes the whole function: every call depends on the value. Some dependencies are decided per call. A tree walk's `visit_file` depends on the parser of *that file's* language, and a change to one parser should re-run the files it parsed, not every file the walk saw. `coco.LogicDep` declares such a value once, at module import; `coco.use_logic_dep` records it as part of the current call's logic:
+
+```python
+PARSER_DEPS = {
+    name: coco.LogicDep(("parser", name, version))
+    for name, version in PARSER_VERSIONS.items()
+}
+
+@coco.fn(logic_tracking="self", version=1)
+async def visit_file(file: File) -> None:
+    language = detect_language(file.path)
+    if (dep := PARSER_DEPS.get(language)) is not None:
+        coco.use_logic_dep(dep)  # this call's logic also depends on that parser
+    ...
+```
+
+A recorded dependency travels exactly like the function's own fingerprint: into the entry of a memoized caller, onward through `"full"` callers, hidden by a `"self"` caller above unless the call is carried by [`logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers), and from a [mounted component](./processing_component) into every ancestor component's entry. (A memoized callee that hits re-offers its stored entry to the caller whole, and that rides to the enclosing component regardless of modes, so a `"self"` caller may record more after a hit than after a miss, never less.) When a later release constructs the `LogicDep` with a new value, only the entries that recorded the old one are invalidated: in the example, a parser's new version re-runs its files and the directories above them, and every other subtree is reused. It is recorded whatever the function's own `logic_tracking` is: it describes the call, not the function's code.
+
+:::caution[Construct at import, never lazily]
+A memo entry is validated against the dependencies registered in the process at that moment. A `LogicDep` constructed on first use registers too late, so entries recorded with it are evicted when probed before that first use; one constructed per call is released too early, so they are evicted every pass. Neither is stale data, only memoization that silently stops working. Build every `LogicDep` before any component runs, at module import; constructing one inside a component context raises.
+:::
+
+Adopting `use_logic_dep` in a function that memoized callers already stored entries for does not re-store those entries (the caution under [`logic_tracking`](#logic_tracking) applies): ship the adoption with a `version` bump or a memoization-key change on those callers.
 
 #### Callbacks: `logic_propagated_to_callers`
 

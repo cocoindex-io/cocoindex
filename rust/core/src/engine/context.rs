@@ -1167,6 +1167,16 @@ pub struct FnCallContextInner {
     /// offered to the parent: tunneled deps that resolved at this frame as
     /// their owner while its `propagate_children_fn_logic` is false.
     pub entry_only_fn_logic_deps: HashSet<Fingerprint>,
+    /// Logic fingerprints a memo hit re-offered from a callee's stored entry
+    /// ([`FnCallMemoGuard::join_cached_logic_deps`](super::function::FnCallMemoGuard::join_cached_logic_deps)).
+    /// A stored entry's set is flat — the callee's own and propagated logic,
+    /// tunneled sets and context-change deps, flattened when it was stored —
+    /// so the kinds cannot be told apart again. The set rides to the
+    /// enclosing component's entry through every frame regardless of mode,
+    /// as the tunneled and context-change parts would have on a miss; a
+    /// `"self"` frame therefore records more after a hit than after a miss
+    /// (its callee's own logic too) — more invalidation, never a stale entry.
+    pub reoffered_logic_deps: HashSet<Fingerprint>,
 }
 
 impl FnCallContextInner {
@@ -1177,6 +1187,7 @@ impl FnCallContextInner {
         self.fn_logic_deps
             .iter()
             .chain(self.entry_only_fn_logic_deps.iter())
+            .chain(self.reoffered_logic_deps.iter())
             .chain(self.tunneled_fn_logic_deps.values().flatten())
             .chain(self.context_change_deps.iter())
             .copied()
@@ -1276,10 +1287,14 @@ impl FnCallContext {
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
             inner.has_child_components |= child_inner.has_child_components;
-            // Context change deps always propagate.
+            // Context change deps always propagate, and so does what a memo
+            // hit re-offered from a stored entry (see `reoffered_logic_deps`).
             inner
                 .context_change_deps
                 .extend(child_inner.context_change_deps);
+            inner
+                .reoffered_logic_deps
+                .extend(child_inner.reoffered_logic_deps);
             // Function logic deps conditionally propagate.
             if self.propagate_children_fn_logic {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);

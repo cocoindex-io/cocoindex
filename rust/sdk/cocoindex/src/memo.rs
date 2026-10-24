@@ -774,6 +774,10 @@ where
         // entry (which owns its target states) and its provider generations.
         record_dependency_memo_entry(&fn_ctx, fp);
         guard.join_cached_target_provider_deps(&fn_ctx);
+        // ... and the logic deps the entry recorded beneath this fn's own fp,
+        // through this frame so the caller's `logic_tracking` applies as on a
+        // miss.
+        guard.join_cached_logic_deps(&fn_ctx);
         if states_changed || context_validation.states_changed {
             guard.update_memo_states(MemoStatesPayload {
                 positional: memo_states_for_resolve,

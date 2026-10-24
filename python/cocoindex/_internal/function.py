@@ -891,6 +891,12 @@ class SyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -1462,6 +1468,12 @@ class AsyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
