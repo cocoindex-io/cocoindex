@@ -35,11 +35,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::txn::{ReadTxn, WriteTxn};
-
-/// LMDB database handle. Keys and values are opaque bytes; logical
-/// key/value schemas live in [`crate::state::db_schema`].
-pub(crate) type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
+use crate::state_store::txn::{Database, Overlay, ReadTxn, WriteTxn};
 
 /// Per-app handle within a `Storage`. Carries the `Database` and a clone
 /// of the parent `Storage`, which owns the env (so standalone read methods
@@ -47,15 +43,49 @@ pub(crate) type Database = heed::Database<heed::types::Bytes, heed::types::Bytes
 /// whose single-writer batcher the session backend routes writes through
 /// (bypassing it would serialize every per-session write through heed's
 /// writer mutex with no amortization).
+///
+/// A handle may carry an [`Overlay`]: the writes of a run that persists
+/// nothing. [`Self::discarding_writes`] derives such a handle; the engine
+/// hands one to a preview run, so no write path has to check for a preview
+/// itself, and the run still reads its own writes back.
 #[derive(Clone)]
 pub struct AppStore {
     pub(crate) db: Database,
     pub(crate) storage: super::storage::Storage,
+    overlay: Option<Arc<Overlay>>,
 }
 
 impl AppStore {
     pub(crate) fn new(db: Database, storage: super::storage::Storage) -> Self {
-        Self { db, storage }
+        Self {
+            db,
+            storage,
+            overlay: None,
+        }
+    }
+
+    /// A handle to the same store for a run that persists nothing. Every
+    /// body and read through the handle, or through a clone of it, sees the
+    /// store under the run's own writes, kept in an in-memory overlay that
+    /// goes with the handle; LMDB never sees them, and nothing waits for the
+    /// single-writer batcher. The handle is what makes a preview write
+    /// nothing while planning as a real update would. On a handle that
+    /// already persists nothing, a clone: the run keeps its writes.
+    pub(crate) fn discarding_writes(&self) -> Self {
+        Self {
+            db: self.db,
+            storage: self.storage.clone(),
+            overlay: Some(
+                self.overlay
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(Overlay::default())),
+            ),
+        }
+    }
+
+    /// Whether writes through this handle reach the store.
+    pub(crate) fn persists(&self) -> bool {
+        self.overlay.is_none()
     }
 
     /// A clone of the parent env, for tests that open LMDB transactions
@@ -74,77 +104,38 @@ impl AppStore {
         self.db
     }
 
-    /// Run `body` inside a write txn driven by the single-writer
-    /// batcher. Concurrent callers coalesce into one underlying
-    /// `heed::RwTxn`; bodies within a batch are awaited sequentially.
-    /// Ordinary application data writes go through this (or
-    /// [`crate::state_store::Storage::run_txn`]) so they participate in
-    /// `MDB_MAP_FULL` auto-resize; bypassing the batcher would serialize
-    /// each call through heed's writer mutex with no amortization.
-    pub(super) async fn run_in_batcher<F>(&self, body: F) -> Result<()>
+    /// Run `body` inside a write txn. On a persisting handle the body joins
+    /// the single-writer batcher (see [`super::Storage::run_txn`] for the
+    /// contract: concurrent callers coalesce into one underlying
+    /// `heed::RwTxn`, bodies within a batch are awaited sequentially, and a
+    /// body may run more than once); on a discarding handle it runs once
+    /// against a read snapshot under the run's overlay (see
+    /// [`super::Storage::run_discarding`]). Every write to this app's data
+    /// goes through here so it lands where the handle says and, when it
+    /// persists, participates in `MDB_MAP_FULL` auto-resize; bypassing the
+    /// batcher would serialize each call through heed's writer mutex with no
+    /// amortization.
+    pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
-        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
+        T: Send + 'static,
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
             + Send
             + Sync
             + 'static,
     {
-        self.storage.run_txn(body).await
+        match &self.overlay {
+            None => self.storage.run_txn(body).await,
+            Some(overlay) => self.storage.run_discarding(overlay.clone(), body).await,
+        }
     }
 
-    /// Open a fresh LMDB read transaction with `MDB_READERS_FULL` retry
-    /// (two-phase: short retry → clear stale readers → retry
-    /// indefinitely). Used by the standalone read methods and by the
-    /// streaming inspection iter.
-    ///
-    /// The returned [`ReadTxn`] holds a coordinator read guard until it is
-    /// dropped, so callers must not keep it open longer than needed.
+    /// Open a fresh read snapshot, under this handle's overlay if it has one.
+    /// Used by the standalone read methods and by the streaming inspection
+    /// iter. See [`super::Storage::read_txn`].
     pub async fn read_txn(&self) -> Result<ReadTxn> {
-        let guard = self.storage.txn_coordinator().read_owned().await;
-        let env = super::txn::opened_env(&guard)?;
-        let try_open = || async {
-            match env.clone().static_read_txn() {
-                Ok(txn) => cocoindex_utils::retryable::Ok(txn),
-                Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
-                    warn!("LMDB readers full, retrying");
-                    Err(cocoindex_utils::retryable::Error::retryable(
-                        internal_error!("LMDB readers full"),
-                    ))
-                }
-                Err(e) => Err(cocoindex_utils::retryable::Error::not_retryable(e)),
-            }
-        };
-
-        // Phase 1: short timeout for transient concurrency.
-        let txn = match cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE1).await {
-            Ok(txn) => txn,
-            Err(e) if !e.is_retryable => return Err(e.into()),
-            Err(_) => {
-                let cleared = env.clear_stale_readers()?;
-                if cleared > 0 {
-                    warn!("Cleared {cleared} stale LMDB readers");
-                }
-                cocoindex_utils::retryable::run(&try_open, &READ_TXN_RETRY_PHASE2)
-                    .await
-                    .map_err(Into::<Error>::into)?
-            }
-        };
-        Ok(ReadTxn::new(guard, txn))
+        self.storage.read_txn(self.overlay.clone()).await
     }
 }
-
-static READ_TXN_RETRY_PHASE1: cocoindex_utils::retryable::RetryOptions =
-    cocoindex_utils::retryable::RetryOptions {
-        retry_timeout: Some(std::time::Duration::from_secs(3)),
-        initial_backoff: std::time::Duration::from_millis(10),
-        max_backoff: std::time::Duration::from_secs(1),
-    };
-
-static READ_TXN_RETRY_PHASE2: cocoindex_utils::retryable::RetryOptions =
-    cocoindex_utils::retryable::RetryOptions {
-        retry_timeout: None,
-        initial_backoff: std::time::Duration::from_millis(10),
-        max_backoff: std::time::Duration::from_secs(1),
-    };
 
 // --- Key encoding helpers (internal) -------------------------------------
 
@@ -230,7 +221,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<Option<Vec<u8>>> {
         let key = key_tracking_info(path)?;
-        Ok(self.db().get(txn, &key)?.map(<[u8]>::to_vec))
+        Ok(txn.get(self.db(), &key)?.map(Cow::into_owned))
     }
 
     /// Standalone snapshot read of raw tracking-info bytes — no
@@ -241,7 +232,7 @@ impl AppStore {
     pub async fn read_tracking_info(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_tracking_info(path)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(rtxn.get(self.db(), &key)?.map(Cow::into_owned))
     }
 
     /// Write pre-serialized tracking info. Callers serialize externally so
@@ -255,7 +246,7 @@ impl AppStore {
         encoded: &[u8],
     ) -> Result<()> {
         let key = key_tracking_info(path)?;
-        self.db().put(txn, &key, encoded)?;
+        txn.put(self.db(), &key, encoded)?;
         Ok(())
     }
 
@@ -265,7 +256,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<()> {
         let key = key_tracking_info(path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -276,22 +267,22 @@ impl AppStore {
     pub async fn clear_staged_tracking(&self, path: &StablePath, self_token: u128) -> Result<()> {
         let app_store = self.clone();
         let path = path.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             Box::pin(async move {
                 let key = key_tracking_info(&path)?;
-                let Some(bytes) = app_store.db().get(wtxn, &key)? else {
+                let Some(bytes) = wtxn.get(app_store.db(), &key)? else {
                     return Ok(());
                 };
                 let mut info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
-                    cocoindex_utils::deser::from_msgpack_slice(bytes)?;
+                    cocoindex_utils::deser::from_msgpack_slice(&bytes)?;
                 if info.pending_process_token != Some(self_token) {
                     return Ok(());
                 }
                 info.pending_process_token = None;
                 let new_bytes = rmp_serde::to_vec_named(&info)?;
-                app_store.db().put(wtxn, &key, &new_bytes)?;
+                wtxn.put(app_store.db(), &key, &new_bytes)?;
                 Ok(())
             })
         })
@@ -312,7 +303,7 @@ impl AppStore {
         let app_store = self.clone();
         let parent = parent.clone();
         let relative = relative.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let parent = parent.clone();
             let relative = relative.clone();
@@ -335,7 +326,7 @@ impl AppStore {
         };
         let app_store = self.clone();
         let path = path.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             Box::pin(async move {
@@ -367,7 +358,7 @@ impl AppStore {
         let app_store = self.clone();
         let path = component_path.clone();
         let encoded = encoded.to_vec();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             let encoded = encoded.clone();
@@ -389,7 +380,7 @@ impl AppStore {
     pub async fn delete_component_memo(&self, path: &StablePath) -> Result<()> {
         let app_store = self.clone();
         let path = path.clone();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
@@ -406,10 +397,10 @@ impl AppStore {
         let rtxn = self.read_txn().await?;
         let parent_owned: StablePath = parent_path.into();
         let cex_key = key_child_existence(&parent_owned, key)?;
-        let Some(bytes) = self.db().get(&rtxn, &cex_key)? else {
+        let Some(bytes) = rtxn.get(self.db(), &cex_key)? else {
             return Ok(None);
         };
-        let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
+        let info: ChildExistenceInfo = from_msgpack_slice(&bytes)?;
         Ok(Some(info.node_type))
     }
 }
@@ -426,7 +417,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<Option<Vec<u8>>> {
         let key = key_component_memo(path)?;
-        Ok(self.db().get(txn, &key)?.map(<[u8]>::to_vec))
+        Ok(txn.get(self.db(), &key)?.map(Cow::into_owned))
     }
 
     /// Read raw component-memo bytes from a fresh snapshot. Used by the
@@ -434,7 +425,7 @@ impl AppStore {
     pub async fn read_component_memo(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_component_memo(path)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(rtxn.get(self.db(), &key)?.map(Cow::into_owned))
     }
 
     /// Write a pre-serialized component memo. Callers serialize externally
@@ -447,7 +438,7 @@ impl AppStore {
         encoded: &[u8],
     ) -> Result<()> {
         let key = key_component_memo(path)?;
-        self.db().put(txn, &key, encoded)?;
+        txn.put(self.db(), &key, encoded)?;
         Ok(())
     }
 
@@ -457,7 +448,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<()> {
         let key = key_component_memo(path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 }
@@ -484,7 +475,7 @@ impl AppStore {
         encoded: &[u8],
     ) -> Result<()> {
         let key = key_fn_memo(path, fp)?;
-        self.db().put(txn, &key, encoded)?;
+        txn.put(self.db(), &key, encoded)?;
         Ok(())
     }
 
@@ -495,7 +486,7 @@ impl AppStore {
         fp: Fingerprint,
     ) -> Result<()> {
         let key = key_fn_memo(path, fp)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -508,14 +499,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<()> {
         let prefix = key_fn_memo_prefix(path)?;
-        let db = self.db();
-        let mut iter = db.prefix_iter_mut(txn, &prefix)?;
-        while iter.next().transpose()?.is_some() {
-            // Safety: we drop the borrowed key/value before the next `next()`.
-            unsafe {
-                iter.del_current()?;
-            }
-        }
+        txn.delete_prefix(self.db(), &prefix)?;
         Ok(())
     }
 }
@@ -530,8 +514,11 @@ impl AppStore {
         child_key: &StableKey,
     ) -> Result<Option<ChildExistenceInfo>> {
         let key = key_child_existence(parent, child_key)?;
-        let data = self.db().get(txn, &key)?;
-        data.map(from_msgpack_slice).transpose().map_err(Into::into)
+        let data = txn.get(self.db(), &key)?;
+        data.as_deref()
+            .map(from_msgpack_slice)
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub async fn write_child_existence(
@@ -543,7 +530,7 @@ impl AppStore {
     ) -> Result<()> {
         let key = key_child_existence(parent, child_key)?;
         let value = rmp_serde::to_vec_named(info)?;
-        self.db().put(txn, &key, &value)?;
+        txn.put(self.db(), &key, &value)?;
         Ok(())
     }
 
@@ -554,7 +541,7 @@ impl AppStore {
         child_key: &StableKey,
     ) -> Result<()> {
         let key = key_child_existence(parent, child_key)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -570,12 +557,12 @@ impl AppStore {
     ) -> Result<Vec<(StableKey, ChildExistenceInfo)>> {
         let prefix = key_child_existence_prefix(parent)?;
         let mut out = Vec::new();
-        for entry in self.db().prefix_iter(txn, &prefix)? {
-            let (raw_key, raw_value) = entry?;
+        txn.for_each_prefix(self.db(), &prefix, |raw_key, raw_value| {
             let stable_key: StableKey = storekey::decode(raw_key[prefix.len()..].as_ref())?;
             let info: ChildExistenceInfo = from_msgpack_slice(raw_value)?;
             out.push((stable_key, info));
-        }
+            Ok(())
+        })?;
         Ok(out)
     }
 }
@@ -590,7 +577,7 @@ impl AppStore {
         relative_path: &StablePath,
     ) -> Result<()> {
         let key = key_tombstone(parent, relative_path)?;
-        self.db().put(txn, &key, &[])?;
+        txn.put(self.db(), &key, &[])?;
         Ok(())
     }
 
@@ -601,7 +588,7 @@ impl AppStore {
         relative_path: &StablePath,
     ) -> Result<()> {
         let key = key_tombstone(parent, relative_path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -612,11 +599,11 @@ impl AppStore {
         let rtxn = self.read_txn().await?;
         let prefix = key_tombstone_prefix(parent)?;
         let mut out = Vec::new();
-        for entry in self.db().prefix_iter(&rtxn, &prefix)? {
-            let (raw_key, _) = entry?;
+        rtxn.for_each_prefix(self.db(), &prefix, |raw_key, _| {
             let relative: StablePath = storekey::decode(raw_key[prefix.len()..].as_ref())?;
             out.push(relative);
-        }
+            Ok(())
+        })?;
         Ok(out)
     }
 
@@ -646,8 +633,11 @@ impl AppStore {
         path: &TargetStatePath,
     ) -> Result<Option<TargetStateOwnerInfo>> {
         let key = key_target_state_owner(path)?;
-        let data = self.db().get(txn, &key)?;
-        data.map(from_msgpack_slice).transpose().map_err(Into::into)
+        let data = txn.get(self.db(), &key)?;
+        data.as_deref()
+            .map(from_msgpack_slice)
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub async fn upsert_target_state_owner(
@@ -660,7 +650,7 @@ impl AppStore {
         let value = rmp_serde::to_vec_named(&TargetStateOwnerInfo {
             component_path: owner.clone(),
         })?;
-        self.db().put(txn, &key, &value)?;
+        txn.put(self.db(), &key, &value)?;
         Ok(())
     }
 
@@ -670,7 +660,7 @@ impl AppStore {
         path: &TargetStatePath,
     ) -> Result<()> {
         let key = key_target_state_owner(path)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -685,11 +675,11 @@ impl AppStore {
         segment_key: &StableKey,
     ) -> Result<()> {
         let key = key_target_segment_name(fp)?;
-        if self.db().get(txn, &key)?.is_some() {
+        if txn.get(self.db(), &key)?.is_some() {
             return Ok(());
         }
         let value = rmp_serde::to_vec_named(segment_key)?;
-        self.db().put(txn, &key, &value)?;
+        txn.put(self.db(), &key, &value)?;
         Ok(())
     }
 
@@ -699,14 +689,7 @@ impl AppStore {
     #[cfg(feature = "bench-support")]
     pub async fn delete_all_target_segment_names(&self, txn: &mut WriteTxn<'_>) -> Result<()> {
         let prefix = DbEntryKey::TargetSegmentNamePrefix.encode()?;
-        let db = self.db();
-        let mut iter = db.prefix_iter_mut(txn, &prefix)?;
-        while iter.next().transpose()?.is_some() {
-            // Safety: we drop the borrowed key/value before the next `next()`.
-            unsafe {
-                iter.del_current()?;
-            }
-        }
+        txn.delete_prefix(self.db(), &prefix)?;
         Ok(())
     }
 }
@@ -714,23 +697,25 @@ impl AppStore {
 // --- ID sequencer --------------------------------------------------------
 
 impl AppStore {
-    pub async fn peek_id_sequence_in_txn(
+    // `&mut` although it only reads: a `&WriteTxn` held across the await
+    // would need `RwTxn: Sync`, which heed does not provide.
+    async fn peek_id_sequence_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
         key: &StableKey,
     ) -> Result<Option<u64>> {
         let db_key = key_id_sequencer(key)?;
-        let data = self.db().get(txn, &db_key)?;
+        let data = txn.get(self.db(), &db_key)?;
         match data {
             None => Ok(None),
             Some(bytes) => {
-                let info: IdSequencerInfo = from_msgpack_slice(bytes)?;
+                let info: IdSequencerInfo = from_msgpack_slice(&bytes)?;
                 Ok(Some(info.next_id))
             }
         }
     }
 
-    pub async fn write_id_sequence(
+    async fn write_id_sequence(
         &self,
         txn: &mut WriteTxn<'_>,
         key: &StableKey,
@@ -739,13 +724,15 @@ impl AppStore {
         let db_key = key_id_sequencer(key)?;
         let info = IdSequencerInfo { next_id };
         let value = rmp_serde::to_vec_named(&info)?;
-        self.db().put(txn, &db_key, &value)?;
+        txn.put(self.db(), &db_key, &value)?;
         Ok(())
     }
 
     /// Atomically reserve `count` consecutive IDs starting from the next
     /// available ID. Returns the first reserved ID. IDs start at 1
-    /// (0 is reserved).
+    /// (0 is reserved). On a handle from [`Self::discarding_writes`] the
+    /// reservation lasts for that run: its later calls get the ids after it,
+    /// and nothing persists, so the ids stay available.
     pub async fn reserve_id_range_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
@@ -844,7 +831,7 @@ impl AppStore {
     ) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_user_state(path, kind, user_key)?;
-        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+        Ok(rtxn.get(self.db(), &key)?.map(Cow::into_owned))
     }
 
     pub async fn write_user_state(
@@ -856,7 +843,7 @@ impl AppStore {
         value: &[u8],
     ) -> Result<()> {
         let key = key_user_state(path, kind, user_key)?;
-        self.db().put(txn, &key, value)?;
+        txn.put(self.db(), &key, value)?;
         Ok(())
     }
 
@@ -876,7 +863,7 @@ impl AppStore {
         let path = path.clone();
         let user_key = user_key.clone();
         let value = value.to_vec();
-        self.run_in_batcher(move |wtxn| {
+        self.run_txn(move |wtxn| {
             let app_store = app_store.clone();
             let path = path.clone();
             let user_key = user_key.clone();
@@ -898,7 +885,7 @@ impl AppStore {
         user_key: &StableKey,
     ) -> Result<()> {
         let key = key_user_state(path, kind, user_key)?;
-        self.db().delete(txn, &key)?;
+        txn.delete(self.db(), &key)?;
         Ok(())
     }
 
@@ -912,14 +899,7 @@ impl AppStore {
         kind: StateKind,
     ) -> Result<()> {
         let prefix = key_user_state_prefix(path, kind)?;
-        let db = self.db();
-        let mut iter = db.prefix_iter_mut(txn, &prefix)?;
-        while iter.next().transpose()?.is_some() {
-            // Safety: key/value borrows are dropped before the next iteration.
-            unsafe {
-                iter.del_current()?;
-            }
-        }
+        txn.delete_prefix(self.db(), &prefix)?;
         Ok(())
     }
 }
@@ -947,20 +927,20 @@ impl AppStore {
         // Function memos, keyed by fingerprint.
         let fp_prefix = key_fn_memo_prefix(path)?;
         let mut memos = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &fp_prefix)? {
-            let (raw_key, raw_val) = entry?;
+        rtxn.for_each_prefix(db, &fp_prefix, |raw_key, raw_val| {
             let fp: Fingerprint = storekey::decode(raw_key[fp_prefix.len()..].as_ref())?;
             memos.push((fp, raw_val.to_vec()));
-        }
+            Ok(())
+        })?;
 
         // User states, keyed by stable key.
         let us_prefix = key_user_state_prefix(path, StateKind::Regular)?;
         let mut states = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &us_prefix)? {
-            let (raw_key, raw_val) = entry?;
+        rtxn.for_each_prefix(db, &us_prefix, |raw_key, raw_val| {
             let user_key: StableKey = storekey::decode(raw_key[us_prefix.len()..].as_ref())?;
             states.push((user_key, raw_val.to_vec()));
-        }
+            Ok(())
+        })?;
 
         Ok((memos, states))
     }
@@ -1028,6 +1008,42 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    /// A discarding run gets distinct ids from successive reservations, in
+    /// one body or across bodies, and leaves the persisted counter untouched.
+    #[tokio::test]
+    async fn discarding_body_reserves_distinct_ids_without_persisting() {
+        let (store, _dir) = make_test_store().await;
+        let key = StableKey::Str(Arc::from("provider"));
+
+        let reserve_twice = |store: AppStore| {
+            let key = key.clone();
+            async move {
+                let store_in_txn = store.clone();
+                store
+                    .run_txn(move |wtxn| {
+                        let (store, key) = (store_in_txn.clone(), key.clone());
+                        Box::pin(async move {
+                            let first = store.reserve_id_range_in_txn(wtxn, &key, 1).await?;
+                            let second = store.reserve_id_range_in_txn(wtxn, &key, 2).await?;
+                            Ok((first, second))
+                        })
+                    })
+                    .await
+            }
+        };
+        let discarding = store.discarding_writes();
+        assert_eq!(reserve_twice(discarding.clone()).await.unwrap(), (1, 2));
+        // The run's later bodies continue where it left off; the store did
+        // not move.
+        assert_eq!(reserve_twice(discarding).await.unwrap(), (4, 5));
+        assert_eq!(reserve_twice(store.clone()).await.unwrap(), (1, 2));
+        assert_eq!(
+            reserve_twice(store.discarding_writes()).await.unwrap(),
+            (4, 5)
+        );
+        assert_eq!(reserve_twice(store).await.unwrap(), (4, 5));
+    }
+
     fn comp_path(name: &str) -> StablePath {
         StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
     }
@@ -1056,12 +1072,12 @@ mod tests {
         info.pending_process_token = token;
         let bytes = rmp_serde::to_vec_named(&info).unwrap();
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_tracking_info_raw(&mut wtxn, path, &bytes)
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
     }
 
     async fn read_pending_process_token(store: &AppStore, path: &StablePath) -> Option<u128> {
@@ -1126,7 +1142,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("count"), b"42")
             .await
@@ -1139,7 +1155,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("flag"), b"true")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 3);
@@ -1154,19 +1170,19 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"v1")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"v2")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 1);
@@ -1183,7 +1199,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"old_a")
             .await
@@ -1196,10 +1212,10 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         // write and delete are atomic within the same txn.
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"new_a")
             .await
@@ -1208,7 +1224,7 @@ mod tests {
             .delete_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"))
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 2);
@@ -1227,7 +1243,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"old_a")
             .await
@@ -1240,10 +1256,10 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         // delete_all and subsequent writes are atomic within the same txn.
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Regular)
             .await
@@ -1256,7 +1272,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("d"), b"d_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 2);
@@ -1275,7 +1291,7 @@ mod tests {
         let p2 = comp_path("comp_b");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p1, StateKind::Regular, &sym("k"), b"from_a")
             .await
@@ -1284,7 +1300,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p2, StateKind::Regular, &sym("k"), b"from_b")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let r1 = read_regular_states(&store, &p1).await;
         let r2 = read_regular_states(&store, &p2).await;
@@ -1306,7 +1322,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"reg")
             .await
@@ -1315,7 +1331,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Live, &sym("k"), b"live")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         // The Regular bulk read sees only the Regular entry, never the Live
         // one written under the same key.
@@ -1350,12 +1366,12 @@ mod tests {
 
         // Clearing the Regular keyspace must not touch Live (the live
         // bootstrap state survives a component's regular flush).
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Regular)
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         assert!(read_regular_states(&store, &p).await.is_empty());
         assert_eq!(
@@ -1368,12 +1384,12 @@ mod tests {
         );
 
         // Clearing Live too leaves the component with no user state.
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Live)
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
         assert!(
             store
                 .read_user_state(&p, StateKind::Live, &sym("k"))

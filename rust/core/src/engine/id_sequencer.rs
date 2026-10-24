@@ -6,9 +6,11 @@
 //! - IDs are allocated in batches to minimize database transactions
 //! - Batch sizes grow exponentially (2, 4, 8, ..., 256) for better performance
 //!
-//! Storage I/O goes through methods on `AppStore` / `Storage`; this module
-//! is the in-memory caching half and never touches the storage backend
-//! directly.
+//! Storage I/O goes through methods on `AppStore`; this module is the
+//! in-memory caching half and never touches the storage backend directly.
+//! The manager owns the app's persisting `AppStore`: a preview reserves ids
+//! like an update (see `AppContext::next_id`), and a reservation through a
+//! handle that discards writes would cache ids the store never saw.
 //!
 //! `pre_commit` bypasses this cache: it reserves a child provider's fresh
 //! generation ID (under `TARGET_ID_KEY`) with
@@ -20,7 +22,7 @@ use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
-use crate::state_store::{AppStore, Storage};
+use crate::state_store::AppStore;
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -73,14 +75,17 @@ impl SequencerState {
 ///
 /// This allows concurrent ID generation for different keys while serializing
 /// operations for the same key.
-#[derive(Default)]
 pub struct IdSequencerManager {
+    /// The store the ids are reserved in. Always the app's persisting
+    /// handle, so a preview's reservations persist like an update's.
+    app_store: AppStore,
     sequencers: Mutex<HashMap<StableKey, Arc<tokio::sync::Mutex<SequencerState>>>>,
 }
 
 impl IdSequencerManager {
-    pub fn new() -> Self {
+    pub fn new(app_store: AppStore) -> Self {
         Self {
+            app_store,
             sequencers: Mutex::new(HashMap::new()),
         }
     }
@@ -90,12 +95,7 @@ impl IdSequencerManager {
     /// This function is thread-safe and handles concurrent access properly.
     /// Different keys can be processed in parallel, while same-key operations
     /// are serialized.
-    pub async fn next_id(
-        &self,
-        storage: &Storage,
-        app_store: &AppStore,
-        key: &StableKey,
-    ) -> Result<u64> {
+    pub async fn next_id(&self, key: &StableKey) -> Result<u64> {
         // Get or create the per-key state (brief lock on main map)
         let state_arc = {
             let mut sequencers = self.sequencers.lock().unwrap();
@@ -110,14 +110,15 @@ impl IdSequencerManager {
 
         if state.needs_refill() {
             let batch_size = state.next_batch_size;
-            let app_store = app_store.clone();
+            let app_store_in_txn = self.app_store.clone();
             let key = key.clone();
             // `reserve_id_range_in_txn` is idempotent under retry: each
             // attempt reads the current counter, computes `start_id`, writes
             // `start_id + batch_size`.
-            let start_id = storage
+            let start_id = self
+                .app_store
                 .run_txn(move |wtxn| {
-                    let app_store = app_store.clone();
+                    let app_store = app_store_in_txn.clone();
                     let key = key.clone();
                     Box::pin(async move {
                         app_store
