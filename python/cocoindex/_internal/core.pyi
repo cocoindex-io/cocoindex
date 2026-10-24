@@ -701,8 +701,15 @@ class BatchingOptions:
     batch has finished. Batchers sharing a queue should agree on it."""
 
     def __new__(
-        cls, max_batch_size: int | None = None, max_in_flight: int | None = None
-    ) -> "BatchingOptions": ...
+        cls,
+        max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: "RateLimiter | None" = None,
+    ) -> "BatchingOptions":
+        """``rate_limiter`` gates every batch: no call runs inline, and a pump
+        runs the oldest pending batch once a ``max_in_flight`` slot and one
+        token are available, so calls arriving during the wait ride the next
+        token. Batchers sharing a queue should agree on it."""
 
 # --- BatchQueue ---
 class BatchQueue:
