@@ -158,6 +158,7 @@ class FnCallMemoGuard:
     def join_cached_target_provider_deps(
         self, parent_fn_ctx: FnCallContext
     ) -> None: ...
+    def join_cached_logic_deps(self, fn_ctx: FnCallContext) -> None: ...
     def resolve(
         self,
         fn_ctx: FnCallContext,

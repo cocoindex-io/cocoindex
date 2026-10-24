@@ -89,6 +89,33 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
         }
     }
 
+    /// On a cache hit, re-offer the stored entry's logic deps through the
+    /// callee's own frame.
+    ///
+    /// A hit skips the body, so when `fn_ctx` is joined into the caller it
+    /// holds only the callee's own fingerprint; everything the entry recorded
+    /// beneath that — callees under `"full"`, per-call logic deps — would be
+    /// missing from a caller re-stored after the hit, and a later change to
+    /// one of them would no longer invalidate that caller (the callee's own
+    /// entry would miss, but a caller that hits never reaches it). Merging
+    /// into `fn_ctx` rather than into the caller's context keeps the caller's
+    /// `logic_tracking` in charge exactly as on a miss: `join_child` drops the
+    /// set under a `"self"` caller and forwards it under a `"full"` one. The
+    /// stored set is flat (entry-only and tunneled sets were flattened when
+    /// the entry was stored), so a `"self"` owner's entry-only deps are offered
+    /// upward here where a miss kept them; that can only invalidate more.
+    /// Call it exactly when the cached value is used, next to
+    /// [`join_cached_target_provider_deps`](Self::join_cached_target_provider_deps).
+    pub fn join_cached_logic_deps(&self, fn_ctx: &FnCallContext) {
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*self.guard
+            && !memo.logic_deps.is_empty()
+        {
+            fn_ctx.update(|inner| {
+                inner.fn_logic_deps.extend(memo.logic_deps.iter().copied());
+            });
+        }
+    }
+
     /// Update memo states on a cache hit without re-execution.
     ///
     /// Used when the state function indicates `can_reuse=true` but the state value itself
