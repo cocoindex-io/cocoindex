@@ -2,17 +2,22 @@
 //!
 //! Pipeline: walk markdown files -> chunk -> embed -> store in Postgres/pgvector.
 //!
-//!   cargo run -- index [SOURCE_DIR]    # incremental (unchanged files memo-skipped)
+//!   cocoindex update                   # catch up (unchanged files are memo-skipped)
+//!   cocoindex update -L                # keep watching the source dir for changes
 //!   cargo run -- query "your query"    # pgvector similarity search
+//!   cargo run -- index [SOURCE_DIR]    # one catch-up run without the CLI
 //!
 //! Parallels the Python example:
-//!   - source           : `cocoindex::resources::fs::walk` (cf. `localfs.walk_dir`)
-//!   - per-file compute  : `#[cocoindex::function]` (cf. `@coco.fn`)
+//!   - environment       : `#[cocoindex::lifespan]` (cf. `@coco.lifespan`)
+//!   - app               : `#[cocoindex::app]` (cf. `coco.App(...)`)
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
 //!   - chunking          : `cocoindex::ops::text::RecursiveSplitter` (cf. `RecursiveSplitter`)
 //!   - embeddings        : `cocoindex::ops::sentence_transformers` all-MiniLM-L6-v2
 //!   - target            : `postgres::TableTarget` + pgvector index
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
@@ -27,6 +32,9 @@ const TABLE: &str = "doc_embeddings";
 const TOP_K: i64 = 5;
 const CHUNK_SIZE: usize = 2000;
 const CHUNK_OVERLAP: usize = 500;
+const APP_NAME: &str = "TextEmbeddingRust";
+/// Overrides the source directory (default: `./markdown_files` in this crate).
+const SOURCE_DIR_ENV: &str = "TEXT_EMBEDDING_SOURCE_DIR";
 
 cocoindex::context_key!(static DB: postgres::Database);
 cocoindex::context_key!(
@@ -45,8 +53,10 @@ struct DocEmbedding {
     embedding: Vec<f32>,
 }
 
-#[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
+/// Chunk and embed one file. Memoized on the file, so an unchanged file
+/// returns its rows without re-chunking.
+#[cocoindex::function(memo)]
+async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<DocEmbedding>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -93,7 +103,26 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     Ok(rows)
 }
 
-async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+/// Environment setup, shared by `cocoindex` and `cargo run -- index`
+/// (`Environment::from_registered`): the state db, Postgres and the embedder.
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    let embedder = load_embedder().await?;
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .provide_key(&EMBEDDER, embedder)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+
+#[cocoindex::app(name = "TextEmbeddingRust")]
+async fn app_main(ctx: Ctx) -> Result<()> {
+    index(ctx, source_dir()).await
+}
+
+async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
     let table = postgres::mount_table_target(
         &ctx,
@@ -113,24 +142,26 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         },
     )?;
 
-    let files = walk_items(&sourcedir, &["**/*.md"])?;
-    println!(
-        "indexing {} markdown file(s) from {}",
-        files.len(),
-        sourcedir.display()
-    );
-
-    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
-
-    let mut count = 0usize;
-    for rows in &rows_by_file {
-        count += rows.len();
-        for row in rows {
-            table.declare_row(&ctx, row)?;
+    // One component per markdown file; each declares its own rows. In live
+    // mode (`cocoindex update -L`) the walker keeps watching the directory.
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::new(
+            ["**/*.md"],
+            std::iter::empty::<&str>(),
+        )?)
+        .live()
+        .poll_interval(Duration::from_secs(1));
+    ctx.mount_each_live(&"files", files, move |ctx, file: FileEntry| {
+        let table = table.clone();
+        async move {
+            for row in process_file(&ctx, &file).await? {
+                table.declare_row(&ctx, &row)?;
+            }
+            Ok(())
         }
-    }
-    println!("indexed {count} chunk(s) total");
-    Ok(())
+    })
+    .await
 }
 
 async fn query_once(
@@ -177,15 +208,18 @@ fn database_url() -> String {
         .unwrap_or_else(|_| "postgres://cocoindex:cocoindex@localhost/cocoindex".to_string())
 }
 
-fn default_sourcedir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("markdown_files")
+fn source_dir() -> PathBuf {
+    std::env::var_os(SOURCE_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("markdown_files"))
 }
 
 async fn load_embedder() -> Result<SentenceTransformerEmbedder> {
     SentenceTransformerEmbedder::load(EMBED_MODEL).await
 }
 
-#[tokio::main]
+/// `cocoindex ...` invocations are answered before this body runs.
+#[cocoindex::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -210,20 +244,13 @@ async fn main() -> Result<()> {
                 Some(other) => Some(PathBuf::from(other)),
                 None => None,
             }
-            .unwrap_or_else(default_sourcedir);
+            .unwrap_or_else(source_dir);
 
-            let db = postgres::Database::connect(&database_url()).await?;
-            let embedder = load_embedder().await?;
-            let app = Environment::builder()
-                .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
-                .provide_key(&DB, db)
-                .provide_key(&EMBEDDER, embedder)
-                .build()
-                .await?
-                .app("TextEmbeddingRust")
-                .await?;
-            let stats = app.run(move |ctx| app_main(ctx, dir)).await?;
-            println!("{stats}");
+            let env = Environment::from_registered().await?;
+            let app = env.app(APP_NAME).await?;
+            let stats = app.run(move |ctx| index(ctx, dir)).await;
+            env.shutdown().await;
+            println!("{}", stats?);
         }
     }
     Ok(())

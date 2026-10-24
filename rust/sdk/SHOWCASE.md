@@ -42,6 +42,44 @@ let app = Environment::builder()
     .await?;
 ```
 
+## Run apps with the `cocoindex` CLI
+
+Register the environment setup and the app entry point, and the standalone
+`cocoindex` binary (`rust/cli`) builds the crate and drives it: `cocoindex
+update`, `update -L`, `update --preview`, `ls`, `show`, `drop`. The same
+lifespan runs when your own code calls `Environment::from_registered()`, like
+`@coco.lifespan` in Python.
+
+```rust
+use cocoindex::prelude::*;
+
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let database = postgres::Database::connect(&url).await?;
+    let pool = database.pool().clone();
+    Ok(builder
+        .db_path(".cocoindex_db")
+        .provide_key(&DB, database)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+
+#[cocoindex::app(name = "MyApp")]
+async fn app_main(ctx: Ctx) -> Result<()> {
+    // Declare the desired target state using ctx.
+    Ok(())
+}
+
+#[cocoindex::main]
+async fn main() -> Result<()> {
+    // `cocoindex ...` invocations are handled before this body runs.
+    let env = Environment::from_registered().await?;
+    let stats = env.app("MyApp").await?.run(app_main).await?;
+    println!("{stats}");
+    env.shutdown().await;
+    Ok(())
+}
+```
+
 ## Declare typed context resources
 
 `context_key!` gives a resource a stable name and type without requiring users
@@ -76,8 +114,8 @@ cocoindex::context_key!(
   recursively, so the containing type does not need `Serialize`. Resource
   types can define a stable identity and external-state validation themselves.
 - `MemoInput` composes through `Option`, sequences, tuples, maps, sets, `Box`,
-  and `Arc`. UUID support is always available; enable the standalone
-  `serde_json`, `chrono`, or `rust_decimal` feature for those leaf types.
+  and `Arc`. UUID and `serde_json::Value` support is always available; enable
+  the standalone `chrono` or `rust_decimal` feature for those leaf types.
   Connector features enable the corresponding leaf feature automatically.
   Wrap other third-party leaf types in a newtype when they appear inside
   derived data.

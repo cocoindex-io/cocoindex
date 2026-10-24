@@ -1,0 +1,34 @@
+[package]
+name = "cocoindex_cli"
+description = "The `cocoindex` command-line tool for Rust projects"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+publish = false
+
+[[bin]]
+name = "cocoindex"
+path = "src/main.rs"
+# The binary shares its crate name with the SDK library; keep rustdoc output
+# from colliding.
+doc = false
+
+[dependencies]
+# Protocol types (`cocoindex::cli::protocol`) shared with user binaries.
+cocoindex = { path = "../sdk/cocoindex" }
+# State-db inspection for `ls --db` and `show`, without user code.
+cocoindex_core = { path = "../core", package = "cocoindex_core" }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# Forward Ctrl-C to the target binary.
+nix = { workspace = true, features = ["signal"] }
+
+[dev-dependencies]
+tempfile = "3"
