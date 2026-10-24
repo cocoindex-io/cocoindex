@@ -6,16 +6,21 @@ from types import ModuleType
 
 from cocoindex._internal import core
 from cocoindex._internal.function import AsyncFunction, SyncFunction
+from cocoindex._internal.logic_dep import LogicDep
 
 
 def release_logic_fp(obj: object) -> None:
-    """Release a coco function's logic fingerprint registration now.
+    """Release a coco function's (or ``LogicDep``'s) logic fingerprint
+    registration now.
 
     Clears ``_logic_fp`` so the object's ``__del__`` doesn't release it a second
     time once the stale module is collected — that would drop the registration
     held by an unchanged function in the next module version.
     """
-    if isinstance(obj, (SyncFunction, AsyncFunction)) and obj._logic_fp is not None:
+    if (
+        isinstance(obj, (SyncFunction, AsyncFunction, LogicDep))
+        and obj._logic_fp is not None
+    ):
         core.unregister_logic_fingerprint(obj._logic_fp)
         obj._logic_fp = None
 
