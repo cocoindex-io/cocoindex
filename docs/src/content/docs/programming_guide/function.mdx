@@ -401,6 +401,36 @@ embeddings = await asyncio.gather(
 
 The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
 
+The `max_in_flight` parameter bounds how many batches run at once. By default (`None`), a full batch starts as soon as it fills, and the next partial batch starts only once every running batch has finished. With `max_in_flight=n`, at most `n` batches run concurrently, and whenever one finishes the next pending batch — full or partial — starts, so a slow batch no longer holds back the rest:
+
+```python
+@coco.fn.as_async(batching=True, max_batch_size=32, max_in_flight=4)
+async def embed(texts: list[str]) -> list[list[float]]:
+    return await client.embed(texts)
+```
+
+#### Pacing batches with a rate limiter
+
+When each batch is one request against a quota, pass the quota's [`RateLimiter`](../common_resources/rate_limiting) as `rate_limiter`. Every batch takes one token before it runs, so a token pays for one batch rather than one call, and the batch boundary becomes the moment a request can be sent:
+
+- No call runs on its own: calls join the open batch, and a pump runs the oldest pending batch once a `max_in_flight` slot and a token are available. Under a scarce quota, every call that arrives while the pump waits for the token rides the next batch.
+- With tokens to spare, a batch goes out at once and the next one fills during its round trip (under `max_in_flight`, when set). The burst allowance of the limiter is how many requests may go out unbatched after an idle stretch.
+- Requests the body makes beyond the batch's own — a retry, a per-item fallback — take their own tokens from the same limiter.
+
+For a method whose limiter lives on the instance, pass a callable that receives `self` and returns the limiter (or `None` for no pacing); it is resolved once per batcher, which is already keyed by `self`:
+
+```python
+class Client:
+    def __init__(self, limiter: RateLimiter) -> None:
+        self._limiter = limiter
+
+    @coco.fn.as_async(
+        batching=True, max_batch_size=100, rate_limiter=lambda self: self._limiter
+    )
+    async def fetch(self, ids: list[str]) -> list[Item]:
+        return await self._api.fetch_many(ids)  # one request, one token
+```
+
 #### Context values in a batched body
 
 One batch merges calls from many components, so the body runs outside any of them: `coco.use_context(...)` inside a `batching=True` body raises `RuntimeError: No ComponentContext available`. Resolve context values in the caller — a `@coco.fn` function or method running inside the component — and pass them to the batched function as extra arguments:
