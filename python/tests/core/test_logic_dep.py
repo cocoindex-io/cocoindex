@@ -1,5 +1,5 @@
 """``coco.LogicDep`` / ``coco.use_logic_dep``: a logic dependency declared at
-import and recorded per call (specs/logic_change_detection/per_call_logic_dep.md).
+import and recorded per call (the function guide, § Per-call dependencies).
 
 A later release that changes a dependency's value is simulated by constructing
 a new ``LogicDep`` under the same name and dropping the old one: its ``__del__``
@@ -124,6 +124,15 @@ def visit(value: str) -> str:
 @coco.fn(memo=True)
 def owner(key: str, value: str) -> str:
     _m().increment("owner")
+    return traverse(coco.logic_propagated_to_callers(visit), value)
+
+
+@coco.fn(memo=True, logic_tracking="self", version=1)
+def owner_self(key: str, value: str) -> str:
+    """A memoized "self" owner with a dependency of its own: on a miss the
+    tunneled callback's dependency stops here, recorded in this entry."""
+    coco.use_logic_dep(_dep("owner"))
+    _m().increment("owner_self")
     return traverse(coco.logic_propagated_to_callers(visit), value)
 
 
@@ -264,6 +273,35 @@ def test_a_dependency_rides_the_callback_tunnel_through_a_self_layer() -> None:
     app.update_blocking()
     assert _m().collect() == {"owner": 1, "traverse": 1, "visit:main.rs": 1}
     assert _stored("rs") == "visit: main.rs"
+
+    app.update_blocking()
+    assert _m().collect() == {}
+
+
+def test_a_hit_under_a_self_owner_keeps_the_tunneled_dependency() -> None:
+    """The owner is "self" and memoized; it re-runs for a reason of its own
+    while the library function beneath it hits. On a miss the callback's
+    dependency reaches the owner's entry through the tunnel regardless of
+    the "self" frames between; the hit must not lose it, or a later release
+    of the dependency would leave the owner a stale hit."""
+
+    @coco.fn
+    def app_main() -> None:
+        _declare("O", owner_self("O", "main.rs"))
+
+    app = _app("test_logic_dep_hit_under_self_owner", app_main)
+    _release("owner", 1)
+    _release("rs", 1)
+    app.update_blocking()
+    assert _m().collect() == {"owner_self": 1, "traverse": 1, "visit:main.rs": 1}
+
+    _release("owner", 2)
+    app.update_blocking()
+    assert _m().collect() == {"owner_self": 1}, "the library function memo-hits"
+
+    _release("rs", 2)
+    app.update_blocking()
+    assert _m().collect() == {"owner_self": 1, "traverse": 1, "visit:main.rs": 1}
 
     app.update_blocking()
     assert _m().collect() == {}

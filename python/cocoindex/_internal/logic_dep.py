@@ -37,26 +37,28 @@ class LogicDep:
     exists in the process; when a later release constructs the dependency with
     a different value, the entries that recorded the old one are invalidated.
 
-    **Construct at module import, never per call or on first use.** An entry
-    is validated against the fingerprints registered at that moment: a
-    dependency that registers only when its first call happens leaves every
-    entry recorded with it invalid until then, and one released at the end of
-    a call leaves them invalid afterwards. Construction inside a component
-    context raises for that reason.
+    **Construct before any component runs — at module import — never per
+    call or on first use.** An entry is validated against the fingerprints
+    registered at that moment: a dependency that registers only when first
+    needed evicts every entry recorded with it that is probed earlier in the
+    process, and one released at the end of a call evicts them all, every
+    pass. Neither is stale data, only memoization that silently stops
+    working, which is why construction inside a component context raises.
     """
 
     __slots__ = ("_logic_fp", "_label")
 
-    _logic_fp: core.Fingerprint | None
+    _logic_fp: core.Fingerprint
     _label: str
 
     def __init__(self, value: Any, /) -> None:
         if _context_var.get(None) is not None:
             raise RuntimeError(
                 "coco.LogicDep must be constructed outside any component context, "
-                "at module import: a dependency constructed inside a component "
-                "registers too late for the memo entries that recorded it and is "
-                "released too early (see the LogicDep docstring)."
+                "before any component runs (at module import): a dependency "
+                "constructed inside a component registers too late for the memo "
+                "entries that recorded it, or is released too early (see the "
+                "LogicDep docstring)."
             )
         self._label = reprlib.repr(value)
         # Its own namespace in the fingerprint space: a function's logic
@@ -71,6 +73,7 @@ class LogicDep:
         core.register_logic_fingerprint(self._logic_fp)
 
     def __del__(self) -> None:
+        # Unset only when `__init__` raised before registering.
         fp = getattr(self, "_logic_fp", None)
         if fp is not None:
             core.unregister_logic_fingerprint(fp)
@@ -93,6 +96,12 @@ class LogicDep:
     def __repr__(self) -> str:
         return f"coco.LogicDep({self._label})"
 
+    def __coco_memo_key__(self) -> object:
+        # As a memoized function's argument (a table of dependencies handed
+        # down, say) a dependency keys by what it is: its fingerprint. Without
+        # this the pipeline would pickle it and fail on the Fingerprint.
+        return ("coco.LogicDep", self._logic_fp.as_bytes())
+
 
 def use_logic_dep(dep: LogicDep, /) -> None:
     """Record ``dep`` as part of the current call's logic.
@@ -104,6 +113,10 @@ def use_logic_dep(dep: LogicDep, /) -> None:
     :func:`logic_propagated_to_callers`, and from a component into every
     ancestor component's entry. It is recorded whatever the current function's
     own ``logic_tracking`` is: it describes the call, not the function's code.
+    (When a memoized callee hits, its stored entry is re-offered to the caller
+    whole and rides to the enclosing component regardless of modes, so a
+    ``"self"`` caller may record more after a hit than after a miss — never
+    less.)
 
     Call it as many times as the call has dependencies; recording the same
     dependency twice records it once. Must run inside a component context.
@@ -122,6 +135,4 @@ def use_logic_dep(dep: LogicDep, /) -> None:
             f"coco.use_logic_dep() takes a coco.LogicDep constructed at module "
             f"import, got {dep!r}"
         )
-    fp = dep._logic_fp
-    assert fp is not None  # cleared only by test helpers that retire the object
-    get_context_from_ctx()._core_fn_call_ctx.add_fn_logic_dep(fp)
+    get_context_from_ctx()._core_fn_call_ctx.add_fn_logic_dep(dep._logic_fp)

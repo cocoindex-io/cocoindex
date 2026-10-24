@@ -893,8 +893,9 @@ class SyncFunction(Function[P, R_co]):
                         )
                         # The hit skips the body, so the frame joined into the
                         # caller below would carry only this function's own fp:
-                        # re-offer what the entry recorded beneath it, under
-                        # the caller's logic_tracking as on a miss.
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
                         guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
@@ -1469,8 +1470,9 @@ class AsyncFunction(Function[P, R_co]):
                         )
                         # The hit skips the body, so the frame joined into the
                         # caller below would carry only this function's own fp:
-                        # re-offer what the entry recorded beneath it, under
-                        # the caller's logic_tracking as on a miss.
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
                         guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(

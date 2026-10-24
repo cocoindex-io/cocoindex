@@ -204,17 +204,17 @@ PARSER_DEPS = {
 }
 
 @coco.fn(logic_tracking="self", version=1)
-async def visit_file(self, file: File) -> None:
+async def visit_file(file: File) -> None:
     language = detect_language(file.path)
     if (dep := PARSER_DEPS.get(language)) is not None:
         coco.use_logic_dep(dep)  # this call's logic also depends on that parser
     ...
 ```
 
-A recorded dependency travels exactly like the function's own fingerprint: into the entry of a memoized caller, onward through `"full"` callers, hidden by a `"self"` caller above unless the call is carried by [`logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers), and from a [mounted component](./processing_component) into every ancestor component's entry. When a later release constructs the `LogicDep` with a new value, only the entries that recorded the old one are invalidated: in the example, a parser's new version re-runs its files and the directories above them, and every other subtree is reused. It is recorded whatever the function's own `logic_tracking` is: it describes the call, not the function's code.
+A recorded dependency travels exactly like the function's own fingerprint: into the entry of a memoized caller, onward through `"full"` callers, hidden by a `"self"` caller above unless the call is carried by [`logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers), and from a [mounted component](./processing_component) into every ancestor component's entry. (A memoized callee that hits re-offers its stored entry to the caller whole, and that rides to the enclosing component regardless of modes, so a `"self"` caller may record more after a hit than after a miss, never less.) When a later release constructs the `LogicDep` with a new value, only the entries that recorded the old one are invalidated: in the example, a parser's new version re-runs its files and the directories above them, and every other subtree is reused. It is recorded whatever the function's own `logic_tracking` is: it describes the call, not the function's code.
 
 :::caution[Construct at import, never lazily]
-A memo entry is validated against the dependencies registered in the process at that moment. A `LogicDep` constructed on first use registers too late, so entries recorded with it are evicted before that first use; one constructed per call is released too early. Build every `LogicDep` at module import; constructing one inside a component context raises.
+A memo entry is validated against the dependencies registered in the process at that moment. A `LogicDep` constructed on first use registers too late, so entries recorded with it are evicted when probed before that first use; one constructed per call is released too early, so they are evicted every pass. Neither is stale data, only memoization that silently stops working. Build every `LogicDep` before any component runs, at module import; constructing one inside a component context raises.
 :::
 
 Adopting `use_logic_dep` in a function that memoized callers already stored entries for does not re-store those entries (the caution under [`logic_tracking`](#logic_tracking) applies): ship the adoption with a `version` bump or a memoization-key change on those callers.

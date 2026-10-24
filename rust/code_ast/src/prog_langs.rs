@@ -559,18 +559,28 @@ pub fn get_language_info(name: &str) -> Option<&'static ProgrammingLanguageInfo>
         .copied()
 }
 
-/// Every registered alias — language names and file extensions alike — with
-/// the name of the language it resolves to, sorted by alias.
+/// One entry of the registry's alias table: a registered name — a language
+/// name or a file extension — and the language it resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LanguageAlias {
+    pub alias: &'static str,
+    pub language: &'static str,
+}
+
+/// Every registered alias with the language it resolves to, sorted by alias.
 ///
 /// The registry's identity, for a consumer whose stored work depends on what
 /// a file name resolves to (a memoized walk that decides a file's eligibility
-/// by [`detect_language`]): hash the pairs it cares about, and a newly
+/// by [`detect_language`]): hash the entries it cares about, and a newly
 /// recognized extension moves the hash where nothing else would. Sorted so
 /// the hash is stable across processes.
-pub fn language_aliases() -> Vec<(&'static str, &'static str)> {
-    let mut aliases: Vec<(&'static str, &'static str)> = LANGUAGE_INFO_BY_NAME
+pub fn language_aliases() -> Vec<LanguageAlias> {
+    let mut aliases: Vec<LanguageAlias> = LANGUAGE_INFO_BY_NAME
         .iter()
-        .map(|(alias, info)| (alias.as_str(), info.name.as_ref()))
+        .map(|(alias, info)| LanguageAlias {
+            alias: alias.as_str(),
+            language: info.name.as_ref(),
+        })
         .collect();
     aliases.sort_unstable();
     aliases
@@ -592,15 +602,16 @@ mod tests {
     #[test]
     fn test_language_aliases_lists_the_registry_sorted() {
         let aliases = language_aliases();
-        assert!(aliases.contains(&(".rs", "rust")));
-        assert!(aliases.contains(&("rust", "rust")));
+        let entry = |alias, language| LanguageAlias { alias, language };
+        assert!(aliases.contains(&entry(".rs", "rust")));
+        assert!(aliases.contains(&entry("rust", "rust")));
         assert!(
-            aliases.windows(2).all(|w| w[0] < w[1]),
-            "sorted, no duplicates"
+            aliases.windows(2).all(|w| w[0].alias < w[1].alias),
+            "sorted by alias, no duplicates"
         );
-        for (alias, name) in &aliases {
+        for LanguageAlias { alias, language } in &aliases {
             let info = get_language_info(alias).expect("every listed alias resolves");
-            assert_eq!(info.name.as_ref(), *name, "alias {alias:?}");
+            assert_eq!(info.name.as_ref(), *language, "alias {alias:?}");
         }
     }
 
