@@ -209,7 +209,7 @@ where
         Self {
             options: BatchingOptions {
                 max_batch_size,
-                max_in_flight: None,
+                ..BatchingOptions::default()
             },
             batchers: Mutex::new(HashMap::new()),
             code_hash,

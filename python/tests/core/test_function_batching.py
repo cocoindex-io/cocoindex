@@ -6,6 +6,7 @@ from typing import Any
 
 import cocoindex as coco
 from cocoindex._internal.runner import Runner
+from cocoindex.resources.rate_limit import RateLimiter
 import pytest
 
 
@@ -1227,3 +1228,79 @@ async def test_gpu_runner_subprocess_retry_with_smaller_batch(
 # Note: With always-async design, functions with batching/runner are always async.
 # The underlying implementation can be sync - it gets wrapped appropriately.
 # Both in-process and subprocess execution work for sync underlying functions.
+
+
+# ============================================================================
+# rate_limiter: batches take one token each before they run
+# ============================================================================
+
+
+def test_rate_limiter_requires_batching() -> None:
+    limiter = RateLimiter(max_rows_per_second=10.0)
+
+    with pytest.raises(ValueError, match="rate_limiter requires batching=True"):
+
+        @coco.fn.as_async(rate_limiter=limiter)
+        async def _unbatched(x: int) -> int:
+            return x
+
+    with pytest.raises(ValueError, match="rate_limiter"):
+
+        @coco.fn(rate_limiter=limiter)  # type: ignore[call-overload, untyped-decorator]
+        async def _plain(x: int) -> int:
+            return x
+
+    with pytest.raises(TypeError, match="rate_limiter must be a RateLimiter"):
+
+        @coco.fn.as_async(batching=True, rate_limiter=3)  # type: ignore[call-overload, untyped-decorator]
+        async def _bad(inputs: list[int]) -> list[int]:
+            return inputs
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_paces_batches() -> None:
+    """Twelve concurrent calls at four per batch need three tokens; at four
+    tokens a second with no burst the second and third wait 250 ms each."""
+    batch_sizes: list[int] = []
+    limiter = RateLimiter(max_rows_per_second=4.0, burst_window_secs=0.0)
+
+    @coco.fn.as_async(batching=True, max_batch_size=4, rate_limiter=limiter)
+    async def paced_double(inputs: list[int]) -> list[int]:
+        batch_sizes.append(len(inputs))
+        return [x * 2 for x in inputs]
+
+    started = asyncio.get_running_loop().time()
+    results = await asyncio.gather(*(paced_double(v) for v in range(12)))
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert list(results) == [v * 2 for v in range(12)]
+    assert sum(batch_sizes) == 12
+    assert all(size <= 4 for size in batch_sizes)
+    assert len(batch_sizes) >= 3
+    # Two token intervals at least, whatever the loop's scheduling.
+    assert elapsed >= 0.45
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_callable_receives_self() -> None:
+    """A method's limiter lives on the instance: the callable form is resolved
+    with the bound ``self``, once per batcher."""
+    resolved: list[object] = []
+
+    class Client:
+        def __init__(self, limiter: RateLimiter | None) -> None:
+            self.limiter = limiter
+
+        def _pick_limiter(self) -> RateLimiter | None:
+            resolved.append(self)
+            return self.limiter
+
+        @coco.fn.as_async(batching=True, rate_limiter=lambda self: self._pick_limiter())
+        async def double(self, inputs: list[int]) -> list[int]:
+            return [x * 2 for x in inputs]
+
+    paced = Client(RateLimiter(max_rows_per_second=100.0))
+    unpaced = Client(None)
+    assert list(await asyncio.gather(paced.double(1), paced.double(2))) == [2, 4]
+    assert await unpaced.double(3) == 6
+    assert resolved == [paced, unpaced]
