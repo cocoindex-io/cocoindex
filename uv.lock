@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -899,6 +899,7 @@ build-test = [
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
     { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
+    { name = "uvicorn" },
 ]
 ci = [
     { name = "aiohttp" },
@@ -916,6 +917,7 @@ ci = [
     { name = "pytest-timeout" },
     { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
     { name = "types-psutil" },
+    { name = "uvicorn" },
     { name = "valkey-glide", marker = "sys_platform != 'win32'" },
 ]
 ci-enabled-optional-deps = [
@@ -943,6 +945,7 @@ dev = [
     { name = "pytest-timeout" },
     { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
     { name = "types-psutil" },
+    { name = "uvicorn" },
     { name = "valkey-glide", marker = "sys_platform != 'win32'" },
 ]
 dev-local = [
@@ -1047,6 +1050,7 @@ build-test = [
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
     { name = "testcontainers", extras = ["postgres", "neo4j"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 ci = [
     { name = "aiohttp", specifier = ">=3.9.0" },
@@ -1064,6 +1068,7 @@ ci = [
     { name = "pytest-timeout" },
     { name = "testcontainers", extras = ["postgres", "neo4j"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
     { name = "types-psutil" },
+    { name = "uvicorn", specifier = ">=0.30" },
     { name = "valkey-glide", marker = "sys_platform != 'win32'", specifier = ">=2.5.2" },
 ]
 ci-enabled-optional-deps = [
@@ -1091,6 +1096,7 @@ dev = [
     { name = "pytest-timeout" },
     { name = "testcontainers", extras = ["postgres", "neo4j"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
     { name = "types-psutil" },
+    { name = "uvicorn", specifier = ">=0.30" },
     { name = "valkey-glide", marker = "sys_platform != 'win32'", specifier = ">=2.5.2" },
 ]
 dev-local = [{ name = "prek" }]
@@ -5269,6 +5275,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e3/05/b17359e1cefb4f909b5e40b1b90a496d987258916dbbf88e842c729f510e/urllib3-2.8.0.tar.gz", hash = "sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63", size = 458972, upload-time = "2026-09-15T19:29:36.253Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl", hash = "sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3", size = 135717, upload-time = "2026-09-15T19:29:34.577Z" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.54.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
 ]
 
 [[package]]
