@@ -702,6 +702,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     title: 'Custom building blocks & streaming',
     blurb: 'Bring your own transform or wire pipelines to streaming systems like Kafka.',
     entries: [
+      { dir: 'minio_webhook', title: 'MinIO Webhook', description: 'Reconcile authenticated MinIO create/delete notifications into a live local file index, with an initial S3 scan and completion-based HTTP acknowledgements.', run: 'python main.py' },
       { dir: 'files_transform', docs: 'files-transform', title: 'Files Transform', description: 'Watch a directory of Markdown files and convert each to HTML with markdown-it-py, writing .html outputs incrementally.' },
       { dir: 'bigquery_target', title: 'BigQuery Target', description: 'Write order records to BigQuery with managed table creation, MERGE upserts, and cleanup.', run: RUN_MAIN },
       { dir: 'kafka_to_lancedb', docs: 'kafka-to-lancedb', title: 'Kafka → LanceDB', description: 'Consume JSON messages from a Kafka topic and dispatch them to two LanceDB tables by message shape.', run: 'cocoindex update -L main.py' },

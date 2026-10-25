@@ -104,6 +104,48 @@ async for key, file in amazon_s3.list_objects(client, "my-bucket").items():
     content = await file.read()
 ```
 
+### Live object notifications
+
+Pass a `LiveStream[bytes]` to `S3Walker.live_items()` to obtain a
+`LiveMapView[str, S3File]` for `coco.mount_each`:
+
+```python
+walker = amazon_s3.list_objects(client, "my-bucket", prefix="data/")
+await coco.mount_each(process_file, walker.live_items(notification_stream))
+```
+
+The stream sends JSON [AWS S3 notification envelopes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/notification-content-structure.html)
+or MinIO equivalents. The connector validates each complete batch, decodes object
+keys once using the provider's form encoding, and filters by the walker's bucket,
+prefix, path matcher, and maximum file size. It subscribes before its initial
+scan and processes admitted changes after that scan commits. One active watcher
+is permitted per view; ordinary async iteration performs an independent read-only
+listing, and `walker.items()` keeps its original async-generator behavior.
+
+Events trigger a fresh HEAD/read of current object state. Their timestamps and
+sequencers are not treated as a historical version order. Duplicate or stale
+delete hints cannot remove an object that currently exists. A 404 removes the
+derived entry; other errors propagate through the completion handle. S3 content
+memoization compares ETags, or content hashes when no ETag is available, even if
+two writes have equal modification timestamps.
+
+The source stream must bound its own in-flight deliveries and await each returned
+handle's `ready()` before acknowledging it. Updates for a single relative key
+remain serialized through that completion; different keys can run concurrently.
+Cancellation of a delivery waiter does not cancel an operation already admitted
+to the view. Stopping the watcher closes its owned operations. The stream's
+`mark_ready()` callback returns promptly; initial readiness also waits for the
+scan and notifications already admitted during catch-up.
+
+The [MinIO webhook example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/minio_webhook)
+provides authenticated, bounded HTTP ingress and a runnable local file target.
+It explicitly propagates processing failures before sending HTTP 204. With
+another application, acknowledgement semantics also depend on its exception
+handler and target. A volatile receiver must rescan on restart and rely on its
+producer's durable queue and retry policy; the connector does not supply an inbox,
+an exactly-once guarantee, or a historical version replay API. AWS S3 needs an
+appropriate notification transport rather than a direct bucket-to-HTTP webhook.
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which objects are included. Patterns are matched against the relative path (after prefix stripping):

@@ -148,6 +148,7 @@ build-test = [
     "mypy",
     "moto[s3]>=5.0.0",
     "aiomoto[s3]>=0.3.0",
+    "uvicorn>=0.30",
     "testcontainers[postgres,neo4j]>=4.0.0; sys_platform != 'win32'",
 ]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
