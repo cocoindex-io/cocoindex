@@ -912,7 +912,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let parent_ctx = ComponentProcessorContext::new_borrowing_from(
             self.component.clone(),
             None,
-            Some(self.lender.clone()),
+            // No lender, as before this context took the store handle: it
+            // admits nothing itself.
+            None,
             self.processing_stats.clone(),
             self.host_ctx.clone(),
             // No on_error on this synthetic parent context — it only

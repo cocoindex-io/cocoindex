@@ -1743,6 +1743,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     child_provider.display_name()
                 );
             }
+            // In an update's order: a factory that fails leaves the component
+            // uncommitted, as it does an update, and a sibling claiming one of
+            // these target states waits on the staged token as it would there
+            // (where the window also spans the sinks' apply).
             let children = build_factory_children(comp_ctx, &actions_by_sinks).await?;
             Committer::new(comp_ctx, target_states_providers)?
                 .commit_writes(child_existence, fn_memos, user_states, curr_version)
@@ -1880,10 +1884,9 @@ async fn cleanup_pending_token<Prof: EngineProfile>(
     }
 }
 
-/// Store the component's memo, if it is memoized; returns whether the store
-/// now holds it. A preview's memo stays in its run's handle, where a run queued
-/// behind this one finds it and no later real update does, so a preview
-/// reports none stored and the component records no latest memo.
+/// Store the component's memo, if it is memoized. A preview stores it in its
+/// run's handle, where the run's later lookups find it and no later real
+/// update does.
 #[instrument(name = "post_submit_after_ready", skip_all)]
 pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
@@ -1894,9 +1897,9 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     )>,
     logic_deps: &HashSet<Fingerprint>,
     target_provider_deps: &TargetProviderDeps,
-) -> Result<bool> {
+) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
-        return Ok(false);
+        return Ok(());
     };
 
     let ret_bytes = ret.to_bytes()?;
@@ -1926,8 +1929,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx
         .app_store()
         .finalize_memoization(comp_ctx.stable_path(), &encoded)
-        .await?;
-    Ok(comp_ctx.app_store().persists())
+        .await
 }
 
 pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(

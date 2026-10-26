@@ -1440,7 +1440,10 @@ mod tests {
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
         let storage = crate::state_store::Storage::from_env(env);
-        (AppStore::new(db, storage), dir)
+        (
+            AppStore::new(crate::state_store::Db::new(db, "test"), storage),
+            dir,
+        )
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {

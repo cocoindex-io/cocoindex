@@ -35,9 +35,9 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::txn::{Database, Overlay, ReadTxn, WriteTxn};
+use crate::state_store::txn::{Db, Overlay, ReadTxn, WriteTxn};
 
-/// Per-app handle within a `Storage`. Carries the `Database` and a clone
+/// Per-app handle within a `Storage`. Carries the app's [`Db`] and a clone
 /// of the parent `Storage`, which owns the env (so standalone read methods
 /// can open their own `RoTxn` without the caller having to do so) and
 /// whose single-writer batcher the session backend routes writes through
@@ -50,13 +50,27 @@ use crate::state_store::txn::{Database, Overlay, ReadTxn, WriteTxn};
 /// itself, and the run still reads its own writes back.
 #[derive(Clone)]
 pub struct AppStore {
-    pub(crate) db: Database,
+    pub(crate) db: Db,
     pub(crate) storage: super::storage::Storage,
     overlay: Option<Arc<Overlay>>,
 }
 
+/// Where a handle's writes land, as later handles see them: in LMDB, which
+/// every handle reads, or in one run's overlay (by its id), which only that
+/// run's handles read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteScope {
+    Persisted,
+    Run(u64),
+}
+
+/// The first id a run that persists nothing reserves. Persisting runs count
+/// up from 1 and never come near it, so an id such a run hands out (a fresh
+/// child-provider generation, say) is in no tracking record, now or later.
+pub(crate) const FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING: u64 = 1 << 63;
+
 impl AppStore {
-    pub(crate) fn new(db: Database, storage: super::storage::Storage) -> Self {
+    pub(crate) fn new(db: Db, storage: super::storage::Storage) -> Self {
         Self {
             db,
             storage,
@@ -73,19 +87,22 @@ impl AppStore {
     /// already persists nothing, a clone: the run keeps its writes.
     pub(crate) fn discarding_writes(&self) -> Self {
         Self {
-            db: self.db,
+            db: self.db.clone(),
             storage: self.storage.clone(),
             overlay: Some(
                 self.overlay
                     .clone()
-                    .unwrap_or_else(|| Arc::new(Overlay::default())),
+                    .unwrap_or_else(|| Arc::new(Overlay::new(&self.db))),
             ),
         }
     }
 
-    /// Whether writes through this handle reach the store.
-    pub(crate) fn persists(&self) -> bool {
-        self.overlay.is_none()
+    /// Where this handle's writes land.
+    pub(crate) fn write_scope(&self) -> WriteScope {
+        match &self.overlay {
+            None => WriteScope::Persisted,
+            Some(overlay) => WriteScope::Run(overlay.id()),
+        }
     }
 
     /// A clone of the parent env, for tests that open LMDB transactions
@@ -97,11 +114,10 @@ impl AppStore {
         super::txn::opened_env(&guard).unwrap().clone()
     }
 
-    /// Internal accessor for cursor-iteration code (e.g.
-    /// `Storage::spawn_stable_path_iter`) that needs the
-    /// raw heed handle.
-    pub(crate) fn db(&self) -> Database {
-        self.db
+    /// The app's database, for reads and writes inside a txn and, through
+    /// [`Db::raw`], for cursor-iteration code that walks the committed store.
+    pub(crate) fn db(&self) -> &Db {
+        &self.db
     }
 
     /// Run `body` inside a write txn. On a persisting handle the body joins
@@ -129,11 +145,11 @@ impl AppStore {
         }
     }
 
-    /// Open a fresh read snapshot, under this handle's overlay if it has one.
-    /// Used by the standalone read methods and by the streaming inspection
-    /// iter. See [`super::Storage::read_txn`].
+    /// Open a fresh read snapshot, seeing the run's writes as of now if this
+    /// handle has an overlay. Used by the standalone read methods and by the
+    /// streaming inspection iter. See [`super::Storage::read_txn`].
     pub async fn read_txn(&self) -> Result<ReadTxn> {
-        self.storage.read_txn(self.overlay.clone()).await
+        self.storage.read_txn(self.overlay.as_deref()).await
     }
 }
 
@@ -221,7 +237,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<Option<Vec<u8>>> {
         let key = key_tracking_info(path)?;
-        Ok(txn.get(self.db(), &key)?.map(Cow::into_owned))
+        Ok(txn.get(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
     /// Standalone snapshot read of raw tracking-info bytes — no
@@ -232,7 +248,7 @@ impl AppStore {
     pub async fn read_tracking_info(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_tracking_info(path)?;
-        Ok(rtxn.get(self.db(), &key)?.map(Cow::into_owned))
+        Ok(rtxn.get(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write pre-serialized tracking info. Callers serialize externally so
@@ -276,7 +292,7 @@ impl AppStore {
                     return Ok(());
                 };
                 let mut info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
-                    cocoindex_utils::deser::from_msgpack_slice(&bytes)?;
+                    cocoindex_utils::deser::from_msgpack_slice(bytes)?;
                 if info.pending_process_token != Some(self_token) {
                     return Ok(());
                 }
@@ -400,7 +416,7 @@ impl AppStore {
         let Some(bytes) = rtxn.get(self.db(), &cex_key)? else {
             return Ok(None);
         };
-        let info: ChildExistenceInfo = from_msgpack_slice(&bytes)?;
+        let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
         Ok(Some(info.node_type))
     }
 }
@@ -417,7 +433,7 @@ impl AppStore {
         path: &StablePath,
     ) -> Result<Option<Vec<u8>>> {
         let key = key_component_memo(path)?;
-        Ok(txn.get(self.db(), &key)?.map(Cow::into_owned))
+        Ok(txn.get(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
     /// Read raw component-memo bytes from a fresh snapshot. Used by the
@@ -425,7 +441,7 @@ impl AppStore {
     pub async fn read_component_memo(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_component_memo(path)?;
-        Ok(rtxn.get(self.db(), &key)?.map(Cow::into_owned))
+        Ok(rtxn.get(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write a pre-serialized component memo. Callers serialize externally
@@ -467,6 +483,10 @@ impl AppStore {
         self.write_fn_memo_raw(txn, path, fp, &value).await
     }
 
+    /// Store a pre-serialized function memo. A run that persists nothing
+    /// keeps none (see [`WriteTxn::put_or_forget`]): memo values can be large
+    /// (embeddings, model outputs), and a later run of the same component in
+    /// that run recomputes what it misses.
     pub async fn write_fn_memo_raw(
         &self,
         txn: &mut WriteTxn<'_>,
@@ -475,7 +495,7 @@ impl AppStore {
         encoded: &[u8],
     ) -> Result<()> {
         let key = key_fn_memo(path, fp)?;
-        txn.put(self.db(), &key, encoded)?;
+        txn.put_or_forget(self.db(), &key, encoded)?;
         Ok(())
     }
 
@@ -515,10 +535,7 @@ impl AppStore {
     ) -> Result<Option<ChildExistenceInfo>> {
         let key = key_child_existence(parent, child_key)?;
         let data = txn.get(self.db(), &key)?;
-        data.as_deref()
-            .map(from_msgpack_slice)
-            .transpose()
-            .map_err(Into::into)
+        data.map(from_msgpack_slice).transpose().map_err(Into::into)
     }
 
     pub async fn write_child_existence(
@@ -634,10 +651,7 @@ impl AppStore {
     ) -> Result<Option<TargetStateOwnerInfo>> {
         let key = key_target_state_owner(path)?;
         let data = txn.get(self.db(), &key)?;
-        data.as_deref()
-            .map(from_msgpack_slice)
-            .transpose()
-            .map_err(Into::into)
+        data.map(from_msgpack_slice).transpose().map_err(Into::into)
     }
 
     pub async fn upsert_target_state_owner(
@@ -705,14 +719,9 @@ impl AppStore {
         key: &StableKey,
     ) -> Result<Option<u64>> {
         let db_key = key_id_sequencer(key)?;
-        let data = txn.get(self.db(), &db_key)?;
-        match data {
-            None => Ok(None),
-            Some(bytes) => {
-                let info: IdSequencerInfo = from_msgpack_slice(&bytes)?;
-                Ok(Some(info.next_id))
-            }
-        }
+        txn.get(self.db(), &db_key)?
+            .map(|bytes| Ok(from_msgpack_slice::<IdSequencerInfo>(bytes)?.next_id))
+            .transpose()
     }
 
     async fn write_id_sequence(
@@ -730,19 +739,22 @@ impl AppStore {
 
     /// Atomically reserve `count` consecutive IDs starting from the next
     /// available ID. Returns the first reserved ID. IDs start at 1
-    /// (0 is reserved). On a handle from [`Self::discarding_writes`] the
-    /// reservation lasts for that run: its later calls get the ids after it,
-    /// and nothing persists, so the ids stay available.
+    /// (0 is reserved). A run that persists nothing reserves in its own
+    /// range, from [`FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING`]: its counter
+    /// lives in its overlay, past any counter LMDB holds, so its ids are
+    /// distinct across the run and never an id a persisting run reserves.
     pub async fn reserve_id_range_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
         key: &StableKey,
         count: u64,
     ) -> Result<u64> {
+        let first_id = txn.first_reservable_id();
         let current_next_id = self
             .peek_id_sequence_in_txn(&mut *txn, key)
             .await?
-            .unwrap_or(1);
+            .unwrap_or(1)
+            .max(first_id);
         self.write_id_sequence(txn, key, current_next_id + count)
             .await?;
         Ok(current_next_id)
@@ -831,7 +843,7 @@ impl AppStore {
     ) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_user_state(path, kind, user_key)?;
-        Ok(rtxn.get(self.db(), &key)?.map(Cow::into_owned))
+        Ok(rtxn.get(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
     pub async fn write_user_state(
@@ -1000,13 +1012,80 @@ impl AppStore {
 
 #[cfg(test)]
 mod tests {
-    use super::AppStore;
+    use super::{AppStore, FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING, key_fn_memo};
     use crate::state::db_schema::StateKind;
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::test_support::make_test_store;
     use crate::state_store::txn::WriteTxn;
+    use cocoindex_utils::fingerprint::Fingerprint;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// Reserves one id under `key` in a body of `store`.
+    async fn reserve_one(store: &AppStore, key: &StableKey) -> u64 {
+        let (store_in_txn, key) = (store.clone(), key.clone());
+        store
+            .run_txn(move |wtxn| {
+                let (store, key) = (store_in_txn.clone(), key.clone());
+                Box::pin(async move { store.reserve_id_range_in_txn(wtxn, &key, 1).await })
+            })
+            .await
+            .unwrap()
+    }
+
+    /// A discarding run reserves in its own range, so neither it nor a
+    /// persisting run reserving meanwhile ever hands out an id the other did.
+    #[tokio::test]
+    async fn discarding_reservations_never_meet_persisting_ones() {
+        const FIRST: u64 = FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING;
+        let (store, _dir) = make_test_store().await;
+        let key = StableKey::Str(Arc::from("provider"));
+        let discarding = store.discarding_writes();
+        assert_eq!(reserve_one(&discarding, &key).await, FIRST);
+        assert_eq!(reserve_one(&store, &key).await, 1);
+        assert_eq!(reserve_one(&store, &key).await, 2);
+        assert_eq!(reserve_one(&discarding, &key).await, FIRST + 1);
+        assert_eq!(reserve_one(&store, &key).await, 3);
+    }
+
+    /// A discarding run keeps no function memo it writes: a later read in the
+    /// run finds none, not even the one the store holds, so the run
+    /// recomputes rather than holding every memo value in memory.
+    #[tokio::test]
+    async fn discarding_run_forgets_the_function_memos_it_writes() {
+        let (store, _dir) = make_test_store().await;
+        let path = comp_path("component");
+        let fp = Fingerprint::from(&"memo").unwrap();
+        let write_then_read = |store: AppStore, value: &'static [u8]| {
+            let path = path.clone();
+            async move {
+                let store_in_txn = store.clone();
+                store
+                    .run_txn(move |wtxn| {
+                        let (store, path) = (store_in_txn.clone(), path.clone());
+                        Box::pin(async move {
+                            store.write_fn_memo_raw(wtxn, &path, fp, value).await?;
+                            let key = key_fn_memo(&path, fp)?;
+                            Ok(wtxn.get(store.db(), &key)?.map(<[u8]>::to_vec))
+                        })
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(
+            write_then_read(store.clone(), b"stored").await.as_deref(),
+            Some(&b"stored"[..])
+        );
+        assert_eq!(
+            write_then_read(store.discarding_writes(), b"previewed").await,
+            None
+        );
+        // The store still holds its own memo.
+        let read = store.read_txn().await.unwrap();
+        let key = key_fn_memo(&path, fp).unwrap();
+        assert_eq!(read.get(store.db(), &key).unwrap(), Some(&b"stored"[..]));
+    }
 
     /// A discarding run gets distinct ids from successive reservations, in
     /// one body or across bodies, and leaves the persisted counter untouched.
@@ -1032,14 +1111,21 @@ mod tests {
             }
         };
         let discarding = store.discarding_writes();
-        assert_eq!(reserve_twice(discarding.clone()).await.unwrap(), (1, 2));
+        const FIRST: u64 = FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING;
+        assert_eq!(
+            reserve_twice(discarding.clone()).await.unwrap(),
+            (FIRST, FIRST + 1)
+        );
         // The run's later bodies continue where it left off; the store did
         // not move.
-        assert_eq!(reserve_twice(discarding).await.unwrap(), (4, 5));
+        assert_eq!(
+            reserve_twice(discarding).await.unwrap(),
+            (FIRST + 3, FIRST + 4)
+        );
         assert_eq!(reserve_twice(store.clone()).await.unwrap(), (1, 2));
         assert_eq!(
             reserve_twice(store.discarding_writes()).await.unwrap(),
-            (4, 5)
+            (FIRST, FIRST + 1)
         );
         assert_eq!(reserve_twice(store).await.unwrap(), (4, 5));
     }

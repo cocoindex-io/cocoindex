@@ -1,5 +1,6 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
+use crate::state_store::WriteScope;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Weak;
@@ -124,7 +125,7 @@ struct ComponentInner<Prof: EngineProfile> {
     /// run just completed and stored its result, so it re-checks the memo
     /// instead of executing again — under `full_reprocess` only when that run
     /// belonged to the same operation (see `execute_once`).
-    last_stored_memo: Mutex<Option<StoredMemo>>,
+    last_stored_memos: Mutex<LastStoredMemos>,
 
     /// Identity registry of child components, keyed by their full StablePath,
     /// so a re-mount of a path whose component is still referenced shares the
@@ -620,6 +621,33 @@ struct StoredMemo {
     memo_fp: Fingerprint,
 }
 
+/// The latest memo a component stored in each place a run can read: LMDB,
+/// which every run reads, and the overlay of one run that persists nothing
+/// (a preview), which only that run reads. Kept apart so a preview's memo
+/// does not displace the persisted one a queued update re-checks.
+#[derive(Default)]
+struct LastStoredMemos {
+    persisted: Option<StoredMemo>,
+    in_run: Option<(u64, StoredMemo)>,
+}
+
+impl LastStoredMemos {
+    fn record(&mut self, scope: WriteScope, memo: StoredMemo) {
+        match scope {
+            WriteScope::Persisted => self.persisted = Some(memo),
+            WriteScope::Run(run) => self.in_run = Some((run, memo)),
+        }
+    }
+
+    /// The latest memo a run reading through `app_store` can find.
+    fn readable_by(&self, app_store: &crate::state_store::AppStore) -> Option<StoredMemo> {
+        match self.in_run {
+            Some((run, memo)) if app_store.write_scope() == WriteScope::Run(run) => Some(memo),
+            _ => self.persisted,
+        }
+    }
+}
+
 /// Result of looking up a component's memo for the processor about to run.
 enum MemoLookup<Prof: EngineProfile> {
     /// A valid memo stands in for a run: report the stored run's outcome and
@@ -712,7 +740,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 stable_path,
                 parent,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
-                last_stored_memo: Mutex::new(None),
+                last_stored_memos: Mutex::new(LastStoredMemos::default()),
                 active_children: parking_lot::Mutex::new(HashMap::new()),
                 live_state: parking_lot::Mutex::new(None),
                 active_ops: std::sync::atomic::AtomicUsize::new(0),
@@ -1177,7 +1205,12 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // a memo stored by this same operation qualifies: that is
                     // the operation's own execution of the component, not a
                     // cache from a previous run.
-                    let last_stored_memo = *self.inner.last_stored_memo.lock().unwrap();
+                    let last_stored_memo = self
+                        .inner
+                        .last_stored_memos
+                        .lock()
+                        .unwrap()
+                        .readable_by(processor_context.app_store());
                     if let Some(processor) = processor
                         && let Some(memo_fp) = memo_fp_to_store
                         && let Some(stored) = last_stored_memo
@@ -1321,7 +1354,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             let logic_deps = processor_context.take_logic_deps();
                             let target_provider_deps =
                                 processor_context.take_target_provider_deps();
-                            let stored = post_submit_for_build(
+                            post_submit_for_build(
                                 processor_context,
                                 comp_memo,
                                 &logic_deps,
@@ -1331,11 +1364,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                             // Record the store for a run queued on the permit
                             // (see the re-check above). Still under the permit,
                             // so this is the component's latest memo.
-                            if stored && let Some(memo_fp) = memo_fp_to_store {
-                                *self.inner.last_stored_memo.lock().unwrap() = Some(StoredMemo {
-                                    operation_generation: processor_context.operation_generation(),
-                                    memo_fp,
-                                });
+                            if let Some(memo_fp) = memo_fp_to_store {
+                                self.inner.last_stored_memos.lock().unwrap().record(
+                                    processor_context.app_store().write_scope(),
+                                    StoredMemo {
+                                        operation_generation: processor_context
+                                            .operation_generation(),
+                                        memo_fp,
+                                    },
+                                );
                             }
                             children_outcome.logic_deps = logic_deps;
                             children_outcome.target_provider_deps = target_provider_deps;
@@ -2644,10 +2681,11 @@ mod tests {
     /// Every key and value of the app's state store.
     async fn app_store_contents(app: &App<TestProfile>) -> Vec<(Vec<u8>, Vec<u8>)> {
         let app_store = app.app_ctx().app_store();
-        let txn = app_store.read_txn().await.unwrap();
+        let read = app_store.read_txn().await.unwrap();
         app_store
             .db()
-            .iter(&txn)
+            .raw()
+            .iter(read.committed())
             .unwrap()
             .map(|entry| {
                 let (key, value) = entry.unwrap();
@@ -2900,6 +2938,30 @@ mod tests {
             app_store_contents(&app).await == contents_before,
             "preview must not write to the state store"
         );
+    }
+
+    /// A preview's stored memo is found only by that preview's runs, and does
+    /// not displace the persisted memo an update queued on the permit
+    /// re-checks.
+    #[tokio::test]
+    async fn a_previews_stored_memo_does_not_hide_the_persisted_one() {
+        let (app, _dir) = test_app("stored_memo_scopes").await;
+        let store = app.app_ctx().app_store();
+        let preview = store.discarding_writes();
+        let fp = |name: &str| Fingerprint::from(&name).unwrap();
+        let memo = |name: &str| super::StoredMemo {
+            operation_generation: 0,
+            memo_fp: fp(name),
+        };
+        let mut memos = super::LastStoredMemos::default();
+        memos.record(store.write_scope(), memo("update"));
+        memos.record(preview.write_scope(), memo("preview"));
+        let found = |reader: &crate::state_store::AppStore| {
+            memos.readable_by(reader).map(|memo| memo.memo_fp)
+        };
+        assert_eq!(found(store), Some(fp("update")));
+        assert_eq!(found(&preview), Some(fp("preview")));
+        assert_eq!(found(&store.discarding_writes()), Some(fp("update")));
     }
 
     /// A preview that finds the stored memo invalid (here: a changed memo key)

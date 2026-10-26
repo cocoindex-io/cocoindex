@@ -11,7 +11,7 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::AppStore;
-use crate::state_store::txn::{Database, Env, EnvSlot, Overlay, ReadTxn, WriteTxn, opened_env};
+use crate::state_store::txn::{Database, Db, Env, EnvSlot, Overlay, ReadTxn, WriteTxn, opened_env};
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -512,7 +512,11 @@ impl Storage {
     /// turns, as a batch's do, so each reads the run's earlier writes through
     /// the overlay as a batched body reads its txn's, and a failing body's
     /// writes are dropped as an aborted txn's. No writer lock is taken,
-    /// nothing reaches LMDB, and nothing makes the body run again.
+    /// nothing reaches LMDB, and nothing makes the body run again. Like a
+    /// batch, the body runs on a blocking-pool thread, so its reads and scans
+    /// do not stall a runtime worker; and like a batched body, it runs to the
+    /// end (committing into the overlay if it succeeds) even if its caller is
+    /// dropped meanwhile.
     pub(crate) async fn run_discarding<T, F>(&self, overlay: Arc<Overlay>, body: F) -> Result<T>
     where
         T: Send + 'static,
@@ -521,11 +525,18 @@ impl Storage {
             + Sync
             + 'static,
     {
-        let _turn = overlay.body_turn().await;
-        let mut wtxn = WriteTxn::discarding(self.read_txn(Some(overlay.clone())).await?)?;
-        let output = body(&mut wtxn).await?;
-        wtxn.commit()?;
-        Ok(output)
+        let turn = overlay.body_turn().await;
+        let snapshot = self.read_txn(None).await?;
+        let runtime = tokio::runtime::Handle::current();
+        let span = Span::current();
+        tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            let mut wtxn = WriteTxn::discarding(snapshot, overlay);
+            let output = runtime.block_on(body(&mut wtxn).instrument(span))?;
+            wtxn.commit()?;
+            Ok(output)
+        })
+        .await?
     }
 
     /// Open a fresh LMDB read transaction, reading through `overlay` when
@@ -534,7 +545,7 @@ impl Storage {
     ///
     /// The returned [`ReadTxn`] holds a coordinator read guard until it is
     /// dropped, so callers must not keep it open longer than needed.
-    pub(crate) async fn read_txn(&self, overlay: Option<Arc<Overlay>>) -> Result<ReadTxn> {
+    pub(crate) async fn read_txn(&self, overlay: Option<&Overlay>) -> Result<ReadTxn> {
         let guard = self.inner.env.clone().read_owned().await;
         let env = opened_env(&guard)?;
         let try_open = || async {
@@ -574,7 +585,7 @@ impl Storage {
         let mut wtxn = env.write_txn()?;
         let db = env.create_database(&mut wtxn, Some(app_name))?;
         wtxn.commit()?;
-        Ok(AppStore::new(db, self.clone()))
+        Ok(AppStore::new(Db::new(db, app_name), self.clone()))
     }
 
     /// Open the per-app sub-database by name, or `None` if it doesn't exist.
@@ -589,7 +600,7 @@ impl Storage {
         // leaves the handle invalid and later reads fail with EINVAL when the
         // sub-database was created by another process.
         rtxn.commit()?;
-        Ok(db.map(|db| AppStore::new(db, self.clone())))
+        Ok(db.map(|db| AppStore::new(Db::new(db, app_name), self.clone())))
     }
 
     /// Drop an app's data from this LMDB environment. heed 0.22 doesn't
@@ -646,7 +657,7 @@ impl Storage {
             let result: Result<()> = (|| {
                 let env_guard = env_slot.blocking_read();
                 let txn = open_read_txn_on_env_with_retry(opened_env(&env_guard)?)?;
-                let db = app_store.db();
+                let db = app_store.db().raw();
                 f(&db, &txn, &tx)
             })();
             if let Err(err) = result {
@@ -841,11 +852,12 @@ mod tests {
         };
         let storage = Storage::new(&settings).await.unwrap();
         let app_store = storage.create_app_store("app").await.unwrap();
-        let db = app_store.db();
+        let db = app_store.db().clone();
         storage
             .run_txn(move |wtxn| {
+                let db = db.clone();
                 Box::pin(async move {
-                    wtxn.put(db, b"key", b"value")?;
+                    wtxn.put(&db, b"key", b"value")?;
                     Ok(())
                 })
             })
@@ -876,7 +888,7 @@ mod tests {
             .unwrap();
         let rtxn = app_store.read_txn().await.unwrap();
         assert_eq!(
-            app_store.db().get(&rtxn, b"key").unwrap(),
+            rtxn.get(app_store.db(), b"key").unwrap(),
             Some(&b"value"[..])
         );
     }
@@ -953,9 +965,8 @@ mod tests {
         // Read back first, middle, and last keys; verify full payload bytes.
         let rtxn = app_store.read_txn().await.unwrap();
         for key in ["key_0000", "key_0031", "key_0063"] {
-            let bytes = app_store
-                .db()
-                .get(&rtxn, key.as_bytes())
+            let bytes = rtxn
+                .get(app_store.db(), key.as_bytes())
                 .unwrap()
                 .unwrap_or_else(|| panic!("{key} should exist after successful commit"));
             assert_eq!(
@@ -1070,9 +1081,8 @@ mod tests {
 
         let rtxn = app_store.read_txn().await.unwrap();
         for key in ["key_0000", "key_0031", "key_0063"] {
-            let bytes = app_store
-                .db()
-                .get(&rtxn, key.as_bytes())
+            let bytes = rtxn
+                .get(app_store.db(), key.as_bytes())
                 .unwrap()
                 .unwrap_or_else(|| panic!("{key} should exist after successful write"));
             assert_eq!(
@@ -1141,7 +1151,7 @@ mod tests {
         let rtxn = app_store.read_txn().await.unwrap();
         for key in KEYS {
             assert_eq!(
-                app_store.db().get(&rtxn, key.as_bytes()).unwrap().is_some(),
+                rtxn.get(app_store.db(), key.as_bytes()).unwrap().is_some(),
                 key.starts_with("ok"),
                 "{key} must commit iff its body succeeded"
             );
@@ -1283,7 +1293,72 @@ mod tests {
             tokio::join!(reserve(discarding.clone()), reserve(discarding.clone()));
         let mut ids = [first, second];
         ids.sort();
-        assert_eq!(ids, [1, 2]);
+        let first_id = crate::state_store::app_store::FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING;
+        assert_eq!(ids, [first_id, first_id + 1]);
+    }
+
+    /// A discarding run's overlay holds one database's writes: a body that
+    /// reads or writes another database through it fails instead of mixing
+    /// the two databases' keys.
+    #[tokio::test]
+    async fn discarding_run_refuses_another_database() {
+        let dir = TempDir::new().unwrap();
+        let storage = Storage::new(&StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: 8,
+            lmdb_map_size: DEFAULT_MAP_SIZE,
+        })
+        .await
+        .unwrap();
+        let first = storage.create_app_store("first").await.unwrap();
+        let second = storage.create_app_store("second").await.unwrap();
+        let discarding = first.discarding_writes();
+        let (first_db, second_db) = (first.db().clone(), second.db().clone());
+        let outcome = discarding
+            .run_txn(move |wtxn| {
+                let (first_db, second_db) = (first_db.clone(), second_db.clone());
+                Box::pin(async move {
+                    wtxn.put(&first_db, b"key", b"first")?;
+                    wtxn.put(&second_db, b"key", b"second")
+                })
+            })
+            .await;
+        let err = outcome.expect_err("writing another database must fail");
+        assert!(err.to_string().contains("`second`"), "{err}");
+        // The failed body left nothing behind in the run.
+        let read = discarding.read_txn().await.unwrap();
+        assert!(read.get(discarding.db(), b"key").unwrap().is_none());
+    }
+
+    /// A read txn of a discarding run is a snapshot of what the run saw when
+    /// it opened: a body that finishes afterwards changes what a new read txn
+    /// sees, not what the open one does.
+    #[tokio::test]
+    async fn discarding_read_txn_is_a_snapshot_of_the_run() {
+        let (app_store, _dir) = make_test_store().await;
+        let discarding = app_store.discarding_writes();
+        let opened_before = discarding.read_txn().await.unwrap();
+        let store_in_txn = discarding.clone();
+        discarding
+            .run_txn(move |wtxn| {
+                let store = store_in_txn.clone();
+                Box::pin(async move { wtxn.put(store.db(), b"k/written", b"") })
+            })
+            .await
+            .unwrap();
+        assert!(
+            opened_before
+                .get(discarding.db(), b"k/written")
+                .unwrap()
+                .is_none()
+        );
+        let opened_after = discarding.read_txn().await.unwrap();
+        assert!(
+            opened_after
+                .get(discarding.db(), b"k/written")
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// Regression test for #2424. LMDB's writer lock belongs to the OS thread
