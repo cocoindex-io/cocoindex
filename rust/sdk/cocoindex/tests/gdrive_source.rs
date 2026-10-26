@@ -70,6 +70,13 @@ async fn gdrive_source_lists_recursively_and_filters_mime_types() {
                     "mimeType": "application/pdf",
                     "size": "20",
                     "modifiedTime": "2026-01-04T00:00:00Z"
+                },
+                {
+                    "id": "txt-1",
+                    "name": "root.txt",
+                    "mimeType": "text/plain",
+                    "size": "7",
+                    "modifiedTime": "2026-01-02T00:00:00Z"
                 }
             ]
         })))
@@ -85,7 +92,7 @@ async fn gdrive_source_lists_recursively_and_filters_mime_types() {
 
     let ids: Vec<&str> = files.iter().map(|f| f.file_id.as_str()).collect();
     assert_eq!(ids, vec!["txt-1", "doc-1"]);
-    assert_eq!(files[0].key(), "root.txt");
+    assert_eq!(files[0].key(), "txt-1");
     assert_eq!(files[0].path(), "root.txt");
     assert_eq!(files[0].size, 7);
     assert_eq!(files[1].path(), "nested/nested-doc");
@@ -95,17 +102,64 @@ async fn gdrive_source_lists_recursively_and_filters_mime_types() {
         files[1].file_path().path().to_string_lossy(),
         "nested/nested-doc"
     );
-    assert_eq!(FileSourceItem::key(&files[1]), "nested/nested-doc");
+    assert_eq!(FileSourceItem::key(&files[1]), "doc-1");
 
     let items = GoogleDriveSource::new(
         GoogleDriveClient::from_static_token("test-token").with_base_url(server.uri()),
-        vec!["root".to_string()],
+        vec!["root".to_string(), "folder-1".to_string()],
     )
     .mime_types(vec!["text/plain".to_string(), DOC_MIME.to_string()])
     .items()
     .await
     .unwrap();
-    assert_eq!(items[0].0, "root.txt");
+    assert_eq!(items[0].0, "txt-1");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1].1.path(), "nested-doc");
+}
+
+#[tokio::test]
+async fn gdrive_memo_distinguishes_ids_and_moves() -> cocoindex::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo)]
+    async fn process(_ctx: &cocoindex::Ctx, file: &DriveFile) -> cocoindex::Result<String> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(format!("{}:{}", file.file_id, file.path()))
+    }
+
+    let server = MockServer::start().await;
+    for id in ["id-1", "id-2"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/files/{id}")))
+            .and(query_param("alt", "media"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(id))
+            .mount(&server)
+            .await;
+    }
+    let client = GoogleDriveClient::from_static_token("test-token").with_base_url(server.uri());
+    let dir = tempfile::tempdir().unwrap();
+    let app = cocoindex::Environment::builder()
+        .db_path(dir.path().join("db"))
+        .build()
+        .await?
+        .app("drive_identity")
+        .await?;
+    for (id, name) in [
+        ("id-1", "a/report.txt"),
+        ("id-2", "a/report.txt"),
+        ("id-2", "b/report.txt"),
+        ("id-2", "b/report.txt"),
+    ] {
+        let file = drive_file(id, name, "text/plain").with_client(client.clone());
+        let result = app
+            .update(move |ctx| async move { process(&ctx, &file).await })
+            .await?;
+        assert_eq!(result, format!("{id}:{name}"));
+    }
+    assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+    Ok(())
 }
 
 #[tokio::test]

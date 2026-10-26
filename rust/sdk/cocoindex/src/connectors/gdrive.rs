@@ -99,8 +99,7 @@ pub struct DriveFileInfo {
 pub struct DriveFile {
     pub file_id: String,
     pub name: String,
-    /// Path relative to the configured Drive root folder. `key()` uses this
-    /// path, matching Python's Google Drive source item keys.
+    /// Path relative to the configured Drive root folder.
     #[serde(default)]
     pub path: String,
     pub mime_type: String,
@@ -141,10 +140,9 @@ impl DriveFile {
         self
     }
 
-    /// Stable key for `mount_each`, matching Python's Google Drive source:
-    /// the file's path under the configured Drive root.
+    /// Stable key for `mount_each`. Drive names and paths need not be unique.
     pub fn key(&self) -> String {
-        self.path().to_string()
+        self.file_id.clone()
     }
 
     pub fn path(&self) -> &str {
@@ -220,7 +218,19 @@ impl FileSourceItem for DriveFile {
     }
 }
 
-crate::memo::impl_file_memo_input!(DriveFile);
+#[async_trait::async_trait]
+impl crate::memo::MemoInput for DriveFile {
+    fn write_memo_key(&self, writer: &mut crate::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&(&self.file_id, self.path()))
+    }
+
+    async fn memo_state(
+        &self,
+        previous: Option<&crate::memo::MemoStateValue>,
+    ) -> Result<Option<crate::memo::MemoStateDecision>> {
+        crate::memo::file_memo_state(self, previous).await.map(Some)
+    }
+}
 
 fn default_file_cache() -> Arc<FileContentCache> {
     Arc::new(FileContentCache::new())
@@ -657,6 +667,7 @@ impl GoogleDriveSource {
             .map(|id| (id, String::new()))
             .collect();
         let mut seen_folders = std::collections::HashSet::new();
+        let mut seen_files = std::collections::HashSet::new();
         let mut out = Vec::new();
         while let Some((folder_id, prefix)) = pending.pop_front() {
             if !seen_folders.insert(folder_id.clone()) {
@@ -675,6 +686,9 @@ impl GoogleDriveSource {
                 if let Some(allowed) = &self.mime_types
                     && !allowed.iter().any(|m| m == &file.mime_type)
                 {
+                    continue;
+                }
+                if !seen_files.insert(file.file_id.clone()) {
                     continue;
                 }
                 file.path = path;
@@ -731,11 +745,35 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].file_id, "a");
         assert_eq!(files[0].size, 42);
-        assert_eq!(files[0].key(), "doc.md");
+        assert_eq!(files[0].key(), "a");
         assert_eq!(files[0].path(), "doc.md");
         assert!(!files[0].is_folder());
         assert_eq!(files[1].size, 0); // folder omits size
         assert!(files[1].is_folder());
+    }
+
+    #[test]
+    fn same_named_files_have_distinct_mount_keys() {
+        let info = DriveFileInfo {
+            file_id: "id-1".into(),
+            name: "report.txt".into(),
+            path: "folder/report.txt".into(),
+            mime_type: "text/plain".into(),
+            size: 0,
+            modified_time: "2024-01-01T00:00:00Z".into(),
+        };
+        let first = DriveFile::new(info.clone());
+        let second = DriveFile::new(DriveFileInfo {
+            file_id: "id-2".into(),
+            ..info
+        });
+        assert_eq!(first.path(), second.path());
+        assert_ne!(first.key(), second.key());
+
+        let mut renamed = first.clone();
+        renamed.name = "renamed.txt".into();
+        renamed.path = "folder/renamed.txt".into();
+        assert_eq!(first.key(), renamed.key());
     }
 
     #[test]
