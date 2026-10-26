@@ -7,7 +7,7 @@
 //! the pool (`release`).
 
 use crate::prelude::*;
-use cocoindex_core::engine::runtime::get_runtime;
+use cocoindex_core::engine::runtime::{get_runtime, is_runtime_shutdown};
 use cocoindex_utils::gpu_pool::{GPUPool, gpu_capacity::GPUCapacity};
 use futures::future::BoxFuture;
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
@@ -231,6 +231,10 @@ impl AcquisitionState {
 
 impl Wake for AcquisitionState {
     fn wake(self: Arc<Self>) {
+        // Past `shutdown_runtime` (interpreter exit), no task will step again.
+        if is_runtime_shutdown() {
+            return;
+        }
         // The pool wakes waiters while it holds its lock. A Python call there can pass the
         // GIL to a thread that then blocks on that lock, so wake the task from another thread.
         get_runtime().spawn_blocking(move || self.wake_task());

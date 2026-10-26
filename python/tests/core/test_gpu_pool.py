@@ -272,6 +272,13 @@ async def test_coco_fn_current_gpus_and_fraction() -> None:
         assert fraction == 0.5
 
 
+@pytest.mark.asyncio
+async def test_acquire_full_more_gpus_than_pool_raises() -> None:
+    pool = coco.GPUPool(2)
+    with pytest.raises(ValueError, match="only has 2"):
+        await pool.acquire_full(3)
+
+
 # A GPU that reaches a cancelled `acquire` must go back to the pool. Each test below
 # ends by acquiring that GPU again; if it leaked, the acquisition times out.
 _LEAK_TIMEOUT_SECS = 5.0
