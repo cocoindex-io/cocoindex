@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from collections import deque
-from typing import Callable
+from typing import Callable, overload
+
+from typing_extensions import deprecated
 
 from cocoindex._internal.extras import install_hint
 
@@ -481,26 +484,76 @@ def topic_as_stream(consumer: AIOConsumer, topics: list[str]) -> TopicStream:
     return TopicStream(consumer, topics)
 
 
+_TOPIC_LIST_DEPRECATION = (
+    "Passing a list of topics to topic_as_map() is deprecated; pass a single "
+    "topic instead: topic_as_map(consumer, topic)."
+)
+_MULTI_TOPIC_DEPRECATION = (
+    "topic_as_map() with several topics is deprecated: items are keyed by the "
+    "message key alone, so the same key on two topics maps to one item, and a "
+    "tombstone on one topic deletes what the other topic's message produced. "
+    "Create one feed (with its own consumer) per topic, and mount each under its "
+    "own mount_each() subpath. Switching changes the item keys; see "
+    "https://cocoindex.io/docs/connectors/kafka#consuming-several-topics"
+)
+
+
+@overload
+def topic_as_map(
+    consumer: AIOConsumer,
+    topic: str,
+    *,
+    is_deletion: IsDeleteFn | None = None,
+) -> _TopicMapFeed: ...
+
+
+@overload
+@deprecated(_TOPIC_LIST_DEPRECATION)
 def topic_as_map(
     consumer: AIOConsumer,
     topics: list[str],
+    /,
     *,
     is_deletion: IsDeleteFn | None = None,
+) -> _TopicMapFeed: ...
+
+
+@overload
+@deprecated(_TOPIC_LIST_DEPRECATION)
+def topic_as_map(
+    consumer: AIOConsumer,
+    *,
+    topics: list[str],
+    is_deletion: IsDeleteFn | None = None,
+) -> _TopicMapFeed: ...
+
+
+def topic_as_map(
+    consumer: AIOConsumer,
+    topic: str | list[str] | None = None,
+    *,
+    is_deletion: IsDeleteFn | None = None,
+    topics: list[str] | None = None,
 ) -> _TopicMapFeed:
     """
     Treat a Kafka topic as a live keyed map.
 
     Returns a ``LiveMapFeed`` that streams change events (updates/deletes) from the
-    given topics. Each item is keyed by the message key, and the value is the full
+    topic. Each item is keyed by the message key, and the value is the full
     ``confluent_kafka.Message`` object. Suitable for passing to ``mount_each()`` for
     parallel processing with automatic offset management.
 
     The consumer must be **unsubscribed** — ``topic_as_map()`` handles subscription
     internally to register partition rebalance callbacks.
 
+    To consume several topics, create one feed (with its own consumer) per topic
+    and mount each under its own ``mount_each()`` subpath. Passing a list of
+    topics is deprecated: it keys items by the message key alone, so keys collide
+    across topics.
+
     Args:
         consumer: An unsubscribed ``AIOConsumer``. Auto-commit should be disabled.
-        topics: Topics to subscribe to.
+        topic: The topic to consume.
         is_deletion: Optional predicate ``(message) -> bool`` for custom deletion
             detection on non-tombstone messages. Messages with ``None`` value (Kafka
             tombstones) are always treated as deletions regardless of this predicate.
@@ -508,7 +561,21 @@ def topic_as_map(
     Returns:
         A ``LiveMapFeed[bytes | str, Message]`` for use with ``mount_each()``.
     """
-    return _TopicMapFeed(topic_as_stream(consumer, topics), is_deletion)
+    if topics is not None:
+        # The deprecated list form, passed as ``topics=[...]``.
+        if topic is not None:
+            raise TypeError("topic_as_map() takes `topic` or `topics`, not both")
+        topic = topics
+    if topic is None:
+        raise TypeError("topic_as_map() missing required argument: 'topic'")
+    if isinstance(topic, str):
+        return _TopicMapFeed(TopicStream(consumer, [topic]), is_deletion)
+    warnings.warn(
+        _TOPIC_LIST_DEPRECATION if len(topic) == 1 else _MULTI_TOPIC_DEPRECATION,
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _TopicMapFeed(TopicStream(consumer, topic), is_deletion)
 
 
 __all__ = [

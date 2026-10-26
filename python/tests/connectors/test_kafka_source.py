@@ -6,6 +6,7 @@ These tests mock the AIOConsumer to verify behavior without a real Kafka broker.
 from __future__ import annotations
 
 import asyncio
+import warnings
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -20,6 +21,7 @@ from cocoindex.connectors.kafka._source import (
     TopicStream,
     _PartitionState,
     _TopicMapFeed,
+    topic_as_map,
     topic_as_stream,
 )
 
@@ -453,6 +455,102 @@ class TestWatchBehavior:
 
         assert sub.deletes == [b"k1"]
         assert len(sub.updates) == 0
+
+
+# ============================================================================
+# topic_as_map(): one topic, and the deprecated list form
+# ============================================================================
+
+
+def _auto_assigning_consumer(
+    *messages: MockMessage,
+) -> tuple[MockAIOConsumer, list[list[str]]]:
+    """A consumer holding *messages* that assigns partition 0 of every topic it
+    subscribes to, plus the list of subscriptions it receives."""
+    consumer = MockAIOConsumer()
+    for topic in {m.topic() for m in messages}:
+        consumer.set_watermarks(topic, 0, 0, len(messages))
+    consumer.enqueue(*messages)
+    subscriptions: list[list[str]] = []
+    original_subscribe = consumer.subscribe
+
+    async def patched_subscribe(topics: list[str], **kw: Any) -> None:
+        subscriptions.append(list(topics))
+        await original_subscribe(topics, **kw)
+        await consumer.trigger_assign([MockTopicPartition(t, 0) for t in topics])
+
+    consumer.subscribe = patched_subscribe  # type: ignore[assignment]
+    return consumer, subscriptions
+
+
+def _users_messages() -> list[MockMessage]:
+    return [
+        MockMessage(topic="users", key=b"42", value=b"alice", offset=0),
+        MockMessage(topic="users", key=b"7", value=b"bob", offset=1),
+        MockMessage(topic="users", key=b"42", value=None, offset=2),
+    ]
+
+
+class TestTopicAsMap:
+    @pytest.mark.asyncio
+    async def test_single_topic_keys_items_by_message_key(self) -> None:
+        consumer, subscriptions = _auto_assigning_consumer(*_users_messages())
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            feed = topic_as_map(consumer, "users")  # type: ignore[call-overload]
+        sub = MockSubscriber()
+        await _watch_until_done(feed, sub)
+
+        assert subscriptions == [["users"]]
+        assert [(k, m.value()) for k, m in sub.updates] == [
+            (b"42", b"alice"),
+            (b"7", b"bob"),
+        ]
+        assert sub.deletes == [b"42"]
+        assert sub.ready_called
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("as_keyword", [False, True])
+    async def test_one_item_list_is_deprecated_and_keeps_keys(
+        self, as_keyword: bool
+    ) -> None:
+        consumer, subscriptions = _auto_assigning_consumer(*_users_messages())
+        with pytest.warns(DeprecationWarning, match="pass a single topic"):
+            if as_keyword:
+                feed = topic_as_map(consumer, topics=["users"])  # type: ignore[call-overload]
+            else:
+                feed = topic_as_map(consumer, ["users"])  # type: ignore[call-overload]
+        sub = MockSubscriber()
+        await _watch_until_done(feed, sub)
+
+        # The same subscription and item keys as topic_as_map(consumer, "users").
+        assert subscriptions == [["users"]]
+        assert [(k, m.value()) for k, m in sub.updates] == [
+            (b"42", b"alice"),
+            (b"7", b"bob"),
+        ]
+        assert sub.deletes == [b"42"]
+
+    @pytest.mark.asyncio
+    async def test_multi_topic_list_warns_that_keys_collide(self) -> None:
+        consumer, subscriptions = _auto_assigning_consumer(
+            MockMessage(topic="users", key=b"42", value=b"alice", offset=0),
+            MockMessage(topic="orders", key=b"42", value=None, offset=0),
+        )
+        with pytest.warns(DeprecationWarning, match="several topics"):
+            feed = topic_as_map(consumer, ["users", "orders"])  # type: ignore[call-overload]
+        sub = MockSubscriber()
+        await _watch_until_done(feed, sub)
+
+        # Behavior is unchanged: both topics key by the bare message key, so
+        # the tombstone on "orders" deletes the item "users" produced.
+        assert subscriptions == [["users", "orders"]]
+        assert [(k, m.value()) for k, m in sub.updates] == [(b"42", b"alice")]
+        assert sub.deletes == [b"42"]
+
+    def test_topic_and_topics_together_raise(self) -> None:
+        with pytest.raises(TypeError, match="not both"):
+            topic_as_map(MockAIOConsumer(), "users", topics=["orders"])  # type: ignore[call-overload]
 
 
 # ============================================================================
