@@ -76,7 +76,7 @@ class DriveFilePath(file.FilePath[str]):
     def __lt__(self, other: Self) -> bool:
         if not isinstance(other, DriveFilePath):
             return NotImplemented
-        return (self._file_id, self._path) < (other._file_id, other._path)
+        return (self._path, self._file_id) < (other._path, other._file_id)
 
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"

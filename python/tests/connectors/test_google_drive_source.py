@@ -116,6 +116,12 @@ class TestDriveFilePath:
         fp2 = DriveFilePath("b.txt", file_id="abc")
         assert fp1 != fp2
 
+    def test_sort_by_path_then_id(self) -> None:
+        first = DriveFilePath("a.txt", file_id="id-2")
+        second = DriveFilePath("b.txt", file_id="id-1")
+        third = DriveFilePath("b.txt", file_id="id-3")
+        assert sorted([third, second, first]) == [first, second, third]
+
     def test_memo_key_distinguishes_ids_and_paths(self) -> None:
         first = DriveFilePath("report.txt", file_id="id-1")
         second = DriveFilePath("report.txt", file_id="id-2")
@@ -167,14 +173,16 @@ def test_listing_preserves_paths_and_deduplicates_roots(
     now = datetime(2024, 1, 1, tzinfo=timezone.utc)
     folder = DriveFileInfo("child", "nested", _source._FOLDER_MIME, 0, now)
     report = DriveFileInfo("report", "report.txt", "text/plain", 1, now)
-    children = {"parent": [folder, report], "child": [report]}
+    only = DriveFileInfo("only", "only.txt", "text/plain", 1, now)
+    children = {"parent": [folder, report], "child": [report, only]}
     monkeypatch.setattr(_source, "_build_service", lambda _: None)
     monkeypatch.setattr(
         _source, "_list_children", lambda _, folder_id: children[folder_id]
     )
     spec = GoogleDriveSourceSpec("unused.json", ["parent", "child", "parent"])
     files = list(list_files(spec))
-    assert [file.file_path.resolve() for file in files] == ["report"]
+    assert [file.file_path.resolve() for file in files] == ["report", "only"]
+    assert [file.file_path.as_posix() for file in files] == ["report.txt", "only.txt"]
 
     children["parent"] = [folder]
     files = list(list_files(GoogleDriveSourceSpec("unused.json", ["parent"])))

@@ -114,12 +114,18 @@ async fn gdrive_source_lists_recursively_and_filters_mime_types() {
     .unwrap();
     assert_eq!(items[0].0, "txt-1");
     assert_eq!(items.len(), 2);
+    assert_eq!(items[1].1.path(), "nested-doc");
 }
 
 #[tokio::test]
 async fn gdrive_memo_distinguishes_ids_and_moves() -> cocoindex::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
     #[cocoindex::function(memo)]
     async fn process(_ctx: &cocoindex::Ctx, file: &DriveFile) -> cocoindex::Result<String> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
         Ok(format!("{}:{}", file.file_id, file.path()))
     }
 
@@ -144,6 +150,7 @@ async fn gdrive_memo_distinguishes_ids_and_moves() -> cocoindex::Result<()> {
         ("id-1", "a/report.txt"),
         ("id-2", "a/report.txt"),
         ("id-2", "b/report.txt"),
+        ("id-2", "b/report.txt"),
     ] {
         let file = drive_file(id, name, "text/plain").with_client(client.clone());
         let result = app
@@ -151,6 +158,7 @@ async fn gdrive_memo_distinguishes_ids_and_moves() -> cocoindex::Result<()> {
             .await?;
         assert_eq!(result, format!("{id}:{name}"));
     }
+    assert_eq!(CALLS.load(Ordering::SeqCst), 3);
     Ok(())
 }
 
