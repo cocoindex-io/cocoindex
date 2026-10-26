@@ -46,6 +46,15 @@ before pushing:
 prek run --all-files
 ```
 
+### Pull Requests and CI
+
+Open a pull request as a draft and mark it ready once the checks above pass:
+drafts run no CI. When `main` has a merge queue, a ready pull request runs only
+the fast checks, and the queue runs the full suite on the commit that lands.
+For a full run on a branch before then, use `gh workflow run CI.yml --ref <branch>`.
+The CI tiers, the merge queue and stacked pull requests are described in
+[CI.md](https://github.com/cocoindex-io/.github/blob/main/CI.md).
+
 ### Workflow Summary
 
 | Change Type | Commands to Run |

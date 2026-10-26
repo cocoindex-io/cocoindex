@@ -45,6 +45,7 @@ from .component_ctx import (
 from .stable_path import StableKey
 from .batching import RetryWithSmallerBatch
 from .logic_propagated_to_callers import logic_propagated_to_callers, logic_tracked
+from .logic_dep import LogicDep, use_logic_dep
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -912,6 +913,8 @@ __all__ = [
     "LogicTracking",
     "logic_propagated_to_callers",
     "logic_tracked",
+    "LogicDep",
+    "use_logic_dep",
     "timeout",
     "check_cancellation",
     "DeadlineExceededError",

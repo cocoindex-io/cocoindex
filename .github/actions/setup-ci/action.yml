@@ -1,0 +1,244 @@
+name: Set up a CI job
+description: >-
+  Set up a runner for the `_test.yml` jobs: disk space, sccache, Rust, protoc,
+  Python, the Rust, sccache and uv caches, the `ci` dependency group, and
+  prek. Run it right after checkout; a local action is only available once
+  the repo is. A job that compiles Rust ends with `save-sccache`.
+
+inputs:
+  python-version:
+    description: >-
+      Python to set up with actions/setup-python. Empty sets up none: the
+      job's hooks must then not build `rust/py` or run through `uv`.
+    default: ""
+  free-threaded:
+    description: Set up the free-threaded build of `python-version`, and check that it is.
+    default: "false"
+  rust-cache-key:
+    description: Swatinem/rust-cache `key`. One per leg, so legs never share a cache.
+    required: true
+  rust-cache-per-python:
+    description: >-
+      Append the resolved Python version and `free-threaded` to
+      `rust-cache-key`, for a job with several interpreters on one runner.
+      A Python patch release then starts the leg's cache afresh.
+    default: "false"
+  uv-cache-suffix:
+    description: >-
+      Install uv with this cache suffix and sync the `ci` dependency group
+      into `.venv`; needs `python-version`. Empty skips both, for a job whose
+      hooks don't run through `uv`.
+    default: ""
+  clippy:
+    description: Install the clippy component with the Rust toolchain.
+    default: "false"
+  min-free-disk-gib:
+    description: >-
+      Free space, in GiB, the job needs on `/`. On Linux, if less is free,
+      preinstalled software the jobs never use is deleted, cheapest first,
+      until that much is. 0 deletes nothing.
+    default: "0"
+
+runs:
+  using: composite
+  steps:
+    # Free space on `/` differs by runner: about 14 GiB on a private repo's
+    # standard runner, about 88 GiB on a public repo's. Each job asks for
+    # its measured peak plus a margin, so a runner that already has that
+    # much deletes nothing.
+    #
+    # Deleting costs time per file, not per byte, so the groups go in
+    # measured order of seconds per GiB: the first frees 12 GiB in 3-10 s,
+    # .NET 5.7 GiB in 7-27 s, the Docker images 2.9 GiB in 10-34 s, and
+    # Android 11 GiB in 40-150 s. The tool cache stays: the Python,
+    # sccache and protoc steps below install into it.
+    - name: Free disk space
+      if: runner.os == 'Linux' && inputs.min-free-disk-gib != '0'
+      shell: bash
+      env:
+        MIN_FREE_GIB: ${{ inputs.min-free-disk-gib }}
+      run: |
+        free_kib() { df -k --output=avail / | tail -1; }
+        need_kib=$((MIN_FREE_GIB * 1024 * 1024))
+        echo "Free on /: $(($(free_kib) / 1048576)) GiB; the job needs $MIN_FREE_GIB GiB"
+        for group in swift-haskell-jvm-browsers dotnet docker-images android; do
+          [ "$(free_kib)" -ge "$need_kib" ] && break
+          start=$SECONDS
+          case $group in
+            swift-haskell-jvm-browsers)
+              sudo rm -rf /usr/share/swift /usr/local/.ghcup /usr/lib/jvm \
+                /usr/local/share/powershell /opt/microsoft \
+                /usr/local/share/chromium /opt/google /usr/lib/firefox ;;
+            dotnet) sudo rm -rf /usr/share/dotnet ;;
+            docker-images) sudo docker image prune --all --force > /dev/null ;;
+            android) sudo rm -rf /usr/local/lib/android ;;
+          esac
+          echo "Deleted $group in $((SECONDS - start)) s"
+        done
+        df -h /
+        if [ "$(free_kib)" -lt "$need_kib" ]; then
+          echo "::warning::Only $(($(free_kib) / 1048576)) GiB free on /; the job needs $MIN_FREE_GIB GiB"
+        fi
+
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.11
+      with:
+        # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
+        version: "v0.12.0"
+
+    - name: Install Rust toolchain
+      shell: bash
+      run: rustup toolchain install stable --profile minimal${{ inputs.clippy == 'true' && ' --component clippy' || '' }}
+
+    # Every job needs `protoc` on some leg: the SDK's Qdrant feature
+    # (`qdrant-client`) and the Rust examples that enable it or LanceDB
+    # (`lance-encoding`) compile protobufs via `prost-build`, and `uv sync`
+    # builds valkey-glide from source on the free-threaded legs (no cp314t
+    # wheel on PyPI), whose build script compiles protobufs too. It is
+    # installed unconditionally so a job can't lose it by accident.
+    #
+    # Not arduino/setup-protoc: it resolves even an exact version by paging
+    # the GitHub releases API and takes an empty page as the end of the
+    # list. The API sometimes returns empty pages, and the step then fails
+    # with "unable to get latest version". The release asset URL needs no
+    # API call. 23.4 is what the action's "23.x" resolved to.
+    - name: Install protoc
+      shell: bash
+      env:
+        PROTOC_VERSION: "23.4"
+      run: |
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) asset=linux-x86_64 ;;
+          Linux-ARM64) asset=linux-aarch_64 ;;
+          macOS-ARM64) asset=osx-aarch_64 ;;
+          macOS-X64) asset=osx-x86_64 ;;
+          Windows-X64) asset=win64 ;;
+          *) echo "::error::No protoc build for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        # RUNNER_TEMP has backslashes on Windows; forward slashes work for
+        # both Git Bash and the Windows PATH.
+        dest="${RUNNER_TEMP//\\//}/protoc"
+        curl -fsSL --retry 5 -o "$dest.zip" \
+          "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-$asset.zip"
+        unzip -q -o "$dest.zip" -d "$dest"
+        echo "$dest/bin" >> "$GITHUB_PATH"
+        "$dest/bin/protoc" --version
+
+    - name: Set up Python
+      if: inputs.python-version != ''
+      uses: actions/setup-python@v7
+      id: setup_python
+      with:
+        python-version: ${{ inputs.python-version }}
+        freethreaded: ${{ inputs.free-threaded }}
+        # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
+        # cache: 'pip'
+
+    - name: Verify free-threaded interpreter
+      if: inputs.free-threaded == 'true'
+      shell: bash
+      run: |
+        python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
+
+    - name: Compute the leg's cache key
+      id: leg
+      shell: bash
+      env:
+        KEY: ${{ inputs.rust-cache-key }}${{ inputs.rust-cache-per-python == 'true' && format('-{0}-{1}', steps.setup_python.outputs.python-version, inputs.free-threaded) || '' }}
+      run: echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+    # sccache keeps its objects on local disk, and `save-sccache` at the
+    # end of the job saves the directory as one Actions cache entry per
+    # leg. sccache's GitHub Actions backend (`SCCACHE_GHA_ENABLED`) makes
+    # a cache API call per compilation unit instead, hundreds per leg even
+    # on a warm Rust cache, and the cache service allows a repository 1500
+    # downloads and 200 uploads a minute. A burst of concurrent runs used
+    # up that quota, and the other restores in the repository then failed
+    # with HTTP 429: `@actions/cache` does not retry one, so rust-cache,
+    # setup-uv and prek restored nothing and the leg ran cold. sccache lost
+    # most of its own uploads to the same limit.
+    - name: Configure sccache's local cache
+      id: sccache
+      shell: bash
+      env:
+        KEY_PREFIX: sccache-${{ steps.leg.outputs.key }}-${{ runner.os }}-${{ runner.arch }}-
+      run: |
+        # RUNNER_TEMP has backslashes on Windows; sccache takes forward
+        # slashes there too.
+        dir="${RUNNER_TEMP//\\//}/sccache"
+        mkdir -p "$dir"
+        {
+          echo "SCCACHE_DIR=$dir"
+          # Bounds the disk a cold leg uses, when every dependency goes
+          # through sccache too. A warm leg stores well under this.
+          echo "SCCACHE_CACHE_SIZE=3G"
+          # The preprocessor cache mode, on by default for local storage
+          # only, missed 11 C objects per build-test leg on every run that
+          # the plain mode hits.
+          echo "SCCACHE_DIRECT=false"
+          echo "SCCACHE_SAVE_KEY=$KEY_PREFIX$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        } >> "$GITHUB_ENV"
+        echo "key-prefix=$KEY_PREFIX" >> "$GITHUB_OUTPUT"
+
+    # Restores the newest save of this leg: from this branch, else from
+    # the default branch. Before the first compile, which starts the
+    # sccache server: the server indexes the directory when it starts.
+    - name: Restore sccache's local cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ env.SCCACHE_SAVE_KEY }}
+        restore-keys: ${{ steps.sccache.outputs.key-prefix }}
+
+    # sccache sets an object's mtime when it reads or writes it, so the
+    # objects not newer than this marker at the end of the job went unused.
+    - name: Mark the sccache restore time
+      shell: bash
+      run: touch "$SCCACHE_DIR.restored"
+
+    - name: Setup Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ steps.leg.outputs.key }}
+        cache-targets: 'true'
+        cache-all-crates: 'false'
+        cache-workspace-crates: 'false'
+        # Only dependency artifacts are cached (workspace crates are
+        # cleaned out), and a failed test doesn't spoil those. Saving on
+        # failure keeps a leg warm across a flaky run; with the default, a
+        # cold leg that flakes starts cold again on the next push.
+        cache-on-failure: 'true'
+        # A merge-group run's caches are scoped to the queue's temporary
+        # branch, which no later run reads; saving them would only crowd out
+        # main's caches.
+        save-if: ${{ github.event_name != 'merge_group' }}
+
+    - name: Install uv
+      if: inputs.uv-cache-suffix != ''
+      uses: astral-sh/setup-uv@v7
+      with:
+        # setup-uv keys its cache on the Python it finds via `uv python
+        # find`, which is "unknown" for a free-threaded interpreter and the
+        # system Python on macOS, so without a suffix the legs share keys
+        # with each other and with the e2e_type_check / fast_check jobs.
+        # Whichever job saves first wins, and the uv cache is only saved
+        # on a key miss, so a leg whose dependencies need building from
+        # source (valkey-glide has no free-threaded wheel: 3-6 min per
+        # run) never gets its built wheel persisted. One key per leg.
+        cache-suffix: ${{ inputs.uv-cache-suffix }}
+        save-cache: ${{ github.event_name != 'merge_group' }}
+
+    - name: Sync Python dependencies
+      if: inputs.uv-cache-suffix != ''
+      shell: bash
+      run: |
+        uv sync \
+          --python "$(python -c 'import sys; print(sys.executable)')" \
+          --no-dev \
+          --group ci \
+          --no-install-project
+
+    - name: Install prek
+      uses: j178/prek-action@v2
+      with:
+        install-only: true

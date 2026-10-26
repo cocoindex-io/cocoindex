@@ -15,8 +15,9 @@
 //! `pre_commit` bypasses this cache: it reserves a child provider's fresh
 //! generation ID (under `TARGET_ID_KEY`) with
 //! `AppStore::reserve_id_range_in_txn`, directly inside the open precommit
-//! write txn. Being a txn write, that reservation rolls back if the batcher
-//! re-runs the batch on `MDB_MAP_FULL`.
+//! write txn. Being a txn write, that reservation rolls back with the
+//! aborted txn when the batcher re-runs the body, after growing the map on
+//! `MDB_MAP_FULL` or after another body in its write batch fails.
 
 use std::collections::HashMap;
 

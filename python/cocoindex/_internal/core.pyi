@@ -158,6 +158,7 @@ class FnCallMemoGuard:
     def join_cached_target_provider_deps(
         self, parent_fn_ctx: FnCallContext
     ) -> None: ...
+    def join_cached_logic_deps(self, fn_ctx: FnCallContext) -> None: ...
     def resolve(
         self,
         fn_ctx: FnCallContext,
@@ -694,8 +695,22 @@ class BatchingOptions:
     """Options for batching behavior."""
 
     max_batch_size: int | None
+    max_in_flight: int | None
+    """Upper bound on batches of the shared queue running at once (the inline
+    first call counts); positive when set. None keeps the idle-queue rule: a
+    full batch starts when it fills, the next partial batch once every running
+    batch has finished. Batchers sharing a queue should agree on it."""
 
-    def __new__(cls, max_batch_size: int | None = None) -> "BatchingOptions": ...
+    def __new__(
+        cls,
+        max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: "RateLimiter | None" = None,
+    ) -> "BatchingOptions":
+        """``rate_limiter`` gates every batch: no call runs inline, and a pump
+        runs the oldest pending batch once a ``max_in_flight`` slot and one
+        token are available, so calls arriving during the wait ride the next
+        token. Batchers sharing a queue should agree on it."""
 
 # --- BatchQueue ---
 class BatchQueue:

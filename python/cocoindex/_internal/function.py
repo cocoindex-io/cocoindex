@@ -81,6 +81,12 @@ AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
 AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 
 LogicTracking: TypeAlias = Literal["full", "self"] | None
+# A batched function's rate limiter: the limiter itself, or — for a method whose
+# limiter lives on the instance — a callable that receives ``self`` (``None``
+# for a free function) and returns the limiter, or ``None`` for no gate.
+RateLimiterSpec: TypeAlias = (
+    core.RateLimiter | Callable[[Any], core.RateLimiter | None] | None
+)
 MemoKeyTransform: TypeAlias = Callable[[Any], Any]
 MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
 
@@ -891,6 +897,12 @@ class SyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -1243,6 +1255,8 @@ class AsyncFunction(Function[P, R_co]):
         "_logic_tracking",
         "_batching",
         "_max_batch_size",
+        "_max_in_flight",
+        "_rate_limiter",
         "_runner",
         "_has_self",
         "_batchers",
@@ -1260,6 +1274,8 @@ class AsyncFunction(Function[P, R_co]):
     _logic_tracking: LogicTracking
     _batching: bool
     _max_batch_size: int | None
+    _max_in_flight: int | None
+    _rate_limiter: RateLimiterSpec
     _runner: Runner | None
     _has_self: bool
     _return_deserializer: DeserializeFn | None
@@ -1277,6 +1293,8 @@ class AsyncFunction(Function[P, R_co]):
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -1285,6 +1303,23 @@ class AsyncFunction(Function[P, R_co]):
         fn = async_fn or sync_fn
         if fn is None:
             raise ValueError("Either async_fn or sync_fn must be provided")
+        if max_in_flight is not None:
+            if not batching:
+                raise ValueError("max_in_flight requires batching=True")
+            if max_in_flight < 1:
+                raise ValueError(
+                    f"max_in_flight must be a positive integer, got {max_in_flight}"
+                )
+        if rate_limiter is not None:
+            if not batching:
+                raise ValueError("rate_limiter requires batching=True")
+            if not isinstance(rate_limiter, core.RateLimiter) and not callable(
+                rate_limiter
+            ):
+                raise TypeError(
+                    "rate_limiter must be a RateLimiter or a callable returning "
+                    f"one, got {type(rate_limiter).__name__}"
+                )
         if logic_tracking is None and deps is not None:
             raise ValueError(
                 "deps= requires logic_tracking to be enabled; with "
@@ -1307,6 +1342,8 @@ class AsyncFunction(Function[P, R_co]):
             self._logic_fp = None
         self._batching = batching
         self._max_batch_size = max_batch_size
+        self._max_in_flight = max_in_flight
+        self._rate_limiter = rate_limiter
         self._runner = runner
         self._has_self = _has_self_parameter(fn) if (batching or runner) else False
         self._batchers = {}
@@ -1462,6 +1499,12 @@ class AsyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -1699,6 +1742,22 @@ class AsyncFunction(Function[P, R_co]):
             if slot.in_flight == 0:
                 del self._batchers[batcher_key]
 
+    def _resolve_rate_limiter(self, self_obj: Any) -> core.RateLimiter | None:
+        """The limiter this batcher's batches take a token from: the one given
+        at decoration, or the one its callable form returns for ``self_obj``
+        (the bound ``self`` for a method, ``None`` for a free function)."""
+        if self._rate_limiter is None:
+            return None
+        if isinstance(self._rate_limiter, core.RateLimiter):
+            return self._rate_limiter
+        limiter = self._rate_limiter(self_obj)
+        if limiter is not None and not isinstance(limiter, core.RateLimiter):
+            raise TypeError(
+                "rate_limiter callable must return a RateLimiter or None, "
+                f"got {type(limiter).__name__}"
+            )
+        return limiter
+
     def _create_batcher(
         self,
         async_ctx: core.AsyncContext,
@@ -1728,7 +1787,9 @@ class AsyncFunction(Function[P, R_co]):
         # When runner is specified without batching, use max_batch_size=1
         # to process items individually.
         options = core.BatchingOptions(
-            max_batch_size=self._max_batch_size if self._batching else 1
+            max_batch_size=self._max_batch_size if self._batching else 1,
+            max_in_flight=self._max_in_flight if self._batching else None,
+            rate_limiter=self._resolve_rate_limiter(self_obj),
         )
         # Honor RetryWithSmallerBatch raised by the batch body: split the
         # batch and retry the halves. Only meaningful in batching mode
@@ -1900,6 +1961,8 @@ class _GenericFunctionBuilder:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -1909,6 +1972,8 @@ class _GenericFunctionBuilder:
         self._memo_key = memo_key
         self._batching = batching
         self._max_batch_size = max_batch_size
+        self._max_in_flight = max_in_flight
+        self._rate_limiter = rate_limiter
         self._runner = runner
         self._version = version
         self._logic_tracking = logic_tracking
@@ -1941,6 +2006,8 @@ class _GenericFunctionBuilder:
             memo_key=self._memo_key,
             batching=self._batching,
             max_batch_size=self._max_batch_size,
+            max_in_flight=self._max_in_flight,
+            rate_limiter=self._rate_limiter,
             runner=self._runner,
             version=self._version,
             logic_tracking=self._logic_tracking,
@@ -2036,6 +2103,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2056,6 +2125,10 @@ class _FunctionDecorator:
                 should be fingerprinted for memoization.
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
+            max_in_flight: Maximum number of batches running at once (only with
+                batching=True); see :func:`fn.as_async`.
+            rate_limiter: Limiter each batch takes one token from before it runs
+                (only with batching=True); see :func:`fn.as_async`.
             runner: Runner to execute the function (e.g., GPU for subprocess)
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
@@ -2100,10 +2173,17 @@ class _FunctionDecorator:
         Memoization requires a ComponentContext: the call must happen inside a
         processing component.
         """
-        if batching or max_batch_size is not None or runner is not None:
+        if (
+            batching
+            or max_batch_size is not None
+            or max_in_flight is not None
+            or rate_limiter is not None
+            or runner is not None
+        ):
             raise ValueError(
-                "@coco.fn does not support batching, max_batch_size or runner: "
-                "they require an async interface. Use @coco.fn.as_async instead."
+                "@coco.fn does not support batching, max_batch_size, max_in_flight, "
+                "rate_limiter or runner: they require an async interface. "
+                "Use @coco.fn.as_async instead."
             )
         builder = _AutoFunctionBuilder(
             memo=memo,
@@ -2128,6 +2208,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: Literal[True],
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2142,6 +2224,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: Literal[False] = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2169,6 +2253,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2184,6 +2270,21 @@ class _FunctionDecorator:
             memo: Enable memoization (skip execution when inputs unchanged)
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
+            max_in_flight: Maximum number of batches running at once (only with
+                batching=True; must be positive). ``None`` (the default) starts
+                a full batch as soon as it fills and the next partial batch only
+                once every running batch has finished; ``n`` bounds the
+                concurrently running batches to ``n`` and starts the next
+                pending batch, full or partial, whenever any batch finishes.
+            rate_limiter: A ``RateLimiter`` each batch takes one token from
+                before it runs (only with batching=True), so a token pays for
+                one batch rather than one call. With it no call runs inline:
+                calls join the open batch, and a pump runs the oldest pending
+                batch once a ``max_in_flight`` slot and a token are available,
+                so every call that arrives during the wait rides the next
+                token. For a method whose limiter lives on the instance, pass
+                a callable that receives ``self`` and returns the limiter (or
+                ``None`` for no gate); it is resolved once per batcher.
             runner: Runner to execute the function (e.g., GPU for subprocess)
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
@@ -2214,6 +2315,8 @@ class _FunctionDecorator:
             memo_key=memo_key,
             batching=batching,
             max_batch_size=max_batch_size,
+            max_in_flight=max_in_flight,
+            rate_limiter=rate_limiter,
             runner=runner,
             version=version,
             logic_tracking=logic_tracking,

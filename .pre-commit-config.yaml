@@ -67,7 +67,10 @@ repos:
           name: maturin develop
           entry: ./dev/run_maturin_develop.sh
           language: system
-          files: ^(rust/|python/|Cargo\.toml|pyproject\.toml)
+          # Every input of a hook that imports the extension (pytest,
+          # generate-cli-docs): CI starts without a built extension and builds
+          # it only when this hook runs.
+          files: ^(rust/|python/|Cargo\.(toml|lock)$|pyproject\.toml$|uv\.lock$|dev/generate_cli_docs\.py$|docs/src/content/docs/cli\.mdx$)
           pass_filenames: false
 
         - id: cargo-test
@@ -120,7 +123,10 @@ repos:
           name: pytest
           entry: uv run pytest python/
           language: system
-          types: [python]
+          # The suite's inputs: the package and its tests, the extension, and
+          # the locked environment. A Rust-only change can change Python
+          # behavior through the extension, so it runs the suite too.
+          files: ^(rust/|python/|Cargo\.(toml|lock)$|pyproject\.toml$|uv\.lock$)
           pass_filenames: false
           always_run: false
 

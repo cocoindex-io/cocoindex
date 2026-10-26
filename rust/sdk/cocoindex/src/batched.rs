@@ -207,7 +207,10 @@ where
     #[doc(hidden)]
     pub fn __new(code_hash: u64, max_batch_size: Option<usize>) -> Self {
         Self {
-            options: BatchingOptions { max_batch_size },
+            options: BatchingOptions {
+                max_batch_size,
+                ..BatchingOptions::default()
+            },
             batchers: Mutex::new(HashMap::new()),
             code_hash,
         }
