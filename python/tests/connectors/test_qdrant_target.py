@@ -409,7 +409,8 @@ def _server_point_id(point_id: Any) -> Any:
 
 if HAS_QDRANT:
 
-    class _ServerLikeMemoryClient(QdrantClient):
+    # QdrantClient is Any when qdrant-client is not installed (the CI type check).
+    class _ServerLikeMemoryClient(QdrantClient):  # type: ignore[misc, unused-ignore]
         """In-memory Qdrant that stores point IDs the way the server does:
         every UUID text form names one point. Local mode keeps raw strings."""
 
