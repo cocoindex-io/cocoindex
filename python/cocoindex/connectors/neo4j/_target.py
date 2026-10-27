@@ -1583,7 +1583,6 @@ class RelationshipTarget(
     table (relationship type)."""
 
     _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
-    _table_name: str
     _table_schema: TableSchema[RowT] | None
     _primary_key: str
     _from_table: NodeTarget[Any]
@@ -1592,14 +1591,12 @@ class RelationshipTarget(
     def __init__(
         self,
         provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
-        table_name: str,
         table_schema: TableSchema[RowT] | None,
         primary_key: str,
         from_table: NodeTarget[Any],
         to_table: NodeTarget[Any],
     ) -> None:
         self._provider = provider
-        self._table_name = table_name
         self._table_schema = table_schema
         self._primary_key = primary_key
         self._from_table = from_table
@@ -1863,9 +1860,7 @@ def declare_relationship_target(
             managed_by=managed_by,
         )
     )
-    return RelationshipTarget(
-        provider, table_name, table_schema, primary_key, from_table, to_table
-    )
+    return RelationshipTarget(provider, table_schema, primary_key, from_table, to_table)
 
 
 async def mount_relationship_target(
@@ -1891,9 +1886,7 @@ async def mount_relationship_target(
             managed_by=managed_by,
         )
     )
-    return RelationshipTarget(
-        provider, table_name, table_schema, primary_key, from_table, to_table
-    )
+    return RelationshipTarget(provider, table_schema, primary_key, from_table, to_table)
 
 
 def table_target(
