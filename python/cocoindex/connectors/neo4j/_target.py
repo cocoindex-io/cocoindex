@@ -748,7 +748,14 @@ _VectorIndexTrackingRecord = _VectorIndexSpec
 @dataclass(frozen=True)
 class _VectorIndexApplier:
     """The vector index sink callback of one Neo4j database (equal for the
-    same ``ConnectionFactory``, so one sink identity per database)."""
+    same ``ConnectionFactory``, so one sink identity per database).
+
+    An index is tracked by its declared name, but the Neo4j index is named
+    after its label and field (``index_name``). A renamed index therefore
+    arrives as a create under the new name and a drop under the old one,
+    both of one Neo4j index: the drop is skipped. Two declared indexes of one
+    Neo4j index are an error.
+    """
 
     factory: ConnectionFactory
 
@@ -759,9 +766,22 @@ class _VectorIndexApplier:
     ) -> None:
         if not actions:
             return
+        created: dict[str, str] = {}
+        for action in actions:
+            if action.spec is None:
+                continue
+            declared = created.setdefault(action.index_name, action.name)
+            if declared != action.name:
+                raise ValueError(
+                    f"Vector indexes {declared!r} and {action.name!r} map to one "
+                    f"Neo4j index {action.index_name!r}: declare one vector index "
+                    f"per field of {action.table_name!r}."
+                )
         graph = await self.factory.acquire()
         for action in actions:
             if action.spec is None:
+                if action.index_name in created:
+                    continue
                 try:
                     await graph.query(
                         _cypher.build_vector_index_drop(action.index_name)
@@ -1347,6 +1367,8 @@ class TableTarget(
     _table_schema: TableSchema[RowT] | None
     _table_name: str
     _primary_key: str
+    # Field -> name of the vector indexes declared through this target.
+    _vector_index_names: dict[str, str]
 
     def __init__(
         self,
@@ -1359,6 +1381,7 @@ class TableTarget(
         self._table_schema = table_schema
         self._table_name = table_name
         self._primary_key = primary_key
+        self._vector_index_names = {}
 
     @property
     def table_name(self) -> str:
@@ -1410,6 +1433,13 @@ class TableTarget(
         _validate_identifier(name, "vector index name")
         if dimension <= 0:
             raise ValueError(f"Invalid vector dimension: {dimension}")
+        # The database keeps one vector index per label and field.
+        declared = self._vector_index_names.setdefault(field, name)
+        if declared != name:
+            raise ValueError(
+                f"Vector indexes {declared!r} and {name!r} both index "
+                f"{self._table_name}.{field}: declare one vector index per field."
+            )
         spec = _VectorIndexSpec(field=field, metric=metric, dimension=dimension)
         att_provider = self._provider.attachment("vector_index")
         coco.declare_target_state(att_provider.target_state(name, spec))

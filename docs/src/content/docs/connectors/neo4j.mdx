@@ -178,6 +178,8 @@ def RelationTarget.declare_relation(
 
 If `record` is omitted, the connector derives a deterministic edge id of the form `{from_label}_{from_id}_{to_label}_{to_id}`. Convenient when an edge has no properties of its own.
 
+An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relation table has an index on it; for a `managed_by="user"` table, create one yourself.
+
 #### Vector indexes (attachment)
 
 Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
@@ -210,6 +212,8 @@ OPTIONS { indexConfig: {
   `vector.similarity_function`: '<metric>'
 } }
 ```
+
+The Neo4j index is named after the label and field, not after `name`, so a field has at most one vector index. Renaming `name` keeps the index. Declaring a second name for the same field is an error.
 
 Vectors are float32 only.
 

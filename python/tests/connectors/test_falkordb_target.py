@@ -179,12 +179,17 @@ class TestNodeDeleteCypher:
 
 @requires_falkordb
 class TestRelationshipUpsertCypher:
-    def test_three_merges_with_props(self) -> None:
+    def test_merges_after_deleting_a_moved_edge(self) -> None:
         assert build_relationship_upsert(
             "REL", "Entity", ["value"], "Entity", ["value"], ["id"], True
         ) == (
             "MERGE (s:`Entity` {`value`: $from_key_0}) "
             "MERGE (t:`Entity` {`value`: $to_key_0}) "
+            "WITH s, t "
+            "OPTIONAL MATCH (a)-[o:`REL` {`id`: $rel_key_0}]->(b) "
+            "WHERE a <> s OR b <> t "
+            "DELETE o "
+            "WITH DISTINCT s, t "
             "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t) "
             "SET r += $props"
         )
@@ -199,13 +204,8 @@ class TestRelationshipUpsertCypher:
         assert "SET r += $props" in cypher
 
     def test_no_props(self) -> None:
-        assert build_relationship_upsert(
-            "REL", "A", ["x"], "B", ["y"], ["id"], False
-        ) == (
-            "MERGE (s:`A` {`x`: $from_key_0}) "
-            "MERGE (t:`B` {`y`: $to_key_0}) "
-            "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)"
-        )
+        cypher = build_relationship_upsert("REL", "A", ["x"], "B", ["y"], ["id"], False)
+        assert cypher.endswith("MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)")
 
 
 @requires_falkordb
@@ -1333,3 +1333,191 @@ async def test_falkordb_table_schema_evolution_under_full_reprocess(
     by_fn2 = {r["filename"]: r for r in nodes_v2}
     assert by_fn2["doc1.md"]["summary"] == "summary 1"
     assert by_fn2["doc2.md"]["summary"] == "summary 2"
+
+
+# =============================================================================
+# Relationship and vector index identity
+# =============================================================================
+
+
+async def _indexes(graph_name: str) -> set[tuple[str, str, str, str]]:
+    """``(entity type, label or relationship type, field, index type)`` of
+    every index."""
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    g = client.select_graph(graph_name)
+    res = await g.query(
+        "CALL db.indexes() YIELD entitytype, label, types "
+        "RETURN entitytype, label, types"
+    )
+    await client.aclose()
+    return {
+        (entity_type, label, field, index_type)
+        for entity_type, label, types in res.result_set
+        for field, index_types in types.items()
+        for index_type in index_types
+    }
+
+
+@requires_falkordb
+class TestVectorIndexApplier:
+    """Several declared names can reach one FalkorDB index, which FalkorDB
+    identifies by its label and field."""
+
+    @staticmethod
+    def _applier(queries: list[str]) -> Any:
+        from cocoindex.connectors.falkordb import _target as falkor_target
+
+        class _FakeGraph:
+            async def query(self, cypher: str, params: Any = None) -> Any:
+                queries.append(cypher)
+
+        class _FakeFactory(falkor_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return _FakeGraph()
+
+        return falkor_target._VectorIndexApplier(_FakeFactory(uri=_FALKORDB_URI))
+
+    @staticmethod
+    def _action(name: str, field: str, *, create: bool) -> Any:
+        from cocoindex.connectors.falkordb import _target as falkor_target
+
+        spec = falkor_target._VectorIndexSpec(field=field, metric="cosine", dimension=4)
+        return falkor_target._VectorIndexAction(
+            name=name, table_name="Doc", field=field, spec=spec if create else None
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rename_keeps_the_index(self) -> None:
+        queries: list[str] = []
+        await self._applier(queries)(
+            None,
+            [
+                self._action("new", "emb", create=True),
+                self._action("old", "emb", create=False),
+                self._action("gone", "other", create=False),
+            ],
+        )
+        assert queries == [
+            build_vector_index_drop("Doc", "emb"),
+            build_vector_index_create("Doc", "emb", 4, "cosine"),
+            build_vector_index_drop("Doc", "other"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_two_names_for_one_index_fail(self) -> None:
+        queries: list[str] = []
+        with pytest.raises(ValueError, match="both index Doc.emb"):
+            await self._applier(queries)(
+                None,
+                [
+                    self._action("a", "emb", create=True),
+                    self._action("b", "emb", create=True),
+                ],
+            )
+        assert queries == []
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_moved_relationship_leaves_no_duplicate(falkor_graph_name: str) -> None:
+    """An edge with an explicit id whose endpoints change is moved, not
+    copied: the edge between the old endpoints goes. A duplicate left by an
+    earlier version goes on a full reprocess."""
+    to_id = "bob"
+
+    async def declare() -> None:
+        people: Any = await coco.use_mount(
+            coco.component_subpath("node"), falkor.mount_table_target, KG_DB, "Person"
+        )
+        for name in ("alice", "bob", "carol"):
+            people.declare_record(row={"id": name})
+        knows: Any = await coco.use_mount(
+            coco.component_subpath("rel"),
+            falkor.mount_relation_target,
+            KG_DB,
+            "KNOWS",
+            people,
+            people,
+        )
+        knows.declare_relation(
+            from_id="alice", to_id=to_id, record={"id": "k1", "since": 1}
+        )
+
+    async def knows_edges() -> list[tuple[str, str, str]]:
+        return sorted(
+            (s["id"], t["id"], r["id"])
+            for s, t, r in await _read_relationships(falkor_graph_name, "KNOWS")
+        )
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_falkordb_moved_rel", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    assert await knows_edges() == [("alice", "bob", "k1")]
+
+    to_id = "carol"
+    await app.update()
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+    # A duplicate an earlier version left behind when the edge moved, where
+    # the best-effort uniqueness constraint on the id was not created.
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    await client.connection.execute_command(
+        "GRAPH.CONSTRAINT",
+        "DROP",
+        falkor_graph_name,
+        "UNIQUE",
+        "RELATIONSHIP",
+        "KNOWS",
+        "PROPERTIES",
+        "1",
+        "id",
+    )
+    await client.select_graph(falkor_graph_name).query(
+        "MATCH (s:Person {id: 'alice'}), (t:Person {id: 'bob'}) "
+        "CREATE (s)-[:KNOWS {id: 'k1', since: 1}]->(t)"
+    )
+    await client.aclose()
+    await app.update(full_reprocess=True)
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_renamed_vector_index_is_kept(falkor_graph_name: str) -> None:
+    """FalkorDB identifies a vector index by its label and field, not the
+    declared name: renaming it keeps it. Two declared names on one field
+    fail."""
+    index_names = ["idx_a"]
+
+    async def declare() -> None:
+        docs: Any = await coco.use_mount(
+            coco.component_subpath("node"), falkor.mount_table_target, KG_DB, "VecDoc"
+        )
+        docs.declare_record(row={"id": "d1", "summary": "s"})
+        for name in index_names:
+            docs.declare_vector_index(name=name, field="summary", dimension=4)
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_falkordb_vec_rename", environment=coco_env),
+        declare,
+    )
+    vector_index = ("NODE", "VecDoc", "summary", "VECTOR")
+    await app.update()
+    assert vector_index in await _indexes(falkor_graph_name)
+
+    index_names = ["idx_b"]
+    await app.update()
+    assert vector_index in await _indexes(falkor_graph_name)
+
+    # A second name for the same field fails where it is declared.
+    index_names = ["idx_b", "idx_c"]
+    with pytest.raises(Exception, match="both index VecDoc.summary"):
+        await app.update()
