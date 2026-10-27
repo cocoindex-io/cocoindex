@@ -41,6 +41,8 @@ async def lifespan(builder: coco.EnvBuilder) -> None:
 
 When you move your project to a different location, just update the path in `builder.provide()` — memoization keys remain the same because they're based on the stable key string (`"source_dir"`), not the filesystem path.
 
+Target files are keyed the same way, by the key string and the relative path. Because the base directory isn't part of the key, CocoIndex can't tell when two keys reach the same file. See [One file, one declaration](#one-file-one-declaration).
+
 ### FilePath
 
 `FilePath` combines an optional base directory key and a relative path. Passing a `ContextKey[Path]` directly to any localfs function is equivalent to constructing `FilePath(base_dir=key)`.
@@ -244,7 +246,7 @@ def declare_file(
 
 **Parameters:**
 
-- `filename` — The name of the file (can include subdirectory path).
+- `filename` — The name of the file (can include subdirectory path). `.` and `..` segments are normalized, so `./a.txt` and `a.txt` are one file. A name that is absolute or leaves the directory (such as `../a.txt`) raises `ValueError`.
 - `content` — The file content (bytes or str).
 - `create_parent_dirs` — If `True`, create parent directories within the target directory.
 
@@ -263,7 +265,7 @@ def declare_dir_target(
 
 **Parameters:**
 
-- `path` — The path of the subdirectory (relative to this directory).
+- `path` — The path of the subdirectory (relative to this directory). It's normalized and checked like `filename` above.
 - `create_parent_dirs` — If `True`, create parent directories.
 
 **Returns:** A `DirTarget` for the subdirectory.
@@ -299,3 +301,20 @@ async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
         create_parent_dirs=True,
     )
 ```
+
+### One file, one declaration
+
+CocoIndex identifies each target file by its key: the `ContextKey` name (none for a path relative to the current directory) and the path under it. The base directory isn't part of the key, which is what lets you move it. The cost is that CocoIndex can't tell when two keys reach the same file on disk. Declare each physical file through exactly one key.
+
+Two keys can reach one file in these ways:
+
+- **Overlapping roots.** Two root directory targets are the same directory, or one is inside the other: under two `ContextKey`s, a `ContextKey` and a plain path, or two paths that reach one directory through a symlink. CocoIndex logs a warning when it applies two such targets. Two `ContextKey`s that point at one base directory are fine if their roots are disjoint, such as `FilePath("foo", base_dir=A)` and `FilePath("bar", base_dir=B)`.
+- **One file named two ways.** Names are normalized, so `./a.txt`, `x/../a.txt` and `a.txt` are one key. A flat path and a nested directory target are not: `target.declare_file("sub/a.txt")` and `target.declare_dir_target("sub")` with `declare_file("a.txt")` are two keys for one file.
+- **Names that differ only in case** on a case-insensitive file system (the default on macOS and Windows). There, `A.txt` and `a.txt` are one file.
+- **A file declared through a path into a directory target.** If `sub` is a directory target and its parent also declares `sub/a.txt`, removing the `sub` directory target removes `sub/a.txt` too. Removing a directory target removes the whole directory.
+
+You can switch a file from one key to another in one update if the processing component that declares the file stays the same. Examples are a case-only rename, or a flat path `sub/a.txt` moved to a nested `sub` directory target. CocoIndex writes the file under the new key and skips the delete under the old key. After a case-only rename on a case-insensitive file system, the file keeps its old spelling on disk.
+
+The opposite switch, from a nested directory target to flat paths, takes two updates. A nested directory target is resolved in its own processing component, so CocoIndex removes it after it writes the flat files, and that removal deletes them. Remove the directory target and run an update first. Then declare the flat files and run a second update.
+
+A relative path, such as `pathlib.Path("out")`, uses the current directory as its base, and the key holds only the relative path. If you run the app from another directory, the same keys reach other files: CocoIndex doesn't write unchanged files to the new place, and the old files stay. Run the app from one directory, or use a `ContextKey`.
