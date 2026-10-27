@@ -9,6 +9,12 @@ Two-level state system:
 2. Record level — upserts/deletes nodes via Cypher MERGE and edges via
    triple-MERGE (source, target, relationship).
 
+Node tables are declared with the node API (``mount_node_target``) and
+relationship tables with the relationship API (``mount_relationship_target``).
+The table and relation APIs (``mount_table_target``, ``mount_relation_target``)
+are their deprecated predecessors: they keep the keys and relation ids of
+existing tables.
+
 Multitenancy is by FalkorDB graph name (one Redis instance, many isolated
 graphs); the graph is part of the ``ConnectionFactory``.
 """
@@ -20,6 +26,7 @@ import datetime
 import decimal
 import logging
 import uuid as uuid_mod
+import warnings
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 from typing import (
@@ -58,6 +65,10 @@ import msgspec
 
 import cocoindex as coco
 from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits._graph_relationship_ids import (
+    legacy_relation_id,
+    relationship_id,
+)
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -475,6 +486,9 @@ class _RecordAction(NamedTuple):
     to_label: str | None
     to_pk_field: str | None
     to_id: Any | None
+    # On a relation upsert: the id the deprecated relation API derives for
+    # this edge. The edge between the same endpoints carrying it is deleted.
+    legacy_id: str | None
 
 
 @dataclass(frozen=True)
@@ -564,6 +578,7 @@ class _SharedRecordApplier:
             to_pk_fields=[action.to_pk_field],
             rel_pk_fields=[action.pk_field],
             has_value_fields=bool(props),
+            has_legacy_key=action.legacy_id is not None,
         )
         params: dict[str, Any] = {
             "from_key_0": action.from_id,
@@ -572,6 +587,8 @@ class _SharedRecordApplier:
         }
         if props:
             params["props"] = props
+        if action.legacy_id is not None:
+            params["legacy_key_0"] = action.legacy_id
         await graph.query(cypher, params)
 
     @staticmethod
@@ -776,6 +793,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _is_relation: bool
     _pk_field: str
     _table_schema: TableSchema[Any] | None
+    _replaces_legacy_ids: bool
     _factory: ConnectionFactory
     _sink: coco.TargetActionSink[_RecordAction]
 
@@ -785,12 +803,14 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         is_relation: bool,
         pk_field: str,
         table_schema: TableSchema[Any] | None,
+        replaces_legacy_ids: bool,
         factory: ConnectionFactory,
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
         self._pk_field = pk_field
         self._table_schema = table_schema
+        self._replaces_legacy_ids = replaces_legacy_ids
         self._factory = factory
         self._sink = coco.TargetActionSink.from_async_fn(_SharedRecordApplier(factory))
 
@@ -839,6 +859,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                     to_label=None,
                     to_pk_field=None,
                     to_id=None,
+                    legacy_id=None,
                 ),
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
@@ -850,6 +871,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         ):
             return None
 
+        legacy_id: str | None = None
         if isinstance(desired_state, _RelationRowValue):
             from_label = desired_state.from_label
             from_pk_field = desired_state.from_pk_field
@@ -858,6 +880,13 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             to_pk_field = desired_state.to_pk_field
             to_id = desired_state.to_id
             encoded = self._encode_row(desired_state.fields)
+            # An edge new to this table may have been written by the
+            # deprecated relation API, under the id it derives (a table
+            # switched to the relationship API), and is replaced.
+            if self._replaces_legacy_ids and not prev_possible_records:
+                legacy_id = legacy_relation_id(from_label, from_id, to_label, to_id)
+                if legacy_id == key[0]:
+                    legacy_id = None
         else:
             from_label = None
             from_pk_field = None
@@ -880,6 +909,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 to_label=to_label,
                 to_pk_field=to_pk_field,
                 to_id=to_id,
+                legacy_id=legacy_id,
             ),
             sink=self._sink,
             tracking_record=target_fp,
@@ -909,6 +939,9 @@ class _TableSpec:
     to_label: str | None
     to_pk_field: str | None
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # A table of the relationship API: an edge new to it replaces the edge
+    # the deprecated relation API wrote between the same endpoints.
+    replaces_legacy_ids: bool = False
 
 
 class _TableMainRecord(msgspec.Struct, frozen=True):
@@ -1016,6 +1049,7 @@ class _TableHandler(
             is_relation=spec.is_relation,
             pk_field=spec.primary_key,
             table_schema=spec.table_schema,
+            replaces_legacy_ids=spec.replaces_legacy_ids,
             factory=context_provider.get(action.key.db_key, ConnectionFactory),
         )
 
@@ -1308,20 +1342,42 @@ async def _exec_constraint(
 # Root provider registration
 # ---------------------------------------------------------------------------
 
+# Node tables and relationship tables each have a root provider of their own,
+# so a label and a relationship type of one name never share a key. The
+# deprecated table and relation APIs keep the provider they always shared, so
+# existing tables keep their keys. One handler serves all three: one sink then
+# applies the table actions of a database, in order.
+_table_handler = _TableHandler()
 _table_provider = coco.register_root_target_states_provider(
-    "cocoindex/falkordb/table", _TableHandler()
+    "cocoindex/falkordb/table", _table_handler
+)
+_node_provider = coco.register_root_target_states_provider(
+    "cocoindex/falkordb/node", _table_handler
+)
+_relationship_provider = coco.register_root_target_states_provider(
+    "cocoindex/falkordb/relationship", _table_handler
 )
 
 
+def _warn_deprecated(name: str, replacement: str) -> None:
+    warnings.warn(
+        f"falkordb.{name} is deprecated; use falkordb.{replacement}. To move an "
+        "existing table over without rebuilding it, follow the switching steps "
+        "in the FalkorDB connector docs.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 # ---------------------------------------------------------------------------
-# TableTarget
+# NodeTarget
 # ---------------------------------------------------------------------------
 
 
-class TableTarget(
-    Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
+class NodeTarget(
+    Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["NodeTarget[RowT]"]
 ):
-    """A target for writing records to a FalkorDB node table."""
+    """A target for writing nodes to a FalkorDB node table (label)."""
 
     _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
     _table_schema: TableSchema[RowT] | None
@@ -1351,7 +1407,7 @@ class TableTarget(
     def primary_key(self) -> str:
         return self._primary_key
 
-    def declare_record(self: TableTarget[RowT], *, row: RowT) -> None:
+    def declare_record(self: NodeTarget[RowT], *, row: RowT) -> None:
         """Declare a record (node) to be upserted to this table."""
         row_dict = self._row_to_dict(row)
         if self._primary_key not in row_dict:
@@ -1379,7 +1435,7 @@ class TableTarget(
         return {f.name: getattr(row, f.name) for f in record_info.fields}
 
     def declare_vector_index(
-        self: TableTarget[RowT],
+        self: NodeTarget[RowT],
         *,
         name: str | None = None,
         field: str,
@@ -1408,15 +1464,141 @@ class TableTarget(
         return self._provider.memo_key
 
 
+class TableTarget(
+    NodeTarget[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
+):
+    """The node table target of the deprecated table API
+    (:func:`mount_table_target`). Same methods as :class:`NodeTarget`."""
+
+
 # ---------------------------------------------------------------------------
-# RelationTarget
+# RelationshipTarget
 # ---------------------------------------------------------------------------
+
+
+def _relationship_state(
+    table_schema: TableSchema[Any] | None,
+    primary_key: str,
+    from_table: NodeTarget[Any],
+    to_table: NodeTarget[Any],
+    from_id: Any,
+    to_id: Any,
+    record: Any,
+    derive_id: Callable[[str, Any, str, Any], str],
+) -> tuple[Any, _RelationRowValue]:
+    """The record id and value of a declared relationship. A record without
+    the primary key gets the id ``derive_id`` makes from the endpoints."""
+    from_label = from_table.table_name
+    to_label = to_table.table_name
+
+    record_id: Any = None
+    row_dict: dict[str, Any] = {}
+    if record is not None:
+        if table_schema is not None:
+            for col_name, col in table_schema.columns.items():
+                if col_name == primary_key:
+                    continue
+                if isinstance(record, dict):
+                    value = record.get(col_name)
+                else:
+                    value = getattr(record, col_name)
+                if value is not None and col.encoder is not None:
+                    value = col.encoder(value)
+                row_dict[col_name] = value
+            record_id = (
+                record.get(primary_key)
+                if isinstance(record, dict)
+                else getattr(record, primary_key, None)
+            )
+        elif isinstance(record, dict):
+            row_dict = {k: v for k, v in record.items() if k != primary_key}
+            record_id = record.get(primary_key)
+        else:
+            record_info = RecordType(type(record))
+            row_dict = {
+                f.name: getattr(record, f.name)
+                for f in record_info.fields
+                if f.name != primary_key
+            }
+            record_id = getattr(record, primary_key, None)
+
+    if record_id is None:
+        record_id = derive_id(from_label, from_id, to_label, to_id)
+
+    return record_id, _RelationRowValue(
+        from_label=from_label,
+        from_pk_field=from_table.primary_key,
+        from_id=from_id,
+        to_label=to_label,
+        to_pk_field=to_table.primary_key,
+        to_id=to_id,
+        fields=row_dict,
+    )
+
+
+class RelationshipTarget(
+    Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["RelationshipTarget[RowT]"]
+):
+    """A target for writing relationships (edges) to a FalkorDB
+    relationship table (relationship type)."""
+
+    _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
+    _table_name: str
+    _table_schema: TableSchema[RowT] | None
+    _primary_key: str
+    _from_table: NodeTarget[Any]
+    _to_table: NodeTarget[Any]
+
+    def __init__(
+        self,
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        table_name: str,
+        table_schema: TableSchema[RowT] | None,
+        primary_key: str,
+        from_table: NodeTarget[Any],
+        to_table: NodeTarget[Any],
+    ) -> None:
+        self._provider = provider
+        self._table_name = table_name
+        self._table_schema = table_schema
+        self._primary_key = primary_key
+        self._from_table = from_table
+        self._to_table = to_table
+
+    def declare_relationship(
+        self: RelationshipTarget[RowT],
+        *,
+        from_id: Any,
+        to_id: Any,
+        record: RowT | None = None,
+    ) -> None:
+        """Declare a relationship (edge) from the ``from_table`` node keyed
+        ``from_id`` to the ``to_table`` node keyed ``to_id``.
+
+        Without a ``record`` carrying the primary key, the relationship's id
+        is derived from its endpoints (ids must then be ``int`` or ``str``).
+        """
+        record_id, row_value = _relationship_state(
+            self._table_schema,
+            self._primary_key,
+            self._from_table,
+            self._to_table,
+            from_id,
+            to_id,
+            record,
+            relationship_id,
+        )
+        coco.declare_target_state(self._provider.target_state((record_id,), row_value))
+
+    def __coco_memo_key__(self) -> str:
+        return self._provider.memo_key
 
 
 class RelationTarget(
     Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["RelationTarget[RowT]"]
 ):
-    """A target for writing relation records (edges) to a FalkorDB relationship type."""
+    """The relation table target of the deprecated relation API
+    (:func:`mount_relation_target`); see :class:`RelationshipTarget`."""
 
     _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
     _table_name: str
@@ -1448,60 +1630,22 @@ class RelationTarget(
         to_id: Any,
         record: RowT | None = None,
     ) -> None:
-        """Declare a relation record (edge)."""
-        from_label = self._from_table.table_name
-        from_pk_field = self._from_table.primary_key
-        to_label = self._to_table.table_name
-        to_pk_field = self._to_table.primary_key
-
-        if record is not None:
-            if self._table_schema is not None:
-                row_dict: dict[str, Any] = {}
-                for col_name, col in self._table_schema.columns.items():
-                    if col_name == self._primary_key:
-                        continue
-                    if isinstance(record, dict):
-                        value = record.get(col_name)
-                    else:
-                        value = getattr(record, col_name)
-                    if value is not None and col.encoder is not None:
-                        value = col.encoder(value)
-                    row_dict[col_name] = value
-                record_id = (
-                    record.get(self._primary_key)
-                    if isinstance(record, dict)
-                    else getattr(record, self._primary_key, None)
-                )
-            elif isinstance(record, dict):
-                row_dict = {k: v for k, v in record.items() if k != self._primary_key}
-                record_id = record.get(self._primary_key)
-            else:
-                record_info = RecordType(type(record))
-                row_dict = {
-                    f.name: getattr(record, f.name)
-                    for f in record_info.fields
-                    if f.name != self._primary_key
-                }
-                record_id = getattr(record, self._primary_key, None)
-        else:
-            row_dict = {}
-            record_id = None
-
-        if record_id is None:
-            record_id = f"{from_label}_{from_id}_{to_label}_{to_id}"
-
-        row_value: _RowValue = _RelationRowValue(
-            from_label=from_label,
-            from_pk_field=from_pk_field,
-            from_id=from_id,
-            to_label=to_label,
-            to_pk_field=to_pk_field,
-            to_id=to_id,
-            fields=row_dict,
+        """Deprecated: use :meth:`RelationshipTarget.declare_relationship`.
+        Declare a relation record (edge)."""
+        _warn_deprecated(
+            "RelationTarget.declare_relation", "RelationshipTarget.declare_relationship"
         )
-
-        pk_values = (record_id,)
-        coco.declare_target_state(self._provider.target_state(pk_values, row_value))
+        record_id, row_value = _relationship_state(
+            self._table_schema,
+            self._primary_key,
+            self._from_table,
+            self._to_table,
+            from_id,
+            to_id,
+            record,
+            legacy_relation_id,
+        )
+        coco.declare_target_state(self._provider.target_state((record_id,), row_value))
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key
@@ -1512,15 +1656,14 @@ class RelationTarget(
 # ---------------------------------------------------------------------------
 
 
-def table_target(
+def _node_table_state(
+    provider: coco.TargetStateProvider[_TableSpec, _RecordHandler],
     db: ContextKey[ConnectionFactory],
     table_name: str,
-    table_schema: TableSchema[RowT] | None = None,
-    *,
-    primary_key: str = "id",
-    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+    table_schema: TableSchema[Any] | None,
+    primary_key: str,
+    managed_by: target.ManagedBy,
 ) -> coco.TargetState[_RecordHandler]:
-    """Create a ``TargetState`` for a FalkorDB node table (label)."""
     _validate_identifier(table_name, "table name")
     _validate_identifier(primary_key, "primary key")
     if table_schema is not None and table_schema.primary_key != primary_key:
@@ -1539,7 +1682,192 @@ def table_target(
         to_pk_field=None,
         managed_by=managed_by,
     )
-    return _table_provider.target_state(key, spec)
+    return provider.target_state(key, spec)
+
+
+def _relationship_table_state(
+    provider: coco.TargetStateProvider[_TableSpec, _RecordHandler],
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    from_table: NodeTarget[Any],
+    to_table: NodeTarget[Any],
+    table_schema: TableSchema[Any] | None,
+    primary_key: str,
+    managed_by: target.ManagedBy,
+    *,
+    replaces_legacy_ids: bool,
+) -> coco.TargetState[_RecordHandler]:
+    _validate_identifier(table_name, "relation table name")
+    _validate_identifier(primary_key, "primary key")
+    _validate_identifier(from_table.table_name, "from table name")
+    _validate_identifier(to_table.table_name, "to table name")
+    if table_schema is not None and table_schema.primary_key != primary_key:
+        raise ValueError(
+            f"primary_key {primary_key!r} does not match schema's "
+            f"{table_schema.primary_key!r}"
+        )
+    key = _TableKey(db_key=db.key, table_name=table_name)
+    spec = _TableSpec(
+        table_schema=table_schema,
+        primary_key=primary_key,
+        is_relation=True,
+        from_label=from_table.table_name,
+        from_pk_field=from_table.primary_key,
+        to_label=to_table.table_name,
+        to_pk_field=to_table.primary_key,
+        managed_by=managed_by,
+        replaces_legacy_ids=replaces_legacy_ids,
+    )
+    return provider.target_state(key, spec)
+
+
+def node_target(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+) -> coco.TargetState[_RecordHandler]:
+    """Create a ``TargetState`` for a FalkorDB node table (label)."""
+    return _node_table_state(
+        _node_provider, db, table_name, table_schema, primary_key, managed_by
+    )
+
+
+def declare_node_target(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+) -> NodeTarget[RowT, coco.PendingS]:
+    """Declare a node table target.
+
+    Use this for tables that exist only as relationship endpoints — no
+    records flow into this declaration's own handler.
+    """
+    provider = coco.declare_target_state_with_child(
+        node_target(
+            db, table_name, table_schema, primary_key=primary_key, managed_by=managed_by
+        )
+    )
+    return NodeTarget(provider, table_schema, table_name, primary_key)
+
+
+async def mount_node_target(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+) -> NodeTarget[RowT]:
+    """Mount a node table target ready to receive ``declare_record`` calls."""
+    provider = await coco.mount_target(
+        node_target(
+            db, table_name, table_schema, primary_key=primary_key, managed_by=managed_by
+        )
+    )
+    return NodeTarget(provider, table_schema, table_name, primary_key)
+
+
+def relationship_target(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    from_table: NodeTarget[Any],
+    to_table: NodeTarget[Any],
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+) -> coco.TargetState[_RecordHandler]:
+    """Create a ``TargetState`` for a FalkorDB relationship table
+    (relationship type). ``from_table`` and ``to_table`` may come from the node API or the
+    deprecated table API."""
+    return _relationship_table_state(
+        _relationship_provider,
+        db,
+        table_name,
+        from_table,
+        to_table,
+        table_schema,
+        primary_key,
+        managed_by,
+        replaces_legacy_ids=True,
+    )
+
+
+def declare_relationship_target(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    from_table: NodeTarget[Any],
+    to_table: NodeTarget[Any],
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+) -> RelationshipTarget[RowT, coco.PendingS]:
+    """Declare a relationship table target."""
+    provider = coco.declare_target_state_with_child(
+        relationship_target(
+            db,
+            table_name,
+            from_table,
+            to_table,
+            table_schema,
+            primary_key=primary_key,
+            managed_by=managed_by,
+        )
+    )
+    return RelationshipTarget(
+        provider, table_name, table_schema, primary_key, from_table, to_table
+    )
+
+
+async def mount_relationship_target(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    from_table: NodeTarget[Any],
+    to_table: NodeTarget[Any],
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+) -> RelationshipTarget[RowT]:
+    """Mount a relationship table target ready to receive
+    ``declare_relationship`` calls."""
+    provider = await coco.mount_target(
+        relationship_target(
+            db,
+            table_name,
+            from_table,
+            to_table,
+            table_schema,
+            primary_key=primary_key,
+            managed_by=managed_by,
+        )
+    )
+    return RelationshipTarget(
+        provider, table_name, table_schema, primary_key, from_table, to_table
+    )
+
+
+def table_target(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+) -> coco.TargetState[_RecordHandler]:
+    """Deprecated: use :func:`node_target`. Create a ``TargetState`` for a
+    FalkorDB node table (label)."""
+    _warn_deprecated("table_target", "node_target")
+    return _node_table_state(
+        _table_provider, db, table_name, table_schema, primary_key, managed_by
+    )
 
 
 def declare_table_target(
@@ -1550,21 +1878,15 @@ def declare_table_target(
     primary_key: str = "id",
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT, coco.PendingS]:
-    """Declare a node table target (no records flow into this declaration's
-    own handler — typically used to register a table that is referenced as a
-    relationship endpoint by other handlers).
-    """
-    if table_schema is not None and table_schema.primary_key != primary_key:
-        raise ValueError(
-            f"primary_key {primary_key!r} does not match schema's {table_schema.primary_key!r}"
-        )
-    pk = table_schema.primary_key if table_schema is not None else primary_key
+    """Deprecated: use :func:`declare_node_target`. Declare a node table
+    target."""
+    _warn_deprecated("declare_table_target", "declare_node_target")
     provider = coco.declare_target_state_with_child(
-        table_target(
-            db, table_name, table_schema, primary_key=pk, managed_by=managed_by
+        _node_table_state(
+            _table_provider, db, table_name, table_schema, primary_key, managed_by
         )
     )
-    return TableTarget(provider, table_schema, table_name, pk)
+    return TableTarget(provider, table_schema, table_name, primary_key)
 
 
 async def mount_table_target(
@@ -1575,18 +1897,15 @@ async def mount_table_target(
     primary_key: str = "id",
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
-    """Mount a node table target ready to receive ``declare_record`` calls."""
-    if table_schema is not None and table_schema.primary_key != primary_key:
-        raise ValueError(
-            f"primary_key {primary_key!r} does not match schema's {table_schema.primary_key!r}"
-        )
-    pk = table_schema.primary_key if table_schema is not None else primary_key
+    """Deprecated: use :func:`mount_node_target`. Mount a node table target
+    ready to receive ``declare_record`` calls."""
+    _warn_deprecated("mount_table_target", "mount_node_target")
     provider = await coco.mount_target(
-        table_target(
-            db, table_name, table_schema, primary_key=pk, managed_by=managed_by
+        _node_table_state(
+            _table_provider, db, table_name, table_schema, primary_key, managed_by
         )
     )
-    return TableTarget(provider, table_schema, table_name, pk)
+    return TableTarget(provider, table_schema, table_name, primary_key)
 
 
 def relation_target(
@@ -1599,27 +1918,20 @@ def relation_target(
     primary_key: str = "id",
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RecordHandler]:
-    """Create a ``TargetState`` for a FalkorDB relationship type."""
-    _validate_identifier(table_name, "relation table name")
-    _validate_identifier(primary_key, "primary key")
-    _validate_identifier(from_table.table_name, "from table name")
-    _validate_identifier(to_table.table_name, "to table name")
-    if table_schema is not None and table_schema.primary_key != primary_key:
-        raise ValueError(
-            f"primary_key {primary_key!r} does not match schema's {table_schema.primary_key!r}"
-        )
-    key = _TableKey(db_key=db.key, table_name=table_name)
-    spec = _TableSpec(
-        table_schema=table_schema,
-        primary_key=primary_key,
-        is_relation=True,
-        from_label=from_table.table_name,
-        from_pk_field=from_table.primary_key,
-        to_label=to_table.table_name,
-        to_pk_field=to_table.primary_key,
-        managed_by=managed_by,
+    """Deprecated: use :func:`relationship_target`. Create a ``TargetState``
+    for a FalkorDB relationship type."""
+    _warn_deprecated("relation_target", "relationship_target")
+    return _relationship_table_state(
+        _table_provider,
+        db,
+        table_name,
+        from_table,
+        to_table,
+        table_schema,
+        primary_key,
+        managed_by,
+        replaces_legacy_ids=False,
     )
-    return _table_provider.target_state(key, spec)
 
 
 def declare_relation_target(
@@ -1632,17 +1944,21 @@ def declare_relation_target(
     primary_key: str = "id",
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> RelationTarget[RowT, coco.PendingS]:
-    """Declare a relation table target."""
+    """Deprecated: use :func:`declare_relationship_target`. Declare a
+    relation table target."""
+    _warn_deprecated("declare_relation_target", "declare_relationship_target")
     pk = table_schema.primary_key if table_schema is not None else primary_key
     provider = coco.declare_target_state_with_child(
-        relation_target(
+        _relationship_table_state(
+            _table_provider,
             db,
             table_name,
             from_table,
             to_table,
             table_schema,
-            primary_key=pk,
-            managed_by=managed_by,
+            pk,
+            managed_by,
+            replaces_legacy_ids=False,
         )
     )
     return RelationTarget(provider, table_name, table_schema, pk, from_table, to_table)
@@ -1658,17 +1974,21 @@ async def mount_relation_target(
     primary_key: str = "id",
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> RelationTarget[RowT]:
-    """Mount a relation table target ready to receive ``declare_relation`` calls."""
+    """Deprecated: use :func:`mount_relationship_target`. Mount a relation
+    table target ready to receive ``declare_relation`` calls."""
+    _warn_deprecated("mount_relation_target", "mount_relationship_target")
     pk = table_schema.primary_key if table_schema is not None else primary_key
     provider = await coco.mount_target(
-        relation_target(
+        _relationship_table_state(
+            _table_provider,
             db,
             table_name,
             from_table,
             to_table,
             table_schema,
-            primary_key=pk,
-            managed_by=managed_by,
+            pk,
+            managed_by,
+            replaces_legacy_ids=False,
         )
     )
     return RelationTarget(provider, table_name, table_schema, pk, from_table, to_table)
@@ -1682,14 +2002,22 @@ __all__ = [
     "ColumnDef",
     "ConnectionFactory",
     "FalkorType",
+    "NodeTarget",
     "RelationTarget",
+    "RelationshipTarget",
     "TableSchema",
     "TableTarget",
     "ValueEncoder",
+    "declare_node_target",
     "declare_relation_target",
+    "declare_relationship_target",
     "declare_table_target",
+    "mount_node_target",
     "mount_relation_target",
+    "mount_relationship_target",
     "mount_table_target",
+    "node_target",
     "relation_target",
+    "relationship_target",
     "table_target",
 ]

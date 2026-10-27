@@ -36,6 +36,7 @@ __all__ = [
     "constraint_name",
     "index_name",
     "validate_identifier",
+    "validate_label",
     "vector_index_name",
 ]
 
@@ -53,6 +54,25 @@ def validate_identifier(name: str, kind: str) -> None:
     if not IDENTIFIER_RE.match(name):
         raise ValueError(
             f"Invalid Neo4j {kind}: {name!r}. Must match [a-zA-Z_][a-zA-Z0-9_]*."
+        )
+
+
+def validate_label(name: str, kind: str) -> None:
+    """Validate a node label or relationship type that names Neo4j schema
+    objects: a valid identifier with no ``__`` and no trailing ``_``.
+
+    :func:`constraint_name`, :func:`index_name` and :func:`vector_index_name`
+    join the label and a property name with ``__``. With this rule the first
+    ``__`` after the prefix always ends the label, so two (label, property)
+    pairs never share a name (``A__x`` + ``y`` vs ``A`` + ``x__y``, or ``A_``
+    + ``y`` vs ``A`` + ``_y``).
+    """
+    validate_identifier(name, kind)
+    if "__" in name or name.endswith("_"):
+        raise ValueError(
+            f"Invalid Neo4j {kind}: {name!r}. Must not contain '__' or end "
+            "with '_': constraint and index names join it to a property name "
+            "with '__'."
         )
 
 
@@ -140,13 +160,16 @@ def build_relationship_upsert(
     to_pk_fields: Sequence[str],
     rel_pk_fields: Sequence[str],
     has_value_fields: bool,
+    has_legacy_key: bool,
 ) -> str:
     """MERGE the source endpoint, the target endpoint, then the relationship.
 
     Before the relationship MERGE, any other relationship of the type with
     this primary key is deleted: the key names one edge, so one found between
     other endpoints is the edge before its endpoints changed (the MERGE would
-    otherwise create a second edge beside it).
+    otherwise create a second edge beside it). With ``has_legacy_key``, the
+    edge between these endpoints keyed by ``$legacy_key_*`` (the key the
+    deprecated relation API gave it) is deleted too.
 
     Endpoint properties are NOT touched — they are owned by their table's own
     record handler. We only ``SET r += $props`` on the relationship itself.
@@ -165,6 +188,12 @@ def build_relationship_upsert(
         f"DELETE o "
         f"WITH DISTINCT s, t "
     )
+    if has_legacy_key:
+        cypher += (
+            f"OPTIONAL MATCH (s)-[l:{rel} {_key_clause('legacy_key', rel_pk_fields)}]->(t) "
+            f"DELETE l "
+            f"WITH DISTINCT s, t "
+        )
     cypher += f"MERGE (s)-[r:{rel} {rel_key}]->(t)"
     if has_value_fields:
         cypher += " SET r += $props"
