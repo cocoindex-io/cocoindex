@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -34,6 +34,7 @@ if HAS_QDRANT:
     import msgspec
 
     from cocoindex._internal import serde
+    from cocoindex.connectors.qdrant import _target as qdrant_target
     from cocoindex.connectors.qdrant._target import (
         _CollectionHandler,
         _CollectionTrackingRecordCore,
@@ -318,10 +319,15 @@ class TestPointIdValidation:
         assert _validate_point_id(0) == 0
         assert _validate_point_id(2**64 - 1) == 2**64 - 1
         assert _validate_point_id(_POINT_UUID) == _POINT_UUID
-        hex_form = uuid.UUID(_POINT_UUID).hex
-        assert _validate_point_id(hex_form) == hex_form
-        urn_form = f"urn:uuid:{_POINT_UUID}"
-        assert _validate_point_id(urn_form) == urn_form
+
+    def test_uuid_text_forms_canonicalized(self) -> None:
+        # Qdrant stores all of these as the same point.
+        for form in (
+            _POINT_UUID.upper(),
+            uuid.UUID(_POINT_UUID).hex,
+            f"urn:uuid:{_POINT_UUID}",
+        ):
+            assert _validate_point_id(form) == _POINT_UUID
 
     def test_uuid_instance_converted_to_string(self) -> None:
         assert _validate_point_id(uuid.UUID(_POINT_UUID)) == _POINT_UUID
@@ -390,6 +396,112 @@ class TestTrackingRecordUpgradeCompat:
             "records; a byte change would flip the statediff and destroy "
             "existing collections on upgrade"
         )
+
+
+# =============================================================================
+# End-to-end — point ID canonicalization upgrade
+# =============================================================================
+
+
+def _server_point_id(point_id: Any) -> Any:
+    return str(uuid.UUID(point_id)) if isinstance(point_id, str) else point_id
+
+
+if HAS_QDRANT:
+
+    class _ServerLikeMemoryClient(QdrantClient):
+        """In-memory Qdrant that stores point IDs the way the server does:
+        every UUID text form names one point. Local mode keeps raw strings."""
+
+        def __init__(self) -> None:
+            super().__init__(":memory:")
+
+        def upsert(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs["points"] = [
+                p.model_copy(update={"id": _server_point_id(p.id)})
+                for p in kwargs["points"]
+            ]
+            return super().upsert(*args, **kwargs)
+
+        def delete(self, *args: Any, **kwargs: Any) -> Any:
+            selector = kwargs["points_selector"]
+            kwargs["points_selector"] = qdrant_models.PointIdsList(
+                points=[_server_point_id(p) for p in selector.points]
+            )
+            return super().delete(*args, **kwargs)
+
+
+@pytest.fixture(params=["server_like_memory", "live"])
+def point_id_client(request: pytest.FixtureRequest) -> "QdrantClient":
+    if request.param == "live":
+        if not os.environ.get("QDRANT_URL"):
+            pytest.skip("QDRANT_URL is not set")
+        return qdrant.create_client(os.environ["QDRANT_URL"], prefer_grpc=True)
+    return _ServerLikeMemoryClient()
+
+
+@requires_qdrant
+def test_non_canonical_point_ids_survive_upgrade(
+    point_id_client: "QdrantClient", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Points declared with non-canonical UUID strings before point IDs were
+    canonicalized still exist after the upgrade. The first run after it
+    upserts their canonical keys and skips deleting their old keys, which name
+    the same points. A point no longer declared is still deleted."""
+    client = point_id_client
+    upper_form = _POINT_UUID.upper()
+    other_uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    hex_form = uuid.UUID(other_uuid).hex
+    collection_name = f"coco_point_ids_{uuid.uuid4().hex}"
+    db_key = coco.ContextKey[QdrantClient](f"test_qdrant_point_ids_{uuid.uuid4().hex}")
+    env = common.create_test_env(__file__, suffix=collection_name)
+    env.context_provider.provide(db_key, client)
+    declared: list[str] = []
+
+    @coco.fn
+    async def app_main() -> None:
+        target = await qdrant.mount_collection_target(
+            db_key,
+            collection_name,
+            await qdrant.CollectionSchema.create(
+                vectors=qdrant.QdrantVectorDef(
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=2)
+                )
+            ),
+        )
+        for point_id in declared:
+            target.declare_point(
+                qdrant.PointStruct(id=point_id, vector=[0.1, 0.2], payload={})
+            )
+
+    app = coco.App(
+        coco.AppConfig(name="test_qdrant_point_ids", environment=env), app_main
+    )
+
+    def stored_ids() -> set[Any]:
+        points, _ = client.scroll(collection_name=collection_name, limit=10)
+        return {p.id for p in points}
+
+    try:
+        # Run 1, before the fix: the raw strings are the keys.
+        monkeypatch.setattr(qdrant_target, "_validate_point_id", lambda raw: raw)
+        declared[:] = [upper_form, hex_form]
+        app.update_blocking()
+        assert stored_ids() == {_POINT_UUID, other_uuid}
+
+        # Run 2, after the fix: the first point moves to its canonical key and
+        # must survive the delete of its old key; the second is undeclared.
+        monkeypatch.undo()
+        declared[:] = [upper_form]
+        app.update_blocking()
+        assert stored_ids() == {_POINT_UUID}
+
+        # Two forms of one UUID are one point, so they can't both be declared.
+        declared[:] = [upper_form, _POINT_UUID]
+        with pytest.raises(Exception, match="already declared"):
+            app.update_blocking()
+    finally:
+        client.delete_collection(collection_name=collection_name)
 
 
 # =============================================================================
