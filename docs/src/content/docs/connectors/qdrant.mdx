@@ -435,6 +435,8 @@ Qdrant only accepts two point ID types — this is enforced by the Qdrant server
 
 `uuid.UUID` instances are also accepted and converted to strings. `declare_point` validates the ID eagerly and raises `ValueError` for anything else, rather than letting the write fail later at the Qdrant server.
 
+Qdrant stores every textual form of one UUID as the same point. CocoIndex therefore tracks a UUID point ID in its canonical form (hyphenated, lower case). If you declare two forms of one UUID in the same run, the second declaration fails as a duplicate.
+
 To derive a stable point ID from an arbitrary string key (e.g. a document path or chunk key), use a deterministic UUID:
 
 ```python
