@@ -129,7 +129,7 @@ def IndexTarget.declare_document(
 - `document` — A `valkey.Document` containing:
   - `id` — Document ID (string)
   - `vector` — Vector data (list of floats or numpy array)
-  - `payload` — Optional metadata dict (values must be str, int, or float)
+  - `payload` — Optional metadata dict (values must be str, int, or float). The key `vector` is reserved for the vector field (see [Data storage](#data-storage)), so a payload with that key raises a `ValueError`.
 
 ### Index schema
 
@@ -148,7 +148,7 @@ class IndexSchema:
 **Parameters:**
 
 - `vectors` — A `VectorDef` specifying the vector field configuration.
-- `fields` — Optional list of `FieldDef` for indexed payload fields (enables search/filtering).
+- `fields` — Optional list of `FieldDef` for indexed payload fields (enables search/filtering). A `FieldDef` named `vector` raises a `ValueError`: that name is reserved for the vector field.
 
 #### VectorDef
 
