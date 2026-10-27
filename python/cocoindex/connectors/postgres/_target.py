@@ -1542,9 +1542,9 @@ class TableTarget(
         Declare a pgvector index on a column of this table.
 
         The actual Postgres index will be named ``{table_name}__vector__{name}``.
-        PostgreSQL truncates a name longer than 63 bytes. Two vector indexes on
-        one table whose names become the same after truncation raise a
-        ``ValueError``.
+        PostgreSQL truncates a name longer than 63 bytes. Declaring two vector
+        indexes on this target whose names become the same after truncation
+        raises a ``ValueError``.
 
         Args:
             name: Logical index name (defaults to ``column``).

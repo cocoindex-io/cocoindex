@@ -238,7 +238,7 @@ def TableTarget.declare_vector_index(
 ) -> None
 ```
 
-The actual PostgreSQL index is named `{table_name}__vector__{name}`. PostgreSQL truncates a name longer than 63 bytes. If two vector indexes on one table get the same name after truncation, `declare_vector_index` raises a `ValueError`.
+The actual PostgreSQL index is named `{table_name}__vector__{name}`. PostgreSQL truncates a name longer than 63 bytes. If two vector indexes declared on the same `TableTarget` get the same name after truncation, `declare_vector_index` raises a `ValueError`.
 
 **Parameters:**
 
