@@ -115,7 +115,12 @@ def build_relationship_upsert(
     rel_pk_fields: Sequence[str],
     has_value_fields: bool,
 ) -> str:
-    """Three MERGEs: source endpoint, target endpoint, then the relationship.
+    """MERGE the source endpoint, the target endpoint, then the relationship.
+
+    Before the relationship MERGE, any other relationship of the type with
+    this primary key is deleted: the key names one edge, so one found between
+    other endpoints is the edge before its endpoints changed (the MERGE would
+    otherwise create a second edge beside it).
 
     Endpoint properties are NOT touched — they are owned by their table's own
     record handler. We only ``SET r += $props`` on the relationship itself.
@@ -124,11 +129,18 @@ def build_relationship_upsert(
         raise ValueError(
             "build_relationship_upsert requires PK fields for from, to, and the relationship"
         )
+    rel = _quote(rel_type)
+    rel_key = _key_clause("rel_key", rel_pk_fields, "r")
     cypher = (
         f"MERGE (s:{_quote(from_label)} {_key_clause('from_key', from_pk_fields, 's')}) "
         f"MERGE (t:{_quote(to_label)} {_key_clause('to_key', to_pk_fields, 't')}) "
-        f"MERGE (s)-[r:{_quote(rel_type)} {_key_clause('rel_key', rel_pk_fields, 'r')}]->(t)"
+        f"WITH s, t "
+        f"OPTIONAL MATCH (a)-[o:{rel} {_key_clause('rel_key', rel_pk_fields, 'o')}]->(b) "
+        f"WHERE a <> s OR b <> t "
+        f"DELETE o "
+        f"WITH DISTINCT s, t "
     )
+    cypher += f"MERGE (s)-[r:{rel} {rel_key}]->(t)"
     if has_value_fields:
         cypher += " SET r += $props"
     return cypher

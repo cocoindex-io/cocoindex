@@ -4,7 +4,8 @@ Run with:
     uv run pytest python/tests/connectors/test_neo4j_target.py -v
 
 Unit tests run without a server. Integration tests require a running Neo4j
-(spun up automatically via testcontainers when ``NEO4J_TEST_SERVER=1``).
+(spun up automatically via testcontainers when ``NEO4J_TEST_SERVER=1``, or
+the server at ``NEO4J_URI`` with password ``cocoindex`` when that is set).
 """
 
 from __future__ import annotations
@@ -169,12 +170,17 @@ class TestNodeDeleteCypher:
 
 
 class TestRelationshipUpsertCypher:
-    def test_three_merges_with_props(self) -> None:
+    def test_merges_after_deleting_a_moved_edge(self) -> None:
         assert build_relationship_upsert(
             "REL", "Entity", ["value"], "Entity", ["value"], ["id"], True
         ) == (
             "MERGE (s:`Entity` {`value`: $from_key_0}) "
             "MERGE (t:`Entity` {`value`: $to_key_0}) "
+            "WITH s, t "
+            "OPTIONAL MATCH (a)-[o:`REL` {`id`: $rel_key_0}]->(b) "
+            "WHERE a <> s OR b <> t "
+            "DELETE o "
+            "WITH DISTINCT s, t "
             "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t) "
             "SET r += $props"
         )
@@ -187,13 +193,8 @@ class TestRelationshipUpsertCypher:
         assert "SET r += $props" in cypher
 
     def test_no_props(self) -> None:
-        assert build_relationship_upsert(
-            "REL", "A", ["x"], "B", ["y"], ["id"], False
-        ) == (
-            "MERGE (s:`A` {`x`: $from_key_0}) "
-            "MERGE (t:`B` {`y`: $to_key_0}) "
-            "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)"
-        )
+        cypher = build_relationship_upsert("REL", "A", ["x"], "B", ["y"], ["id"], False)
+        assert cypher.endswith("MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)")
 
     def test_empty_pk_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -893,9 +894,13 @@ class TestApplyBatchRetry:
 
 @pytest.fixture(scope="module")
 def neo4j_uri_auth() -> Iterator[tuple[str, tuple[str, str]]]:
-    """Spin up a Neo4j 5.13 container once per test module."""
+    """Spin up a Neo4j container once per test module, or use the server at
+    ``NEO4J_URI`` (user ``neo4j``, password ``cocoindex``) when it is set."""
     if not (HAS_NEO4J and _HAS_NEO4J_SERVER):
         pytest.skip("NEO4J_TEST_SERVER is not set")
+    if uri := os.environ.get("NEO4J_URI"):
+        yield uri, ("neo4j", "cocoindex")
+        return
 
     from testcontainers.community.neo4j import Neo4jContainer  # type: ignore[import-untyped]
 
@@ -1553,3 +1558,174 @@ async def test_neo4j_table_schema_evolution_under_full_reprocess(
     by_fn2 = {r["filename"]: r for r in nodes_v2}
     assert by_fn2["doc1.md"]["summary"] == "summary 1"
     assert by_fn2["doc2.md"]["summary"] == "summary 2"
+
+
+# =============================================================================
+# Relationship and vector index identity
+# =============================================================================
+
+
+@requires_neo4j
+class TestVectorIndexApplier:
+    """Several declared names can reach one Neo4j index, which is named after
+    its label and field."""
+
+    @staticmethod
+    def _applier(queries: list[str]) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        class _FakeGraph:
+            async def query(self, cypher: str, params: Any = None) -> list[Any]:
+                queries.append(cypher)
+                return []
+
+        class _FakeFactory(neo_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return _FakeGraph()
+
+        return neo_target._VectorIndexApplier(_FakeFactory(uri="bolt://localhost:7687"))
+
+    @staticmethod
+    def _action(name: str, field: str, *, create: bool) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        spec = neo_target._VectorIndexSpec(field=field, metric="cosine", dimension=4)
+        return neo_target._VectorIndexAction(
+            name=name,
+            table_name="Doc",
+            index_name=vector_index_name("Doc", field),
+            spec=spec if create else None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rename_keeps_the_index(self) -> None:
+        queries: list[str] = []
+        await self._applier(queries)(
+            None,
+            [
+                self._action("new", "emb", create=True),
+                self._action("old", "emb", create=False),
+                self._action("gone", "other", create=False),
+            ],
+        )
+        assert queries == [
+            build_vector_index_drop("coco_vec_Doc__emb"),
+            build_vector_index_create("coco_vec_Doc__emb", "Doc", "emb", 4, "cosine"),
+            build_vector_index_drop("coco_vec_Doc__other"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_two_names_for_one_index_fail(self) -> None:
+        queries: list[str] = []
+        with pytest.raises(ValueError, match="map to one Neo4j index"):
+            await self._applier(queries)(
+                None,
+                [
+                    self._action("a", "emb", create=True),
+                    self._action("b", "emb", create=True),
+                ],
+            )
+        assert queries == []
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_moved_relationship_leaves_no_duplicate(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """An edge with an explicit id whose endpoints change is moved, not
+    copied: the edge between the old endpoints goes. A duplicate left by an
+    earlier version goes on a full reprocess."""
+    uri, auth = neo4j_clean
+    to_id = "bob"
+
+    async def declare() -> None:
+        people: Any = await coco.use_mount(
+            coco.component_subpath("node"), neo.mount_table_target, KG_DB, "Person"
+        )
+        for name in ("alice", "bob", "carol"):
+            people.declare_record(row={"id": name})
+        knows: Any = await coco.use_mount(
+            coco.component_subpath("rel"),
+            neo.mount_relation_target,
+            KG_DB,
+            "KNOWS",
+            people,
+            people,
+        )
+        knows.declare_relation(
+            from_id="alice", to_id=to_id, record={"id": "k1", "since": 1}
+        )
+
+    async def knows_edges() -> list[tuple[str, str, str]]:
+        return sorted(
+            (s["id"], t["id"], r["id"])
+            for s, t, r in await _read_relationships(uri, auth, "KNOWS")
+        )
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_moved_rel", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    assert await knows_edges() == [("alice", "bob", "k1")]
+
+    to_id = "carol"
+    await app.update()
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+    # A duplicate an earlier version left behind when the edge moved.
+    await _query(
+        uri,
+        auth,
+        "MATCH (s:Person {id: 'alice'}), (t:Person {id: 'bob'}) "
+        "CREATE (s)-[:KNOWS {id: 'k1', since: 1}]->(t)",
+    )
+    await app.update(full_reprocess=True)
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_renamed_vector_index_is_kept(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """The Neo4j index is named after its label and field, not the declared
+    name: renaming it keeps it. Two declared names on one field fail."""
+    uri, auth = neo4j_clean
+    index_names = ["vec_a"]
+
+    async def declare() -> None:
+        docs: Any = await coco.use_mount(
+            coco.component_subpath("node"), neo.mount_table_target, KG_DB, "VecDoc"
+        )
+        docs.declare_record(row={"id": "d1", "summary": "s"})
+        for name in index_names:
+            docs.declare_vector_index(name=name, field="summary", dimension=4)
+
+    async def vector_indexes() -> set[str]:
+        rows = await _query(
+            uri, auth, "SHOW VECTOR INDEXES YIELD name, properties RETURN *"
+        )
+        return {r["name"] for r in rows if r["properties"] == ["summary"]}
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_vec_rename", environment=coco_env), declare
+    )
+    await app.update()
+    assert await vector_indexes() == {"coco_vec_VecDoc__summary"}
+
+    index_names = ["vec_b"]
+    await app.update()
+    assert await vector_indexes() == {"coco_vec_VecDoc__summary"}
+
+    # A second name for the same field fails where it is declared.
+    index_names = ["vec_b", "vec_c"]
+    with pytest.raises(Exception, match="both index VecDoc.summary"):
+        await app.update()

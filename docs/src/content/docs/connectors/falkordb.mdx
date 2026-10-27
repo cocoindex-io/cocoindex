@@ -172,6 +172,8 @@ def RelationTarget.declare_relation(
 
 If `record` is omitted, the connector derives a deterministic edge id from `(from_label, from_id, to_label, to_id)`. This is convenient when an edge has no properties of its own.
 
+An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relation table has an index on it; for a `managed_by="user"` table, create one yourself.
+
 #### Vector indexes (attachment)
 
 Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
@@ -194,7 +196,11 @@ def TableTarget.declare_vector_index(
 - `metric` — Similarity metric: `"cosine"`, `"euclidean"`, or `"ip"` (inner product). Translated to FalkorDB's `similarityFunction` option.
 - `dimension` — The vector's dimension. Required.
 
-The connector emits `CREATE VECTOR INDEX FOR (e:Label) ON (e.field) OPTIONS {dimension: N, similarityFunction: '...'}`. Vectors are float32 only — wider vector dtypes are not supported.
+The connector emits `CREATE VECTOR INDEX FOR (e:Label) ON (e.field) OPTIONS {dimension: N, similarityFunction: '...'}`.
+
+FalkorDB identifies a vector index by its label and field, not by `name`, so a field has at most one vector index. Renaming `name` keeps the index. Declaring a second name for the same field is an error.
+
+Vectors are float32 only — wider vector dtypes are not supported.
 
 ### Table schema: from Python class
 
