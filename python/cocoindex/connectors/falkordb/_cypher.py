@@ -114,13 +114,16 @@ def build_relationship_upsert(
     to_pk_fields: Sequence[str],
     rel_pk_fields: Sequence[str],
     has_value_fields: bool,
+    has_legacy_key: bool,
 ) -> str:
     """MERGE the source endpoint, the target endpoint, then the relationship.
 
     Before the relationship MERGE, any other relationship of the type with
     this primary key is deleted: the key names one edge, so one found between
     other endpoints is the edge before its endpoints changed (the MERGE would
-    otherwise create a second edge beside it).
+    otherwise create a second edge beside it). With ``has_legacy_key``, the
+    edge between these endpoints keyed by ``$legacy_key_*`` (the key the
+    deprecated relation API gave it) is deleted too.
 
     Endpoint properties are NOT touched — they are owned by their table's own
     record handler. We only ``SET r += $props`` on the relationship itself.
@@ -140,6 +143,12 @@ def build_relationship_upsert(
         f"DELETE o "
         f"WITH DISTINCT s, t "
     )
+    if has_legacy_key:
+        cypher += (
+            f"OPTIONAL MATCH (s)-[l:{rel} {_key_clause('legacy_key', rel_pk_fields, 'l')}]->(t) "
+            f"DELETE l "
+            f"WITH DISTINCT s, t "
+        )
     cypher += f"MERGE (s)-[r:{rel} {rel_key}]->(t)"
     if has_value_fields:
         cypher += " SET r += $props"
