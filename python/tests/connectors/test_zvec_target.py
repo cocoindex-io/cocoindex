@@ -202,6 +202,42 @@ class FtsTunedDoc:
     embedding: _Embedding
 
 
+@dataclass
+class BytesKeyDoc:
+    id: bytes
+    embedding: _Embedding
+
+
+@dataclass
+class BoolKeyDoc:
+    id: bool
+    embedding: _Embedding
+
+
+@dataclass
+class AnyKeyDoc:
+    id: Any
+    embedding: _Embedding
+
+
+@dataclass
+class ObjectKeyDoc:
+    id: object
+    embedding: _Embedding
+
+
+@dataclass
+class UnionKeyDoc:
+    id: int | str
+    embedding: _Embedding
+
+
+@dataclass
+class StrKeyDoc:
+    id: str
+    embedding: _Embedding
+
+
 # =============================================================================
 # Mutable per-test source state
 # =============================================================================
@@ -678,3 +714,44 @@ def test_filter_query(conn: Any) -> None:
         filter="year > 2000",
     )
     assert [d.id for d in results] == ["2"]
+
+
+@pytest.mark.parametrize(
+    ("row_type", "key", "key_type"),
+    [
+        (BytesKeyDoc, b"1", "bytes"),
+        (BoolKeyDoc, True, "bool"),
+        (AnyKeyDoc, 1, "Any"),
+        (ObjectKeyDoc, 1, "Any"),
+        (UnionKeyDoc, 1, "a union"),
+    ],
+)
+def test_new_collection_rejects_ambiguous_key_type(
+    conn: Any, row_type: type, key: Any, key_type: str
+) -> None:
+    """str() of these key types can give two keys one document id."""
+    collection = f"test_key_{row_type.__name__.lower()}"
+    _reset(row_type, collection)
+    app = _make_app(conn, f"test_new_collection_rejects_{row_type.__name__}")
+
+    _rows.append(row_type(id=key, embedding=_EMB))
+    with pytest.raises(Exception, match=f"is typed {key_type}"):
+        app.update_blocking()
+    assert not conn.collection_path(collection).exists()
+
+
+def test_existing_collection_keeps_ambiguous_key_type(conn: Any) -> None:
+    """A collection that already exists keeps accepting rows: only new ones are checked."""
+    global _row_type
+    _reset(StrKeyDoc, "test_key_existing")
+    app = _make_app(conn, "test_existing_collection_keeps_ambiguous_key_type")
+    _rows.append(StrKeyDoc(id="a", embedding=_EMB))
+    app.update_blocking()
+
+    # The key type isn't part of the collection's tracking record, so the
+    # collection stays as it is.
+    _row_type = UnionKeyDoc
+    _rows[:] = [UnionKeyDoc(id="a", embedding=_EMB), UnionKeyDoc(id=2, embedding=_EMB)]
+    app.update_blocking()
+    assert fetch_doc(conn, "test_key_existing", "a") is not None
+    assert fetch_doc(conn, "test_key_existing", "2") is not None
