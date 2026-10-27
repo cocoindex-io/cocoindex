@@ -26,6 +26,7 @@ __all__ = [
     "build_node_index_create",
     "build_node_index_drop",
     "build_node_upsert",
+    "build_node_vector_index_list",
     "build_relationship_delete",
     "build_relationship_delete_all",
     "build_relationship_index_create",
@@ -332,3 +333,15 @@ def build_vector_index_drop(name: str) -> str:
     Vector indexes share the index namespace; the same DROP works.
     """
     return f"DROP INDEX {_quote(name)} IF EXISTS"
+
+
+def build_node_vector_index_list() -> str:
+    """``SHOW INDEXES`` of the vector indexes on the nodes of label ``$label``.
+
+    One row per index, with its ``name`` and indexed ``properties``.
+    """
+    return (
+        "SHOW INDEXES YIELD name, type, entityType, labelsOrTypes, properties "
+        "WHERE type = 'VECTOR' AND entityType = 'NODE' AND labelsOrTypes = [$label] "
+        "RETURN name, properties"
+    )

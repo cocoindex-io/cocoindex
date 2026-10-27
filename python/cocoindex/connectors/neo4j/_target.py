@@ -1356,6 +1356,13 @@ class _TableHandler(
         not own belongs in a ``managed_by="user"`` table, which never gets
         here.
 
+        A node table also drops the vector indexes the connector created on
+        its label. They are attachments of the table, pruned with it like the
+        records, so the database is asked for them: that also finds an index
+        whose tracking an earlier version pruned. On a rebuild the engine
+        treats the table's vector index declarations as new, so they create
+        the indexes again.
+
         Uses ``prev_pk_field`` / ``prev_is_relation`` recovered during
         reconcile from the previous tracking record — that's what was
         actually CREATEd, so it's what we need to DROP.
@@ -1376,6 +1383,16 @@ class _TableHandler(
             await graph.query(_cypher.build_node_delete_all(key.table_name))
             cn = _cypher.constraint_name(key.table_name, [pk_field])
             await graph.query(_cypher.build_constraint_drop(cn))
+            rows = await graph.query(
+                _cypher.build_node_vector_index_list(), {"label": key.table_name}
+            )
+            for row in rows:
+                name = row["name"]
+                # The connector names its indexes after label and field.
+                if name == _cypher.vector_index_name(
+                    key.table_name, row["properties"][0]
+                ):
+                    await graph.query(_cypher.build_vector_index_drop(name))
 
 
 # ---------------------------------------------------------------------------
