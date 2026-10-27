@@ -1688,9 +1688,19 @@ class TestVectorIndexApplier:
 
 @requires_neo4j
 @pytest.mark.asyncio
-async def test_deprecated_apis_warn() -> None:
+async def test_deprecated_apis_warn(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each deprecated entry point warns once per call; the node and
-    relationship APIs don't. A preview run needs no server."""
+    relationship APIs don't. A preview run needs no server.
+
+    The calls run in components, on an engine thread. With context-aware
+    warnings (free-threaded Python), a ``catch_warnings`` here doesn't see
+    warnings raised there, so they are recorded at ``warnings.warn``, which
+    every thread calls."""
+    caught: list[str] = []
+
+    def record(message: Any, category: Any = None, *args: Any, **kwargs: Any) -> None:
+        if category is DeprecationWarning and str(message).startswith("neo4j."):
+            caught.append(str(message).split(" is deprecated")[0])
 
     async def declare() -> None:
         old_node: Any = await coco.use_mount(
@@ -1729,15 +1739,9 @@ async def test_deprecated_apis_warn() -> None:
     app = coco.App(
         coco.AppConfig(name="test_neo4j_deprecations", environment=coco_env), declare
     )
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        await app.update(preview=True)
-    deprecated = sorted(
-        str(w.message).split(" is deprecated")[0]
-        for w in caught
-        if issubclass(w.category, DeprecationWarning)
-    )
-    assert deprecated == [
+    monkeypatch.setattr(warnings, "warn", record)
+    await app.update(preview=True)
+    assert sorted(caught) == [
         "neo4j.RelationTarget.declare_relation",
         "neo4j.declare_relation_target",
         "neo4j.declare_table_target",
