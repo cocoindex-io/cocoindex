@@ -177,16 +177,23 @@ class TestMessageHandlerReconcile:
         assert result.action.value is None  # Tombstone
         assert coco.is_non_existence(result.tracking_record)
 
-    def test_delete_with_callback(
-        self, message_handler_with_deletion: _MessageHandler
+    @pytest.mark.asyncio
+    async def test_delete_with_callback(
+        self,
+        message_handler_with_deletion: _MessageHandler,
+        producer: MockAIOProducer,
     ) -> None:
         result = message_handler_with_deletion.reconcile(
             b"k1", coco.NON_EXISTENCE, [b"fp"], False
         )
 
         assert result is not None
-        assert result.action.key == b"k1"
-        assert result.action.value == b"deleted:k1"
+        assert result.action == _MessageAction(key=b"k1", value=None)
+        # The sink turns the deletion into the callback's value.
+        await message_handler_with_deletion._apply_actions(
+            MagicMock(spec=ContextProvider), [result.action]
+        )
+        assert producer.produced_messages == [("test-topic", b"k1", b"deleted:k1")]
 
     def test_delete_no_prev_no_missing_skips(
         self, message_handler: _MessageHandler
@@ -249,12 +256,47 @@ class TestMessageHandlerSink:
             ),
         )
 
-        action = _MessageAction(key=b"k1", value=b"del:k1")
+        action = _MessageAction(key=b"k1", value=None)
 
         context_provider = MagicMock(spec=ContextProvider)
         await handler._apply_actions(context_provider, [action])
 
-        assert producer.produced_messages[0] == ("test-topic", b"k1", b"del:k1")
+        assert producer.produced_messages == [("test-topic", b"k1", b"del:k1")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("published", "deleted"),
+        [("k1", b"k1"), (b"k1", "k1")],
+        ids=["str_published", "bytes_published"],
+    )
+    @pytest.mark.parametrize("with_deletion_value", [False, True])
+    async def test_deletion_of_key_published_in_same_call_is_skipped(
+        self,
+        producer: MockAIOProducer,
+        published: bytes | str,
+        deleted: bytes | str,
+        with_deletion_value: bool,
+    ) -> None:
+        # "k1" and b"k1" are one Kafka key: a deletion of one form must not
+        # follow (and erase) a publish of the other in the same call.
+        handler = _MessageHandler(
+            producer=_as_producer(producer),
+            topic="test-topic",
+            deletion_value_fn=(lambda k: b"del") if with_deletion_value else None,
+        )
+        await handler._apply_actions(
+            MagicMock(spec=ContextProvider),
+            [
+                _MessageAction(key=published, value=b"v1"),
+                _MessageAction(key=deleted, value=None),
+                _MessageAction(key=b"k2", value=None),
+            ],
+        )
+
+        assert producer.produced_messages == [
+            ("test-topic", published, b"v1"),
+            ("test-topic", b"k2", b"del" if with_deletion_value else None),
+        ]
 
     @pytest.mark.asyncio
     async def test_multiple_topics(self, producer: MockAIOProducer) -> None:
@@ -308,7 +350,7 @@ class _TopicScenario:
     """What ``_app_main`` declares; tests mutate it between runs."""
 
     declare_topic: bool = True
-    messages: dict[str, bytes] = field(default_factory=dict)
+    messages: dict[bytes | str, bytes] = field(default_factory=dict)
 
 
 @coco.fn
@@ -352,6 +394,34 @@ async def test_app_child_removal_produces_tombstone(topic_app: _TopicApp) -> Non
     del topic_app.scenario.messages["k1"]
     await topic_app.app.update()
     assert topic_app.producer.produced_messages == [("exp-topic", "k1", None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("old_key", "new_key"),
+    [("k1", b"k1"), (b"k1", "k1")],
+    ids=["str_to_bytes", "bytes_to_str"],
+)
+async def test_app_key_switching_str_and_bytes_keeps_record(
+    topic_app: _TopicApp, old_key: bytes | str, new_key: bytes | str
+) -> None:
+    topic_app.scenario.messages[old_key] = b"v1"
+    await topic_app.app.update()
+
+    # The new form is a new target state and the old form's is removed, but
+    # both are one Kafka key: the update publishes the record and must not
+    # tombstone it after.
+    topic_app.producer.clear()
+    del topic_app.scenario.messages[old_key]
+    topic_app.scenario.messages[new_key] = b"v2"
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", new_key, b"v2")]
+
+    # The old form's tracking is gone, so removing the new form tombstones once.
+    topic_app.producer.clear()
+    del topic_app.scenario.messages[new_key]
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", new_key, None)]
 
 
 @pytest.mark.asyncio

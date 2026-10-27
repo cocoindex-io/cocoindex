@@ -56,9 +56,11 @@ from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
+    AnyType,
     RecordType,
     SequenceType,
     TypeChecker,
+    UnionType,
     analyze_type_info,
     is_record_type,
 )
@@ -491,7 +493,8 @@ class CollectionSchema(Generic[RowT]):
         Args:
             record_type: A dataclass, NamedTuple, or Pydantic model.
             primary_key: Exactly one column name. Its value becomes the document
-                id (converted to ``str``).
+                id (converted to ``str``). A new collection rejects a key column
+                typed ``Any``, ``object``, a union, ``bytes`` or ``bool``.
             column_overrides: Optional per-column type/vector overrides.
         """
         if not is_record_type(record_type):
@@ -804,6 +807,31 @@ _collection_action_sink = coco.TargetActionSink[_CollectionAction].from_fn(
 )
 
 
+def _ambiguous_doc_id_type(schema: CollectionSchema[Any]) -> str | None:
+    """Describe the primary key type if ``str`` of its values is ambiguous, else None.
+
+    A document id is ``str(key)``: in a union or ``Any`` column it maps 1 and "1"
+    (or True and "True") to one id, and it turns bytes into the text "b'...'".
+    """
+    if schema.row_type is None:
+        return None
+    type_hint = next(
+        f.type_hint
+        for f in RecordType(schema.row_type).fields
+        if f.name == schema.primary_key
+    )
+    type_info = analyze_type_info(type_hint)
+    if isinstance(type_info.variant, AnyType) or type_info.base_type is object:
+        return "Any"
+    if isinstance(type_info.variant, UnionType):
+        return "a union"
+    if type_info.base_type is bytes:
+        return "bytes"
+    if type_info.base_type is bool:
+        return "bool"
+    return None
+
+
 class _CollectionHandler(
     coco.TargetHandler[_CollectionSpec, _CollectionTrackingRecord, _DocHandler]
 ):
@@ -825,6 +853,18 @@ class _CollectionHandler(
         if coco.is_non_existence(desired_state):
             tracking_record = coco.NON_EXISTENCE
         else:
+            # Only a new collection is checked, so existing ones keep their ids.
+            if not prev_possible_records and (
+                key_type := _ambiguous_doc_id_type(desired_state.schema)
+            ):
+                raise ValueError(
+                    f"zvec collection {key.collection_name!r}: primary key column "
+                    f"{desired_state.schema.primary_key!r} is typed {key_type}. A "
+                    "document id is the key value converted with str(), which is "
+                    'ambiguous for this type (1 and "1" get one id, bytes become '
+                    "\"b'...'\"). Use a str or int key column, converting the "
+                    "value yourself if needed."
+                )
             tracking_record = statediff.MutualTrackingRecord(
                 tracking_record=_tracking_core_from_spec(desired_state),
                 managed_by=desired_state.managed_by,

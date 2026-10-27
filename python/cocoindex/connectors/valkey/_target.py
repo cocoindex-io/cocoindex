@@ -87,7 +87,8 @@ class FieldDef(NamedTuple):
     filtering and searching via FT.SEARCH queries.
 
     Args:
-        name: The field name (must match the key in Document.payload).
+        name: The field name (must match the key in Document.payload). The
+              name ``vector`` is reserved for the vector field.
         type: Field type — "text" for full-text search, "tag" for exact-match
               filtering, "numeric" for range filtering.
         sortable: Whether the field can be used for sorting results.
@@ -147,6 +148,8 @@ class IndexSchema:
         vectors: _ResolvedVectorDef,
         fields: tuple[FieldDef, ...] = (),
     ) -> None:
+        for field_def in fields:
+            _check_not_vector_field_name(field_def.name, "FieldDef name")
         self._vectors = vectors
         self._fields = fields
 
@@ -184,6 +187,7 @@ class Document:
         id: Unique document identifier (string).
         vector: Vector as a list of floats or numpy array.
         payload: Optional dict of additional fields stored alongside the vector.
+            The key ``vector`` is reserved for the vector field.
     """
 
     id: str
@@ -255,6 +259,15 @@ def _validate_name(value: str, label: str) -> str:
             f"hyphens, and underscores, got: {value!r}"
         )
     return value
+
+
+def _check_not_vector_field_name(name: str, label: str) -> None:
+    """Reject the hash field name that holds a document's vector."""
+    if name == _VECTOR_FIELD_NAME:
+        raise ValueError(
+            f"{label} {name!r} is reserved: CocoIndex stores the document's vector "
+            "in the hash field of that name. Use another name."
+        )
 
 
 def _vector_to_bytes(vector: list[float] | np.ndarray) -> bytes:  # type: ignore[type-arg]
@@ -344,6 +357,11 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
+
+        # Checked before the unchanged-fingerprint shortcut, so a document
+        # stored with a broken vector before this check fails every run.
+        for payload_key in desired_state.payload or ():
+            _check_not_vector_field_name(payload_key, "Payload key")
 
         # Build fingerprint from vector + payload
         target_fp = fingerprint_object(

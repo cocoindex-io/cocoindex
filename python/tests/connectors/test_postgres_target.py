@@ -201,6 +201,17 @@ class HalfVectorRow:
 
 
 @dataclass
+class TwoVectorRow:
+    id: str
+    title_embedding: Annotated[
+        NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=4)
+    ]
+    body_embedding: Annotated[
+        NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=4)
+    ]
+
+
+@dataclass
 class TextRow:
     id: str
     content: str
@@ -482,6 +493,100 @@ async def test_postgres_declare_halfvec_vector_index_uses_halfvec_opclass(
         assert info["amname"] == "ivfflat"
         assert await _index_opclass_names(pool, pg_index_name) == ["halfvec_cosine_ops"]
 
+    finally:
+        await _drop_table(pool, table_name)
+
+
+def _truncated(name: str) -> str:
+    """The name PostgreSQL keeps for an identifier: its first 63 bytes."""
+    return name.encode()[:63].decode(errors="ignore")
+
+
+def _long_table_name(length: int) -> str:
+    table_name = _unique_name("t" * (length - 9))
+    assert len(table_name) == length
+    return table_name
+
+
+@pytest.mark.asyncio
+async def test_postgres_vector_indexes_with_one_truncated_name_raise(
+    pg_env: _PgEnv,
+) -> None:
+    """Two vector indexes whose PostgreSQL names truncate to one name are rejected."""
+    # The index name prefix `<table>__vector__` takes 51 bytes, so only the first
+    # 12 bytes of each vector index name survive truncation.
+    table_name = _long_table_name(41)
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(TwoVectorRow, primary_key=["id"]),
+            )
+            table.declare_vector_index(
+                name="embeddings_for_title", column="title_embedding"
+            )
+            table.declare_vector_index(
+                name="embeddings_for_body", column="body_embedding"
+            )
+
+        app = coco.App(
+            coco.AppConfig(
+                name=f"test_vec_idx_truncated_{table_name}",
+                environment=pg_env.coco_env,
+            ),
+            declare_fn,
+        )
+        with pytest.raises(Exception, match="both get the PostgreSQL index name"):
+            await app.update()
+    finally:
+        await _drop_table(pg_env.pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_vector_indexes_with_long_names(pg_env: _PgEnv) -> None:
+    """Long vector index names keep working: distinct after truncation, or renamed."""
+    pool = pg_env.pool
+    # The index name prefix `<table>__vector__` takes 58 bytes, so the first 5
+    # bytes of each vector index name survive truncation.
+    table_name = _long_table_name(48)
+    title_index_name = "title_embedding"
+
+    async def declare_fn() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            postgres.declare_table_target,
+            _PG_DB_KEY,
+            table_name,
+            await postgres.TableSchema.from_class(TwoVectorRow, primary_key=["id"]),
+        )
+        table.declare_vector_index(name=title_index_name, column="title_embedding")
+        table.declare_vector_index(name="body_embedding", column="body_embedding")
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_vec_idx_long_names_{table_name}",
+            environment=pg_env.coco_env,
+        ),
+        declare_fn,
+    )
+    title_pg_name = _truncated(f"{table_name}__vector__title_embedding")
+    body_pg_name = _truncated(f"{table_name}__vector__body_embedding")
+    assert title_pg_name != body_pg_name
+    try:
+        await app.update()
+        assert await _index_info(pool, title_pg_name) is not None
+        assert await _index_info(pool, body_pg_name) is not None
+
+        # A new name that truncates to the old one replaces it: the drop of the
+        # old index must not remove the new one.
+        title_index_name = "title_embedding_v2"
+        await app.update()
+        assert await _index_info(pool, title_pg_name) is not None
+        assert await _index_info(pool, body_pg_name) is not None
     finally:
         await _drop_table(pool, table_name)
 

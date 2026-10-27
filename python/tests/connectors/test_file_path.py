@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePath
+from typing import Any
 
 from cocoindex.resources.file import FilePath
 from cocoindex.connectors.localfs import FilePath as LocalfsFilePath
@@ -80,3 +81,26 @@ def test_localfs_has_no_cwd_base_dir() -> None:
     assert not hasattr(localfs, "CWD_BASE_DIR"), (
         "CWD_BASE_DIR should not be exported from localfs"
     )
+
+
+def test_file_paths_of_different_types_never_compare() -> None:
+    """Equality and ordering follow the memo key, which includes the path type."""
+    import pytest
+
+    from cocoindex.connectors.amazon_s3 import S3FilePath
+
+    local = LocalfsFilePath("x.txt")
+    concrete = _ConcreteFilePath(None, PurePath("x.txt"))
+    s3 = S3FilePath("bucket", "x.txt", object_key="x.txt")
+    pairs: list[tuple[FilePath[Any], FilePath[Any]]] = [
+        (local, concrete),
+        (local, s3),
+        (s3, concrete),
+    ]
+    for a, b in pairs:
+        assert a != b and b != a
+        with pytest.raises(TypeError):
+            _ = a < b
+        with pytest.raises(TypeError):
+            _ = b > a
+    assert local == LocalfsFilePath("x.txt")

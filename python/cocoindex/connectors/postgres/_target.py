@@ -98,6 +98,24 @@ def _qualified_table_name(table_name: str, pg_schema_name: str | None) -> str:
     return f'"{table_name}"'
 
 
+# PostgreSQL truncates identifiers longer than this many bytes (NAMEDATALEN - 1).
+_MAX_IDENTIFIER_BYTES = 63
+
+
+def _truncated_identifier(name: str) -> str:
+    """Return the identifier PostgreSQL uses for ``name`` in a UTF-8 database.
+
+    PostgreSQL cuts a longer identifier to 63 bytes, backing off to a character
+    boundary.
+    """
+    return name.encode()[:_MAX_IDENTIFIER_BYTES].decode(errors="ignore")
+
+
+def _vector_index_name(table_name: str, index_name: str) -> str:
+    """The name of the PostgreSQL index for a declared vector index, untruncated."""
+    return f"{table_name}__vector__{index_name}"
+
+
 class PgType(NamedTuple):
     """
     Annotation to specify a PostgreSQL column type.
@@ -522,8 +540,11 @@ class _VectorIndexHandler:
         self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
     ) -> None:
         async with self._pool.acquire() as conn:
-            for action in actions:
-                index_base_name = f"{self._table_name}__vector__{action.name}"
+            # Drop deleted indexes first: a deleted index and a created one can
+            # share a PostgreSQL name after truncation, and the later drop would
+            # remove the new index.
+            for action in sorted(actions, key=lambda a: a.spec is not None):
+                index_base_name = _vector_index_name(self._table_name, action.name)
                 # `CREATE INDEX` takes an *unqualified* index name (it is created in
                 # the table's schema); `DROP INDEX` must be *schema-qualified* to
                 # find that index — an unqualified name resolves via `search_path`,
@@ -1456,15 +1477,21 @@ class TableTarget(
     """
 
     _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
+    _table_name: str
     _table_schema: TableSchema[RowT]
+    # Vector index name by the (truncated) PostgreSQL index name it maps to.
+    _vector_index_names: dict[str, str]
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        table_name: str,
         table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
+        self._table_name = table_name
         self._table_schema = table_schema
+        self._vector_index_names = {}
 
     def declare_row(self: "TableTarget[RowT]", *, row: RowT) -> None:
         """
@@ -1515,6 +1542,9 @@ class TableTarget(
         Declare a pgvector index on a column of this table.
 
         The actual Postgres index will be named ``{table_name}__vector__{name}``.
+        PostgreSQL truncates a name longer than 63 bytes. Declaring two vector
+        indexes on this target whose names become the same after truncation
+        raises a ``ValueError``.
 
         Args:
             name: Logical index name (defaults to ``column``).
@@ -1532,6 +1562,7 @@ class TableTarget(
             raise ValueError(
                 f"Column '{column}' not found in table schema: {list(self._table_schema.columns.keys())}"
             )
+        self._check_vector_index_name(name)
         spec = _VectorIndexSpec(
             column=column,
             metric=metric,
@@ -1543,6 +1574,26 @@ class TableTarget(
         )
         att_provider = self._provider.attachment("vector_index")
         coco.declare_target_state(att_provider.target_state(name, spec))
+
+    def _check_vector_index_name(self, name: str) -> None:
+        """Raise if another vector index on this table gets the same PostgreSQL name."""
+        pg_name = _truncated_identifier(_vector_index_name(self._table_name, name))
+        other = self._vector_index_names.setdefault(pg_name, name)
+        if other == name:
+            return
+        prefix_bytes = len(_vector_index_name(self._table_name, "").encode())
+        if prefix_bytes >= _MAX_IDENTIFIER_BYTES:
+            hint = "Use a shorter table name to have more than one vector index."
+        else:
+            hint = (
+                "Use vector index names that differ within their first "
+                f"{_MAX_IDENTIFIER_BYTES - prefix_bytes} bytes, or a shorter table name."
+            )
+        raise ValueError(
+            f"Vector indexes {other!r} and {name!r} on table {self._table_name!r} "
+            f"both get the PostgreSQL index name {pg_name!r}: PostgreSQL truncates "
+            f"names to {_MAX_IDENTIFIER_BYTES} bytes. {hint}"
+        )
 
     def declare_sql_command_attachment(
         self: "TableTarget[RowT]",
@@ -1592,7 +1643,8 @@ def table_target(
         db: ContextKey for the asyncpg.Pool connection.
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
-        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        pg_schema_name: Optional PostgreSQL schema name. When None, the table
+            name is not schema-qualified, so `search_path` picks the schema.
         managed_by: Whether the table is managed by "system" or "user".
 
     Returns:
@@ -1631,7 +1683,8 @@ def declare_table_target(
         db: ContextKey for the asyncpg.Pool connection.
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
-        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        pg_schema_name: Optional PostgreSQL schema name. When None, the table
+            name is not schema-qualified, so `search_path` picks the schema.
         managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
                     or "user" (table must exist, CocoIndex only manages rows).
 
@@ -1647,7 +1700,7 @@ def declare_table_target(
             managed_by=managed_by,
         )
     )
-    return TableTarget(provider, table_schema)
+    return TableTarget(provider, table_name, table_schema)
 
 
 async def mount_table_target(
@@ -1667,7 +1720,8 @@ async def mount_table_target(
         db: ContextKey for the asyncpg.Pool connection.
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
-        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        pg_schema_name: Optional PostgreSQL schema name. When None, the table
+            name is not schema-qualified, so `search_path` picks the schema.
         managed_by: Whether the table is managed by "system" or "user".
 
     Returns:
@@ -1682,7 +1736,7 @@ async def mount_table_target(
             managed_by=managed_by,
         )
     )
-    return TableTarget(provider, table_schema)
+    return TableTarget(provider, table_name, table_schema)
 
 
 async def create_pool(

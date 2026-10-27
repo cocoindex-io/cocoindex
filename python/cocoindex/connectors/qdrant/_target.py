@@ -260,13 +260,20 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
             return
 
         upserts: list[qdrant_models.PointStruct] = []
+        upserted_ids: set[_PointId] = set()
         deletes: list[_PointId] = []
 
         for action in actions:
             if action.point is None:
-                deletes.append(action.point_id)
+                deletes.append(_canonical_point_id(action.point_id))
             else:
                 upserts.append(action.point)
+                upserted_ids.add(_canonical_point_id(action.point_id))
+
+        # A key from before point IDs were canonicalized (e.g. an upper-case
+        # UUID) names the same point as its canonical key upserted here, so
+        # deleting it would remove the point just written.
+        deletes = [point_id for point_id in deletes if point_id not in upserted_ids]
 
         if upserts:
             await asyncio.to_thread(
@@ -556,6 +563,11 @@ class CollectionTarget(
         Args:
             point: PointStruct defining the point ID, vectors, and payload
 
+        A UUID point ID may be given in any text form Qdrant accepts (upper
+        case, 32-char hex, URN) or as a ``uuid.UUID``; all forms of one UUID
+        name the same point, so declaring two of them in one run fails as a
+        duplicate declaration.
+
         Raises:
             ValueError: If the point ID is not an unsigned 64-bit integer or
                 a UUID (Qdrant rejects all other IDs at write time).
@@ -735,8 +747,24 @@ _POINT_ID_RULE = (
 )
 
 
+def _canonical_point_id(point_id: _PointId) -> _PointId:
+    """The ID Qdrant stores a point under.
+
+    Qdrant parses every UUID text form (upper case, 32-char hex, URN) to the
+    same point, so a UUID string becomes its hyphenated lower-case form. A
+    string that is not a UUID names no point; it stays as it is.
+    """
+    if isinstance(point_id, str):
+        try:
+            return str(uuid.UUID(point_id))
+        except ValueError:
+            return point_id
+    return point_id
+
+
 def _validate_point_id(raw: object) -> _PointId:
-    """Validate a point ID against Qdrant's server-side rules, eagerly.
+    """Validate a point ID against Qdrant's server-side rules, eagerly, and
+    return its canonical form (see :func:`_canonical_point_id`).
 
     Qdrant only accepts unsigned 64-bit integers and UUIDs (any textual
     form: hyphenated, 32-char hex, or URN); everything else is rejected at
@@ -754,13 +782,12 @@ def _validate_point_id(raw: object) -> _PointId:
         return str(raw)
     if isinstance(raw, str):
         try:
-            uuid.UUID(raw)
+            return str(uuid.UUID(raw))
         except ValueError:
             raise ValueError(
                 f"Invalid Qdrant point ID {raw!r}: strings must be UUIDs. "
                 f"{_POINT_ID_RULE}"
             ) from None
-        return raw
     raise ValueError(
         f"Invalid Qdrant point ID of type {type(raw).__name__}. {_POINT_ID_RULE}"
     )

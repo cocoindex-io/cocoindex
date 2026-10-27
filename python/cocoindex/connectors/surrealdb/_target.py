@@ -99,6 +99,45 @@ def _to_record_id(table: str, value: Any) -> Any:
     return RecordID(table, value)
 
 
+def _relation_id_part(value: str) -> str:
+    """Length-prefix ``value``, so concatenated parts split back only one way."""
+    return f"{len(value)}:{value};"
+
+
+def _endpoint_id_fragment(value: Any) -> str:
+    """Encode an endpoint record ID as ``<type tag>:<value>``, so ``1`` and ``"1"`` differ.
+
+    A tuple and a list name the same array ID (see :func:`_to_record_id`), so they
+    encode the same. Other types are tagged with their qualified type name, which
+    always contains a ``.`` and so never equals the ``str`` / ``int`` / ``array`` tags.
+    """
+    if isinstance(value, str):
+        return f"str:{value}"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"int:{value}"
+    if isinstance(value, (tuple, list)):
+        parts = "".join(_relation_id_part(_endpoint_id_fragment(v)) for v in value)
+        return f"array:{parts}"
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}:{value}"
+
+
+def _auto_relation_id(from_table: str, from_id: Any, to_table: str, to_id: Any) -> str:
+    """The record ID of a relation declared without an explicit ``id``.
+
+    Each part is length-prefixed and each endpoint ID type-tagged, so distinct
+    endpoints never give the same ID.
+    """
+    return "".join(
+        (
+            _relation_id_part(from_table),
+            _relation_id_part(_endpoint_id_fragment(from_id)),
+            _relation_id_part(to_table),
+            _relation_id_part(_endpoint_id_fragment(to_id)),
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Connection factory
 # ---------------------------------------------------------------------------
@@ -1472,7 +1511,9 @@ class RelationTarget(
 
         # Auto-derive id from endpoints when not explicitly provided
         if record_id is None:
-            record_id = f"{from_table_name}_{from_id}_{to_table_name}_{to_id}"
+            record_id = _auto_relation_id(
+                from_table_name, from_id, to_table_name, to_id
+            )
 
         # Wrap in _RelationRowValue
         row_value: _RowValue = _RelationRowValue(

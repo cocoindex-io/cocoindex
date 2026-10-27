@@ -249,12 +249,13 @@ class TableSchema(Generic[RowT]):
         self.primary_key = primary_key
         self.row_type = row_type
 
-        # Validate primary key columns exist
+        # Validate primary key columns exist and can appear in a delete filter
         for pk in self.primary_key:
             if pk not in self.columns:
                 raise ValueError(
                     f"Primary key column '{pk}' not found in columns: {list(self.columns.keys())}"
                 )
+            _pk_condition(pk, self.columns[pk])
 
     @classmethod
     async def from_class(
@@ -339,6 +340,82 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
+_I64_MIN = -(2**63)
+
+
+def _string_literal(value: str) -> str:
+    return f"'{_escape_sql_string(value)}'"
+
+
+def _binary_literal(value: bytes) -> str:
+    return f"X'{bytes(value).hex()}'"
+
+
+def _bool_literal(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _int_literal(value: int) -> str:
+    # Key integers are int64. Lance parses the int64 minimum as a negated positive
+    # number, which overflows to a float; a cast from a string is exact.
+    if value == _I64_MIN:
+        return f"CAST('{value}' AS BIGINT)"
+    return str(value)
+
+
+def _sql_literal_renderer(pa_type: pa.DataType) -> Callable[[Any], str] | None:
+    """Return the renderer of a value of this type as a DataFusion SQL literal.
+
+    Returns None for a type without one.
+    """
+    types = pa.types
+    if (
+        types.is_string(pa_type)
+        or types.is_large_string(pa_type)
+        or types.is_string_view(pa_type)
+    ):
+        return _string_literal
+    if (
+        types.is_binary(pa_type)
+        or types.is_large_binary(pa_type)
+        or types.is_fixed_size_binary(pa_type)
+        or types.is_binary_view(pa_type)
+    ):
+        return _binary_literal
+    if types.is_boolean(pa_type):
+        return _bool_literal
+    # Keys have no float type, but an integer key can fill a float or decimal column.
+    if (
+        types.is_integer(pa_type)
+        or types.is_float32(pa_type)
+        or types.is_float64(pa_type)
+        or types.is_decimal(pa_type)
+    ):
+        return _int_literal
+    return None
+
+
+def _pk_condition(name: str, column: ColumnDef) -> Callable[[Any], str]:
+    """Return a function that renders the delete filter condition ``name = value``.
+
+    Raises ValueError if the column's name or type can't be expressed in a filter.
+    """
+    if "`" in name:
+        raise ValueError(
+            f"Primary key column '{name}': a primary key column name can't contain '`'"
+        )
+    render_literal = _sql_literal_renderer(column.type)
+    if render_literal is None:
+        raise ValueError(
+            f"Primary key column '{name}' has type {column.type}, which isn't supported "
+            "for a primary key. Supported types: string, binary, boolean, integer, "
+            "float32, float64 and decimal."
+        )
+    # Backticks keep the name's case and allow any character other than '`'.
+    quoted_name = f"`{name}`"
+    return lambda value: f"{quoted_name} = {render_literal(value)}"
+
+
 async def _drop_index_if_exists(
     table: lancedb.table.AsyncTable, index_name: str, table_name: str
 ) -> None:
@@ -410,6 +487,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _stats_checked_once: bool
     _sink: coco.TargetActionSink[_RowAction]
     _null_backfilled_columns: frozenset[str]
+    _pk_conditions: list[Callable[[Any], str]]
 
     def __init__(
         self,
@@ -428,6 +506,10 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._stats_checked_once = False
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
         self._null_backfilled_columns = frozenset(null_backfilled_columns)
+        self._pk_conditions = [
+            _pk_condition(pk, table_schema.columns[pk])
+            for pk in table_schema.primary_key
+        ]
 
     async def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -641,21 +723,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         deletes: list[_RowAction],
     ) -> None:
         """Execute delete operations using LanceDB's delete."""
-        pk_cols = self._table_schema.primary_key
-
-        # Build delete conditions for each row
-        # LanceDB delete syntax: table.delete("column = value")
         for action in deletes:
-            conditions = []
-            for i, pk_col in enumerate(pk_cols):
-                pk_value = action.key[i]
-                # Handle different types appropriately
-                if isinstance(pk_value, str):
-                    conditions.append(f"{pk_col} = '{_escape_sql_string(pk_value)}'")
-                else:
-                    conditions.append(f"{pk_col} = {pk_value}")
-
-            condition = " AND ".join(conditions)
+            condition = " AND ".join(
+                pk_condition(pk_value)
+                for pk_condition, pk_value in zip(self._pk_conditions, action.key)
+            )
             await table.delete(condition)
 
     def _build_pyarrow_schema(self) -> pa.Schema:

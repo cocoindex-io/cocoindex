@@ -100,7 +100,7 @@ def list_blobs(
 **Parameters:**
 
 - `container_client` - An async Azure `ContainerClient`.
-- `prefix` - Only list blobs whose name starts with this prefix. The prefix is stripped from relative paths in returned files.
+- `prefix` - Only list blobs in this folder. A prefix names a folder: `"docs"` and `"docs/"` both list the blobs under `docs/`, and neither lists `docsa.md`. The folder is stripped from relative paths in returned files. To select blobs by the start of their name (for example `2024-*.csv`), use `path_matcher`.
 - `path_matcher` - Optional filter for files. Patterns are matched against the relative path after prefix stripping. See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
 - `max_file_size` - Skip blobs larger than this size in bytes.
 
@@ -120,7 +120,7 @@ async for file in azure_blob.list_blobs(client, prefix="docs/"):
 
 ### Keyed iteration with `items()`
 
-`AzureBlobWalker.items()` yields `(str, AzureBlobFile)` pairs. The key is the blob path relative to the prefix:
+`AzureBlobWalker.items()` yields `(str, AzureBlobFile)` pairs. The key is the blob name relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
 
 ```python
 async for key, file in azure_blob.list_blobs(client, prefix="docs/").items():
@@ -209,11 +209,14 @@ Each file returned by the connector has an `AzureBlobFilePath`, a [`FilePath`](.
 
 - **Relative path** (`file.file_path.path`) - The blob name relative to the walker prefix, or the full blob name if no prefix was used.
 - **Resolved path** (`file.file_path.resolve()`) - The full blob name in the container.
+- **Identity** - Two `AzureBlobFilePath`s are equal only if they have the same account, container and relative name.
 
 For example, with `prefix="docs/"` and blob name `"docs/readme.md"`:
 
 - `file.file_path.path` returns `PurePath("readme.md")`
 - `file.file_path.resolve()` returns `"docs/readme.md"`
+
+A derived path (`parent`, `/`, `with_name()`, `with_suffix()`) resolves to the blob name of the new path in the same folder: `file.file_path.with_suffix(".txt").resolve()` returns `"docs/readme.txt"`.
 
 ### Example
 

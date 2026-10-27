@@ -17,6 +17,11 @@ from pathlib import PurePath
 from typing import Protocol, cast
 from urllib.parse import urlparse
 
+from cocoindex.connectorkits._object_store import (
+    ObjectStoreFilePath,
+    folder_prefix,
+    relative_key,
+)
 from cocoindex.resources import file
 
 
@@ -119,14 +124,17 @@ def _get_blob_client(
     return cast(_BlobClient, container_client.get_blob_client(blob_name))
 
 
-class AzureBlobFilePath(file.FilePath[str]):
-    """File path for Azure Blob Storage objects."""
+class AzureBlobFilePath(ObjectStoreFilePath):
+    """File path for Azure Blob Storage objects.
 
-    __slots__ = ("_account_name", "_container_name", "_blob_name")
+    ``path`` is the blob name relative to the walker prefix; ``blob_name`` must end
+    with it.
+    """
+
+    __slots__ = ("_account_name", "_container_name")
 
     _account_name: str
     _container_name: str
-    _blob_name: str
 
     def __init__(
         self,
@@ -136,10 +144,9 @@ class AzureBlobFilePath(file.FilePath[str]):
         *,
         blob_name: str,
     ) -> None:
-        super().__init__(None, PurePath(path))
+        super().__init__(path, object_key=blob_name)
         self._account_name = account_name
         self._container_name = container_name
-        self._blob_name = blob_name
 
     @property
     def account_name(self) -> str:
@@ -151,22 +158,19 @@ class AzureBlobFilePath(file.FilePath[str]):
 
     @property
     def blob_name(self) -> str:
-        return self._blob_name
+        """The full blob name."""
+        return self.resolve()
 
-    def resolve(self) -> str:
-        """Return the full blob name."""
-        return self._blob_name
+    def _store(self) -> tuple[str, ...]:
+        return (self._account_name, self._container_name)
 
     def _with_path(self, path: PurePath) -> AzureBlobFilePath:
         return type(self)(
             self._account_name,
             self._container_name,
             path,
-            blob_name=self._blob_name,
+            blob_name=self._object_key_of(path),
         )
-
-    def __coco_memo_key__(self) -> object:
-        return (self._account_name, self._container_name, self._path)
 
 
 class AzureBlobFile(file.FileLike[str]):
@@ -245,7 +249,7 @@ class AzureBlobWalker:
     _container_client: _ContainerClient
     _account_name: str
     _container_name: str
-    _prefix: str
+    _folder: str
     _path_matcher: file.FilePathMatcher
     _max_file_size: int | None
 
@@ -259,29 +263,26 @@ class AzureBlobWalker:
     ) -> None:
         self._container_client = container_client
         self._account_name, self._container_name = _container_identity(container_client)
-        self._prefix = prefix
+        self._folder = folder_prefix(prefix)
         self._path_matcher = path_matcher or file.MatchAllFilePathMatcher()
         self._max_file_size = max_file_size
 
-    async def _aiter_blob_files(self) -> AsyncIterator[AzureBlobFile]:
-        name_starts_with = self._prefix or None
+    async def items(self) -> AsyncIterator[tuple[str, AzureBlobFile]]:
+        """Async iterate over (key, file) pairs.
+
+        The key is the blob name relative to the prefix, exactly as stored.
+        """
+        name_starts_with = self._folder or None
         async for blob in self._container_client.list_blobs(
             name_starts_with=name_starts_with
         ):
             blob_name = blob.name
-            if blob_name.endswith("/"):
+            # None for a directory marker (a name ending with /)
+            relative_name = relative_key(blob_name, self._folder)
+            if relative_name is None:
                 continue
 
-            if self._prefix:
-                relative_name = blob_name[len(self._prefix) :].lstrip("/")
-            else:
-                relative_name = blob_name
-
-            if not relative_name:
-                continue
-
-            relative_path = PurePath(relative_name)
-            if not self._path_matcher.is_file_included(relative_path):
+            if not self._path_matcher.is_file_included(PurePath(relative_name)):
                 continue
 
             blob_size = int(blob.size)
@@ -294,19 +295,18 @@ class AzureBlobWalker:
                 relative_name,
                 blob_name=blob_name,
             )
-            yield AzureBlobFile(
-                container_client=self._container_client,
-                file_path=file_path,
-                _metadata=_metadata_from_properties(blob),
+            yield (
+                relative_name,
+                AzureBlobFile(
+                    container_client=self._container_client,
+                    file_path=file_path,
+                    _metadata=_metadata_from_properties(blob),
+                ),
             )
 
     async def __aiter__(self) -> AsyncIterator[AzureBlobFile]:
-        async for f in self._aiter_blob_files():
+        async for _, f in self.items():
             yield f
-
-    async def items(self) -> AsyncIterator[tuple[str, AzureBlobFile]]:
-        async for f in self._aiter_blob_files():
-            yield f.file_path.path.as_posix(), f
 
 
 def list_blobs(
@@ -316,7 +316,11 @@ def list_blobs(
     path_matcher: file.FilePathMatcher | None = None,
     max_file_size: int | None = None,
 ) -> AzureBlobWalker:
-    """List blobs in a container and yield file entries."""
+    """List blobs in a container and yield file entries.
+
+    ``prefix`` names a folder: ``"docs"`` and ``"docs/"`` both list ``docs/...``,
+    and neither lists ``docsa.md``.
+    """
     return AzureBlobWalker(
         container_client,
         prefix=prefix,

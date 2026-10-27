@@ -186,7 +186,10 @@ def test_listing_preserves_paths_and_deduplicates_roots(
 
     children["parent"] = [folder]
     files = list(list_files(GoogleDriveSourceSpec("unused.json", ["parent"])))
-    assert files[0].file_path.as_posix() == "nested/report.txt"
+    assert [file.file_path.as_posix() for file in files] == [
+        "nested/only.txt",
+        "nested/report.txt",
+    ]
 
 
 @requires_google_drive
@@ -231,3 +234,174 @@ async def test_memo_distinguishes_drive_ids_and_folder_moves(
     assert await app.update() == "id-2:b/report.txt"
     assert await app.update() == "id-2:b/report.txt"
     assert calls == ["id-1", "id-2", "id-2"]
+
+
+class _FakeDriveFiles:
+    """The ``service.files()`` surface that ``list_files`` uses."""
+
+    def __init__(self, children: dict[str, list[dict[str, str]]]) -> None:
+        self.children = children
+
+    def list(self, *, q: str, fields: str, pageToken: str | None) -> _FakeRequest:
+        folder_id = q.split("'")[1]
+        return _FakeRequest({"files": self.children[folder_id]})
+
+
+class _FakeRequest:
+    def __init__(self, response: dict[str, object]) -> None:
+        self._response = response
+
+    def execute(self) -> dict[str, object]:
+        return self._response
+
+
+class _FakeDriveService:
+    def __init__(self, children: dict[str, list[dict[str, str]]]) -> None:
+        self._files = _FakeDriveFiles(children)
+
+    def files(self) -> _FakeDriveFiles:
+        return self._files
+
+
+def _drive_entry(
+    file_id: str, name: str, mime_type: str = "text/plain", **extra: str
+) -> dict[str, str]:
+    return {
+        "id": file_id,
+        "name": name,
+        "mimeType": mime_type,
+        "modifiedTime": "2024-01-01T00:00:00Z",
+        **extra,
+    }
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_listing_uses_md5_as_content_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cocoindex.connectors.google_drive import _source
+
+    service = _FakeDriveService(
+        {
+            "root": [
+                _drive_entry("bin", "data.bin", md5Checksum="abc123", size="3"),
+                _drive_entry("doc", "notes", _source._DOCS_MIME),
+            ]
+        }
+    )
+    monkeypatch.setattr(_source, "_build_service", lambda _: service)
+    files = {
+        f.file_path.resolve(): f
+        for f in list_files(GoogleDriveSourceSpec("unused.json", ["root"]))
+    }
+    assert await files["bin"].content_fingerprint() == b"abc123"
+    # Google Docs have no MD5: the fingerprint hashes the exported content.
+    assert (await files["doc"]._ensure_metadata()).content_fingerprint is None
+
+
+@requires_google_drive
+def test_file_with_several_parents_keeps_one_path_whatever_the_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cocoindex.connectors.google_drive import _source
+
+    folders = [
+        _drive_entry("f-b", "b", _source._FOLDER_MIME),
+        _drive_entry("f-a", "a", _source._FOLDER_MIME),
+    ]
+    shared = _drive_entry("shared", "report.txt")
+    children = {"root": folders, "f-a": [shared], "f-b": [shared]}
+    monkeypatch.setattr(
+        _source, "_build_service", lambda _: _FakeDriveService(children)
+    )
+    spec = GoogleDriveSourceSpec("unused.json", ["root"])
+
+    first = [f.file_path.as_posix() for f in list_files(spec)]
+    children["root"] = list(reversed(folders))
+    second = [f.file_path.as_posix() for f in list_files(spec)]
+    assert first == second == ["a/report.txt"]
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_memo_follows_md5_not_modified_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new mtime with the same MD5 reuses the memo; a new MD5 recomputes."""
+    reads: list[str] = []
+
+    async def read(file: DriveFile, size: int = -1) -> bytes:
+        reads.append(file.file_path.resolve())
+        return b"content"
+
+    monkeypatch.setattr(DriveFile, "_read_impl", read)
+
+    calls: list[str] = []
+
+    @coco.fn(memo=True)
+    async def process(file: DriveFile) -> int:
+        calls.append(file.file_path.resolve())
+        return len(await file.read())
+
+    current: DriveFile
+
+    @coco.fn
+    async def main() -> int:
+        return await process(current)
+
+    env = create_test_env(__file__, suffix="drive_md5_memo")
+    app = coco.App(coco.AppConfig(name="drive_md5_memo", environment=env), main)
+    t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    t2 = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    for mtime, md5 in [(t1, "m1"), (t2, "m1"), (t2, "m2")]:
+        current = DriveFile(
+            None,
+            DriveFileInfo(
+                "id-1", "a.bin", "application/octet-stream", 7, mtime, md5_checksum=md5
+            ),
+        )
+        assert await app.update() == 7
+    assert calls == ["id-1", "id-1"]
+    assert reads == ["id-1", "id-1"]
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_memo_without_md5_skips_read_while_mtime_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Google Doc has no MD5: an unchanged mtime reuses the memo without a download."""
+    from cocoindex.connectors.google_drive import _source
+
+    reads: list[str] = []
+
+    async def read(file: DriveFile, size: int = -1) -> bytes:
+        reads.append(file.file_path.resolve())
+        return b"content"
+
+    monkeypatch.setattr(DriveFile, "_read_impl", read)
+
+    calls: list[str] = []
+
+    @coco.fn(memo=True)
+    async def process(file: DriveFile) -> int:
+        calls.append(file.file_path.resolve())
+        return len(await file.read())
+
+    current: DriveFile
+
+    @coco.fn
+    async def main() -> int:
+        return await process(current)
+
+    env = create_test_env(__file__, suffix="drive_no_md5_memo")
+    app = coco.App(coco.AppConfig(name="drive_no_md5_memo", environment=env), main)
+    mtime = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    for _ in range(2):
+        current = DriveFile(
+            None, DriveFileInfo("doc-1", "notes", _source._DOCS_MIME, 0, mtime)
+        )
+        assert await app.update() == 7
+    assert calls == ["doc-1"]
+    assert reads == ["doc-1"]

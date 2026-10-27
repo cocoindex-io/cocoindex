@@ -129,8 +129,9 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 
 `DriveFile` implements [`FileLike`](../common_resources/data_types#filelike) with Google Drive-specific behavior:
 
-- `file_path` — A `DriveFilePath` containing the path relative to the configured root folder; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal.
+- `file_path` — A `DriveFilePath` containing the path relative to the configured root folder; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal. Each folder's children are visited in order of name, then ID, so the same path is kept on every run.
 - `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported.
+- Change detection uses the Drive MD5 checksum of binary files, so an unchanged file is not downloaded again. Google Docs, Sheets and Slides have no checksum; their exported content is hashed instead.
 
 ### Example
 
