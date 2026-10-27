@@ -72,25 +72,29 @@ Different `ContextKey`s with different graph names produce fully separate target
 
 ## As target
 
-The `falkordb` connector provides target state APIs for writing records to node tables and relation tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
+The `falkordb` connector provides target state APIs for writing nodes to node tables and edges to relationship tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
 
 Each `graph.query` call against FalkorDB is its own atomic unit (FalkorDB does not expose multi-statement transactions); the connector orders writes within a batch as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints.
+
+:::note
+The node and relationship APIs below replace the table and relation APIs (`mount_table_target`, `mount_relation_target`, …), which are deprecated. To move an existing table over, see [Deprecated: table and relation APIs](#deprecated-table-and-relation-apis).
+:::
 
 ### Declaring target states
 
 #### Node tables (parent state)
 
-Declares a node label as a target state. Returns a `TableTarget` for declaring records.
+Declares a node label as a target state. Returns a `NodeTarget` for declaring nodes.
 
 ```python
-def declare_table_target(
+def declare_node_target(
     db: ContextKey,
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
     primary_key: str = "id",
     managed_by: Literal["system", "user"] = "system",
-) -> TableTarget[RowT, coco.PendingS]
+) -> NodeTarget[RowT, coco.PendingS]
 ```
 
 **Parameters:**
@@ -98,17 +102,17 @@ def declare_table_target(
 - `db` — A `ContextKey[falkordb.ConnectionFactory]` for the FalkorDB connection.
 - `table_name` — The Cypher node label (e.g. `"Document"`).
 - `table_schema` — Optional schema definition (see [Table Schema](#table-schema-from-python-class)). FalkorDB does not enforce per-property types server-side, so the schema participates in CocoIndex's fingerprint (so two flows declaring the same label must agree) but no per-column DDL is emitted.
-- `primary_key` — Single property name used as the node's primary key. Defaults to `"id"`. Compound primary keys are not supported in v1.0.
+- `primary_key` — Single property name used as the node's primary key. Defaults to `"id"`. Must match the schema's primary key when `table_schema` is given. Compound primary keys are not supported in v1.0.
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use `await falkordb.mount_table_target(KG_DB, ...)` to get a resolved target.
+**Returns:** A pending `NodeTarget`. Use `await falkordb.mount_node_target(KG_DB, ...)` to get a resolved target.
 
-#### Records (child states)
+#### Nodes (child states)
 
-Once a `TableTarget` is resolved, declare records to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n += $props`):
+Once a `NodeTarget` is resolved, declare nodes to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n += $props`):
 
 ```python
-def TableTarget.declare_record(
+def NodeTarget.declare_record(
     self,
     *,
     row: RowT,
@@ -121,41 +125,41 @@ def TableTarget.declare_record(
 
 `declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
 
-#### Relation tables (parent state)
+#### Relationship tables (parent state)
 
-Declares a relationship type as a target state. Returns a `RelationTarget` for declaring edges.
+Declares a relationship type as a target state. Returns a `RelationshipTarget` for declaring edges.
 
 ```python
-def declare_relation_target(
+def declare_relationship_target(
     db: ContextKey,
     table_name: str,
-    from_table: TableTarget,
-    to_table: TableTarget,
+    from_table: NodeTarget,
+    to_table: NodeTarget,
     table_schema: TableSchema[RowT] | None = None,
     *,
     primary_key: str = "id",
     managed_by: Literal["system", "user"] = "system",
-) -> RelationTarget[RowT, coco.PendingS]
+) -> RelationshipTarget[RowT, coco.PendingS]
 ```
 
 **Parameters:**
 
 - `db` — A `ContextKey[falkordb.ConnectionFactory]` for the FalkorDB connection.
-- `table_name` — The Cypher relationship type (e.g. `"MENTION"`).
-- `from_table` — The `TableTarget` whose nodes are the *source* endpoints of edges in this relationship.
-- `to_table` — The `TableTarget` whose nodes are the *target* endpoints of edges in this relationship.
+- `table_name` — The Cypher relationship type (e.g. `"MENTION"`). A node label and a relationship type may share a name.
+- `from_table` — The node target whose nodes are the *source* endpoints of edges in this relationship. A `TableTarget` of the deprecated table API works too.
+- `to_table` — The node target whose nodes are the *target* endpoints of edges in this relationship.
 - `table_schema` — Optional schema for the relationship's own properties (see [Table Schema](#table-schema-from-python-class)). The relationship's `primary_key` field uniquely identifies each edge.
-- `primary_key` — Single property name used as the edge's primary key. Defaults to `"id"`.
+- `primary_key` — Single property name used as the edge's primary key. Defaults to `"id"`. Must match the schema's primary key when `table_schema` is given.
 - `managed_by` — Whether CocoIndex manages the relationship lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `RelationTarget`. Use `await falkordb.mount_relation_target(KG_DB, ...)` to get a resolved target.
+**Returns:** A pending `RelationshipTarget`. Use `await falkordb.mount_relationship_target(KG_DB, ...)` to get a resolved target.
 
-#### Relations (child states)
+#### Relationships (child states)
 
-Once a `RelationTarget` is resolved, declare edges. Each declaration produces a triple-MERGE: source endpoint, target endpoint, then the relationship.
+Once a `RelationshipTarget` is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
 
 ```python
-def RelationTarget.declare_relation(
+def RelationshipTarget.declare_relationship(
     self,
     *,
     from_id: Any,
@@ -168,16 +172,18 @@ def RelationTarget.declare_relation(
 
 - `from_id` — The source node's primary-key value. The connector MERGEs `(s:FromLabel {pk: $from_id})` so endpoints are auto-created if absent.
 - `to_id` — The target node's primary-key value. Same MERGE behavior.
-- `record` — Optional row object whose fields populate the relationship's properties. Must include the relationship's `primary_key` field if provided.
+- `record` — Optional row object whose fields populate the relationship's properties. Its `primary_key` field, if present, is the edge's id.
 
-If `record` is omitted, the connector derives a deterministic edge id from `(from_label, from_id, to_label, to_id)`. This is convenient when an edge has no properties of its own.
+If `record` is omitted or has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.
+
+An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relationship table has an index on it; for a `managed_by="user"` table, create one yourself.
 
 #### Vector indexes (attachment)
 
-Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
+Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `NodeTarget`:
 
 ```python
-def TableTarget.declare_vector_index(
+def NodeTarget.declare_vector_index(
     self,
     *,
     name: str | None = None,
@@ -194,7 +200,11 @@ def TableTarget.declare_vector_index(
 - `metric` — Similarity metric: `"cosine"`, `"euclidean"`, or `"ip"` (inner product). Translated to FalkorDB's `similarityFunction` option.
 - `dimension` — The vector's dimension. Required.
 
-The connector emits `CREATE VECTOR INDEX FOR (e:Label) ON (e.field) OPTIONS {dimension: N, similarityFunction: '...'}`. Vectors are float32 only — wider vector dtypes are not supported.
+The connector emits `CREATE VECTOR INDEX FOR (e:Label) ON (e.field) OPTIONS {dimension: N, similarityFunction: '...'}`.
+
+FalkorDB identifies a vector index by its label and field, not by `name`, so a field has at most one vector index. Renaming `name` keeps the index. Declaring a second name for the same field is an error.
+
+Vectors are float32 only — wider vector dtypes are not supported.
 
 ### Table schema: from Python class
 
@@ -292,13 +302,13 @@ schema = TableSchema(
 For each managed table, the connector creates the supporting Cypher index on the primary key field on first run:
 
 - For node tables: `CREATE INDEX FOR (e:Label) ON (e.<pk>)`.
-- For relation tables: `CREATE INDEX FOR ()-[e:RelType]-() ON (e.<pk>)`.
+- For relationship tables: `CREATE INDEX FOR ()-[e:RelType]-() ON (e.<pk>)`.
 
 It then attempts a uniqueness constraint via the `GRAPH.CONSTRAINT CREATE` Redis command (best-effort — failures are logged but do not abort).
 
 A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the constraint and index are dropped. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a label with data CocoIndex doesn't own, declare the table with `managed_by="user"`.
 
-The same teardown happens when a table's identity changes — its primary key field, whether it is a node or relation table, or a relation table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
+The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
 
 When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the index and constraint — and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
 
@@ -333,7 +343,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 @coco.fn
 async def app_main() -> None:
     schema = await falkordb.TableSchema.from_class(Document, primary_key="filename")
-    documents = await falkordb.mount_table_target(
+    documents = await falkordb.mount_node_target(
         KG_DB, "Document", schema, primary_key="filename",
     )
     documents.declare_record(
@@ -348,7 +358,7 @@ async def app_main() -> None:
 app = coco.App(coco.AppConfig(name="docs_to_falkordb"), app_main)
 ```
 
-### Example: Relation tables (knowledge graph)
+### Example: Relationship tables (knowledge graph)
 
 ```python
 @dataclass
@@ -364,17 +374,17 @@ class RelationshipRow:
 
 @coco.fn
 async def kg_app_main() -> None:
-    documents = await falkordb.mount_table_target(
+    documents = await falkordb.mount_node_target(
         KG_DB, "Document",
         await falkordb.TableSchema.from_class(Document, primary_key="filename"),
         primary_key="filename",
     )
-    entities = await falkordb.mount_table_target(
+    entities = await falkordb.mount_node_target(
         KG_DB, "Entity",
         await falkordb.TableSchema.from_class(Entity, primary_key="value"),
         primary_key="value",
     )
-    relationships = await falkordb.mount_relation_target(
+    relationships = await falkordb.mount_relationship_target(
         KG_DB, "RELATIONSHIP",
         entities, entities,
         await falkordb.TableSchema.from_class(RelationshipRow, primary_key="id"),
@@ -385,7 +395,7 @@ async def kg_app_main() -> None:
     documents.declare_record(row=Document(filename="overview.md", title="Overview", summary="..."))
     entities.declare_record(row=Entity(value="CocoIndex"))
     entities.declare_record(row=Entity(value="FalkorDB"))
-    relationships.declare_relation(
+    relationships.declare_relationship(
         from_id="CocoIndex",
         to_id="FalkorDB",
         record=RelationshipRow(id="rel-1", predicate="writes_to"),
@@ -395,4 +405,34 @@ async def kg_app_main() -> None:
 kg_app = coco.App(coco.AppConfig(name="kg_app"), kg_app_main)
 ```
 
-The `Entity` table is declared up-front (via `mount_table_target`) so its index and constraint are reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints. The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+The `Entity` table is declared up-front (via `mount_node_target`) so its index and constraint are reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints. The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+
+## Deprecated: table and relation APIs
+
+The table and relation APIs are deprecated. They emit a `DeprecationWarning` and otherwise work as before. Each has a replacement with the same parameters:
+
+| Deprecated | Replacement |
+|---|---|
+| `table_target`, `declare_table_target`, `mount_table_target` (returns `TableTarget`) | `node_target`, `declare_node_target`, `mount_node_target` (returns `NodeTarget`) |
+| `relation_target`, `declare_relation_target`, `mount_relation_target` (returns `RelationTarget`) | `relationship_target`, `declare_relationship_target`, `mount_relationship_target` (returns `RelationshipTarget`) |
+| `RelationTarget.declare_relation` | `RelationshipTarget.declare_relationship` |
+
+One parameter check differs: the relationship APIs require `primary_key` to match the schema's primary key, as the node APIs do, where the relation APIs used the schema's.
+
+The deprecated APIs keep the keys and edge ids of existing tables, and with them two limits the replacements remove:
+
+- A node table and a relationship table share one key space, so a label and a relationship type must have different names. Declaring both under one name fails the update.
+- The derived edge id is `{from_label}_{from_id}_{to_label}_{to_id}`. Two endpoint pairs can share it (the ids `1` and `"1"`, or ids that contain `_`), and declaring both fails the update.
+
+A label belongs to one table: don't declare the same label (or relationship type) through both the deprecated and the new API. The two declarations are separate tables, and removing either one deletes every node of the label (or edge of the type).
+
+### Switching an existing table
+
+Switching a table from the deprecated API to its replacement keeps its nodes, edges, constraints and indexes. It takes two updates:
+
+1. Add `managed_by="user"` to each deprecated declaration you switch, and run one update. Nothing in the database changes. From now on, removing these declarations deletes nothing.
+2. Replace the deprecated calls with their replacements (and `declare_relation` with `declare_relationship`), without `managed_by="user"`, and run one update. The new tables find their indexes and constraints in place. Every node and edge of a switched table is written once more, and its vector indexes are rebuilt. An edge with a derived id gets the new id: the edge with the old id between the same endpoints is replaced.
+
+Run the two steps as separate updates, in this order. Without step 1, removing a deprecated declaration destroys its table: every node of the label or edge of the type is deleted, possibly after the new table has written it.
+
+You can switch tables one at a time: a new relationship table accepts node targets of both APIs.

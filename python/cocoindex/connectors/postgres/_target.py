@@ -17,6 +17,7 @@ import logging
 import numbers
 import re
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -26,10 +27,11 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
+    overload,
 )
 
 
-from typing_extensions import TypeVar
+from typing_extensions import TypeVar, deprecated
 
 from cocoindex._internal.extras import install_hint
 
@@ -1464,6 +1466,12 @@ _table_provider = coco.register_root_target_states_provider(
 )
 
 
+_TABLE_TARGET_DEPRECATION = (
+    "TableTarget(provider, table_schema) is deprecated and skips the vector index "
+    "name check; pass the table name: TableTarget(provider, table_name, table_schema)."
+)
+
+
 class TableTarget(
     Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
 ):
@@ -1477,17 +1485,56 @@ class TableTarget(
     """
 
     _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
-    _table_name: str
+    # None only for the deprecated two-argument form, which skips the vector
+    # index name check.
+    _table_name: str | None
     _table_schema: TableSchema[RowT]
     # Vector index name by the (truncated) PostgreSQL index name it maps to.
     _vector_index_names: dict[str, str]
 
+    @overload
     def __init__(
         self,
         provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
         table_name: str,
         table_schema: TableSchema[RowT],
+    ) -> None: ...
+
+    @overload
+    @deprecated(_TABLE_TARGET_DEPRECATION)
+    def __init__(
+        self,
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        table_schema: TableSchema[RowT],
+        /,
+    ) -> None: ...
+
+    @overload
+    @deprecated(_TABLE_TARGET_DEPRECATION)
+    def __init__(
+        self,
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        *,
+        table_schema: TableSchema[RowT],
+    ) -> None: ...
+
+    def __init__(
+        self,
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        table_name: str | TableSchema[RowT] | None = None,
+        table_schema: TableSchema[RowT] | None = None,
     ) -> None:
+        if isinstance(table_name, TableSchema):
+            # The deprecated form TableTarget(provider, table_schema).
+            if table_schema is not None:
+                raise TypeError(
+                    "TableTarget() takes table_name before table_schema, not two schemas"
+                )
+            table_name, table_schema = None, table_name
+        if table_schema is None:
+            raise TypeError("TableTarget() missing required argument: 'table_schema'")
+        if table_name is None:
+            warnings.warn(_TABLE_TARGET_DEPRECATION, DeprecationWarning, stacklevel=2)
         self._provider = provider
         self._table_name = table_name
         self._table_schema = table_schema
@@ -1577,6 +1624,8 @@ class TableTarget(
 
     def _check_vector_index_name(self, name: str) -> None:
         """Raise if another vector index on this table gets the same PostgreSQL name."""
+        if self._table_name is None:
+            return
         pg_name = _truncated_identifier(_vector_index_name(self._table_name, name))
         other = self._vector_index_names.setdefault(pg_name, name)
         if other == name:

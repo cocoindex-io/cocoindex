@@ -12,6 +12,7 @@ import datetime
 import decimal
 import ipaddress
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -587,6 +588,53 @@ async def test_postgres_vector_indexes_with_long_names(pg_env: _PgEnv) -> None:
         await app.update()
         assert await _index_info(pool, title_pg_name) is not None
         assert await _index_info(pool, body_pg_name) is not None
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("form", ["three_arguments", "positional", "keyword"])
+async def test_postgres_table_target_constructor_forms(
+    pg_env: _PgEnv, form: str
+) -> None:
+    """TableTarget(provider, table_schema) still works, with a DeprecationWarning."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_tt_forms")
+    schema = await postgres.TableSchema.from_class(VectorRow, primary_key=["id"])
+    caught: list[warnings.WarningMessage] = []
+
+    async def declare_fn() -> None:
+        provider = await coco.mount_target(
+            postgres.table_target(_PG_DB_KEY, table_name, schema)
+        )
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            if form == "three_arguments":
+                table = postgres.TableTarget(provider, table_name, schema)
+            elif form == "positional":
+                table = postgres.TableTarget(provider, schema)
+            else:
+                table = postgres.TableTarget(provider, table_schema=schema)
+        caught.extend(recorded)
+        table.declare_row(
+            row=VectorRow(
+                id="1",
+                content="hello",
+                embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            )
+        )
+        table.declare_vector_index(column="embedding")
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_tt_forms_{table_name}", environment=pg_env.coco_env),
+        declare_fn,
+    )
+    try:
+        await app.update()
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == (0 if form == "three_arguments" else 1)
+        assert await _row_count(pool, table_name) == 1
+        assert await _index_info(pool, f"{table_name}__vector__embedding") is not None
     finally:
         await _drop_table(pool, table_name)
 

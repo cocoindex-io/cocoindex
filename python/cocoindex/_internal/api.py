@@ -465,11 +465,16 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
             live component instance is created per item (the item value is passed
             as the first constructor argument, mirroring the plain-function shape).
         items: A keyed iterable of (key, value) pairs, or a LiveMapFeed/LiveMapView for live mode.
+            Each key is the item's component key under *subpath*, so keys must be
+            unique within one call.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
 
     Returns:
         A handle that can be used to wait until all processing units are ready.
+
+    Raises:
+        ValueError: If a keyed iterable yields the same key more than once.
     """
     check_cancellation()
     check_not_in_process_live("coco.mount_each")

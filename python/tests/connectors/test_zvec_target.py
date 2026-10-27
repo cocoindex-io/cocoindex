@@ -720,7 +720,6 @@ def test_filter_query(conn: Any) -> None:
     ("row_type", "key", "key_type"),
     [
         (BytesKeyDoc, b"1", "bytes"),
-        (BoolKeyDoc, True, "bool"),
         (AnyKeyDoc, 1, "Any"),
         (ObjectKeyDoc, 1, "Any"),
         (UnionKeyDoc, 1, "a union"),
@@ -738,6 +737,18 @@ def test_new_collection_rejects_ambiguous_key_type(
     with pytest.raises(Exception, match=f"is typed {key_type}"):
         app.update_blocking()
     assert not conn.collection_path(collection).exists()
+
+
+def test_new_collection_accepts_bool_key(conn: Any) -> None:
+    """str() keeps bool keys apart ("True", "False"), so a bool key column is accepted."""
+    _reset(BoolKeyDoc, "test_key_bool")
+    app = _make_app(conn, "test_new_collection_accepts_bool_key")
+    _rows.extend(
+        [BoolKeyDoc(id=True, embedding=_EMB), BoolKeyDoc(id=False, embedding=_EMB)]
+    )
+    app.update_blocking()
+    assert fetch_doc(conn, "test_key_bool", "True") is not None
+    assert fetch_doc(conn, "test_key_bool", "False") is not None
 
 
 def test_existing_collection_keeps_ambiguous_key_type(conn: Any) -> None:

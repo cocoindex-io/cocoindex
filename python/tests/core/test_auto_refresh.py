@@ -15,6 +15,12 @@ from tests.common.target_states import DictDataWithPrev, GlobalDictTarget
 
 coco_env = common.create_test_env(__file__)
 
+# Bound on the wait for a live test's first three cycles. Locally they take
+# well under 0.2 s, but on the Windows CI runners, late in the suite, a cycle
+# can take over a second: three cycles have overrun 5 s there. The wait ends
+# as soon as the third cycle runs, so a generous bound costs nothing.
+_CYCLES_TIMEOUT_S = 20.0
+
 
 # ============================================================================
 # auto_refresh — catch-up mode
@@ -85,11 +91,14 @@ async def test_auto_refresh_live_runs_periodically() -> None:
 
     counter = {"calls": 0}
     cycle_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     async def fn() -> None:
         counter["calls"] += 1
-        if counter["calls"] >= 3:
-            cycle_event.set()
+        if counter["calls"] == 3:
+            # `fn` runs on `coco_env`'s background loop, not this test's loop:
+            # a direct `set()` would not wake this loop.
+            loop.call_soon_threadsafe(cycle_event.set)
         coco.declare_target_state(GlobalDictTarget.target_state("k", counter["calls"]))
 
     AutoRefresh = coco.auto_refresh(fn, interval=datetime.timedelta(milliseconds=20))
@@ -105,7 +114,7 @@ async def test_auto_refresh_live_runs_periodically() -> None:
     result_task = asyncio.create_task(handle.result())
     try:
         # Wait until at least 3 cycles have happened
-        await asyncio.wait_for(cycle_event.wait(), timeout=5.0)
+        await asyncio.wait_for(cycle_event.wait(), timeout=_CYCLES_TIMEOUT_S)
         assert counter["calls"] >= 3
 
         _core.cancel_all()
@@ -163,7 +172,7 @@ async def test_auto_refresh_cycle_exception_reported_and_loop_continues() -> Non
     handle = app.update(live=True)
     result_task = asyncio.create_task(handle.result())
     try:
-        await asyncio.wait_for(after_failure_event.wait(), timeout=5.0)
+        await asyncio.wait_for(after_failure_event.wait(), timeout=_CYCLES_TIMEOUT_S)
         assert counter["calls"] >= 3
         # The 2nd cycle's failure must have been routed via the handler chain
         # with mount_kind="process_live" (set by update_full's on_error resolver).
