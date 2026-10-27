@@ -201,7 +201,7 @@ CocoIndex identifies a table by its key: the `db` key, `pg_schema_name` and `tab
 - `pg_schema_name=None` and `pg_schema_name="public"` are two different keys, even when `search_path` makes them reach the same table.
 - PostgreSQL truncates a table name longer than 63 bytes, so two long names that share their first 63 bytes are one table.
 
-Declare each table through one key only. Switching a table from one form to the other changes its key: CocoIndex then drops the table it tracked under the old key, which is the same table.
+Declare each table through one key only. Switching a table from one form to the other changes its key: CocoIndex then cleans up the table it tracked under the old key, which is the same table.
 :::
 
 #### Rows (child states)
