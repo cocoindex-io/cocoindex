@@ -57,8 +57,8 @@ class _FakeContainerClient:
     container_name: str | None = "docs"
     url = "https://testaccount.blob.core.windows.net/docs"
 
-    def __init__(self) -> None:
-        self._objects = {
+    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
+        self._objects = objects or {
             "file1.txt": b"hello",
             "file2.md": b"# Title",
             "data/nested.json": b'{"key": "value"}',
@@ -346,3 +346,69 @@ class TestAzureBlobFilePathUnit:
         )
 
         assert fp1.__coco_memo_key__() != fp2.__coco_memo_key__()
+
+
+_KEY_TEST_BLOBS = {
+    "docs/a.md": b"a",
+    "docs//a.md": b"double slash",
+    "docsa.md": b"outside the folder",
+    "docs/x/y.txt": b"y",
+    "docs/x//y.txt": b"y double slash",
+    "docs/x/./y.txt": b"y dot",
+    "docs/sub/b.md": b"b",
+    "docs/sub/": b"",
+}
+
+
+@pytest.mark.asyncio
+class TestItemKeys:
+    """Item keys are the blob names relative to the prefix folder, as stored."""
+
+    @pytest.mark.parametrize("prefix", ["docs", "docs/"])
+    async def test_prefix_is_a_folder_and_keys_are_raw(self, prefix: str) -> None:
+        client = _FakeContainerClient(dict(_KEY_TEST_BLOBS))
+        walker = azure_blob.list_blobs(client, prefix=prefix)
+        items = {key: f async for key, f in walker.items()}
+
+        assert sorted(items) == [
+            "/a.md",
+            "a.md",
+            "sub/b.md",
+            "x/./y.txt",
+            "x//y.txt",
+            "x/y.txt",
+        ]
+        for key, f in items.items():
+            assert f.file_path.blob_name == "docs/" + key
+            assert await f.read() == _KEY_TEST_BLOBS["docs/" + key]
+
+        paths = [f.file_path for f in items.values()]
+        assert len(set(paths)) == len(paths)
+        assert len({p.__coco_memo_key__() for p in paths}) == len(paths)
+
+    async def test_derived_paths_resolve_to_new_blob_name(self) -> None:
+        client = _FakeContainerClient(dict(_KEY_TEST_BLOBS))
+        walker = azure_blob.list_blobs(client, prefix="docs")
+        items = {key: f async for key, f in walker.items()}
+        fp = items["sub/b.md"].file_path
+
+        assert fp.with_suffix(".txt").blob_name == "docs/sub/b.txt"
+        sibling = fp.parent.parent / "a.md"
+        assert sibling.resolve() == "docs/a.md"
+        assert sibling == items["a.md"].file_path
+        f = await azure_blob.get_blob(client, sibling.resolve())
+        assert await f.read() == b"a"
+
+
+class TestAzureBlobFilePathIdentity:
+    def test_account_and_container_are_part_of_identity(self) -> None:
+        paths = [
+            azure_blob.AzureBlobFilePath("acct", "c1", "x.txt", blob_name="x.txt"),
+            azure_blob.AzureBlobFilePath("acct", "c2", "x.txt", blob_name="x.txt"),
+            azure_blob.AzureBlobFilePath("other", "c1", "x.txt", blob_name="x.txt"),
+        ]
+        assert len(set(paths)) == 3
+        assert sorted(paths) == [paths[0], paths[1], paths[2]]
+        assert paths[0] == azure_blob.AzureBlobFilePath(
+            "acct", "c1", "x.txt", blob_name="x.txt"
+        )

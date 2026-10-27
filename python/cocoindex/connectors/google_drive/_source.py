@@ -100,6 +100,7 @@ class DriveFileInfo:
     size: int
     modified_time: datetime
     path: str | None = None
+    md5_checksum: str | None = None
 
 
 class DriveFile(file.FileLike[str]):
@@ -113,7 +114,11 @@ class DriveFile(file.FileLike[str]):
         file_path = DriveFilePath(
             info.path if info.path is not None else info.name, file_id=info.file_id
         )
-        metadata = file.FileMetadata(size=info.size, modified_time=info.modified_time)
+        metadata = file.FileMetadata(
+            size=info.size,
+            modified_time=info.modified_time,
+            content_fingerprint=_md5_to_fingerprint(info.md5_checksum),
+        )
         super().__init__(file_path, _metadata=metadata)
         self._service = service
         self._mime_type = info.mime_type
@@ -127,7 +132,7 @@ class DriveFile(file.FileLike[str]):
                 self._service.files()
                 .get(
                     fileId=self._file_id,
-                    fields="size, modifiedTime",
+                    fields="size, modifiedTime, md5Checksum",
                 )
                 .execute()
             )
@@ -136,6 +141,7 @@ class DriveFile(file.FileLike[str]):
             return file.FileMetadata(
                 size=size,
                 modified_time=_parse_modified_time(response.get("modifiedTime")),
+                content_fingerprint=_md5_to_fingerprint(response.get("md5Checksum")),
             )
 
         return await asyncio.to_thread(_fetch)
@@ -203,6 +209,11 @@ def _parse_modified_time(value: str | None) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _md5_to_fingerprint(md5_checksum: str | None) -> bytes | None:
+    """Drive gives an MD5 for binary files only, not for Google Docs, Sheets or Slides."""
+    return md5_checksum.encode("utf-8") if md5_checksum else None
+
+
 def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
     query = f"'{folder_id}' in parents and trashed = false"
     page_token = None
@@ -212,7 +223,10 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
             service.files()
             .list(
                 q=query,
-                fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+                fields=(
+                    "nextPageToken,"
+                    " files(id, name, mimeType, size, modifiedTime, md5Checksum)"
+                ),
                 pageToken=page_token,
             )
             .execute()
@@ -227,6 +241,7 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
                     mime_type=f["mimeType"],
                     size=size,
                     modified_time=_parse_modified_time(f.get("modifiedTime")),
+                    md5_checksum=f.get("md5Checksum"),
                 )
             )
         page_token = response.get("nextPageToken")
@@ -247,7 +262,13 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]:
         if folder_id in seen_folders:
             continue
         seen_folders.add(folder_id)
-        for info in _list_children(service, folder_id):
+        # Drive lists children in no set order. Sorting them makes the path kept
+        # for a file with several parents (the first one seen) the same every run.
+        children = sorted(
+            _list_children(service, folder_id),
+            key=lambda info: (info.name, info.file_id),
+        )
+        for info in children:
             path = f"{prefix}/{info.name}" if prefix else info.name
             if info.mime_type == _FOLDER_MIME:
                 folders.append((info.file_id, path))

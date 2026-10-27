@@ -49,6 +49,11 @@ from cocoindex._internal.live_component import (
     ReadyAwaitable,
 )
 from cocoindex.connectorkits import SingleWatcherGuard
+from cocoindex.connectorkits._object_store import (
+    ObjectStoreFilePath,
+    folder_prefix,
+    relative_key,
+)
 from cocoindex.resources import file
 
 _logger = logging.getLogger(__name__)
@@ -82,22 +87,21 @@ def _parse_event_time(s: Any) -> datetime | None:
         return None
 
 
-class OCIFilePath(file.FilePath[str]):
+class OCIFilePath(ObjectStoreFilePath):
     """File path for OCI Object Storage objects.
 
     Holds the namespace, bucket name, and full object name. ``resolve()``
     returns the full object name (the value passed to ``head_object`` /
     ``get_object``), while ``path`` is the prefix-stripped relative form
-    used for memoization. For a walker with prefix ``"logs/"`` and object
-    ``"logs/a.txt"``, ``object_name == "logs/a.txt"`` and
-    ``path == PurePath("a.txt")``.
+    used for memoization; ``object_name`` must end with it. For a walker with
+    prefix ``"logs/"`` and object ``"logs/a.txt"``,
+    ``object_name == "logs/a.txt"`` and ``path == PurePath("a.txt")``.
     """
 
-    __slots__ = ("_namespace", "_bucket_name", "_object_name")
+    __slots__ = ("_namespace", "_bucket_name")
 
     _namespace: str
     _bucket_name: str
-    _object_name: str
 
     def __init__(
         self,
@@ -107,10 +111,9 @@ class OCIFilePath(file.FilePath[str]):
         *,
         object_name: str,
     ) -> None:
-        super().__init__(None, PurePath(path))
+        super().__init__(path, object_key=object_name)
         self._namespace = namespace
         self._bucket_name = bucket_name
-        self._object_name = object_name
 
     @property
     def namespace(self) -> str:
@@ -122,22 +125,19 @@ class OCIFilePath(file.FilePath[str]):
 
     @property
     def object_name(self) -> str:
-        return self._object_name
+        """The full OCI object name."""
+        return self.resolve()
 
-    def resolve(self) -> str:
-        """Return the full OCI object name."""
-        return self._object_name
+    def _store(self) -> tuple[str, ...]:
+        return (self._namespace, self._bucket_name)
 
     def _with_path(self, path: PurePath) -> OCIFilePath:
         return type(self)(
             self._namespace,
             self._bucket_name,
             path,
-            object_name=self._object_name,
+            object_name=self._object_key_of(path),
         )
-
-    def __coco_memo_key__(self) -> object:
-        return (self._namespace, self._bucket_name, self._path)
 
 
 class OCIFile(file.FileLike[str]):
@@ -262,7 +262,7 @@ class OCIWalker:
     _client: Any
     _namespace: str
     _bucket_name: str
-    _prefix: str
+    _folder: str
     _path_matcher: file.FilePathMatcher
     _max_file_size: int | None
     _live_stream: LiveStream[bytes] | None
@@ -283,7 +283,7 @@ class OCIWalker:
         self._client = client
         self._namespace = namespace
         self._bucket_name = bucket_name
-        self._prefix = prefix
+        self._folder = folder_prefix(prefix)
         self._path_matcher = path_matcher or file.MatchAllFilePathMatcher()
         self._max_file_size = max_file_size
         self._live_stream = live_stream
@@ -297,8 +297,20 @@ class OCIWalker:
     def bucket_name(self) -> str:
         return self._bucket_name
 
-    def _walk_sync(self) -> Iterator[OCIFile]:
-        """Synchronously paginate ListObjects and yield matching OCIFile objects."""
+    def _included_key(self, object_name: str) -> str | None:
+        """Return the item key of ``object_name``, or ``None`` if this walker skips it.
+
+        Shared by the scan and live events, so both key an object the same way.
+        """
+        rel_key = relative_key(object_name, self._folder)
+        if rel_key is None or not self._path_matcher.is_file_included(
+            PurePath(rel_key)
+        ):
+            return None
+        return rel_key
+
+    def _walk_sync(self) -> Iterator[tuple[str, OCIFile]]:
+        """Synchronously paginate ListObjects and yield matching (key, OCIFile) pairs."""
         start: str | None = None
         while True:
             kwargs: dict[str, Any] = {
@@ -306,8 +318,8 @@ class OCIWalker:
                 "bucket_name": self._bucket_name,
                 "fields": "name,size,md5,timeModified,etag",
             }
-            if self._prefix:
-                kwargs["prefix"] = self._prefix
+            if self._folder:
+                kwargs["prefix"] = self._folder
             if start is not None:
                 kwargs["start"] = start
 
@@ -315,18 +327,8 @@ class OCIWalker:
             data = response.data
             for summary in data.objects:
                 full_name: str = summary.name
-                if full_name.endswith("/"):
-                    continue
-                if self._prefix and full_name.startswith(self._prefix):
-                    relative_key = full_name[len(self._prefix) :]
-                else:
-                    relative_key = full_name
-                relative_key = relative_key.lstrip("/")
-                if not relative_key:
-                    continue
-
-                relative_path = PurePath(relative_key)
-                if not self._path_matcher.is_file_included(relative_path):
+                rel_key = self._included_key(full_name)
+                if rel_key is None:
                     continue
 
                 size = int(summary.size)
@@ -336,11 +338,11 @@ class OCIWalker:
                 file_path = OCIFilePath(
                     self._namespace,
                     self._bucket_name,
-                    relative_key,
+                    rel_key,
                     object_name=full_name,
                 )
                 metadata = _metadata_from_summary(summary)
-                yield OCIFile(self._client, file_path, _metadata=metadata)
+                yield (rel_key, OCIFile(self._client, file_path, _metadata=metadata))
 
             next_start = getattr(data, "next_start_with", None)
             if not next_start:
@@ -348,13 +350,13 @@ class OCIWalker:
             start = next_start
 
     async def __aiter__(self) -> AsyncIterator[OCIFile]:
-        from cocoindex.connectorkits.async_adapters import sync_to_async_iter
-
-        async for f in sync_to_async_iter(lambda: self._walk_sync()):
+        async for _, f in self._items_iter():
             yield f
 
     def items(self) -> AsyncIterable[tuple[str, OCIFile]]:
-        """Return ``(relative_key, OCIFile)`` pairs for use with ``mount_each``.
+        """Return ``(key, OCIFile)`` pairs for use with ``mount_each``.
+
+        The key is the object name relative to the prefix, exactly as stored.
 
         With ``live_stream`` set, returns a ``LiveMapView`` that supports
         live watching. Otherwise returns a plain async iterator.
@@ -364,8 +366,10 @@ class OCIWalker:
         return self._items_iter()
 
     async def _items_iter(self) -> AsyncIterator[tuple[str, OCIFile]]:
-        async for f in self:
-            yield (f.file_path.path.as_posix(), f)
+        from cocoindex.connectorkits.async_adapters import sync_to_async_iter
+
+        async for item in sync_to_async_iter(lambda: self._walk_sync()):
+            yield item
 
 
 class _LiveOCIItems:
@@ -456,7 +460,8 @@ class _OCIStreamSubscriber:
        covers this state). Missing / unparseable / future-dated events fall
        through to be processed. Disabled entirely when ``cutoff is None``
        (skip-scan mode): the replayed backlog is processed, not dropped.
-    5. Prefix + path-matcher filter.
+    5. Prefix + path-matcher filter, keyed like the scan (folder markers are
+       skipped).
     6. **Block on ``self._ready_complete``** — ensures dispatch happens
        strictly after both the scan's ``update_full`` has committed and
        ``map_sub.mark_ready()`` has returned. The blocking inline (combined
@@ -531,16 +536,9 @@ class _OCIStreamSubscriber:
             if event_time is not None and event_time < self._cutoff:
                 return _IMMEDIATE_READY
 
-        # Prefix + path-matcher filter
-        prefix = self._walker._prefix
-        if prefix and not resource_name.startswith(prefix):
-            return _IMMEDIATE_READY
-        relative_key = (
-            resource_name[len(prefix) :] if prefix else resource_name
-        ).lstrip("/")
-        if not relative_key:
-            return _IMMEDIATE_READY
-        if not self._walker._path_matcher.is_file_included(PurePath(relative_key)):
+        # Prefix + path-matcher filter, with the scan's keys
+        rel_key = self._walker._included_key(resource_name)
+        if rel_key is None:
             return _IMMEDIATE_READY
 
         # Back-pressure: block until scan + parent mark_ready have completed.
@@ -551,7 +549,7 @@ class _OCIStreamSubscriber:
             OCIFilePath(
                 self._walker.namespace,
                 self._walker.bucket_name,
-                relative_key,
+                rel_key,
                 object_name=resource_name,
             ),
         )
@@ -568,7 +566,7 @@ class _OCIStreamSubscriber:
             return _IMMEDIATE_READY
 
         if not present:
-            return await self._map_sub.delete(relative_key)
+            return await self._map_sub.delete(rel_key)
 
         max_size = self._walker._max_file_size
         if max_size is not None:
@@ -584,7 +582,7 @@ class _OCIStreamSubscriber:
             if size > max_size:
                 return _IMMEDIATE_READY
 
-        return await self._map_sub.update(relative_key, oci_file)
+        return await self._map_sub.update(rel_key, oci_file)
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +661,9 @@ def list_objects(
         client: An ``oci.object_storage.ObjectStorageClient``.
         namespace: OCI namespace.
         bucket_name: Bucket name.
-        prefix: Only list objects whose name starts with this prefix.
+        prefix: Only list objects in this folder. The prefix names a folder:
+            ``"logs"`` and ``"logs/"`` both list ``logs/...``, and neither lists
+            ``logsa.txt``.
         path_matcher: Optional file path matcher (matched against the relative
             path, after prefix stripping).
         max_file_size: Skip objects larger than this size in bytes.

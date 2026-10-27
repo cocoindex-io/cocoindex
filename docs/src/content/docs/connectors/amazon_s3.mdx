@@ -72,7 +72,7 @@ def list_objects(
 
 - `client` — An aiobotocore S3 client.
 - `bucket_name` — The S3 bucket name.
-- `prefix` — Only list objects whose key starts with this prefix. The prefix is stripped from relative paths in the returned files.
+- `prefix` — Only list objects in this folder. A prefix names a folder: `"data"` and `"data/"` both list the objects under `data/`, and neither lists `database.csv`. The folder is stripped from relative paths in the returned files. To select objects by the start of their name (for example `2024-*.csv`), use `path_matcher`.
 - `path_matcher` — Optional filter for files. Patterns are matched against the relative path (after prefix stripping). See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
 - `max_file_size` — Skip objects larger than this size in bytes.
 
@@ -97,7 +97,7 @@ See [`FileLike`](../common_resources/data_types#filelike) for details on the fil
 
 ### Keyed iteration with `items()`
 
-`S3Walker.items()` yields `(str, S3File)` pairs, useful for associating each file with a stable string key (its relative path):
+`S3Walker.items()` yields `(str, S3File)` pairs, useful for associating each file with a stable string key: the object key relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
 
 ```python
 async for key, file in amazon_s3.list_objects(client, "my-bucket").items():
@@ -198,10 +198,13 @@ Each file returned by the connector has an `S3FilePath` — a [`FilePath`](../co
 
 - **Relative path** (`file.file_path.path`) — The object key relative to the walker prefix (or the full key if no prefix was used).
 - **Resolved path** (`file.file_path.resolve()`) — The full S3 object key.
+- **Identity** — Two `S3FilePath`s are equal only if they have the same bucket and the same relative key.
 
 For example, with `prefix="data/"` and an object key `"data/docs/readme.md"`:
 - `file.file_path.path` → `PurePath("docs/readme.md")`
 - `file.file_path.resolve()` → `"data/docs/readme.md"`
+
+A derived path (`parent`, `/`, `with_name()`, `with_suffix()`) resolves to the object key of the new path in the same folder: `file.file_path.with_suffix(".txt").resolve()` → `"data/docs/readme.txt"`.
 
 ### Example
 
