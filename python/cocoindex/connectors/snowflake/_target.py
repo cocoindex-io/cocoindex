@@ -60,7 +60,7 @@ class ConnectionConfig:
 
     account: str
     user: str
-    password: str
+    password: str = dataclasses.field(repr=False)
     warehouse: str | None = None
     role: str | None = None
 
