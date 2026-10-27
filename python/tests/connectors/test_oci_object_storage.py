@@ -1084,3 +1084,88 @@ def test_oci_walker_scan_through_real_mount_each() -> None:
     assert GlobalDictTarget.store.data["file1.txt"] == DictDataWithPrev(
         data=len("file1.txt"), prev=[], prev_may_be_missing=True
     )
+
+
+# ===========================================================================
+# Item keys: scan and live events agree
+# ===========================================================================
+
+
+_KEY_TEST_OBJECTS = {
+    "docs/a.md": b"a",
+    "docs//a.md": b"double slash",
+    "docsa.md": b"outside the folder",
+    "docs/x/y.txt": b"y",
+    "docs/x//y.txt": b"y double slash",
+    "docs/x/./y.txt": b"y dot",
+    "docs/sub/": b"",
+}
+_KEY_TEST_ITEM_KEYS = ["/a.md", "a.md", "x/./y.txt", "x//y.txt", "x/y.txt"]
+
+
+def _stage_key_test_bucket(client: MockObjectStorageClient) -> None:
+    for name, body in _KEY_TEST_OBJECTS.items():
+        client.put(name, body, etag=f"etag-{name}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["docs", "docs/"])
+async def test_oci_prefix_is_a_folder_and_keys_are_raw(
+    oci_client: MockObjectStorageClient, prefix: str
+) -> None:
+    _stage_key_test_bucket(oci_client)
+    walker = list_objects(oci_client, "ns", "bucket", prefix=prefix)
+    items = {key: f async for key, f in walker.items()}
+
+    assert sorted(items) == _KEY_TEST_ITEM_KEYS
+    for key, f in items.items():
+        assert f.file_path.object_name == "docs/" + key
+        assert await f.read() == _KEY_TEST_OBJECTS["docs/" + key]
+    paths = [f.file_path for f in items.values()]
+    assert len(set(paths)) == len(paths)
+    assert len({p.__coco_memo_key__() for p in paths}) == len(paths)
+
+
+@pytest.mark.asyncio
+async def test_oci_live_events_use_scan_keys(
+    oci_client: MockObjectStorageClient,
+) -> None:
+    """Live events key objects like the scan, and skip what the scan skips."""
+    _stage_key_test_bucket(oci_client)
+    stream = _ManualLiveStream()
+    walker = list_objects(oci_client, "ns", "bucket", prefix="docs", live_stream=stream)
+    scan_keys = sorted([key async for key, _ in walker._items_iter()])
+
+    sub = _MockMapSubscriber()
+    items = _live_items(walker)
+    watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
+    await _drive_to_ready(stream, sub)
+
+    for name in _KEY_TEST_OBJECTS:
+        await stream.send_event(_event("ns", "bucket", name))
+    assert sorted(key for key, _ in sub.updates) == scan_keys == _KEY_TEST_ITEM_KEYS
+    for key, f in sub.updates:
+        assert await f.read() == _KEY_TEST_OBJECTS["docs/" + key]
+
+    # A deleted object is removed under its scan key; a folder marker is skipped.
+    oci_client.remove("docs//a.md")
+    await stream.send_event(_event("ns", "bucket", "docs//a.md"))
+    oci_client.remove("docs/sub/")
+    await stream.send_event(_event("ns", "bucket", "docs/sub/"))
+    assert sub.deletes == ["/a.md"]
+
+    stream.end()
+    await watch_task
+
+
+def test_oci_file_path_identity_includes_namespace_and_bucket() -> None:
+    paths = [
+        OCIFilePath("ns", "b1", "x.txt", object_name="x.txt"),
+        OCIFilePath("ns", "b2", "x.txt", object_name="x.txt"),
+        OCIFilePath("ns2", "b1", "x.txt", object_name="x.txt"),
+    ]
+    assert len(set(paths)) == 3
+    assert sorted(paths) == paths
+    fp = OCIFilePath("ns", "b", "rel/x.txt", object_name="prefix/rel/x.txt")
+    assert fp.with_suffix(".md").object_name == "prefix/rel/x.md"
+    assert (fp.parent / "y.txt").resolve() == "prefix/rel/y.txt"
