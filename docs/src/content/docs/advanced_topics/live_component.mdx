@@ -248,7 +248,7 @@ async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None:
 To add live support to a source connector, make your source return an object that implements `LiveMapView` (if the source has scannable state) or `LiveMapFeed` (if it only streams changes):
 
 - **`LiveMapView` example**: The [`localfs`](../connectors/localfs) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
-- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
+- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from a Kafka topic.
 
 ### Single-subscriber contract
 

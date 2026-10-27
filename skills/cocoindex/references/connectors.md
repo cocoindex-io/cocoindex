@@ -628,7 +628,7 @@ consumer = AIOConsumer({
     "auto.offset.reset": "earliest",
 })
 
-items = kafka.topic_as_map(consumer, ["my-topic"])
+items = kafka.topic_as_map(consumer, "my-topic")
 await coco.mount_each(process_message, items, target_table)
 ```
 

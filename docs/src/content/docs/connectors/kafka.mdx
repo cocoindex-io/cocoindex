@@ -45,7 +45,7 @@ consumer = AIOConsumer({
 ```python
 def topic_as_map(
     consumer: AIOConsumer,
-    topics: list[str],
+    topic: str,
     *,
     is_deletion: IsDeleteFn | None = None,
 ) -> LiveMapFeed[bytes | str, Message]:
@@ -54,7 +54,7 @@ def topic_as_map(
 **Parameters:**
 
 - `consumer` — An unsubscribed `AIOConsumer`. Auto-commit should be disabled.
-- `topics` — Topics to subscribe to.
+- `topic` — The topic to consume. To consume several topics, see [Consuming several topics](#consuming-several-topics).
 - `is_deletion` — Optional predicate `(message: Message) -> bool` for custom deletion detection on non-tombstone messages (see [Deletion handling](#deletion-handling)).
 
 **Returns:** A `LiveMapFeed[bytes | str, Message]` where each item is keyed by the message key and the value is the full `confluent_kafka.Message` object.
@@ -64,11 +64,11 @@ Messages with `None` value (Kafka tombstones) are **always** treated as deletion
 
 ```python
 # Default: only tombstones are deletions
-items = kafka.topic_as_map(consumer, ["my-topic"])
+items = kafka.topic_as_map(consumer, "my-topic")
 
 # Custom: also treat messages with a specific header as deletions
 items = kafka.topic_as_map(
-    consumer, ["my-topic"],
+    consumer, "my-topic",
     is_deletion=lambda msg: msg.value() == b"DELETED",
 )
 ```
@@ -84,7 +84,7 @@ The feed signals readiness after catching up to the high watermark offsets that 
 ### Example
 
 ```python
-from collections.abc import AsyncIterator
+import pathlib
 
 from confluent_kafka import Message
 from confluent_kafka.aio import AIOConsumer
@@ -110,7 +110,7 @@ async def app_main(outdir: pathlib.Path) -> None:
         "group.id": "my-group",
         "enable.auto.commit": "false",
     })
-    items = kafka.topic_as_map(consumer, ["my-topic"])
+    items = kafka.topic_as_map(consumer, "my-topic")
     await coco.mount_each(process_message, items, target)
 
 
@@ -121,6 +121,47 @@ app = coco.App(
 )
 app.update_blocking(live=True)
 ```
+
+### Consuming several topics
+
+`topic_as_map()` keys each item by its message key alone, so one feed reads one topic. To consume several topics, create one feed per topic, each with its own consumer, and mount each feed under its own `mount_each()` subpath. The subpath keeps the same message key on two topics (for example, `42` on `users` and `42` on `orders`) in two separate components.
+
+```python
+@coco.fn
+async def app_main(outdir: pathlib.Path) -> None:
+    for topic in ["users", "orders"]:
+        target = await localfs.mount_dir_target(outdir / topic)
+        consumer = AIOConsumer({
+            "bootstrap.servers": "localhost:9092",
+            "group.id": "my-group",
+            "enable.auto.commit": "false",
+        })
+        items = kafka.topic_as_map(consumer, topic)
+        await coco.mount_each(
+            coco.component_subpath(topic), process_message, items, target
+        )
+```
+
+Each topic also writes to its own directory here, because `process_message` names a file by the message key only.
+
+#### Switching from a list of topics
+
+Passing a list of topics to `topic_as_map()` is deprecated and emits a `DeprecationWarning`.
+
+- **One topic in the list:** change `["my-topic"]` to `"my-topic"`. The item keys stay the same, so nothing else changes.
+- **Several topics in the list:** the list form keys items by the message key alone, so the same key on two topics is one item, and a tombstone on one topic deletes what the other topic's message produced. The list form keeps working this way until you switch.
+
+Switching from several topics in a list to one feed per topic changes the item keys. The live map resumes from the committed offsets and never re-reads a topic, so the components under the old keys are never cleaned up, and the new components get only messages that arrive after the switch. Replay the topics when you switch:
+
+1. Stop the app and drop it: `cocoindex drop main.py` (or `App.drop()`). This removes the outputs of the old components.
+2. Reset the consumer group to the earliest offset of each topic, for example:
+
+   ```bash
+   kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group my-group \
+     --reset-offsets --to-earliest --topic users --topic orders --execute
+   ```
+
+3. Change the code to one feed per topic and start the app again. It processes every message the topics still retain.
 
 ## As a live stream
 
@@ -246,7 +287,7 @@ def KafkaTopicTarget.declare_target_state(
 
 **Parameters:**
 
-- `key` — The message key, used as the stable identity for change detection.
+- `key` — The message key, used as the stable identity for change detection. A `str` key is sent as its UTF-8 bytes, so `"a"` and `b"a"` are the same Kafka key: declare each key in one form only. If a key changes form between runs (for example, from `"a"` to `b"a"`), CocoIndex publishes the new form and sends no deletion message for the old form, so the record stays.
 - `value` — The message value.
 
 CocoIndex fingerprints the value and only produces a message when it has changed since the last run.

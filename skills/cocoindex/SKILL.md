@@ -196,7 +196,7 @@ files = localfs.walk_dir(sourcedir, live=True, ...)
 await coco.mount_each(process_file, files.items(), target)
 
 # Kafka -- inherently live
-items = kafka.topic_as_map(consumer, ["my-topic"])
+items = kafka.topic_as_map(consumer, "my-topic")
 await coco.mount_each(process_message, items, target)
 ```
 

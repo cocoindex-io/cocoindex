@@ -54,7 +54,12 @@ class _TopicAction(NamedTuple):
 
 class _MessageAction(NamedTuple):
     key: bytes | str
-    value: bytes | str | None  # None = tombstone (no deletion_value_fn)
+    value: bytes | str | None  # None = deletion
+
+
+def _kafka_key(key: bytes | str) -> bytes:
+    """The key as Kafka stores it: the producer encodes a ``str`` key as UTF-8."""
+    return key.encode() if isinstance(key, str) else key
 
 
 # --- Message handler (child level) ---
@@ -89,14 +94,30 @@ class _MessageHandler(coco.TargetHandler[bytes | str, _MessageFingerprint, None]
     ) -> None:
         if not actions:
             return
+        # A str key and its UTF-8 bytes are distinct target states but one Kafka
+        # key. When a key switches between the two forms across runs, this call
+        # carries both the new form's publish and the old form's deletion; the
+        # deletion would erase the record just published, so skip it.
+        published_keys = {
+            _kafka_key(action.key) for action in actions if action.value is not None
+        }
+        messages: list[tuple[bytes | str, bytes | str | None]] = []
+        for action in actions:
+            value = action.value
+            if value is None:
+                if _kafka_key(action.key) in published_keys:
+                    continue
+                if self._deletion_value_fn is not None:
+                    value = self._deletion_value_fn(action.key)
+            messages.append((action.key, value))
         # AIOProducer.produce() is an async method that enqueues the message into
         # the batch buffer and returns an asyncio.Future resolved by the delivery
         # report. We must await the produce coroutines to obtain those futures,
         # then await the futures to ensure messages are actually delivered.
         delivery_futures = await asyncio.gather(
             *(
-                self._producer.produce(self._topic, key=action.key, value=action.value)
-                for action in actions
+                self._producer.produce(self._topic, key=key, value=value)
+                for key, value in messages
             )
         )
         await asyncio.gather(*delivery_futures)
@@ -114,11 +135,8 @@ class _MessageHandler(coco.TargetHandler[bytes | str, _MessageFingerprint, None]
         if coco.is_non_existence(desired_target_state):
             if not prev_possible_records and not prev_may_be_missing:
                 return None
-            deletion_value: bytes | str | None = None
-            if self._deletion_value_fn is not None:
-                deletion_value = self._deletion_value_fn(key)
             return coco.TargetReconcileOutput(
-                action=_MessageAction(key=key, value=deletion_value),
+                action=_MessageAction(key=key, value=None),
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
