@@ -494,7 +494,7 @@ class CollectionSchema(Generic[RowT]):
             record_type: A dataclass, NamedTuple, or Pydantic model.
             primary_key: Exactly one column name. Its value becomes the document
                 id (converted to ``str``). A new collection rejects a key column
-                typed ``Any``, ``object``, a union, ``bytes`` or ``bool``.
+                typed ``Any``, ``object``, a union or ``bytes``.
             column_overrides: Optional per-column type/vector overrides.
         """
         if not is_record_type(record_type):
@@ -827,8 +827,6 @@ def _ambiguous_doc_id_type(schema: CollectionSchema[Any]) -> str | None:
         return "a union"
     if type_info.base_type is bytes:
         return "bytes"
-    if type_info.base_type is bool:
-        return "bool"
     return None
 
 

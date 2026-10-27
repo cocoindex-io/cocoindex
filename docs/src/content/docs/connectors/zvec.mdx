@@ -135,7 +135,7 @@ async def CollectionSchema.from_class(
 :::note[Single primary key]
 zvec documents have a single string `id`, so `primary_key` must name exactly one column. Its value is converted to `str` to form the id. Composite primary keys are not supported.
 
-Because the id is `str(value)`, some key types are ambiguous: in a union or `Any` column, `1` and `"1"` get the same id, and `bytes` become the text `b'...'`. Creating a new collection raises a `ValueError` when the key column is typed `Any`, `object`, a union, `bytes` or `bool`. A collection that CocoIndex already tracks keeps working. Use a `str` or `int` key column, and convert the value yourself if needed.
+Because the id is `str(value)`, some key types are ambiguous: in a union or `Any` column, `1` and `"1"` get the same id, and `bytes` become the text `b'...'`. Creating a new collection raises a `ValueError` when the key column is typed `Any`, `object`, a union or `bytes`. A collection that CocoIndex already tracks keeps working. Use a `str` or `int` key column, and convert the value yourself if needed.
 :::
 
 :::note[At least one vector field]
