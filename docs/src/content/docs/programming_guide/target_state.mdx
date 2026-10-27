@@ -154,6 +154,8 @@ CocoIndex ensures a container exists before its contents are added, and syncs th
 
 `App.drop()` follows the same rule: it destroys CocoIndex-owned containers and abandons user-managed ones. To remove the contents of a user-managed container, drain it first by keeping the container declared with no contents for one update — see [Kafka](../connectors/kafka#abandoning-a-topic) and [Iggy](../connectors/iggy#abandoning-a-topic) for the recipe.
 
+A target state's identity is its key. CocoIndex doesn't detect two different keys that reach the same physical object: two directories that overlap or alias through a symlink, two [`ContextKey`s](./context#contextkey-as-stable-identity) for one database, or two names or IDs that the backend treats as equal (for example, table names that differ only in case). CocoIndex syncs them as two target states, so syncing one can overwrite or delete the other. Keeping the objects behind different keys apart is your responsibility.
+
 ### What happens when a target's schema changes
 
 When you change a container target state's declaration (e.g., add a column to a table schema, change a primary key), CocoIndex detects the change and does its best to alter the target in place. If the change is too large to alter (e.g., changing primary keys), the target is dropped and recreated.

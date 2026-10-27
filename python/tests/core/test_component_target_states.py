@@ -6,7 +6,8 @@ import pytest
 
 import dataclasses
 import gc
-from typing import Any, Collection, Generic
+import re
+from typing import Any, AsyncIterator, Collection, Generic, Iterator
 
 from tests import common
 from tests.common.target_states import (
@@ -1131,6 +1132,133 @@ async def test_mount_each_delete() -> None:
         '/@test_target_state/dicts/"D3"': coco.ROOT_PATH / _me / "D3" / "setup",
         '/@test_target_state/dicts/"D3"/"a"': coco.ROOT_PATH / _me / "D3",
     }
+
+
+##################################################################################
+# Test for mount_each item keys
+
+_KeyedEntries = list[tuple[coco.StableKey, tuple[str, int]]]
+
+
+async def _declare_entry(entry: tuple[str, int]) -> None:
+    key, value = entry
+    coco.declare_target_state(GlobalDictTarget.target_state(key, value))
+
+
+async def _mount_each_entries(items: _KeyedEntries) -> None:
+    await coco.mount_each(_declare_entry, items)
+
+
+async def _mount_each_entries_async(items: _KeyedEntries) -> None:
+    async def _entries() -> AsyncIterator[tuple[coco.StableKey, tuple[str, int]]]:
+        for item in items:
+            yield item
+
+    await coco.mount_each(_declare_entry, _entries())
+
+
+@pytest.mark.parametrize(
+    "main_fn", [_mount_each_entries, _mount_each_entries_async], ids=["sync", "async"]
+)
+@pytest.mark.asyncio
+async def test_mount_each_rejects_duplicate_key(main_fn: Any) -> None:
+    GlobalDictTarget.store.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_mount_each_rejects_duplicate_key_{main_fn.__name__}",
+            environment=coco_env,
+        ),
+        main_fn,
+        items=[("a", ("x", 1)), ("b", ("y", 2)), ("a", ("z", 3))],
+    )
+    with pytest.raises(
+        ValueError,
+        match=re.escape('Child path /@_declare_entry/"a" is mounted more than once'),
+    ):
+        await app.update()
+    assert "z" not in GlobalDictTarget.store.data
+
+
+_sources: dict[str, dict[str, int]] = {}
+
+
+def _source_entries(source_name: str) -> Iterator[tuple[str, tuple[str, int]]]:
+    for name, value in _sources[source_name].items():
+        yield name, (f"{source_name}/{name}", value)
+
+
+async def _mount_each_source_under_own_subpath() -> None:
+    for source_name in _sources:
+        await coco.mount_each(
+            coco.component_subpath(source_name),
+            _declare_entry,
+            _source_entries(source_name),
+        )
+
+
+async def _mount_each_source_under_default_subpath() -> None:
+    for source_name in _sources:
+        await coco.mount_each(_declare_entry, _source_entries(source_name))
+
+
+@pytest.mark.asyncio
+async def test_mount_each_same_key_under_separate_subpaths() -> None:
+    GlobalDictTarget.store.clear()
+    _sources.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_each_same_key_under_separate_subpaths",
+            environment=coco_env,
+        ),
+        _mount_each_source_under_own_subpath,
+    )
+
+    _sources["docs"] = {"intro.md": 1}
+    _sources["notes"] = {"intro.md": 2}
+    await app.update()
+    assert GlobalDictTarget.store.data == {
+        "docs/intro.md": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "notes/intro.md": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+
+    # Removing the item from one source leaves the other source's item alone.
+    del _sources["notes"]["intro.md"]
+    await app.update()
+    assert GlobalDictTarget.store.data == {
+        "docs/intro.md": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+    }
+    assert await coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "docs",
+        coco.ROOT_PATH / "docs" / "intro.md",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mount_each_rejects_same_key_from_two_calls_on_one_subpath() -> None:
+    GlobalDictTarget.store.clear()
+    _sources.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_each_rejects_same_key_from_two_calls_on_one_subpath",
+            environment=coco_env,
+        ),
+        _mount_each_source_under_default_subpath,
+    )
+
+    _sources["docs"] = {"intro.md": 1}
+    _sources["notes"] = {"intro.md": 2}
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            'Child path /@_declare_entry/"intro.md" is mounted more than once'
+        ),
+    ):
+        await app.update()
+    assert "notes/intro.md" not in GlobalDictTarget.store.data
 
 
 ##################################################################################
