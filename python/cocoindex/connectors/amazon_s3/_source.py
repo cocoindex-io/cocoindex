@@ -289,8 +289,16 @@ class S3Walker:
         self._path_matcher = path_matcher or file.MatchAllFilePathMatcher()
         self._max_file_size = max_file_size
 
-    async def _aiter_items(self) -> AsyncIterator[tuple[str, S3File]]:
-        """Primary async iteration over S3 objects, yielding (key, S3File) pairs."""
+    async def items(self) -> AsyncIterator[tuple[str, S3File]]:
+        """Async iterate over (key, file) pairs.
+
+        The key is the object key relative to the prefix, exactly as stored.
+
+        Example::
+
+            async for key, file in walker.items():
+                content = await file.read()
+        """
         page_kwargs: dict[str, str] = {"Bucket": self._bucket_name}
         if self._folder:
             page_kwargs["Prefix"] = self._folder
@@ -338,21 +346,8 @@ class S3Walker:
 
     async def __aiter__(self) -> AsyncIterator[S3File]:
         """Asynchronously iterate over S3 objects, yielding S3File objects."""
-        async for _, f in self._aiter_items():
+        async for _, f in self.items():
             yield f
-
-    async def items(self) -> AsyncIterator[tuple[str, S3File]]:
-        """Async iterate over (key, file) pairs.
-
-        The key is the object key relative to the prefix, exactly as stored.
-
-        Example::
-
-            async for key, file in walker.items():
-                content = await file.read()
-        """
-        async for item in self._aiter_items():
-            yield item
 
 
 def list_objects(

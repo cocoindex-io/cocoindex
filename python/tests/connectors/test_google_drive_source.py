@@ -364,3 +364,44 @@ async def test_memo_follows_md5_not_modified_time(
         assert await app.update() == 7
     assert calls == ["id-1", "id-1"]
     assert reads == ["id-1", "id-1"]
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_memo_without_md5_skips_read_while_mtime_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Google Doc has no MD5: an unchanged mtime reuses the memo without a download."""
+    from cocoindex.connectors.google_drive import _source
+
+    reads: list[str] = []
+
+    async def read(file: DriveFile, size: int = -1) -> bytes:
+        reads.append(file.file_path.resolve())
+        return b"content"
+
+    monkeypatch.setattr(DriveFile, "_read_impl", read)
+
+    calls: list[str] = []
+
+    @coco.fn(memo=True)
+    async def process(file: DriveFile) -> int:
+        calls.append(file.file_path.resolve())
+        return len(await file.read())
+
+    current: DriveFile
+
+    @coco.fn
+    async def main() -> int:
+        return await process(current)
+
+    env = create_test_env(__file__, suffix="drive_no_md5_memo")
+    app = coco.App(coco.AppConfig(name="drive_no_md5_memo", environment=env), main)
+    mtime = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    for _ in range(2):
+        current = DriveFile(
+            None, DriveFileInfo("doc-1", "notes", _source._DOCS_MIME, 0, mtime)
+        )
+        assert await app.update() == 7
+    assert calls == ["doc-1"]
+    assert reads == ["doc-1"]

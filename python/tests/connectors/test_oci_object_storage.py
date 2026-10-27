@@ -1134,10 +1134,10 @@ async def test_oci_live_events_use_scan_keys(
     _stage_key_test_bucket(oci_client)
     stream = _ManualLiveStream()
     walker = list_objects(oci_client, "ns", "bucket", prefix="docs", live_stream=stream)
-    scan_keys = sorted([key async for key, _ in walker._items_iter()])
+    items = _live_items(walker)
+    scan_keys = sorted([key async for key, _ in items])
 
     sub = _MockMapSubscriber()
-    items = _live_items(walker)
     watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
     await _drive_to_ready(stream, sub)
 

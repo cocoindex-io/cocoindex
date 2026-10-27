@@ -267,7 +267,11 @@ class AzureBlobWalker:
         self._path_matcher = path_matcher or file.MatchAllFilePathMatcher()
         self._max_file_size = max_file_size
 
-    async def _aiter_items(self) -> AsyncIterator[tuple[str, AzureBlobFile]]:
+    async def items(self) -> AsyncIterator[tuple[str, AzureBlobFile]]:
+        """Async iterate over (key, file) pairs.
+
+        The key is the blob name relative to the prefix, exactly as stored.
+        """
         name_starts_with = self._folder or None
         async for blob in self._container_client.list_blobs(
             name_starts_with=name_starts_with
@@ -301,16 +305,8 @@ class AzureBlobWalker:
             )
 
     async def __aiter__(self) -> AsyncIterator[AzureBlobFile]:
-        async for _, f in self._aiter_items():
+        async for _, f in self.items():
             yield f
-
-    async def items(self) -> AsyncIterator[tuple[str, AzureBlobFile]]:
-        """Async iterate over (key, file) pairs.
-
-        The key is the blob name relative to the prefix, exactly as stored.
-        """
-        async for item in self._aiter_items():
-            yield item
 
 
 def list_blobs(
