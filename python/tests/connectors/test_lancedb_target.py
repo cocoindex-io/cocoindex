@@ -6,7 +6,7 @@ import datetime as _datetime
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, NamedTuple, cast
+from typing import Any, Callable, Iterator, NamedTuple, cast
 
 import pytest
 
@@ -1531,28 +1531,35 @@ async def test_execute_deletes_with_real_lancedb(lancedb_dir: Path) -> None:
 @pytest.mark.asyncio
 @requires_lancedb
 @pytest.mark.parametrize(
-    ("column", "pa_type", "deleted_key", "kept_key"),
+    ("column", "make_pa_type", "deleted_key", "kept_key"),
     [
-        pytest.param("doc-id", pa.string(), "it's", "kept", id="quoted_name"),
-        pytest.param("docId", pa.large_string(), "a", "b", id="camel_case_name"),
-        pytest.param("blob", pa.binary(), b"\x00\xff'", b"kept", id="binary"),
-        pytest.param("digest", pa.binary(2), b"ab", b"cd", id="fixed_size_binary"),
-        pytest.param("flag", pa.bool_(), True, False, id="bool"),
-        pytest.param("small", pa.int32(), -5, 7, id="int32"),
-        pytest.param("big", pa.uint64(), 2**63 - 1, 1, id="uint64"),
-        pytest.param("low", pa.int64(), -(2**63), 1, id="int64_min"),
-        pytest.param("score", pa.float64(), 1, 2, id="float_with_int_keys"),
-        pytest.param("amount", pa.decimal128(10, 2), 1, 2, id="decimal_with_int_keys"),
+        pytest.param("doc-id", lambda: pa.string(), "it's", "kept", id="quoted_name"),
+        pytest.param(
+            "docId", lambda: pa.large_string(), "a", "b", id="camel_case_name"
+        ),
+        pytest.param("blob", lambda: pa.binary(), b"\x00\xff'", b"kept", id="binary"),
+        pytest.param(
+            "digest", lambda: pa.binary(2), b"ab", b"cd", id="fixed_size_binary"
+        ),
+        pytest.param("flag", lambda: pa.bool_(), True, False, id="bool"),
+        pytest.param("small", lambda: pa.int32(), -5, 7, id="int32"),
+        pytest.param("big", lambda: pa.uint64(), 2**63 - 1, 1, id="uint64"),
+        pytest.param("low", lambda: pa.int64(), -(2**63), 1, id="int64_min"),
+        pytest.param("score", lambda: pa.float64(), 1, 2, id="float_with_int_keys"),
+        pytest.param(
+            "amount", lambda: pa.decimal128(10, 2), 1, 2, id="decimal_with_int_keys"
+        ),
     ],
 )
 async def test_delete_row_by_key_type(
     lancedb_dir: Path,
     column: str,
-    pa_type: pa.DataType,
+    make_pa_type: Callable[[], pa.DataType],
     deleted_key: Any,
     kept_key: Any,
 ) -> None:
     """A row that is no longer declared is deleted, whatever its key type and column name."""
+    pa_type = make_pa_type()
     conn = await lancedb.connect_async(str(lancedb_dir))
     table_name = "test_delete_by_key"
     table_schema = lancedb.TableSchema(
@@ -1598,21 +1605,27 @@ async def test_delete_row_by_key_type(
 
 @requires_lancedb
 @pytest.mark.parametrize(
-    ("column", "pa_type", "message"),
+    ("column", "make_pa_type", "message"),
     [
-        pytest.param("a`b", pa.string(), "can't contain '`'", id="backtick_name"),
-        pytest.param("ts", pa.timestamp("us"), "isn't supported", id="timestamp"),
-        pytest.param("day", pa.date32(), "isn't supported", id="date"),
-        pytest.param("score", pa.float16(), "isn't supported", id="float16"),
-        pytest.param("tags", pa.list_(pa.string()), "isn't supported", id="list"),
+        pytest.param(
+            "a`b", lambda: pa.string(), "can't contain '`'", id="backtick_name"
+        ),
+        pytest.param(
+            "ts", lambda: pa.timestamp("us"), "isn't supported", id="timestamp"
+        ),
+        pytest.param("day", lambda: pa.date32(), "isn't supported", id="date"),
+        pytest.param("score", lambda: pa.float16(), "isn't supported", id="float16"),
+        pytest.param(
+            "tags", lambda: pa.list_(pa.string()), "isn't supported", id="list"
+        ),
     ],
 )
 def test_table_schema_rejects_primary_key_without_delete_filter(
-    column: str, pa_type: pa.DataType, message: str
+    column: str, make_pa_type: Callable[[], pa.DataType], message: str
 ) -> None:
     """A primary key column that a delete filter can't express is rejected up front."""
     with pytest.raises(ValueError, match=message):
         lancedb.TableSchema(
-            columns={column: lancedb.ColumnDef(type=pa_type, nullable=False)},
+            columns={column: lancedb.ColumnDef(type=make_pa_type(), nullable=False)},
             primary_key=[column],
         )
