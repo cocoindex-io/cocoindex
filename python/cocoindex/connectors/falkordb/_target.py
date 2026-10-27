@@ -1263,6 +1263,13 @@ class _TableHandler(
         The content delete must succeed; the DDL drops stay best-effort
         (FalkorDB has no IF EXISTS).
 
+        A node table also drops the vector indexes on its label. They are
+        attachments of the table, pruned with it like the records, so the
+        graph is asked for them: that also finds an index whose tracking an
+        earlier version pruned. These drops must succeed, as the indexes were
+        just listed. On a rebuild the engine treats the table's vector index
+        declarations as new, so they create the indexes again.
+
         Uses ``prev_pk_field`` recovered during reconcile from the previous
         tracking record — that's what was actually CREATEd, so it's what we
         need to DROP. Falls back to the current spec's PK if there's no prev
@@ -1307,6 +1314,14 @@ class _TableHandler(
                 key.table_name,
                 e,
             )
+        if not is_relation:
+            res = await graph.query(
+                _cypher.build_node_vector_index_list(), {"label": key.table_name}
+            )
+            for (field,) in res.result_set:
+                await graph.query(
+                    _cypher.build_vector_index_drop(key.table_name, field)
+                )
 
 
 async def _exec_constraint(
