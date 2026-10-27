@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Awaitable, Generator, Iterator
+from typing import Any, TypeVar
 
 import pytest
 
@@ -16,6 +17,8 @@ from cocoindex._internal.runner import (
     current_gpus,
     current_gpu_fraction,
 )
+
+_T = TypeVar("_T")
 
 
 @pytest.fixture(autouse=True)
@@ -267,3 +270,94 @@ async def test_coco_fn_current_gpus_and_fraction() -> None:
         assert len(gpus) == 1
         assert 0 <= gpus[0] < 2
         assert fraction == 0.5
+
+
+@pytest.mark.asyncio
+async def test_acquire_full_more_gpus_than_pool_raises() -> None:
+    pool = coco.GPUPool(2)
+    with pytest.raises(ValueError, match="only has 2"):
+        await pool.acquire_full(3)
+
+
+# A GPU that reaches a cancelled `acquire` must go back to the pool. Each test below
+# ends by acquiring that GPU again; if it leaked, the acquisition times out.
+_LEAK_TIMEOUT_SECS = 5.0
+
+
+async def _await(acquisition: Awaitable[_T]) -> _T:
+    """Awaits the acquisition in a coroutine of its own, as `GPURunner` does."""
+    return await acquisition
+
+
+@pytest.mark.asyncio
+async def test_cancelled_acquire_returns_gpu_released_to_it() -> None:
+    pool = coco.GPUPool(1)
+    gpu = await pool.acquire(1.0)
+    waiter = asyncio.create_task(_await(pool.acquire(1.0)))
+    await asyncio.sleep(0)  # The waiter starts waiting for the GPU.
+
+    # Release the GPU to the waiter in the same step that cancels it.
+    waiter.cancel()
+    pool.release(gpu, 1.0)
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert await asyncio.wait_for(pool.acquire(1.0), _LEAK_TIMEOUT_SECS) == gpu
+
+
+@pytest.mark.asyncio
+async def test_cancelled_acquire_full_returns_all_gpus() -> None:
+    pool = coco.GPUPool(2)
+    held = await pool.acquire(1.0)
+    # Takes the free GPU at once, then waits for the held one.
+    waiter = asyncio.create_task(_await(pool.acquire_full(2)))
+    await asyncio.sleep(0)
+
+    waiter.cancel()
+    pool.release(held, 1.0)
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    gpus = await asyncio.wait_for(pool.acquire_full(2), _LEAK_TIMEOUT_SECS)
+    assert sorted(gpus) == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_acquire_cancelled_after_gpu_arrives_returns_it() -> None:
+    pool = coco.GPUPool(1)
+    gpu = await pool.acquire(1.0)
+
+    # Step the acquisition as a task does. The cancellation is thrown in after the GPU
+    # reached the acquisition but before the task resumed to take it: what a task does
+    # when it is cancelled in that gap, e.g. by a `wait_for` timeout in the same loop
+    # iteration as the release.
+    steps = pool.acquire(1.0).__await__()
+    wakeup = steps.send(None)
+    pool.release(gpu, 1.0)
+    await asyncio.wait([wakeup])
+    with pytest.raises(asyncio.CancelledError):
+        steps.throw(asyncio.CancelledError())
+
+    assert await asyncio.wait_for(pool.acquire(1.0), _LEAK_TIMEOUT_SECS) == gpu
+
+
+def test_gpu_released_to_waiter_on_closed_loop_returns_to_pool() -> None:
+    pool = coco.GPUPool(1)
+
+    async def acquire() -> int:
+        return await asyncio.wait_for(pool.acquire(1.0), _LEAK_TIMEOUT_SECS)
+
+    gpu = asyncio.run(acquire())
+
+    async def start_waiting() -> Generator[Any, None, int]:
+        steps = pool.acquire(1.0).__await__()
+        steps.send(None)  # Now waits for the GPU on this loop.
+        return steps
+
+    loop = asyncio.new_event_loop()
+    steps = loop.run_until_complete(start_waiting())
+    loop.close()  # The waiter's loop never runs again.
+    pool.release(gpu, 1.0)
+
+    assert asyncio.run(acquire()) == gpu
+    steps.close()
