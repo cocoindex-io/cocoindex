@@ -1261,6 +1261,34 @@ async def test_mount_each_rejects_same_key_from_two_calls_on_one_subpath() -> No
     assert "notes/intro.md" not in GlobalDictTarget.store.data
 
 
+async def _mount_on_mount_each_subpath() -> None:
+    await coco.mount_each(
+        coco.component_subpath("docs"), _declare_entry, [("intro.md", ("a", 1))]
+    )
+    await coco.mount(coco.component_subpath("docs"), _declare_entry, ("b", 2))
+
+
+@pytest.mark.asyncio
+async def test_mount_rejects_path_already_used_by_mount_each() -> None:
+    GlobalDictTarget.store.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_rejects_path_already_used_by_mount_each",
+            environment=coco_env,
+        ),
+        _mount_on_mount_each_subpath,
+    )
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            'Child path /"docs" is mounted as a component, but other children'
+        ),
+    ):
+        await app.update()
+    assert "b" not in GlobalDictTarget.store.data
+
+
 ##################################################################################
 # Test for async target states
 
