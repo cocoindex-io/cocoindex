@@ -161,12 +161,11 @@ def _apply_entry_actions(
     call. The delete is skipped there: it would remove the entry just written.
     """
     # Identities of the entries written so far; only a call with deletes needs them.
-    written: set[tuple[int, int]] | None = (
-        set() if any(action.content is None for action in actions) else None
-    )
+    track_written = any(action.content is None for action in actions)
+    written: set[tuple[int, int]] = set()
     for action in actions:
         path = _entry_path(context_provider, action)
-        if written is not None and action.content is None:
+        if action.content is None:
             try:
                 identity = _entry_identity(path, follow_symlinks=False)
             except (FileNotFoundError, NotADirectoryError):
@@ -174,7 +173,7 @@ def _apply_entry_actions(
             if identity in written:
                 continue
         _execute_entry_action(path, action)
-        if written is not None and action.content is not None:
+        if track_written and action.content is not None:
             identity = _entry_identity(path, follow_symlinks=True)
             if identity is not None:
                 written.add(identity)
@@ -202,6 +201,7 @@ def _track_root_dirs(
             written.append((action.root_key, _entry_path(context_provider, action)))
     if not removed and not written:
         return
+    overlaps: list[tuple[str, str]] = []
     with _root_dirs_lock:
         for key in removed:
             _root_dirs.pop(key, None)
@@ -209,18 +209,20 @@ def _track_root_dirs(
             if _root_dirs.get(key) == path:
                 continue
             _root_dirs[key] = path
-            for other_key, other_path in _root_dirs.items():
-                if other_key != key and (
-                    path.is_relative_to(other_path) or other_path.is_relative_to(path)
-                ):
-                    _logger.warning(
-                        "localfs directory targets %s and %s overlap. A file reached "
-                        "through both is managed twice, and removing one target "
-                        "removes files of the other. See "
-                        '"One file, one declaration" in the localfs connector docs.',
-                        _describe_root_dir(key, path),
-                        _describe_root_dir(other_key, other_path),
-                    )
+            overlaps.extend(
+                (_describe_root_dir(key, path), _describe_root_dir(other_key, other))
+                for other_key, other in _root_dirs.items()
+                if other_key != key
+                and (path.is_relative_to(other) or other.is_relative_to(path))
+            )
+    for described, other_described in overlaps:
+        _logger.warning(
+            "localfs directory targets %s and %s overlap. A file reached through "
+            "both is managed twice, and removing one target removes files of the "
+            'other. See "One file, one declaration" in the localfs connector docs.',
+            described,
+            other_described,
+        )
 
 
 def _describe_root_dir(key: _RootKey, path: pathlib.Path) -> str:
@@ -239,7 +241,6 @@ _entry_action_sink = coco.TargetActionSink[_EntryAction].from_fn(
 
 
 def _reconcile_entry(
-    base_dir_key: str | None,
     path_str: str,
     root_key: _RootKey | None,
     desired_state: _EntrySpec | coco.NonExistenceType,
@@ -249,6 +250,7 @@ def _reconcile_entry(
     coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler] | None
 ):
     """Common reconcile logic for both root and non-root entries."""
+    base_dir_key = root_key.base_dir_key if root_key is not None else None
     if coco.is_non_existence(desired_state):
         # Determine entry type from previous state (None fingerprint = dir)
         entry_type: Literal["file", "dir"] = "file"
@@ -333,7 +335,6 @@ class _EntryHandler(
         key = _ENTRY_NAME_CHECKER.check(key)
         path = self._base_path / key
         return _reconcile_entry(
-            None,
             str(path),
             None,
             desired_state,
@@ -378,7 +379,6 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
         else:
             path_str = root_key.path
         return _reconcile_entry(
-            root_key.base_dir_key,
             path_str,
             root_key,
             desired_state,

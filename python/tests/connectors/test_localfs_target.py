@@ -458,6 +458,25 @@ def test_switch_from_flat_path_to_nested_dir_target_keeps_file(
     assert (outdir / "sub" / "a.txt").read_text() == "a"
 
 
+def test_delete_of_another_file_in_the_same_update_runs(tmp_path: Path) -> None:
+    """The guard spares only the entry just written: a removed file is deleted in
+    the same call that rewrites its sibling."""
+    outdir = tmp_path / "out"
+    app = _new_app("test_delete_of_another_file", outdir)
+
+    async def both(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("a.txt", "a")
+        target.declare_file("b.txt", "b")
+
+    async def only_a(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("a.txt", "a2")
+
+    _update(app, both)
+    _update(app, only_a)
+    assert sorted(os.listdir(outdir)) == ["a.txt"]
+    assert (outdir / "a.txt").read_text() == "a2"
+
+
 def test_case_only_rename_keeps_file(tmp_path: Path) -> None:
     """On a case-insensitive file system both names reach one file, and the old
     name's delete must not remove the new name's write."""
