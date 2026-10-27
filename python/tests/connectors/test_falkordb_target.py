@@ -1715,6 +1715,83 @@ async def test_renamed_vector_index_is_kept(falkor_graph_name: str) -> None:
 
 
 @requires_falkordb_server
+@pytest.mark.parametrize("api", ["node", "table"])
+@pytest.mark.parametrize("removal", ["undeclare", "drop"])
+@pytest.mark.asyncio
+async def test_destroyed_node_table_drops_its_vector_indexes(
+    falkor_graph_name: str, api: str, removal: str
+) -> None:
+    """A node table's vector indexes are pruned with it, so destroying the
+    table drops them. A rebuild creates them again. The indexes of tables
+    still declared stay."""
+    docs_declared = True
+    docs_pk = "id"
+
+    async def declare() -> None:
+        if docs_declared:
+            mount: Any = (
+                falkor.mount_node_target if api == "node" else falkor.mount_table_target
+            )
+            docs: Any = await coco.use_mount(
+                coco.component_subpath("docs"),
+                mount,
+                KG_DB,
+                "VecDoc",
+                primary_key=docs_pk,
+            )
+            docs.declare_record(
+                row={"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+            )
+            docs.declare_vector_index(field="summary", dimension=4)
+            docs.declare_vector_index(field="body", dimension=4)
+        notes: Any = await coco.use_mount(
+            coco.component_subpath("notes"),
+            falkor.mount_node_target,
+            KG_DB,
+            "VecNote",
+        )
+        notes.declare_record(row={"id": "n1", "summary": "s"})
+        notes.declare_vector_index(field="summary", dimension=4)
+
+    async def vector_indexes() -> set[tuple[str, str]]:
+        return {
+            (label, field)
+            for _, label, field, index_type in await _indexes(falkor_graph_name)
+            if index_type == "VECTOR"
+        }
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_falkordb_vec_drop_{api}_{removal}", environment=coco_env
+        ),
+        declare,
+    )
+    await app.update()
+    all_indexes = {("VecDoc", "summary"), ("VecDoc", "body"), ("VecNote", "summary")}
+    assert await vector_indexes() == all_indexes
+
+    # A new primary key rebuilds the table, vector indexes included.
+    docs_pk = "title"
+    await app.update()
+    assert await _read_nodes(falkor_graph_name, "VecDoc") == [
+        {"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+    ]
+    assert await vector_indexes() == all_indexes
+
+    if removal == "undeclare":
+        docs_declared = False
+        await app.update()
+        assert await vector_indexes() == {("VecNote", "summary")}
+    else:
+        await app.drop()
+        assert await vector_indexes() == set()
+    assert await _read_nodes(falkor_graph_name, "VecDoc") == []
+
+
+@requires_falkordb_server
 @pytest.mark.asyncio
 async def test_switching_from_the_table_and_relation_apis(
     falkor_graph_name: str,
@@ -1844,3 +1921,4 @@ async def test_switching_from_the_table_and_relation_apis(
     await app.drop()
     assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 0
     assert await _count(falkor_graph_name, "MATCH ()-[r]->() RETURN count(r)") == 0
+    assert await _indexes(falkor_graph_name) == set()

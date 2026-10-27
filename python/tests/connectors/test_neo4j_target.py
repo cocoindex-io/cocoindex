@@ -1993,6 +1993,89 @@ async def test_renamed_vector_index_is_kept(
 
 
 @requires_neo4j_server
+@pytest.mark.parametrize("api", ["node", "table"])
+@pytest.mark.parametrize("removal", ["undeclare", "drop"])
+@pytest.mark.asyncio
+async def test_destroyed_node_table_drops_its_vector_indexes(
+    neo4j_clean: tuple[str, tuple[str, str]], api: str, removal: str
+) -> None:
+    """A node table's vector indexes are pruned with it, so destroying the
+    table drops them. A rebuild creates them again. An index the connector
+    did not create stays, as do the indexes of tables still declared."""
+    uri, auth = neo4j_clean
+    docs_declared = True
+    docs_pk = "id"
+
+    async def declare() -> None:
+        if docs_declared:
+            mount: Any = (
+                neo.mount_node_target if api == "node" else neo.mount_table_target
+            )
+            docs: Any = await coco.use_mount(
+                coco.component_subpath("docs"),
+                mount,
+                KG_DB,
+                "VecDoc",
+                primary_key=docs_pk,
+            )
+            docs.declare_record(
+                row={"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+            )
+            docs.declare_vector_index(field="summary", dimension=4)
+            docs.declare_vector_index(field="body", dimension=4)
+        notes: Any = await coco.use_mount(
+            coco.component_subpath("notes"), neo.mount_node_target, KG_DB, "VecNote"
+        )
+        notes.declare_record(row={"id": "n1", "summary": "s"})
+        notes.declare_vector_index(field="summary", dimension=4)
+
+    async def vector_indexes() -> set[str]:
+        rows = await _query(uri, auth, "SHOW VECTOR INDEXES YIELD name RETURN name")
+        return {r["name"] for r in rows}
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_neo4j_vec_drop_{api}_{removal}", environment=coco_env
+        ),
+        declare,
+    )
+    await app.update()
+    await _query(
+        uri,
+        auth,
+        "CREATE VECTOR INDEX user_vec FOR (n:VecDoc) ON n.extra OPTIONS "
+        "{ indexConfig: { `vector.dimensions`: 4 } }",
+    )
+    all_indexes = {
+        "coco_vec_VecDoc__summary",
+        "coco_vec_VecDoc__body",
+        "coco_vec_VecNote__summary",
+        "user_vec",
+    }
+    assert await vector_indexes() == all_indexes
+
+    # A new primary key rebuilds the table, vector indexes included.
+    docs_pk = "title"
+    await app.update()
+    assert await _read_nodes(uri, auth, "VecDoc") == [
+        {"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+    ]
+    assert await vector_indexes() == all_indexes
+
+    if removal == "undeclare":
+        docs_declared = False
+        await app.update()
+        assert await vector_indexes() == {"coco_vec_VecNote__summary", "user_vec"}
+    else:
+        await app.drop()
+        assert await vector_indexes() == {"user_vec"}
+    assert await _read_nodes(uri, auth, "VecDoc") == []
+
+
+@requires_neo4j_server
 @pytest.mark.asyncio
 async def test_switching_from_the_table_and_relation_apis(
     neo4j_clean: tuple[str, tuple[str, str]],
@@ -2121,3 +2204,4 @@ async def test_switching_from_the_table_and_relation_apis(
     await app.drop()
     assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 0
     assert await _count(uri, auth, "MATCH ()-[r]->() RETURN count(r) AS c") == 0
+    assert await _coco_schema_names(uri, auth) == set()

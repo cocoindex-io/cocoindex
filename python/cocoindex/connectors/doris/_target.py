@@ -439,7 +439,7 @@ class DorisConnectionConfig:
     fe_http_port: int = 8080
     query_port: int = 9030
     username: str = "root"
-    password: str = ""
+    password: str = field(default="", repr=False)
     enable_https: bool = False
     be_load_host: str | None = None
     batch_size: int = 10000

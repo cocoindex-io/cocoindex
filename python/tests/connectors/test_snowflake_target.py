@@ -166,6 +166,17 @@ async def test_snowflake_type_override_is_used() -> None:
     assert schema.columns["vector"].use_parse_json is False
 
 
+def test_connection_config_repr_omits_password() -> None:
+    config = _connection_config()
+    assert "test_password" not in repr(config)
+    assert "test_account" in repr(config)
+
+
+def test_connection_configs_with_different_passwords_are_unequal() -> None:
+    config = _connection_config()
+    assert config != dataclasses.replace(config, password="other_password")
+
+
 def test_qualified_table_name_quotes_each_part() -> None:
     assert (
         _target._qualified_table_name("analytics", "public", "events")

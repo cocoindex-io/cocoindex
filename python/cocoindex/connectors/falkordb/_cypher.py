@@ -19,6 +19,7 @@ __all__ = [
     "build_node_upsert",
     "build_node_delete",
     "build_node_delete_all",
+    "build_node_vector_index_list",
     "build_relationship_upsert",
     "build_relationship_delete",
     "build_relationship_delete_all",
@@ -239,3 +240,18 @@ def build_vector_index_drop(label: str, field: str) -> str:
     take an index name — it identifies the index by (label, field).
     """
     return f"DROP VECTOR INDEX FOR (e:{_quote(label)}) ON (e.{_quote(field)})"
+
+
+def build_node_vector_index_list() -> str:
+    """The fields with a vector index on the nodes of label ``$label``.
+
+    One row per field: ``db.indexes()`` gives a label one row, whose
+    ``types`` maps each indexed field to its index types.
+    """
+    return (
+        "CALL db.indexes() YIELD label, types, entitytype "
+        "WHERE label = $label AND entitytype = 'NODE' "
+        "UNWIND keys(types) AS field "
+        "WITH field, types WHERE 'VECTOR' IN types[field] "
+        "RETURN field"
+    )
