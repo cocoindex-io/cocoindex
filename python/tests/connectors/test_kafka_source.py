@@ -468,8 +468,13 @@ def _auto_assigning_consumer(
     """A consumer holding *messages* that assigns partition 0 of every topic it
     subscribes to, plus the list of subscriptions it receives."""
     consumer = MockAIOConsumer()
-    for topic in {m.topic() for m in messages}:
-        consumer.set_watermarks(topic, 0, 0, len(messages))
+    high_watermarks: dict[str, int] = {}
+    for m in messages:
+        high_watermarks[m.topic()] = max(
+            high_watermarks.get(m.topic(), 0), m.offset() + 1
+        )
+    for topic, high in high_watermarks.items():
+        consumer.set_watermarks(topic, 0, 0, high)
     consumer.enqueue(*messages)
     subscriptions: list[list[str]] = []
     original_subscribe = consumer.subscribe
@@ -547,6 +552,7 @@ class TestTopicAsMap:
         assert subscriptions == [["users", "orders"]]
         assert [(k, m.value()) for k, m in sub.updates] == [(b"42", b"alice")]
         assert sub.deletes == [b"42"]
+        assert sub.ready_called
 
     def test_topic_and_topics_together_raise(self) -> None:
         with pytest.raises(TypeError, match="not both"):
