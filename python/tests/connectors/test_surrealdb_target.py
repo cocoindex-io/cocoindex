@@ -42,6 +42,7 @@ requires_surrealdb = pytest.mark.skipif(
 if HAS_SURREALDB:
     from cocoindex.connectors import surrealdb  # type: ignore[attr-defined]
     from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
+        _auto_relation_id,
         _to_record_id,
         _validate_identifier,
     )
@@ -95,6 +96,39 @@ class TestToRecordId:
 
     def test_awkward_string(self) -> None:
         assert _to_record_id("t", "a`b\\c").id == "a`b\\c"
+
+
+@requires_surrealdb
+class TestAutoRelationId:
+    """Tests for _auto_relation_id(): distinct endpoints never share an ID."""
+
+    def test_format(self) -> None:
+        assert (
+            _auto_relation_id("person", "alice", "post", 1)
+            == "6:person;9:str:alice;4:post;5:int:1;"
+        )
+
+    def test_table_and_id_boundary_is_unambiguous(self) -> None:
+        assert _auto_relation_id("doc", "chunk_1", "tag", "x") != _auto_relation_id(
+            "doc_chunk", "1", "tag", "x"
+        )
+
+    def test_int_and_numeric_string_stay_distinct(self) -> None:
+        assert _auto_relation_id("a", 1, "b", "x") != _auto_relation_id(
+            "a", "1", "b", "x"
+        )
+
+    def test_array_ids(self) -> None:
+        # A tuple and a list name the same array record ID.
+        assert _auto_relation_id("a", ("sap", 1), "b", "x") == _auto_relation_id(
+            "a", ["sap", 1], "b", "x"
+        )
+        assert _auto_relation_id("a", ("sap", 1), "b", "x") != _auto_relation_id(
+            "a", ("sap", "1"), "b", "x"
+        )
+        assert _auto_relation_id("a", ["p;q"], "b", "x") != _auto_relation_id(
+            "a", ["p", "q"], "b", "x"
+        )
 
 
 @requires_surrealdb
@@ -2253,6 +2287,151 @@ async def test_array_record_ids_and_relations(
     assert res == [["sap", "0001"], ["sap", "0002"]]
     edges = await _query(conn, "SELECT VALUE [meta::id(in), meta::id(out)] FROM knows")
     assert edges == [[["sap", "0001"], ["sap", "0002"]]]
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_relation_auto_ids_of_distinct_endpoints_differ(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """Endpoints that the old ``{from_table}_{from_id}_{to_table}_{to_id}`` ID
+    format merged into one ID (``doc_chunk_1_tag_x``) each get their own edge."""
+    conn, ns, db = surreal_conn
+    for table in ("doc", "doc_chunk", "tag"):
+        await _query(conn, f"DEFINE TABLE {table} SCHEMALESS")
+    await _query(conn, "DEFINE TABLE has_tag TYPE RELATION SCHEMALESS")
+    coco_env.context_provider.provide(
+        SURREAL_DB_KEY,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL, namespace=ns, database=db, credentials=None
+        ),
+    )
+
+    async def main() -> None:
+        tables: dict[str, Any] = {}
+        for table in ("doc", "doc_chunk", "tag"):
+            tables[table] = await coco.use_mount(  # type: ignore[call-overload]
+                coco.component_subpath("setup", table),
+                surrealdb.mount_table_target,  # type: ignore[arg-type]
+                SURREAL_DB_KEY,
+                table,
+                None,
+                managed_by=ManagedBy.USER,
+            )
+        has_tag = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "has_tag"),
+            surrealdb.mount_relation_target,  # type: ignore[arg-type]
+            SURREAL_DB_KEY,
+            "has_tag",
+            [tables["doc"], tables["doc_chunk"]],
+            tables["tag"],
+            None,
+            managed_by=ManagedBy.USER,
+        )
+        tables["doc"].declare_record(row={"id": "chunk_1"})
+        tables["doc_chunk"].declare_record(row={"id": "1"})
+        tables["doc_chunk"].declare_record(row={"id": 1})
+        tables["tag"].declare_record(row={"id": "x"})
+        for from_table, from_id in (
+            ("doc", "chunk_1"),
+            ("doc_chunk", "1"),
+            ("doc_chunk", 1),
+        ):
+            has_tag.declare_relation(
+                from_id=from_id, to_id="x", from_table=tables[from_table]
+            )
+
+    app = coco.App(coco.AppConfig(name="rel_auto_ids", environment=coco_env), main)
+    await app.update()
+
+    edges = await _query(
+        conn, "SELECT VALUE [meta::tb(in), meta::id(in), meta::id(out)] FROM has_tag"
+    )
+    assert len(edges) == 3
+    assert {tuple(e) for e in edges} == {
+        ("doc", "chunk_1", "x"),
+        ("doc_chunk", "1", "x"),
+        ("doc_chunk", 1, "x"),
+    }
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_relation_auto_id_upgrade_replaces_old_format_record(
+    surreal_conn: tuple[Any, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relation stored under the old auto-ID format is re-created once under
+    its new ID, and the old record is deleted, on the first run after upgrade."""
+    from cocoindex.connectors.surrealdb import _target
+
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE person SCHEMALESS")
+    await _query(conn, "DEFINE TABLE post SCHEMALESS")
+    await _query(conn, "DEFINE TABLE likes TYPE RELATION SCHEMALESS")
+    coco_env.context_provider.provide(
+        SURREAL_DB_KEY,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL, namespace=ns, database=db, credentials=None
+        ),
+    )
+
+    async def main() -> None:
+        person = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "person"),
+            surrealdb.mount_table_target,  # type: ignore[arg-type]
+            SURREAL_DB_KEY,
+            "person",
+            None,
+            managed_by=ManagedBy.USER,
+        )
+        post = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "post"),
+            surrealdb.mount_table_target,  # type: ignore[arg-type]
+            SURREAL_DB_KEY,
+            "post",
+            None,
+            managed_by=ManagedBy.USER,
+        )
+        likes = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "likes"),
+            surrealdb.mount_relation_target,  # type: ignore[arg-type]
+            SURREAL_DB_KEY,
+            "likes",
+            person,
+            post,
+            None,
+            managed_by=ManagedBy.USER,
+        )
+        person.declare_record(row={"id": "alice"})
+        post.declare_record(row={"id": "post1"})
+        likes.declare_relation(from_id="alice", to_id="post1", record={"rating": 5})
+
+    app = coco.App(coco.AppConfig(name="rel_auto_id_up", environment=coco_env), main)
+
+    # Run 1 with the pre-fix ID format.
+    monkeypatch.setattr(
+        _target,
+        "_auto_relation_id",
+        lambda from_table, from_id, to_table, to_id: (
+            f"{from_table}_{from_id}_{to_table}_{to_id}"
+        ),
+    )
+    await app.update()
+    assert await _query(conn, "SELECT VALUE meta::id(id) FROM likes") == [
+        "person_alice_post_post1"
+    ]
+
+    # Run 2 after the upgrade: one sink call upserts the new ID, deletes the old.
+    monkeypatch.undo()
+    await app.update()
+    edges = await _query(
+        conn,
+        "SELECT VALUE [meta::id(id), meta::id(in), meta::id(out), rating] FROM likes",
+    )
+    assert edges == [
+        [_auto_relation_id("person", "alice", "post", "post1"), "alice", "post1", 5]
+    ]
 
 
 @requires_surrealdb
