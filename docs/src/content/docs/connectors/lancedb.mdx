@@ -240,7 +240,7 @@ async def TableSchema.from_class(
 **Parameters:**
 
 - `record_type` — A record type whose fields define table columns.
-- `primary_key` — List of column names forming the primary key.
+- `primary_key` — List of column names forming the primary key. A primary key column must have a string, binary, boolean, integer, `float32`, `float64` or decimal PyArrow type, and its name can't contain a backtick (`` ` ``). `TableSchema` raises a `ValueError` for any other primary key column.
 - `column_specs` — Optional per-column overrides for type mapping or vector configuration.
 
 **Example:**

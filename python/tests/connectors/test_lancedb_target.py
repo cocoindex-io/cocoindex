@@ -6,7 +6,7 @@ import datetime as _datetime
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, NamedTuple, cast
+from typing import Any, Callable, Iterator, NamedTuple, cast
 
 import pytest
 
@@ -1473,7 +1473,7 @@ async def test_execute_deletes_escapes_string_pk() -> None:
             _target._RowAction(key=("O'Brien",), value=None),
         ],
     )
-    assert delete_filters == ["id = 'O''Brien'"]
+    assert delete_filters == ["`id` = 'O''Brien'"]
 
 
 @pytest.mark.asyncio
@@ -1526,3 +1526,106 @@ async def test_execute_deletes_with_real_lancedb(lancedb_dir: Path) -> None:
     # Verify only the quoted-PK row was deleted
     rows = await _read_rows(conn, table_name)
     assert rows == [{"id": "normal", "name": "Bob"}]
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+@pytest.mark.parametrize(
+    ("column", "make_pa_type", "deleted_key", "kept_key"),
+    [
+        pytest.param("doc-id", lambda: pa.string(), "it's", "kept", id="quoted_name"),
+        pytest.param(
+            "docId", lambda: pa.large_string(), "a", "b", id="camel_case_name"
+        ),
+        pytest.param("blob", lambda: pa.binary(), b"\x00\xff'", b"kept", id="binary"),
+        pytest.param(
+            "digest", lambda: pa.binary(2), b"ab", b"cd", id="fixed_size_binary"
+        ),
+        pytest.param("flag", lambda: pa.bool_(), True, False, id="bool"),
+        pytest.param("small", lambda: pa.int32(), -5, 7, id="int32"),
+        pytest.param("big", lambda: pa.uint64(), 2**63 - 1, 1, id="uint64"),
+        pytest.param("low", lambda: pa.int64(), -(2**63), 1, id="int64_min"),
+        pytest.param("score", lambda: pa.float64(), 1, 2, id="float_with_int_keys"),
+        pytest.param(
+            "amount", lambda: pa.decimal128(10, 2), 1, 2, id="decimal_with_int_keys"
+        ),
+    ],
+)
+async def test_delete_row_by_key_type(
+    lancedb_dir: Path,
+    column: str,
+    make_pa_type: Callable[[], pa.DataType],
+    deleted_key: Any,
+    kept_key: Any,
+) -> None:
+    """A row that is no longer declared is deleted, whatever its key type and column name."""
+    pa_type = make_pa_type()
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_delete_by_key"
+    table_schema = lancedb.TableSchema(
+        columns={
+            column: lancedb.ColumnDef(type=pa_type, nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=[column],
+    )
+    source_rows: list[dict[str, Any]] = []
+
+    async def declare_table_and_rows() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            lancedb.declare_table_target,
+            LANCEDB_DB,
+            table_name,
+            table_schema,
+        )
+        for row in source_rows:
+            table.declare_row(row=row)
+
+    env = _make_env(conn, f"test_delete_row_by_key_type__{column}")
+    app = coco.App(
+        coco.AppConfig(name="test_lancedb_delete_by_key", environment=env),
+        declare_table_and_rows,
+    )
+
+    source_rows = [
+        {column: deleted_key, "name": "deleted"},
+        {column: kept_key, "name": "kept"},
+    ]
+    await app.update()
+    assert sorted(row["name"] for row in await _read_rows(conn, table_name)) == [
+        "deleted",
+        "kept",
+    ]
+
+    source_rows = [{column: kept_key, "name": "kept"}]
+    await app.update()
+    assert [row["name"] for row in await _read_rows(conn, table_name)] == ["kept"]
+
+
+@requires_lancedb
+@pytest.mark.parametrize(
+    ("column", "make_pa_type", "message"),
+    [
+        pytest.param(
+            "a`b", lambda: pa.string(), "can't contain '`'", id="backtick_name"
+        ),
+        pytest.param(
+            "ts", lambda: pa.timestamp("us"), "isn't supported", id="timestamp"
+        ),
+        pytest.param("day", lambda: pa.date32(), "isn't supported", id="date"),
+        pytest.param("score", lambda: pa.float16(), "isn't supported", id="float16"),
+        pytest.param(
+            "tags", lambda: pa.list_(pa.string()), "isn't supported", id="list"
+        ),
+    ],
+)
+def test_table_schema_rejects_primary_key_without_delete_filter(
+    column: str, make_pa_type: Callable[[], pa.DataType], message: str
+) -> None:
+    """A primary key column that a delete filter can't express is rejected up front."""
+    with pytest.raises(ValueError, match=message):
+        lancedb.TableSchema(
+            columns={column: lancedb.ColumnDef(type=make_pa_type(), nullable=False)},
+            primary_key=[column],
+        )
