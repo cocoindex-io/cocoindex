@@ -47,7 +47,6 @@
 //! a run takes its parent's token first when it is free, and the loan alone
 //! keeps the hierarchy deadlock-free, whichever waiter the pool serves.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -67,12 +66,8 @@ impl AdmissionPool {
     pub fn new(max_inflight_components: Option<usize>) -> Self {
         Self {
             inner: Arc::new(PoolInner {
-                bounded: max_inflight_components.is_some(),
-                state: Mutex::new(PoolState {
-                    free: max_inflight_components.unwrap_or(0),
-                    waiting: 0,
-                    next_seq: 0,
-                }),
+                limit: max_inflight_components,
+                state: Mutex::new(PoolState { next_seq: 0 }),
                 root: Arc::new(ShareNode::new(0, None)),
                 next_node_id: AtomicU64::new(1),
             }),
@@ -81,7 +76,9 @@ impl AdmissionPool {
 
     /// Tokens not held by any run; `None` for an unbounded pool.
     pub fn available_tokens(&self) -> Option<usize> {
-        self.inner.bounded.then(|| self.inner.state.lock().free)
+        let limit = self.inner.limit?;
+        let _state = self.inner.state.lock();
+        Some(limit - self.inner.root.state.lock().held)
     }
 
     /// The share of a new app-level update: an `App` update or drop, or any
@@ -95,7 +92,8 @@ impl AdmissionPool {
 
     #[cfg(test)]
     fn waiting_runs(&self) -> usize {
-        self.inner.state.lock().waiting
+        let _state = self.inner.state.lock();
+        self.inner.root.state.lock().waiting
     }
 }
 
@@ -145,26 +143,26 @@ impl LiveShare {
 }
 
 struct PoolInner {
-    /// `false` for an unbounded pool, which admits at once.
-    bounded: bool,
+    /// `None` for an unbounded pool, which admits at once.
+    limit: Option<usize>,
+    /// The pool's lock: the share tree is read and written only while it is
+    /// held, which the tree's methods on [`PoolState`] require.
     state: Mutex<PoolState>,
-    /// The app: every share hangs below it.
+    /// The app: every share hangs below it. Its counts are the pool's: the
+    /// tokens in use and the runs waiting.
     root: Arc<ShareNode>,
     next_node_id: AtomicU64,
 }
 
 struct PoolState {
-    free: usize,
-    /// Runs waiting for a pool token, in the whole tree.
-    waiting: usize,
     /// Numbers the waiters and orders "started waiting" among equals.
     next_seq: u64,
 }
 
 /// A node of the share tree: the app (the root), a live component, or an
 /// update (a leaf, the only kind with waiters). Its state is read and
-/// written only under the pool's lock, so the node's own mutex never
-/// contends; one node's state is locked at a time.
+/// written only through [`PoolState`], under the pool's lock, so the node's
+/// own mutex never contends; one node's state is locked at a time.
 struct ShareNode {
     id: u64,
     /// `None` for the root only.
@@ -182,17 +180,17 @@ struct ShareState {
     key: Option<ReadyKey>,
     /// The children with waiting runs, the next to serve first.
     ready: BTreeMap<ReadyKey, Arc<ShareNode>>,
-    /// An update's waiting runs, in arrival order.
-    waiters: VecDeque<Waiter>,
+    /// An update's waiting runs by arrival number, so in arrival order.
+    waiters: BTreeMap<u64, oneshot::Sender<PoolPermit>>,
 }
 
-/// `(held, started waiting, node id)`: fewest held first, then the first to
-/// start waiting. The id keeps keys unique.
-type ReadyKey = (usize, u64, u64);
-
-struct Waiter {
-    seq: u64,
-    grant: oneshot::Sender<PoolPermit>,
+/// A waiting child's place in its parent's `ready`: the fewest held first,
+/// then the first to start waiting. The node id keeps keys unique.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ReadyKey {
+    held: usize,
+    since: u64,
+    node: u64,
 }
 
 impl ShareNode {
@@ -211,30 +209,30 @@ impl PoolInner {
         Arc::new(ShareNode::new(id, Some(parent)))
     }
 
-    /// Take a pool token for a run of `share`'s update: at once when one is
-    /// free and nobody waits, else when a release hands it over.
+    /// Take one of the `limit` tokens for a run of `share`'s update: at once
+    /// when one is free and nobody waits, else when a release hands it over.
     ///
     /// Cancel-safe: dropped while queued, the run leaves the queue; dropped
     /// after a grant it did not see, the token goes to the next waiter.
-    async fn acquire(self: &Arc<Self>, share: &Arc<ShareNode>) -> Result<PoolPermit> {
+    async fn acquire(self: &Arc<Self>, share: &Arc<ShareNode>, limit: usize) -> Result<PoolPermit> {
         let mut wait = {
             let mut state = self.state.lock();
-            if state.free > 0 && state.waiting == 0 {
-                state.free -= 1;
-                change_held(share, true);
+            let (held, waiting) = {
+                let root = self.root.state.lock();
+                (root.held, root.waiting)
+            };
+            if waiting == 0 && held < limit {
+                state.change_held(share, true);
                 return Ok(PoolPermit {
                     pool: self.clone(),
                     share: share.clone(),
                 });
             }
-            // A release hands every free token to a waiter, so a run that
-            // has to wait finds none free.
-            debug_assert_eq!(state.free, 0, "a free token beside a waiting run");
+            // A release hands its token to a waiter, so a run that has to
+            // wait finds none free.
+            debug_assert_eq!(held, limit, "a free token beside a waiting run");
             let (grant, receiver) = oneshot::channel();
-            let seq = state.next_seq;
-            state.next_seq += 1;
-            state.waiting += 1;
-            enqueue(share, Waiter { seq, grant }, &mut state.next_seq);
+            let seq = state.enqueue(share, grant);
             Wait {
                 pool: self.clone(),
                 share: share.clone(),
@@ -250,47 +248,104 @@ impl PoolInner {
         Ok(permit)
     }
 
-    /// Give `share`'s token back and hand the free tokens to waiters.
+    /// Give `share`'s token back: to the next waiter down the share tree,
+    /// or to the pool when nobody waits.
     fn release(self: &Arc<Self>, share: &Arc<ShareNode>) {
-        let mut unclaimed = Vec::new();
-        {
+        let unclaimed = {
             let mut state = self.state.lock();
-            change_held(share, false);
-            state.free += 1;
-            self.grant_waiting(&mut state, &mut unclaimed);
-        }
-        // Each returns its token through `release`, which takes the lock.
+            state.change_held(share, false);
+            let next = state.next_to_serve(&self.root);
+            next.and_then(|next| {
+                let grant = state.dequeue_front(&next)?;
+                state.change_held(&next, true);
+                let permit = PoolPermit {
+                    pool: self.clone(),
+                    share: next,
+                };
+                grant.send(permit).err()
+            })
+        };
+        // A grant whose waiter has gone returns the token through
+        // `release` again, which takes the lock.
         drop(unclaimed);
     }
+}
 
-    /// Hand free tokens to waiters down the share tree. A permit whose
-    /// waiter has gone is put in `unclaimed`, for the caller to drop once
-    /// the lock is released.
-    fn grant_waiting(self: &Arc<Self>, state: &mut PoolState, unclaimed: &mut Vec<PoolPermit>) {
-        while state.free > 0 && state.waiting > 0 {
-            let Some(share) = self.next_to_serve() else {
+/// The share tree's operations; `&mut PoolState` is the proof that the
+/// pool's lock is held.
+impl PoolState {
+    /// Count a pool token taken (`taken`) or given back by a run of
+    /// `share`'s update, in `share` and every ancestor, moving each waiting
+    /// node to its new place in its parent's `ready`.
+    fn change_held(&mut self, share: &Arc<ShareNode>, taken: bool) {
+        let mut node = share.clone();
+        loop {
+            let moved = {
+                let mut state = node.state.lock();
+                if taken {
+                    state.held += 1;
+                } else {
+                    state.held -= 1;
+                }
+                let held = state.held;
+                state.key.as_mut().map(|key| {
+                    let old = *key;
+                    key.held = held;
+                    (old, *key)
+                })
+            };
+            let Some(parent) = node.parent.clone() else {
                 break;
             };
-            let Some(waiter) = dequeue_front(&share) else {
-                break;
-            };
-            state.waiting -= 1;
-            state.free -= 1;
-            change_held(&share, true);
-            let permit = PoolPermit {
-                pool: self.clone(),
-                share,
-            };
-            if let Err(permit) = waiter.grant.send(permit) {
-                unclaimed.push(permit);
+            if let Some((old, new)) = moved {
+                let mut parent_state = parent.state.lock();
+                if let Some(child) = parent_state.ready.remove(&old) {
+                    parent_state.ready.insert(new, child);
+                }
             }
+            node = parent;
         }
+    }
+
+    /// Queue a waiting run of `share`'s update and count it in every
+    /// ancestor; a node that starts waiting takes its place in its parent's
+    /// `ready`. Returns the run's arrival number.
+    fn enqueue(&mut self, share: &Arc<ShareNode>, grant: oneshot::Sender<PoolPermit>) -> u64 {
+        let seq = self.next_seq();
+        share.state.lock().waiters.insert(seq, grant);
+        let mut node = share.clone();
+        loop {
+            let parent = node.parent.clone();
+            let started = {
+                let mut state = node.state.lock();
+                state.waiting += 1;
+                if state.waiting == 1 && parent.is_some() {
+                    let key = ReadyKey {
+                        held: state.held,
+                        since: self.next_seq(),
+                        node: node.id,
+                    };
+                    state.key = Some(key);
+                    Some(key)
+                } else {
+                    None
+                }
+            };
+            let Some(parent) = parent else {
+                break;
+            };
+            if let Some(key) = started {
+                parent.state.lock().ready.insert(key, node.clone());
+            }
+            node = parent;
+        }
+        seq
     }
 
     /// The update whose first waiter the next token goes to: down from the
     /// root, the ready child that holds the fewest tokens at each level.
-    fn next_to_serve(&self) -> Option<Arc<ShareNode>> {
-        let mut node = self.root.clone();
+    fn next_to_serve(&self, root: &Arc<ShareNode>) -> Option<Arc<ShareNode>> {
+        let mut node = root.clone();
         loop {
             let next = {
                 let state = node.state.lock();
@@ -307,117 +362,53 @@ impl PoolInner {
             }
         }
     }
-}
 
-/// Count a pool token taken (`taken`) or given back by a run of `share`'s
-/// update, in `share` and every ancestor, moving each waiting node to its
-/// new place in its parent's `ready`. Called under the pool's lock.
-fn change_held(share: &Arc<ShareNode>, taken: bool) {
-    let mut node = share.clone();
-    loop {
-        let moved = {
-            let mut state = node.state.lock();
-            if taken {
-                state.held += 1;
-            } else {
-                state.held -= 1;
-            }
-            let held = state.held;
-            state.key.as_mut().map(|key| {
-                let old = *key;
-                key.0 = held;
-                (old, *key)
-            })
-        };
-        let Some(parent) = node.parent.clone() else {
-            break;
-        };
-        if let Some((old, new)) = moved {
-            let mut parent_state = parent.state.lock();
-            if let Some(child) = parent_state.ready.remove(&old) {
-                parent_state.ready.insert(new, child);
-            }
-        }
-        node = parent;
+    /// Take the first waiter of `share`'s update out of its queue.
+    fn dequeue_front(&mut self, share: &Arc<ShareNode>) -> Option<oneshot::Sender<PoolPermit>> {
+        let (_, grant) = share.state.lock().waiters.pop_first()?;
+        self.count_waiter_out(share);
+        Some(grant)
     }
-}
 
-/// Queue `waiter` in `share`'s update and count it in every ancestor; a node
-/// that starts waiting takes its place in its parent's `ready`. Called under
-/// the pool's lock.
-fn enqueue(share: &Arc<ShareNode>, waiter: Waiter, next_seq: &mut u64) {
-    share.state.lock().waiters.push_back(waiter);
-    let mut node = share.clone();
-    loop {
-        let parent = node.parent.clone();
-        let started = {
-            let mut state = node.state.lock();
-            state.waiting += 1;
-            if state.waiting == 1 && parent.is_some() {
-                let key = (state.held, *next_seq, node.id);
-                *next_seq += 1;
-                state.key = Some(key);
-                Some(key)
-            } else {
-                None
-            }
-        };
-        let Some(parent) = parent else {
-            break;
-        };
-        if let Some(key) = started {
-            parent.state.lock().ready.insert(key, node.clone());
+    /// Take the waiter numbered `seq` out of `share`'s queue; `false` when
+    /// it is no longer queued because a release granted it.
+    fn remove_waiter(&mut self, share: &Arc<ShareNode>, seq: u64) -> bool {
+        let removed = share.state.lock().waiters.remove(&seq).is_some();
+        if removed {
+            self.count_waiter_out(share);
         }
-        node = parent;
+        removed
     }
-}
 
-/// Take the first waiter of `share`'s update out of its queue. Called under
-/// the pool's lock.
-fn dequeue_front(share: &Arc<ShareNode>) -> Option<Waiter> {
-    let waiter = share.state.lock().waiters.pop_front()?;
-    count_waiter_out(share);
-    Some(waiter)
-}
-
-/// Take the waiter numbered `seq` out of `share`'s queue; `false` when it is
-/// no longer queued because a release granted it. Called under the pool's
-/// lock.
-fn remove_waiter(share: &Arc<ShareNode>, seq: u64) -> bool {
-    let removed = {
-        let mut state = share.state.lock();
-        match state.waiters.iter().position(|w| w.seq == seq) {
-            Some(index) => state.waiters.remove(index).is_some(),
-            None => false,
-        }
-    };
-    if removed {
-        count_waiter_out(share);
-    }
-    removed
-}
-
-/// Count one waiter out of `share` and its ancestors, after it left
-/// `share`'s queue; a node with no waiter left leaves its parent's `ready`.
-fn count_waiter_out(share: &Arc<ShareNode>) {
-    let mut node = share.clone();
-    loop {
-        let left = {
-            let mut state = node.state.lock();
-            state.waiting -= 1;
-            if state.waiting == 0 {
-                state.key.take()
-            } else {
-                None
+    /// Count one waiter out of `share` and its ancestors, after it left
+    /// `share`'s queue; a node with no waiter left leaves its parent's
+    /// `ready`.
+    fn count_waiter_out(&mut self, share: &Arc<ShareNode>) {
+        let mut node = share.clone();
+        loop {
+            let left = {
+                let mut state = node.state.lock();
+                state.waiting -= 1;
+                if state.waiting == 0 {
+                    state.key.take()
+                } else {
+                    None
+                }
+            };
+            let Some(parent) = node.parent.clone() else {
+                break;
+            };
+            if let Some(key) = left {
+                parent.state.lock().ready.remove(&key);
             }
-        };
-        let Some(parent) = node.parent.clone() else {
-            break;
-        };
-        if let Some(key) = left {
-            parent.state.lock().ready.remove(&key);
+            node = parent;
         }
-        node = parent;
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
     }
 }
 
@@ -438,10 +429,7 @@ impl Drop for Wait {
         if self.received {
             return;
         }
-        let mut state = self.pool.state.lock();
-        if remove_waiter(&self.share, self.seq) {
-            state.waiting -= 1;
-        }
+        self.pool.state.lock().remove_waiter(&self.share, self.seq);
     }
 }
 
@@ -613,9 +601,9 @@ impl Admission {
     /// the pool is unbounded. Cancel-safe.
     pub(crate) async fn admit(&self) -> Result<()> {
         let pool = &self.share.pool.inner;
-        if !pool.bounded {
+        let Some(limit) = pool.limit else {
             return Ok(());
-        }
+        };
         {
             let state = self.state.lock();
             if state.finished {
@@ -625,7 +613,7 @@ impl Admission {
                 return Ok(());
             }
         }
-        let slot = acquire_slot(self.parent.as_ref(), pool, &self.share.node).await?;
+        let slot = acquire_slot(self.parent.as_ref(), pool, &self.share.node, limit).await?;
         let mut state = self.state.lock();
         if state.finished {
             internal_bail!("component run already finished");
@@ -637,7 +625,7 @@ impl Admission {
     /// Whether the run still has to take a token before it may execute:
     /// false once admitted, and always for an unbounded pool.
     pub(crate) fn needs_token(&self) -> bool {
-        if !self.share.pool.inner.bounded {
+        if self.share.pool.inner.limit.is_none() {
             return false;
         }
         let state = self.state.lock();
@@ -674,6 +662,7 @@ async fn acquire_slot(
     parent: Option<&Lender>,
     pool: &Arc<PoolInner>,
     share: &Arc<ShareNode>,
+    limit: usize,
 ) -> Result<Slot> {
     let borrow = async {
         match parent {
@@ -686,7 +675,7 @@ async fn acquire_slot(
         // with runs that have no parent to borrow from.
         biased;
         Some(loan) = borrow => Ok(Slot::Loan(loan)),
-        permit = pool.acquire(share) => Ok(Slot::Pool(permit?)),
+        permit = pool.acquire(share, limit) => Ok(Slot::Pool(permit?)),
     }
 }
 
