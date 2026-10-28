@@ -16,7 +16,7 @@ cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
 ] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-# Postgres query path. Target writes go through cocoindex::postgres.
+# Postgres query path. Target writes go through cocoindex::connectors::postgres.
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",

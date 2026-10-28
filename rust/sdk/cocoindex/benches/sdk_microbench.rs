@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use cocoindex::memo::{
     finish_key_fingerprinter, key_bytes_result, new_key_fingerprinter, write_key_fingerprint_part,
 };
-use cocoindex::walk;
+use cocoindex::resources::fs::walk;
 use cocoindex_utils::fingerprint::Fingerprint;
 use criterion::{BenchmarkId, Criterion, SamplingMode, black_box, criterion_group, criterion_main};
 use rustc_hash::FxHashSet;

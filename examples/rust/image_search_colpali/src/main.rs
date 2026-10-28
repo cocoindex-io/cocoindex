@@ -19,15 +19,14 @@
 //! where `D` is the per-vector dimension (128 for `vidore/colpali-v1.2`). A
 //! reference Python server is in the README. Everything else — the incremental
 //! pipeline and the Qdrant MAX_SIM multi-vector collection — is native Rust via
-//! `cocoindex::qdrant`.
+//! `cocoindex::connectors::qdrant`.
 //!
 //! Build note: `qdrant-client` compiles protobufs, so `protoc` is required.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use cocoindex::prelude::*;
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -45,13 +44,11 @@ const IMAGE_GLOBS: &[&str] = &[
     "**/*.bmp",
 ];
 
-static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("image_search_colpali_db", |c: &QdrantConnection| {
-        c.state_id().to_string()
-    })
-});
-static COLPALI: LazyLock<ContextKey<ColpaliClient>> =
-    LazyLock::new(|| ContextKey::new_with_state("colpali", |c: &ColpaliClient| c.url.clone()));
+cocoindex::context_key!(static DB: QdrantConnection);
+cocoindex::context_key!(
+    static COLPALI: ColpaliClient,
+    detect_change
+);
 
 /// HTTP client for an external ColPali inference service (see module docs).
 #[derive(Clone)]
@@ -108,6 +105,12 @@ impl ColpaliClient {
     }
 }
 
+impl MemoInput for ColpaliClient {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.url)
+    }
+}
+
 /// A computed point: stable id + multi-vector embedding + source filename.
 #[derive(Clone, Serialize, Deserialize)]
 struct PointData {
@@ -131,7 +134,6 @@ async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let conn = ctx.get_key(&DB)?;
     let target = qdrant::mount_collection_target(
         &ctx,
         &DB,

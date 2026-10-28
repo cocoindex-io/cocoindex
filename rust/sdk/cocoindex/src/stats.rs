@@ -97,9 +97,10 @@ impl ComponentStats {
 
 /// Whether an update has caught up its initial processing — mirrors Python's
 /// `cocoindex.UpdateStatus`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UpdateStatus {
     /// Initial catch-up processing is still running.
+    #[default]
     Running,
     /// Initial processing is caught up. Live components may still update stats.
     Ready,
@@ -115,12 +116,6 @@ pub struct UpdateStats {
     pub by_component: BTreeMap<String, ComponentStats>,
     /// Whether initial processing has caught up.
     pub status: UpdateStatus,
-}
-
-impl Default for UpdateStatus {
-    fn default() -> Self {
-        UpdateStatus::Running
-    }
 }
 
 impl UpdateStats {

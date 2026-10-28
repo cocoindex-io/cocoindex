@@ -16,13 +16,13 @@ repos:
         # oci_object_storage.rs only references the PEM key header in doc comments.
         # (This comment must avoid the literal key-header phrase, or the hook would
         # flag its own config file.)
-        exclude: "^rust/sdk/cocoindex/src/(gdrive|oci_object_storage)\\.rs$"
+        exclude: "^rust/sdk/cocoindex/src/connectors/(gdrive|oci_object_storage)\\.rs$"
       - id: end-of-file-fixer
         # Makes sure files end in a newline and only a newline.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
       - id: trailing-whitespace
         # Trims trailing whitespace.
-        exclude_types: [python]  # Covered by Ruff W291.
+        exclude_types: [python]  # ruff-format handles Python; this line-based fixer would also edit string literals.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
   - repo: https://github.com/gitleaks/gitleaks
@@ -43,9 +43,10 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.0
     hooks:
+      # Lint before formatting, as Ruff recommends with `--fix`.
+      - id: ruff-check
+        args: [--fix]
       - id: ruff-format
-        types: [python]
-        pass_filenames: true
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.6.1
@@ -66,14 +67,45 @@ repos:
           name: maturin develop
           entry: ./dev/run_maturin_develop.sh
           language: system
-          files: ^(rust/|python/|Cargo\.toml|pyproject\.toml)
+          # Every input of a hook that imports the extension (pytest,
+          # generate-cli-docs): CI starts without a built extension and builds
+          # it only when this hook runs.
+          files: ^(rust/|python/|Cargo\.(toml|lock)$|pyproject\.toml$|uv\.lock$|dev/generate_cli_docs\.py$|docs/src/content/docs/cli\.mdx$)
           pass_filenames: false
 
         - id: cargo-test
           name: cargo test
           entry: ./dev/run_cargo_test.sh
+          # The Rust SDK's crates are left to cargo-test-sdk.
+          args: [--workspace, --exclude, cocoindex, --exclude, cocoindex_macros]
           language: system
-          files: ^(rust/|Cargo\.toml)
+          files: ^(rust/|Cargo\.(toml|lock)$)
+          pass_filenames: false
+
+        # The Rust SDK isn't launched yet, so its hooks (cargo-test-sdk,
+        # cargo-clippy-sdk, cargo-test-rust-externs) run only for changes to the
+        # SDK itself and to the Rust examples and benchmarks that build on it.
+        # A change to the code the SDK builds on (rust/core, Cargo.lock, ...)
+        # skips them; the daily Rust SDK workflow runs them on all of main.
+        - id: cargo-test-sdk
+          name: cargo test (Rust SDK)
+          entry: ./dev/run_cargo_test_sdk.sh
+          language: system
+          files: ^rust/sdk/
+          pass_filenames: false
+
+        - id: cargo-clippy
+          name: cargo clippy
+          entry: ./dev/run_cargo_clippy.sh
+          language: system
+          files: ^(rust/|Cargo\.(toml|lock)$)
+          pass_filenames: false
+
+        - id: cargo-clippy-sdk
+          name: cargo clippy (Rust SDK)
+          entry: ./dev/run_cargo_clippy_sdk.sh
+          language: system
+          files: ^rust/sdk/
           pass_filenames: false
 
         - id: update-rust-extern-locks
@@ -105,7 +137,10 @@ repos:
           name: pytest
           entry: uv run pytest python/
           language: system
-          types: [python]
+          # The suite's inputs: the package and its tests, the extension, and
+          # the locked environment. A Rust-only change can change Python
+          # behavior through the extension, so it runs the suite too.
+          files: ^(rust/|python/|Cargo\.(toml|lock)$|pyproject\.toml$|uv\.lock$)
           pass_filenames: false
           always_run: false
 

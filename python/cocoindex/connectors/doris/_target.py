@@ -29,7 +29,7 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -439,7 +439,7 @@ class DorisConnectionConfig:
     fe_http_port: int = 8080
     query_port: int = 9030
     username: str = "root"
-    password: str = ""
+    password: str = field(default="", repr=False)
     enable_https: bool = False
     be_load_host: str | None = None
     batch_size: int = 10000
@@ -695,7 +695,9 @@ async def _execute_delete(
             if val is None:
                 parts.append(f"`{col}` IS NULL")
             elif isinstance(val, str):
-                escaped = val.replace("'", "\\'")
+                # `\` is an escape character in Doris string literals, so it is
+                # escaped first, then `'`.
+                escaped = val.replace("\\", "\\\\").replace("'", "\\'")
                 parts.append(f"`{col}` = '{escaped}'")
             else:
                 parts.append(f"`{col}` = {val}")
@@ -735,6 +737,31 @@ class InvertedIndexDef:
     parser: str | None = None  # "chinese", "english", "unicode", etc.
 
 
+class _VectorIndexParams(msgspec.Struct, frozen=True, array_like=True):
+    """The properties a vector index is created with."""
+
+    index_type: str
+    metric_type: str
+    dimension: int | None
+    max_degree: int | None
+    ef_construction: int | None
+    nlist: int | None
+
+
+def _vector_index_params(
+    idx: VectorIndexDef, schema: TableSchema[Any]
+) -> _VectorIndexParams:
+    col = schema.columns.get(idx.field_name)
+    return _VectorIndexParams(
+        index_type=idx.index_type.lower(),
+        metric_type=idx.metric_type.lower(),
+        dimension=col.vector_dimension if col else None,
+        max_degree=idx.max_degree,
+        ef_construction=idx.ef_construction,
+        nlist=idx.nlist,
+    )
+
+
 def _generate_create_table_ddl(
     database: str,
     table_name: str,
@@ -769,20 +796,19 @@ def _generate_create_table_ddl(
         _validate_identifier(idx.field_name)
         idx_name = f"idx_vec_{idx.field_name}"
         _validate_identifier(idx_name)
-        dim = schema.columns.get(idx.field_name)
-        dim_val = dim.vector_dimension if dim else None
+        params = _vector_index_params(idx, schema)
         props = [
-            f'"index_type" = "{idx.index_type.lower()}"',
-            f'"metric_type" = "{idx.metric_type.lower()}"',
+            f'"index_type" = "{params.index_type}"',
+            f'"metric_type" = "{params.metric_type}"',
         ]
-        if dim_val:
-            props.append(f'"dim" = "{dim_val}"')
-        if idx.max_degree is not None:
-            props.append(f'"max_degree" = "{idx.max_degree}"')
-        if idx.ef_construction is not None:
-            props.append(f'"ef_construction" = "{idx.ef_construction}"')
-        if idx.nlist is not None:
-            props.append(f'"nlist" = "{idx.nlist}"')
+        if params.dimension:
+            props.append(f'"dim" = "{params.dimension}"')
+        if params.max_degree is not None:
+            props.append(f'"max_degree" = "{params.max_degree}"')
+        if params.ef_construction is not None:
+            props.append(f'"ef_construction" = "{params.ef_construction}"')
+        if params.nlist is not None:
+            props.append(f'"nlist" = "{params.nlist}"')
         col_defs.append(
             f"    INDEX {idx_name} (`{idx.field_name}`) USING ANN PROPERTIES ({', '.join(props)})"
         )
@@ -825,6 +851,8 @@ class _RowAction(NamedTuple):
 
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a Doris table."""
+
+    tracks_value_fingerprint = True
 
     _managed_conn: ManagedConnection
     _table_name: str
@@ -969,6 +997,11 @@ class _TablePrimaryTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     primary_key_columns: tuple[_PkColumnInfo, ...]
     vector_indexes: tuple[str, ...] | None = None
     inverted_indexes: tuple[str, ...] | None = None
+    # Index parameters, aligned with the field names above. Records written
+    # before these fields existed decode them as None; see
+    # `_fill_missing_index_params`.
+    vector_index_params: tuple[_VectorIndexParams, ...] | None = None
+    inverted_index_parsers: tuple[str | None, ...] | None = None
 
 
 class _NonPkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -1004,6 +1037,14 @@ def _table_composite_tracking_record_from_spec(
         inverted_indexes=tuple(v.field_name for v in spec.inverted_indexes)
         if spec.inverted_indexes
         else None,
+        vector_index_params=tuple(
+            _vector_index_params(v, schema) for v in spec.vector_indexes
+        )
+        if spec.vector_indexes
+        else None,
+        inverted_index_parsers=tuple(v.parser for v in spec.inverted_indexes)
+        if spec.inverted_indexes
+        else None,
     )
     sub: dict[str, _TableSubTrackingRecord] = {
         _col_subkey(col_name): _NonPkColumnTrackingRecord(
@@ -1020,6 +1061,35 @@ _TableTrackingRecord = statediff.MutualTrackingRecord[
         _TablePrimaryTrackingRecord, str, _TableSubTrackingRecord
     ]
 ]
+
+
+def _fill_missing_index_params(
+    prev: _TableTrackingRecord, desired: _TablePrimaryTrackingRecord
+) -> _TableTrackingRecord:
+    """Fill the index parameters a record written before they were tracked
+    lacks, from the desired record.
+
+    Such a record names its indexes but not their parameters. The table was
+    built from parameters CocoIndex can't know, so they are taken as the
+    desired ones: an upgrade alone doesn't rebuild the table. Index names
+    are compared as before, so a renamed index still does.
+    """
+    main = prev.tracking_record.main
+    filled = main
+    if main.vector_indexes is not None and main.vector_index_params is None:
+        filled = msgspec.structs.replace(
+            filled, vector_index_params=desired.vector_index_params
+        )
+    if main.inverted_indexes is not None and main.inverted_index_parsers is None:
+        filled = msgspec.structs.replace(
+            filled, inverted_index_parsers=desired.inverted_index_parsers
+        )
+    if filled is main:
+        return prev
+    return msgspec.structs.replace(
+        prev,
+        tracking_record=msgspec.structs.replace(prev.tracking_record, main=filled),
+    )
 
 
 class _TableAction(NamedTuple):
@@ -1096,25 +1166,34 @@ def _apply_column_actions(
                     raise
 
 
+def _row_handler(
+    context_provider: ContextProvider, action: _TableAction, /
+) -> _RowHandler:
+    """The row handler for a created or updated table's rows."""
+    key = action.key
+    assert not coco.is_non_existence(action.spec)
+    return _RowHandler(
+        managed_conn=context_provider.get(key.db_key, ManagedConnection),
+        table_name=key.table_name,
+        table_schema=action.spec.table_schema,
+    )
+
+
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-    child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
     /,
 ) -> None:
-    """Apply table actions (DDL) and fulfill the child row handlers."""
-    by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions):
-        by_key.setdefault(action.key, []).append(i)
+    """Apply table actions (DDL)."""
+    by_key: dict[_TableKey, list[_TableAction]] = {}
+    for action in actions:
+        by_key.setdefault(action.key, []).append(action)
 
-    for key, idxs in by_key.items():
+    for key, key_actions in by_key.items():
         managed_conn = context_provider.get(key.db_key, ManagedConnection)
         config = managed_conn.config
 
-        for i in idxs:
-            action = actions[i]
-            assert action.key == key
-
+        for action in key_actions:
             if action.main_action in ("replace", "delete"):
                 # Drop table
                 try:
@@ -1129,13 +1208,6 @@ def _apply_table_actions(
                 continue
 
             spec = action.spec
-            child_slots[i].fulfill(
-                _RowHandler(
-                    managed_conn=managed_conn,
-                    table_name=key.table_name,
-                    table_schema=spec.table_schema,
-                )
-            )
 
             if action.main_action in ("insert", "upsert", "replace"):
                 ddl = _generate_create_table_ddl(
@@ -1165,8 +1237,8 @@ def _apply_table_actions(
                 )
 
 
-_table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
-    _apply_table_actions
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn(
+    _apply_table_actions, child_handler=_row_handler
 )
 
 
@@ -1194,6 +1266,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 ),
                 managed_by=desired_state.managed_by,
             )
+            desired_main = tracking_record.tracking_record.main
+            prev_possible_records = [
+                _fill_missing_index_params(prev, desired_main)
+                for prev in prev_possible_records
+            ]
 
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(

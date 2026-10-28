@@ -18,7 +18,8 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::{App, Result, kafka};
+use cocoindex::connectors::kafka;
+use cocoindex::{App, Result};
 use rskafka::client::partition::UnknownTopicHandling;
 use rskafka::client::{Client, ClientBuilder};
 
@@ -61,8 +62,7 @@ async fn consume_all(client: &Client, topic: &str) -> (Vec<(String, Option<Strin
 fn latest(records: &[(String, Option<String>)], key: &str) -> Option<Option<String>> {
     records
         .iter()
-        .filter(|(k, _)| k == key)
-        .next_back()
+        .rfind(|(k, _)| k == key)
         .map(|(_, v)| v.clone())
 }
 
@@ -201,7 +201,6 @@ async fn kafka_target_custom_delete_value_when_available() -> Result<()> {
                         deletion_value_fn: Some(Arc::new(|key: &str| {
                             format!("deleted:{key}").into_bytes()
                         })),
-                        ..Default::default()
                     };
                     let target = kafka::mount_kafka_topic_target(&ctx, &producer, topic, options)?;
                     for (k, v) in &messages {

@@ -23,6 +23,7 @@ from typing_extensions import TypeVar
 import re
 
 from cocoindex._internal.datatype import RecordType, is_record_type
+from cocoindex._internal.extras import install_hint
 from cocoindex._internal.stable_path import StableKey
 from cocoindex.connectorkits.async_adapters import async_to_sync_iter
 
@@ -35,7 +36,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "asyncpg is required to use the PostgreSQL source connector. "
-        "Please install cocoindex[postgres]."
+        + install_hint("postgres")
     ) from e
 
 

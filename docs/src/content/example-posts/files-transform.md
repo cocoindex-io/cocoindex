@@ -10,7 +10,7 @@ tags: [file-transform, incremental]
 
 We'll take a folder of Markdown files and render each one to HTML, writing the results to a second folder that stays in sync with the source. No database, no embeddings, no API keys — just files in, files out. It's the smallest complete CocoIndex pipeline, and the cleanest way to see the **source → transform → target** shape that every larger example is built from.
 
-The transform is your own ordinary `async` function. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, watching the directory, and keeping the output folder in sync — runs in a Rust engine underneath, so only the files that actually changed get re-rendered and re-written.
+The transform is your own ordinary `async` function. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, watching the directory, and keeping the output folder in sync — runs in a Rust engine underneath, so only the files that actually changed get re-rendered and re-written.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform)
 
@@ -20,11 +20,11 @@ The transform is your own ordinary `async` function. The heavy lifting — [incr
 
 From a high level, these are the steps:
 
-1. Read Markdown files from a local directory, [watching for changes](https://cocoindex.io/docs/programming_guide/live_mode/).
+1. Read Markdown files from a local directory, [watching for changes](/docs/programming_guide/live_mode/).
 2. Render each file to HTML with [markdown-it-py](https://github.com/executablebooks/markdown-it-py).
-3. Write each `.html` file to an output folder (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)) on the [local filesystem](https://cocoindex.io/docs/connectors/localfs/).
+3. Write each `.html` file to an output folder (as [target states](/docs/programming_guide/target_state/)) on the [local filesystem](/docs/connectors/localfs/).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## Process a file
 
@@ -52,13 +52,13 @@ async def process_file(file: FileLike, outdir: pathlib.Path) -> None:
 
 The transform itself is just two lines: read the text, render it. The output name joins the source path parts with `__` so `subdir/file.md` becomes `subdir__file.html` — a flat, collision-free name in the output folder.
 
-[`localfs.declare_file`](https://cocoindex.io/docs/connectors/localfs/) declares the `.html` file as a [target state](https://cocoindex.io/docs/programming_guide/target_state/) on the local filesystem. You describe the file you *want to exist*; CocoIndex handles writing it, overwriting it when the content changes, and deleting it when the source Markdown is gone.
+[`localfs.declare_file`](/docs/connectors/localfs/) declares the `.html` file as a [target state](/docs/programming_guide/target_state/) on the local filesystem. You describe the file you *want to exist*; CocoIndex handles writing it, overwriting it when the content changes, and deleting it when the source Markdown is gone.
 
-[`@coco.fn`](https://cocoindex.io/docs/programming_guide/function/) with [`memo=True`](https://cocoindex.io/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a file's content and this function's code are both unchanged, the whole file is skipped on the next run, and its HTML output is left exactly as it is.
+[`@coco.fn`](/docs/programming_guide/function/) with [`memo=True`](/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a file's content and this function's code are both unchanged, the whole file is skipped on the next run, and its HTML output is left exactly as it is.
 
 ## Define the main function
 
-`app_main` wires the source to the target. It walks the source directory for Markdown files and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file.
+`app_main` wires the source to the target. It walks the source directory for Markdown files and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
 ```python title="main.py"
 @coco.fn
@@ -71,11 +71,11 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     await coco.mount_each(process_file, files.items(), outdir)
 ```
 
-[`walk_dir`](https://cocoindex.io/docs/connectors/localfs/) lists the source folder, filtered to `*.md` by the [`PatternFilePathMatcher`](https://cocoindex.io/docs/connectors/localfs/). `live=True` makes the [filesystem source](https://cocoindex.io/docs/connectors/localfs/) [watch for changes](https://cocoindex.io/docs/programming_guide/live_mode/), and [`mount_each`](https://cocoindex.io/docs/programming_guide/processing_component/) runs one component per file so the engine can track and update each one independently — add, edit, or delete a Markdown file and only that file's HTML moves.
+[`walk_dir`](/docs/connectors/localfs/) lists the source folder, filtered to `*.md` by the [`PatternFilePathMatcher`](/docs/connectors/localfs/). `live=True` makes the [filesystem source](/docs/connectors/localfs/) [watch for changes](/docs/programming_guide/live_mode/), and [`mount_each`](/docs/programming_guide/processing_component/) runs one component per file so the engine can track and update each one independently — add, edit, or delete a Markdown file and only that file's HTML moves.
 
 ## Create the App
 
-Bind `app_main` into a [`coco.App`](https://cocoindex.io/docs/programming_guide/app/), pointing it at the source folder and the output folder.
+Bind `app_main` into a [`coco.App`](/docs/programming_guide/app/), pointing it at the source folder and the output folder.
 
 ```python title="main.py"
 app = coco.App(
@@ -100,7 +100,7 @@ That is the entire pipeline — about 25 lines.
 
 ## Run the pipeline
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build the output folder. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
+Run the [`cocoindex` CLI](/docs/cli/) to build the output folder. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
 
 ```sh
 # Catch-up run
@@ -124,6 +124,6 @@ The same machinery covers **logic** changes too: change the markdown-it preset o
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/files_transform](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform). This is the minimal building block — once it clicks, swap the transform for chunking and embedding and you have [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/), or point the same flow at a Postgres or vector target.
+The full, runnable example is in the CocoIndex repo: [examples/files_transform](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform). This is the minimal building block — once it clicks, swap the transform for chunking and embedding and you have [Semantic Search 101](/docs/examples/text-embedding/), or point the same flow at a Postgres or vector target.
 
 If this helped, [give CocoIndex a star on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s) — we'd love to see what you build.

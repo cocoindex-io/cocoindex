@@ -246,16 +246,10 @@ class App(Generic[P, R]):
         config.environment._info.register_app(self._name, self)
 
     async def _get_core_env_app(self) -> tuple[Environment, core.App]:
-        with self._lock:
-            if self._core_env_app is not None:
-                return self._core_env_app
         env = await self._environment._get_env()
         return self._ensure_core_env_app(env)
 
     def _get_core_env_app_sync(self) -> tuple[Environment, core.App]:
-        with self._lock:
-            if self._core_env_app is not None:
-                return self._core_env_app
         env = self._environment._get_env_sync()
         return self._ensure_core_env_app(env)
 
@@ -265,7 +259,9 @@ class App(Generic[P, R]):
 
     def _ensure_core_env_app(self, env: Environment) -> tuple[Environment, core.App]:
         with self._lock:
-            if self._core_env_app is None:
+            # A lazy environment that was stopped and started again yields a new
+            # `Environment`; the core app bound to the old (closed) one is stale.
+            if self._core_env_app is None or self._core_env_app[0] is not env:
                 self._core_env_app = (
                     env,
                     core.App(self._name, env._core_env, self._max_inflight_components),

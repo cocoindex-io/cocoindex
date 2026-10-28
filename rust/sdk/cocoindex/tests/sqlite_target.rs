@@ -6,18 +6,15 @@
 //! user-managed, multiple tables, and the declare (pending) variant.
 #![cfg(feature = "sqlite")]
 
-use std::sync::LazyLock;
-
-use cocoindex::{App, ContextKey, Ctx, Environment, Result, sqlite};
+use cocoindex::connectors::sqlite;
+use cocoindex::{App, Ctx, Environment, PreviewAction, Result};
 use serde::Serialize;
 use serde_json::json;
 use sqlx::Row as _;
 
-static DB: LazyLock<ContextKey<sqlite::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("sqlite_target_test_db", |db: &sqlite::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: sqlite::Database, key = "sqlite_target_test_db"
+);
 
 #[derive(Clone, Serialize)]
 struct Item {
@@ -117,37 +114,127 @@ async fn sqlite_table_target_insert_update_delete_nochange() {
     );
 }
 
+async fn table_exists(db: &sqlite::Database, table: &str) -> bool {
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?")
+            .bind(table)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    count == 1
+}
+
+/// Planned actions as sorted strings. The connector's actions encode as
+/// positional arrays: a table action is `[db_key, table_name, spec,
+/// main_action, column_actions]`, a row action `[pk, state]`.
+fn describe(actions: &[PreviewAction]) -> Vec<String> {
+    let mut described: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            let value: serde_json::Value = value.decode().unwrap();
+            match value.as_array().map(Vec::as_slice) {
+                Some([_db_key, table, _spec, main_action, column_actions]) => {
+                    format!("{verb} table {table} main={main_action} columns={column_actions}")
+                }
+                Some([pk, state]) => format!("{verb} row {pk} {}", state[0]),
+                _ => panic!("unexpected action payload {value}"),
+            }
+        })
+        .collect();
+    described.sort();
+    described
+}
+
 #[tokio::test]
-async fn sqlite_table_dropped_when_no_longer_declared() {
+async fn sqlite_table_target_previews_rows() {
+    let (db, _dbdir) = temp_db().await;
+    let (app, _appdir) = build_app(&db).await;
+    let table_count = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap()
+    };
+
+    // The table would be created and both rows written (the connector plans
+    // every row write as an upsert); nothing is.
+    let actions = app
+        .preview(|ctx| declare_items(ctx, vec![item(1, "one"), item(2, "two")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [1] {"id":1,"label":"one"}"#,
+            r#"update row [2] {"id":2,"label":"two"}"#,
+            r#"update table "items" main="insert" columns={}"#,
+        ]
+    );
+    assert_eq!(table_count().await, 0);
+
+    app.run(|ctx| declare_items(ctx, vec![item(1, "one"), item(2, "two")]))
+        .await
+        .unwrap();
+
+    // Against the applied state: rows 2 and 3 written; row 1 and the table
+    // unchanged; the container action is still listed. Nothing is applied.
+    let actions = app
+        .preview(|ctx| {
+            declare_items(
+                ctx,
+                vec![item(1, "one"), item(2, "two-updated"), item(3, "three")],
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [2] {"id":2,"label":"two-updated"}"#,
+            r#"update row [3] {"id":3,"label":"three"}"#,
+            r#"update table "items" main=null columns={}"#,
+        ]
+    );
+    assert_eq!(
+        fetch(&db, "items").await,
+        vec![(1, "one".to_string()), (2, "two".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn sqlite_undeclared_and_dropped_tables_are_removed() {
     let (db, _dbdir) = temp_db().await;
     let (app, _appdir) = build_app(&db).await;
 
     app.run(|ctx| declare_items(ctx, vec![item(1, "one")]))
         .await
         .unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 1);
+    assert!(table_exists(&db, "items").await);
 
-    // Re-register the table provider but declare nothing → the orphaned table
-    // is dropped (handler present, table state absent).
-    app.run(|ctx| async move {
-        let _ = sqlite::table_target(&ctx, &DB, "items", item_schema())?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 0, "orphaned system-managed table should be dropped");
+    // A run that no longer declares the table drops it.
+    app.run(|_ctx| async { Ok(()) }).await.unwrap();
+    assert!(
+        !table_exists(&db, "items").await,
+        "a system-managed table no longer declared is dropped"
+    );
+
+    app.run(|ctx| declare_items(ctx, vec![item(1, "one")]))
+        .await
+        .unwrap();
+    assert!(table_exists(&db, "items").await);
+
+    app.drop_state().await.unwrap();
+    assert!(
+        !table_exists(&db, "items").await,
+        "drop_state drops the table"
+    );
 }
 
 #[tokio::test]
@@ -185,13 +272,10 @@ async fn sqlite_user_managed_table_keeps_table_manages_rows() {
 
     // Remove all rows; the user-managed table must still exist (empty).
     app.run(|ctx| declare_user(ctx, vec![])).await.unwrap();
-    let exists: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(exists, 1, "user-managed table must persist when empty");
+    assert!(
+        table_exists(&db, "items").await,
+        "user-managed table must persist when empty"
+    );
     assert_eq!(fetch(&db, "items").await, Vec::<(i64, String)>::new());
 }
 
@@ -396,6 +480,55 @@ async fn sqlite_change_column_type_recreates_column() {
         .unwrap();
     assert_eq!(row.get::<i64, _>("id"), 1);
     assert_eq!(row.get::<i64, _>("score"), 42);
+}
+
+#[tokio::test]
+async fn sqlite_column_type_change_that_cannot_drop_fails_instead_of_keeping_old_type() {
+    let (db, _dbdir) = temp_db().await;
+    let (app, _appdir) = build_app(&db).await;
+
+    app.run(|ctx| async move {
+        let s = sqlite::TableSchema::new([("id", col("INTEGER")), ("score", col("TEXT"))], ["id"])?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
+        t.declare_row(&ctx, &json!({"id": 1, "score": "10"}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    // SQLite cannot drop a column that an index references.
+    sqlx::query("CREATE INDEX scores_score ON \"scores\" (\"score\")")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let change_type = || {
+        app.run(|ctx| async move {
+            let s = sqlite::TableSchema::new(
+                [("id", col("INTEGER")), ("score", col("INTEGER"))],
+                ["id"],
+            )?;
+            let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
+            t.declare_row(&ctx, &json!({"id": 1, "score": 42}))?;
+            Ok(())
+        })
+    };
+    let err = change_type().await.unwrap_err();
+    assert!(err.to_string().contains("score"), "{err}");
+
+    // Once the blocking index is gone, the next run retries and applies the
+    // change, because the failed run recorded nothing.
+    sqlx::query("DROP INDEX scores_score")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    change_type().await.unwrap();
+    let cols = table_columns(&db, "scores").await;
+    assert!(
+        cols.iter()
+            .any(|(n, t)| n == "score" && t.eq_ignore_ascii_case("INTEGER")),
+        "{cols:?}"
+    );
 }
 
 #[tokio::test]

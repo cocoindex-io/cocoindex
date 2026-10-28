@@ -67,6 +67,11 @@ impl<Prof: EngineProfile> Environment<Prof> {
         &self.inner.storage
     }
 
+    /// Close the environment's storage. See [`Storage::close`].
+    pub async fn close(&self) {
+        self.inner.storage.close().await
+    }
+
     /// Run a batched write transaction. Delegates to
     /// [`Storage::run_txn`].
     pub async fn run_txn<T, F>(&self, body: F) -> Result<T>

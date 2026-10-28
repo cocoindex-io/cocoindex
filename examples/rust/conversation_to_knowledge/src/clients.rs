@@ -2,10 +2,10 @@
 //! ContextKeys used to inject them into the pipeline.
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
+pub use cocoindex::connectors::surrealdb::Graph;
 use cocoindex::prelude::*;
-pub use cocoindex::surrealdb::Graph;
 use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel, read_file_to_bytes,
@@ -17,26 +17,28 @@ use serde::de::DeserializeOwned;
 // Context keys
 // ---------------------------------------------------------------------------
 
-/// LLM used for metadata/statement extraction. State-tracked on the model name,
-/// so changing the model invalidates memoized extraction (parity with Python's
-/// `LLM_MODEL = ContextKey(..., detect_change=True)`).
-pub static LLM: LazyLock<ContextKey<LlmClient>> =
-    LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
+// LLM used for metadata/statement extraction. Its MemoInput tracks the model,
+// so changing the model invalidates memoized extraction (parity with Python's
+// `LLM_MODEL = ContextKey(..., detect_change=True)`).
+cocoindex::context_key!(
+    pub static LLM: LlmClient,
+    detect_change
+);
 
-/// LLM used to confirm entity-resolution pairs.
-pub static RESOLVER_LLM: LazyLock<ContextKey<LlmClient>> = LazyLock::new(|| {
-    ContextKey::new_with_state("resolution_llm_model", |c: &LlmClient| c.model.clone())
-});
+// LLM used to confirm entity-resolution pairs.
+cocoindex::context_key!(
+    pub static RESOLVER_LLM: LlmClient,
+    detect_change
+);
 
-/// Local embedder for entity-resolution similarity.
-pub static EMBEDDER: LazyLock<ContextKey<Embedder>> =
-    LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
+// Local embedder for entity-resolution similarity.
+cocoindex::context_key!(
+    pub static EMBEDDER: Embedder,
+    detect_change
+);
 
-/// SurrealDB connection. State-tracked on the target endpoint so changing the
-/// external graph database invalidates local target-state reconciliation.
-pub static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| {
-    ContextKey::new_with_state("surreal_db", |g: &Graph| g.state_id().to_string())
-});
+// SurrealDB connection. Connection resources are not memo dependencies.
+cocoindex::context_key!(pub static GRAPH: Graph);
 
 // ---------------------------------------------------------------------------
 // LLM client (OpenAI-compatible, JSON mode)
@@ -103,6 +105,12 @@ impl LlmClient {
     }
 }
 
+impl MemoInput for LlmClient {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.model)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Embedder (local fastembed model)
 // ---------------------------------------------------------------------------
@@ -143,6 +151,12 @@ impl Embedder {
             .await
             .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
             .map_err(|e| Error::engine(format!("embedding failed: {e}")))
+    }
+}
+
+impl MemoInput for Embedder {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&self.model_name)
     }
 }
 

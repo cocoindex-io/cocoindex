@@ -13,22 +13,20 @@
 //! the no-change skip (which must not duplicate rows), and an inverted index.
 //!
 //! Note: `USING ANN` vector indexes require Doris 3.x; the all-in-one 2.1 image
-//! rejects that syntax, so the vector-index DDL is covered by a `src/doris.rs`
+//! rejects that syntax, so the vector-index DDL is covered by a `src/connectors/doris.rs`
 //! unit test rather than live here.
 #![cfg(feature = "doris")]
 
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::doris::{
+use cocoindex::connectors::doris::{
     self, ColumnDef, DorisConfig, DorisConnection, DorisTableOptions, InvertedIndexDef, TableSchema,
 };
-use cocoindex::{ContextKey, Environment, Result};
+use cocoindex::{Environment, Result};
 use serde::Serialize;
 use sqlx::Row;
 
-static DORIS_DB: LazyLock<ContextKey<DorisConnection>> =
-    LazyLock::new(|| ContextKey::new("doris_target_test_db"));
+cocoindex::context_key!(static DORIS_DB: DorisConnection, key = "doris_target_test_db");
 
 #[derive(Serialize, Clone)]
 struct Item {
@@ -137,6 +135,17 @@ async fn drop_table(conn: &DorisConnection, table: &str) {
         table
     );
     let _ = sqlx::raw_sql(&sql).execute(conn.pool()).await;
+}
+
+async fn table_exists(conn: &DorisConnection, table: &str) -> bool {
+    let sql = format!(
+        "SELECT COUNT(*) AS c FROM information_schema.tables \
+         WHERE table_schema = '{}' AND table_name = '{}'",
+        conn.config().database,
+        table
+    );
+    let row = sqlx::raw_sql(&sql).fetch_one(conn.pool()).await.unwrap();
+    row.get::<i64, _>("c") > 0
 }
 
 fn item(id: &str, name: &str, value: i64) -> Item {
@@ -426,6 +435,54 @@ async fn doris_inverted_index_table() -> Result<()> {
     .await
     .unwrap();
     assert_eq!(count_row.get::<i64, _>("c"), 1);
+
+    drop_table(&conn, &table).await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doris_undeclared_and_dropped_tables_are_removed() -> Result<()> {
+    let Some(cfg) = config() else {
+        eprintln!("skipping live Doris test; DORIS_FE_HOST is not set");
+        return Ok(());
+    };
+    let conn = DorisConnection::connect(cfg).await?;
+    let table = unique_table("removal");
+    let tmp = tempfile::tempdir().unwrap();
+
+    let app = Environment::builder()
+        .db_path(tmp.path().join("db"))
+        .provide_key(&DORIS_DB, conn.clone())
+        .build()
+        .await?
+        .app("DorisTableRemoval")
+        .await?;
+    let run_declaring = |table: String| {
+        app.run(move |ctx| async move {
+            let target = doris::mount_table_target(&ctx, &DORIS_DB, table, item_schema()).await?;
+            target.declare_row(&ctx, &item("1", "Alice", 10))?;
+            Ok(())
+        })
+    };
+
+    run_declaring(table.clone()).await?;
+    assert!(table_exists(&conn, &table).await);
+
+    // A run that no longer declares the table drops it.
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert!(
+        !table_exists(&conn, &table).await,
+        "a table no longer declared is dropped"
+    );
+
+    run_declaring(table.clone()).await?;
+    assert!(table_exists(&conn, &table).await);
+
+    app.drop_state().await?;
+    assert!(
+        !table_exists(&conn, &table).await,
+        "drop_state drops the table"
+    );
 
     drop_table(&conn, &table).await;
     Ok(())

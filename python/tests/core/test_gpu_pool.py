@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Awaitable, Generator, Iterator
+from typing import Any, TypeVar
 
 import pytest
 
 import cocoindex as coco
 from cocoindex._internal import runner as _runner_mod
 from cocoindex._internal.runner import (
-    GPUPool,
     GPURunner,
     configure_gpu_pool,
     current_gpu,
     current_gpus,
     current_gpu_fraction,
-    _detect_num_gpus,
 )
+
+_T = TypeVar("_T")
 
 
 @pytest.fixture(autouse=True)
@@ -28,73 +27,6 @@ def _reset_gpu_pool() -> Iterator[None]:
     _runner_mod._default_gpu_pool = None
     yield
     _runner_mod._default_gpu_pool = old
-
-
-@pytest.mark.asyncio
-async def test_acquire_returns_gpu_id() -> None:
-    pool = GPUPool(num_gpus=2)
-    gpu = await pool.acquire(1.0)
-    assert 0 <= gpu < 2
-    await pool.release(gpu, 1.0)
-
-
-@pytest.mark.asyncio
-async def test_acquire_different_gpus() -> None:
-    pool = GPUPool(num_gpus=2)
-    gpu0 = await pool.acquire(1.0)
-    gpu1 = await pool.acquire(1.0)
-    assert gpu0 != gpu1
-    await pool.release(gpu0, 1.0)
-    await pool.release(gpu1, 1.0)
-
-
-@pytest.mark.asyncio
-async def test_acquire_blocks_when_capacity_full() -> None:
-    pool = GPUPool(num_gpus=1)
-    gpu = await pool.acquire(1.0)
-
-    task = asyncio.create_task(pool.acquire(1.0))
-    await asyncio.sleep(0.02)
-    assert not task.done()
-
-    await pool.release(gpu, 1.0)
-    result = await asyncio.wait_for(task, timeout=1.0)
-    assert result == 0
-    await pool.release(result, 1.0)
-
-
-@pytest.mark.asyncio
-async def test_fractional_shares_same_gpu() -> None:
-    pool = GPUPool(num_gpus=1)
-    gpu0 = await pool.acquire(0.5)
-    gpu1 = await pool.acquire(0.5)
-    assert gpu0 == gpu1
-
-    task = asyncio.create_task(pool.acquire(0.5))
-    await asyncio.sleep(0.02)
-    assert not task.done()
-
-    await pool.release(gpu0, 0.5)
-    result = await asyncio.wait_for(task, timeout=1.0)
-    assert result == gpu0
-    await pool.release(gpu1, 0.5)
-    await pool.release(result, 0.5)
-
-
-@pytest.mark.asyncio
-async def test_multi_gpu_all_parallel() -> None:
-    pool = GPUPool(num_gpus=3)
-    tasks = [asyncio.create_task(pool.acquire(1.0)) for _ in range(3)]
-    results = await asyncio.gather(*tasks)
-    assert len(set(results)) == 3
-    for g in results:
-        await pool.release(g, 1.0)
-
-
-@pytest.mark.asyncio
-async def test_invalid_num_gpus_raises() -> None:
-    with pytest.raises(ValueError):
-        GPUPool(num_gpus=0)
 
 
 @pytest.mark.asyncio
@@ -340,130 +272,92 @@ async def test_coco_fn_current_gpus_and_fraction() -> None:
         assert fraction == 0.5
 
 
-def test_detect_num_gpus_explicit_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("COCOINDEX_NUM_GPUS", "4")
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    assert _detect_num_gpus() == 4
+@pytest.mark.asyncio
+async def test_acquire_full_more_gpus_than_pool_raises() -> None:
+    pool = coco.GPUPool(2)
+    with pytest.raises(ValueError, match="only has 2"):
+        await pool.acquire_full(3)
 
 
-def test_detect_num_gpus_cuda_visible_devices(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2,3")
-    assert _detect_num_gpus() == 3
+# A GPU that reaches a cancelled `acquire` must go back to the pool. Each test below
+# ends by acquiring that GPU again; if it leaked, the acquisition times out.
+_LEAK_TIMEOUT_SECS = 5.0
 
 
-def test_detect_num_gpus_cuda_visible_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    assert _detect_num_gpus() == 1
+async def _await(acquisition: Awaitable[_T]) -> _T:
+    """Awaits the acquisition in a coroutine of its own, as `GPURunner` does."""
+    return await acquisition
 
 
-def test_detect_num_gpus_explicit_env_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("COCOINDEX_NUM_GPUS", "0")
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    assert _detect_num_gpus() == 1
+@pytest.mark.asyncio
+async def test_cancelled_acquire_returns_gpu_released_to_it() -> None:
+    pool = coco.GPUPool(1)
+    gpu = await pool.acquire(1.0)
+    waiter = asyncio.create_task(_await(pool.acquire(1.0)))
+    await asyncio.sleep(0)  # The waiter starts waiting for the GPU.
+
+    # Release the GPU to the waiter in the same step that cancels it.
+    waiter.cancel()
+    pool.release(gpu, 1.0)
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert await asyncio.wait_for(pool.acquire(1.0), _LEAK_TIMEOUT_SECS) == gpu
 
 
-def test_detect_num_gpus_explicit_env_overrides_cuda_visible(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("COCOINDEX_NUM_GPUS", "2")
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
-    assert _detect_num_gpus() == 2
+@pytest.mark.asyncio
+async def test_cancelled_acquire_full_returns_all_gpus() -> None:
+    pool = coco.GPUPool(2)
+    held = await pool.acquire(1.0)
+    # Takes the free GPU at once, then waits for the held one.
+    waiter = asyncio.create_task(_await(pool.acquire_full(2)))
+    await asyncio.sleep(0)
+
+    waiter.cancel()
+    pool.release(held, 1.0)
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    gpus = await asyncio.wait_for(pool.acquire_full(2), _LEAK_TIMEOUT_SECS)
+    assert sorted(gpus) == [0, 1]
 
 
-def test_detect_num_gpus_cuda_visible_single_device(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
-    assert _detect_num_gpus() == 1
+@pytest.mark.asyncio
+async def test_acquire_cancelled_after_gpu_arrives_returns_it() -> None:
+    pool = coco.GPUPool(1)
+    gpu = await pool.acquire(1.0)
+
+    # Step the acquisition as a task does. The cancellation is thrown in after the GPU
+    # reached the acquisition but before the task resumed to take it: what a task does
+    # when it is cancelled in that gap, e.g. by a `wait_for` timeout in the same loop
+    # iteration as the release.
+    steps = pool.acquire(1.0).__await__()
+    wakeup = steps.send(None)
+    pool.release(gpu, 1.0)
+    await asyncio.wait([wakeup])
+    with pytest.raises(asyncio.CancelledError):
+        steps.throw(asyncio.CancelledError())
+
+    assert await asyncio.wait_for(pool.acquire(1.0), _LEAK_TIMEOUT_SECS) == gpu
 
 
-def test_detect_num_gpus_cuda_visible_with_whitespace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0, 1 , 2")
-    assert _detect_num_gpus() == 3
+def test_gpu_released_to_waiter_on_closed_loop_returns_to_pool() -> None:
+    pool = coco.GPUPool(1)
 
+    async def acquire() -> int:
+        return await asyncio.wait_for(pool.acquire(1.0), _LEAK_TIMEOUT_SECS)
 
-def test_detect_num_gpus_nvidia_smi_returns_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    gpu = asyncio.run(acquire())
 
-    def _mock_run(*args: Any, **kwargs: Any) -> Any:
-        class _Completed:
-            returncode = 0
-            stdout = "8\n"
+    async def start_waiting() -> Generator[Any, None, int]:
+        steps = pool.acquire(1.0).__await__()
+        steps.send(None)  # Now waits for the GPU on this loop.
+        return steps
 
-        return _Completed()
+    loop = asyncio.new_event_loop()
+    steps = loop.run_until_complete(start_waiting())
+    loop.close()  # The waiter's loop never runs again.
+    pool.release(gpu, 1.0)
 
-    monkeypatch.setattr(subprocess, "run", _mock_run)
-    assert _detect_num_gpus() == 8
-
-
-def test_detect_num_gpus_nvidia_smi_empty_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-
-    def _mock_run(*args: Any, **kwargs: Any) -> Any:
-        class _Completed:
-            returncode = 0
-            stdout = ""
-
-        return _Completed()
-
-    monkeypatch.setattr(subprocess, "run", _mock_run)
-    assert _detect_num_gpus() == 1
-
-
-def test_detect_num_gpus_nvidia_smi_nonzero_exit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-
-    def _mock_run(*args: Any, **kwargs: Any) -> Any:
-        class _Completed:
-            returncode = 1
-            stdout = ""
-
-        return _Completed()
-
-    monkeypatch.setattr(subprocess, "run", _mock_run)
-    assert _detect_num_gpus() == 1
-
-
-def test_detect_num_gpus_nvidia_smi_not_found(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-
-    def _mock_run(*args: Any, **kwargs: Any) -> Any:
-        raise FileNotFoundError("nvidia-smi not found")
-
-    monkeypatch.setattr(subprocess, "run", _mock_run)
-    assert _detect_num_gpus() == 1
-
-
-def test_detect_num_gpus_all_missing_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("COCOINDEX_NUM_GPUS", raising=False)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-
-    def _mock_run(*args: Any, **kwargs: Any) -> Any:
-        class _Completed:
-            returncode = 1
-            stdout = ""
-
-        return _Completed()
-
-    monkeypatch.setattr(subprocess, "run", _mock_run)
-    assert _detect_num_gpus() == 1
+    assert asyncio.run(acquire()) == gpu
+    steps.close()

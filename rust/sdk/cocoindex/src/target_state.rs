@@ -12,7 +12,9 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::ctx::{ContextStore, Ctx};
 use crate::error::{Error, Result};
-use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, SinkFuture, Value};
+use crate::profile::{
+    Action, BoxedHandler, BoxedSink, ChildHandlerFn, RustProfile, SinkChildren, SinkFuture, Value,
+};
 
 pub trait IntoStableKey {
     fn into_stable_key(self) -> StableKey;
@@ -102,7 +104,17 @@ impl<V> TargetStateProvider<V> {
         }
     }
 
+    /// The provider for this provider's `att_type` attachment. A child provider
+    /// gets its handler, and so its attachments, only when the parent target
+    /// state commits: declare attachments on a mounted target (e.g. from
+    /// `mount_table_target`), not on a pending `declare_*_target` handle.
     pub fn attachment<T>(&self, ctx: &Ctx, att_type: &str) -> Result<TargetStateProvider<T>> {
+        if self.inner.handler().is_none() {
+            return Err(Error::engine(format!(
+                "cannot declare a `{att_type}` attachment on a target that is not mounted yet: \
+                 use the `mount_*` variant of the target (e.g. `mount_table_target`)"
+            )));
+        }
         let provider = ctx.register_attachment_target_provider(&self.inner, att_type)?;
         Ok(TargetStateProvider::new(provider))
     }
@@ -160,10 +172,10 @@ impl From<TargetChildInvalidation> for ChildInvalidation {
 
 /// A child (or attachment) target handler definition.
 ///
-/// Passed to [`ChildSlot::fulfill`] by a *container* target's sink (see
-/// [`TargetActionSink::from_async_fn_with_children`]) to fulfill the child
+/// Returned by a *container* target's child handler factory (see
+/// [`TargetActionSink::from_async_fn_with_child_handler`]) for the child
 /// provider obtained from [`declare_target_state_with_child`]/[`mount_target`],
-/// and returned by [`TargetHandler::attachments`] to define attachment handlers.
+/// and by [`TargetHandler::attachments`] to define attachment handlers.
 /// It wraps a typed [`TargetHandler`] for the child/attachment value type.
 pub struct ChildTargetDef {
     handler: BoxedHandler,
@@ -182,7 +194,10 @@ impl ChildTargetDef {
     }
 }
 
-/// Fulfillment handle for the child target provider of one container action.
+/// Fulfillment handle for the child target provider of one container action,
+/// for the deprecated [`TargetActionSink::from_async_fn_with_children`]; new
+/// sinks build child handlers with
+/// [`TargetActionSink::from_async_fn_with_child_handler`] instead.
 ///
 /// A sink built with [`TargetActionSink::from_async_fn_with_children`] receives
 /// `Some(slot)` alongside every action whose target state was declared with
@@ -200,10 +215,43 @@ impl ChildSlot {
     }
 }
 
-#[derive(Clone)]
+/// Applies a batch of target actions.
+///
+/// The engine batches actions by sink *identity*: actions returned with the
+/// same sink (or a clone of it) are applied together in one call, while every
+/// `from_async_fn*` call creates a new identity whose actions are applied
+/// separately. A handler should therefore build its sink once and return a
+/// clone from each `reconcile`, rather than building one per call.
 pub struct TargetActionSink<A> {
     inner: TargetActionSinkKeeper<RustProfile>,
     _action: PhantomData<fn() -> A>,
+}
+
+// Not derived: a derive would require `A: Clone`, but cloning a sink only
+// shares its identity.
+impl<A> Clone for TargetActionSink<A> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _action: PhantomData,
+        }
+    }
+}
+
+/// A handler's sink, built on first use and shared by every `reconcile`
+/// output so the engine applies all of the handler's actions in one batch.
+pub(crate) struct SinkCache<A>(std::sync::OnceLock<TargetActionSink<A>>);
+
+impl<A> Default for SinkCache<A> {
+    fn default() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+}
+
+impl<A> SinkCache<A> {
+    pub(crate) fn get(&self, build: impl FnOnce() -> TargetActionSink<A>) -> TargetActionSink<A> {
+        self.0.get_or_init(build).clone()
+    }
 }
 
 impl<A> TargetActionSink<A>
@@ -220,31 +268,62 @@ where
         Self::from_async_fn_with_ctx(move |_host_ctx, actions| f(actions))
     }
 
-    /// Build a sink for a *container* target: each action comes with the
-    /// [`ChildSlot`] for its child target provider (`None` for an action whose
-    /// target state was not declared with a child — typically an orphan
-    /// delete), and the closure must fulfill every slot it receives.
+    /// Build a sink for a *container* target, whose actions may carry child
+    /// target states (those declared with [`declare_target_state_with_child`] /
+    /// [`mount_target`]).
+    ///
+    /// `apply` applies the actions, as a leaf sink's closure does.
+    /// `child_handler` returns the definition of the handler for a created or
+    /// updated container's child target states, built from its action alone
+    /// and free of side effects: the engine calls it before `apply` in an
+    /// update, and in place of `apply` in a [preview](crate::App::preview).
+    pub fn from_async_fn_with_child_handler<F, Fut, C>(apply: F, child_handler: C) -> Self
+    where
+        F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+        C: Fn(&A) -> Result<ChildTargetDef> + Send + Sync + 'static,
+    {
+        Self::from_async_fn_with_child_handler_ctx(
+            move |_host_ctx, actions| apply(actions),
+            child_handler,
+        )
+    }
+
+    /// Deprecated container sink: each action comes with the [`ChildSlot`] for
+    /// its child target provider (`None` for an action whose target state was
+    /// not declared with a child — typically an orphan delete), and the closure
+    /// must fulfill every slot it receives. Such a sink cannot be previewed.
+    #[deprecated(
+        note = "use `from_async_fn_with_child_handler`, which builds child handlers from the actions"
+    )]
     pub fn from_async_fn_with_children<F, Fut>(f: F) -> Self
     where
         F: Fn(Vec<(TargetAction<A>, Option<ChildSlot>)>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        Self::from_async_fn_with_children_ctx(move |_host_ctx, actions| f(actions))
+        Self::new(
+            move |_host_ctx, actions| Ok(f(decode_actions_with_children::<A>(actions)?)),
+            SinkChildren::LegacySlots,
+        )
     }
 
-    /// Deprecated form of [`Self::from_async_fn_with_children`] taking the
-    /// pre-slot closure shape: the closure returns the child handler
+    /// Deprecated container sink with the pre-slot closure shape (older than
+    /// the also deprecated [`Self::from_async_fn_with_children`]); use
+    /// [`Self::from_async_fn_with_child_handler`]. The closure returns the child handler
     /// definitions as a `Vec` index-aligned with the actions (`None` for an
     /// action without a child). The definitions are used to fulfill the
     /// actions' child slots; a missing definition for an action that has a
     /// slot, or a length mismatch, fails the batch.
-    #[deprecated(note = "use `from_async_fn_with_children` and fulfill each action's `ChildSlot`")]
+    #[deprecated(
+        note = "use `from_async_fn_with_child_handler`, which builds child handlers from the actions"
+    )]
     pub fn from_async_fn_with_child_defs<F, Fut>(f: F) -> Self
     where
         F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send + 'static,
     {
         let f = Arc::new(f);
+        #[allow(deprecated)]
         Self::from_async_fn_with_children(move |actions| {
             let f = f.clone();
             async move {
@@ -285,28 +364,45 @@ where
         F: Fn(Arc<ContextStore>, Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        Self::new(move |host_ctx, actions| Ok(f(host_ctx, decode_leaf_actions::<A>(actions)?)))
+        Self::new(
+            move |host_ctx, actions| Ok(f(host_ctx, decode_leaf_actions::<A>(actions)?)),
+            SinkChildren::Leaf,
+        )
     }
 
-    /// Like [`Self::from_async_fn_with_children`], but the apply closure also
-    /// receives the host context for apply-time connection resolution.
-    #[allow(dead_code)]
-    pub(crate) fn from_async_fn_with_children_ctx<F, Fut>(f: F) -> Self
+    /// Like [`Self::from_async_fn_with_child_handler`], but the apply closure
+    /// also receives the host context for apply-time connection resolution.
+    pub(crate) fn from_async_fn_with_child_handler_ctx<F, Fut, C>(
+        apply: F,
+        child_handler: C,
+    ) -> Self
     where
-        F: Fn(Arc<ContextStore>, Vec<(TargetAction<A>, Option<ChildSlot>)>) -> Fut
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(Arc<ContextStore>, Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
+        C: Fn(&A) -> Result<ChildTargetDef> + Send + Sync + 'static,
     {
-        Self::new(move |host_ctx, actions| {
-            Ok(f(host_ctx, decode_actions_with_children::<A>(actions)?))
-        })
+        let child_handler: ChildHandlerFn = Arc::new(move |action: &Action| {
+            let action = match decode_action::<A>(action.clone()).map_err(Error::into_core)? {
+                TargetAction::Create(a) | TargetAction::Update(a) => a,
+                TargetAction::Delete(_) => {
+                    cocoindex_utils::client_bail!(
+                        "the container handler's `reconcile` returned `TargetAction::Delete` \
+                         for a declared target state; a declared container must reconcile to \
+                         `Create` or `Update`, which carry its child handler"
+                    )
+                }
+            };
+            Ok(child_handler(&action).map_err(Error::into_core)?.handler)
+        });
+        Self::new(
+            move |host_ctx, actions| Ok(apply(host_ctx, decode_leaf_actions::<A>(actions)?)),
+            SinkChildren::Factory(child_handler),
+        )
     }
 
     /// Wrap a closure that decodes the engine's batch and starts the apply
     /// future; a decode failure becomes a failed future.
-    fn new<F, Fut>(f: F) -> Self
+    fn new<F, Fut>(f: F, children: SinkChildren) -> Self
     where
         F: Fn(Arc<ContextStore>, Vec<TargetActionWithChildSlot<RustProfile>>) -> Result<Fut>
             + Send
@@ -314,15 +410,18 @@ where
             + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        let inner = TargetActionSinkKeeper::new(BoxedSink::new(move |host_ctx, actions| {
-            let fut: SinkFuture = match f(host_ctx, actions) {
-                Ok(fut) => Box::pin(async move { fut.await.map_err(Error::into_core) }),
-                Err(err) => Box::pin(async move { Err(err.into_core()) }),
-            };
-            fut
-        }));
+        let sink = BoxedSink::new(
+            move |host_ctx, actions| {
+                let fut: SinkFuture = match f(host_ctx, actions) {
+                    Ok(fut) => Box::pin(async move { fut.await.map_err(Error::into_core) }),
+                    Err(err) => Box::pin(async move { Err(err.into_core()) }),
+                };
+                fut
+            },
+            children,
+        );
         Self {
-            inner,
+            inner: TargetActionSinkKeeper::new(sink),
             _action: PhantomData,
         }
     }
@@ -331,20 +430,20 @@ where
     // gated behind the neo4j/falkordb features; matching the gate keeps it from
     // tripping dead-code warnings in builds without those features.
     //
-    // Every action gets a child slot; the returned entry is `None` where the
-    // sink left it unfulfilled (e.g. a drop).
+    // As the engine does, builds the child of each create/update from the
+    // sink's child handler factory, then applies the actions; the returned entry
+    // is `None` for a delete. `host_ctx` is what the sink resolves connections
+    // from.
     #[cfg(all(test, any(feature = "neo4j", feature = "falkordb")))]
     pub(crate) async fn apply_for_test(
         &self,
+        host_ctx: Arc<ContextStore>,
         actions: Vec<TargetAction<A>>,
     ) -> Result<Vec<Option<ChildTargetDef>>> {
-        let slots: Vec<ChildTargetSlot<RustProfile>> =
-            actions.iter().map(|_| ChildTargetSlot::new()).collect();
         let actions = actions
             .into_iter()
-            .zip(&slots)
-            .map(|(action, slot)| {
-                let action = match action {
+            .map(|action| {
+                Ok(match action {
                     TargetAction::Create(value) => {
                         Action::Create(Value::from_serializable(&value)?)
                     }
@@ -354,17 +453,24 @@ where
                     TargetAction::Delete(value) => {
                         Action::Delete(Value::from_serializable(&value)?)
                     }
-                };
-                Ok((action, Some(slot.clone())))
+                })
             })
             .collect::<Result<Vec<_>>>()?;
-        self.inner
-            .apply(&(), Arc::new(crate::ctx::ContextStore::default()), actions)
-            .await?;
-        slots
-            .iter()
-            .map(|slot| Ok(slot.take()?.map(|handler| ChildTargetDef { handler })))
-            .collect()
+        let mut children = Vec::with_capacity(actions.len());
+        for action in &actions {
+            children.push(match action {
+                Action::Delete(_) => None,
+                Action::Create(_) | Action::Update(_) => self
+                    .inner
+                    .child_handlers(&(), host_ctx.clone(), &[action])
+                    .await?
+                    .pop()
+                    .map(|handler| ChildTargetDef { handler }),
+            });
+        }
+        let actions = actions.into_iter().map(|action| (action, None)).collect();
+        self.inner.apply(&(), host_ctx, actions).await?;
+        Ok(children)
     }
 }
 
@@ -377,10 +483,9 @@ fn decode_leaf_actions<A: DeserializeOwned>(
         .into_iter()
         .map(|(action, child_slot)| {
             if child_slot.is_some() {
+                // The engine mints slots only for a `LegacySlots` sink.
                 return Err(Error::engine(
-                    "target action sink built with `TargetActionSink::from_async_fn` received \
-                     an action with child target states; build it with \
-                     `from_async_fn_with_children` and fulfill their child slots",
+                    "internal: a sink without child slots received one",
                 ));
             }
             decode_action::<A>(action)
@@ -417,6 +522,21 @@ where
     type TrackingRecord: Serialize + DeserializeOwned + Send + Sync + 'static;
     type Action: Serialize + DeserializeOwned + Send + 'static;
 
+    /// Reconcile the desired target state against the previously-tracked
+    /// records, returning the action to take.
+    ///
+    /// May be called more than once for the same target state in one update;
+    /// only the output of the attempt that commits is applied, so it must be
+    /// free of side effects.
+    ///
+    /// A *container* handler (one used with [`declare_target_state_with_child`]
+    /// or [`mount_target`]) must return `Some` output whenever `desired` is
+    /// `Some`, even when nothing changed, because its action is what the sink's
+    /// child handler factory builds the child handler from. Returning `None`
+    /// there leaves the child handler missing, and declaring a child target
+    /// state then fails. The action must be a `Create` or an `Update`: a
+    /// factory gets no child handler from a `Delete`, which is only for a
+    /// container no longer declared (`desired` is `None`).
     fn reconcile(
         &self,
         key: StableKey,
@@ -436,6 +556,12 @@ where
     }
 }
 
+/// Register a root target-state provider for the current run.
+///
+/// The provider exists only while a run registers it: once a run stops
+/// registering it, or on [`App::drop_state`](crate::App::drop_state), the
+/// engine cannot reach its handler, so the target states declared through it
+/// are left in place.
 pub fn register_root_target_states_provider<V, H>(
     ctx: &Ctx,
     name: impl Into<String>,
@@ -479,8 +605,8 @@ where
 /// Mount a parent target and return a ready child target provider.
 ///
 /// The parent target state is declared and committed inside a foreground child
-/// component, so the parent handler's sink runs and fulfills the child provider
-/// (via its [`ChildSlot`]) before this returns.
+/// component, so the parent sink's child handler factory has built the child
+/// provider's handler before this returns.
 /// The returned provider is ready for immediate child declarations. Use
 /// [`declare_target_state_with_child`] when the child provider can be fulfilled
 /// when the enclosing component commits.
@@ -521,6 +647,58 @@ where
         crate::error::Error::engine("mount_target: child provider was not produced")
     })?;
     Ok(TargetStateProvider::new(child))
+}
+
+/// A root target-state provider that every environment registers when it is
+/// built (collected at link time in [`STATIC_ROOT_PROVIDERS`]).
+///
+/// Its handler is stateless: the target's identity (a directory, a table)
+/// lives in the target-state key or value, and runtime resources are resolved
+/// at apply time from the host context. So the engine reaches the handler
+/// outside the run that declared the target states: on `App::drop_state`, and
+/// when a run no longer declares a target.
+pub(crate) struct StaticRootProvider {
+    name: &'static str,
+    make_handler: fn() -> BoxedHandler,
+}
+
+#[linkme::distributed_slice]
+pub(crate) static STATIC_ROOT_PROVIDERS: [StaticRootProvider] = [..];
+
+impl StaticRootProvider {
+    pub(crate) const fn new<V, H>(name: &'static str) -> Self
+    where
+        V: Serialize + DeserializeOwned + Send + 'static,
+        H: TargetHandler<V> + Default,
+    {
+        Self {
+            name,
+            make_handler: make_static_handler::<V, H>,
+        }
+    }
+
+    pub(crate) fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) fn make_handler(&self) -> BoxedHandler {
+        (self.make_handler)()
+    }
+
+    /// This provider as registered in the environment `ctx` runs in. `V` must
+    /// be the value type of the handler passed to [`Self::new`].
+    pub(crate) fn get<V>(&self, ctx: &Ctx) -> Result<TargetStateProvider<V>> {
+        ctx.static_root_target_provider(self.name)
+            .map(TargetStateProvider::new)
+    }
+}
+
+fn make_static_handler<V, H>() -> BoxedHandler
+where
+    V: Serialize + DeserializeOwned + Send + 'static,
+    H: TargetHandler<V> + Default,
+{
+    boxed_handler::<V, H>(H::default())
 }
 
 fn boxed_handler<V, H>(handler: H) -> BoxedHandler
@@ -587,6 +765,23 @@ fn internal(err: impl std::fmt::Display) -> cocoindex_utils::error::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sink_cache_returns_one_batching_identity() {
+        let builds = std::sync::atomic::AtomicUsize::new(0);
+        let cache = SinkCache::<()>::default();
+        let build = || {
+            builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            TargetActionSink::<()>::from_async_fn(|_| async { Ok(()) })
+        };
+        let first = cache.get(build);
+        let second = cache.get(build);
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // The engine groups actions by this identity.
+        assert!(first.inner == second.inner);
+        let fresh = TargetActionSink::<()>::from_async_fn(|_| async { Ok(()) });
+        assert!(first.inner != fresh.inner);
+    }
 
     #[test]
     fn u64_stable_key_is_tagged_and_non_lossy() {

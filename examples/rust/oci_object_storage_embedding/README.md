@@ -11,7 +11,7 @@ Postgres/pgvector — then serves similarity search.
 
 | Concern          | Python                                          | Rust (this example)                                       |
 | ---------------- | ----------------------------------------------- | --------------------------------------------------------- |
-| Source           | `oci_object_storage.list_objects` (`oci` SDK)   | `cocoindex::oci_object_storage::list_objects` (native REST)|
+| Source           | `oci_object_storage.list_objects` (`oci` SDK)   | `cocoindex::connectors::oci_object_storage::list_objects` (native REST)|
 | Auth             | `oci.config.from_file` + `ObjectStorageClient`  | `OciClient::connect` reads `~/.oci/config`, signs requests |
 | Per-file compute | `@coco.fn(memo=True) process_file`              | `#[cocoindex::function(memo)] process_file`               |
 | Chunking         | `RecursiveSplitter` (markdown, 2000/500)        | `RecursiveSplitter` (markdown, 2000/500)                  |

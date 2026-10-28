@@ -10,6 +10,7 @@ Tests cover:
 from __future__ import annotations
 
 import datetime
+import itertools
 import os
 import pathlib
 from pathlib import Path, PurePath
@@ -227,6 +228,37 @@ class TestDirWalkerWalkSync:
         names = {f.file_path.name for f in files}
         assert "top.txt" in names
         assert "nested.txt" in names
+
+    def test_recursive_symlink_to_ancestor_does_not_loop(self, tmp_path: Path) -> None:
+        (tmp_path / "file.txt").write_bytes(b"content")
+        try:
+            (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"Directory symlinks unavailable: {exc}")
+
+        walker = DirWalker(tmp_path, recursive=True)
+        files = list(itertools.islice(walker._walk_sync(), 3))
+        assert [
+            file.file_path.path.relative_to(tmp_path).as_posix() for file in files
+        ] == ["file.txt"]
+
+    def test_recursive_follows_noncyclic_directory_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "file.txt").write_bytes(b"content")
+        try:
+            (tmp_path / "alias").symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"Directory symlinks unavailable: {exc}")
+
+        walker = DirWalker(tmp_path, recursive=True)
+        paths = {
+            file.file_path.path.relative_to(tmp_path).as_posix()
+            for file in walker._walk_sync()
+        }
+        assert paths == {"target/file.txt", "alias/file.txt"}
 
     def test_empty_directory_yields_nothing(self, tmp_path: Path) -> None:
         walker = DirWalker(tmp_path)

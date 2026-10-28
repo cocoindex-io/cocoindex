@@ -77,10 +77,10 @@ impl LanguageHooks for CSharpHooks {
     ) -> Vec<String> {
         let mut cursor = root.walk();
         for child in root.children(&mut cursor) {
-            if child.kind() == "file_scoped_namespace_declaration" {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    return vec![self.extract_namespace_name(&name_node, source)];
-                }
+            if child.kind() == "file_scoped_namespace_declaration"
+                && let Some(name_node) = child.child_by_field_name("name")
+            {
+                return vec![self.extract_namespace_name(&name_node, source)];
             }
         }
         vec![]

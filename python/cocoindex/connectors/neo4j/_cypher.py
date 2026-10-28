@@ -22,10 +22,13 @@ __all__ = [
     "build_constraint_create",
     "build_constraint_drop",
     "build_node_delete",
+    "build_node_delete_all",
     "build_node_index_create",
     "build_node_index_drop",
     "build_node_upsert",
+    "build_node_vector_index_list",
     "build_relationship_delete",
+    "build_relationship_delete_all",
     "build_relationship_index_create",
     "build_relationship_index_drop",
     "build_relationship_upsert",
@@ -34,6 +37,7 @@ __all__ = [
     "constraint_name",
     "index_name",
     "validate_identifier",
+    "validate_label",
     "vector_index_name",
 ]
 
@@ -51,6 +55,25 @@ def validate_identifier(name: str, kind: str) -> None:
     if not IDENTIFIER_RE.match(name):
         raise ValueError(
             f"Invalid Neo4j {kind}: {name!r}. Must match [a-zA-Z_][a-zA-Z0-9_]*."
+        )
+
+
+def validate_label(name: str, kind: str) -> None:
+    """Validate a node label or relationship type that names Neo4j schema
+    objects: a valid identifier with no ``__`` and no trailing ``_``.
+
+    :func:`constraint_name`, :func:`index_name` and :func:`vector_index_name`
+    join the label and a property name with ``__``. With this rule the first
+    ``__`` after the prefix always ends the label, so two (label, property)
+    pairs never share a name (``A__x`` + ``y`` vs ``A`` + ``x__y``, or ``A_``
+    + ``y`` vs ``A`` + ``_y``).
+    """
+    validate_identifier(name, kind)
+    if "__" in name or name.endswith("_"):
+        raise ValueError(
+            f"Invalid Neo4j {kind}: {name!r}. Must not contain '__' or end "
+            "with '_': constraint and index names join it to a property name "
+            "with '__'."
         )
 
 
@@ -117,6 +140,19 @@ def build_node_delete(label: str, pk_fields: Sequence[str]) -> str:
     return f"MATCH (n:{_quote(label)} {_key_clause('key', pk_fields)}) DETACH DELETE n"
 
 
+def build_node_delete_all(label: str) -> str:
+    """``MATCH (n:`Label`) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS``.
+
+    Destroys a node table: every node carrying the label goes, together with
+    the relationships attached to it. The deletes run in Neo4j's default-sized
+    inner transactions so a large label need not fit one transaction's heap;
+    ``CALL … IN TRANSACTIONS`` only runs in an auto-commit session.
+    """
+    return (
+        f"MATCH (n:{_quote(label)}) CALL {{ WITH n DETACH DELETE n }} IN TRANSACTIONS"
+    )
+
+
 def build_relationship_upsert(
     rel_type: str,
     from_label: str,
@@ -125,8 +161,16 @@ def build_relationship_upsert(
     to_pk_fields: Sequence[str],
     rel_pk_fields: Sequence[str],
     has_value_fields: bool,
+    has_legacy_key: bool,
 ) -> str:
-    """Three MERGEs: source endpoint, target endpoint, then the relationship.
+    """MERGE the source endpoint, the target endpoint, then the relationship.
+
+    Before the relationship MERGE, any other relationship of the type with
+    this primary key is deleted: the key names one edge, so one found between
+    other endpoints is the edge before its endpoints changed (the MERGE would
+    otherwise create a second edge beside it). With ``has_legacy_key``, the
+    edge between these endpoints keyed by ``$legacy_key_*`` (the key the
+    deprecated relation API gave it) is deleted too.
 
     Endpoint properties are NOT touched — they are owned by their table's own
     record handler. We only ``SET r += $props`` on the relationship itself.
@@ -135,11 +179,23 @@ def build_relationship_upsert(
         raise ValueError(
             "build_relationship_upsert requires PK fields for from, to, and the relationship"
         )
+    rel = _quote(rel_type)
+    rel_key = _key_clause("rel_key", rel_pk_fields)
     cypher = (
         f"MERGE (s:{_quote(from_label)} {_key_clause('from_key', from_pk_fields)}) "
         f"MERGE (t:{_quote(to_label)} {_key_clause('to_key', to_pk_fields)}) "
-        f"MERGE (s)-[r:{_quote(rel_type)} {_key_clause('rel_key', rel_pk_fields)}]->(t)"
+        f"WITH s, t "
+        f"OPTIONAL MATCH (a)-[o:{rel} {rel_key}]->(b) WHERE a <> s OR b <> t "
+        f"DELETE o "
+        f"WITH DISTINCT s, t "
     )
+    if has_legacy_key:
+        cypher += (
+            f"OPTIONAL MATCH (s)-[l:{rel} {_key_clause('legacy_key', rel_pk_fields)}]->(t) "
+            f"DELETE l "
+            f"WITH DISTINCT s, t "
+        )
+    cypher += f"MERGE (s)-[r:{rel} {rel_key}]->(t)"
     if has_value_fields:
         cypher += " SET r += $props"
     return cypher
@@ -158,6 +214,15 @@ def build_relationship_delete(rel_type: str, pk_fields: Sequence[str]) -> str:
     return (
         f"MATCH ()-[r:{_quote(rel_type)} {_key_clause('key', pk_fields)}]->() DELETE r"
     )
+
+
+def build_relationship_delete_all(rel_type: str) -> str:
+    """``MATCH ()-[r:`RelType`]->() CALL { WITH r DELETE r } IN TRANSACTIONS``.
+
+    Destroys a relation table: every relationship of the type goes; the
+    endpoints stay, as with the per-record delete.
+    """
+    return f"MATCH ()-[r:{_quote(rel_type)}]->() CALL {{ WITH r DELETE r }} IN TRANSACTIONS"
 
 
 def build_node_index_create(
@@ -268,3 +333,15 @@ def build_vector_index_drop(name: str) -> str:
     Vector indexes share the index namespace; the same DROP works.
     """
     return f"DROP INDEX {_quote(name)} IF EXISTS"
+
+
+def build_node_vector_index_list() -> str:
+    """``SHOW INDEXES`` of the vector indexes on the nodes of label ``$label``.
+
+    One row per index, with its ``name`` and indexed ``properties``.
+    """
+    return (
+        "SHOW INDEXES YIELD name, type, entityType, labelsOrTypes, properties "
+        "WHERE type = 'VECTOR' AND entityType = 'NODE' AND labelsOrTypes = [$label] "
+        "RETURN name, properties"
+    )

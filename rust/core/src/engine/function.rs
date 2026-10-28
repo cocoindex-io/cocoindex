@@ -15,14 +15,12 @@ fn build_fn_call_memo<Prof: EngineProfile>(
     memo_states: MemoStatesPayload<Prof>,
 ) -> Option<FnCallMemo<Prof>> {
     fn_ctx.update(|inner| {
-        let mut logic_deps = inner.fn_logic_deps.clone();
-        logic_deps.extend(inner.context_change_deps.iter().cloned());
         Some(FnCallMemo {
             ret,
             target_state_paths: inner.target_state_paths.clone(),
             target_provider_deps: inner.target_provider_deps.clone(),
             dependency_memo_entries: inner.dependency_memo_entries.clone(),
-            logic_deps,
+            logic_deps: inner.entry_logic_deps().collect(),
             memo_states: memo_states.positional,
             context_memo_states: memo_states.by_context_fp,
             already_stored: false,
@@ -87,6 +85,43 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
                         .iter()
                         .map(|(path, generation)| (path.clone(), generation.clone())),
                 );
+            });
+        }
+    }
+
+    /// On a cache hit, re-offer the stored entry's logic deps through the
+    /// callee's own frame.
+    ///
+    /// A hit skips the body, so when `fn_ctx` is joined into the caller it
+    /// holds only the callee's own fingerprint; everything the entry recorded
+    /// beneath that — callees under `"full"`, per-call logic deps, tunneled
+    /// callbacks in transit to an owner above, context keys — would be
+    /// missing from a caller re-stored after the hit, and a later change to
+    /// one of them would no longer invalidate that caller (the callee's own
+    /// entry would miss, but a caller that hits never reaches it).
+    ///
+    /// The stored set is flat, so the kinds a miss treats differently cannot
+    /// be told apart: the callee's own and `"full"`-propagated logic follows
+    /// the caller's `logic_tracking`, while tunneled sets ride to their owner
+    /// and context-change deps ride everywhere regardless of it. Re-offering
+    /// the whole set through a mode-governed channel would drop the tunneled
+    /// and context parts under a `"self"` caller — a stale entry. It goes
+    /// through [`FnCallContextInner::reoffered_logic_deps`] instead, which
+    /// rides to the enclosing component's entry through every frame: a
+    /// `"self"` caller re-stored after a hit then records its callee's own
+    /// logic too, which a miss would have dropped — more invalidation, never
+    /// stale. Recording the kinds separately in the entry would restore the
+    /// exact miss behaviour. Call it exactly when the cached value is used,
+    /// next to
+    /// [`join_cached_target_provider_deps`](Self::join_cached_target_provider_deps).
+    pub fn join_cached_logic_deps(&self, fn_ctx: &FnCallContext) {
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*self.guard
+            && !memo.logic_deps.is_empty()
+        {
+            fn_ctx.update(|inner| {
+                inner
+                    .reoffered_logic_deps
+                    .extend(memo.logic_deps.iter().copied());
             });
         }
     }

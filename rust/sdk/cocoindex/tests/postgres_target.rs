@@ -1,17 +1,17 @@
 #![cfg(feature = "postgres")]
 
-use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::str::FromStr as _;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cocoindex::{ContextKey, Ctx, Environment, Result, postgres};
+use cocoindex::connectors::postgres;
+use cocoindex::{Ctx, Environment, PreviewAction, Result, SchemaFields};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
-static PG: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("postgres_target_test_db", |db: &postgres::Database| {
-        db.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static PG: postgres::Database, key = "postgres_target_test_db"
+);
 
 #[derive(Clone, Serialize)]
 struct TestRow {
@@ -261,6 +261,122 @@ async fn postgres_table_target_reconciles_rows_when_available() -> Result<()> {
     Ok(())
 }
 
+/// Planned actions as sorted strings. The connector's actions encode as
+/// positional arrays: a table action is `[db_key, spec, drop, recreate,
+/// retype_cols]` with `spec` as `[pg_schema_name, table_name, ..]`, a row
+/// action `[pk, state]`.
+fn describe(actions: &[PreviewAction]) -> Vec<String> {
+    let mut described: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            let value: serde_json::Value = value.decode().unwrap();
+            match value.as_array().map(Vec::as_slice) {
+                Some([_db_key, spec, _drop, recreate, retype_cols]) => format!(
+                    "{verb} table {} recreate={recreate} retype={retype_cols}",
+                    spec[1]
+                ),
+                Some([pk, state]) => format!("{verb} row {pk} {}", state[0]),
+                _ => panic!("unexpected action payload {value}"),
+            }
+        })
+        .collect();
+    described.sort();
+    described
+}
+
+/// Preview plans the table and its rows without creating either.
+#[tokio::test]
+async fn postgres_table_target_previews_rows_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres target test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_preview_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?
+        .app("PostgresTargetPreviewTest")
+        .await?;
+    let rows = |labels: &[(i64, &str)]| {
+        labels
+            .iter()
+            .map(|(id, label)| TestRow {
+                id: *id,
+                label: label.to_string(),
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // The table and both rows would be written (the connector plans every
+    // write as an upsert); nothing is.
+    let actions = app
+        .preview({
+            let schema = schema.clone();
+            let rows = rows(&[(1, "one"), (2, "two")]);
+            move |ctx| declare_rows(ctx, schema, rows)
+        })
+        .await?;
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [1] {"id":1,"label":"one"}"#,
+            r#"update row [2] {"id":2,"label":"two"}"#,
+            r#"update table "rows" recreate=false retype=[]"#,
+        ]
+    );
+    assert!(!table_exists(&db, &schema, "rows").await?);
+
+    app.run({
+        let schema = schema.clone();
+        let rows = rows(&[(1, "one"), (2, "two")]);
+        move |ctx| declare_rows(ctx, schema, rows)
+    })
+    .await?;
+
+    // Against the applied state: rows 2 and 3 written; row 1 and the table
+    // unchanged; the container action is still listed. Nothing is applied.
+    let actions = app
+        .preview({
+            let schema = schema.clone();
+            let rows = rows(&[(1, "one"), (2, "two-updated"), (3, "three")]);
+            move |ctx| declare_rows(ctx, schema, rows)
+        })
+        .await?;
+    assert_eq!(
+        describe(&actions),
+        vec![
+            r#"update row [2] {"id":2,"label":"two-updated"}"#,
+            r#"update row [3] {"id":3,"label":"three"}"#,
+            r#"update table "rows" recreate=false retype=[]"#,
+        ]
+    );
+    let row_count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM \"{schema}\".\"rows\""))
+        .fetch_one(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres count: {e}")))?;
+    assert_eq!(row_count, 2);
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn postgres_sql_command_attachment_runs_setup_and_teardown_when_available() -> Result<()> {
     let Ok(url) = std::env::var("POSTGRES_URL") else {
@@ -307,6 +423,67 @@ async fn postgres_sql_command_attachment_runs_setup_and_teardown_when_available(
     assert!(
         !index_exists(&db, &schema, "rows_label_idx").await?,
         "teardown_sql should drop the index when the attachment is removed"
+    );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_undeclared_and_dropped_tables_are_removed_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres table-removal test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_removal_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?
+        .app("PostgresTableRemovalE2ETest")
+        .await?;
+    let row = TestRow {
+        id: 1,
+        label: "one".to_string(),
+    };
+
+    app.run({
+        let schema = schema.clone();
+        let row = row.clone();
+        move |ctx| declare_rows(ctx, schema, vec![row])
+    })
+    .await?;
+    assert!(table_exists(&db, &schema, "rows").await?);
+
+    // A run that no longer declares the table drops it.
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert!(
+        !table_exists(&db, &schema, "rows").await?,
+        "a table no longer declared is dropped"
+    );
+
+    app.run({
+        let schema = schema.clone();
+        move |ctx| declare_rows(ctx, schema, vec![row])
+    })
+    .await?;
+    assert!(table_exists(&db, &schema, "rows").await?);
+
+    app.drop_state().await?;
+    assert!(
+        !table_exists(&db, &schema, "rows").await?,
+        "drop_state drops the table"
     );
 
     sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
@@ -804,6 +981,85 @@ async fn postgres_bytea_round_trips_byte_arrays_when_available() -> Result<()> {
         vec![(1, vec![0u8, 1, 2, 255, 104, 105]), (2, Vec::new())],
         "bytea byte arrays must round-trip exactly (hex-encoded literal)"
     );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct DecimalRow {
+    id: i64,
+    amount: Decimal,
+    elapsed: Duration,
+}
+
+async fn declare_decimals(ctx: Ctx, schema: String, rows: Vec<DecimalRow>) -> Result<()> {
+    let table = postgres::mount_table_target(
+        &ctx,
+        &PG,
+        "decimals",
+        postgres::TableSchema::from_row::<DecimalRow>(["id"])?,
+        Some(&schema),
+    )
+    .await?;
+    for row in &rows {
+        table.declare_row(&ctx, row)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_decimal_and_duration_round_trip_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres decimal test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_decimal_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?
+        .app("PostgresDecimalTest")
+        .await?;
+
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_decimals(
+                ctx,
+                schema,
+                vec![DecimalRow {
+                    id: 1,
+                    amount: Decimal::from_str("1234567890.012300").unwrap(),
+                    elapsed: Duration::new(2, 345_678_000),
+                }],
+            )
+        }
+    })
+    .await?;
+
+    let row = sqlx::query(&format!(
+        "SELECT amount::text AS amount, EXTRACT(EPOCH FROM elapsed)::double precision AS elapsed \
+         FROM \"{schema}\".\"decimals\" WHERE id = 1"
+    ))
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres query: {e}")))?;
+    assert_eq!(
+        row.try_get::<String, _>("amount").unwrap(),
+        "1234567890.012300"
+    );
+    assert_eq!(row.try_get::<f64, _>("elapsed").unwrap(), 2.345678);
 
     sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
         .execute(db.pool())

@@ -1,0 +1,43 @@
+name: Save sccache's local cache
+description: >-
+  Save the sccache directory that `setup-ci` restored, pruned to the objects
+  this job used, as the leg's newest cache entry. Run it as the job's last
+  step; it does nothing when the job compiled nothing new.
+
+runs:
+  using: composite
+  steps:
+    - name: Prune sccache's local cache
+      id: prune
+      shell: bash
+      run: |
+        if [[ "$GITHUB_EVENT_NAME" == merge_group ]]; then
+          # A merge-group run's caches are scoped to the queue's temporary
+          # branch, which no later run reads.
+          echo "a merge-group run saves no caches"
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [[ -z "${SCCACHE_SAVE_KEY:-}" ]]; then
+          echo "setup-ci did not get as far as configuring sccache"
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        writes=$("$SCCACHE_PATH" --show-stats --stats-format=json | jq '.stats.cache_writes')
+        echo "sccache wrote $writes objects"
+        if [[ "$writes" == 0 ]]; then
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # Objects no compile read or wrote since the restore belong to code
+        # that has since changed; they would only grow every later restore.
+        find "$SCCACHE_DIR" -type f ! -newer "$SCCACHE_DIR.restored" -delete
+        du -sh "$SCCACHE_DIR"
+        echo "save=true" >> "$GITHUB_OUTPUT"
+
+    - name: Save sccache's local cache
+      if: steps.prune.outputs.save == 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ env.SCCACHE_SAVE_KEY }}

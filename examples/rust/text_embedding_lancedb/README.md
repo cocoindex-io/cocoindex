@@ -3,20 +3,20 @@
 Rust port of the Python [`text_embedding_lancedb`](../../text_embedding_lancedb)
 example. Same pipeline as [`text_embedding`](../text_embedding), but the vector
 store is **LanceDB** (an embedded, file-based vector database) via the native
-`cocoindex::lancedb` connector instead of Postgres/pgvector.
+`cocoindex::connectors::lancedb` connector instead of Postgres/pgvector.
 
 ## Parallel to the Python example
 
 | Concern          | Python                                   | Rust (this example)                                |
 | ---------------- | ---------------------------------------- | -------------------------------------------------- |
-| Source           | `localfs.walk_dir`                       | `cocoindex::fs::walk`                              |
+| Source           | `localfs.walk_dir`                       | `cocoindex::resources::fs::walk`                              |
 | Per-file compute | `@coco.fn(memo=True) process_file`       | `#[cocoindex::function(memo)] process_file`         |
 | Chunking         | `RecursiveSplitter` (markdown)           | `cocoindex_ops_text` `RecursiveChunker` (markdown)  |
 | Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `fastembed` `AllMiniLML6V2` (same model, 384-dim)   |
-| Target           | `lancedb.TableTarget`                    | `cocoindex::lancedb::LanceTableTarget`              |
-| Vector search    | `table.search(vec)`                      | `cocoindex::lancedb::vector_search` (cosine)        |
+| Target           | `lancedb.TableTarget`                    | `cocoindex::connectors::lancedb::LanceTableTarget`              |
+| Vector search    | `table.search(vec)`                      | `cocoindex::connectors::lancedb::vector_search` (cosine)        |
 
-The `cocoindex::lancedb` connector is a declarative two-level managed target
+The `cocoindex::connectors::lancedb` connector is a declarative two-level managed target
 (table → rows), mirroring `postgres`: it creates the table to match the schema,
 upserts changed rows, skips unchanged ones (fingerprint tracking), and deletes
 rows that are no longer declared. It's built on the native Rust `lancedb` crate +

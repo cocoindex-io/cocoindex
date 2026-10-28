@@ -12,7 +12,7 @@ import MermaidRenderer from '@cocoindex/brand/MermaidRenderer.astro';
 import Analytics from '../../components/Analytics.astro';
 import ScarfPixel from '../../components/ScarfPixel.astro';
 import Foot from '../../components/Foot.astro';
-import { THEME_COLOR, SITE_URL, titleMarkup, titleText, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
+import { THEME_COLOR, SITE_URL, SITE_EXAMPLES, titleMarkup, titleText, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
 import { reviewedDate } from '../../data/review-meta';
 import { getEntry, render } from 'astro:content';
@@ -154,7 +154,7 @@ const introItems = [
       <!-- ─────────── LEFT: EXAMPLE NAV ─────────── -->
       <aside class="ex-side" aria-label="All examples">
         <div class="side-head">
-          <a href={`${base}/examples`}>← All examples</a>
+          <a href={SITE_EXAMPLES}>← All examples</a>
           <span class="ct">{examples.length}</span>
         </div>
         {grouped.map((g) => (
@@ -166,7 +166,7 @@ const introItems = [
             <ol>
               {g.items.map((it) => (
                 <li class={it.slug === slug ? 'on' : ''}>
-                  <a href={`${base}/examples/${it.slug}`}>
+                  <a href={`${base}/examples/${it.slug}/`}>
                     <span class="n">{it.index.split(' ')[0]}</span>
                     <span class="ttl">{titleText(it.title)}</span>
                   </a>
@@ -180,7 +180,7 @@ const introItems = [
       <main class="ex-main">
       <!-- Local breadcrumb sits just below the sticky Topbar. -->
       <nav class="ex-crumb" aria-label="Breadcrumb">
-        <a href={`${base}/examples`}>Examples</a>
+        <a href={SITE_EXAMPLES}>Examples</a>
         <span class="sep">/</span>
         <span class="cur">{plainTitle}</span>
       </nav>

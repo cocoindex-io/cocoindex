@@ -10,7 +10,7 @@ tags: [structured-extraction, baml]
 
 We'll take a folder of patient intake forms — the messy, multi-section PDFs a clinic hands you on a clipboard — and turn each one into a clean, validated JSON record: demographics, insurance, medications, allergies, surgeries, consent. The hard part isn't reading the PDF; it's getting back data that *matches a schema* every time, so downstream code can trust it. We use [BAML](https://boundaryml.com/) to declare that schema and run a single type-safe extraction per form against a Gemini vision model.
 
-The whole pipeline is ordinary `async` Python. You write a [BAML schema](https://docs.boundaryml.com/) for the `Patient` type and one extraction function, wrap it in a [CocoIndex function](https://cocoindex.io/docs/programming_guide/function/), and let the Rust engine underneath handle [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) — only changed PDFs get re-extracted, and the LLM call (the one genuinely expensive step) is skipped entirely for forms you've already processed.
+The whole pipeline is ordinary `async` Python. You write a [BAML schema](https://docs.boundaryml.com/) for the `Patient` type and one extraction function, wrap it in a [CocoIndex function](/docs/programming_guide/function/), and let the Rust engine underneath handle [incremental processing](/docs/programming_guide/core_concepts/) — only changed PDFs get re-extracted, and the LLM call (the one genuinely expensive step) is skipped entirely for forms you've already processed.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_baml)
 
@@ -22,9 +22,9 @@ From a high level, these are the steps:
 
 1. Read PDF intake forms from a local directory.
 2. [Extract a typed `Patient`](https://boundaryml.com/) from each PDF with one BAML function call to a Gemini vision model, then serialize it to JSON.
-3. Write one JSON file per form to an output directory (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+3. Write one JSON file per form to an output directory (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## Define the schema in BAML
 
@@ -117,11 +117,11 @@ async def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     )
 ```
 
-[`@coco.fn`](https://cocoindex.io/docs/programming_guide/function/) with [`memo=True`](https://cocoindex.io/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a PDF's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never pay for a second Gemini call on a form you've already extracted. `patient_info.model_dump_json(indent=2)` serializes the validated model, and `localfs.declare_file` declares the JSON file as a [target state](https://cocoindex.io/docs/programming_guide/target_state/); CocoIndex handles writing, updating, or deleting it to match.
+[`@coco.fn`](/docs/programming_guide/function/) with [`memo=True`](/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a PDF's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never pay for a second Gemini call on a form you've already extracted. `patient_info.model_dump_json(indent=2)` serializes the validated model, and `localfs.declare_file` declares the JSON file as a [target state](/docs/programming_guide/target_state/); CocoIndex handles writing, updating, or deleting it to match.
 
 ## Define the main function
 
-`app_main` wires the source to the target. It walks the source directory for PDFs and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file with `mount_each`.
+`app_main` wires the source to the target. It walks the source directory for PDFs and mounts one [processing component](/docs/programming_guide/processing_component/) per file with `mount_each`.
 
 ```python title="main.py"
 @coco.fn
@@ -142,7 +142,7 @@ app = coco.App(
 )
 ```
 
-The [filesystem source](https://cocoindex.io/docs/connectors/localfs/) walks `data/patient_forms/` for `*.pdf`, and `mount_each` runs one component per form so the engine can track and update each independently. `coco.App` binds the main function to its arguments — the source and output directories — into a runnable unit.
+The [filesystem source](/docs/connectors/localfs/) walks `data/patient_forms/` for `*.pdf`, and `mount_each` runs one component per form so the engine can track and update each independently. `coco.App` binds the main function to its arguments — the source and output directories — into a runnable unit.
 
 ## Setup
 
@@ -168,7 +168,7 @@ The [filesystem source](https://cocoindex.io/docs/connectors/localfs/) walks `da
 
 ## Run the pipeline
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build and update the index. A catch-up run scans the source, extracts, writes, and exits:
+Run the [`cocoindex` CLI](/docs/cli/) to build and update the index. A catch-up run scans the source, extracts, writes, and exits:
 
 ```sh
 cocoindex update main.py

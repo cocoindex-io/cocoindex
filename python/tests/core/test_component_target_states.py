@@ -6,7 +6,8 @@ import pytest
 
 import dataclasses
 import gc
-from typing import Any, Collection, Generic
+import re
+from typing import Any, AsyncIterator, Collection, Generic, Iterator
 
 from tests import common
 from tests.common.target_states import (
@@ -18,6 +19,7 @@ from tests.common.target_states import (
     AtMost,
     GlobalDictTarget,
     Metrics,
+    split_dicts_actions,
 )
 
 coco_env = common.create_test_env(__file__)
@@ -1133,6 +1135,161 @@ async def test_mount_each_delete() -> None:
 
 
 ##################################################################################
+# Test for mount_each item keys
+
+_KeyedEntries = list[tuple[coco.StableKey, tuple[str, int]]]
+
+
+async def _declare_entry(entry: tuple[str, int]) -> None:
+    key, value = entry
+    coco.declare_target_state(GlobalDictTarget.target_state(key, value))
+
+
+async def _mount_each_entries(items: _KeyedEntries) -> None:
+    await coco.mount_each(_declare_entry, items)
+
+
+async def _mount_each_entries_async(items: _KeyedEntries) -> None:
+    async def _entries() -> AsyncIterator[tuple[coco.StableKey, tuple[str, int]]]:
+        for item in items:
+            yield item
+
+    await coco.mount_each(_declare_entry, _entries())
+
+
+@pytest.mark.parametrize(
+    "main_fn", [_mount_each_entries, _mount_each_entries_async], ids=["sync", "async"]
+)
+@pytest.mark.asyncio
+async def test_mount_each_rejects_duplicate_key(main_fn: Any) -> None:
+    GlobalDictTarget.store.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_mount_each_rejects_duplicate_key_{main_fn.__name__}",
+            environment=coco_env,
+        ),
+        main_fn,
+        items=[("a", ("x", 1)), ("b", ("y", 2)), ("a", ("z", 3))],
+    )
+    with pytest.raises(
+        ValueError,
+        match=re.escape('Child path /@_declare_entry/"a" is mounted more than once'),
+    ):
+        await app.update()
+    assert "z" not in GlobalDictTarget.store.data
+
+
+_sources: dict[str, dict[str, int]] = {}
+
+
+def _source_entries(source_name: str) -> Iterator[tuple[str, tuple[str, int]]]:
+    for name, value in _sources[source_name].items():
+        yield name, (f"{source_name}/{name}", value)
+
+
+async def _mount_each_source_under_own_subpath() -> None:
+    for source_name in _sources:
+        await coco.mount_each(
+            coco.component_subpath(source_name),
+            _declare_entry,
+            _source_entries(source_name),
+        )
+
+
+async def _mount_each_source_under_default_subpath() -> None:
+    for source_name in _sources:
+        await coco.mount_each(_declare_entry, _source_entries(source_name))
+
+
+@pytest.mark.asyncio
+async def test_mount_each_same_key_under_separate_subpaths() -> None:
+    GlobalDictTarget.store.clear()
+    _sources.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_each_same_key_under_separate_subpaths",
+            environment=coco_env,
+        ),
+        _mount_each_source_under_own_subpath,
+    )
+
+    _sources["docs"] = {"intro.md": 1}
+    _sources["notes"] = {"intro.md": 2}
+    await app.update()
+    assert GlobalDictTarget.store.data == {
+        "docs/intro.md": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "notes/intro.md": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+
+    # Removing the item from one source leaves the other source's item alone.
+    del _sources["notes"]["intro.md"]
+    await app.update()
+    assert GlobalDictTarget.store.data == {
+        "docs/intro.md": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+    }
+    assert await coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "docs",
+        coco.ROOT_PATH / "docs" / "intro.md",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mount_each_rejects_same_key_from_two_calls_on_one_subpath() -> None:
+    GlobalDictTarget.store.clear()
+    _sources.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_each_rejects_same_key_from_two_calls_on_one_subpath",
+            environment=coco_env,
+        ),
+        _mount_each_source_under_default_subpath,
+    )
+
+    _sources["docs"] = {"intro.md": 1}
+    _sources["notes"] = {"intro.md": 2}
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            'Child path /@_declare_entry/"intro.md" is mounted more than once'
+        ),
+    ):
+        await app.update()
+    assert "notes/intro.md" not in GlobalDictTarget.store.data
+
+
+async def _mount_on_mount_each_subpath() -> None:
+    await coco.mount_each(
+        coco.component_subpath("docs"), _declare_entry, [("intro.md", ("a", 1))]
+    )
+    await coco.mount(coco.component_subpath("docs"), _declare_entry, ("b", 2))
+
+
+@pytest.mark.asyncio
+async def test_mount_rejects_path_already_used_by_mount_each() -> None:
+    GlobalDictTarget.store.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_rejects_path_already_used_by_mount_each",
+            environment=coco_env,
+        ),
+        _mount_on_mount_each_subpath,
+    )
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            'Child path /"docs" is mounted as a component, but other children'
+        ),
+    ):
+        await app.update()
+    assert "b" not in GlobalDictTarget.store.data
+
+
+##################################################################################
 # Test for async target states
 
 
@@ -1359,24 +1516,56 @@ def test_mount_target_delete() -> None:
 
 
 ##################################################################################
-# Test: preview rejects child target providers
+# Test: preview of target states under child target providers
 ##################################################################################
 
 
-def test_preview_rejects_child_target_providers() -> None:
+def test_preview_child_target_providers() -> None:
     DictsTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         coco.AppConfig(
-            name="test_preview_rejects_child_target_providers", environment=coco_env
+            name="test_preview_child_target_providers", environment=coco_env
         ),
         _declare_dicts_data_together,
     )
 
-    _source_data["D1"] = {"a": 1}
-    with pytest.raises(Exception, match="child target providers"):
-        app.update_blocking(preview=True)
+    # The container's action and one per entry; nothing applied.
+    _source_data["D1"] = {"a": 1, "b": 2}
+    planned = split_dicts_actions(app.update_blocking(preview=True))
+    assert {n: a.action for n, a in planned.containers.items()} == {"D1": "insert"}
+    assert planned.entries == {
+        "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+    assert DictsTarget.store.data == {}
+    assert DictsTarget.store.metrics.collect() == {}
+
+    # A real update afterwards applies all of it.
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    DictsTarget.store.metrics.clear()
+
+    # The next preview plans the entries against what is now tracked: `b`
+    # updated and `c` inserted; `a` is unchanged. The container action is
+    # retained because tracking-record equality is not a no-op guarantee.
+    _source_data["D1"] = {"a": 1, "b": 3, "c": 4}
+    planned = split_dicts_actions(app.update_blocking(preview=True))
+    assert {n: a.action for n, a in planned.containers.items()} == {"D1": None}
+    assert planned.entries == {
+        "b": DictDataWithPrev(data=3, prev=[2], prev_may_be_missing=False),
+        "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+    }
+    assert DictsTarget.store.data["D1"]["b"].data == 2
+    assert "c" not in DictsTarget.store.data["D1"]
+    assert DictsTarget.store.metrics.collect() == {}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
 
 ##################################################################################

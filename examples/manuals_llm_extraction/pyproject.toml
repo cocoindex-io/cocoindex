@@ -7,7 +7,7 @@ dependencies = [
     "cocoindex[postgres]>=1.0.7",
     "docling>=2.0.0",
     "instructor>=1.0.0",
-    "litellm>=1.0.0",
+    "litellm>=1.0.0,!=1.107.0",
     "pydantic>=2.0.0",
     "asyncpg>=0.29.0",
 ]

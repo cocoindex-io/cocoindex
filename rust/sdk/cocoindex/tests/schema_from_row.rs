@@ -3,11 +3,44 @@
 //! `from_row` must produce exactly the schema a user would write by hand, using
 //! that connector's leaf-type mapping.
 
+#[cfg(any(
+    feature = "doris",
+    feature = "lancedb",
+    feature = "postgres",
+    feature = "qdrant",
+    feature = "sqlite",
+    feature = "turbopuffer"
+))]
+fn assert_unresolved_dimension_error(result: cocoindex::Result<()>, connector: &str) {
+    let message = result
+        .expect_err("unresolved vector schema unexpectedly reached target construction")
+        .to_string();
+    assert!(message.contains(connector), "{message}");
+    assert!(message.contains("embedding"), "{message}");
+    assert!(message.contains("with_vector_dim"), "{message}");
+}
+
+#[cfg(any(
+    feature = "doris",
+    feature = "lancedb",
+    feature = "postgres",
+    feature = "qdrant",
+    feature = "sqlite",
+    feature = "turbopuffer"
+))]
+#[derive(cocoindex::SchemaFields)]
+#[allow(dead_code)]
+struct UnresolvedVectorRow {
+    id: i64,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
 #[cfg(feature = "doris")]
 #[test]
 fn doris_from_row_matches_explicit_schema() {
     use cocoindex::SchemaFields;
-    use cocoindex::doris::{ColumnDef, TableSchema};
+    use cocoindex::connectors::doris::{ColumnDef, TableSchema};
 
     #[derive(SchemaFields)]
     #[allow(dead_code)]
@@ -17,6 +50,8 @@ fn doris_from_row_matches_explicit_schema() {
         count: i64,
         score: f64,
         active: bool,
+        blob: Vec<u8>,
+        elapsed: std::time::Duration,
         #[coco(vector = 4)]
         embedding: Vec<f32>,
         #[coco(json)]
@@ -25,7 +60,11 @@ fn doris_from_row_matches_explicit_schema() {
         code: String,
     }
 
-    let got = TableSchema::from_row::<Row>(["id"]).unwrap();
+    let unresolved = TableSchema::from_row::<Row>(["id"]).unwrap();
+    assert!(unresolved.clone().with_vector_dim("embedding", 0).is_err());
+    assert!(unresolved.clone().with_vector_dim("missing", 4).is_err());
+    assert!(unresolved.clone().with_vector_dim("id", 4).is_err());
+    let got = unresolved;
     let want = TableSchema::new(
         [
             ("id", ColumnDef::new("TEXT").not_null()),
@@ -33,6 +72,8 @@ fn doris_from_row_matches_explicit_schema() {
             ("count", ColumnDef::new("BIGINT").not_null()),
             ("score", ColumnDef::new("DOUBLE").not_null()),
             ("active", ColumnDef::new("BOOLEAN").not_null()),
+            ("blob", ColumnDef::new("STRING").not_null()),
+            ("elapsed", ColumnDef::new("BIGINT").not_null()),
             ("embedding", ColumnDef::vector(4)),
             ("tags", ColumnDef::new("JSON").not_null()),
             ("code", ColumnDef::new("VARCHAR(10)").not_null()),
@@ -47,7 +88,7 @@ fn doris_from_row_matches_explicit_schema() {
 #[test]
 fn sqlite_from_row_matches_explicit_schema() {
     use cocoindex::SchemaFields;
-    use cocoindex::sqlite::{ColumnDef, TableSchema};
+    use cocoindex::connectors::sqlite::{ColumnDef, TableSchema};
 
     #[derive(SchemaFields)]
     #[allow(dead_code)]
@@ -56,17 +97,23 @@ fn sqlite_from_row_matches_explicit_schema() {
         name: Option<String>,
         score: f64,
         blob: Vec<u8>,
-        #[coco(vector = 3)]
+        elapsed: std::time::Duration,
+        #[coco(vector)]
         embedding: Vec<f32>,
     }
 
-    let got = TableSchema::from_row::<Row>(["id"]).unwrap();
+    let unresolved = TableSchema::from_row::<Row>(["id"]).unwrap();
+    assert!(unresolved.clone().with_vector_dim("embedding", 0).is_err());
+    assert!(unresolved.clone().with_vector_dim("missing", 3).is_err());
+    assert!(unresolved.clone().with_vector_dim("id", 3).is_err());
+    let got = unresolved.with_vector_dim("embedding", 3).unwrap();
     let want = TableSchema::new(
         [
             ("id", ColumnDef::new("INTEGER").not_null()),
             ("name", ColumnDef::new("TEXT")),
             ("score", ColumnDef::new("REAL").not_null()),
             ("blob", ColumnDef::new("BLOB").not_null()),
+            ("elapsed", ColumnDef::new("REAL").not_null()),
             ("embedding", ColumnDef::new("float[3]").not_null()),
         ],
         ["id"],
@@ -75,11 +122,29 @@ fn sqlite_from_row_matches_explicit_schema() {
     assert_eq!(got, want);
 }
 
+#[cfg(feature = "sqlite")]
+#[test]
+fn schema_from_row_rejects_duplicate_renamed_columns() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::sqlite::TableSchema;
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: i64,
+        #[coco(rename = "id")]
+        other_id: i64,
+    }
+
+    let error = TableSchema::from_row::<Row>(["id"]).unwrap_err();
+    assert!(error.to_string().contains("duplicate column \"id\""));
+}
+
 #[cfg(feature = "postgres")]
 #[test]
 fn postgres_from_row_matches_explicit_schema() {
     use cocoindex::SchemaFields;
-    use cocoindex::postgres::{ColumnDef, TableSchema};
+    use cocoindex::connectors::postgres::{ColumnDef, TableSchema};
 
     #[derive(SchemaFields)]
     #[allow(dead_code)]
@@ -88,7 +153,8 @@ fn postgres_from_row_matches_explicit_schema() {
         title: Option<String>,
         views: i32,
         ratio: f32,
-        #[coco(vector = 8)]
+        elapsed: std::time::Duration,
+        #[coco(vector)]
         embedding: Vec<f32>,
         #[coco(vector = 8, half)]
         embedding_half: Vec<f32>,
@@ -96,7 +162,11 @@ fn postgres_from_row_matches_explicit_schema() {
         meta: Vec<String>,
     }
 
-    let got = TableSchema::from_row::<Row>(["id"]).unwrap();
+    let unresolved = TableSchema::from_row::<Row>(["id"]).unwrap();
+    assert!(unresolved.clone().with_vector_dim("embedding", 0).is_err());
+    assert!(unresolved.clone().with_vector_dim("missing", 8).is_err());
+    assert!(unresolved.clone().with_vector_dim("id", 8).is_err());
+    let got = unresolved.with_vector_dim("embedding", 8).unwrap();
     // Postgres ColumnDef::new is NOT NULL by default; `.nullable()` opts in.
     let want = TableSchema::new(
         [
@@ -104,6 +174,7 @@ fn postgres_from_row_matches_explicit_schema() {
             ("title", ColumnDef::new("text").nullable()),
             ("views", ColumnDef::new("integer")),
             ("ratio", ColumnDef::new("real")),
+            ("elapsed", ColumnDef::new("interval")),
             ("embedding", ColumnDef::new("vector(8)")),
             ("embedding_half", ColumnDef::new("halfvec(8)")),
             ("meta", ColumnDef::new("jsonb")),
@@ -114,12 +185,204 @@ fn postgres_from_row_matches_explicit_schema() {
     assert_eq!(got, want);
 }
 
+#[cfg(feature = "lancedb")]
+#[test]
+fn lancedb_from_row_matches_explicit_schema() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::lancedb::{ColumnDef, ColumnType, TableSchema};
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: i64,
+        count: i32,
+        ratio: f32,
+        active: bool,
+        title: Option<String>,
+        #[coco(json)]
+        tags: Vec<String>,
+        #[coco(vector)]
+        embedding: Vec<f32>,
+        #[coco(vector, half)]
+        half_embedding: Vec<f32>,
+    }
+
+    let unresolved = TableSchema::from_row::<Row>(["id"]).unwrap();
+    assert!(unresolved.clone().with_vector_dim("embedding", 0).is_err());
+    assert!(unresolved.clone().with_vector_dim("missing", 4).is_err());
+    assert!(unresolved.clone().with_vector_dim("id", 4).is_err());
+    let got = unresolved
+        .with_vector_dim("embedding", 4)
+        .unwrap()
+        .with_vector_dim("half_embedding", 4)
+        .unwrap();
+    let want = TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("count", ColumnDef::new(ColumnType::Int32)),
+            ("ratio", ColumnDef::new(ColumnType::Float32)),
+            ("active", ColumnDef::new(ColumnType::Bool)),
+            ("title", ColumnDef::new(ColumnType::Text).nullable()),
+            ("tags", ColumnDef::new(ColumnType::Json)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(4))),
+            ("half_embedding", ColumnDef::new(ColumnType::HalfVector(4))),
+        ],
+        ["id"],
+    )
+    .unwrap();
+    assert_eq!(got, want);
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Unsupported {
+        id: i64,
+        #[coco(type = "struct<x: int>")]
+        details: String,
+    }
+    let err = TableSchema::from_row::<Unsupported>(["id"]).unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("LanceDB"), "{message}");
+    assert!(message.contains("details"), "{message}");
+}
+
+#[cfg(feature = "qdrant")]
+#[test]
+fn qdrant_from_row_derives_named_vectors_and_runtime_dimension() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::qdrant::{CollectionSchema, Distance, QdrantVectorDef};
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: u64,
+        text: String,
+        #[coco(vector)]
+        embedding: Vec<f32>,
+    }
+
+    let unresolved = CollectionSchema::from_row::<Row>(Distance::Cosine).unwrap();
+    assert!(unresolved.clone().with_vector_dim("embedding", 0).is_err());
+    assert!(unresolved.clone().with_vector_dim("missing", 3).is_err());
+    let got = unresolved.with_vector_dim("embedding", 3).unwrap();
+    let want = CollectionSchema::named([(
+        "embedding",
+        QdrantVectorDef::f32(3, Distance::Cosine).unwrap(),
+    )])
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[cfg(feature = "turbopuffer")]
+#[test]
+fn turbopuffer_from_row_derives_named_vectors_and_runtime_dimension() {
+    use cocoindex::SchemaFields;
+    use cocoindex::connectors::turbopuffer::{DistanceMetric, NamespaceSchema, VectorDef};
+
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: String,
+        text: String,
+        #[coco(vector)]
+        embedding: Vec<f32>,
+    }
+
+    let unresolved = NamespaceSchema::from_row::<Row>(DistanceMetric::CosineDistance).unwrap();
+    assert!(unresolved.clone().with_vector_dim("embedding", 0).is_err());
+    assert!(unresolved.clone().with_vector_dim("missing", 3).is_err());
+    let got = unresolved.with_vector_dim("embedding", 3).unwrap();
+    let want = NamespaceSchema::named(
+        [("embedding", VectorDef::f32(3).unwrap())],
+        DistanceMetric::CosineDistance,
+    )
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[cfg(any(
+    feature = "doris",
+    feature = "lancedb",
+    feature = "postgres",
+    feature = "qdrant",
+    feature = "sqlite",
+    feature = "turbopuffer"
+))]
+#[tokio::test]
+async fn targets_reject_unresolved_vector_dimensions() {
+    macro_rules! check_target {
+        ($ctx:expr, $connector:literal, $schema:expr, $target:path $(, $extra:expr)*) => {{
+            let key = cocoindex::ContextKey::new($connector);
+            assert_unresolved_dimension_error(
+                $target($ctx, &key, "docs", $schema $(, $extra)*).map(|_| ()),
+                $connector,
+            );
+        }};
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let app = cocoindex::App::open("unresolved_vector_dimensions", tmp.path().join("db"))
+        .await
+        .unwrap();
+    app.update(|ctx| async move {
+        #[cfg(feature = "sqlite")]
+        check_target!(
+            &ctx,
+            "SQLite",
+            cocoindex::connectors::sqlite::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::sqlite::table_target
+        );
+        #[cfg(feature = "postgres")]
+        check_target!(
+            &ctx,
+            "Postgres",
+            cocoindex::connectors::postgres::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::postgres::table_target,
+            None
+        );
+        #[cfg(feature = "doris")]
+        check_target!(
+            &ctx,
+            "Doris",
+            cocoindex::connectors::doris::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::doris::table_target
+        );
+        #[cfg(feature = "lancedb")]
+        check_target!(
+            &ctx,
+            "LanceDB",
+            cocoindex::connectors::lancedb::TableSchema::from_row::<UnresolvedVectorRow>(["id"])?,
+            cocoindex::connectors::lancedb::table_target
+        );
+        #[cfg(feature = "qdrant")]
+        check_target!(
+            &ctx,
+            "Qdrant",
+            cocoindex::connectors::qdrant::CollectionSchema::from_row::<UnresolvedVectorRow>(
+                cocoindex::connectors::qdrant::Distance::Cosine
+            )?,
+            cocoindex::connectors::qdrant::collection_target
+        );
+        #[cfg(feature = "turbopuffer")]
+        check_target!(
+            &ctx,
+            "Turbopuffer",
+            cocoindex::connectors::turbopuffer::NamespaceSchema::from_row::<UnresolvedVectorRow>(
+                cocoindex::connectors::turbopuffer::DistanceMetric::CosineDistance
+            )?,
+            cocoindex::connectors::turbopuffer::namespace_target
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
 /// End-to-end: a `from_row`-derived schema actually creates a SQLite table and
 /// round-trips a row (no server needed).
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
-    use cocoindex::sqlite::{self, Database, TableSchema};
+    use cocoindex::connectors::sqlite::{self, Database, TableSchema};
     use cocoindex::{ContextKey, Environment, SchemaFields};
     use sqlx::Row as _;
 
@@ -128,6 +391,8 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
         id: i64,
         name: String,
         score: f64,
+        data: Vec<u8>,
+        elapsed: std::time::Duration,
     }
 
     let tmp = tempfile::tempdir().unwrap();
@@ -139,11 +404,15 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
             id: 1,
             name: "a".into(),
             score: 1.5,
+            data: vec![0, 104, 105, 255],
+            elapsed: std::time::Duration::new(1, 250_000_000),
         },
         Item {
             id: 2,
             name: "b".into(),
             score: 2.5,
+            data: Vec::new(),
+            elapsed: std::time::Duration::new(2, 500_000_000),
         },
     ];
 
@@ -167,23 +436,28 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
     })
     .await?;
 
-    let fetched = sqlx::query("SELECT id, name, score FROM items ORDER BY id")
+    let fetched = sqlx::query("SELECT id, name, score, data, elapsed FROM items ORDER BY id")
         .fetch_all(db.pool())
         .await
         .unwrap();
-    let got: Vec<(i64, String, f64)> = fetched
+    let got: Vec<(i64, String, f64, Vec<u8>, f64)> = fetched
         .iter()
         .map(|r| {
             (
                 r.get::<i64, _>("id"),
                 r.get::<String, _>("name"),
                 r.get::<f64, _>("score"),
+                r.get::<Vec<u8>, _>("data"),
+                r.get::<f64, _>("elapsed"),
             )
         })
         .collect();
     assert_eq!(
         got,
-        vec![(1, "a".to_string(), 1.5), (2, "b".to_string(), 2.5)]
+        vec![
+            (1, "a".to_string(), 1.5, vec![0, 104, 105, 255], 1.25),
+            (2, "b".to_string(), 2.5, Vec::new(), 2.5),
+        ]
     );
     Ok(())
 }
@@ -193,7 +467,7 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
 #[cfg(feature = "doris")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn doris_from_row_round_trips_a_row() -> cocoindex::Result<()> {
-    use cocoindex::doris::{self, DorisConfig, DorisConnection, TableSchema};
+    use cocoindex::connectors::doris::{self, DorisConfig, DorisConnection, TableSchema};
     use cocoindex::{ContextKey, Environment, SchemaFields};
     use sqlx::Row as _;
 

@@ -20,7 +20,7 @@ const BASE = '/docs';
 // `build.format: 'directory'` (the default), source-relative `./foo` links
 // resolve incorrectly in the browser (a page at `/programming_guide/x/`
 // makes `./foo` mean `/programming_guide/x/foo`). The plugin emits absolute
-// hrefs (`/docs/<slug>`) so links work regardless of trailing-slash quirks.
+// hrefs (`/docs/<slug>/`) so links work regardless of trailing-slash quirks.
 // `[plugin, options]` tuples need an explicit type — TypeScript otherwise
 // widens the array literal to `(Plugin | Options)[]` and Astro rejects it.
 /** @type {any[]} */
@@ -37,12 +37,13 @@ export default defineConfig({
   base: BASE,
   // `trailingSlash: 'always'` matches `build.format: 'directory'`: every
   // page lives at `<slug>/index.html` and is canonical at `<slug>/`. In
-  // dev, requests without the trailing slash 404 — that strictness is the
-  // point: the link-checker plugin catches no-slash hrefs in markdown/MDX,
-  // and `'always'` catches no-slash hrefs in `.astro` components (sidebar,
-  // breadcrumb, pager, future pieces) before they ship. External / legacy
-  // links without the slash still resolve in production via GitHub Pages's
-  // own 301 redirect, so this doesn't break inbound traffic.
+  // dev, requests without the trailing slash 404, so every href must carry
+  // it: the remark plugin rewrites relative markdown/MDX links that way,
+  // and scripts/check-agent-output.mjs fails the build on any root-relative
+  // link in the output that lacks it, from markdown or from `.astro`
+  // components (sidebar, breadcrumb, pager, future pieces). External /
+  // legacy links without the slash still resolve in production via GitHub
+  // Pages's own 301 redirect, so this doesn't break inbound traffic.
   trailingSlash: 'always',
   integrations: [
     mdx({

@@ -4,15 +4,17 @@ Run with:
     uv run pytest python/tests/connectors/test_neo4j_target.py -v
 
 Unit tests run without a server. Integration tests require a running Neo4j
-(spun up automatically via testcontainers when ``NEO4J_TEST_SERVER=1``).
+(spun up automatically via testcontainers when ``NEO4J_TEST_SERVER=1``, or
+the server at ``NEO4J_URI`` with password ``cocoindex`` when that is set).
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Iterator
+import warnings
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 import pytest_asyncio
@@ -22,10 +24,12 @@ from cocoindex.connectors.neo4j._cypher import (
     build_constraint_create,
     build_constraint_drop,
     build_node_delete,
+    build_node_delete_all,
     build_node_index_create,
     build_node_index_drop,
     build_node_upsert,
     build_relationship_delete,
+    build_relationship_delete_all,
     build_relationship_index_create,
     build_relationship_index_drop,
     build_relationship_upsert,
@@ -57,10 +61,19 @@ requires_neo4j = pytest.mark.skipif(not HAS_NEO4J, reason="neo4j is not installe
 
 _HAS_NEO4J_SERVER = bool(os.environ.get("NEO4J_TEST_SERVER"))
 
-requires_neo4j_server = pytest.mark.skipif(
-    not (HAS_NEO4J and _HAS_NEO4J_SERVER),
-    reason="NEO4J_TEST_SERVER is not set",
-)
+_NEO4J_IMAGE = "neo4j:5.26-community"
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def requires_neo4j_server(fn: _F) -> _F:
+    fn = pytest.mark.requires_docker(_NEO4J_IMAGE)(fn)
+    fn = pytest.mark.skipif(
+        not (HAS_NEO4J and _HAS_NEO4J_SERVER),
+        reason="NEO4J_TEST_SERVER is not set",
+    )(fn)
+    return fn
+
 
 if HAS_NEO4J:
     from cocoindex.connectors import neo4j as neo  # type: ignore[attr-defined]
@@ -149,41 +162,64 @@ class TestNodeDeleteCypher:
         with pytest.raises(ValueError):
             build_node_delete("X", [])
 
+    def test_delete_all_detaches_in_batched_transactions(self) -> None:
+        # Table teardown: every node carrying the label, with its relationships,
+        # in Neo4j-default-sized inner transactions (auto-commit session only).
+        assert build_node_delete_all("Document") == (
+            "MATCH (n:`Document`) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS"
+        )
+
 
 class TestRelationshipUpsertCypher:
-    def test_three_merges_with_props(self) -> None:
+    def test_merges_after_deleting_a_moved_edge(self) -> None:
         assert build_relationship_upsert(
-            "REL", "Entity", ["value"], "Entity", ["value"], ["id"], True
+            "REL", "Entity", ["value"], "Entity", ["value"], ["id"], True, False
         ) == (
             "MERGE (s:`Entity` {`value`: $from_key_0}) "
             "MERGE (t:`Entity` {`value`: $to_key_0}) "
+            "WITH s, t "
+            "OPTIONAL MATCH (a)-[o:`REL` {`id`: $rel_key_0}]->(b) "
+            "WHERE a <> s OR b <> t "
+            "DELETE o "
+            "WITH DISTINCT s, t "
             "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t) "
             "SET r += $props"
         )
 
     def test_no_set_on_endpoints(self) -> None:
         # Endpoints' properties are owned by their own table's _RecordHandler.
-        cypher = build_relationship_upsert("REL", "A", ["x"], "B", ["y"], ["id"], True)
+        cypher = build_relationship_upsert(
+            "REL", "A", ["x"], "B", ["y"], ["id"], True, False
+        )
         assert "SET s" not in cypher
         assert "SET t" not in cypher
         assert "SET r += $props" in cypher
 
     def test_no_props(self) -> None:
-        assert build_relationship_upsert(
-            "REL", "A", ["x"], "B", ["y"], ["id"], False
-        ) == (
-            "MERGE (s:`A` {`x`: $from_key_0}) "
-            "MERGE (t:`B` {`y`: $to_key_0}) "
-            "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)"
+        cypher = build_relationship_upsert(
+            "REL", "A", ["x"], "B", ["y"], ["id"], False, False
         )
+        assert cypher.endswith("MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)")
+
+    def test_legacy_key_deletes_the_edge_between_the_endpoints(self) -> None:
+        cypher = build_relationship_upsert(
+            "REL", "A", ["x"], "B", ["y"], ["id"], False, True
+        )
+        assert (
+            "WITH DISTINCT s, t "
+            "OPTIONAL MATCH (s)-[l:`REL` {`id`: $legacy_key_0}]->(t) "
+            "DELETE l "
+            "WITH DISTINCT s, t "
+            "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)"
+        ) in cypher
 
     def test_empty_pk_raises(self) -> None:
         with pytest.raises(ValueError):
-            build_relationship_upsert("REL", "A", [], "B", ["y"], ["id"], True)
+            build_relationship_upsert("REL", "A", [], "B", ["y"], ["id"], True, False)
         with pytest.raises(ValueError):
-            build_relationship_upsert("REL", "A", ["x"], "B", [], ["id"], True)
+            build_relationship_upsert("REL", "A", ["x"], "B", [], ["id"], True, False)
         with pytest.raises(ValueError):
-            build_relationship_upsert("REL", "A", ["x"], "B", ["y"], [], True)
+            build_relationship_upsert("REL", "A", ["x"], "B", ["y"], [], True, False)
 
 
 class TestRelationshipDeleteCypher:
@@ -196,6 +232,13 @@ class TestRelationshipDeleteCypher:
     def test_empty_pk_raises(self) -> None:
         with pytest.raises(ValueError):
             build_relationship_delete("REL", [])
+
+    def test_delete_all_keeps_endpoints(self) -> None:
+        cypher = build_relationship_delete_all("REL")
+        assert cypher == (
+            "MATCH ()-[r:`REL`]->() CALL { WITH r DELETE r } IN TRANSACTIONS"
+        )
+        assert "DETACH" not in cypher
 
 
 class TestIndexDdlCypher:
@@ -451,6 +494,7 @@ class TestTableReconcile:
         assert out_reproc is not None
         assert out_reproc.action.main_action == "upsert"
         assert out_reproc.action.column_actions == {
+            "field:id": "upsert",
             "field:a": "upsert",
             "field:b": "delete",
             "field:c": "insert",
@@ -527,10 +571,343 @@ class TestTableReconcile:
         assert out_reproc is not None
         assert out_reproc.action.main_action == "upsert"
         assert out_reproc.action.column_actions == {
+            "field:id": "upsert",
             "field:a": "upsert",
             "field:b": "insert",
         }
         assert out_reproc.child_invalidation == "lossy"
+
+    def test_only_identity_changes_rebuild_the_table(self) -> None:
+        """A rebuild deletes every node of the label, so only changes the
+        per-record reconcile can't absorb may trigger one: the primary key
+        field (and the node/relation kind or endpoints). Attaching a schema
+        or changing a property type re-upserts records at most."""
+        from cocoindex.connectorkits import statediff, target
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        def spec(
+            columns: dict[str, neo.ColumnDef] | None, primary_key: str
+        ) -> neo_target._TableSpec:
+            schema = (
+                neo.TableSchema(columns=columns, primary_key=primary_key)
+                if columns is not None
+                else None
+            )
+            return neo_target._TableSpec(
+                table_schema=schema,
+                primary_key=primary_key,
+                is_relation=False,
+                from_label=None,
+                from_pk_field=None,
+                to_label=None,
+                to_pk_field=None,
+                managed_by=target.ManagedBy.SYSTEM,
+            )
+
+        handler = neo_target._TableHandler()
+        key = neo_target._TableKey("db", "Doc")
+
+        out = handler.reconcile(key, spec(None, "id"), [], False)
+        assert out is not None and out.action.main_action is None
+        schemaless = out.tracking_record
+        assert isinstance(schemaless, statediff.MutualTrackingRecord)
+
+        # Schemaless -> schema: the new fields show up, nothing is rebuilt.
+        with_schema = spec(
+            {"id": neo.ColumnDef("STRING"), "a": neo.ColumnDef("STRING")}, "id"
+        )
+        out = handler.reconcile(key, with_schema, [schemaless], False)
+        assert out is not None
+        assert out.action.main_action is None
+        assert out.action.column_actions == {
+            "field:id": "insert",
+            "field:a": "insert",
+        }
+        assert out.child_invalidation is None
+        with_schema_tracking = out.tracking_record
+        assert isinstance(with_schema_tracking, statediff.MutualTrackingRecord)
+
+        # Primary key type change: lossy (records re-upsert), not a rebuild.
+        int_pk = spec(
+            {"id": neo.ColumnDef("INTEGER"), "a": neo.ColumnDef("STRING")}, "id"
+        )
+        out_int = handler.reconcile(key, int_pk, [with_schema_tracking], False)
+        assert out_int is not None
+        assert out_int.action.main_action is None
+        assert out_int.action.column_actions == {"field:id": "replace"}
+        assert out_int.child_invalidation == "lossy"
+
+        # Primary key field change: the table is rebuilt from scratch.
+        new_pk = spec(
+            {"id": neo.ColumnDef("STRING"), "a": neo.ColumnDef("STRING")}, "a"
+        )
+        out_pk = handler.reconcile(key, new_pk, [with_schema_tracking], False)
+        assert out_pk is not None
+        assert out_pk.action.main_action == "replace"
+        assert out_pk.child_invalidation == "destructive"
+        assert out_pk.action.prev_pk_field == "id"
+
+
+@requires_neo4j
+def test_record_sinks_shared_per_connection_factory() -> None:
+    """Every table's record handler of one database — node and relation tables
+    alike — reconciles to one record sink (and one vector index sink), so a
+    batch can order node writes around relation writes. Another factory gets
+    its own sinks."""
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    factory = neo.ConnectionFactory(uri="bolt://localhost:7687")
+    node = neo_target._RecordHandler("A", False, "id", None, False, factory)
+    relation = neo_target._RecordHandler("R", True, "id", None, True, factory)
+    other = neo_target._RecordHandler(
+        "A",
+        False,
+        "id",
+        None,
+        False,
+        neo.ConnectionFactory(uri="bolt://localhost:7687"),
+    )
+
+    assert node._sink._core == relation._sink._core
+    assert node._sink._core != other._sink._core
+    assert (
+        node.attachments()["vector_index"]._sink._core
+        == relation.attachments()["vector_index"]._sink._core
+    )
+
+
+# =============================================================================
+# Apply-batch retry on transient errors — fake driver, no server
+# =============================================================================
+
+
+class _FakeTx:
+    """Transaction whose runs raise a deadlock while ``failures[0] > 0``."""
+
+    def __init__(self, log: list[str], failures: list[int]) -> None:
+        self._log = log
+        self._failures = failures
+
+    async def run(self, cypher: str, **params: Any) -> None:
+        self._log.append("run")
+        if self._failures[0] > 0:
+            self._failures[0] -= 1
+            raise _neo4j.exceptions.TransientError(
+                "Neo.TransientError.Transaction.DeadlockDetected"
+            )
+
+    async def commit(self) -> None:
+        self._log.append("commit")
+
+    async def rollback(self) -> None:
+        self._log.append("rollback")
+
+
+class _FakeSession:
+    def __init__(self, log: list[str], failures: list[int]) -> None:
+        self._log = log
+        self._failures = failures
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def begin_transaction(self) -> _FakeTx:
+        self._log.append("begin")
+        return _FakeTx(self._log, self._failures)
+
+
+class _FakeDriver:
+    def __init__(self, log: list[str], failures: list[int]) -> None:
+        self._log = log
+        self._failures = failures
+
+    def session(self, database: str) -> _FakeSession:
+        return _FakeSession(self._log, self._failures)
+
+
+class _ScriptedDriver:
+    """A fake driver whose ``fail(tx_number, runs_in_tx)`` decides, at every
+    run, whether that run raises."""
+
+    def __init__(
+        self, log: list[str], fail: Callable[[int, int], BaseException | None]
+    ) -> None:
+        self.log = log
+        self.fail = fail
+        self.txs = 0
+
+    def session(self, database: str) -> _ScriptedSession:
+        return _ScriptedSession(self)
+
+
+class _ScriptedSession:
+    def __init__(self, driver: _ScriptedDriver) -> None:
+        self._driver = driver
+
+    async def __aenter__(self) -> _ScriptedSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def begin_transaction(self) -> _ScriptedTx:
+        self._driver.txs += 1
+        self._driver.log.append("begin")
+        return _ScriptedTx(self._driver, self._driver.txs)
+
+
+class _ScriptedTx:
+    def __init__(self, driver: _ScriptedDriver, number: int) -> None:
+        self._driver = driver
+        self._number = number
+        self._runs = 0
+
+    async def run(self, cypher: str, **params: Any) -> None:
+        self._runs += 1
+        self._driver.log.append("run")
+        err = self._driver.fail(self._number, self._runs)
+        if err is not None:
+            raise err
+
+    async def commit(self) -> None:
+        self._driver.log.append("commit")
+
+    async def rollback(self) -> None:
+        self._driver.log.append("rollback")
+
+
+@requires_neo4j
+class TestApplyBatchRetry:
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_TXN_RETRY_INITIAL_BACKOFF_SECONDS", 0.0)
+        monkeypatch.setattr(neo_target, "_TXN_RETRY_MAX_BACKOFF_SECONDS", 0.0)
+
+    @staticmethod
+    def _applier(log: list[str], failures: int) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        graph = neo_target._GraphHandle(_FakeDriver(log, [failures]), "neo4j")
+
+        class _FakeFactory(neo_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return graph
+
+        return neo_target._SharedRecordApplier(
+            _FakeFactory(uri="bolt://localhost:7687")
+        )
+
+    @staticmethod
+    def _node_upsert() -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        return neo_target._RecordAction(
+            table_name="Doc",
+            is_relation=False,
+            pk_field="id",
+            record_id="d1",
+            value={"id": "d1", "title": "t"},
+            from_label=None,
+            from_pk_field=None,
+            from_id=None,
+            to_label=None,
+            to_pk_field=None,
+            to_id=None,
+            legacy_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_deadlock_is_rolled_back_and_retried(self) -> None:
+        log: list[str] = []
+        applier = self._applier(log, failures=2)
+        await applier(None, [self._node_upsert()])
+        assert log == ["begin", "run", "rollback"] * 2 + ["begin", "run", "commit"]
+
+    @pytest.mark.asyncio
+    async def test_persistent_deadlock_raises_after_max_attempts(self) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        log: list[str] = []
+        applier = self._applier(log, failures=10**6)
+        with pytest.raises(_neo4j.exceptions.TransientError):
+            await applier(None, [self._node_upsert()])
+        assert log.count("begin") == neo_target._TXN_MAX_ATTEMPTS
+        assert "commit" not in log
+
+    @staticmethod
+    def _scripted_applier(
+        log: list[str], fail: Callable[[int, int], BaseException | None]
+    ) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        graph = neo_target._GraphHandle(_ScriptedDriver(log, fail), "neo4j")
+
+        class _FakeFactory(neo_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return graph
+
+        return neo_target._SharedRecordApplier(
+            _FakeFactory(uri="bolt://localhost:7687")
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_chunk_stops_the_batch_after_earlier_commits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_MAX_ACTIONS_PER_TXN", 2)
+        log: list[str] = []
+        applier = self._scripted_applier(
+            log,
+            lambda tx, run: _neo4j.exceptions.ClientError("constraint")
+            if tx == 2
+            else None,
+        )
+        with pytest.raises(_neo4j.exceptions.ClientError):
+            await applier(None, [self._node_upsert() for _ in range(5)])
+        # The first chunk stays committed, the second rolls back, the third is
+        # never attempted, and the error fails the batch.
+        assert log == ["begin", "run", "run", "commit", "begin", "run", "rollback"]
+
+    @pytest.mark.asyncio
+    async def test_chunk_over_the_memory_limit_is_split_not_retried(self) -> None:
+        class _MemoryLimit(_neo4j.exceptions.TransientError):
+            code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+        log: list[str] = []
+        # The server takes at most 2 writes per transaction.
+        applier = self._scripted_applier(
+            log, lambda tx, run: _MemoryLimit("too big") if run > 2 else None
+        )
+        await applier(None, [self._node_upsert() for _ in range(5)])
+        # 5 → (2, 3) → (2, (1, 2)): every action is committed, in 3
+        # transactions, and no failing transaction is retried as it was.
+        assert log.count("commit") == 3
+        assert log.count("begin") == 5
+        assert log.count("run") - log.count("rollback") * 3 == 5
+
+    @pytest.mark.asyncio
+    async def test_large_batch_commits_in_bounded_transactions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        monkeypatch.setattr(neo_target, "_MAX_ACTIONS_PER_TXN", 2)
+        log: list[str] = []
+        applier = self._applier(log, failures=0)
+        await applier(None, [self._node_upsert() for _ in range(5)])
+        # 5 actions in transactions of at most 2: 2 + 2 + 1, in order.
+        assert log == ["begin", "run", "run", "commit"] * 2 + [
+            "begin",
+            "run",
+            "commit",
+        ]
 
 
 # =============================================================================
@@ -540,15 +917,17 @@ class TestTableReconcile:
 
 @pytest.fixture(scope="module")
 def neo4j_uri_auth() -> Iterator[tuple[str, tuple[str, str]]]:
-    """Spin up a Neo4j 5.13 container once per test module."""
+    """Spin up a Neo4j container once per test module, or use the server at
+    ``NEO4J_URI`` (user ``neo4j``, password ``cocoindex``) when it is set."""
     if not (HAS_NEO4J and _HAS_NEO4J_SERVER):
         pytest.skip("NEO4J_TEST_SERVER is not set")
+    if uri := os.environ.get("NEO4J_URI"):
+        yield uri, ("neo4j", "cocoindex")
+        return
 
     from testcontainers.community.neo4j import Neo4jContainer  # type: ignore[import-untyped]
 
-    container = Neo4jContainer(
-        "neo4j:5.26-community", username="neo4j", password="cocoindex"
-    )
+    container = Neo4jContainer(_NEO4J_IMAGE, username="neo4j", password="cocoindex")
     container.start()
     try:
         uri = container.get_connection_url()
@@ -600,6 +979,29 @@ async def _read_nodes(
         await driver.close()
 
 
+async def _query(uri: str, auth: tuple[str, str], cypher: str) -> list[dict[str, Any]]:
+    driver = _neo4j.AsyncGraphDatabase.driver(uri, auth=auth)
+    try:
+        async with driver.session(database="neo4j") as session:
+            result = await session.run(cypher)
+            return [dict(r) async for r in result]
+    finally:
+        await driver.close()
+
+
+async def _count(uri: str, auth: tuple[str, str], cypher: str) -> int:
+    """Run ``cypher`` (which must ``RETURN count(...) AS c``) and return it."""
+    (row,) = await _query(uri, auth, cypher)
+    return int(row["c"])
+
+
+async def _coco_schema_names(uri: str, auth: tuple[str, str]) -> set[str]:
+    """Names of the constraints and indexes this connector created."""
+    rows = await _query(uri, auth, "SHOW CONSTRAINTS YIELD name RETURN name")
+    rows += await _query(uri, auth, "SHOW INDEXES YIELD name RETURN name")
+    return {r["name"] for r in rows if r["name"].startswith("coco_")}
+
+
 async def _read_relationships(
     uri: str, auth: tuple[str, str], rel_type: str
 ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
@@ -618,6 +1020,9 @@ async def _read_relationships(
 # Module-level state shared with declare functions (mirrors falkordb pattern).
 _node_rows: list[Any] = []
 _rel_pairs: list[tuple[Any, Any]] = []
+_doc_pk: str = "filename"
+_tables_declared: bool = True
+_entity_with_schema: bool = True
 
 
 if HAS_NEO4J:
@@ -641,7 +1046,7 @@ if HAS_NEO4J:
         schema = await neo.TableSchema.from_class(Document, primary_key="filename")
         table: Any = await coco.use_mount(  # type: ignore[call-overload]
             coco.component_subpath("setup", "doc_table"),
-            neo.mount_table_target,  # type: ignore[arg-type]
+            neo.mount_node_target,  # type: ignore[arg-type]
             KG_DB,
             "Document",
             schema,
@@ -650,12 +1055,31 @@ if HAS_NEO4J:
         for row in _node_rows:
             table.declare_record(row=row)
 
+    async def _declare_documents_keyed_by_doc_pk() -> None:
+        schema = await neo.TableSchema.from_class(Document, primary_key=_doc_pk)
+        table: Any = await coco.use_mount(  # type: ignore[call-overload]
+            coco.component_subpath("setup", "doc_table"),
+            neo.mount_node_target,  # type: ignore[arg-type]
+            KG_DB,
+            "Document",
+            schema,
+            primary_key=_doc_pk,
+        )
+        for row in _node_rows:
+            table.declare_record(row=row)
+
     async def _declare_entities_and_relationships() -> None:
-        entity_schema = await neo.TableSchema.from_class(Entity, primary_key="value")
+        if not _tables_declared:
+            return
+        entity_schema = (
+            await neo.TableSchema.from_class(Entity, primary_key="value")
+            if _entity_with_schema
+            else None
+        )
         rel_schema = await neo.TableSchema.from_class(RelRow, primary_key="id")
         entity_table: Any = await coco.use_mount(  # type: ignore[call-overload]
             coco.component_subpath("setup", "entity_table"),
-            neo.mount_table_target,
+            neo.mount_node_target,
             KG_DB,
             "Entity",
             entity_schema,
@@ -663,7 +1087,7 @@ if HAS_NEO4J:
         )
         rel_table: Any = await coco.use_mount(  # type: ignore[call-overload]
             coco.component_subpath("setup", "rel_table"),
-            neo.mount_relation_target,
+            neo.mount_relationship_target,
             KG_DB,
             "REL",
             entity_table,
@@ -677,7 +1101,7 @@ if HAS_NEO4J:
                 if v not in seen_entities:
                     entity_table.declare_record(row=Entity(value=v))
                     seen_entities.add(v)
-            rel_table.declare_relation(
+            rel_table.declare_relationship(
                 from_id=from_id,
                 to_id=to_id,
                 record=RelRow(id=f"{from_id}->{to_id}", predicate="connects"),
@@ -788,6 +1212,136 @@ async def test_delete_removes_node(
 
 @requires_neo4j_server
 @pytest.mark.asyncio
+async def test_drop_destroys_tables_with_their_contents(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """App.drop() destroys the system-managed tables: the nodes, the
+    relationships, and the constraints/indexes the connector created."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    uri, auth = neo4j_clean
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_drop", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    await app.update()
+    assert len(await _read_nodes(uri, auth, "Entity")) == 3
+    assert len(await _read_relationships(uri, auth, "REL")) == 2
+    assert await _coco_schema_names(uri, auth) == {
+        "coco_uniq_Entity__value",
+        "coco_idx_rel_REL__id",
+    }
+
+    await app.drop()
+
+    assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 0
+    assert await _count(uri, auth, "MATCH ()-[r]->() RETURN count(r) AS c") == 0
+    assert await _coco_schema_names(uri, auth) == set()
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_undeclared_tables_are_destroyed(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Tables that are no longer declared go the same way as on drop."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    uri, auth = neo4j_clean
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_undeclare", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    await app.update()
+    assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 2
+
+    _tables_declared = False
+    await app.update()
+    assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 0
+    assert await _coco_schema_names(uri, auth) == set()
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_primary_key_change_rebuilds_table(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Changing the primary key field rebuilds the table: nodes keyed by the
+    old field are deleted rather than left behind as untracked stragglers."""
+    global _node_rows, _doc_pk
+    uri, auth = neo4j_clean
+    _node_rows = [
+        Document(filename="a.md", title="A", summary="alpha"),
+        Document(filename="b.md", title="B", summary="beta"),
+    ]
+    _doc_pk = "filename"
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_pk_change", environment=coco_env),
+        _declare_documents_keyed_by_doc_pk,
+    )
+    await app.update()
+    assert await _coco_schema_names(uri, auth) == {"coco_uniq_Document__filename"}
+
+    # Re-key by title, with new titles: the old nodes match neither key.
+    _doc_pk = "title"
+    _node_rows = [
+        Document(filename="a.md", title="A2", summary="alpha"),
+        Document(filename="b.md", title="B2", summary="beta"),
+    ]
+    await app.update()
+    assert {r["title"] for r in await _read_nodes(uri, auth, "Document")} == {
+        "A2",
+        "B2",
+    }
+    assert await _coco_schema_names(uri, auth) == {"coco_uniq_Document__title"}
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_attaching_a_schema_keeps_nodes_and_relationships(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Attaching a schema to a schemaless table is not a rebuild: the nodes
+    stay, and so do the relationships of other tables attached to them."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    uri, auth = neo4j_clean
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    _tables_declared = True
+    _entity_with_schema = False
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_schema_attach", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    try:
+        await app.update()
+        assert len(await _read_relationships(uri, auth, "REL")) == 2
+
+        _entity_with_schema = True
+        await app.update()
+        assert len(await _read_nodes(uri, auth, "Entity")) == 3
+        assert len(await _read_relationships(uri, auth, "REL")) == 2
+    finally:
+        _entity_with_schema = True
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
 async def test_relationship_upsert_with_endpoint_merge(
     neo4j_clean: tuple[str, tuple[str, str]],
 ) -> None:
@@ -815,6 +1369,93 @@ async def test_relationship_upsert_with_endpoint_merge(
         assert rel["predicate"] == "connects"
 
 
+def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], Any]]:
+    """Split preview actions into table actions by table name and record
+    actions by ``(table name, record id)``."""
+    from cocoindex.connectors.neo4j import _target as neo_target
+
+    tables = {
+        a.key.table_name: a for a in actions if isinstance(a, neo_target._TableAction)
+    }
+    records = {
+        (a.table_name, a.record_id): a
+        for a in actions
+        if isinstance(a, neo_target._RecordAction)
+    }
+    assert len(actions) == len(tables) + len(records)
+    return tables, records
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_preview_plans_tables_and_records(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Preview plans the tables and their records without touching the
+    database; a real update then applies them."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    uri, auth = neo4j_clean
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    factory = neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    coco_env.context_provider.provide(KG_DB, factory)
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_preview", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    tables, records = _planned(await app.update(preview=True))
+    # Building the record handlers opened no connection.
+    assert not factory._connections._entries
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "Entity": "insert",
+        "REL": "insert",
+    }
+    assert {k: a.value for k, a in records.items()} == {
+        ("Entity", "alice"): {"value": "alice"},
+        ("Entity", "bob"): {"value": "bob"},
+        ("REL", "alice->bob"): {"predicate": "connects"},
+    }
+    rel = records[("REL", "alice->bob")]
+    assert (rel.from_label, rel.from_id, rel.to_label, rel.to_id) == (
+        "Entity",
+        "alice",
+        "Entity",
+        "bob",
+    )
+    # Nothing is written: no nodes, no constraints or indexes.
+    assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 0
+    assert await _coco_schema_names(uri, auth) == set()
+
+    await app.update()
+    assert {n["value"] for n in await _read_nodes(uri, auth, "Entity")} == {
+        "alice",
+        "bob",
+    }
+    assert len(await _read_relationships(uri, auth, "REL")) == 1
+    assert await _coco_schema_names(uri, auth) == {
+        "coco_uniq_Entity__value",
+        "coco_idx_rel_REL__id",
+    }
+
+    # Against the applied state: the container actions are retained, alongside the new edge and
+    # its new endpoint; the unchanged records are not planned. Nothing is
+    # applied.
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: action.main_action for name, action in tables.items()} == {
+        "Entity": None,
+        "REL": None,
+    }
+    assert set(records) == {("Entity", "carol"), ("REL", "bob->carol")}
+    assert len(await _read_nodes(uri, auth, "Entity")) == 2
+    assert len(await _read_relationships(uri, auth, "REL")) == 1
+
+    await app.update()
+    assert len(await _read_nodes(uri, auth, "Entity")) == 3
+    assert len(await _read_relationships(uri, auth, "REL")) == 2
+
+
 @requires_neo4j_server
 @pytest.mark.asyncio
 async def test_vector_index_attached(
@@ -832,7 +1473,7 @@ async def test_vector_index_attached(
         schema = await neo.TableSchema.from_class(_DocWithVec, primary_key="filename")
         table: Any = await coco.use_mount(  # type: ignore[call-overload]
             coco.component_subpath("setup", "doc_table"),
-            neo.mount_table_target,
+            neo.mount_node_target,
             KG_DB,
             "VecDoc",
             schema,
@@ -903,7 +1544,7 @@ async def test_neo4j_table_schema_evolution_under_full_reprocess(
         schema = await neo.TableSchema.from_class(doc_type, primary_key="filename")
         table: Any = await coco.use_mount(
             coco.component_subpath("setup", "doc_table"),
-            neo.mount_table_target,
+            neo.mount_node_target,
             KG_DB,
             "DocEvolve",
             schema,
@@ -940,3 +1581,627 @@ async def test_neo4j_table_schema_evolution_under_full_reprocess(
     by_fn2 = {r["filename"]: r for r in nodes_v2}
     assert by_fn2["doc1.md"]["summary"] == "summary 1"
     assert by_fn2["doc2.md"]["summary"] == "summary 2"
+
+
+# =============================================================================
+# Node and relationship APIs vs the deprecated table and relation APIs
+# =============================================================================
+
+
+@requires_neo4j
+class TestNodeAndRelationshipApiValidation:
+    @pytest.mark.parametrize("label", ["A__x", "A_", "__A"])
+    def test_labels_that_make_ambiguous_ddl_names_are_rejected(
+        self, label: str
+    ) -> None:
+        """``A__x`` + ``y`` and ``A`` + ``x__y`` would share the constraint
+        name ``coco_uniq_A__x__y``; ``A_`` + ``y`` and ``A`` + ``_y`` would
+        share ``coco_uniq_A___y``."""
+        with pytest.raises(ValueError, match="node label"):
+            neo.node_target(KG_DB, label)
+        node = neo.NodeTarget(None, None, "Ok", "id")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="relationship type"):
+            neo.relationship_target(KG_DB, label, node, node)
+
+    def test_key_fields_are_not_restricted(self) -> None:
+        neo.node_target(KG_DB, "A", primary_key="x__y")
+        neo.node_target(KG_DB, "A", primary_key="_y")
+
+    def test_deprecated_table_api_keeps_accepting_them(self) -> None:
+        with pytest.warns(DeprecationWarning, match="use neo4j.node_target"):
+            neo.table_target(KG_DB, "A__x")
+        node = neo.TableTarget(None, None, "Ok", "id")  # type: ignore[arg-type]
+        with pytest.warns(DeprecationWarning, match="use neo4j.relationship_target"):
+            neo.relation_target(KG_DB, "R__x", node, node)
+
+    def test_relationship_primary_key_must_match_the_schema(self) -> None:
+        node = neo.NodeTarget(None, None, "Ok", "id")  # type: ignore[arg-type]
+        schema = neo.TableSchema(
+            columns={"rel_id": neo.ColumnDef("STRING")}, primary_key="rel_id"
+        )
+        with pytest.raises(ValueError, match="primary_key"):
+            neo.relationship_target(KG_DB, "R", node, node, schema)
+
+
+@requires_neo4j
+class TestVectorIndexApplier:
+    """Several declared names can reach one Neo4j index, which is named after
+    its label and field."""
+
+    @staticmethod
+    def _applier(queries: list[str]) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        class _FakeGraph:
+            async def query(self, cypher: str, params: Any = None) -> list[Any]:
+                queries.append(cypher)
+                return []
+
+        class _FakeFactory(neo_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return _FakeGraph()
+
+        return neo_target._VectorIndexApplier(_FakeFactory(uri="bolt://localhost:7687"))
+
+    @staticmethod
+    def _action(name: str, field: str, *, create: bool) -> Any:
+        from cocoindex.connectors.neo4j import _target as neo_target
+
+        spec = neo_target._VectorIndexSpec(field=field, metric="cosine", dimension=4)
+        return neo_target._VectorIndexAction(
+            name=name,
+            table_name="Doc",
+            index_name=vector_index_name("Doc", field),
+            spec=spec if create else None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rename_keeps_the_index(self) -> None:
+        queries: list[str] = []
+        await self._applier(queries)(
+            None,
+            [
+                self._action("new", "emb", create=True),
+                self._action("old", "emb", create=False),
+                self._action("gone", "other", create=False),
+            ],
+        )
+        assert queries == [
+            build_vector_index_drop("coco_vec_Doc__emb"),
+            build_vector_index_create("coco_vec_Doc__emb", "Doc", "emb", 4, "cosine"),
+            build_vector_index_drop("coco_vec_Doc__other"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_two_names_for_one_index_fail(self) -> None:
+        queries: list[str] = []
+        with pytest.raises(ValueError, match="map to one Neo4j index"):
+            await self._applier(queries)(
+                None,
+                [
+                    self._action("a", "emb", create=True),
+                    self._action("b", "emb", create=True),
+                ],
+            )
+        assert queries == []
+
+
+@requires_neo4j
+@pytest.mark.asyncio
+async def test_deprecated_apis_warn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each deprecated entry point warns once per call; the node and
+    relationship APIs don't. A preview run needs no server.
+
+    The calls run in components, on an engine thread. With context-aware
+    warnings (free-threaded Python), a ``catch_warnings`` here doesn't see
+    warnings raised there, so they are recorded at ``warnings.warn``, which
+    every thread calls."""
+    caught: list[str] = []
+
+    def record(message: Any, category: Any = None, *args: Any, **kwargs: Any) -> None:
+        if category is DeprecationWarning and str(message).startswith("neo4j."):
+            caught.append(str(message).split(" is deprecated")[0])
+
+    async def declare() -> None:
+        old_node: Any = await coco.use_mount(
+            coco.component_subpath("old_node"), neo.mount_table_target, KG_DB, "Old"
+        )
+        neo.declare_table_target(KG_DB, "OldToo")
+        old_rel: Any = await coco.use_mount(
+            coco.component_subpath("old_rel"),
+            neo.mount_relation_target,
+            KG_DB,
+            "OLD_REL",
+            old_node,
+            old_node,
+        )
+        neo.declare_relation_target(KG_DB, "OLD_REL_TOO", old_node, old_node)
+        old_rel.declare_relation(from_id="a", to_id="b")
+
+        new_node: Any = await coco.use_mount(
+            coco.component_subpath("new_node"), neo.mount_node_target, KG_DB, "New"
+        )
+        neo.declare_node_target(KG_DB, "NewToo")
+        new_rel: Any = await coco.use_mount(
+            coco.component_subpath("new_rel"),
+            neo.mount_relationship_target,
+            KG_DB,
+            "NEW_REL",
+            new_node,
+            old_node,
+        )
+        neo.declare_relationship_target(KG_DB, "NEW_REL_TOO", old_node, new_node)
+        new_rel.declare_relationship(from_id="a", to_id="b")
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri="bolt://localhost:1")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_deprecations", environment=coco_env), declare
+    )
+    monkeypatch.setattr(warnings, "warn", record)
+    await app.update(preview=True)
+    assert sorted(caught) == [
+        "neo4j.RelationTarget.declare_relation",
+        "neo4j.declare_relation_target",
+        "neo4j.declare_table_target",
+        "neo4j.mount_relation_target",
+        "neo4j.mount_table_target",
+    ]
+
+
+@requires_neo4j
+@pytest.mark.parametrize("collision", ["shared_name", "shared_derived_id"])
+@pytest.mark.asyncio
+async def test_deprecated_apis_fail_on_colliding_keys(collision: str) -> None:
+    """What the docs promise for the deprecated APIs: a label and a
+    relationship type of one name, or two edges whose derived ids coincide,
+    fail the update (a preview run needs no server)."""
+
+    async def declare() -> None:
+        nodes: Any = await coco.use_mount(
+            coco.component_subpath("node"), neo.mount_table_target, KG_DB, "N"
+        )
+        rels: Any = await coco.use_mount(
+            coco.component_subpath("rel"),
+            neo.mount_relation_target,
+            KG_DB,
+            "N" if collision == "shared_name" else "R",
+            nodes,
+            nodes,
+        )
+        rels.declare_relation(from_id=1, to_id=2)
+        if collision == "shared_derived_id":
+            rels.declare_relation(from_id="1", to_id="2")
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri="bolt://localhost:1")
+    )
+    app = coco.App(
+        coco.AppConfig(name=f"test_neo4j_{collision}", environment=coco_env), declare
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.raises(Exception, match="already"):
+            await app.update(preview=True)
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_label_and_relationship_type_of_one_name(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Node tables and relationship tables have keys of their own: a label
+    and a relationship type may share a name, and dropping one leaves the
+    other."""
+    uri, auth = neo4j_clean
+    with_relationships = True
+
+    async def declare() -> None:
+        things: Any = await coco.use_mount(
+            coco.component_subpath("node"), neo.mount_node_target, KG_DB, "Thing"
+        )
+        things.declare_record(row={"id": "a"})
+        things.declare_record(row={"id": "b"})
+        if with_relationships:
+            rels: Any = await coco.use_mount(
+                coco.component_subpath("rel"),
+                neo.mount_relationship_target,
+                KG_DB,
+                "Thing",
+                things,
+                things,
+            )
+            rels.declare_relationship(from_id="a", to_id="b")
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_shared_name", environment=coco_env), declare
+    )
+    await app.update()
+    assert len(await _read_nodes(uri, auth, "Thing")) == 2
+    assert len(await _read_relationships(uri, auth, "Thing")) == 1
+    assert await _coco_schema_names(uri, auth) == {
+        "coco_uniq_Thing__id",
+        "coco_idx_rel_Thing__id",
+    }
+
+    with_relationships = False
+    await app.update()
+    assert len(await _read_nodes(uri, auth, "Thing")) == 2
+    assert await _read_relationships(uri, auth, "Thing") == []
+    assert await _coco_schema_names(uri, auth) == {"coco_uniq_Thing__id"}
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_derived_relationship_ids_are_unambiguous(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """Endpoints the deprecated relation API maps to one id (``1`` vs
+    ``"1"``, ``"a_N_b", "c"`` vs ``"a", "b_N_c"``) get edges of their own."""
+    uri, auth = neo4j_clean
+    pairs: list[tuple[Any, Any]] = [
+        (1, "1"),
+        ("1", 1),
+        ("a_N_b", "c"),
+        ("a", "b_N_c"),
+    ]
+
+    async def declare() -> None:
+        nodes: Any = await coco.use_mount(
+            coco.component_subpath("node"), neo.mount_node_target, KG_DB, "N"
+        )
+        for node_id in {v for pair in pairs for v in pair}:
+            nodes.declare_record(row={"id": node_id})
+        rels: Any = await coco.use_mount(
+            coco.component_subpath("rel"),
+            neo.mount_relationship_target,
+            KG_DB,
+            "R",
+            nodes,
+            nodes,
+        )
+        for from_id, to_id in pairs:
+            rels.declare_relationship(from_id=from_id, to_id=to_id)
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_unambiguous_ids", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    edges = await _read_relationships(uri, auth, "R")
+    assert sorted((repr(s["id"]), repr(t["id"])) for s, t, _ in edges) == sorted(
+        (repr(a), repr(b)) for a, b in pairs
+    )
+    assert len({r["id"] for _, _, r in edges}) == 4
+
+
+@requires_neo4j_server
+@pytest.mark.parametrize("api", ["relationship", "relation"])
+@pytest.mark.asyncio
+async def test_moved_relationship_leaves_no_duplicate(
+    neo4j_clean: tuple[str, tuple[str, str]], api: str
+) -> None:
+    """An edge with an explicit id whose endpoints change is moved, not
+    copied: the edge between the old endpoints goes. A duplicate left by an
+    earlier version goes on a full reprocess."""
+    uri, auth = neo4j_clean
+    to_id = "bob"
+
+    async def declare() -> None:
+        mount_node: Any = (
+            neo.mount_node_target if api == "relationship" else neo.mount_table_target
+        )
+        mount_rel: Any = (
+            neo.mount_relationship_target
+            if api == "relationship"
+            else neo.mount_relation_target
+        )
+        people: Any = await coco.use_mount(
+            coco.component_subpath("node"), mount_node, KG_DB, "Person"
+        )
+        for name in ("alice", "bob", "carol"):
+            people.declare_record(row={"id": name})
+        knows: Any = await coco.use_mount(
+            coco.component_subpath("rel"), mount_rel, KG_DB, "KNOWS", people, people
+        )
+        declare_edge = (
+            knows.declare_relationship
+            if api == "relationship"
+            else knows.declare_relation
+        )
+        declare_edge(from_id="alice", to_id=to_id, record={"id": "k1", "since": 1})
+
+    async def knows_edges() -> list[tuple[str, str, str]]:
+        return sorted(
+            (s["id"], t["id"], r["id"])
+            for s, t, r in await _read_relationships(uri, auth, "KNOWS")
+        )
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name=f"test_neo4j_moved_rel_{api}", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    assert await knows_edges() == [("alice", "bob", "k1")]
+
+    to_id = "carol"
+    await app.update()
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+    # A duplicate an earlier version left behind when the edge moved.
+    await _query(
+        uri,
+        auth,
+        "MATCH (s:Person {id: 'alice'}), (t:Person {id: 'bob'}) "
+        "CREATE (s)-[:KNOWS {id: 'k1', since: 1}]->(t)",
+    )
+    await app.update(full_reprocess=True)
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_renamed_vector_index_is_kept(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """The Neo4j index is named after its label and field, not the declared
+    name: renaming it keeps it. Two declared names on one field fail."""
+    uri, auth = neo4j_clean
+    index_names = ["vec_a"]
+
+    async def declare() -> None:
+        docs: Any = await coco.use_mount(
+            coco.component_subpath("node"), neo.mount_node_target, KG_DB, "VecDoc"
+        )
+        docs.declare_record(row={"id": "d1", "summary": "s"})
+        for name in index_names:
+            docs.declare_vector_index(name=name, field="summary", dimension=4)
+
+    async def vector_indexes() -> set[str]:
+        rows = await _query(
+            uri, auth, "SHOW VECTOR INDEXES YIELD name, properties RETURN *"
+        )
+        return {r["name"] for r in rows if r["properties"] == ["summary"]}
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_vec_rename", environment=coco_env), declare
+    )
+    await app.update()
+    assert await vector_indexes() == {"coco_vec_VecDoc__summary"}
+
+    index_names = ["vec_b"]
+    await app.update()
+    assert await vector_indexes() == {"coco_vec_VecDoc__summary"}
+
+    # A second name for the same field fails where it is declared.
+    index_names = ["vec_b", "vec_c"]
+    with pytest.raises(Exception, match="both index VecDoc.summary"):
+        await app.update()
+
+
+@requires_neo4j_server
+@pytest.mark.parametrize("api", ["node", "table"])
+@pytest.mark.parametrize("removal", ["undeclare", "drop"])
+@pytest.mark.asyncio
+async def test_destroyed_node_table_drops_its_vector_indexes(
+    neo4j_clean: tuple[str, tuple[str, str]], api: str, removal: str
+) -> None:
+    """A node table's vector indexes are pruned with it, so destroying the
+    table drops them. A rebuild creates them again. An index the connector
+    did not create stays, as do the indexes of tables still declared."""
+    uri, auth = neo4j_clean
+    docs_declared = True
+    docs_pk = "id"
+
+    async def declare() -> None:
+        if docs_declared:
+            mount: Any = (
+                neo.mount_node_target if api == "node" else neo.mount_table_target
+            )
+            docs: Any = await coco.use_mount(
+                coco.component_subpath("docs"),
+                mount,
+                KG_DB,
+                "VecDoc",
+                primary_key=docs_pk,
+            )
+            docs.declare_record(
+                row={"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+            )
+            docs.declare_vector_index(field="summary", dimension=4)
+            docs.declare_vector_index(field="body", dimension=4)
+        notes: Any = await coco.use_mount(
+            coco.component_subpath("notes"), neo.mount_node_target, KG_DB, "VecNote"
+        )
+        notes.declare_record(row={"id": "n1", "summary": "s"})
+        notes.declare_vector_index(field="summary", dimension=4)
+
+    async def vector_indexes() -> set[str]:
+        rows = await _query(uri, auth, "SHOW VECTOR INDEXES YIELD name RETURN name")
+        return {r["name"] for r in rows}
+
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_neo4j_vec_drop_{api}_{removal}", environment=coco_env
+        ),
+        declare,
+    )
+    await app.update()
+    await _query(
+        uri,
+        auth,
+        "CREATE VECTOR INDEX user_vec FOR (n:VecDoc) ON n.extra OPTIONS "
+        "{ indexConfig: { `vector.dimensions`: 4 } }",
+    )
+    all_indexes = {
+        "coco_vec_VecDoc__summary",
+        "coco_vec_VecDoc__body",
+        "coco_vec_VecNote__summary",
+        "user_vec",
+    }
+    assert await vector_indexes() == all_indexes
+
+    # A new primary key rebuilds the table, vector indexes included.
+    docs_pk = "title"
+    await app.update()
+    assert await _read_nodes(uri, auth, "VecDoc") == [
+        {"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+    ]
+    assert await vector_indexes() == all_indexes
+
+    if removal == "undeclare":
+        docs_declared = False
+        await app.update()
+        assert await vector_indexes() == {"coco_vec_VecNote__summary", "user_vec"}
+    else:
+        await app.drop()
+        assert await vector_indexes() == {"user_vec"}
+    assert await _read_nodes(uri, auth, "VecDoc") == []
+
+
+@requires_neo4j_server
+@pytest.mark.asyncio
+async def test_switching_from_the_table_and_relation_apis(
+    neo4j_clean: tuple[str, tuple[str, str]],
+) -> None:
+    """The documented switch: mark the old declarations ``managed_by="user"``
+    and update once, then declare the same tables with the node and
+    relationship APIs. Nodes, constraints and indexes stay; an edge with a
+    derived id is replaced by one with the new id, never duplicated."""
+    uri, auth = neo4j_clean
+    api = "old"
+    managed_by = "system"
+
+    @dataclass
+    class _Person:
+        name: str
+        summary: str
+
+    @dataclass
+    class _Knows:
+        id: str
+        since: int
+
+    names = ["alice", "bob", "carol"]
+    likes = [("alice", "bob"), ("bob", "carol")]
+
+    async def declare() -> None:
+        person_schema = await neo.TableSchema.from_class(_Person, primary_key="name")
+        knows_schema = await neo.TableSchema.from_class(_Knows, primary_key="id")
+        old = api == "old"
+        options: dict[str, Any] = {"managed_by": managed_by} if old else {}
+        mount_node: Any = neo.mount_table_target if old else neo.mount_node_target
+        person: Any = await coco.use_mount(
+            coco.component_subpath("person"),
+            mount_node,
+            KG_DB,
+            "Person",
+            person_schema,
+            primary_key="name",
+            **options,
+        )
+        mount_rel: Any = (
+            neo.mount_relation_target if old else neo.mount_relationship_target
+        )
+        likes_rel: Any = await coco.use_mount(
+            coco.component_subpath("likes"),
+            mount_rel,
+            KG_DB,
+            "LIKES",
+            person,
+            person,
+            **options,
+        )
+        knows_rel: Any = await coco.use_mount(
+            coco.component_subpath("knows"),
+            mount_rel,
+            KG_DB,
+            "KNOWS",
+            person,
+            person,
+            knows_schema,
+            primary_key="id",
+            **options,
+        )
+        for name in names:
+            person.declare_record(row=_Person(name=name, summary=f"{name}!"))
+        person.declare_vector_index(field="summary", dimension=4)
+        for from_id, to_id in likes:
+            if old:
+                likes_rel.declare_relation(from_id=from_id, to_id=to_id)
+            else:
+                likes_rel.declare_relationship(from_id=from_id, to_id=to_id)
+        knows = _Knows(id="k1", since=2020)
+        if old:
+            knows_rel.declare_relation(from_id="alice", to_id="carol", record=knows)
+        else:
+            knows_rel.declare_relationship(from_id="alice", to_id="carol", record=knows)
+
+    async def edges(rel_type: str) -> list[tuple[str, str, str]]:
+        return sorted(
+            (s["name"], t["name"], r["id"])
+            for s, t, r in await _read_relationships(uri, auth, rel_type)
+        )
+
+    async def assert_graph(likes_ids: list[str]) -> None:
+        assert sorted(n["name"] for n in await _read_nodes(uri, auth, "Person")) == (
+            names
+        )
+        assert await edges("LIKES") == [
+            (a, b, rel_id) for (a, b), rel_id in zip(likes, likes_ids)
+        ]
+        assert await edges("KNOWS") == [("alice", "carol", "k1")]
+        assert await _coco_schema_names(uri, auth) == {
+            "coco_uniq_Person__name",
+            "coco_idx_rel_LIKES__id",
+            "coco_idx_rel_KNOWS__id",
+            "coco_vec_Person__summary",
+        }
+
+    legacy_ids = ["Person_alice_Person_bob", "Person_bob_Person_carol"]
+    coco_env.context_provider.provide(
+        KG_DB, neo.ConnectionFactory(uri=uri, auth=auth, database="neo4j")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_neo4j_switch_apis", environment=coco_env), declare
+    )
+    await app.update()
+    await assert_graph(legacy_ids)
+
+    # Step 1: hand the tables to the user. Nothing in the graph changes.
+    managed_by = "user"
+    await app.update()
+    await assert_graph(legacy_ids)
+
+    # Step 2: declare them with the node and relationship APIs.
+    api = "new"
+    await app.update()
+    new_ids = [
+        "6:Person;5:alice;6:Person;3:bob;",
+        "6:Person;3:bob;6:Person;5:carol;",
+    ]
+    await assert_graph(new_ids)
+
+    # The new tables own the graph from here on.
+    await app.update()
+    await assert_graph(new_ids)
+    await app.drop()
+    assert await _count(uri, auth, "MATCH (n) RETURN count(n) AS c") == 0
+    assert await _count(uri, auth, "MATCH ()-[r]->() RETURN count(r) AS c") == 0
+    assert await _coco_schema_names(uri, auth) == set()

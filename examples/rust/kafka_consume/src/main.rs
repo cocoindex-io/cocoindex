@@ -13,7 +13,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use cocoindex::{App, UpdateOptions, kafka};
+use cocoindex::connectors::kafka;
+use cocoindex::{App, UpdateOptions};
 
 #[tokio::main]
 async fn main() -> cocoindex::Result<()> {

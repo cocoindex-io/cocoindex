@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -25,23 +26,83 @@ use crate::live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveMapView, MountEachLiveComponent,
     MountKind, build_chained_on_error, new_operator, start_process_live,
 };
+use crate::memo::{MemoInput, MemoStateDecision, MemoStateValue};
 use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
 use crate::user_state::{IntoStateKey, StateHandle};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
+type ContextStateFuture =
+    Pin<Box<dyn Future<Output = Result<Option<MemoStateDecision>>> + Send + 'static>>;
+type ContextStateFn<T> =
+    Arc<dyn Fn(Arc<T>, Option<MemoStateValue>) -> ContextStateFuture + Send + Sync>;
+type StoredContextStateFn = Arc<dyn Fn(Option<MemoStateValue>) -> ContextStateFuture + Send + Sync>;
+
+/// Declare a process-wide [`ContextKey`] backed by a [`std::sync::LazyLock`].
+///
+/// By default, the Rust identifier is also the context key's stable name. Use
+/// `key = "..."` when the persisted name must differ from the identifier or
+/// remain stable across an identifier rename. Change detection is disabled by
+/// default. With `detect_change`, the value's [`MemoInput`] implementation
+/// defines its memo identity and optional external-state validation. For a
+/// foreign type that cannot implement [`MemoInput`] because of Rust's orphan
+/// rules, use a local newtype with a manual [`MemoInput`] implementation.
+///
+/// ```
+/// # #[derive(cocoindex::MemoInput)]
+/// # struct AppConfig;
+/// # struct Database;
+/// cocoindex::context_key!(static CONFIG: AppConfig);
+/// cocoindex::context_key!(static TRACKED_CONFIG: AppConfig, detect_change);
+/// cocoindex::context_key!(
+///     static DB: Database,
+///     key = "my_package/database"
+/// );
+/// ```
+///
+/// The key name is a stable persistent identity used in target-state and memo
+/// keys. Renaming an identifier that uses the default name therefore changes
+/// its identity; use `key = "..."` when that is not intended. `key =` changes
+/// only this logical name. When both optional arguments are present, they must
+/// appear in this order: `key = "..."`, then `detect_change`.
+#[macro_export]
+macro_rules! context_key {
+    ($vis:vis static $key:ident: $value:ty, key = $name:literal, detect_change $(,)?) => {
+        $vis static $key: ::std::sync::LazyLock<$crate::ContextKey<$value>> =
+            ::std::sync::LazyLock::new(|| $crate::ContextKey::new_detect_change($name));
+    };
+    ($vis:vis static $key:ident: $value:ty, detect_change $(,)?) => {
+        $vis static $key: ::std::sync::LazyLock<$crate::ContextKey<$value>> =
+            ::std::sync::LazyLock::new(|| {
+                $crate::ContextKey::new_detect_change(::std::stringify!($key))
+            });
+    };
+    ($vis:vis static $key:ident: $value:ty, key = $name:literal $(,)?) => {
+        $vis static $key: ::std::sync::LazyLock<$crate::ContextKey<$value>> =
+            ::std::sync::LazyLock::new(|| $crate::ContextKey::new($name));
+    };
+    ($vis:vis static $key:ident: $value:ty $(,)?) => {
+        $vis static $key: ::std::sync::LazyLock<$crate::ContextKey<$value>> =
+            ::std::sync::LazyLock::new(|| $crate::ContextKey::new(::std::stringify!($key)));
+    };
+    ($($invalid:tt)*) => {
+        ::core::compile_error!(
+            "invalid context_key! syntax; expected `static NAME: Type` followed by optional \
+             `key = \"...\"` and `detect_change` in that order"
+        );
+    };
+}
 
 /// A named context key for app-provided resources.
 ///
 /// - [`ContextKey::new`] stores arbitrary `Send + Sync` resources (no change
 ///   tracking).
-/// - [`ContextKey::new_detect_change`] tracks a serializable value: memoized
-///   work is invalidated when the whole value's fingerprint changes.
-/// - [`ContextKey::new_with_state`] tracks a derived state of an arbitrary
-///   value. Only changes to the extracted state invalidate memoized work.
+/// - [`ContextKey::new_detect_change`] uses the value type's [`MemoInput`]
+///   behavior to invalidate memoized work.
 pub struct ContextKey<T> {
     name: Arc<str>,
     detect_change: bool,
     fingerprint_fn: Option<ContextFingerprinter<T>>,
+    state_fn: Option<ContextStateFn<T>>,
     _marker: PhantomData<fn() -> T>,
 }
 
@@ -51,6 +112,7 @@ impl<T> Clone for ContextKey<T> {
             name: self.name.clone(),
             detect_change: self.detect_change,
             fingerprint_fn: self.fingerprint_fn.clone(),
+            state_fn: self.state_fn.clone(),
             _marker: PhantomData,
         }
     }
@@ -63,7 +125,7 @@ impl<T> ContextKey<T> {
     /// Panics if the same key name has already been constructed in this
     /// process.
     pub fn new(name: impl Into<String>) -> Self {
-        Self::with_parts(name.into(), false, None)
+        Self::with_parts(name.into(), false, None, None)
     }
 
     /// The stable key name.
@@ -80,56 +142,39 @@ impl<T> ContextKey<T> {
         name: String,
         detect_change: bool,
         fingerprint_fn: Option<ContextFingerprinter<T>>,
+        state_fn: Option<ContextStateFn<T>>,
     ) -> Self {
         let used = USED_CONTEXT_KEYS.get_or_init(|| Mutex::new(HashSet::new()));
         let duplicate = {
             let mut used = used.lock().expect("context key registry poisoned");
             !used.insert(name.clone())
         };
-        assert!(!duplicate, "Context key {name} already used");
+        assert!(
+            !duplicate,
+            "Context key {name:?} is already used; choose a unique identifier or set \
+             `key = \"stable_unique_name\"`"
+        );
         Self {
             name: Arc::from(name),
             detect_change,
             fingerprint_fn,
+            state_fn,
             _marker: PhantomData,
         }
     }
 }
 
-impl<T: Serialize> ContextKey<T> {
+impl<T: MemoInput + 'static> ContextKey<T> {
     /// Create a named context key whose provided values invalidate memoized
-    /// work when their serialized fingerprint changes.
+    /// work when their type-defined memo identity or external state changes.
     pub fn new_detect_change(name: impl Into<String>) -> Self {
         let fingerprint_fn: ContextFingerprinter<T> = Arc::new(|name: &str, value: &T| {
-            Fingerprint::from(&("context_key", name, value))
-                .map_err(|e| Error::engine(format!("context key fingerprint error: {e}")))
+            crate::memo::memo_input_fingerprint("context_key", name, value)
         });
-        Self::with_parts(name.into(), true, Some(fingerprint_fn))
-    }
-}
-
-impl<T> ContextKey<T> {
-    /// Create a named context key whose memo invalidation is driven by a
-    /// *derived state* rather than the whole value. `state_fn` extracts a
-    /// serializable state from the provided value; memoized work that reads
-    /// this key (via [`Ctx::get_key`]) is invalidated only when that state's
-    /// fingerprint changes.
-    ///
-    /// Use this for resources that are not serializable, such as DB pools or
-    /// clients, or when only a narrow identity like a connection string or
-    /// schema version should affect memoization. The value type `T` need not be
-    /// `Serialize`; only the extracted state must be.
-    pub fn new_with_state<S, SF>(name: impl Into<String>, state_fn: SF) -> Self
-    where
-        S: Serialize,
-        SF: Fn(&T) -> S + Send + Sync + 'static,
-    {
-        let fingerprint_fn: ContextFingerprinter<T> = Arc::new(move |name: &str, value: &T| {
-            let state = state_fn(value);
-            Fingerprint::from(&("context_key", name, &state))
-                .map_err(|e| Error::engine(format!("context key state fingerprint error: {e}")))
+        let state_fn: ContextStateFn<T> = Arc::new(|value, previous| {
+            Box::pin(async move { value.memo_state(previous.as_ref()).await })
         });
-        Self::with_parts(name.into(), true, Some(fingerprint_fn))
+        Self::with_parts(name.into(), true, Some(fingerprint_fn), Some(state_fn))
     }
 }
 
@@ -139,6 +184,7 @@ static USED_CONTEXT_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 pub(crate) struct ContextStore {
     values: HashMap<Arc<str>, Arc<dyn Any + Send + Sync>>,
     fingerprints: HashMap<Arc<str>, Fingerprint>,
+    state_fns: HashMap<Fingerprint, StoredContextStateFn>,
 }
 
 impl ContextStore {
@@ -147,11 +193,22 @@ impl ContextStore {
         key: &ContextKey<T>,
         value: T,
     ) -> Result<()> {
+        let value = Arc::new(value);
         if let Some(fingerprint_fn) = &key.fingerprint_fn {
-            let fp = fingerprint_fn(&key.name, &value)?;
-            self.fingerprints.insert(key.name.clone(), fp);
+            let fp = fingerprint_fn(&key.name, value.as_ref())?;
+            if let Some(previous_fp) = self.fingerprints.insert(key.name.clone(), fp) {
+                self.state_fns.remove(&previous_fp);
+            }
+            if let Some(state_fn) = &key.state_fn {
+                let state_fn = Arc::clone(state_fn);
+                let value = Arc::clone(&value);
+                self.state_fns.insert(
+                    fp,
+                    Arc::new(move |previous| state_fn(Arc::clone(&value), previous)),
+                );
+            }
         }
-        self.values.insert(key.name.clone(), Arc::new(value));
+        self.values.insert(key.name.clone(), value);
         Ok(())
     }
 
@@ -159,6 +216,78 @@ impl ContextStore {
         for fp in self.fingerprints.values() {
             env.register_logic(*fp);
         }
+    }
+
+    pub(crate) async fn register_initial_states(
+        &mut self,
+        env: &Environment<RustProfile>,
+    ) -> Result<()> {
+        let fingerprints = self.state_fns.keys().copied().collect::<Vec<_>>();
+        for fingerprint in fingerprints {
+            let state_fn = self
+                .state_fns
+                .get(&fingerprint)
+                .expect("context state function disappeared during initialization");
+            if let Some(decision) = state_fn(None).await? {
+                let (state, _) = decision.into_parts();
+                env.register_context_initial_states(fingerprint, vec![state]);
+            } else {
+                self.state_fns.remove(&fingerprint);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_memo_state_fns(&self) -> bool {
+        !self.state_fns.is_empty()
+    }
+
+    pub(crate) async fn validate_memo_states(
+        &self,
+        stored: &[(Fingerprint, Vec<Value>)],
+    ) -> Result<ContextMemoValidation> {
+        let mut updated = Vec::with_capacity(stored.len());
+        let mut memo_valid = true;
+
+        for (fingerprint, states) in stored {
+            let Some(state_fn) = self.state_fns.get(fingerprint) else {
+                memo_valid = false;
+                updated.push((*fingerprint, states.clone()));
+                continue;
+            };
+            if states.len() != 1 {
+                memo_valid = false;
+                updated.push((*fingerprint, states.clone()));
+                continue;
+            }
+            let previous = MemoStateValue::from_profile_value(states[0].clone());
+            let Some(decision) = state_fn(Some(previous)).await? else {
+                memo_valid = false;
+                updated.push((*fingerprint, states.clone()));
+                continue;
+            };
+            let (state, valid) = decision.into_parts();
+            memo_valid &= valid;
+            updated.push((*fingerprint, vec![state]));
+        }
+
+        let states_changed =
+            updated
+                .iter()
+                .zip(stored)
+                .any(|((new_fp, new_values), (old_fp, old_values))| {
+                    new_fp != old_fp
+                        || new_values.len() != old_values.len()
+                        || new_values
+                            .iter()
+                            .zip(old_values)
+                            .any(|(new, old)| new.0 != old.0)
+                });
+        Ok(ContextMemoValidation {
+            states: updated,
+            memo_valid,
+            states_changed,
+        })
     }
 
     fn get<T: Send + Sync + 'static>(&self, key: &ContextKey<T>) -> Option<&T> {
@@ -183,6 +312,12 @@ impl ContextStore {
     fn fingerprint<T>(&self, key: &ContextKey<T>) -> Option<Fingerprint> {
         self.fingerprints.get(&key.name).copied()
     }
+}
+
+pub(crate) struct ContextMemoValidation {
+    pub(crate) states: Vec<(Fingerprint, Vec<Value>)>,
+    pub(crate) memo_valid: bool,
+    pub(crate) states_changed: bool,
 }
 
 /// Pipeline context passed to closures inside `App::update()` / `App::run()`.
@@ -280,30 +415,56 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let fp = Fingerprint::from(&("cocoindex_fn", module_path, fn_name, code_hash))
-            .map_err(|e| Error::engine(format!("function logic fingerprint error: {e}")))?;
+        let fp = fn_logic_fingerprint(module_path, fn_name, code_hash)?;
         // `propagate_children_fn_logic` is the `logic_tracking` mode lowered by
         // the `#[function]` macro: `true` for `"full"` (default — a transitively
         // called function's logic change also invalidates this one), `false` for
         // `"self"` (only this function's own body is tracked).
         let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
         fn_ctx.add_fn_logic_dep(fp);
-        let _guard = TrackedFnCallGuard {
+        let _frame = self.frame_guard(fn_ctx.clone());
+        f(self.with_fn_ctx(fn_ctx)).await
+    }
+
+    /// Guard that joins `fn_ctx` into this `Ctx`'s enclosing frame when it
+    /// drops: the surrounding function call if there is one, else the
+    /// component. Joining into the enclosing frame (not straight into the
+    /// component) is what lets a memoized caller inherit everything its body
+    /// observed — context deps, nested logic, target states, memo entries and
+    /// child mounts — matching the Python SDK's `parent.join_child(fn_ctx)`.
+    pub(crate) fn frame_guard(&self, fn_ctx: Arc<FnCallContext>) -> FnFrameGuard {
+        FnFrameGuard {
             comp_ctx: self.comp_ctx.clone(),
             parent_fn_ctx: self.fn_ctx.clone(),
-            fn_ctx: fn_ctx.clone(),
-        };
-        f(self.with_fn_ctx(fn_ctx)).await
+            fn_ctx,
+        }
     }
 }
 
-struct TrackedFnCallGuard {
+/// The logic fingerprint of one `#[cocoindex::function]`. Must match the one
+/// registered at startup (see `crate::logic`).
+pub(crate) fn fn_logic_fingerprint(
+    module_path: &str,
+    fn_name: &str,
+    code_hash: u64,
+) -> Result<Fingerprint> {
+    Ok(Fingerprint::from(&(
+        "cocoindex_fn",
+        module_path,
+        fn_name,
+        code_hash,
+    ))?)
+}
+
+/// Joins a function-call frame into its enclosing frame on drop, so the join
+/// also happens on error and cancellation paths. See [`Ctx::frame_guard`].
+pub(crate) struct FnFrameGuard {
     comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
     parent_fn_ctx: Option<Arc<FnCallContext>>,
     fn_ctx: Arc<FnCallContext>,
 }
 
-impl Drop for TrackedFnCallGuard {
+impl Drop for FnFrameGuard {
     fn drop(&mut self) {
         if let Some(parent) = &self.parent_fn_ctx {
             parent.join_child(&self.fn_ctx);
@@ -311,24 +472,6 @@ impl Drop for TrackedFnCallGuard {
             comp_ctx.join_fn_call(&self.fn_ctx);
         }
     }
-}
-
-pub(crate) struct FnCallGuard<'a> {
-    comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: Arc<FnCallContext>,
-}
-
-impl<'a> Drop for FnCallGuard<'a> {
-    fn drop(&mut self) {
-        self.comp_ctx.join_fn_call(&self.fn_ctx);
-    }
-}
-
-pub(crate) fn fn_call_guard<'a>(
-    comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: Arc<FnCallContext>,
-) -> FnCallGuard<'a> {
-    FnCallGuard { comp_ctx, fn_ctx }
 }
 
 struct StatsGroupEndGuard {
@@ -432,10 +575,11 @@ impl Ctx {
         {
             if let Some(fn_ctx) = &self.fn_ctx {
                 fn_ctx.add_context_change_dep(fp);
-            } else if let Some(comp_ctx) = &self.comp_ctx {
-                let fn_ctx = FnCallContext::default();
-                fn_ctx.add_context_change_dep(fp);
-                comp_ctx.join_fn_call(&fn_ctx);
+            }
+            if let Some(comp_ctx) = &self.comp_ctx {
+                let component_dep = FnCallContext::default();
+                component_dep.add_context_change_dep(fp);
+                comp_ctx.join_fn_call(&component_dep);
             }
         }
         Ok(value)
@@ -500,6 +644,21 @@ impl Ctx {
         };
         execution::register_root_target_state_provider(comp_ctx, name.into(), handler)
             .map_err(Error::from)
+    }
+
+    pub(crate) fn static_root_target_provider(
+        &self,
+        name: &str,
+    ) -> Result<TargetStateProvider<RustProfile>> {
+        self.state
+            .static_root_providers
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                Error::engine(format!(
+                    "static root target provider `{name}` is not registered"
+                ))
+            })
     }
 
     pub(crate) fn register_attachment_target_provider(
@@ -635,7 +794,7 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
-        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await
@@ -651,8 +810,12 @@ impl Ctx {
             async move {
                 let mut ready_marked = false;
                 loop {
-                    let processor =
-                        auto_refresh_processor(state.clone(), f.clone(), processor_name.clone());
+                    let processor = auto_refresh_processor(
+                        state.clone(),
+                        handler_chain.clone(),
+                        f.clone(),
+                        processor_name.clone(),
+                    );
                     let on_error = build_chained_on_error(
                         &handler_chain,
                         ExceptionContext {
@@ -692,6 +855,9 @@ impl Ctx {
     /// task, and returns when the component marks itself ready. In catch-up
     /// (non-live) mode the default body runs a single full pass; in live mode it
     /// keeps reacting to its source in the background until the app is dropped.
+    ///
+    /// A failure in the component's processing is logged, not returned; use
+    /// [`Ctx::mount_live_with_handler`] to observe or propagate it.
     pub async fn mount_live<K, C>(&self, key: &K, component: C) -> Result<()>
     where
         K: Display,
@@ -801,7 +967,7 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
-        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await
@@ -869,16 +1035,16 @@ impl Ctx {
 
     /// Foreground mount with an explicit component-memo fingerprint. The
     /// `mount!` / `use_mount!` / `mount_each!` macros call this; `scope` is the
-    /// `memo_fp = None` (always-run) case kept for direct use and tests.
+    /// `memo = None` (always-run) case kept for direct use and tests.
     ///
-    /// When `memo_fp` is `Some`, the engine checks it before running the child
+    /// When `memo` is `Some`, the engine checks its fingerprint and argument states before running the child
     /// and skips the whole component on an unchanged hit (see
-    /// [`crate::mount::component_memo_fp`]).
+    /// [`crate::mount::component_memo`]).
     #[doc(hidden)]
     pub async fn __use_mount_fp<T, F, Fut>(
         &self,
         key: String,
-        memo_fp: Option<Fingerprint>,
+        memo: Option<crate::mount::ComponentMemo>,
         f: F,
     ) -> Result<T>
     where
@@ -901,12 +1067,15 @@ impl Ctx {
             .mount_child(&fn_ctx, child_path)
             .map_err(|e| Error::engine(format!("{e}")))?;
 
-        // Guard to ensure `join_fn_call` is executed even if `f` panics or the future
-        // is dropped/cancelled early.
-        let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
+        // Join the mount frame into the enclosing frame even if `f` panics or the
+        // future is dropped/cancelled early. Inside a memoized function this
+        // carries `has_child_components` to the memo frame, so the engine rejects
+        // the memo entry instead of letting a later hit delete the child's
+        // target states.
+        let _frame = self.frame_guard(fn_ctx.clone());
 
         let state = self.state.clone();
-        let scope_fn_ctx = fn_ctx.clone();
+        let has_context_memo_state = state.context.has_memo_state_fns();
         let scope_handler_chain = self.handler_chain.clone();
         // Foreground child inherits the caller's current scoped deadline —
         // the same value passed to core use_mount below.
@@ -914,21 +1083,26 @@ impl Ctx {
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
                 let deadline = child_deadline;
-                let ctx = Ctx {
-                    comp_ctx: Some(child_comp_ctx),
-                    state: state.clone(),
-                    fn_ctx: Some(scope_fn_ctx.clone()),
+                // The child component is its own root: frames opened in its
+                // body join the child component (like the app root), never
+                // the parent's mount frame. The child's dependencies reach the
+                // parent through the engine's component run outcome.
+                let ctx = Ctx::new_with_handlers(
+                    Some(child_comp_ctx),
+                    state.clone(),
+                    scope_handler_chain.clone(),
                     deadline,
-                    handler_chain: scope_handler_chain.clone(),
-                };
+                );
                 Box::pin(async move {
                     let result = f(ctx).await?;
                     Value::from_serializable(&result)
                 })
             },
-            memo_fp,
+            memo.as_ref().map(|memo| memo.fp),
             format!("mount:{key}"),
-        );
+        )
+        .with_memo_state_handler(has_context_memo_state)
+        .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
 
         let handle = match child_component
             .use_mount(comp_ctx, processor, self.deadline)
@@ -972,7 +1146,7 @@ impl Ctx {
         K: Display,
         V: Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        M: Fn(&V) -> Result<Option<Fingerprint>>,
+        M: Fn(&V) -> Result<Option<crate::mount::ComponentMemo>>,
         B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
@@ -985,20 +1159,20 @@ impl Ctx {
                     "duplicate key `{key}` in mount_each batch"
                 )));
             }
-            let memo_fp = memo_of(&value)?;
+            let memo = memo_of(&value)?;
             let subpath = match prefix {
                 Some(prefix) => format!("{prefix}/{key}"),
                 None => key,
             };
-            keyed.push((subpath, memo_fp, value));
+            keyed.push((subpath, memo, value));
         }
 
         let futs: Vec<_> = keyed
             .into_iter()
-            .map(|(subpath, memo_fp, value)| {
+            .map(|(subpath, memo, value)| {
                 let body = body.clone();
                 async move {
-                    self.__use_mount_fp(subpath, memo_fp, move |child| body(child, value))
+                    self.__use_mount_fp(subpath, memo, move |child| body(child, value))
                         .await
                 }
             })
@@ -1168,6 +1342,7 @@ impl Ctx {
 
 fn auto_refresh_processor<F, Fut>(
     state: Arc<AppInner>,
+    handler_chain: Arc<Vec<ExceptionHandler>>,
     f: F,
     processor_name: String,
 ) -> BoxedProcessor
@@ -1177,8 +1352,15 @@ where
 {
     BoxedProcessor::new(
         move |comp_ctx| {
-            // Live refresh components are deadline-isolated by design.
-            let ctx = Ctx::new(Some(comp_ctx), state.clone(), DeadlineContext::NONE);
+            // Live refresh components are deadline-isolated by design. Nested
+            // live components inherit the enclosing handler chain, as they do
+            // from `LiveComponentOperator`.
+            let ctx = Ctx::new_with_handlers(
+                Some(comp_ctx),
+                state.clone(),
+                handler_chain.clone(),
+                DeadlineContext::NONE,
+            );
             Box::pin(async move {
                 f(ctx).await?;
                 Ok(Value::unit())
@@ -1199,6 +1381,17 @@ mod tests {
     };
 
     static TEST_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[derive(Serialize, crate::MemoInput)]
+    struct TrackedConfig;
+
+    crate::context_key!(static PLAIN_KEY: String);
+    crate::context_key!(static NAMED_KEY: String, key = "ctx_macro_named");
+    crate::context_key!(
+        static DETECT_CHANGE_KEY: TrackedConfig,
+        key = "ctx_macro_detect_change",
+        detect_change
+    );
 
     struct TestClockGuard {
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -1222,6 +1415,16 @@ mod tests {
         fn drop(&mut self) {
             testing_disable_deadline_clock();
         }
+    }
+
+    #[test]
+    fn context_key_macro_uses_identifier_by_default_and_supports_override() {
+        assert_eq!(PLAIN_KEY.name(), "PLAIN_KEY");
+        assert!(!PLAIN_KEY.detect_change());
+        assert_eq!(NAMED_KEY.name(), "ctx_macro_named");
+        assert!(!NAMED_KEY.detect_change());
+        assert_eq!(DETECT_CHANGE_KEY.name(), "ctx_macro_detect_change");
+        assert!(DETECT_CHANGE_KEY.detect_change());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -9,18 +9,15 @@
 //! in-place update, orphan delete, and schema-change collection recreate.
 #![cfg(feature = "qdrant")]
 
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
-use cocoindex::{ContextKey, Environment, Result};
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
+use cocoindex::{Environment, Result};
 use serde_json::json;
 
-static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("qdrant_test", |c: &QdrantConnection| {
-        c.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: QdrantConnection, key = "qdrant_test"
+);
 
 type Point = (u64, Vec<f32>, &'static str, &'static str);
 
@@ -246,6 +243,68 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
         count(conn.clone(), collection.clone()).await,
         1,
         "orphaned UUID point deleted"
+    );
+
+    let _ = conn.client().delete_collection(&collection).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn qdrant_undeclared_and_dropped_collections_are_removed_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("QDRANT_URL") else {
+        eprintln!("skipping live Qdrant collection-removal test; QDRANT_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let collection = format!("coco_qdrant_removal_{nonce}");
+    let conn = QdrantConnection::connect(&url).await?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, conn.clone())
+        .build()
+        .await?
+        .app("QdrantCollectionRemovalTest")
+        .await?;
+    let declare = |collection: String| {
+        move |ctx: cocoindex::Ctx| async move {
+            let target = qdrant::mount_collection_target(
+                &ctx,
+                &DB,
+                &collection,
+                CollectionSchema::new(3, Distance::Cosine),
+            )
+            .await?;
+            target.declare_point(&ctx, 1u64, vec![1.0, 0.0, 0.0], payload("a.md", "alpha"))?;
+            Ok::<_, cocoindex::Error>(())
+        }
+    };
+    let exists = |name: String| {
+        let conn = conn.clone();
+        async move { conn.client().collection_exists(name).await.unwrap() }
+    };
+
+    app.run(declare(collection.clone())).await?;
+    assert!(exists(collection.clone()).await);
+
+    // A run that no longer declares the collection drops it.
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert!(
+        !exists(collection.clone()).await,
+        "a collection no longer declared is dropped"
+    );
+
+    app.run(declare(collection.clone())).await?;
+    assert!(exists(collection.clone()).await);
+
+    app.drop_state().await?;
+    assert!(
+        !exists(collection.clone()).await,
+        "drop_state drops the collection"
     );
 
     let _ = conn.client().delete_collection(&collection).await;

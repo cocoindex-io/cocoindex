@@ -242,7 +242,7 @@ impl Pattern {
                 _ => None,
             })
             .collect();
-        opens.sort_by(|a, b| b.0.cmp(&a.0)); // innermost (largest open) first
+        opens.sort_by_key(|o| std::cmp::Reverse(o.0)); // innermost (largest open) first
         for (open, close) in opens {
             // Cache this containment only when its INNER is self-contained — see
             // `containment_inner_cacheable`. A nested INNER whose name is bound by an
@@ -798,6 +798,7 @@ impl<'s> Ctx<'_, 's> {
     /// of *one parent's* direct children (same-level), so a `*` run can't
     /// silently leak out of the subtree the pattern entered. A cross-level skip
     /// is written as multiple `*`, one per grammar level.
+    #[allow(clippy::too_many_arguments)]
     fn match_multi(
         &mut self,
         pi: usize,
@@ -1203,6 +1204,7 @@ mod tests {
         assert!(crate::lang::by_name("python").is_some());
         assert!(crate::lang::by_name("PY").is_some());
         assert!(crate::lang::by_name("c++").is_some());
+        assert!(crate::lang::by_name("nix").is_some());
         assert!(crate::lang::by_name("nope").is_none());
     }
 

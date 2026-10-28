@@ -5,6 +5,9 @@
 
 pub mod chunk;
 pub mod embedder;
+pub mod file;
+pub mod fs;
+pub mod id;
 pub mod live_map;
 pub mod rate_limit;
 pub mod schema;

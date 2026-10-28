@@ -1,28 +1,143 @@
 name: CI
 
+# The tiers and the rest of this workflow's shape follow
+# https://github.com/cocoindex-io/.github/blob/main/CI.md: pull requests run a
+# fast tier when `main` has a merge queue, the queue runs the full tier on the
+# commit that lands, and drafts run nothing.
+#
+# Path filtering happens in the `changes` job, not in `on.<event>.paths`: a
+# workflow skipped by a path filter leaves its checks pending, so they can't
+# be required. This workflow always runs, and `ci-gate` is the one check to
+# require for build, tests and type checks.
 on:
   pull_request:
     branches: [main, v1]
-    paths:
-      - rust/**
-      - python/**
-      - "*.toml"
-      - ".github/workflows/*.yml"
-      - "docs/docs/cli.mdx"
+    # `ready_for_review` starts CI when a draft is marked ready. `stacked`
+    # starts it when a pull request joins a stack: its `opened` event can
+    # arrive before the stack exists and miss the branch filter.
+    types: [opened, synchronize, reopened, ready_for_review, stacked]
+  merge_group:
   push:
     branches: [main, v1]
-    paths:
-      - rust/**
-      - python/**
-      - "*.toml"
-      - ".github/workflows/*.yml"
-      - "docs/docs/cli.mdx"
+  # A push the merge queue already tested skips the full tier, so a nightly
+  # run keeps main's caches current.
+  schedule:
+    - cron: "0 9 * * *"
   workflow_dispatch:
+
+# A new push to a pull request cancels its running CI. Other runs get a group
+# of their own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    # Drafts run no CI. Every job below needs this one, so all of them skip.
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      # ci-mode reads the commit's checks to skip a push the queue tested.
+      checks: read
+      contents: read
+      # paths-filter lists a pull request's files through the API.
+      pull-requests: read
+    outputs:
+      full: ${{ steps.mode.outputs.full }}
+      build-test: ${{ steps.filter.outputs.build-test }}
+      type-check: ${{ steps.filter.outputs.type-check }}
+      rust-sdk: ${{ steps.filter.outputs.rust-sdk }}
+    steps:
+      # Pushes and merge groups are diffed with git; a pull request through
+      # the API.
+      - uses: actions/checkout@v7
+        if: github.event_name == 'push' || github.event_name == 'merge_group'
+        with:
+          fetch-depth: 1
+      - id: mode
+        uses: cocoindex-io/.github/actions/ci-mode@v1
+      # A skipped filter leaves its outputs empty, and an empty output runs
+      # the job: manual and scheduled runs test everything. So does a
+      # stack's top layer: on a pull request the filter lists the files the
+      # layer itself changed, but its run stands in for the whole stack.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: >-
+          steps.mode.outputs.full == 'true'
+          && !github.event.pull_request.stack
+          && contains(fromJSON('["pull_request", "push", "merge_group"]'), github.event_name)
+        id: filter
+        with:
+          # Each list covers every input of the hooks its job runs, so no
+          # change skips a check that applies to it. The exception is
+          # rust-sdk: the Rust SDK isn't launched yet, so a change to the
+          # code it builds on (rust/core, Cargo.lock, ...) skips its checks,
+          # and rust_sdk_daily.yml runs them on main every day.
+          filters: |
+            build-test:
+              - 'rust/**'
+              - 'python/**'
+              - '*.toml'
+              - 'Cargo.lock'
+              - 'uv.lock'
+              - '.github/workflows/*.yml'
+              - '.github/actions/**'
+              - 'dev/generate_cli_docs.py'
+              - 'docs/src/content/docs/cli.mdx'
+            type-check:
+              - 'python/**'
+              - 'examples*/**'
+              - 'benchmarks/**'
+              - '*.toml'
+              - 'uv.lock'
+              - '.github/workflows/CI.yml'
+              - '.github/workflows/e2e_type_check.yml'
+            rust-sdk:
+              - 'rust/sdk/**'
+              - 'examples/rust/**'
+              - 'benchmarks/*/rust/**'
+              - '.github/workflows/CI.yml'
+              - '.github/workflows/_rust_sdk.yml'
+              - '.github/actions/**'
+
   build-test:
     name: Build & Test
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.build-test != 'false'
     uses: ./.github/workflows/_test.yml
+
+  type-check:
+    name: E2E Type Check
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.type-check != 'false'
+    uses: ./.github/workflows/e2e_type_check.yml
+
+  rust-sdk:
+    name: Rust SDK
+    needs: changes
+    # The nightly run leaves the Rust SDK to rust_sdk_daily.yml.
+    if: >-
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.rust-sdk != 'false'
+      && github.event_name != 'schedule'
+    uses: ./.github/workflows/_rust_sdk.yml
+
+  # Passes when every job above passed, or was skipped by the tier or because
+  # the change doesn't touch its inputs. Fails on a failed or cancelled job,
+  # and when `changes` itself didn't succeed (its skipped dependents would
+  # otherwise look like a pass).
+  ci-gate:
+    if: always() && github.event.pull_request.draft != true
+    needs: [changes, build-test, type-check, rust-sdk]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
+          jq -e '
+            .changes.result == "success"
+            and all(.[]; .result == "success" or .result == "skipped")
+          ' <<<"$RESULTS" >/dev/null

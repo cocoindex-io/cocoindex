@@ -353,12 +353,14 @@ NEO4J_DB = coco.ContextKey[neo4j.ConnectionFactory]("neo4j_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(NEO4J_DB, neo4j.ConnectionFactory(
+    neo4j_db = neo4j.ConnectionFactory(
         uri="bolt://localhost:7687",
         auth=("neo4j", "cocoindex"),
         database="neo4j",  # Optional, default "neo4j"
-    ))
+    )
+    builder.provide(NEO4J_DB, neo4j_db)
     yield
+    await neo4j_db.close()  # closes the driver the factory opened on this loop
 ```
 
 ### As Target (Nodes + Relationships)
@@ -379,34 +381,38 @@ class AssignedRel:
     priority: int
 
 # Mount node tables (each label is a table)
-person_table = await neo4j.mount_table_target(
+person_table = await neo4j.mount_node_target(
     NEO4J_DB,
     "Person",
     await neo4j.TableSchema.from_class(Person, primary_key="name"),
     primary_key="name",
 )
-task_table = await neo4j.mount_table_target(
+task_table = await neo4j.mount_node_target(
     NEO4J_DB,
     "Task",
     await neo4j.TableSchema.from_class(Task, primary_key="description"),
     primary_key="description",
 )
 
-# Mount a relationship target between two node tables
-assigned_rel = await neo4j.mount_relation_target(
+# Mount a relationship table between two node tables
+assigned_rel = await neo4j.mount_relationship_target(
     NEO4J_DB, "ASSIGNED_TO", person_table, task_table,
-    await neo4j.TableSchema.from_class(AssignedRel),
 )
 
 # Declare nodes
 person_table.declare_record(row=Person(name="Alice"))   # alias: declare_row
 task_table.declare_record(row=Task(description="ship v1"))
 
-# Declare edges (record optional; PK auto-derived from endpoints when omitted)
-assigned_rel.declare_relation(
+# Declare edges (record optional; without a primary key field the edge id is
+# derived from the endpoints, whose ids must then be int or str)
+assigned_rel.declare_relationship(
     from_id="Alice", to_id="ship v1", record=AssignedRel(priority=1),
 )
 ```
+
+`mount_table_target` / `mount_relation_target` / `declare_relation` are the deprecated
+names of these APIs. To switch an existing table without rebuilding it, follow
+"Switching an existing table" in the Neo4j connector docs.
 
 ### Vector Index
 
@@ -446,31 +452,33 @@ FALKOR_DB = coco.ContextKey[falkordb.ConnectionFactory]("falkor_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(FALKOR_DB, falkordb.ConnectionFactory(
+    falkor_db = falkordb.ConnectionFactory(
         uri="falkor://localhost:6379",
         graph="knowledge_graph",  # Optional, default "default"
-    ))
+    )
+    builder.provide(FALKOR_DB, falkor_db)
     yield
+    await falkor_db.close()  # closes the client the factory opened on this loop
 ```
 
 ### As Target (Nodes + Relationships)
 
 ```python
-person_table = await falkordb.mount_table_target(
+person_table = await falkordb.mount_node_target(
     FALKOR_DB,
     "Person",
     await falkordb.TableSchema.from_class(Person, primary_key="name"),
     primary_key="name",
 )
-task_table = await falkordb.mount_table_target(
+task_table = await falkordb.mount_node_target(
     FALKOR_DB,
     "Task",
     await falkordb.TableSchema.from_class(Task, primary_key="description"),
     primary_key="description",
 )
 
-# Mount relationship target (no schema -> PK auto-derived from endpoints)
-assigned_rel = await falkordb.mount_relation_target(
+# Mount a relationship table (no schema -> edge id derived from endpoints)
+assigned_rel = await falkordb.mount_relationship_target(
     FALKOR_DB, "ASSIGNED_TO", person_table, task_table,
 )
 
@@ -479,8 +487,12 @@ person_table.declare_record(row=Person(name="Alice"))   # alias: declare_row
 task_table.declare_record(row=Task(description="ship v1"))
 
 # Declare edges
-assigned_rel.declare_relation(from_id="Alice", to_id="ship v1")
+assigned_rel.declare_relationship(from_id="Alice", to_id="ship v1")
 ```
+
+`mount_table_target` / `mount_relation_target` / `declare_relation` are the deprecated
+names of these APIs. To switch an existing table without rebuilding it, follow
+"Switching an existing table" in the FalkorDB connector docs.
 
 ### Vector Index
 
@@ -624,7 +636,7 @@ consumer = AIOConsumer({
     "auto.offset.reset": "earliest",
 })
 
-items = kafka.topic_as_map(consumer, ["my-topic"])
+items = kafka.topic_as_map(consumer, "my-topic")
 await coco.mount_each(process_message, items, target_table)
 ```
 

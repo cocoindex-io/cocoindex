@@ -1,10 +1,14 @@
 import asyncio
+import datetime
 import traceback
 from typing import Iterator
+
+import pytest
 
 import cocoindex as coco
 
 from cocoindex._internal import environment as envmod
+from cocoindex.resources.live_map import LiveMap
 
 from tests import common
 from tests.common.target_states import GlobalDictTarget, DictDataWithPrev
@@ -368,3 +372,59 @@ def test_cancellation_in_handler_skips_outer_handlers() -> None:
     assert outer_calls == []
     assert len(caught) == 1
     assert isinstance(caught[0], asyncio.CancelledError)
+
+
+@pytest.mark.parametrize("auto_refresh", [False, True], ids=["plain", "auto_refresh"])
+def test_scoped_handler_receives_live_map_item_failures(auto_refresh: bool) -> None:
+    """A scoped handler covers a ``mount_each`` over a LiveMap as it covers one
+    over a list: each item's failure reaches it rather than the environment's
+    handler — also when each item is a live component (``coco.auto_refresh``).
+    The items are mounted from an internal live component, whose own context
+    starts from the environment's handler alone."""
+    envmod.reset_default_env_for_tests()
+    name = f"test_exception_handlers_live_map_{'auto_refresh' if auto_refresh else 'plain'}"
+
+    scoped: list[tuple[str, str]] = []
+    environment: list[str] = []
+
+    @coco.lifespan
+    def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+        builder.settings.db_path = common.get_env_db_path(name)
+
+        def global_handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            environment.append(ctx.stable_path)
+
+        builder.set_exception_handler(global_handler)
+        yield
+
+    @coco.fn
+    async def _item(value: str) -> None:
+        raise ValueError(f"boom-{value}")
+
+    @coco.fn
+    async def _produce(lm: LiveMap[str, str]) -> None:
+        lm.declare_entry("a", "1")
+
+    @coco.fn
+    async def _root() -> None:
+        def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            scoped.append((ctx.stable_path, str(exc)))
+
+        async with coco.exception_handler(handler):
+            lm: LiveMap[str, str] = await LiveMap.create()
+            producer = await coco.mount(_produce, lm)
+            await producer.ready()
+            items = coco.component_subpath("items")
+            if auto_refresh:
+                interval = datetime.timedelta(hours=1)
+                await coco.mount_each(
+                    items, coco.auto_refresh(_item, interval=interval), lm
+                )
+            else:
+                await coco.mount_each(items, _item, lm)
+
+    app = coco.App(name, _root)
+    app.update_blocking()
+
+    assert scoped == [('/"items"/"a"', "boom-1")]
+    assert environment == []

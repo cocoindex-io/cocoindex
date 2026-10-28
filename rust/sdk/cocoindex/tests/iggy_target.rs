@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::iggy::{self, IggyProducer};
+use cocoindex::connectors::iggy::{self, IggyProducer};
 use cocoindex::{App, Result};
 use iggy::prelude::{
     CompressionAlgorithm, Consumer, Identifier, IggyExpiry, MaxTopicSize, MessageClient,
@@ -54,11 +54,7 @@ async fn poll_all(producer: &IggyProducer, stream: &str, topic: &str) -> Vec<Str
 /// Latest payload for a `"<key>=..."` message in log order.
 fn latest(payloads: &[String], key: &str) -> Option<String> {
     let prefix = format!("{key}=");
-    payloads
-        .iter()
-        .filter(|p| p.starts_with(&prefix))
-        .next_back()
-        .cloned()
+    payloads.iter().rfind(|p| p.starts_with(&prefix)).cloned()
 }
 
 /// Create the (user-managed) stream + single-partition topic the target writes to.

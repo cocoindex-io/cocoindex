@@ -4,6 +4,7 @@ use crate::{
     component::PyComponentProcessor,
     prelude::*,
     target_state::{PyTargetActionSinkInner, PyTargetHandler},
+    target_state_codec::{PyTargetAction, PyTargetStateValue},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -18,7 +19,7 @@ impl EngineProfile for PyEngineProfile {
 
     type TargetHdl = PyTargetHandler;
     type TargetStateTrackingRecord = crate::value::PyStoredValue;
-    type TargetAction = Py<PyAny>;
+    type TargetAction = PyTargetAction;
     type TargetActionSink = PyTargetActionSinkInner;
-    type TargetStateValue = Py<PyAny>;
+    type TargetStateValue = PyTargetStateValue;
 }

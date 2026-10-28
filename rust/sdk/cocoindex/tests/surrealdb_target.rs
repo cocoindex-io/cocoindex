@@ -1,12 +1,9 @@
 #![cfg(feature = "surrealdb")]
 
-use std::sync::LazyLock;
-
+use cocoindex::connectors::surrealdb::{self, ColumnDef, Graph, TableSchema, VectorIndexOptions};
 use cocoindex::prelude::*;
-use cocoindex::surrealdb::{self, ColumnDef, Graph, TableSchema, VectorIndexOptions};
 
-static GRAPH: LazyLock<ContextKey<Graph>> =
-    LazyLock::new(|| ContextKey::new("surrealdb_smoke_graph"));
+cocoindex::context_key!(static GRAPH: Graph, key = "surrealdb_smoke_graph");
 
 async fn try_graph(db_name: &str) -> Option<Graph> {
     let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
@@ -385,53 +382,61 @@ async fn surrealdb_schema_evolution_adds_field_when_available() {
 }
 
 // ---------------------------------------------------------------------------
-// Table drop: a table no longer declared on re-run is removed
+// Table removal: a table no longer declared on re-run, or on drop_state, is
+// removed
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn surrealdb_table_dropped_when_no_longer_declared_when_available() {
+async fn surrealdb_undeclared_and_dropped_tables_are_removed_when_available() {
     let db_name = format!(
         "rust_sdk_surrealdb_drop_{}_{}",
         std::process::id(),
         chrono_like_timestamp()
     );
     let Some(graph) = try_graph(&db_name).await else {
-        eprintln!("skipping SurrealDB table-drop test; no local SurrealDB connection");
+        eprintln!("skipping SurrealDB table-removal test; no local SurrealDB connection");
         return;
     };
-    let (app, _dir) = temp_app(&graph, "surrealdb_table_drop").await;
+    let (app, _dir) = temp_app(&graph, "surrealdb_table_removal").await;
 
-    // Declare the table + a record.
-    app.run(|ctx| async move {
-        let widget = surrealdb::mount_table_target(&ctx, &GRAPH, "widget").await?;
-        widget.declare_record(&ctx, "w1", &serde_json::json!({ "name": "gear" }))?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert!(
-        graph
-            .table_names()
-            .await
-            .unwrap()
-            .contains(&"widget".to_string())
-    );
-    assert_eq!(graph.count("widget").await.unwrap(), 1);
+    async fn declare_widgets(app: &App) {
+        app.run(|ctx| async move {
+            let widget = surrealdb::mount_table_target(&ctx, &GRAPH, "widget").await?;
+            let fits =
+                surrealdb::mount_relation_target(&ctx, &GRAPH, "fits", &widget, &widget).await?;
+            widget.declare_record(&ctx, "w1", &serde_json::json!({ "name": "gear" }))?;
+            widget.declare_record(&ctx, "w2", &serde_json::json!({ "name": "axle" }))?;
+            fits.declare_relation(&ctx, "w1", "w2")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    async fn assert_tables(graph: &Graph, present: bool) {
+        let tables = graph.table_names().await.unwrap();
+        for name in ["widget", "fits"] {
+            assert_eq!(
+                tables.contains(&name.to_string()),
+                present,
+                "table {name}: tables={tables:?}"
+            );
+        }
+    }
 
-    // Re-register the table provider but declare nothing on it: the table state
-    // declared in the previous run is now orphaned, so the system-managed table
-    // is dropped (`REMOVE TABLE`) and its rows go with it.
-    app.run(|ctx| async move {
-        let _ = surrealdb::table_target(&ctx, &GRAPH, "widget")?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let after = graph.table_names().await.unwrap();
-    assert!(
-        !after.contains(&"widget".to_string()),
-        "after orphaning the table: tables={after:?}"
-    );
+    declare_widgets(&app).await;
+    assert_tables(&graph, true).await;
+    assert_eq!(graph.count("widget").await.unwrap(), 2);
+    assert_eq!(graph.count("fits").await.unwrap(), 1);
+
+    // A run that no longer declares the tables removes them (`REMOVE TABLE`).
+    app.run(|_ctx| async { Ok(()) }).await.unwrap();
+    assert_tables(&graph, false).await;
+
+    declare_widgets(&app).await;
+    assert_tables(&graph, true).await;
+
+    app.drop_state().await.unwrap();
+    assert_tables(&graph, false).await;
 }
 
 // ---------------------------------------------------------------------------

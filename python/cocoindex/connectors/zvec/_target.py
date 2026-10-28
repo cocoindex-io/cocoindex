@@ -32,7 +32,6 @@ from typing import (
     Generic,
     Iterator,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -41,11 +40,13 @@ from typing import (
 import numpy as np
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import zvec as _zvec
 except ImportError as e:
     raise ImportError(
-        "zvec is required to use the zvec connector. Please install cocoindex[zvec]."
+        "zvec is required to use the zvec connector. " + install_hint("zvec")
     ) from e
 
 import msgspec
@@ -55,9 +56,11 @@ from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
+    AnyType,
     RecordType,
     SequenceType,
     TypeChecker,
+    UnionType,
     analyze_type_info,
     is_record_type,
 )
@@ -490,7 +493,8 @@ class CollectionSchema(Generic[RowT]):
         Args:
             record_type: A dataclass, NamedTuple, or Pydantic model.
             primary_key: Exactly one column name. Its value becomes the document
-                id (converted to ``str``).
+                id (converted to ``str``). A new collection rejects a key column
+                typed ``Any``, ``object``, a union or ``bytes``.
             column_overrides: Optional per-column type/vector overrides.
         """
         if not is_record_type(record_type):
@@ -625,12 +629,12 @@ def _build_doc(value: _DocValue) -> Any:
 class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     """Handler for document-level target states within a collection."""
 
-    _db_key: str
+    _conn: ManagedConnection
     _collection_name: str
     _sink: coco.TargetActionSink[_DocAction]
 
-    def __init__(self, db_key: str, collection_name: str) -> None:
-        self._db_key = db_key
+    def __init__(self, conn: ManagedConnection, collection_name: str) -> None:
+        self._conn = conn
         self._collection_name = collection_name
         self._sink = coco.TargetActionSink[_DocAction].from_fn(self._apply_actions)
 
@@ -639,8 +643,7 @@ class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     ) -> None:
         if not actions:
             return
-        conn = context_provider.get(self._db_key, ManagedConnection)
-        col = conn.open_existing(self._collection_name)
+        col = self._conn.open_existing(self._collection_name)
 
         upserts: list[Any] = []
         deletes: list[str] = []
@@ -760,21 +763,28 @@ class _CollectionAction(NamedTuple):
     main_action: statediff.DiffAction | None
 
 
+def _doc_handler(
+    context_provider: ContextProvider, action: _CollectionAction, /
+) -> _DocHandler:
+    """The doc handler for a created or updated collection's docs."""
+    return _DocHandler(
+        context_provider.get(action.key.db_key, ManagedConnection),
+        action.key.collection_name,
+    )
+
+
 def _apply_collection_actions(
     context_provider: ContextProvider,
     actions: Sequence[_CollectionAction],
-    child_slots: Mapping[int, coco.ChildSlot[_DocHandler]],
     /,
 ) -> None:
-    by_key: dict[_CollectionKey, list[int]] = {}
-    for i, action in enumerate(actions):
-        by_key.setdefault(action.key, []).append(i)
+    by_key: dict[_CollectionKey, list[_CollectionAction]] = {}
+    for action in actions:
+        by_key.setdefault(action.key, []).append(action)
 
-    for key, idxs in by_key.items():
+    for key, key_actions in by_key.items():
         conn = context_provider.get(key.db_key, ManagedConnection)
-        for i in idxs:
-            action = actions[i]
-
+        for action in key_actions:
             # A non-None main action implies a system-managed collection
             # (resolve_system_transition yields None for user-managed ones).
             if action.main_action in ("replace", "delete"):
@@ -784,7 +794,6 @@ def _apply_collection_actions(
                 continue
 
             spec = action.spec
-            child_slots[i].fulfill(_DocHandler(key.db_key, key.collection_name))
 
             if action.main_action in ("insert", "upsert", "replace"):
                 conn.open_or_create(
@@ -793,9 +802,32 @@ def _apply_collection_actions(
                 )
 
 
-_collection_action_sink = coco.TargetActionSink[
-    _CollectionAction
-].from_fn_with_children(_apply_collection_actions)
+_collection_action_sink = coco.TargetActionSink[_CollectionAction].from_fn(
+    _apply_collection_actions, child_handler=_doc_handler
+)
+
+
+def _ambiguous_doc_id_type(schema: CollectionSchema[Any]) -> str | None:
+    """Describe the primary key type if ``str`` of its values is ambiguous, else None.
+
+    A document id is ``str(key)``: in a union or ``Any`` column it maps 1 and "1"
+    (or True and "True") to one id, and it turns bytes into the text "b'...'".
+    """
+    if schema.row_type is None:
+        return None
+    type_hint = next(
+        f.type_hint
+        for f in RecordType(schema.row_type).fields
+        if f.name == schema.primary_key
+    )
+    type_info = analyze_type_info(type_hint)
+    if isinstance(type_info.variant, AnyType) or type_info.base_type is object:
+        return "Any"
+    if isinstance(type_info.variant, UnionType):
+        return "a union"
+    if type_info.base_type is bytes:
+        return "bytes"
+    return None
 
 
 class _CollectionHandler(
@@ -819,6 +851,18 @@ class _CollectionHandler(
         if coco.is_non_existence(desired_state):
             tracking_record = coco.NON_EXISTENCE
         else:
+            # Only a new collection is checked, so existing ones keep their ids.
+            if not prev_possible_records and (
+                key_type := _ambiguous_doc_id_type(desired_state.schema)
+            ):
+                raise ValueError(
+                    f"zvec collection {key.collection_name!r}: primary key column "
+                    f"{desired_state.schema.primary_key!r} is typed {key_type}. A "
+                    "document id is the key value converted with str(), which is "
+                    'ambiguous for this type (1 and "1" get one id, bytes become '
+                    "\"b'...'\"). Use a str or int key column, converting the "
+                    "value yourself if needed."
+                )
             tracking_record = statediff.MutualTrackingRecord(
                 tracking_record=_tracking_core_from_spec(desired_state),
                 managed_by=desired_state.managed_by,

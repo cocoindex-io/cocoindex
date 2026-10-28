@@ -2,10 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
-use cocoindex::fs;
-use cocoindex::neo4j::{self, ColumnDef, TableSchema};
+use cocoindex::connectors::neo4j::{self, ColumnDef, TableSchema};
 use cocoindex::prelude::*;
+use cocoindex::resources::fs;
 use serde::{Deserialize, Serialize};
+
+// The graph connection, provided to the environment in `main`. Its name is the
+// graph's stable identity in the target states.
+cocoindex::context_key!(static GRAPH: neo4j::Graph);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Meeting {
@@ -153,10 +157,10 @@ fn canonical_person(name: &str) -> String {
     }
 }
 
-async fn build_graph(ctx: &Ctx, graph: &neo4j::Graph, input_dir: &str) -> Result<()> {
+async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
     let meeting_table = neo4j::mount_table_target(
         ctx,
-        graph,
+        &GRAPH,
         "Meeting",
         schema(
             &[
@@ -169,22 +173,28 @@ async fn build_graph(ctx: &Ctx, graph: &neo4j::Graph, input_dir: &str) -> Result
         )?,
     )
     .await?;
-    let person_table =
-        neo4j::mount_table_target(ctx, graph, "Person", schema(&[("name", "STRING")], "name")?)
-            .await?;
+    let person_table = neo4j::mount_table_target(
+        ctx,
+        &GRAPH,
+        "Person",
+        schema(&[("name", "STRING")], "name")?,
+    )
+    .await?;
     let task_table = neo4j::mount_table_target(
         ctx,
-        graph,
+        &GRAPH,
         "Task",
         schema(&[("description", "STRING")], "description")?,
     )
     .await?;
     let attended_rel =
-        neo4j::mount_relation_target(ctx, graph, "ATTENDED", &person_table, &meeting_table).await?;
+        neo4j::mount_relation_target(ctx, &GRAPH, "ATTENDED", &person_table, &meeting_table)
+            .await?;
     let decided_rel =
-        neo4j::mount_relation_target(ctx, graph, "DECIDED", &meeting_table, &task_table).await?;
+        neo4j::mount_relation_target(ctx, &GRAPH, "DECIDED", &meeting_table, &task_table).await?;
     let assigned_rel =
-        neo4j::mount_relation_target(ctx, graph, "ASSIGNED_TO", &person_table, &task_table).await?;
+        neo4j::mount_relation_target(ctx, &GRAPH, "ASSIGNED_TO", &person_table, &task_table)
+            .await?;
 
     let files = fs::walk(input_dir, &["**/*.md"])?;
     let mut meetings = Vec::new();
@@ -285,17 +295,20 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| format!("{}/input", env!("CARGO_MANIFEST_DIR")));
     let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
-    let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "cocoindex".to_string());
+    let password = std::env::var("NEO4J_PASSWORD")
+        .map_err(|_| Error::engine("NEO4J_PASSWORD is not set"))?;
     let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());
     let graph = neo4j::Graph::connect(&uri, &user, &password, &database).await?;
-    let app = App::builder("meeting_notes_graph_neo4j")
+    let app = Environment::builder()
         .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&GRAPH, graph)
         .build()
+        .await?
+        .app("meeting_notes_graph_neo4j")
         .await?;
     app.update(move |ctx| {
-        let graph = graph.clone();
         let input_dir = input_dir.clone();
-        async move { build_graph(&ctx, &graph, &input_dir).await }
+        async move { build_graph(&ctx, &input_dir).await }
     })
     .await?;
     Ok(())

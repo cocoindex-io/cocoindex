@@ -84,7 +84,7 @@ async for file in source.files():
 
 ### Keyed iteration with `items()`
 
-`items()` yields `(str, DriveFile)` pairs, where the key is the file's name path. This is useful with `mount_each()`:
+`items()` yields `(str, DriveFile)` pairs keyed by the file's Google Drive ID. IDs remain stable across renames and avoid collisions when files share a name, including within the same folder. This is useful with `mount_each()`:
 
 ```python
 async for key, file in source.items():
@@ -129,8 +129,9 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 
 `DriveFile` implements [`FileLike`](../common_resources/data_types#filelike) with Google Drive-specific behavior:
 
-- `file_path` — A `DriveFilePath` where `resolve()` returns the Google Drive file ID.
+- `file_path` — A `DriveFilePath` containing the path relative to the configured root folder; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal. Each folder's children are visited in order of name, then ID, so the same path is kept on every run.
 - `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported.
+- Change detection uses the Drive MD5 checksum of binary files, so an unchanged file is not downloaded again. Google Docs, Sheets and Slides have no checksum; their exported content is hashed instead.
 
 ### Example
 

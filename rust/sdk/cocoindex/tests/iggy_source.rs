@@ -15,7 +15,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cocoindex::iggy::{self, IggyConsumer, IggyProducer};
+use cocoindex::connectors::iggy::{self, IggyConsumer, IggyProducer};
 use cocoindex::{App, Result, UpdateOptions};
 use iggy::prelude::{
     CompressionAlgorithm, Identifier, IggyExpiry, MaxTopicSize, StreamClient, TopicClient,

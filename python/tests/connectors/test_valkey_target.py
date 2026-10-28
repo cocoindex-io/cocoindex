@@ -30,10 +30,17 @@ from tests import common
 # =============================================================================
 
 try:
+    import importlib.metadata
+
     from glide import GlideClient, GlideClientConfiguration, NodeAddress
     from glide.async_commands import ft as glide_ft
 
-    HAS_GLIDE = True
+    try:
+        _glide_ver = importlib.metadata.version("valkey-glide")
+        _ver_tuple = tuple(int(x) for x in _glide_ver.split(".")[:3] if x.isdigit())
+        HAS_GLIDE = _ver_tuple >= (2, 5, 2)
+    except Exception:
+        HAS_GLIDE = False
 except ImportError:
     HAS_GLIDE = False
 
@@ -173,10 +180,19 @@ class TestCreateClientConfig:
     def test_default_config(self) -> None:
         config = valkey.create_client_config()
         assert config is not None
+        assert config.client_name == "cocoindex_vector_store"
+        assert config.client_info_tag == "cocoindex"
 
     def test_custom_host_port(self) -> None:
         config = valkey.create_client_config("myhost", 7777)
         assert config is not None
+
+    def test_kwargs_override(self) -> None:
+        config = valkey.create_client_config(
+            client_info_tag="my_custom_tag", client_name="my_custom_name"
+        )
+        assert config.client_info_tag == "my_custom_tag"
+        assert config.client_name == "my_custom_name"
 
 
 @requires_glide
@@ -216,6 +232,14 @@ class TestFieldDef:
         fd = valkey.FieldDef("price", "numeric", sortable=True)
         assert fd.type == "numeric"
         assert fd.sortable is True
+
+    @pytest.mark.asyncio
+    async def test_vector_name_is_reserved(self) -> None:
+        with pytest.raises(ValueError, match="FieldDef name 'vector' is reserved"):
+            await valkey.IndexSchema.create(
+                vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA),
+                fields=[valkey.FieldDef("vector", "tag")],
+            )
 
 
 @requires_glide
@@ -326,6 +350,40 @@ async def test_create_index_and_insert_documents(valkey_env: _ValkeyEnv) -> None
     vec_blob = await client.hget(f"{prefix}doc1", "vector")
     assert vec_blob is not None
     assert _decode_vector(vec_blob, _DIM) == pytest.approx([1.0] * _DIM)  # type: ignore[arg-type]
+
+
+@requires_glide
+@requires_server
+@pytest.mark.asyncio
+async def test_payload_key_vector_is_rejected(valkey_env: _ValkeyEnv) -> None:
+    """A payload key named `vector` would overwrite the stored vector, so it is rejected."""
+    index_name = _unique_name("test_reserved_payload")
+
+    async def declare_fn() -> None:
+        index = await coco.use_mount(
+            coco.component_subpath("setup", "index"),
+            valkey.declare_index_target,
+            _VALKEY_DB_KEY,
+            index_name,
+            await valkey.IndexSchema.create(
+                vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA),
+            ),
+        )
+        index.declare_document(
+            valkey.Document(
+                id="doc1",
+                vector=_make_vector(_DIM, 1.0),
+                payload={"vector": "not a vector"},
+            )
+        )
+
+    app = coco.App(
+        coco.AppConfig(name="test_reserved_payload", environment=valkey_env.coco_env),
+        declare_fn,
+    )
+    with pytest.raises(Exception, match="Payload key 'vector' is reserved"):
+        await app.update()
+    assert await valkey_env.client.hget(f"{index_name}:doc1", "vector") is None
 
 
 @requires_glide

@@ -10,7 +10,7 @@ available transcriptions.
 
 | Concern          | Python                                   | Rust (this example)                                  |
 | ---------------- | ---------------------------------------- | ---------------------------------------------------- |
-| Source           | `localfs.walk_dir`                       | `cocoindex::fs::walk`                                |
+| Source           | `localfs.walk_dir`                       | `cocoindex::resources::fs::walk`                                |
 | Per-file compute | `@coco.fn(memo=True) process_file`       | `#[cocoindex::function(memo)] transcribe`            |
 | Transcription    | `LiteLLMTranscriber("whisper-1")`        | OpenAI `/v1/audio/transcriptions` (`whisper-1`)      |
 | Target           | `postgres.mount_table_target`            | `postgres::mount_table_target`                       |

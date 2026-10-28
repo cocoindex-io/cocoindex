@@ -183,6 +183,24 @@ class TestS3File:
         f = await amazon_s3.get_object(client, bucket_name, "data/nested.json")
         assert await f.read() == b'{"key": "value"}'
 
+    async def test_partial_read_zero_bytes(self, s3_client: tuple[Any, str]) -> None:
+        client, bucket_name = s3_client
+        f = await amazon_s3.get_object(client, bucket_name, "file1.txt")
+
+        assert await f.read(0) == b""
+        assert await f.read(2) == b"he"
+        assert await f.read() == b"hello"
+
+    async def test_partial_read_empty_object(self, s3_client: tuple[Any, str]) -> None:
+        client, bucket_name = s3_client
+        boto3.client("s3", region_name="us-east-1").put_object(
+            Bucket=bucket_name, Key="empty.bin", Body=b""
+        )
+        f = await amazon_s3.get_object(client, bucket_name, "empty.bin")
+
+        assert await f.read(2) == b""
+        assert await f.read() == b""
+
     async def test_read_text(self, s3_client: tuple[Any, str]) -> None:
         """await read_text() returns file content as text."""
         client, bucket_name = s3_client
@@ -432,3 +450,160 @@ class TestS3FilePathUnit:
             object_key="file.txt",
         )
         assert fp1.__coco_memo_key__() != fp2.__coco_memo_key__()
+
+
+# ---------------------------------------------------------------------------
+# Item keys and path identity
+# ---------------------------------------------------------------------------
+
+
+_KEY_TEST_OBJECTS = {
+    "docs/a.md": b"a",
+    "docs//a.md": b"double slash",
+    "docsa.md": b"outside the folder",
+    "docs/x/y.txt": b"y",
+    "docs/x//y.txt": b"y double slash",
+    "docs/x/./y.txt": b"y dot",
+    "docs/sub/b.md": b"b",
+}
+
+
+@pytest_asyncio.fixture
+async def s3_key_client() -> AsyncIterator[tuple[Any, str]]:
+    """A bucket with keys that differ only in ways PurePath normalizes away."""
+    async with mock_aws():
+        bucket_name = "key-test"
+        sync_client = boto3.client("s3", region_name="us-east-1")
+        sync_client.create_bucket(Bucket=bucket_name)
+        for key, body in _KEY_TEST_OBJECTS.items():
+            sync_client.put_object(Bucket=bucket_name, Key=key, Body=body)
+
+        session = aiobotocore.session.get_session()
+        async with session.create_client("s3", region_name="us-east-1") as client:
+            yield client, bucket_name
+
+
+@pytest.mark.asyncio
+class TestItemKeys:
+    """Item keys are the object keys relative to the prefix folder, as stored."""
+
+    @pytest.mark.parametrize("prefix", ["docs", "docs/"])
+    async def test_prefix_is_a_folder_and_keys_are_raw(
+        self, s3_key_client: tuple[Any, str], prefix: str
+    ) -> None:
+        client, bucket_name = s3_key_client
+        walker = amazon_s3.list_objects(client, bucket_name, prefix=prefix)
+        items = {key: f async for key, f in walker.items()}
+
+        assert sorted(items) == [
+            "/a.md",
+            "a.md",
+            "sub/b.md",
+            "x/./y.txt",
+            "x//y.txt",
+            "x/y.txt",
+        ]
+        # Each item reads its own object, and `docsa.md` is not in the folder.
+        for key, f in items.items():
+            assert f.file_path.resolve() == "docs/" + key
+            assert await f.read() == _KEY_TEST_OBJECTS["docs/" + key]
+
+        paths = [f.file_path for f in items.values()]
+        assert len(set(paths)) == len(paths)
+        assert len({p.__coco_memo_key__() for p in paths}) == len(paths)
+
+    async def test_derived_paths_resolve_to_new_object_key(
+        self, s3_key_client: tuple[Any, str]
+    ) -> None:
+        client, bucket_name = s3_key_client
+        walker = amazon_s3.list_objects(client, bucket_name, prefix="docs/")
+        items = {key: f async for key, f in walker.items()}
+        fp = items["sub/b.md"].file_path
+
+        assert fp.with_suffix(".txt").resolve() == "docs/sub/b.txt"
+        assert fp.with_name("c.md").resolve() == "docs/sub/c.md"
+        assert fp.parent.resolve() == "docs/sub"
+        sibling = fp.parent.parent / "a.md"
+        assert sibling.resolve() == "docs/a.md"
+        assert sibling == items["a.md"].file_path
+        f = await amazon_s3.get_object(client, bucket_name, sibling.resolve())
+        assert await f.read() == b"a"
+
+
+class TestS3FilePathIdentity:
+    """Equality, hashing and ordering agree with the memo key."""
+
+    def test_bucket_is_part_of_identity(self) -> None:
+        a = amazon_s3.S3FilePath("bucket-a", "x.txt", object_key="x.txt")
+        b = amazon_s3.S3FilePath("bucket-b", "x.txt", object_key="x.txt")
+        assert a != b
+        assert len({a, b}) == 2
+        assert sorted([b, a]) == [a, b]
+
+    def test_equal_paths(self) -> None:
+        a = amazon_s3.S3FilePath("bucket", "x.txt", object_key="p/x.txt")
+        b = amazon_s3.S3FilePath("bucket", "x.txt", object_key="p/x.txt")
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_not_equal_to_other_file_path_types(self) -> None:
+        from cocoindex.connectors.localfs import FilePath as LocalfsFilePath
+
+        s3_path = amazon_s3.S3FilePath("bucket", "x.txt", object_key="x.txt")
+        assert s3_path != LocalfsFilePath("x.txt")
+
+    def test_object_key_must_end_with_path(self) -> None:
+        with pytest.raises(ValueError):
+            amazon_s3.S3FilePath("bucket", "x.txt", object_key="y.txt")
+
+
+@pytest.mark.asyncio
+async def test_memo_detects_overwrite_with_same_mtime() -> None:
+    """S3 mtimes are whole seconds: a same-second overwrite is caught by the ETag."""
+    import cocoindex as coco
+    from cocoindex.resources.file import FileMetadata
+
+    from tests.common import create_test_env
+
+    async with mock_aws():
+        sync_client = boto3.client("s3", region_name="us-east-1")
+        sync_client.create_bucket(Bucket="same-second")
+        session = aiobotocore.session.get_session()
+        async with session.create_client("s3", region_name="us-east-1") as client:
+            calls: list[str] = []
+
+            @coco.fn(memo=True)
+            async def process(f: amazon_s3.S3File) -> str:
+                calls.append(await f.read_text())
+                return calls[-1]
+
+            current: amazon_s3.S3File
+
+            @coco.fn
+            async def main() -> str:
+                return await process(current)
+
+            env = create_test_env(__file__, suffix="s3_same_second_overwrite")
+            app = coco.App(
+                coco.AppConfig(name="s3_same_second_overwrite", environment=env), main
+            )
+            for etag, text in [("e1", "v1"), ("e1", "v1"), ("e2", "v2")]:
+                sync_client.put_object(
+                    Bucket="same-second", Key="f.txt", Body=text.encode()
+                )
+                # Pin the listed metadata: the mtime stays, only the ETag moves.
+                current = amazon_s3.S3File(
+                    client=client,
+                    file_path=amazon_s3.S3FilePath(
+                        "same-second", "f.txt", object_key="f.txt"
+                    ),
+                    _metadata=FileMetadata(
+                        size=len(text),
+                        modified_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                        content_fingerprint=etag.encode(),
+                    ),
+                )
+                assert await app.update() == text
+
+            # The second run reuses the memo; the overwrite recomputes.
+            assert calls == ["v1", "v2"]

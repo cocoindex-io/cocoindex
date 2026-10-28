@@ -3,15 +3,24 @@ name: Fast Check
 on:
   pull_request:
     branches: [main, v1]
+    types: [opened, synchronize, reopened, ready_for_review, stacked]
+  merge_group:
   push:
     branches: [main, v1]
   workflow_dispatch:
+
+# A new push to a pull request cancels its running checks. Other runs get a
+# group of their own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   fast-check:
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -33,4 +42,4 @@ jobs:
           extra-args: '--all-files'
         env:
           # Skip heavy build/test hooks - only run fast formatting/linting checks
-          PREK_SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,cargo-test-rust-externs,cargo-tree-sdk-no-pyo3,pytest,generate-cli-docs
+          PREK_SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,cargo-test-sdk,cargo-clippy,cargo-clippy-sdk,cargo-test-rust-externs,cargo-tree-sdk-no-pyo3,pytest,generate-cli-docs

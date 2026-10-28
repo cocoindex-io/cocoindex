@@ -19,12 +19,11 @@
 //! the CLIP ONNX models on first run.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use cocoindex::ops::image::ImageEmbedder;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::prelude::*;
-use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
 use serde_json::json;
 
 /// CLIP ViT-B/32 vision tower (images) and text tower (queries). Both output
@@ -44,16 +43,11 @@ const IMAGE_GLOBS: &[&str] = &[
     "**/*.bmp",
 ];
 
-static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("image_search_db", |c: &QdrantConnection| {
-        c.state_id().to_string()
-    })
-});
-static EMBEDDER: LazyLock<ContextKey<ImageEmbedder>> = LazyLock::new(|| {
-    ContextKey::new_with_state("image_embedder", |e: &ImageEmbedder| {
-        e.model_name().to_string()
-    })
-});
+cocoindex::context_key!(static DB: QdrantConnection);
+cocoindex::context_key!(
+    static EMBEDDER: ImageEmbedder,
+    detect_change
+);
 
 /// A computed point: stable id + image vector + source filename.
 #[derive(Clone, Serialize, Deserialize)]
@@ -78,7 +72,6 @@ async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let conn = ctx.get_key(&DB)?;
     let target = qdrant::mount_collection_target(
         &ctx,
         &DB,
@@ -112,7 +105,7 @@ async fn query_once(
     text_embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = text_embedder.embed(query).await?;
+    let query_vec = Embedder::embed(text_embedder, query).await?;
     let hits = qdrant::vector_search(conn, COLLECTION, query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit

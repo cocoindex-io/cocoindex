@@ -22,7 +22,6 @@ from typing import (
     Generic,
     Iterator,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -42,6 +41,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
+from cocoindex._internal.extras import install_hint
 from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
@@ -60,7 +60,7 @@ class ConnectionConfig:
 
     account: str
     user: str
-    password: str
+    password: str = dataclasses.field(repr=False)
     warehouse: str | None = None
     role: str | None = None
 
@@ -337,7 +337,7 @@ def _connect(config: ConnectionConfig) -> Iterator[Any]:
     except ImportError as e:
         raise ImportError(
             "snowflake-connector-python is required to use the Snowflake connector. "
-            "Please install cocoindex[snowflake]."
+            + install_hint("snowflake")
         ) from e
 
     kwargs: dict[str, str] = {
@@ -366,6 +366,8 @@ class _RowAction(NamedTuple):
 
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
+
+    tracks_value_fingerprint = True
 
     _db_key: str
     _database: str | None
@@ -641,31 +643,42 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink[_TableAction].from_fn(
+            self._apply_actions, child_handler=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RowHandler:
+        """The row handler for a created or updated table's rows."""
+        key = action.key
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            db_key=key.db_key,
+            database=key.database,
+            schema=key.schema,
+            table_name=key.table_name,
+            table_schema=action.spec.table_schema,
         )
 
     def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
         /,
     ) -> None:
-        """Apply table actions (DDL) and fulfill the child row handlers."""
-        by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_key.setdefault(action.key, []).append(i)
+        """Apply table actions (DDL)."""
+        by_key: dict[_TableKey, list[_TableAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             config = context_provider.get(key.db_key, ConnectionConfig)
             with _connect(config) as conn:
                 cursor = conn.cursor()
                 try:
-                    for i in idxs:
-                        action = actions[i]
-                        assert action.key == key
-
+                    for action in key_actions:
                         if action.main_action in ("replace", "delete"):
                             _drop_table(cursor, key)
 
@@ -673,15 +686,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                             continue
 
                         spec = action.spec
-                        child_slots[i].fulfill(
-                            _RowHandler(
-                                db_key=key.db_key,
-                                database=key.database,
-                                schema=key.schema,
-                                table_name=key.table_name,
-                                table_schema=spec.table_schema,
-                            )
-                        )
 
                         if action.main_action in ("insert", "upsert", "replace"):
                             _create_table(

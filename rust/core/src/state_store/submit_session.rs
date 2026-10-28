@@ -365,10 +365,11 @@ pub struct CommitPlan {
 /// suspension scope. The body's future is `'a`-tied so it can't outlive
 /// the borrow.
 ///
-/// `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
-/// invoke the reconciler more than once; it therefore clones or
-/// `Arc`-shares its captures rather than moving them in. The LMDB
-/// AppStore invokes it exactly once.
+/// `Fn` (not `FnOnce`) because the LMDB AppStore can invoke it more
+/// than once: the batcher re-runs this commit's body against a fresh txn
+/// after growing the map on `MDB_MAP_FULL`, or after another body in its
+/// write batch fails. It therefore clones or `Arc`-shares its captures
+/// rather than moving them in.
 pub type ExistenceReconciler =
     Box<dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send + Sync>;
 
@@ -388,11 +389,18 @@ impl AppStore {
     /// AGENTS.md "LMDB write paths"). LMDB has no savepoints — to
     /// "abort" on PendingRetry, the body contributes no writes.
     ///
-    /// The callback is `Fn` (not `FnOnce`) for shape parity with
-    /// retry-capable backends; LMDB's batcher never retries the body,
-    /// so it's invoked at most once per call here. Captures consumed by
-    /// the body must be cloned inside the closure (typically a few
-    /// `Arc::clone`s).
+    /// The callback is `Fn` (not `FnOnce`) because it can run more than
+    /// once per call: the batcher re-runs a body against a fresh txn after
+    /// growing the map on `MDB_MAP_FULL`, or after another body in its
+    /// write batch fails, keeping only the last run's output. So the
+    /// callback must be side-effect-free on its captures: clone what the
+    /// body consumes inside the closure (typically a few `Arc::clone`s)
+    /// rather than moving it out. A result handed out through a captured
+    /// slot rather than the return value (as the preview path does) must
+    /// overwrite the slot on each run, never accumulate into it.
+    ///
+    /// A callback error fails only this call: none of its writes commit,
+    /// while the other bodies of the batch commit without it.
     pub async fn precommit<T, F>(
         &self,
         component_path: &StablePath,
@@ -469,8 +477,8 @@ impl AppStore {
     ) -> Result<()> {
         let app_store = self.clone();
         let component_path = component_path.clone();
-        // Wrap non-Clone values in `Arc` so the closure stays `Fn` (retryable on
-        // `MDB_MAP_FULL`). `CommitPlan` and `ExistenceReconciler` are read-only inside
+        // Wrap non-Clone values in `Arc` so the closure stays `Fn` (the batcher may
+        // re-run it). `CommitPlan` and `ExistenceReconciler` are read-only inside
         // the body, so `Arc`-sharing is safe.
         let plan = Arc::new(plan);
         let existence_reconciler = Arc::new(existence_reconciler);

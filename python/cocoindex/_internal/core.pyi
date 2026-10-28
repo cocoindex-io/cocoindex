@@ -13,6 +13,7 @@ from typing import (
     TypeVar,
 )
 import asyncio
+from types import ModuleType
 
 from cocoindex._internal.typing import Fingerprintable as Fingerprintable
 from cocoindex._internal.typing import StableKey as StableKey
@@ -121,7 +122,12 @@ class ComponentProcessorContext:
 class FnCallContext:
     def __new__(cls, *, propagate_children_fn_logic: bool = True) -> FnCallContext: ...
     def join_child(self, child_fn_ctx: FnCallContext) -> None: ...
+    def join_tunneled_child(
+        self, child_fn_ctx: FnCallContext, owner: FnCallContext
+    ) -> None: ...
     def join_child_memo(self, memo_fp: Fingerprint) -> None: ...
+    @property
+    def closed(self) -> bool: ...
     def add_fn_logic_dep(self, fp: Fingerprint) -> None: ...
     def add_context_change_dep(self, fp: Fingerprint) -> None: ...
     def initial_context_memo_states(
@@ -152,6 +158,7 @@ class FnCallMemoGuard:
     def join_cached_target_provider_deps(
         self, parent_fn_ctx: FnCallContext
     ) -> None: ...
+    def join_cached_logic_deps(self, fn_ctx: FnCallContext) -> None: ...
     def resolve(
         self,
         fn_ctx: FnCallContext,
@@ -180,6 +187,7 @@ class AsyncContext:
 # --- Environment ---
 class Environment:
     def __new__(cls, settings: Any, async_context: AsyncContext) -> "Environment": ...
+    def close(self) -> None: ...
     def register_logic(self, fp: Fingerprint) -> None: ...
     def unregister_logic(self, fp: Fingerprint) -> None: ...
     def register_context_initial_states(
@@ -387,11 +395,15 @@ def mount_live_async(
 class TargetActionSink:
     @staticmethod
     def new_sync(
-        callback: Callable[..., Any], with_children: bool
+        callback: Callable[..., Any],
+        with_children: bool,
+        child_handler: Callable[[Any, Any], Any] | None = None,
     ) -> TargetActionSink: ...
     @staticmethod
     def new_async(
-        callback: Callable[..., Coroutine[Any, Any, Any]], with_children: bool
+        callback: Callable[..., Coroutine[Any, Any, Any]],
+        with_children: bool,
+        child_handler: Callable[[Any, Any], Any] | None = None,
     ) -> TargetActionSink: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -419,7 +431,9 @@ def init_runtime(
     lang: str,
     serialize_fn: Callable[[Any], bytes],
     child_slot_wrapper_fn: Callable[[ChildTargetSlot], Any],
+    typed_target_handler_wrapper_fn: Callable[[Any], Any],
     non_existence: Any,
+    target_state_codec: ModuleType,
 ) -> None: ...
 def shutdown_tokio_runtime() -> None: ...
 def cancel_all() -> None: ...
@@ -456,6 +470,8 @@ def register_root_target_states_provider(
     name: str, handler: Any
 ) -> TargetStateProvider: ...
 def fingerprint_simple_object(obj: Fingerprintable) -> Fingerprint: ...
+def fingerprint_plain_object(obj: object) -> Fingerprint | None: ...
+def set_plain_canonical_form_overridden(overridden: bool) -> None: ...
 def fingerprint_bytes(data: bytes) -> Fingerprint: ...
 def fingerprint_str(s: str) -> Fingerprint: ...
 def register_logic_fingerprint(fp: Fingerprint) -> None: ...
@@ -679,8 +695,22 @@ class BatchingOptions:
     """Options for batching behavior."""
 
     max_batch_size: int | None
+    max_in_flight: int | None
+    """Upper bound on batches of the shared queue running at once (the inline
+    first call counts); positive when set. None keeps the idle-queue rule: a
+    full batch starts when it fills, the next partial batch once every running
+    batch has finished. Batchers sharing a queue should agree on it."""
 
-    def __new__(cls, max_batch_size: int | None = None) -> "BatchingOptions": ...
+    def __new__(
+        cls,
+        max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: "RateLimiter | None" = None,
+    ) -> "BatchingOptions":
+        """``rate_limiter`` gates every batch: no call runs inline, and a pump
+        runs the oldest pending batch once a ``max_in_flight`` slot and one
+        token are available, so calls arriving during the wait ride the next
+        token. Batchers sharing a queue should agree on it."""
 
 # --- BatchQueue ---
 class BatchQueue:
@@ -738,3 +768,34 @@ class RateLimiter:
         cls, max_rows_per_second: float, burst_window_secs: float = 1.0
     ) -> "RateLimiter": ...
     def acquire(self, n: int = 1) -> Coroutine[Any, Any, None]: ...
+
+########################################################
+# GPU pool
+########################################################
+
+class GPUPool:
+    def __init__(self, num_gpus: int) -> None: ...
+    @property
+    def num_gpus(self) -> int: ...
+    async def acquire(self, fraction: float) -> int:
+        """
+        Acquires a fraction of a GPU and returns the GPU ID.
+        """
+        ...
+
+    async def acquire_full(self, gpu_count: int) -> list[int]:
+        """
+        Acquires a given integer number of fully available GPUs (capacity == 1.0) from the GPU pool.
+
+        The gpu_count should be greater or equal to 1 and less than or equal to the number of GPUs in the pool.
+        """
+        ...
+
+    def release(self, gpu_id: int, fraction: float) -> None:
+        """
+        Releases a fraction of capacity back to the specified GPU ID.
+        """
+        ...
+
+    @staticmethod
+    def default() -> "GPUPool": ...

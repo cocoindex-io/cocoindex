@@ -84,18 +84,16 @@ def extract_video_id(url: str) -> str:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    builder.provide(
-        SURREAL_DB,
-        surrealdb.ConnectionFactory(
-            url=os.environ.get("SURREALDB_URL", "ws://localhost:8787/rpc"),
-            namespace=os.environ.get("SURREALDB_NS", "cocoindex"),
-            database=os.environ.get("SURREALDB_DB", "yt_conversations"),
-            credentials={
-                "username": os.environ.get("SURREALDB_USER", "root"),
-                "password": os.environ.get("SURREALDB_PASS", "root"),
-            },
-        ),
+    surreal_db = surrealdb.ConnectionFactory(
+        url=os.environ.get("SURREALDB_URL", "ws://localhost:8787/rpc"),
+        namespace=os.environ.get("SURREALDB_NS", "cocoindex"),
+        database=os.environ.get("SURREALDB_DB", "yt_conversations"),
+        credentials={
+            "username": os.environ.get("SURREALDB_USER", "root"),
+            "password": os.environ.get("SURREALDB_PASS", "root"),
+        },
     )
+    builder.provide(SURREAL_DB, surreal_db)
     builder.provide(
         EMBEDDER,
         SentenceTransformerEmbedder("Snowflake/snowflake-arctic-embed-xs"),
@@ -109,6 +107,7 @@ async def coco_lifespan(
         os.environ.get("RESOLUTION_LLM_MODEL", "openai/gpt-5-mini"),
     )
     yield
+    await surreal_db.close()
 
 
 # ---------------------------------------------------------------------------

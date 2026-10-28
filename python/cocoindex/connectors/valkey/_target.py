@@ -12,7 +12,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -20,7 +19,7 @@ from typing import (
 import msgspec
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from cocoindex._internal.extras import install_hint
 
 try:
     from glide import (
@@ -45,8 +44,8 @@ try:
     from glide.async_commands import ft
 except ImportError as e:
     raise ImportError(
-        "valkey-glide>=2.4.0 is required to use the Valkey connector. "
-        "Please install cocoindex[valkey]."
+        "valkey-glide>=2.5.2 is required to use the Valkey connector. "
+        + install_hint("valkey")
     ) from e
 
 import cocoindex as coco
@@ -55,6 +54,8 @@ from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import TypeChecker
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,8 @@ class FieldDef(NamedTuple):
     filtering and searching via FT.SEARCH queries.
 
     Args:
-        name: The field name (must match the key in Document.payload).
+        name: The field name (must match the key in Document.payload). The
+              name ``vector`` is reserved for the vector field.
         type: Field type — "text" for full-text search, "tag" for exact-match
               filtering, "numeric" for range filtering.
         sortable: Whether the field can be used for sorting results.
@@ -146,6 +148,8 @@ class IndexSchema:
         vectors: _ResolvedVectorDef,
         fields: tuple[FieldDef, ...] = (),
     ) -> None:
+        for field_def in fields:
+            _check_not_vector_field_name(field_def.name, "FieldDef name")
         self._vectors = vectors
         self._fields = fields
 
@@ -183,6 +187,7 @@ class Document:
         id: Unique document identifier (string).
         vector: Vector as a list of floats or numpy array.
         payload: Optional dict of additional fields stored alongside the vector.
+            The key ``vector`` is reserved for the vector field.
     """
 
     id: str
@@ -254,6 +259,15 @@ def _validate_name(value: str, label: str) -> str:
             f"hyphens, and underscores, got: {value!r}"
         )
     return value
+
+
+def _check_not_vector_field_name(name: str, label: str) -> None:
+    """Reject the hash field name that holds a document's vector."""
+    if name == _VECTOR_FIELD_NAME:
+        raise ValueError(
+            f"{label} {name!r} is reserved: CocoIndex stores the document's vector "
+            "in the hash field of that name. Use another name."
+        )
 
 
 def _vector_to_bytes(vector: list[float] | np.ndarray) -> bytes:  # type: ignore[type-arg]
@@ -344,6 +358,11 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
                 tracking_record=coco.NON_EXISTENCE,
             )
 
+        # Checked before the unchanged-fingerprint shortcut, so a document
+        # stored with a broken vector before this check fails every run.
+        for payload_key in desired_state.payload or ():
+            _check_not_vector_field_name(payload_key, "Payload key")
+
         # Build fingerprint from vector + payload
         target_fp = fingerprint_object(
             (desired_state.vector, desired_state.payload)
@@ -384,26 +403,33 @@ class _IndexHandler(
     _sink: coco.TargetActionSink[_IndexAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._document_handler
+        )
+
+    @staticmethod
+    def _document_handler(
+        context_provider: ContextProvider, action: _IndexAction, /
+    ) -> _DocumentHandler:
+        """The document handler for a created or updated index's documents."""
+        return _DocumentHandler(
+            client=context_provider.get(action.key.db_key, GlideClient),  # type: ignore[type-abstract]
+            index_name=action.key.index_name,
         )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_IndexAction],
-        child_slots: Mapping[int, coco.ChildSlot[_DocumentHandler]],
         /,
     ) -> None:
-        by_key: dict[_IndexKey, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_key.setdefault(action.key, []).append(i)
+        by_key: dict[_IndexKey, list[_IndexAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             client = context_provider.get(key.db_key, GlideClient)  # type: ignore[type-abstract]
-            for i in idxs:
-                action = actions[i]
-
+            for action in key_actions:
                 if action.main_action in ("replace", "delete"):
                     # Drop the index, then purge the document hashes under its
                     # prefix. Once the index is reconciled away the engine no
@@ -422,12 +448,6 @@ class _IndexHandler(
                     continue
 
                 spec = action.spec
-                child_slots[i].fulfill(
-                    _DocumentHandler(
-                        client=client,
-                        index_name=key.index_name,
-                    )
-                )
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     await self._create_index(
@@ -743,6 +763,7 @@ def create_client_config(
         client_name: Client name for the connection, visible in CLIENT LIST
             and monitoring dashboards. Pass ``None`` to disable.
         **kwargs: Additional keyword arguments passed to GlideClientConfiguration.
+            ``client_info_tag`` defaults to ``"cocoindex"``.
 
     Returns:
         GlideClientConfiguration instance.
@@ -751,6 +772,8 @@ def create_client_config(
 
     addresses = [NodeAddress(host=host, port=port)]
     config_kwargs: dict[str, Any] = dict(kwargs)
+
+    config_kwargs.setdefault("client_info_tag", "cocoindex")
 
     # Explicit parameters take precedence over **kwargs to prevent
     # accidental override of security-sensitive settings.

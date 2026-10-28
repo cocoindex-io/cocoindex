@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
+use crate::engine::admission::{Admission, AdmissionPool, Lender, UpdateShare};
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
@@ -37,7 +39,9 @@ struct AppContextInner<Prof: EngineProfile> {
     app_store: AppStore,
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
-    inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    /// The pool of in-flight tokens component runs are admitted to; see
+    /// [`crate::engine::admission`].
+    admission_pool: AdmissionPool,
     /// Source of operation generations; see
     /// [`ComponentProcessorContext::operation_generation`].
     operation_generation: std::sync::atomic::AtomicU64,
@@ -72,15 +76,13 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         app_reg: AppRegistration<Prof>,
         max_inflight_components: Option<usize>,
     ) -> Self {
-        let inflight_semaphore =
-            max_inflight_components.map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
         Self {
             inner: Arc::new(AppContextInner {
                 env,
                 app_store,
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
-                inflight_semaphore,
+                admission_pool: AdmissionPool::new(max_inflight_components),
                 operation_generation: std::sync::atomic::AtomicU64::new(0),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
@@ -137,8 +139,8 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         &self.inner.app_reg
     }
 
-    pub fn inflight_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
-        self.inner.inflight_semaphore.as_ref()
+    pub fn admission_pool(&self) -> &AdmissionPool {
+        &self.inner.admission_pool
     }
 
     /// Mint the generation of a new operation; see
@@ -172,6 +174,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
+    /// A preview reserves ids like an update: ids are opaque, so the gap its
+    /// unused ids leave costs nothing, and the sequencer is the one state a
+    /// preview writes.
     pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
@@ -185,7 +190,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 pub(crate) struct DeclaredTargetState<Prof: EngineProfile> {
     pub provider: TargetStateProvider<Prof>,
-    pub item_key: StableKey,
+    /// The item key, `storekey`-encoded: the form pre-commit records it in,
+    /// at a fraction of the size of the decoded key's tree of `Arc`s.
+    pub item_key_bytes: Box<[u8]>,
     pub value: Prof::TargetStateValue,
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }
@@ -234,21 +241,17 @@ impl<Prof: EngineProfile> MemoStatesPayload<Prof> {
     }
 }
 
+#[derive(Default)]
 pub enum FnCallMemoEntry<Prof: EngineProfile> {
     /// Prefetched from the database but not yet accessed during this build.
     /// Lazily decoded on first access (transitions to `Ready` or stays
     /// `Stored` for later GC). Treated as untouched at flush time.
     Stored(Vec<u8>),
     /// Memoization result is pending, i.e. the function call is not finished yet.
+    #[default]
     Pending,
     /// Memoization result is ready. None means memoization is disabled, e.g. it mounts child components.
     Ready(Option<FnCallMemo<Prof>>),
-}
-
-impl<Prof: EngineProfile> Default for FnCallMemoEntry<Prof> {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// In-memory cache of all function-memoization entries for a single
@@ -458,9 +461,7 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
         *entry = FnCallMemoEntry::Ready(None);
         return Ok(());
     }
-    let return_value_bytes = match decoded.return_value {
-        db_schema::MemoizedValue::Inlined(b) => b,
-    };
+    let db_schema::MemoizedValue::Inlined(return_value_bytes) = decoded.return_value;
     let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
     let memo_states = deserialize_memo_values::<Prof>(&decoded.memo_states)?;
     let context_memo_states =
@@ -663,6 +664,10 @@ pub(crate) enum ComponentProcessingMode {
     Delete,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one per component run, matched once; boxing would only add an allocation"
+)]
 pub(crate) enum ComponentProcessingAction<Prof: EngineProfile> {
     Build(ComponentBuildContext<Prof>),
     Delete(ComponentDeleteContext<Prof>),
@@ -692,6 +697,16 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             preview_collector,
         })
     }
+
+    pub fn new_delete(
+        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+        on_error: Option<crate::engine::component::OnError>,
+    ) -> Self {
+        Self::Delete(ComponentDeleteContext {
+            providers,
+            on_error,
+        })
+    }
 }
 
 struct ComponentProcessorContextInner<Prof: EngineProfile> {
@@ -701,7 +716,9 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
 
-    inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    /// This run's in-flight token and the lender its children borrow from;
+    /// see [`crate::engine::admission`].
+    admission: Admission,
 
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
@@ -716,7 +733,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
 }
 
 /// A `ComponentProcessorContext` is a thin view over a shared `inner`
-/// (component identity, building state, providers — never forked) plus three
+/// (component identity, building state, providers, admission — never forked)
+/// plus three
 /// **per-view** fields that a `stats_group` substitutes: the stats bucket, the
 /// child-readiness accumulator, and the enclosing-group list for liveness.
 /// `Clone` shares everything (all `Arc`-based handles), so an unscoped clone is
@@ -734,9 +752,62 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
+    /// A context whose run borrows its in-flight token from `parent_context`'s
+    /// run and belongs to its update. Without a parent, the run is an
+    /// app-level update of its own.
     pub(crate) fn new(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        processing_action: ComponentProcessingAction<Prof>,
+    ) -> Self {
+        let (lender, share) = match &parent_context {
+            Some(parent) => (
+                Some(parent.admission().lender().clone()),
+                parent.admission().share().clone(),
+            ),
+            None => (None, component.app_ctx().admission_pool().new_update()),
+        };
+        Self::from_parts(
+            component,
+            parent_context,
+            lender,
+            share,
+            processing_stats,
+            host_ctx,
+            processing_action,
+        )
+    }
+
+    /// A context for a run of a live component: it has no parent context and
+    /// is an update of its own (`share`, from the live component's share).
+    /// It borrows its in-flight token from `lender`, the run that mounted the
+    /// live component, for as long as that run lasts.
+    pub(crate) fn new_borrowing_from(
+        component: Component<Prof>,
+        lender: Option<Lender>,
+        share: UpdateShare,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        processing_action: ComponentProcessingAction<Prof>,
+    ) -> Self {
+        Self::from_parts(
+            component,
+            None,
+            lender,
+            share,
+            processing_stats,
+            host_ctx,
+            processing_action,
+        )
+    }
+
+    fn from_parts(
+        component: Component<Prof>,
+        parent_context: Option<ComponentProcessorContext<Prof>>,
+        lender: Option<Lender>,
+        share: UpdateShare,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
@@ -745,13 +816,14 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
         };
+        let admission = Admission::new(share, lender);
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
                 operation_generation,
-                inflight_permit: Mutex::new(None),
+                admission,
                 logic_deps: Mutex::new(HashSet::new()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
                 host_ctx,
@@ -765,8 +837,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// Derive a sibling view that reports into `group`'s stats, registers child
     /// readiness into `group`'s readiness, and appends `group` to the
     /// enclosing-group list (for live-member liveness). Shares `inner` — so
-    /// component identity, building state, providers, and the inflight permit
-    /// are unchanged.
+    /// component identity, building state, providers, and admission are
+    /// unchanged.
     pub(crate) fn with_stats_group(&self, group: &Arc<StatsGroup<Prof>>) -> Self {
         let mut stats_groups = Vec::with_capacity(self.stats_groups.len() + 1);
         stats_groups.extend(self.stats_groups.iter().cloned());
@@ -969,18 +1041,25 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
+    /// Join a function frame that ran directly under this component (its
+    /// top-level function, or a state handler's frame) into the component.
+    ///
+    /// The component boundary flattens every kind of logic dep the frame holds
+    /// into the component's single `logic_deps` set — including tunneled sets
+    /// still addressed to an owner. Component-tree propagation applies no
+    /// `logic_tracking` mode, and the function frames that could resolve a
+    /// tunneled set are all closed before child outcomes reach a parent
+    /// component, so a tagged set at this level could never be resolved and
+    /// would be observably identical to the flattened one.
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let (fn_logic_deps, context_change_deps, target_provider_deps) = fn_ctx.update(|inner| {
+        let (logic_deps, target_provider_deps) = fn_ctx.update(|inner| {
             (
-                inner.fn_logic_deps.clone(),
-                inner.context_change_deps.clone(),
+                inner.entry_logic_deps().collect::<Vec<_>>(),
                 inner.target_provider_deps.clone(),
             )
         });
-        let mut deps = self.inner.logic_deps.lock().unwrap();
-        deps.extend(fn_logic_deps);
-        deps.extend(context_change_deps);
-        drop(deps);
+        fn_ctx.close();
+        self.inner.logic_deps.lock().unwrap().extend(logic_deps);
         self.merge_target_provider_deps(target_provider_deps);
     }
 
@@ -1034,13 +1113,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             .collect_context_initial_states(deps.iter())
     }
 
-    pub(crate) fn set_inflight_permit(&self, permit: tokio::sync::OwnedSemaphorePermit) {
-        *self.inner.inflight_permit.lock().unwrap() = Some(permit);
-    }
-
-    /// Release the inflight permit if held. No-op after first call.
-    pub(crate) fn release_inflight_permit(&self) {
-        *self.inner.inflight_permit.lock().unwrap() = None;
+    /// This run's admission: its in-flight token and the lender its children
+    /// borrow from.
+    pub(crate) fn admission(&self) -> &Admission {
+        &self.inner.admission
     }
 
     pub fn processing_stats(&self) -> &ProcessingStats {
@@ -1066,17 +1142,16 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.operation_generation
     }
 
+    /// Whether this is a preview run. Only a build runs as a preview: a
+    /// preview plans no deletes of components.
     pub fn preview(&self) -> bool {
-        match &self.inner.processing_action {
-            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.is_some(),
-            ComponentProcessingAction::Delete { .. } => false,
-        }
+        self.preview_collector().is_some()
     }
 
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
-            ComponentProcessingAction::Delete { .. } => None,
+            ComponentProcessingAction::Delete(_) => None,
         }
     }
 
@@ -1088,7 +1163,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FnCallContextInner {
     /// Target states that are declared by the function.
     pub target_state_paths: Vec<TargetStatePath>,
@@ -1107,6 +1182,55 @@ pub struct FnCallContextInner {
     pub fn_logic_deps: HashSet<Fingerprint>,
     /// Context key fingerprints (always propagate regardless of logic_tracking mode).
     pub context_change_deps: HashSet<Fingerprint>,
+
+    /// Logic fingerprints offered by tunneled callbacks, keyed by the frame that
+    /// created the tunnel (the owner). They ride through `join_child` regardless
+    /// of `propagate_children_fn_logic`, are stored in every memo entry on the
+    /// way, and are resolved into ordinary child deps when they reach the owner.
+    /// See [`FnCallContext::join_tunneled_child`].
+    pub tunneled_fn_logic_deps: HashMap<FnFrameId, HashSet<Fingerprint>>,
+    /// Logic fingerprints recorded into this frame's memo entry only, never
+    /// offered to the parent: tunneled deps that resolved at this frame as
+    /// their owner while its `propagate_children_fn_logic` is false.
+    pub entry_only_fn_logic_deps: HashSet<Fingerprint>,
+    /// Logic fingerprints a memo hit re-offered from a callee's stored entry
+    /// ([`FnCallMemoGuard::join_cached_logic_deps`](super::function::FnCallMemoGuard::join_cached_logic_deps)).
+    /// A stored entry's set is flat — the callee's own and propagated logic,
+    /// tunneled sets and context-change deps, flattened when it was stored —
+    /// so the kinds cannot be told apart again. The set rides to the
+    /// enclosing component's entry through every frame regardless of mode,
+    /// as the tunneled and context-change parts would have on a miss; a
+    /// `"self"` frame therefore records more after a hit than after a miss
+    /// (its callee's own logic too) — more invalidation, never a stale entry.
+    pub reoffered_logic_deps: HashSet<Fingerprint>,
+}
+
+impl FnCallContextInner {
+    /// Every logic dependency this frame's memo entry records: own and
+    /// propagated function logic, entry-only recordings, tunneled sets still
+    /// in transit, and context-change deps.
+    pub fn entry_logic_deps(&self) -> impl Iterator<Item = Fingerprint> + '_ {
+        self.fn_logic_deps
+            .iter()
+            .chain(self.entry_only_fn_logic_deps.iter())
+            .chain(self.reoffered_logic_deps.iter())
+            .chain(self.tunneled_fn_logic_deps.values().flatten())
+            .chain(self.context_change_deps.iter())
+            .copied()
+    }
+}
+
+/// Process-unique identity of one [`FnCallContext`]. A tunneled callback's
+/// logic is addressed to the id of the frame that created the tunnel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FnFrameId(u64);
+
+static NEXT_FN_FRAME_ID: AtomicU64 = AtomicU64::new(1);
+
+impl FnFrameId {
+    fn next() -> Self {
+        Self(NEXT_FN_FRAME_ID.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 pub struct FnCallContext {
@@ -1114,14 +1238,16 @@ pub struct FnCallContext {
     /// Whether to merge children's `fn_logic_deps` into this context.
     /// `true` for "full" mode, `false` for "self" or `None` mode.
     propagate_children_fn_logic: bool,
+    id: FnFrameId,
+    /// Set once this frame has been joined into its parent or component, i.e.
+    /// its call has returned. A tunnel created in this frame is only valid
+    /// while it is open.
+    closed: AtomicBool,
 }
 
 impl Default for FnCallContext {
     fn default() -> Self {
-        Self {
-            inner: Mutex::new(FnCallContextInner::default()),
-            propagate_children_fn_logic: true,
-        }
+        Self::new(true)
     }
 }
 
@@ -1130,12 +1256,52 @@ impl FnCallContext {
         Self {
             inner: Mutex::new(FnCallContextInner::default()),
             propagate_children_fn_logic,
+            id: FnFrameId::next(),
+            closed: AtomicBool::new(false),
         }
+    }
+
+    pub fn id(&self) -> FnFrameId {
+        self.id
+    }
+
+    /// Whether this frame has been joined into its parent or component.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
     }
 
     pub fn join_child(&self, child_fn_ctx: &FnCallContext) {
         // Take the child's inner first to keep lock scope small (and avoid deadlock).
         let child_inner = child_fn_ctx.update(std::mem::take);
+        child_fn_ctx.close();
+        self.merge_child_inner(child_inner);
+    }
+
+    /// Join a tunneled callback's collector frame.
+    ///
+    /// What the callback offered (the collector's `fn_logic_deps`) is addressed
+    /// to `owner`, the frame that created the tunnel, and rides upward tagged
+    /// until it gets there — through frames that would otherwise drop it. If
+    /// this frame *is* the owner, it is resolved right here: recorded in this
+    /// frame's entry, and offered upward only under this frame's flag.
+    /// Everything else the collector gathered merges as for `join_child`.
+    pub fn join_tunneled_child(&self, child_fn_ctx: &FnCallContext, owner: FnFrameId) {
+        let mut child_inner = child_fn_ctx.update(std::mem::take);
+        child_fn_ctx.close();
+        let offered = std::mem::take(&mut child_inner.fn_logic_deps);
+        child_inner
+            .tunneled_fn_logic_deps
+            .entry(owner)
+            .or_default()
+            .extend(offered);
+        self.merge_child_inner(child_inner);
+    }
+
+    fn merge_child_inner(&self, child_inner: FnCallContextInner) {
         self.update(|inner| {
             inner
                 .target_state_paths
@@ -1147,15 +1313,50 @@ impl FnCallContext {
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
             inner.has_child_components |= child_inner.has_child_components;
-            // Context change deps always propagate.
+            // Context change deps always propagate, and so does what a memo
+            // hit re-offered from a stored entry (see `reoffered_logic_deps`).
             inner
                 .context_change_deps
                 .extend(child_inner.context_change_deps);
+            inner
+                .reoffered_logic_deps
+                .extend(child_inner.reoffered_logic_deps);
             // Function logic deps conditionally propagate.
             if self.propagate_children_fn_logic {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
             }
+            // Tunneled deps ride through every frame until they reach the
+            // owner that created the tunnel. The owner's entry always records
+            // them; its flag only decides whether they are offered upward.
+            for (owner, fps) in child_inner.tunneled_fn_logic_deps {
+                if owner == self.id {
+                    if self.propagate_children_fn_logic {
+                        inner.fn_logic_deps.extend(fps);
+                    } else {
+                        inner.entry_only_fn_logic_deps.extend(fps);
+                    }
+                } else {
+                    inner
+                        .tunneled_fn_logic_deps
+                        .entry(owner)
+                        .or_default()
+                        .extend(fps);
+                }
+            }
+            // `entry_only_fn_logic_deps` belongs to the child's own memo entry
+            // and is deliberately not propagated.
         });
+    }
+
+    /// Merge a snapshot of `child_fn_ctx` without consuming it.
+    ///
+    /// Batched SDK functions execute one shared body for several per-item
+    /// function-call contexts. Each item must inherit the same dependencies,
+    /// so the shared context needs to be joined more than once.
+    pub fn join_child_shared(&self, child_fn_ctx: &FnCallContext) {
+        let child_inner = child_fn_ctx.update(|inner| inner.clone());
+        child_fn_ctx.close();
+        self.merge_child_inner(child_inner);
     }
 
     pub fn add_fn_logic_dep(&self, fp: Fingerprint) {
@@ -1249,8 +1450,8 @@ mod tests {
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
-        let storage = crate::state_store::Storage::from_env(env.clone());
-        (AppStore::new(db, env, storage), dir)
+        let storage = crate::state_store::Storage::from_env(env);
+        (AppStore::new(db, storage), dir)
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
@@ -1351,7 +1552,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
             .await
@@ -1394,7 +1596,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
             .await
@@ -1418,7 +1621,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1444,7 +1648,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
             .await
@@ -1468,7 +1673,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1497,7 +1703,8 @@ mod tests {
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        let env = store.env();
+        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
             .await
@@ -1509,5 +1716,123 @@ mod tests {
         apply_plan_via_commit(&store, &p, cache).await;
 
         assert!(read_regular_states(&store, &p).await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fn_call_context_tests {
+    use super::FnCallContext;
+    use cocoindex_utils::fingerprint::Fingerprint;
+    use std::collections::HashSet;
+
+    fn fp(name: &str) -> Fingerprint {
+        Fingerprint::from(name).unwrap()
+    }
+
+    fn fn_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {
+        ctx.update(|inner| inner.fn_logic_deps.clone())
+    }
+
+    fn entry_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {
+        ctx.update(|inner| inner.entry_logic_deps().collect())
+    }
+
+    /// A tunneled wrapper owned by `owner` was called from `caller`; the
+    /// callback offered `offered`.
+    fn tunneled_call(caller: &FnCallContext, owner: &FnCallContext, offered: &[Fingerprint]) {
+        let collector = FnCallContext::new(true);
+        for f in offered {
+            collector.add_fn_logic_dep(*f);
+        }
+        caller.join_tunneled_child(&collector, owner.id());
+    }
+
+    #[test]
+    fn tunneled_deps_pass_self_frames_and_resolve_at_a_full_owner() {
+        let owner = FnCallContext::new(true);
+        let h = FnCallContext::new(false);
+        let t = FnCallContext::new(false);
+        t.add_fn_logic_dep(fp("T"));
+        tunneled_call(&t, &owner, &[fp("cb")]);
+        // T's entry records the callback though T is "self"; T offers only itself.
+        assert_eq!(entry_logic_deps(&t), [fp("T"), fp("cb")].into());
+        assert_eq!(fn_logic_deps(&t), [fp("T")].into());
+        h.join_child(&t);
+        // H ("self") drops T's own logic but passes the tagged set through.
+        assert_eq!(entry_logic_deps(&h), [fp("cb")].into());
+        assert!(fn_logic_deps(&h).is_empty());
+        owner.join_child(&h);
+        // At the owner the set resolves into ordinary deps under its flag.
+        assert_eq!(fn_logic_deps(&owner), [fp("cb")].into());
+        assert!(owner.update(|inner| inner.tunneled_fn_logic_deps.is_empty()));
+    }
+
+    #[test]
+    fn self_owner_records_in_its_entry_and_offers_nothing_upward() {
+        let above = FnCallContext::new(true);
+        let owner = FnCallContext::new(false);
+        let t = FnCallContext::new(false);
+        tunneled_call(&t, &owner, &[fp("cb")]);
+        owner.join_child(&t);
+        assert_eq!(entry_logic_deps(&owner), [fp("cb")].into());
+        assert!(fn_logic_deps(&owner).is_empty());
+        above.join_child(&owner);
+        assert!(entry_logic_deps(&above).is_empty());
+    }
+
+    #[test]
+    fn self_ancestor_above_a_full_owner_sees_nothing() {
+        let s = FnCallContext::new(false);
+        let owner = FnCallContext::new(true);
+        let t = FnCallContext::new(false);
+        tunneled_call(&t, &owner, &[fp("cb")]);
+        owner.join_child(&t);
+        assert_eq!(fn_logic_deps(&owner), [fp("cb")].into());
+        s.join_child(&owner);
+        assert!(entry_logic_deps(&s).is_empty());
+    }
+
+    #[test]
+    fn tunneled_call_directly_in_the_owner_frame_resolves_at_once() {
+        let full_owner = FnCallContext::new(true);
+        tunneled_call(&full_owner, &full_owner, &[fp("cb")]);
+        assert_eq!(fn_logic_deps(&full_owner), [fp("cb")].into());
+
+        let parent = FnCallContext::new(true);
+        let self_owner = FnCallContext::new(false);
+        tunneled_call(&self_owner, &self_owner, &[fp("cb")]);
+        assert_eq!(entry_logic_deps(&self_owner), [fp("cb")].into());
+        parent.join_child(&self_owner);
+        assert!(entry_logic_deps(&parent).is_empty());
+    }
+
+    #[test]
+    fn distinct_owners_resolve_independently() {
+        let o = FnCallContext::new(true);
+        let h = FnCallContext::new(false);
+        let t = FnCallContext::new(false);
+        tunneled_call(&t, &o, &[fp("cb1")]);
+        tunneled_call(&t, &h, &[fp("cb2")]);
+        assert_eq!(entry_logic_deps(&t), [fp("cb1"), fp("cb2")].into());
+        h.join_child(&t);
+        // cb2 resolves at H: recorded in H's entry, not offered (H is "self");
+        // cb1 rides on.
+        assert_eq!(entry_logic_deps(&h), [fp("cb1"), fp("cb2")].into());
+        o.join_child(&h);
+        assert_eq!(fn_logic_deps(&o), [fp("cb1")].into());
+    }
+
+    #[test]
+    fn joins_close_the_child_frame() {
+        let parent = FnCallContext::new(true);
+        let a = FnCallContext::new(true);
+        let b = FnCallContext::new(true);
+        let c = FnCallContext::new(true);
+        assert!(!a.is_closed());
+        parent.join_child(&a);
+        parent.join_child_shared(&b);
+        parent.join_tunneled_child(&c, parent.id());
+        assert!([&a, &b, &c].iter().all(|ctx| ctx.is_closed()));
+        assert!(!parent.is_closed());
     }
 }

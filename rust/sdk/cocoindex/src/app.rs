@@ -1,5 +1,6 @@
 //! App lifecycle: builder, update loop, open/run convenience API.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,7 +11,9 @@ use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
 use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
-use cocoindex_core::engine::target_state::TargetStateProviderRegistry;
+use cocoindex_core::engine::target_state::{
+    TargetStateProvider as CoreTargetStateProvider, TargetStateProviderRegistry,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -19,6 +22,7 @@ use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::profile::{Action, BoxedProcessor, RustProfile, Value};
 use crate::stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
+use crate::target_state::STATIC_ROOT_PROVIDERS;
 use crate::typemap::TypeMap;
 
 // ---------------------------------------------------------------------------
@@ -53,8 +57,15 @@ pub(crate) struct EnvironmentInner {
     core_env: CoreEnvironment<RustProfile>,
     state: Arc<TypeMap>,
     context: Arc<ContextStore>,
+    static_root_providers: StaticRootProviders,
     max_inflight_components: Option<usize>,
 }
+
+/// The environment's registered [`StaticRootProvider`]s, by name.
+///
+/// [`StaticRootProvider`]: crate::target_state::StaticRootProvider
+pub(crate) type StaticRootProviders =
+    Arc<HashMap<&'static str, CoreTargetStateProvider<RustProfile>>>;
 
 impl Environment {
     /// Start building an environment.
@@ -83,12 +94,16 @@ impl Environment {
                 core_app,
                 state: self.inner.state.clone(),
                 context: self.inner.context.clone(),
+                static_root_providers: self.inner.static_root_providers.clone(),
             }),
         })
     }
 
     /// Create an app in this environment (blocking). Convenience for sync
     /// callers — creates a tokio runtime internally and awaits [`Self::app`].
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn app_blocking(&self, name: &str) -> Result<App> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -180,7 +195,7 @@ impl EnvironmentBuilder {
     ///
     /// Returns an error if the LMDB database environment fails to initialize
     /// (e.g., due to permissions, disk space, or a corrupted state directory).
-    pub async fn build(self) -> Result<Environment> {
+    pub async fn build(mut self) -> Result<Environment> {
         // Register every `#[coco::function]`'s logic fingerprint into the engine's
         // logic set, so memo entries that depend on them validate correctly
         // (see `crate::logic`). Idempotent across builds.
@@ -195,25 +210,36 @@ impl EnvironmentBuilder {
             lmdb_max_dbs: self.lmdb_max_dbs,
             lmdb_map_size: self.lmdb_map_size,
         };
-        let providers = Arc::new(std::sync::Mutex::new(TargetStateProviderRegistry::new(
-            Default::default(),
-        )));
+        let mut registry = TargetStateProviderRegistry::new(Default::default());
+        let mut static_root_providers = HashMap::new();
+        for def in STATIC_ROOT_PROVIDERS {
+            let provider = registry
+                .register_root(def.name().to_string(), def.make_handler())
+                .map_err(Error::from)?;
+            static_root_providers.insert(def.name(), provider);
+        }
+        let providers = Arc::new(std::sync::Mutex::new(registry));
         let core_env = CoreEnvironment::<RustProfile>::new(settings, providers, ())
             .await
             .map_err(|e| Error::engine(format!("failed to open LMDB: {e}")))?;
         self.context.register_logic(&core_env);
+        self.context.register_initial_states(&core_env).await?;
 
         Ok(Environment {
             inner: Arc::new(EnvironmentInner {
                 core_env,
                 state: Arc::new(self.state),
                 context: Arc::new(self.context),
+                static_root_providers: Arc::new(static_root_providers),
                 max_inflight_components: self.max_inflight_components,
             }),
         })
     }
 
     /// Build the environment (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<Environment> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -269,6 +295,9 @@ impl AppBuilder {
     }
 
     /// Build the app (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<App> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -298,6 +327,7 @@ pub(crate) struct AppInner {
     pub(crate) core_app: CoreApp<RustProfile>,
     pub(crate) state: Arc<TypeMap>,
     pub(crate) context: Arc<ContextStore>,
+    pub(crate) static_root_providers: StaticRootProviders,
 }
 
 #[derive(Clone)]
@@ -328,6 +358,9 @@ impl App {
 
     /// Convenience: synchronously open an app with a specific DB path. Same
     /// as [`Self::open`] but blocks on a tokio runtime internally.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn open_blocking(name: &str, db_path: impl Into<PathBuf>) -> Result<App> {
         App::builder(name).db_path(db_path).build_blocking()
     }
@@ -476,6 +509,9 @@ impl App {
     }
 
     /// Run the pipeline in preview mode (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn preview_blocking<F, Fut, T>(&self, f: F) -> Result<Vec<PreviewAction>>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -621,6 +657,9 @@ impl App {
     }
 
     /// Run the pipeline once with explicit update options (blocking).
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn update_blocking_with_options<F, Fut, T>(&self, options: UpdateOptions, f: F) -> Result<T>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -648,6 +687,9 @@ impl App {
     }
 
     /// Drop all persisted state (blocking). Convenience for sync callers.
+    ///
+    /// # Panics
+    /// Panics if called from within an async runtime; use the async form there.
     pub fn drop_state_blocking(&self) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -784,7 +826,7 @@ where
         // callers want the actions, not the return value).
         self.core.result().await.map_err(Error::from)?;
         let actions = collector
-            .map(|c| std::mem::take(&mut *c.lock().unwrap()))
+            .map(|c| std::mem::take(&mut *c.lock().unwrap_or_else(|e| e.into_inner())))
             .unwrap_or_default();
         Ok(actions
             .into_iter()

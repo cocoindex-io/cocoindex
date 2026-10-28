@@ -8,8 +8,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if cargo tree -p cocoindex -e normal | grep -q pyo3; then
+# `--target all` takes in every platform's dependencies, so one run on any
+# platform covers all of them.
+if cargo tree -p cocoindex -e normal --target all | grep -q pyo3; then
   echo "ERROR: cocoindex SDK depends on pyo3 (must stay PyO3-free)" >&2
-  cargo tree -p cocoindex -e normal | grep pyo3 >&2 || true
+  cargo tree -p cocoindex -e normal --target all | grep pyo3 >&2 || true
   exit 1
 fi

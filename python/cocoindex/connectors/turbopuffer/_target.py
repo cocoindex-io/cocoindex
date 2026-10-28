@@ -18,7 +18,6 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -26,12 +25,14 @@ from typing import (
 import msgspec
 import numpy as np
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from turbopuffer import AsyncTurbopuffer, NotFoundError  # type: ignore
 except ImportError as e:
     raise ImportError(
         "turbopuffer is required to use the Turbopuffer connector. "
-        "Please install cocoindex[turbopuffer]."
+        + install_hint("turbopuffer")
     ) from e
 
 import cocoindex as coco
@@ -382,18 +383,29 @@ class _NamespaceHandler(
     _sink: coco.TargetActionSink[_NamespaceAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _NamespaceAction, /
+    ) -> _RowHandler:
+        """The row handler for a created or updated namespace's rows."""
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            client=context_provider.get(action.key.db_key, AsyncTurbopuffer),
+            namespace_name=action.key.namespace_name,
+            schema=action.spec.schema,
         )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_NamespaceAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
         /,
     ) -> None:
-        for i, action in enumerate(actions):
+        for action in actions:
             client = context_provider.get(action.key.db_key, AsyncTurbopuffer)
 
             if action.main_action in ("replace", "delete"):
@@ -403,18 +415,6 @@ class _NamespaceHandler(
                 except NotFoundError:
                     # Namespace was deleted out-of-band (e.g. via the dashboard).
                     pass
-
-            if coco.is_non_existence(action.spec):
-                continue
-
-            spec = action.spec
-            child_slots[i].fulfill(
-                _RowHandler(
-                    client=client,
-                    namespace_name=action.key.namespace_name,
-                    schema=spec.schema,
-                )
-            )
 
     def reconcile(
         self,

@@ -24,12 +24,10 @@ fn nonce() -> u128 {
 #[cfg(feature = "neo4j")]
 #[tokio::test]
 async fn neo4j_vector_index_create_then_drop_when_available() {
-    use cocoindex::neo4j::{self, ColumnDef, TableSchema, VectorMetric};
-    use cocoindex::{App, ContextKey, Environment, Result};
-    use std::sync::LazyLock;
+    use cocoindex::connectors::neo4j::{self, ColumnDef, TableSchema, VectorMetric};
+    use cocoindex::{Environment, Result};
 
-    static G: LazyLock<ContextKey<neo4j::Graph>> =
-        LazyLock::new(|| ContextKey::new("neo4j_vidx_graph"));
+    cocoindex::context_key!(static G: neo4j::Graph, key = "neo4j_vidx_graph");
 
     let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
@@ -69,8 +67,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
         move |ctx| {
             let label = label.clone();
             async move {
-                let g = ctx.get_key(&G)?;
-                let table = neo4j::mount_table_target(&ctx, g, label, schema()?).await?;
+                let table = neo4j::mount_table_target(&ctx, &G, label, schema()?).await?;
                 table.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
                 table.declare_node_index(&ctx, &["name"])?;
                 table.declare_record(
@@ -91,8 +88,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
         move |ctx| {
             let label = label.clone();
             async move {
-                let g = ctx.get_key(&G)?;
-                let table = neo4j::mount_table_target(&ctx, g, label, schema()?).await?;
+                let table = neo4j::mount_table_target(&ctx, &G, label, schema()?).await?;
                 table.declare_record(
                     &ctx,
                     1_i64,
@@ -104,18 +100,21 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
     })
     .await
     .expect("dropping the orphaned Neo4j vector index should be accepted");
+
+    // Remove the table's key constraint so the test leaves nothing behind.
+    app.drop_state()
+        .await
+        .expect("dropping the Neo4j app state should be accepted");
 }
 
 #[cfg(feature = "falkordb")]
 #[tokio::test]
 async fn falkordb_vector_index_create_then_drop_when_available() {
-    use cocoindex::falkordb::{self, ColumnDef, TableSchema, VectorMetric};
-    use cocoindex::{App, ContextKey, Environment, Result};
-    use std::sync::LazyLock;
+    use cocoindex::connectors::falkordb::{self, ColumnDef, TableSchema, VectorMetric};
+    use cocoindex::{Environment, Result};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static G: LazyLock<ContextKey<falkordb::Graph>> =
-        LazyLock::new(|| ContextKey::new("falkordb_vidx_graph"));
+    cocoindex::context_key!(static G: falkordb::Graph, key = "falkordb_vidx_graph");
 
     let uri =
         std::env::var("FALKORDB_URI").unwrap_or_else(|_| "falkor://localhost:6379".to_string());
@@ -155,8 +154,7 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
 
     // Run 1: create the table + a vector index + one node.
     app.run(move |ctx| async move {
-        let g = ctx.get_key(&G)?;
-        let table = falkordb::mount_table_target(&ctx, g, "Doc", schema()?).await?;
+        let table = falkordb::mount_table_target(&ctx, &G, "Doc", schema()?).await?;
         table.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
         table.declare_node_index(&ctx, &["name"])?;
         table.declare_record(
@@ -171,8 +169,7 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
 
     // Run 2: keep the table + node, stop declaring the index → it is dropped.
     app.run(move |ctx| async move {
-        let g = ctx.get_key(&G)?;
-        let table = falkordb::mount_table_target(&ctx, g, "Doc", schema()?).await?;
+        let table = falkordb::mount_table_target(&ctx, &G, "Doc", schema()?).await?;
         table.declare_record(
             &ctx,
             1_i64,
@@ -182,4 +179,9 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
     })
     .await
     .expect("dropping the orphaned FalkorDB vector index should be accepted");
+
+    // Remove the table's key constraint so the test leaves nothing behind.
+    app.drop_state()
+        .await
+        .expect("dropping the FalkorDB app state should be accepted");
 }
