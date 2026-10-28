@@ -50,3 +50,14 @@ A few related rules:
 * When several parents mount the same component at once (two `App.update()` calls overlapping, or several owners of a shared component), only the run that executes takes a slot. The others wait for it without a slot and reuse its result.
 * Live components (`coco.auto_refresh`, `mount_each()` over a live map) borrow the slot of the component that mounted them for their cycles and item updates, like its other children, for as long as it runs; afterwards they take slots from the pool like any other component.
 * Deleting components (cleaning up a removed subtree, `App.drop()`) is bounded by the same limit.
+
+## Live components share the limit fairly
+
+[Live components](./live_component) update on their own schedules, and one of them can have far more work queued than another: a full re-index next to a refresh of a few changed items. The limit is shared fairly between **independent updates**, so a small update never waits for a large one's whole backlog:
+
+* An independent update is an `App.update()`, one cycle of a live component (each refresh of `coco.auto_refresh`), or one item update of `mount_each()` over a live map. Every component an update mounts belongs to that update.
+* A component that finds a free slot takes it at once, and no slot is reserved, so an update that runs alone can use the whole limit.
+* When no slot is free, a slot that frees up goes to whichever waiting side holds the fewest slots: first among the app's updates and its live components, then, inside the live component that wins, among its own updates and the live components they mounted. Among equals it goes to the one that started waiting first, and within one update components start in the order they asked.
+* A live component mounted by another live component's update counts as part of that live component.
+
+Fairness only decides which waiting component gets a slot that frees up. It never takes a slot from a running component, and the lending above works the same way.

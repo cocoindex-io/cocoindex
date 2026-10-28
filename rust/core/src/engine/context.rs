@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
-use crate::engine::admission::{Admission, AdmissionPool, Lender};
+use crate::engine::admission::{Admission, AdmissionPool, Lender, UpdateShare};
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
@@ -753,7 +753,8 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// A context whose run borrows its in-flight token from `parent_context`'s
-    /// run, if any.
+    /// run and belongs to its update. Without a parent, the run is an
+    /// app-level update of its own.
     pub(crate) fn new(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
@@ -761,27 +762,52 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
-        let lender = parent_context
-            .as_ref()
-            .map(|parent| parent.admission().lender().clone());
-        Self::new_borrowing_from(
+        let (lender, share) = match &parent_context {
+            Some(parent) => (
+                Some(parent.admission().lender().clone()),
+                parent.admission().share().clone(),
+            ),
+            None => (None, component.app_ctx().admission_pool().new_update()),
+        };
+        Self::from_parts(
             component,
             parent_context,
             lender,
+            share,
             processing_stats,
             host_ctx,
             processing_action,
         )
     }
 
-    /// A context whose run borrows its in-flight token from `lender`, which
-    /// need not belong to `parent_context`: a live component's runs have no
-    /// parent context but borrow from the run that mounted the live
-    /// component, for as long as that run lasts.
+    /// A context for a run of a live component: it has no parent context and
+    /// is an update of its own (`share`, from the live component's share).
+    /// It borrows its in-flight token from `lender`, the run that mounted the
+    /// live component, for as long as that run lasts.
     pub(crate) fn new_borrowing_from(
+        component: Component<Prof>,
+        lender: Option<Lender>,
+        share: UpdateShare,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        processing_action: ComponentProcessingAction<Prof>,
+    ) -> Self {
+        Self::from_parts(
+            component,
+            None,
+            lender,
+            share,
+            processing_stats,
+            host_ctx,
+            processing_action,
+        )
+    }
+
+    fn from_parts(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
         lender: Option<Lender>,
+        share: UpdateShare,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
@@ -790,7 +816,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
         };
-        let admission = Admission::new(component.app_ctx().admission_pool().clone(), lender);
+        let admission = Admission::new(share, lender);
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
