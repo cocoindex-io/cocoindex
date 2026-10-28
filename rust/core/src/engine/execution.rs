@@ -80,9 +80,9 @@ pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
 
 /// Read the component's stored memo and return it when it was stored under
 /// `processor_fp` and its logic and target-provider dependencies still hold;
-/// otherwise delete it — except in a preview, which writes nothing (a preview
-/// of a lossy schema change would otherwise invalidate memos the next real run
-/// still needs). Whether a stored memo may be consulted at all under
+/// otherwise delete it. In a preview the delete stays in the run's handle (a
+/// preview of a lossy schema change would otherwise invalidate memos the next
+/// real run still needs). Whether a stored memo may be consulted at all under
 /// `full_reprocess` is the caller's decision (see `Component::execute_once`).
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
@@ -95,7 +95,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         TargetProviderDeps,
     )>,
 > {
-    let app_store = comp_ctx.app_ctx().app_store();
+    let app_store = comp_ctx.app_store();
     let path = comp_ctx.stable_path();
     {
         let Some(memo_bytes) = app_store.read_component_memo(path).await? else {
@@ -147,19 +147,15 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
     }
 
     // Invalidate the memoization.
-    if !comp_ctx.preview() {
-        let app_store = comp_ctx.app_ctx().app_store().clone();
-        let path = path.clone();
-        comp_ctx
-            .app_ctx()
-            .env()
-            .run_txn(move |wtxn| {
-                let app_store = app_store.clone();
-                let path = path.clone();
-                Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
-            })
-            .await?;
-    }
+    let path = path.clone();
+    let app_store_in_txn = app_store.clone();
+    app_store
+        .run_txn(move |wtxn| {
+            let app_store = app_store_in_txn.clone();
+            let path = path.clone();
+            Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
+        })
+        .await?;
 
     Ok(None)
 }
@@ -170,15 +166,12 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
 /// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
 /// preserving `processor_fp`, `return_value`, `logic_deps`, and
-/// `target_provider_deps`. A no-op in a preview, which writes nothing.
+/// `target_provider_deps`. In a preview the write stays in the run's handle.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
 ) -> Result<()> {
-    if comp_ctx.preview() {
-        return Ok(());
-    }
-    let app_store = comp_ctx.app_ctx().app_store().clone();
+    let app_store = comp_ctx.app_store().clone();
     let path = comp_ctx.stable_path().clone();
 
     // Serialize new states once outside the (potentially retried) txn.
@@ -192,11 +185,10 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
         &new_states.by_context_fp,
     )?);
 
-    comp_ctx
-        .app_ctx()
-        .env()
+    let app_store_in_txn = app_store.clone();
+    app_store
         .run_txn(move |wtxn| {
-            let app_store = app_store.clone();
+            let app_store = app_store_in_txn.clone();
             let path = path.clone();
             let memo_states_serialized = Arc::clone(&memo_states_serialized);
             let context_memo_states_serialized = Arc::clone(&context_memo_states_serialized);
@@ -432,10 +424,24 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let component_path = component_ctx.stable_path().clone();
         Ok(Self {
             component_ctx: component_ctx.clone(),
-            app_store: component_ctx.app_ctx().app_store().clone(),
+            app_store: component_ctx.app_store().clone(),
             target_states_providers: target_states_providers.clone(),
             component_path,
         })
+    }
+
+    /// Phase 4 commit ([`Self::commit_writes`]), then Phase 5 GC: the
+    /// deletes of the child components this run no longer declares.
+    async fn commit(
+        self,
+        child_existence: ChildExistenceAction,
+        fn_memos: FnMemoCache<Prof>,
+        user_states: UserStateCache<Prof::FunctionData>,
+        curr_version: Option<u64>,
+    ) -> Result<()> {
+        self.commit_writes(child_existence, fn_memos, user_states, curr_version)
+            .await?;
+        self.launch_child_component_gc().await
     }
 
     /// Build the engine-side decisions for Phase 4 commit and run
@@ -444,10 +450,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// (tracking-info, fn-memo flush, user-state flush, target-owner cleanup),
     /// and — unless `child_existence` is [`ChildExistenceAction::Keep`] —
     /// invokes the `ExistenceReconciler` callback to walk the
-    /// child-existence tree atomically inside the same txn. Then launches
-    /// Phase 5 GC.
-    async fn commit(
-        self,
+    /// child-existence tree atomically inside the same txn.
+    async fn commit_writes(
+        &self,
         child_existence: ChildExistenceAction,
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
@@ -501,12 +506,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
         self.app_store
             .commit(&self.component_path, plan, existence_reconciler)
-            .await?;
-
-        // Phase 5 GC: snapshot-read tombstones and spawn child delete
-        // operations. Outside the commit txn — tombstones are durable
-        // and the GC sweep is idempotent.
-        self.launch_child_component_gc().await
+            .await
     }
 
     /// Closure that walks `declared_children` (`None`: nothing declared)
@@ -641,6 +641,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
         Ok((Some(data_bytes), owners_to_delete))
     }
 
+    /// Phase 5 GC: snapshot-read tombstones and spawn child delete
+    /// operations. Outside the commit txn — tombstones are durable and the
+    /// GC sweep is idempotent.
     async fn launch_child_component_gc(&self) -> Result<()> {
         // Cascade the parent's on_error to descendant orphan deletes.
         //
@@ -923,7 +926,6 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     process_token: u128,
     stable_path: &StablePath,
     full_reprocess: bool,
-    preview: bool,
     processor_name: Option<&str>,
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
@@ -1222,20 +1224,14 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     let new_gen = if needs_fresh_generation {
                         // Inside the open precommit WTxn — use the
                         // in-txn variant to avoid nesting another
-                        // batched WTxn on LMDB (would deadlock). A
-                        // preview writes nothing, so it only peeks: an id
-                        // not yet reserved is in no tracking record, as a
-                        // fresh one must be, and nothing persists it.
-                        let new_id = if preview {
-                            app_store
-                                .peek_id_sequence_in_txn(wtxn, &TARGET_ID_KEY)
-                                .await?
-                                .unwrap_or(1)
-                        } else {
-                            app_store
-                                .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
-                                .await?
-                        };
+                        // batched WTxn on LMDB (would deadlock). A preview
+                        // reserves in its run's own handle: the id is in no
+                        // tracking record, as a fresh one must be, distinct
+                        // from the preview's other fresh generations, and
+                        // persisted by nothing.
+                        let new_id = app_store
+                            .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
+                            .await?;
                         TargetStateProviderGeneration {
                             provider_id: new_id,
                             provider_schema_version: 0,
@@ -1525,188 +1521,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // HashSet rehash per retry (its size is unbounded — one entry per
     // fn-memo target). The other captures are O(1) clones (Arc-internal
     // or persistent data structures).
-    let app_store = comp_ctx.app_ctx().app_store().clone();
+    let app_store = comp_ctx.app_store().clone();
     let stable_path = comp_ctx.stable_path().clone();
     let processor_name_owned: Option<Arc<str>> = processor_name.map(Arc::from);
-
-    if comp_ctx.preview() {
-        // Mirror normal precommit Phase 2 planning, but always return
-        // `Ok(None)` from the callback so AppStore applies/commits no
-        // tracking writes; the callback hands its output out through
-        // `preview_output` instead. One `precommit` call can run the
-        // callback more than once — the batcher re-runs a body on
-        // `MDB_MAP_FULL`, or when a body after it in the same write txn
-        // fails — so each run overwrites the slot (`None` on
-        // `PendingRetry`) and only the last run's output counts. Its
-        // actions reach the shared collector once, after `precommit`
-        // returns.
-        let collector = comp_ctx
-            .preview_collector()
-            .cloned()
-            .ok_or_else(|| internal_error!("preview mode requires a preview collector"))?;
-        let preview_output: Arc<Mutex<Option<PreCommitOutput<Prof>>>> = Arc::new(Mutex::new(None));
-
-        let contained_target_state_paths = Arc::new(contained_target_state_paths);
-        let declared_target_states = Arc::new(tokio::sync::Mutex::new(declared_target_states));
-
-        let mut pending_backoff = std::time::Duration::from_millis(5);
-        const MAX_PENDING_RETRIES: u32 = 8;
-        let mut pending_attempt: u32 = 0;
-        let pre_commit_out = loop {
-            let preview_output_capture = preview_output.clone();
-            let captures: Arc<PreCommitCaptures<Prof>> = Arc::new(PreCommitCaptures {
-                app_store: app_store.clone(),
-                stable_path: stable_path.clone(),
-                processor_name: processor_name_owned.clone(),
-                contained_target_state_paths: Arc::clone(&contained_target_state_paths),
-                target_states_providers: target_states_providers.clone(),
-                declared_target_states: Arc::clone(&declared_target_states),
-            });
-
-            app_store
-                .precommit(&stable_path, move |wtxn, session| {
-                    let c = Arc::clone(&captures);
-                    let preview_output_capture = preview_output_capture.clone();
-                    Box::pin(async move {
-                        let declared_paths_all: Vec<TargetStatePath> = {
-                            let guard = c.declared_target_states.lock().await;
-                            guard.keys().cloned().collect()
-                        };
-                        let reads = session
-                            .precommit_read(
-                                wtxn,
-                                PrecommitReadPlan {
-                                    self_path: c.stable_path.clone(),
-                                    self_token: process_token,
-                                },
-                            )
-                            .await?;
-
-                        let existing_tracking_info_bytes = reads.existing_tracking_info;
-                        let tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> =
-                            existing_tracking_info_bytes
-                                .as_deref()
-                                .map(from_msgpack_slice)
-                                .transpose()?;
-                        let existing_paths: std::collections::HashSet<TargetStatePath> =
-                            tracking_info
-                                .as_ref()
-                                .map(|info| {
-                                    info.target_state_items
-                                        .keys()
-                                        .map(|k| k.target_state_path.clone())
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                        let paths_to_claim: Vec<TargetStatePath> = declared_paths_all
-                            .iter()
-                            .filter(|p| !existing_paths.contains(*p))
-                            .cloned()
-                            .collect();
-
-                        let claim = session
-                            .precommit_claim_targets(
-                                wtxn,
-                                PrecommitClaimTargetsPlan {
-                                    self_path: c.stable_path.clone(),
-                                    paths_to_claim,
-                                },
-                            )
-                            .await?;
-
-                        let outcome = pre_commit(
-                            &c.app_store,
-                            wtxn,
-                            process_token,
-                            &c.stable_path,
-                            full_reprocess,
-                            true,
-                            c.processor_name.as_deref(),
-                            &c.contained_target_state_paths,
-                            &c.target_states_providers,
-                            Arc::clone(&c.declared_target_states),
-                            declared_paths_all,
-                            tracking_info,
-                            claim.prior_owners,
-                            claim.preempted_owner_states,
-                        )
-                        .await?;
-
-                        let output = match outcome {
-                            PreCommitOutcome::Done {
-                                output,
-                                write_plan: _,
-                            } => Some(output),
-                            PreCommitOutcome::PendingRetry => None,
-                        };
-                        *preview_output_capture.lock().unwrap() = output;
-                        Ok(None::<(PrecommitWritePlan, ())>)
-                    })
-                })
-                .await?;
-
-            let output = preview_output.lock().unwrap().take();
-            match output {
-                Some(output) => break output,
-                None => {
-                    // PendingRetry: back off, retry.
-                    pending_attempt += 1;
-                    if pending_attempt >= MAX_PENDING_RETRIES {
-                        client_bail!(
-                            "preview pre_commit gave up after {} retries waiting for concurrent ownership transfer at {}",
-                            MAX_PENDING_RETRIES,
-                            comp_ctx.stable_path(),
-                        );
-                    }
-                    tokio::time::sleep(pending_backoff).await;
-                    pending_backoff =
-                        std::cmp::min(pending_backoff * 2, std::time::Duration::from_millis(200));
-                }
-            }
-        };
-
-        if let Some(ref name) = pre_commit_out.processor_name_for_del {
-            collect_processor_name_name_for_del(name);
-        }
-
-        // Ready the child providers as a real submit would, so the components
-        // declaring child target states can preview theirs: the generations
-        // `pre_commit` planned, and the handlers from each sink's child handler
-        // factory, built without applying the actions.
-        for (child_provider, new_gen) in pre_commit_out.deferred_provider_generations {
-            child_provider.set_provider_generation(new_gen)?;
-        }
-        if let Some((child_provider, _)) = pre_commit_out
-            .actions_by_sinks
-            .values()
-            .find_map(|input| input.pending_children.first())
-        {
-            client_bail!(
-                "the target action sink for {} does not support preview of child target \
-                 states: build it with a child handler factory (`child_handler=` in Python, \
-                 `from_async_fn_with_child_handler` in Rust)",
-                child_provider.display_name()
-            );
-        }
-        let children = build_factory_children(comp_ctx, &pre_commit_out.actions_by_sinks).await?;
-        if let Some(ref mut registry) = built_target_states_providers {
-            for (child_provider, handler) in children {
-                child_provider.fulfill_handler(handler, registry)?;
-            }
-        }
-        collector.lock().unwrap().extend(
-            pre_commit_out
-                .actions_by_sinks
-                .into_values()
-                .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
-        );
-        // A commit also deletes the child components this run no longer
-        // declares; a preview skips the commit, and previews no such delete.
-        return Ok(SubmitOutput {
-            built_target_states_providers,
-            touched_previous_states: pre_commit_out.previously_exists,
-        });
-    }
 
     // Delete-mode preflight (was in `pre_commit` body pre-Session).
     // The early-return / demote-only decision needs to happen before
@@ -1844,7 +1661,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             process_token,
                             &c.stable_path,
                             full_reprocess,
-                            false,
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
                             &c.target_states_providers,
@@ -1910,6 +1726,60 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // most once per successful submit is the invariant we preserve.
     for (child_provider, new_gen) in pre_commit_out.deferred_provider_generations {
         child_provider.set_provider_generation(new_gen)?;
+    }
+
+    // A preview plans its actions like a real submit and applies none of
+    // them. It still readies the child providers from each sink's child
+    // handler factory, so the components declaring child target states can
+    // preview theirs, and commits into its run's handle, where the run's
+    // later reads find the component committed as an update would leave it,
+    // and nothing persists. The commit's Phase 5 deletes of the child
+    // components this run no longer declares are not previewed.
+    if let Some(collector) = comp_ctx.preview_collector() {
+        let planned: Result<Vec<_>> = async {
+            if let Some((child_provider, _)) = actions_by_sinks
+                .values()
+                .find_map(|input| input.pending_children.first())
+            {
+                client_bail!(
+                    "the target action sink for {} does not support preview of child target \
+                     states: build it with a child handler factory (`child_handler=` in Python, \
+                     `from_async_fn_with_child_handler` in Rust)",
+                    child_provider.display_name()
+                );
+            }
+            // In an update's order: a factory that fails leaves the component
+            // uncommitted, as it does an update, and a sibling claiming one of
+            // these target states waits on the staged token as it would there
+            // (where the window also spans the sinks' apply).
+            let children = build_factory_children(comp_ctx, &actions_by_sinks).await?;
+            Committer::new(comp_ctx, target_states_providers)?
+                .commit_writes(child_existence, fn_memos, user_states, curr_version)
+                .await?;
+            Ok(children)
+        }
+        .await;
+        let children = match planned {
+            Ok(children) => children,
+            Err(e) => {
+                cleanup_pending_token(comp_ctx, process_token).await;
+                return Err(e);
+            }
+        };
+        if let Some(ref mut registry) = built_target_states_providers {
+            for (child_provider, handler) in children {
+                child_provider.fulfill_handler(handler, registry)?;
+            }
+        }
+        collector.lock().unwrap().extend(
+            actions_by_sinks
+                .into_values()
+                .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
+        );
+        return Ok(SubmitOutput {
+            built_target_states_providers,
+            touched_previous_states,
+        });
     }
 
     // Sink apply. On failure we clear the stage marker so a
@@ -2000,7 +1870,7 @@ async fn cleanup_pending_token<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     process_token: u128,
 ) {
-    let app_store = comp_ctx.app_ctx().app_store().clone();
+    let app_store = comp_ctx.app_store().clone();
     let path = comp_ctx.stable_path().clone();
     let mut backoff = std::time::Duration::from_millis(10);
     loop {
@@ -2019,9 +1889,9 @@ async fn cleanup_pending_token<Prof: EngineProfile>(
     }
 }
 
-/// Store the component's memo, if it is memoized; returns whether it stored
-/// one. A preview stores none: a later real update would reuse it and skip
-/// declaring the component's target states.
+/// Store the component's memo, if it is memoized. A preview stores it in its
+/// run's handle, where the run's later lookups find it and no later real
+/// update does.
 #[instrument(name = "post_submit_after_ready", skip_all)]
 pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
@@ -2032,13 +1902,10 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     )>,
     logic_deps: &HashSet<Fingerprint>,
     target_provider_deps: &TargetProviderDeps,
-) -> Result<bool> {
+) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
-        return Ok(false);
+        return Ok(());
     };
-    if comp_ctx.preview() {
-        return Ok(false);
-    }
 
     let ret_bytes = ret.to_bytes()?;
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
@@ -2065,11 +1932,9 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     // Routes through the single-writer batcher so concurrent callers
     // coalesce into one underlying write txn.
     comp_ctx
-        .app_ctx()
         .app_store()
         .finalize_memoization(comp_ctx.stable_path(), &encoded)
-        .await?;
-    Ok(true)
+        .await
 }
 
 pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
@@ -2088,7 +1953,6 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     // exclusivity rules out races on the same tombstone; GC's
     // eventual-consistency tolerates a missed sweep.
     comp_ctx
-        .app_ctx()
         .app_store()
         .cleanup_tombstone(&owner_path, &relative_path)
         .await
@@ -2138,7 +2002,6 @@ pub(crate) async fn eager_existence_upsert<Prof: EngineProfile>(
         .map(|p| p.stable_path().clone())
         .unwrap_or_else(StablePath::root);
     comp_ctx
-        .app_ctx()
         .app_store()
         .ensure_existence_chain(path, &known_parent_path)
         .await

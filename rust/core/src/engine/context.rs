@@ -79,9 +79,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         Self {
             inner: Arc::new(AppContextInner {
                 env,
+                id_sequencer_manager: IdSequencerManager::new(app_store.clone()),
                 app_store,
                 app_reg,
-                id_sequencer_manager: IdSequencerManager::new(),
                 admission_pool: AdmissionPool::new(max_inflight_components),
                 operation_generation: std::sync::atomic::AtomicU64::new(0),
                 cancellation_token: std::sync::Mutex::new(
@@ -131,6 +131,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         &self.inner.env
     }
 
+    /// The app's state store, persisting every write. A component run reads
+    /// and writes through [`ComponentProcessorContext::app_store`] instead,
+    /// which persists nothing in a preview.
     pub fn app_store(&self) -> &AppStore {
         &self.inner.app_store
     }
@@ -176,15 +179,13 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
     /// A preview reserves ids like an update: ids are opaque, so the gap its
     /// unused ids leave costs nothing, and the sequencer is the one state a
-    /// preview writes.
+    /// preview persists — the manager owns the app's persisting store, not a
+    /// run's handle.
     pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
-        self.inner
-            .id_sequencer_manager
-            .next_id(self.inner.env.storage(), &self.inner.app_store, key)
-            .await
+        self.inner.id_sequencer_manager.next_id(key).await
     }
 }
 
@@ -713,6 +714,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
+    /// See [`ComponentProcessorContext::app_store`].
+    app_store: AppStore,
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
 
@@ -764,6 +767,23 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         let lender = parent_context
             .as_ref()
             .map(|parent| parent.admission().lender().clone());
+        // A run's store handle is its parent's, so every context of one
+        // operation — children, the deletes its commit launches, the live
+        // components it mounts — shares the root's: the app's persisting
+        // store, or in a preview one handle whose writes never persist.
+        let app_store = match &parent_context {
+            Some(parent) => parent.app_store().clone(),
+            None => match &processing_action {
+                ComponentProcessingAction::Build(build_ctx)
+                    if build_ctx.preview_collector.is_some() =>
+                {
+                    component.app_ctx().app_store().discarding_writes()
+                }
+                ComponentProcessingAction::Build(_) | ComponentProcessingAction::Delete(_) => {
+                    component.app_ctx().app_store().clone()
+                }
+            },
+        };
         Self::new_borrowing_from(
             component,
             parent_context,
@@ -771,13 +791,15 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             processing_stats,
             host_ctx,
             processing_action,
+            app_store,
         )
     }
 
-    /// A context whose run borrows its in-flight token from `lender`, which
-    /// need not belong to `parent_context`: a live component's runs have no
-    /// parent context but borrow from the run that mounted the live
-    /// component, for as long as that run lasts.
+    /// A context whose run borrows its in-flight token from `lender` and
+    /// reads and writes the store through `app_store`, neither of which need
+    /// belong to `parent_context`: a live component's runs have no parent
+    /// context but borrow from the run that mounted the live component, for
+    /// as long as that run lasts, and share that run's store handle.
     pub(crate) fn new_borrowing_from(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
@@ -785,6 +807,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
+        app_store: AppStore,
     ) -> Self {
         let operation_generation = match &parent_context {
             Some(parent) => parent.operation_generation(),
@@ -796,6 +819,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 component,
                 parent_context,
                 processing_action,
+                app_store,
                 operation_generation,
                 admission,
                 logic_deps: Mutex::new(HashSet::new()),
@@ -847,6 +871,17 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.component.app_ctx()
     }
 
+    /// The app's state store as this run reads and writes it, shared with
+    /// every other context of the same operation. In a preview it is a handle
+    /// that persists nothing (see [`AppStore::discarding_writes`]): the run
+    /// reads its own writes back and plans as an update would, and that is
+    /// what makes a preview write nothing — its write paths need no check of
+    /// their own. Component runs reach the store through here, not through
+    /// [`AppContext::app_store`].
+    pub fn app_store(&self) -> &AppStore {
+        &self.inner.app_store
+    }
+
     pub fn stable_path(&self) -> &StablePath {
         self.inner.component.stable_path()
     }
@@ -884,7 +919,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             return Ok(());
         }
         let (fn_memo_rows, user_state_rows) = self
-            .app_ctx()
             .app_store()
             .prefetch_fn_processing_states(self.stable_path())
             .await?;
@@ -1116,12 +1150,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.operation_generation
     }
 
-    /// Whether this is a preview run. Only a build runs as a preview: a
-    /// preview plans no deletes of components.
-    pub fn preview(&self) -> bool {
-        self.preview_collector().is_some()
-    }
-
+    /// The collector of a preview run's actions. Only a build runs as a
+    /// preview: a preview plans no deletes of components.
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
@@ -1425,7 +1455,10 @@ mod tests {
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
         let storage = crate::state_store::Storage::from_env(env);
-        (AppStore::new(db, storage), dir)
+        (
+            AppStore::new(crate::state_store::Db::new(db, "test"), storage),
+            dir,
+        )
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
@@ -1527,7 +1560,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
             .await
@@ -1540,7 +1573,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache
@@ -1571,12 +1604,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new(); // no populate
         cache.use_state(sym("new_k"), td("new_val")).unwrap();
@@ -1596,12 +1629,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache.populate(vec![(sym("a"), b("a_val"))]).unwrap();
@@ -1623,12 +1656,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache.populate(vec![(sym("k"), b("old"))]).unwrap();
@@ -1648,7 +1681,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1657,7 +1690,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache
@@ -1678,12 +1711,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let cache = UserStateCache::new(); // no populate, no use_state
 
