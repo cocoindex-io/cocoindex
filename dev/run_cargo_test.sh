@@ -69,9 +69,8 @@ if [[ -n "${PYTHONPATH_DETECTED}" ]]; then
   fi
 fi
 
-# The Rust SDK (`cocoindex`) has no default features, so this builds none of
-# its optional connectors and ops; dev/run_cargo_test_sdk_features.sh covers
-# them.
+# The cargo-test hook passes arguments that leave out the Rust SDK's crates;
+# dev/run_cargo_test_sdk.sh tests those.
 if [[ "${COCOINDEX_SKIP_UV:-}" == "1" ]]; then
   cargo test "$@"
 else

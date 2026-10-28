@@ -49,6 +49,7 @@ jobs:
       full: ${{ steps.mode.outputs.full }}
       build-test: ${{ steps.filter.outputs.build-test }}
       type-check: ${{ steps.filter.outputs.type-check }}
+      rust-sdk: ${{ steps.filter.outputs.rust-sdk }}
     steps:
       # Pushes and merge groups are diffed with git; a pull request through
       # the API.
@@ -70,7 +71,10 @@ jobs:
         id: filter
         with:
           # Each list covers every input of the hooks its job runs, so no
-          # change skips a check that applies to it.
+          # change skips a check that applies to it. The exception is
+          # rust-sdk: the Rust SDK isn't launched yet, so a change to the
+          # code it builds on (rust/core, Cargo.lock, ...) skips its checks,
+          # and rust_sdk_daily.yml runs them on main every day.
           filters: |
             build-test:
               - 'rust/**'
@@ -82,8 +86,6 @@ jobs:
               - '.github/actions/**'
               - 'dev/generate_cli_docs.py'
               - 'docs/src/content/docs/cli.mdx'
-              - 'examples/rust/**'
-              - 'benchmarks/**/rust/**'
             type-check:
               - 'python/**'
               - 'examples*/**'
@@ -92,6 +94,13 @@ jobs:
               - 'uv.lock'
               - '.github/workflows/CI.yml'
               - '.github/workflows/e2e_type_check.yml'
+            rust-sdk:
+              - 'rust/sdk/**'
+              - 'examples/rust/**'
+              - 'benchmarks/*/rust/**'
+              - '.github/workflows/CI.yml'
+              - '.github/workflows/_rust_sdk.yml'
+              - '.github/actions/**'
 
   build-test:
     name: Build & Test
@@ -105,13 +114,23 @@ jobs:
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.type-check != 'false'
     uses: ./.github/workflows/e2e_type_check.yml
 
+  rust-sdk:
+    name: Rust SDK
+    needs: changes
+    # The nightly run leaves the Rust SDK to rust_sdk_daily.yml.
+    if: >-
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.rust-sdk != 'false'
+      && github.event_name != 'schedule'
+    uses: ./.github/workflows/_rust_sdk.yml
+
   # Passes when every job above passed, or was skipped by the tier or because
   # the change doesn't touch its inputs. Fails on a failed or cancelled job,
   # and when `changes` itself didn't succeed (its skipped dependents would
   # otherwise look like a pass).
   ci-gate:
     if: always() && github.event.pull_request.draft != true
-    needs: [changes, build-test, type-check]
+    needs: [changes, build-test, type-check, rust-sdk]
     runs-on: ubuntu-latest
     steps:
       - env:

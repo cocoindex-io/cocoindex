@@ -32,19 +32,27 @@ different version than the hook pins, so run the hooks rather than `ruff` itself
 uv tool install prek                         # one-time; some hooks also need `protoc` (brew install protobuf)
 prek run ruff-check ruff-format --all-files  # Lint (applying safe fixes), then format Python code (same as CI)
 cargo fmt                                    # Format Rust code
-./dev/run_cargo_clippy.sh                    # Lint Rust code (same as CI)
+./dev/run_cargo_clippy.sh                    # Lint Rust code other than the Rust SDK (same as CI)
+./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK (same as CI)
 ```
 
 ### Pre-submission Checks
 
 CI enforces the full pre-commit hook suite from `.pre-commit-config.yaml`, which
 covers more than the commands above — notably regenerating the CLI docs
-(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. Run it locally
-before pushing:
+(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. Before pushing, run
+the hooks whose inputs your branch changed, as PR CI does:
 
 ```bash
-prek run --all-files
+prek run --from-ref origin/main --to-ref HEAD
 ```
+
+`prek run --all-files` runs every hook on every file, the Rust SDK hooks
+(`cargo-test-sdk`, `cargo-clippy-sdk`, `cargo-test-rust-externs`) included. The
+Rust SDK isn't launched yet, so those hooks run only for a change under
+`rust/sdk/`, `examples/rust/` or `benchmarks/*/rust/`, not for a change to the
+code the SDK builds on. The `Rust SDK Daily` workflow runs them on `main` every
+day and files an issue when they fail.
 
 ### Pull Requests and CI
 
@@ -62,10 +70,11 @@ The CI tiers, the merge queue and stacked pull requests are described in
 | Rust code only | `uv run maturin develop && cargo test` |
 | Python code only | `uv run mypy && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
+| Rust SDK, Rust examples or Rust benchmarks | `prek run cargo-test-sdk cargo-clippy-sdk update-rust-extern-locks cargo-test-rust-externs --all-files` |
 | Python lint and format | `prek run ruff-check ruff-format --all-files` |
-| Before pushing | `prek run --all-files` |
+| Before pushing | `prek run --from-ref origin/main --to-ref HEAD` |
 
-After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — both `rust/py` and the Rust SDK under `rust/sdk/` call core directly, and the SDK is easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those.
+After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — both `rust/py` and the Rust SDK under `rust/sdk/` call core directly, and the SDK is easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those. That hook and the other Rust SDK hooks don't run for a change to `rust/core` alone, so this check is the one that catches a broken SDK before the daily run does.
 
 ## Code Structure
 
