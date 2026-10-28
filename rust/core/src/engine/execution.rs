@@ -858,6 +858,52 @@ struct PreCommitCaptures<Prof: EngineProfile> {
         Arc<tokio::sync::Mutex<BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>>>,
 }
 
+/// Tracking record of a component that `pre_commit` takes target states
+/// from. It is decoded once per `pre_commit` call, edited in place as
+/// targets move away, and encoded once if modified. Doing that work per
+/// moved target made moving N targets from one owner quadratic in N.
+struct PreemptedOwner<'a> {
+    tracking: db_schema::StablePathEntryTrackingInfo<'a>,
+    /// Whether `take_item` removed anything: only modified records are
+    /// written back.
+    modified: bool,
+}
+
+impl PreemptedOwner<'_> {
+    /// Removes and returns the item stored under `key`, and drops any other
+    /// provider generations of the same target state path.
+    fn take_item(
+        &mut self,
+        key: &TargetStatePathWithProviderId,
+    ) -> Option<db_schema::TargetStateInfoItem<'static>> {
+        let items = &mut self.tracking.target_state_items;
+        let item = items.remove(key).map(|item| {
+            let mut item = item.into_owned();
+            // Reset version numbers so the new component's commit retention
+            // prunes them. The old owner's versions are from a different
+            // version space and may collide with curr_version.
+            for (version, _) in &mut item.states {
+                *version = 0;
+            }
+            item
+        });
+        // Stale entries under other provider ids would clobber inverted
+        // tracking when the old owner prunes them. Keys order by path, then
+        // provider id with `None` first, so this range holds exactly the
+        // generations of this path.
+        let generations = TargetStatePathWithProviderId {
+            target_state_path: key.target_state_path.clone(),
+            provider_id: None,
+        }..=TargetStatePathWithProviderId {
+            target_state_path: key.target_state_path.clone(),
+            provider_id: Some(u64::MAX),
+        };
+        let stale_removed = items.extract_if(generations, |_, _| true).count();
+        self.modified |= item.is_some() || stale_removed > 0;
+        item
+    }
+}
+
 /// Engine-side reconcile body. Takes precomputed reads from
 /// [`PrecommitSession::precommit_read`] and
 /// [`PrecommitSession::precommit_claim_targets`] (existing tracking_info,
@@ -909,21 +955,21 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         .filter_map(|(k, v)| v.map(|owner| (k, owner)))
         .collect();
 
-    // Old-owner tracking_info bytes were prefetched by the session.
-    // The cache is per-owner-path; the detection sub-pass and Phase 1
-    // reconcile both read from it. The Phase 1 preempt branch may
-    // re-encode an owner's bytes after removing the preempted item;
-    // those updates are emitted as `preempted_owner_updates` in the
-    // write plan, applied inside the precommit txn by the session.
-    let mut old_tracking_cache: HashMap<StablePath, Vec<u8>> = preempted_owner_states
+    // Old-owner tracking_info bytes were prefetched by the session. The
+    // detection sub-pass and Phase 1 reconcile share one decoded record per
+    // owner; modified records become `preempted_owner_updates` in the write
+    // plan, which the session applies inside the precommit txn.
+    let mut preempted_owners: HashMap<&StablePath, PreemptedOwner<'_>> = preempted_owner_states
         .iter()
-        .filter_map(|(path, state)| {
-            state
-                .tracking_info
-                .as_ref()
-                .map(|bytes| (path.clone(), bytes.clone()))
+        .filter_map(|(path, state)| state.tracking_info.as_deref().map(|bytes| (path, bytes)))
+        .map(|(path, bytes)| {
+            let owner = PreemptedOwner {
+                tracking: from_msgpack_slice(bytes)?,
+                modified: false,
+            };
+            Ok((path, owner))
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
     // Detection sub-pass — runs before any `TargetStateValue` is consumed by
     // reconcile, so a `PendingRetry` return leaves the input `declared_target_states`
@@ -964,12 +1010,11 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         if owner_path == stable_path {
             continue;
         }
-        let Some(cached) = old_tracking_cache.get(owner_path) else {
+        let Some(old) = preempted_owners.get(owner_path) else {
             continue;
         };
-        let old: db_schema::StablePathEntryTrackingInfo<'_> = from_msgpack_slice(cached)?;
-        if old.pending_process_token == Some(process_token)
-            && let Some(item) = old.target_state_items.get(&lookup_key)
+        if old.tracking.pending_process_token == Some(process_token)
+            && let Some(item) = old.tracking.target_state_items.get(&lookup_key)
             && item.is_pending()
         {
             pending_retry = true;
@@ -1000,7 +1045,6 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         names
     };
 
-    let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
         if let Some(processor_name) = processor_name {
@@ -1048,7 +1092,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         // decides whether and how to clone).
         // Reuse the `declared_paths_all` materialized at the top for
         // the bulk-read step — same set, no need to re-lock + re-clone.
-        for target_state_path in declared_paths_all.iter().cloned() {
+        for target_state_path in &declared_paths_all {
             // Look up existing tracked entry using exact key (provider_id from current providers).
             let parent_provider_gen = target_states_providers
                 .get(target_state_path.provider_path())
@@ -1072,46 +1116,10 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             let mut prev_item = if let Some(existing_item) = existing_item {
                 Some(existing_item)
             } else {
-                match bulk_target_owners.get(&target_state_path) {
-                    Some(owner_path) if owner_path != stable_path => {
-                        let old_owner_path = owner_path.clone();
-                        if let Some(cached_bytes) = old_tracking_cache.get(&old_owner_path) {
-                            let mut old_tracking: db_schema::StablePathEntryTrackingInfo<'_> =
-                                from_msgpack_slice(cached_bytes)?;
-                            let len_before = old_tracking.target_state_items.len();
-                            // Look up the entry matching current provider_id.
-                            // `into_owned()` releases the borrow on the cached
-                            // bytes so `prev_item` outlives this scope.
-                            let prev_item = old_tracking
-                                .target_state_items
-                                .remove(&lookup_key)
-                                .map(|item| {
-                                    let mut item = item.into_owned();
-                                    // Reset version numbers so the new component's commit
-                                    // retention prunes them. The old owner's versions are from
-                                    // a different version space and may collide with
-                                    // curr_version.
-                                    for (version, _) in item.states.iter_mut() {
-                                        *version = 0;
-                                    }
-                                    item
-                                });
-                            // Also remove any stale entries (different provider_ids)
-                            // to prevent them from clobbering inverted tracking on prune.
-                            old_tracking
-                                .target_state_items
-                                .retain(|k, _| k.target_state_path != target_state_path);
-                            if old_tracking.target_state_items.len() < len_before {
-                                let new_bytes = rmp_serde::to_vec_named(&old_tracking)?;
-                                drop(old_tracking);
-                                old_tracking_cache.insert(old_owner_path.clone(), new_bytes);
-                                modified_old_owners.insert(old_owner_path);
-                            }
-                            prev_item
-                        } else {
-                            None
-                        }
-                    }
+                match bulk_target_owners.get(target_state_path) {
+                    Some(owner_path) if owner_path != stable_path => preempted_owners
+                        .get_mut(owner_path)
+                        .and_then(|old| old.take_item(&lookup_key)),
                     _ => None,
                 }
             };
@@ -1143,7 +1151,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             // in this iteration aren't carrying a `!Send` borrow.
             let (target_state_key_bytes, recon_output, child_provider) = {
                 let guard = declared_target_states.lock().await;
-                let decl = guard.get(&target_state_path).ok_or_else(|| {
+                let decl = guard.get(target_state_path).ok_or_else(|| {
                     internal_error!("declared entry vanished mid-pre_commit: {target_state_path}")
                 })?;
                 let decode_item_key =
@@ -1407,18 +1415,15 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     };
     let (curr_version, new_tracking_info_bytes) = curr_version;
 
-    // Collect modified preempted-owner blobs from `old_tracking_cache`
-    // into the write plan. The backend writes them alongside the self
-    // tracking_info in the same precommit txn (the apply step inside
-    // `precommit(callback)`), collapsing N preempts of one owner into
-    // one upsert.
-    let mut preempted_owner_updates: BTreeMap<StablePath, Vec<u8>> = BTreeMap::new();
-    for path in modified_old_owners {
-        let encoded = old_tracking_cache
-            .remove(&path)
-            .ok_or_else(|| internal_error!("modified old owner missing from cache: {}", path))?;
-        preempted_owner_updates.insert(path, encoded);
-    }
+    // Encode each modified preempted owner once into the write plan. The
+    // backend writes them alongside the self tracking_info in the same
+    // precommit txn (the apply step inside `precommit(callback)`),
+    // collapsing N preempts of one owner into one upsert.
+    let preempted_owner_updates: BTreeMap<StablePath, Vec<u8>> = preempted_owners
+        .into_iter()
+        .filter(|(_, owner)| owner.modified)
+        .map(|(path, owner)| Ok((path.clone(), rmp_serde::to_vec_named(&owner.tracking)?)))
+        .collect::<Result<_>>()?;
 
     // Provider-generation updates: buffered into the output, applied
     // by `submit()` after the precommit txn commits — so a re-run of this
@@ -2200,4 +2205,96 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
         }
     }
     Ok(contained_target_state_paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(name: &str, parent: Option<&TargetStatePath>) -> TargetStatePath {
+        TargetStatePath::new(Fingerprint::from(name).unwrap(), parent)
+    }
+
+    fn key(path: &TargetStatePath, provider_id: Option<u64>) -> TargetStatePathWithProviderId {
+        TargetStatePathWithProviderId {
+            target_state_path: path.clone(),
+            provider_id,
+        }
+    }
+
+    fn owner(keys: &[TargetStatePathWithProviderId]) -> PreemptedOwner<'static> {
+        let mut tracking = db_schema::StablePathEntryTrackingInfo::new(Cow::Borrowed("owner"));
+        tracking.version = 93;
+        tracking.pending_process_token = Some(123);
+        for key in keys {
+            let item = db_schema::TargetStateInfoItem {
+                key: Cow::Borrowed(b"key"),
+                states: vec![(
+                    91,
+                    db_schema::TargetStateInfoItemState::Existing(Cow::Borrowed(b"value")),
+                )],
+                provider_schema_version: 7,
+                provider_generation: None,
+            };
+            tracking.target_state_items.insert(key.clone(), item);
+        }
+        PreemptedOwner {
+            tracking,
+            modified: false,
+        }
+    }
+
+    #[test]
+    fn take_item_drops_the_other_generations_of_its_path_only() {
+        let moved = path("moved", None);
+        let child = path("child", Some(&moved));
+        let kept = path("kept", None);
+        let mut owner = owner(&[
+            key(&moved, None),
+            key(&moved, Some(4)),
+            key(&moved, Some(u64::MAX)),
+            key(&child, None),
+            key(&kept, Some(4)),
+        ]);
+
+        let taken = owner.take_item(&key(&moved, Some(4))).unwrap();
+
+        assert_eq!(taken.states.len(), 1);
+        assert_eq!(taken.states[0].0, 0);
+        assert_eq!(taken.states[0].1.as_ref(), Some(b"value".as_slice()));
+        assert_eq!(taken.provider_schema_version, 7);
+        assert!(owner.modified);
+        let items = &owner.tracking.target_state_items;
+        assert_eq!(items.len(), 2);
+        assert!(items.contains_key(&key(&child, None)));
+        assert!(items.contains_key(&key(&kept, Some(4))));
+        assert_eq!(owner.tracking.version, 93);
+        assert_eq!(owner.tracking.pending_process_token, Some(123));
+    }
+
+    #[test]
+    fn take_item_drops_stale_generations_when_the_current_one_is_absent() {
+        let moved = path("moved", None);
+        let mut owner = owner(&[key(&moved, Some(9))]);
+
+        assert!(owner.take_item(&key(&moved, Some(10))).is_none());
+
+        assert!(owner.modified);
+        assert!(owner.tracking.target_state_items.is_empty());
+    }
+
+    #[test]
+    fn take_item_of_an_untracked_path_leaves_the_owner_unmodified() {
+        let kept = path("kept", None);
+        let mut owner = owner(&[key(&kept, Some(4))]);
+
+        assert!(
+            owner
+                .take_item(&key(&path("missing", None), None))
+                .is_none()
+        );
+
+        assert!(!owner.modified);
+        assert_eq!(owner.tracking.target_state_items.len(), 1);
+    }
 }
