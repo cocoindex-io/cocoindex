@@ -19,7 +19,7 @@
     "@cocoindex/brand": "github:cocoindex-io/cocoindex-brand#v0.4.41",
     "@docsearch/css": "^4.6.2",
     "@docsearch/js": "^4.6.2",
-    "astro": "^7.3.2",
+    "astro": "^7.4.2",
     "mdast-util-to-string": "^4.0.0",
     "mermaid": "^12.2.0",
     "mixpanel-browser": "^2.78.0",
