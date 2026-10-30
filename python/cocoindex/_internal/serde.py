@@ -51,20 +51,22 @@ def _all_subclasses(cls: type) -> list[type]:
 
 
 def _is_concrete_numpy_scalar(cls: type) -> bool:
-    """Check a numpy scalar class is concrete enough to register.
+    """Check a class is one of numpy's own concrete scalar classes.
 
-    Abstract scalar classes (``np.floating``, ``np.number``, ...) cannot be
-    converted with ``np.dtype()``, so a record holding one could never decode
-    via ``_dec_hook`` — registering them would only let the writer accept a
-    value the reader cannot use.
+    Abstract scalar classes (``np.floating``, ``np.number``, ...) have no dtype
+    of their own: numpy 2.3+ raises on ``np.dtype(np.floating)``, and older
+    versions warn and return another type's dtype (``float64``). Classes from
+    other packages (``ml_dtypes.bfloat16``) are left out, so the allow-list
+    does not depend on what was imported before cocoindex.
     """
-    if inspect.isabstract(cls):
+    if cls.__module__ != "numpy":
         return False
-    try:
-        np.dtype(cls)
-    except (TypeError, ValueError):
-        return False
-    return True
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            return np.dtype(cls).type is cls
+        except (TypeError, ValueError):
+            return False
 
 
 # Concrete numpy scalar classes (e.g. np.float32), computed once and reused

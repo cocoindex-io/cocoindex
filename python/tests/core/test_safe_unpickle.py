@@ -139,7 +139,6 @@ class TestRegisteredTypes:
 
 class TestRejection:
     def test_unregistered_type_rejected(self) -> None:
-
         # Use pickle.dumps directly to bypass strict-serialize checking,
         # so we can test that deserialize rejects the unregistered type.
         data = pickle.dumps(_Unregistered(42))
@@ -153,7 +152,6 @@ class TestRejection:
             assert "Forbidden global" in str(e.__cause__)
 
     def test_forbidden_global_rejected(self) -> None:
-
         # pickle.dumps(os.system) on macOS/Linux produces this (posix.system)
         payload = (
             b"\x80\x04\x95\x14\x00\x00\x00\x00\x00\x00\x00"
