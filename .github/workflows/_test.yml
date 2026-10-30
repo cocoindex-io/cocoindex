@@ -70,6 +70,44 @@ jobs:
             min-free-disk-gib: 20
             uv-cache-suffix: ${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}
 
+        # The Omnigraph connector's live tests boot `omnigraph-server` on a
+        # local cluster and deploy schema through the `omnigraph` CLI. They
+        # gate on OMNIGRAPH_TEST_SERVER=1 and expect both binaries at
+        # test/bin/v0.14.0 (git-ignored), so install the pinned release there
+        # on every platform it ships for; elsewhere the live tests skip as
+        # they do on a developer machine without it. They also skip while the
+        # `omnigraph` Python SDK is not installed.
+        - name: Install Omnigraph for the connector's live tests
+          if: runner.os != 'Windows'
+          shell: bash
+          env:
+            OMNIGRAPH_VERSION: "0.14.0"
+          run: |
+            case "${{ runner.os }}-${{ runner.arch }}" in
+              Linux-X64)   asset=omnigraph-linux-x86_64 ;;
+              Linux-ARM64) asset=omnigraph-linux-arm64 ;;
+              macOS-ARM64) asset=omnigraph-macos-arm64 ;;
+              *)
+                echo "No Omnigraph release for ${{ runner.os }}-${{ runner.arch }}; live tests will skip"
+                exit 0
+                ;;
+            esac
+            base="https://github.com/ModernRelay/omnigraph/releases/download/v${OMNIGRAPH_VERSION}"
+            dir="test/bin/v${OMNIGRAPH_VERSION}"
+            mkdir -p "$dir"
+            cd "$dir"
+            curl -sSfL -o "$asset.tar.gz" "$base/$asset.tar.gz"
+            curl -sSfL -o "$asset.sha256" "$base/$asset.sha256"
+            if command -v sha256sum >/dev/null; then
+              sha256sum -c "$asset.sha256"
+            else
+              shasum -a 256 -c "$asset.sha256"
+            fi
+            tar xzf "$asset.tar.gz" omnigraph omnigraph-server
+            rm "$asset.tar.gz" "$asset.sha256"
+            ./omnigraph version --json
+            echo "OMNIGRAPH_TEST_SERVER=1" >> "$GITHUB_ENV"
+
         - name: Run build-test hooks
           uses: ./.github/actions/run-prek
           env:
