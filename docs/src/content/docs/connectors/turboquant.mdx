@@ -1,0 +1,92 @@
+---
+title: "*TurboQuant* connector"
+toc_max_heading_level: 4
+description: >
+  Write vectors to a local TurboQuant index file backed by turbovec. Covers
+  declaring the index and its vectors, quantization bit width, lifecycle
+  management, and allowlist-filtered search.
+---
+The `turboquant` connector writes vectors to a local index file built with [turbovec](https://github.com/RyanCodrai/turbovec), which compresses each vector to 2, 3, or 4 bits per dimension and searches with SIMD kernels. The index runs in process and needs no server.
+
+The index stores only vectors keyed by unsigned 64-bit IDs. Store payloads and filterable fields in a regular target, such as [SQLite](/docs/connectors/sqlite/) or [Postgres](/docs/connectors/postgres/), under the same IDs. To filter a search, query that target for the matching IDs and pass them as an allowlist.
+
+```python
+from cocoindex.connectors import turboquant
+```
+
+turbovec ships inside the CocoIndex native extension, so the connector needs no extra install.
+
+## As target
+
+The connector tracks which vectors should exist in the index file. It adds new IDs, replaces vectors whose content changed, removes IDs that are no longer declared, and rewrites the file after each batch of changes.
+
+### Index (parent state)
+
+Declares an index file as a target state. Returns an `IndexTarget` for declaring vectors.
+
+```python
+def declare_index_target(
+    path: str | Path,
+    *,
+    bit_width: int = 4,
+) -> IndexTarget[coco.PendingS]
+```
+
+**Parameters:**
+
+- `path`: Index file path. CocoIndex resolves it to an absolute path and uses that as the target state key, so moving the file to another path creates a new index and deletes the old one.
+- `bit_width`: Bits per quantized dimension: `2`, `3`, or `4`. Changing it deletes the file and rebuilds the index from the declared vectors.
+
+**Returns:** A pending `IndexTarget`. Use `await turboquant.mount_index_target(path, bit_width=...)` to resolve.
+
+When the index is no longer declared, CocoIndex deletes the file.
+
+### Vectors (child states)
+
+Once an `IndexTarget` is resolved, declare vectors:
+
+```python
+def IndexTarget.declare_vector(self, *, id: int, vector: NDArray[np.float32] | Sequence[float]) -> None
+```
+
+- `id` must fit in an unsigned 64-bit integer.
+- `vector` must be one-dimensional. The first vector sets the index dimension, which must be a multiple of 8; every later vector must match it.
+
+CocoIndex fingerprints each vector and skips the write when no vector changed.
+
+### Example
+
+```python
+import cocoindex as coco
+from cocoindex.connectors import turboquant
+
+@coco.fn
+async def app_main(embeddings: dict[int, list[float]]) -> None:
+    index = await turboquant.mount_index_target("./data/chunks.tvim", bit_width=4)
+    for chunk_id, embedding in embeddings.items():
+        index.declare_vector(id=chunk_id, vector=embedding)
+```
+
+## Searching
+
+`search()` loads the index and returns the top `k` matches for one query, best match first:
+
+```python
+def search(
+    path: str | Path,
+    query: NDArray[np.float32] | Sequence[float],
+    k: int,
+    *,
+    allowlist: Sequence[int] | NDArray[np.uint64] | None = None,
+) -> list[SearchResult]
+```
+
+Each `SearchResult` has a `score` and an `id`. Scores are inner products of quantized vectors, so normalize vectors before indexing and querying to rank by cosine similarity.
+
+When `allowlist` is set, the search considers only those IDs. IDs absent from the index are ignored, and an allowlist with no indexed IDs returns an empty list.
+
+```python
+results = turboquant.search("./data/chunks.tvim", query_embedding, 10, allowlist=[3, 7, 42])
+```
+
+`load_index(path)` returns the underlying index for repeated or batched queries. Both `load_index()` and `search()` cache the loaded index per path and reload it when the file's modification time or size changes.
