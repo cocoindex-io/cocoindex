@@ -23,11 +23,12 @@ Output: JSON on stdout with shape:
       "range": "v1.0.7..origin/main",
       "commits": [
         {"sha": "1936301a", "subject": "...", "type": "feat", "scope": "py",
-         "pr": 2091, "author_handle": "georgeh0", "author_handle_source": "pr",
-         "author_name": "Jiangzhou", "author_email": "..."},
+         "breaking": false, "pr": 2091, "author_handle": "georgeh0",
+         "author_handle_source": "pr", "author_name": "Jiangzhou",
+         "author_email": "..."},
         ...
       ],
-      "new_contributors": ["hakuuww", "davidmyriel", ...],
+      "new_contributors": [{"handle": "mulatta", "pr": 2434}, ...],
       "unresolved_prs": [2244],
       "warnings": ["HEAD is 1 commit(s) behind origin/main ..."]
     }
@@ -188,20 +189,22 @@ def main() -> int:
         name, email = line.split("\x1f")
         prior_names.add(name)
         prior_emails.add(email)
-    new_handles, seen = [], set()
-    for c in commits:
+    # Oldest first, so each new contributor is paired with their first PR.
+    new_contributors: dict[str, int | None] = {}
+    for c in reversed(commits):
         if c["author_name"] in prior_names or c["author_email"] in prior_emails:
             continue
         h = c["author_handle"]
-        if h and h not in seen:
-            seen.add(h)
-            new_handles.append(h)
+        if h and h not in new_contributors:
+            new_contributors[h] = c["pr"]
 
     json.dump(
         {
             "range": rng,
             "commits": commits,
-            "new_contributors": new_handles,
+            "new_contributors": [
+                {"handle": h, "pr": pr} for h, pr in new_contributors.items()
+            ],
             "unresolved_prs": unresolved_prs,
             "warnings": warnings,
         },

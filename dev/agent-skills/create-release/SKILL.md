@@ -114,7 +114,8 @@ the range (one per landed PR) with its PR number, the PR author's GitHub handle,
 and a first-pass new-contributor list, so you don't hand-loop `gh pr view`. It
 prints JSON: `commits` (each with `sha`, `subject`, `type`, `scope`,
 `breaking`, `pr`, `author_handle`, `author_handle_source`, `author_name`,
-`author_email`), plus `new_contributors`, `unresolved_prs` and `warnings`. Read
+`author_email`), plus `new_contributors` (each a `handle` and the `pr` of their
+earliest commit in the range), `unresolved_prs` and `warnings`. Read
 `warnings` first. If `gh` can't reach the repository, fall back to
 `git log --first-parent <prev_tag>..<sha> --oneline` and say that handles and
 contributors are missing, rather than inventing them.
@@ -177,8 +178,8 @@ by git name and email against history before `<prev_tag>`, which is
 approximate in both directions: someone who previously committed under a
 different name and email shows up as "new", and one person can appear under
 several name spellings. Verify against
-`git log <prev_tag> --format='%an <%ae>' | sort -u` before listing anyone, and
-link each to their first PR in the range.
+`git log <prev_tag> --format='%an <%ae>' | sort -u` before listing anyone.
+Each entry's `pr` is the PR for its "made their first contribution in" link.
 
 ## 4. Pick the version
 
