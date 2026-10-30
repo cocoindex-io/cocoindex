@@ -48,6 +48,33 @@ If you are unsure whether two names refer to the same thing, err on the side \
 of `matched` being null.
 """
 
+# The default is intentionally limited to this ordinary text path. Callers that
+# pass a model retain their exact provider/model string and do not get fallback
+# behavior; embeddings, transcription, and user-supplied conversation history
+# are separate paths.
+DEFAULT_MINIMAX_TEXT_MODELS = (
+    "minimax/MiniMax-M3.1-Flash",
+    "minimax/MiniMax-M3",
+)
+_MODEL_UNAVAILABLE_MESSAGES = (
+    "model not found",
+    "model_not_found",
+    "unknown model",
+    "unsupported model",
+    "model does not exist",
+    "model is not available",
+)
+
+
+def _is_model_unavailable(error: BaseException) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code == 404:
+        return True
+    if status_code not in (None, 400):
+        return False
+    message = str(error).lower()
+    return any(fragment in message for fragment in _MODEL_UNAVAILABLE_MESSAGES)
+
 
 class _InvalidModelOutput(Exception):
     """The model returned a `matched` value outside the candidate list."""
@@ -66,7 +93,7 @@ class LlmPairResolver:
     def __init__(
         self,
         *,
-        model: str,
+        model: str | None = None,
         entity_type: str | None = None,
         extra_guidance: str | None = None,
         retries: int = 2,
@@ -74,7 +101,9 @@ class LlmPairResolver:
         """
         Args:
             model: A litellm model string (e.g. ``"openai/gpt-4o-mini"``,
-                ``"anthropic/claude-haiku-4-5"``). Same format as
+                ``"anthropic/claude-haiku-4-5"``). If omitted, the ordinary
+                text path uses MiniMax M3.1-Flash first and retries a
+                model-unavailable response with MiniMax M3. Same format as
                 :class:`~cocoindex.ops.litellm.LiteLLMEmbedder`.
             entity_type: Optional entity-type hint woven into the prompt
                 (e.g. ``"person"``, ``"technology"``, ``"organization"``).
@@ -84,10 +113,13 @@ class LlmPairResolver:
                 value. Default 2. An active ``coco.timeout()`` deadline can
                 only stop retries sooner, never extend them.
         """
-        self._model = model
+        self._models = (model,) if model is not None else DEFAULT_MINIMAX_TEXT_MODELS
+        self._model = self._models[0]
         self._retries = retries
         self._system_prompt = _build_prompt(entity_type, extra_guidance)
-        self._memo_key = _coco.memo_fingerprint((model, entity_type, extra_guidance))
+        self._memo_key = _coco.memo_fingerprint(
+            (self._models, entity_type, extra_guidance)
+        )
         self._client: _typing.Any | None = None
 
     @_coco.fn(memo=True, logic_tracking="self")
@@ -109,11 +141,7 @@ class LlmPairResolver:
         ]
 
         async def _attempt() -> _PairDecision:
-            result = await self._get_client().chat.completions.create(
-                model=self._model,
-                response_model=_LlmResponse,
-                messages=messages,
-            )
+            result = await self._create_completion(messages)
 
             if result.matched is None or result.matched in candidates:
                 return _PairDecision(matched=result.matched, canonical=result.canonical)
@@ -141,19 +169,40 @@ class LlmPairResolver:
             # contract of returning an empty decision instead of raising.
             return _PairDecision()
 
+    async def _create_completion(self, messages: list[dict[str, str]]) -> _typing.Any:
+        client = self._get_client()
+        for index, model in enumerate(self._models):
+            try:
+                return await client.chat.completions.create(
+                    model=model,
+                    response_model=_LlmResponse,
+                    messages=messages,
+                )
+            except Exception as error:
+                if index + 1 == len(self._models) or not _is_model_unavailable(error):
+                    raise
+        raise AssertionError("at least one text model is required")
+
     def __coco_memo_key__(self) -> object:
         return self._memo_key
 
     def __getstate__(self) -> dict[str, _typing.Any]:
         return {
             "model": self._model,
+            "models": self._models,
             "retries": self._retries,
             "system_prompt": self._system_prompt,
             "memo_key": self._memo_key,
         }
 
     def __setstate__(self, state: dict[str, _typing.Any]) -> None:
-        self._model = state["model"]
+        models = state.get("models")
+        if models is None:
+            # Pickles created before the default model list was introduced only
+            # carry one explicit model and must retain that historical choice.
+            models = (state["model"],)
+        self._models = tuple(models)
+        self._model = self._models[0]
         self._retries = state["retries"]
         self._system_prompt = state["system_prompt"]
         self._memo_key = state["memo_key"]

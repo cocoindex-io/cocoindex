@@ -17,7 +17,10 @@ pytest.importorskip("instructor", reason="instructor not installed")
 from litellm import ModelResponse  # noqa: E402
 
 from cocoindex.ops.entity_resolution import CanonicalSide, PairDecision  # noqa: E402
-from cocoindex.ops.entity_resolution.llm_resolver import LlmPairResolver  # noqa: E402
+from cocoindex.ops.entity_resolution.llm_resolver import (  # noqa: E402
+    DEFAULT_MINIMAX_TEXT_MODELS,
+    LlmPairResolver,
+)
 
 
 def _make_response(matched: str | None, canonical: str = "matched") -> ModelResponse:
@@ -53,6 +56,50 @@ async def test_llm_happy_path_no_match() -> None:
         result = await resolver("foo", ["bar", "baz"])
     assert result == PairDecision()
     assert mock.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_llm_default_minimax_falls_back_only_when_model_is_unavailable() -> None:
+    calls: list[str] = []
+
+    class _ModelUnavailableError(Exception):
+        status_code = 404
+
+    async def _acompletion(**kwargs: object) -> ModelResponse:
+        calls.append(str(kwargs["model"]))
+        if len(calls) == 1:
+            raise _ModelUnavailableError("model not found")
+        return _make_response(matched=None)
+
+    mock = AsyncMock(side_effect=_acompletion)
+    with patch(
+        "cocoindex.ops.entity_resolution.llm_resolver._litellm.acompletion", mock
+    ):
+        result = await LlmPairResolver()("foo", ["bar", "baz"])
+
+    assert result == PairDecision()
+    assert calls == list(DEFAULT_MINIMAX_TEXT_MODELS)
+
+
+@pytest.mark.asyncio
+async def test_llm_explicit_model_does_not_use_minimax_fallback() -> None:
+    calls: list[str] = []
+
+    class _ModelUnavailableError(Exception):
+        status_code = 404
+
+    async def _acompletion(**kwargs: object) -> ModelResponse:
+        calls.append(str(kwargs["model"]))
+        raise _ModelUnavailableError("model not found")
+
+    mock = AsyncMock(side_effect=_acompletion)
+    with patch(
+        "cocoindex.ops.entity_resolution.llm_resolver._litellm.acompletion", mock
+    ):
+        with pytest.raises(_ModelUnavailableError):
+            await LlmPairResolver(model="custom/provider-model")("foo", ["bar"])
+
+    assert calls == ["custom/provider-model"]
 
 
 @pytest.mark.asyncio
