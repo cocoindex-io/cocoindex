@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from typing import cast
 
 import pytest
@@ -111,10 +112,16 @@ def test_bounded_queue_preserves_values_and_errors(
     async def consume() -> None:
         async for item in sync_to_async_iter(source, max_queue_size=1):
             received.append(item)
+            if item == 0:
+                # Longer than the producer's put timeout, forcing a retry.
+                await asyncio.sleep(0.3)
 
     def run() -> None:
         if source_is_async:
-            received.extend(async_to_sync_iter(async_source, max_queue_size=1))
+            for item in async_to_sync_iter(async_source, max_queue_size=1):
+                received.append(item)
+                if item == 0:
+                    time.sleep(0.3)
         else:
             asyncio.run(consume())
 

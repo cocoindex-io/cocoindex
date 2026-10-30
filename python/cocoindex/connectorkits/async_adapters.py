@@ -73,16 +73,15 @@ async def sync_to_async_iter(
     stop_event = _threading.Event()
 
     def producer() -> None:
+        end: tuple[bool, _T | Exception] = (True, StopIteration())
         try:
             for item in sync_iter_fn():
-                if stop_event.is_set():
-                    break
                 if not _put_until_stopped(q, (False, item), stop_event):
                     break
         except Exception as e:  # pylint: disable=broad-except
-            _put_until_stopped(q, (True, e), stop_event)
+            end = (True, e)
         finally:
-            _put_until_stopped(q, (True, StopIteration()), stop_event)
+            _put_until_stopped(q, end, stop_event)
 
     _ctx = _contextvars.copy_context()
     loop = _asyncio.get_running_loop()
@@ -165,16 +164,15 @@ def async_to_sync_iter(
 
     def producer() -> None:
         async def run_async() -> None:
+            end: tuple[bool, _T | Exception] = (True, StopIteration())
             try:
                 async for item in async_iter_fn():
-                    if stop_event.is_set():
-                        break
                     if not _put_until_stopped(q, (False, item), stop_event):
                         break
             except Exception as e:  # pylint: disable=broad-except
-                _put_until_stopped(q, (True, e), stop_event)
+                end = (True, e)
             finally:
-                _put_until_stopped(q, (True, StopIteration()), stop_event)
+                _put_until_stopped(q, end, stop_event)
 
         _asyncio.run(run_async())
 
