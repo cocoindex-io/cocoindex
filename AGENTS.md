@@ -387,6 +387,7 @@ Reusable task-specific agent guidance lives under `dev/agent-skills/`. These pla
 - For docs diagrams, read `dev/agent-skills/cocoindex-diagrams/SKILL.md`.
 - For new target connectors, read `dev/agent-skills/target-connector/SKILL.md`.
 - For upgrading example package versions, read `dev/agent-skills/upgrade-examples/SKILL.md`.
+- For cutting a release (next version, release notes, GitHub release, PyPI publish), read `dev/agent-skills/create-release/SKILL.md`.
 
 Agent Skills-compatible clients, including Codex, discover the checked-in symlinks under `.agents/skills/`. The public CocoIndex skill is exposed there as `cocoindex`, and contributor playbooks are exposed there from `dev/agent-skills/`.
 
