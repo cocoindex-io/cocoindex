@@ -1,0 +1,5 @@
+.env
+*.db
+*.omni
+.venv/
+*.egg-info/

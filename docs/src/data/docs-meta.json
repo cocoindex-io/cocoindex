@@ -86,6 +86,9 @@
     "connectors/oci_object_storage": {
       "reviewedTs": 1783166400
     },
+    "connectors/omnigraph": {
+      "reviewedTs": 1783166400
+    },
     "connectors/postgres": {
       "reviewedTs": 1783166400
     },
