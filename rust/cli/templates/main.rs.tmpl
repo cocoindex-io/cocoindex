@@ -1,0 +1,55 @@
+//! {{name}}: a CocoIndex app.
+//!
+//!   cocoindex update        # build this crate and bring ./out in sync with ./data
+//!   cocoindex update -L     # keep running (live sources keep watching)
+//!   cocoindex show          # inspect the persisted state
+//!   cocoindex drop          # drop the app's state
+
+use std::path::PathBuf;
+
+use cocoindex::prelude::*;
+
+fn project_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Configure the environment: the state db, and shared resources such as
+/// database pools or models (`builder.provide_key(&KEY, value)`, torn down with
+/// `builder.on_shutdown(..)`). `cocoindex` and `Environment::from_registered()`
+/// both run this.
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder.db_path(project_dir().join(".cocoindex_db")))
+}
+
+/// Process one input. Runs in its own component, skipped when the file is unchanged.
+#[cocoindex::function]
+async fn process_file(_ctx: &Ctx, file: FileEntry) -> Result<(String, String)> {
+    let text = file.content_str()?;
+    Ok((format!("{}.txt", file.stem()), text.to_uppercase()))
+}
+
+/// The pipeline: declare targets, enumerate inputs, process each input.
+#[cocoindex::app(name = "{{name}}")]
+async fn app_main(ctx: Ctx) -> Result<()> {
+    // 1) Declare targets.
+    let target = mount_dir_target(&ctx, project_dir().join("out"))?;
+
+    // 2) Enumerate inputs.
+    let files = walk_items(project_dir().join("data"), &["**/*.md"])?;
+
+    // 3) Process each input under a stable path, then declare its output.
+    let outputs = mount_each!(files, |file| process_file(ctx, file)).await?;
+    for (name, content) in &outputs {
+        target.declare_file(&ctx, name, content.as_bytes())?;
+    }
+    Ok(())
+}
+
+#[cocoindex::main]
+async fn main() -> Result<()> {
+    // `cocoindex ...` commands are handled before this body runs. Put the
+    // program's own behaviour here, e.g. queries over the indexed data.
+    println!("Run `cocoindex update` to process ./data into ./out.");
+    Ok(())
+}

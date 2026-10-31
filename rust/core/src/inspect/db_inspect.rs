@@ -47,6 +47,16 @@ pub async fn iter_stable_paths_by_name<Prof: EngineProfile>(
     }
 }
 
+/// Store-scoped form of [`iter_stable_paths`], for callers that opened an
+/// [`AppStore`] directly (no live environment or app).
+pub async fn iter_stable_paths_from_store(
+    store: AppStore,
+) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
+    let storage = store.storage.clone();
+    let rx = storage.spawn_stable_path_iter(store).await;
+    receiver_to_stable_path_info_stream(rx)
+}
+
 fn receiver_to_stable_path_info_stream(
     rx: tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>>,
 ) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
@@ -568,8 +578,11 @@ fn list_parents_in_txn(
     Ok(results)
 }
 
-/// Query details for a path with optional children/parents, all in a single read txn.
-async fn query_details_from_store(
+/// Query details for a path with optional children/parents, all in a single
+/// read txn. Store-scoped so callers without a live environment (the
+/// standalone `cocoindex` CLI reading a state db) can use it; pass an empty
+/// `provider_keys` map when no provider registry is available.
+pub async fn query_stable_path_details_from_store(
     store: &AppStore,
     provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
     path: &StablePath,
@@ -610,7 +623,7 @@ pub async fn query_stable_path_details<Prof: EngineProfile>(
     recursive: bool,
     include_parents: bool,
 ) -> Result<Vec<StablePathDetail>> {
-    query_details_from_store(
+    query_stable_path_details_from_store(
         app.app_ctx().app_store(),
         provider_key_seed(app.app_ctx().env()),
         path,
@@ -634,7 +647,7 @@ pub async fn query_stable_path_details_by_name<Prof: EngineProfile>(
         Some(store) => store,
         None => return Ok(Vec::new()),
     };
-    query_details_from_store(
+    query_stable_path_details_from_store(
         &store,
         provider_key_seed(env),
         path,

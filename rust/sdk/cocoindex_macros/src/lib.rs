@@ -1,4 +1,4 @@
-//! Proc macros for cocoindex: `#[function]`.
+//! Proc macros for cocoindex: `#[function]`, `#[app]`, `#[lifespan]`, `#[main]`.
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -1743,11 +1743,390 @@ pub fn derive_schema_fields(input: TokenStream) -> TokenStream {
     .into()
 }
 
+// ===========================================================================
+// #[app] / #[lifespan] / #[main] — link-time registration for the CLI
+//
+// `#[cocoindex::app]` and `#[cocoindex::lifespan]` push one entry each into a
+// `linkme` distributed slice (`::cocoindex::COCO_APPS` /
+// `::cocoindex::COCO_LIFESPANS`), the mechanism `#[function]` uses for logic
+// fingerprints. `Environment::from_registered()` and the `__coco` CLI protocol
+// read those slices, so a user's `main` and the `cocoindex` CLI initialize the
+// identical environment. `#[cocoindex::main]` runs the protocol dispatch before
+// the user's own body.
+// ===========================================================================
+
+/// Parsed arguments for `#[app(...)]`: an optional `name = "..."`.
+#[derive(Debug, Default)]
+struct AppArgs {
+    name: Option<LitStr>,
+}
+
+impl Parse for AppArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut args = AppArgs::default();
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            if key == "name" {
+                input.parse::<Token![=]>()?;
+                let value: LitStr = input.parse()?;
+                if value.value().is_empty() {
+                    return Err(SynError::new(value.span(), "app name must not be empty"));
+                }
+                if args.name.replace(value).is_some() {
+                    return Err(SynError::new(key.span(), "duplicate `name`"));
+                }
+            } else {
+                return Err(SynError::new(
+                    key.span(),
+                    format!("unknown #[app] argument `{key}`; expected `name = \"...\"`"),
+                ));
+            }
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        Ok(args)
+    }
+}
+
+/// The single typed parameter of an `#[app]` / `#[lifespan]` function.
+fn single_param<'a>(func: &'a ItemFn, expected: &str) -> syn::Result<&'a PatType> {
+    let mut inputs = func.sig.inputs.iter();
+    match (inputs.next(), inputs.next()) {
+        (Some(FnArg::Typed(param)), None) => Ok(param),
+        _ => Err(SynError::new(
+            func.sig.ident.span(),
+            format!("function must take exactly one parameter: {expected}"),
+        )),
+    }
+}
+
+fn require_async(func: &ItemFn, what: &str) -> syn::Result<()> {
+    if func.sig.asyncness.is_none() {
+        return Err(SynError::new(
+            func.sig.fn_token.span,
+            format!("{what} must be an `async fn`"),
+        ));
+    }
+    Ok(())
+}
+
+fn type_ends_with(ty: &Type, name: &str) -> bool {
+    matches!(ty, Type::Path(type_path)
+        if type_path.path.segments.last().is_some_and(|segment| segment.ident == name))
+}
+
+/// Register an app entry point with the binary, so `cocoindex update` / `drop`
+/// and [`Environment::from_registered`] can find it by name.
+///
+/// The function keeps its signature and stays callable (`app.run(app_main)`).
+/// It must be `async fn name(ctx: Ctx) -> Result<T>` — `Ctx` by value. The
+/// app's name is the function name unless `name = "..."` is given; names are
+/// LMDB namespaces and must be unique per binary.
+///
+/// ```ignore
+/// #[cocoindex::app(name = "TextEmbedding")]
+/// async fn app_main(ctx: Ctx) -> Result<()> { ... }
+/// ```
+#[proc_macro_attribute]
+pub fn app(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = match syn::parse::<AppArgs>(attr) {
+        Ok(args) => args,
+        Err(err) => return TokenStream::from(err.to_compile_error()),
+    };
+    let func = parse_macro_input!(item as ItemFn);
+    match expand_app(args, func) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => TokenStream::from(err.to_compile_error()),
+    }
+}
+
+fn expand_app(args: AppArgs, func: ItemFn) -> syn::Result<TokenStream2> {
+    require_async(&func, "#[cocoindex::app] function")?;
+    let param = single_param(&func, "`ctx: Ctx` (by value)")?;
+    if !type_ends_with(&param.ty, "Ctx") {
+        return Err(SynError::new_spanned(
+            &param.ty,
+            "#[cocoindex::app] function takes `ctx: Ctx` by value (not `&Ctx`)",
+        ));
+    }
+    let fn_name = &func.sig.ident;
+    let upper = fn_name.to_string().to_uppercase();
+    let shim_name = format_ident!("__coco_app_{}", fn_name);
+    let static_name = format_ident!("__COCO_APP_{}", upper);
+    let app_name = match args.name {
+        Some(lit) => quote! { #lit },
+        None => quote! { ::core::stringify!(#fn_name) },
+    };
+    Ok(quote! {
+        #func
+
+        #[doc(hidden)]
+        fn #shim_name(
+            ctx: ::cocoindex::Ctx,
+        ) -> ::cocoindex::__private::BoxFuture<'static, ::cocoindex::Result<()>> {
+            ::std::boxed::Box::pin(async move { #fn_name(ctx).await.map(|_| ()) })
+        }
+
+        #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_APPS)]
+        #[linkme(crate = ::cocoindex::linkme)]
+        #[doc(hidden)]
+        static #static_name: ::cocoindex::AppEntry = ::cocoindex::AppEntry {
+            module: ::core::module_path!(),
+            name: #app_name,
+            run: #shim_name,
+        };
+    })
+}
+
+/// Register an environment lifespan with the binary. `Environment::from_registered`
+/// (and so the `cocoindex` CLI) runs every lifespan over a fresh builder, then
+/// opens the state db — the Rust analogue of Python's `@coco.lifespan`.
+///
+/// The function must be `async fn name(builder: EnvironmentBuilder) ->
+/// Result<EnvironmentBuilder>`: configure the builder (`db_path`, `provide`,
+/// `provide_key`, `on_shutdown` for teardown) and return it.
+///
+/// ```ignore
+/// #[cocoindex::lifespan]
+/// async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+///     let db = postgres::Database::connect(&url).await?;
+///     Ok(builder.db_path("./.cocoindex_db").provide_key(&DB, db))
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn lifespan(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return TokenStream::from(
+            SynError::new(
+                Span::call_site(),
+                "#[cocoindex::lifespan] takes no arguments",
+            )
+            .to_compile_error(),
+        );
+    }
+    let func = parse_macro_input!(item as ItemFn);
+    match expand_lifespan(func) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => TokenStream::from(err.to_compile_error()),
+    }
+}
+
+fn expand_lifespan(func: ItemFn) -> syn::Result<TokenStream2> {
+    require_async(&func, "#[cocoindex::lifespan] function")?;
+    let param = single_param(&func, "`builder: EnvironmentBuilder`")?;
+    if !type_ends_with(&param.ty, "EnvironmentBuilder") {
+        return Err(SynError::new_spanned(
+            &param.ty,
+            "#[cocoindex::lifespan] function takes `builder: EnvironmentBuilder` by value \
+             and returns `Result<EnvironmentBuilder>`",
+        ));
+    }
+    let fn_name = &func.sig.ident;
+    let upper = fn_name.to_string().to_uppercase();
+    let shim_name = format_ident!("__coco_lifespan_{}", fn_name);
+    let static_name = format_ident!("__COCO_LIFESPAN_{}", upper);
+    Ok(quote! {
+        #func
+
+        #[doc(hidden)]
+        fn #shim_name(
+            builder: ::cocoindex::EnvironmentBuilder,
+        ) -> ::cocoindex::__private::BoxFuture<
+            'static,
+            ::cocoindex::Result<::cocoindex::EnvironmentBuilder>,
+        > {
+            ::std::boxed::Box::pin(#fn_name(builder))
+        }
+
+        #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_LIFESPANS)]
+        #[linkme(crate = ::cocoindex::linkme)]
+        #[doc(hidden)]
+        static #static_name: ::cocoindex::LifespanEntry = ::cocoindex::LifespanEntry {
+            module: ::core::module_path!(),
+            name: ::core::stringify!(#fn_name),
+            run: #shim_name,
+        };
+    })
+}
+
+/// Make an `async fn main` the entry point of a cocoindex binary.
+///
+/// The expansion builds a multi-thread tokio runtime, first lets the
+/// `cocoindex` CLI's `__coco` protocol take over when the binary was started
+/// by the CLI (`cocoindex::cli::try_dispatch`), and otherwise runs the body.
+/// The body may return anything a plain `main` may return
+/// ([`std::process::Termination`]: `()`, `ExitCode`, `Result<T, E: Debug>`, ...);
+/// an `Err` is reported the same way. Use the async SDK
+/// APIs inside; the `*_blocking` helpers would nest a runtime and panic.
+///
+/// ```ignore
+/// #[cocoindex::main]
+/// async fn main() -> cocoindex::Result<()> {
+///     let env = Environment::from_registered().await?;
+///     // ...
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return TokenStream::from(
+            SynError::new(Span::call_site(), "#[cocoindex::main] takes no arguments")
+                .to_compile_error(),
+        );
+    }
+    let func = parse_macro_input!(item as ItemFn);
+    match expand_main(func) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => TokenStream::from(err.to_compile_error()),
+    }
+}
+
+fn expand_main(func: ItemFn) -> syn::Result<TokenStream2> {
+    require_async(&func, "#[cocoindex::main] function")?;
+    if !func.sig.inputs.is_empty() {
+        return Err(SynError::new(
+            func.sig.ident.span(),
+            "#[cocoindex::main] function takes no parameters",
+        ));
+    }
+    if !func.sig.generics.params.is_empty() {
+        return Err(SynError::new(
+            func.sig.ident.span(),
+            "#[cocoindex::main] function cannot be generic",
+        ));
+    }
+    let attrs = &func.attrs;
+    let vis = &func.vis;
+    let name = &func.sig.ident;
+    let mut inner = func.clone();
+    inner.attrs.clear();
+    inner.vis = syn::Visibility::Inherited;
+    inner.sig.ident = format_ident!("__coco_user_main");
+    Ok(quote! {
+        #(#attrs)*
+        #vis fn #name() -> ::std::process::ExitCode {
+            #inner
+
+            let runtime = match ::cocoindex::tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                ::core::result::Result::Ok(runtime) => runtime,
+                ::core::result::Result::Err(err) => {
+                    ::std::eprintln!("cocoindex: failed to start the tokio runtime: {err}");
+                    return ::std::process::ExitCode::FAILURE;
+                }
+            };
+            let code = runtime.block_on(async {
+                if let ::core::option::Option::Some(code) =
+                    ::cocoindex::cli::try_dispatch().await
+                {
+                    return code;
+                }
+                ::std::process::Termination::report(__coco_user_main().await)
+            });
+            ::core::mem::drop(runtime);
+            code
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use quote::quote;
     use syn::parse_str;
+
+    fn item_fn(src: &str) -> ItemFn {
+        parse_str::<ItemFn>(src).unwrap()
+    }
+
+    #[test]
+    fn app_args_default_and_named() {
+        let args: AppArgs = syn::parse2(TokenStream2::new()).unwrap();
+        assert!(args.name.is_none());
+        let args: AppArgs = syn::parse2(quote!(name = "TextEmbedding")).unwrap();
+        assert_eq!(args.name.unwrap().value(), "TextEmbedding");
+    }
+
+    #[test]
+    fn app_args_reject_unknown_and_empty() {
+        let err = syn::parse2::<AppArgs>(quote!(title = "x")).unwrap_err();
+        assert!(err.to_string().contains("unknown #[app] argument"));
+        let err = syn::parse2::<AppArgs>(quote!(name = "")).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+        let err = syn::parse2::<AppArgs>(quote!(name = "a", name = "b")).unwrap_err();
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn app_expansion_registers_entry() {
+        let func = item_fn("async fn app_main(ctx: Ctx) -> Result<u32> { Ok(1) }");
+        let out = expand_app(AppArgs::default(), func).unwrap().to_string();
+        assert!(out.contains("COCO_APPS"));
+        assert!(out.contains("__COCO_APP_APP_MAIN"));
+        assert!(out.contains("stringify ! (app_main)"));
+        assert!(out.contains("async fn app_main"), "user fn is kept");
+        let func = item_fn("async fn app_main(ctx: Ctx) -> Result<()> { Ok(()) }");
+        let args: AppArgs = syn::parse2(quote!(name = "Named")).unwrap();
+        let out = expand_app(args, func).unwrap().to_string();
+        assert!(out.contains("name : \"Named\""));
+    }
+
+    #[test]
+    fn app_rejects_wrong_shapes() {
+        let err = expand_app(
+            AppArgs::default(),
+            item_fn("fn app_main(ctx: Ctx) -> Result<()> { Ok(()) }"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("async fn"));
+        let err = expand_app(
+            AppArgs::default(),
+            item_fn("async fn app_main(ctx: &Ctx) -> Result<()> { Ok(()) }"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("by value"));
+        let err = expand_app(
+            AppArgs::default(),
+            item_fn("async fn app_main(ctx: Ctx, n: u32) -> Result<()> { Ok(()) }"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("exactly one parameter"));
+    }
+
+    #[test]
+    fn lifespan_expansion_and_errors() {
+        let func = item_fn(
+            "async fn init(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> { Ok(builder) }",
+        );
+        let out = expand_lifespan(func).unwrap().to_string();
+        assert!(out.contains("COCO_LIFESPANS"));
+        assert!(out.contains("__COCO_LIFESPAN_INIT"));
+        let err = expand_lifespan(item_fn(
+            "async fn init(builder: &mut EnvironmentBuilder) -> Result<()> { Ok(()) }",
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("by value"));
+        let err = expand_lifespan(item_fn("async fn init() -> Result<()> { Ok(()) }")).unwrap_err();
+        assert!(err.to_string().contains("exactly one parameter"));
+    }
+
+    #[test]
+    fn main_expansion_and_errors() {
+        let out = expand_main(item_fn("async fn main() -> Result<()> { Ok(()) }"))
+            .unwrap()
+            .to_string();
+        assert!(out.contains("fn main () -> :: std :: process :: ExitCode"));
+        assert!(out.contains("try_dispatch"));
+        assert!(out.contains("__coco_user_main"));
+        let err = expand_main(item_fn("fn main() {}")).unwrap_err();
+        assert!(err.to_string().contains("async fn"));
+        let err = expand_main(item_fn("async fn main(x: u32) {}")).unwrap_err();
+        assert!(err.to_string().contains("no parameters"));
+    }
 
     #[test]
     fn parse_function_args_empty() {
