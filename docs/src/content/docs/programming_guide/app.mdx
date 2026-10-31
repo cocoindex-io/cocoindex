@@ -88,8 +88,7 @@ For example, an app that processes files might mount one component per file — 
 
 ```text
 (root)                         ← app_main component
-├── "setup"                    ← declare_dir_target component
-└── "process"
+└── process_file
     ├── "hello.md"             ← process_file component
     └── "world.md"             ← process_file component
 ```
