@@ -966,6 +966,22 @@ def test_declared_stable_type_id_is_inherited_and_takes_precedence_over_register
         unregister_memo_type(Sub)
 
 
+def test_metaclass_declared_stable_type_id_is_not_class_identity() -> None:
+    class FamilyMeta(type):
+        __coco_memo_type_id__ = "test.Family/v1"
+
+    @dataclasses.dataclass
+    class Row1(metaclass=FamilyMeta):
+        x: int
+
+    @dataclasses.dataclass
+    class Row2(metaclass=FamilyMeta):
+        x: int
+
+    assert memo_fingerprint(Row1(x=1)) != memo_fingerprint(Row2(x=1))
+    assert memo_fingerprint(Row1) != memo_fingerprint(Row2)
+
+
 def test_prev_type_id_on_base_class_propagates_to_subclasses() -> None:
     import cocoindex as coco
 

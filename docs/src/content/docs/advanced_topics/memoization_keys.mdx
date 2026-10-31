@@ -174,7 +174,7 @@ When passing a class object itself (such as `ProductRow` rather than an instance
 To customize memoization for class objects globally, register a memo key function on the class's custom metaclass or on `type`.
 
 :::caution[Avoid colliding class objects]
-Unlike instances (where field tuples keep payloads distinct), raw class objects do not hash schema attributes or field tuples. Classes sharing an inherited or metaclass-level stable type ID will produce identical fingerprints. If a memoized function accepts class objects and must distinguish between them, declare a distinct `__coco_memo_type_id__` on each class or provide a custom `memo_key=` at the call site.
+Unlike instances (where field tuples keep payloads distinct), raw class objects do not hash schema attributes or field tuples. Classes sharing an inherited stable type ID will produce identical fingerprints. If a memoized function accepts class objects and must distinguish between them, declare a distinct `__coco_memo_type_id__` on each class or provide a custom `memo_key=` at the call site.
 :::
 
 ### Override at the call site with `memo_key=`
