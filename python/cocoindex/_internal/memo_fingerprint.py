@@ -72,7 +72,7 @@ def _make_state_deserialize_fn(
             ann,
             source_label=f"prev_state param of {fn_label}()",
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return make_deserialize_fn(typing.Any)
 
 
@@ -475,11 +475,14 @@ def register_memo_key_function(
 def register_not_memo_keyable(typ: type) -> None:
     """Register a type as not memo-keyable.
 
-    Internal helper for tests and internal registrations. It is intentionally
-    not exported through the public ``cocoindex`` namespace until registered
-    not-memo-keyable precedence is fixed for types that define
-    ``__coco_memo_key__`` or otherwise supply memo-key behavior. Public code
-    should inherit from ``coco.NotMemoKeyable`` when the type is user-owned.
+    Use this for third-party types that maintain internal state incompatible
+    with memoization, but which you cannot modify to inherit from `NotMemoKeyable`.
+
+    Example:
+        import cocoindex as coco
+        from some_library import StatefulGenerator
+
+        coco.register_not_memo_keyable(StatefulGenerator)
     """
 
     if not isinstance(typ, type):
@@ -645,7 +648,7 @@ def _canonicalize(
             payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
             # Tag to avoid colliding with user-provided raw bytes.
             result = ("pickle", payload)
-        except Exception:  # noqa: BLE001
+        except Exception:
             raise TypeError(
                 f"Unsupported type for memoization key: {type(obj)!r}. "
                 "Provide __coco_memo_key__() or register a memo key function."
