@@ -1473,6 +1473,20 @@ def test_memo_fingerprint_of_plain_data_is_stable() -> None:
     )
 
 
+def test_memo_fingerprint_of_class_objects_is_stable() -> None:
+    # Values measured on main, where a class object is keyed by a temporary
+    # (module, qualname) tuple; the cycle after it checks back-reference ordinals.
+    schema = type("Schema", (), {"__module__": "app.models"})
+    cycle: list[object] = []
+    cycle.append(cycle)
+    assert memo_fingerprint(schema).as_bytes().hex() == (
+        "f4682ab705e4b07c4906721398444971"
+    )
+    assert memo_fingerprint([schema, cycle]).as_bytes().hex() == (
+        "a6716187b9dbbbcdb9a9db2a1b988de5"
+    )
+
+
 def test_memo_fingerprint_honors_registry_for_plain_container_types() -> None:
     register_memo_key_function(list, lambda obj: len(obj))
     try:
