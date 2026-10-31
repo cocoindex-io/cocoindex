@@ -822,6 +822,9 @@ bigquery = [
 colpali = [
     { name = "colpali-engine" },
 ]
+discord = [
+    { name = "httpx" },
+]
 doris = [
     { name = "aiohttp" },
     { name = "aiomysql" },
@@ -1014,6 +1017,7 @@ requires-dist = [
     { name = "httplib2", marker = "extra == 'all'", specifier = ">=0.22.0" },
     { name = "httplib2", marker = "extra == 'google-drive'", specifier = ">=0.22.0" },
     { name = "httpx", marker = "extra == 'all'", specifier = ">=0.27.0" },
+    { name = "httpx", marker = "extra == 'discord'", specifier = ">=0.27.0" },
     { name = "httpx", marker = "extra == 'google-drive'", specifier = ">=0.27.0" },
     { name = "instructor", marker = "extra == 'all'", specifier = ">=1.0" },
     { name = "instructor", marker = "extra == 'entity-resolution-llm'", specifier = ">=1.0" },
@@ -1055,7 +1059,7 @@ requires-dist = [
     { name = "zvec", marker = "extra == 'all'", specifier = ">=0.5.0" },
     { name = "zvec", marker = "extra == 'zvec'", specifier = ">=0.5.0" },
 ]
-provides-extras = ["all", "amazon-s3", "azure-blob", "bigquery", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer", "valkey", "zvec"]
+provides-extras = ["all", "amazon-s3", "azure-blob", "bigquery", "colpali", "discord", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer", "valkey", "zvec"]
 
 [package.metadata.requires-dev]
 build-test = [
