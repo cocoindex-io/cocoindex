@@ -334,9 +334,7 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
 
     try:
         register_memo_type(RegisteredSourceEntry, stable_type_id=marker)
-        registry = _memo_fingerprint._registered_memo_type_registry(
-            RegisteredSourceEntry
-        )
+        registry = _memo_fingerprint._memo_type_registry.get(RegisteredSourceEntry)
         assert registry is not None
         assert _memo_fingerprint._type_identity_parts(
             RegisteredSourceEntry, registry
@@ -1607,7 +1605,7 @@ def test_register_memo_type_validation_and_public_export() -> None:
         )
         assert _memo_fingerprint._type_identity_parts(
             ExplicitNoneStateEntry,
-            _memo_fingerprint._registered_memo_type_registry(ExplicitNoneStateEntry),
+            _memo_fingerprint._memo_type_registry.get(ExplicitNoneStateEntry),
         ) == (("__coco_memo_type_id__", "test.ExplicitNoneState/v1"), None)
     finally:
         _memo_fingerprint.unregister_memo_type(ExplicitNoneStateEntry)

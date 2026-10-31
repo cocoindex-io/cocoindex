@@ -157,11 +157,6 @@ def _unregister_memo_type_registry(typ: type) -> None:
     _sync_plain_canonical_form_overridden()
 
 
-def _registered_memo_type_registry(typ: type) -> _MemoTypeRegistry | None:
-    """Return the exact type's registration from the type-keyed table."""
-    return _memo_type_registry.get(typ)
-
-
 # The container types the native plain-data walker handles. A memo key function
 # registered for any type in their MROs overrides their default canonical form.
 _PLAIN_CONTAINER_BASES = frozenset({dict, list, tuple, object})
@@ -220,7 +215,7 @@ def _type_identity_parts(
                 reg = (
                     registry
                     if (registry is not None and owner is typ)
-                    else _registered_memo_type_registry(owner)
+                    else _memo_type_registry.get(owner)
                 )
                 if reg is not None and reg.stable_type_id is not None:
                     stable_type_id = reg.stable_type_id
@@ -262,7 +257,7 @@ def _canonicalize_registered_memo_key(
         typ = type(obj)
         identity = _type_identity_parts(
             typ,
-            registry if typ is owner else _registered_memo_type_registry(typ),
+            registry if typ is owner else _memo_type_registry.get(typ),
             fallback_owner=owner,
         )
     return (
@@ -280,14 +275,12 @@ def _canonicalize_class_object(
     """Canonicalize a class object without invoking memo attributes on it."""
 
     metaclass: type = type(cls)
-    metaclass_registry = _registered_memo_type_registry(metaclass)
+    metaclass_registry = _memo_type_registry.get(metaclass)
     for owner in metaclass.__mro__:
         if owner is object:
             break
         registry = (
-            metaclass_registry
-            if owner is metaclass
-            else _registered_memo_type_registry(owner)
+            metaclass_registry if owner is metaclass else _memo_type_registry.get(owner)
         )
         if registry is not None and registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
@@ -295,7 +288,7 @@ def _canonicalize_class_object(
             )
 
     cls_registry = (
-        metaclass_registry if cls is metaclass else _registered_memo_type_registry(cls)
+        metaclass_registry if cls is metaclass else _memo_type_registry.get(cls)
     )
     return (
         "hook",
@@ -551,7 +544,7 @@ def _canonicalize(
 
     typ = type(obj)
     hook = getattr(obj, _MEMO_KEY_ATTR, None)
-    registry = _registered_memo_type_registry(typ)
+    registry = _memo_type_registry.get(typ)
     if hook is not None and callable(hook):
         k = hook()
         tag = "hook"
@@ -568,9 +561,7 @@ def _canonicalize(
         )
 
     for owner in typ.__mro__:
-        owner_registry = (
-            registry if owner is typ else _registered_memo_type_registry(owner)
-        )
+        owner_registry = registry if owner is typ else _memo_type_registry.get(owner)
         if owner_registry is not None and owner_registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
                 obj, owner, owner_registry, _seen, state_methods
