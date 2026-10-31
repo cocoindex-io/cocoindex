@@ -161,14 +161,14 @@ coco.register_memo_type(
 
 Each call replaces the type's entire registration. If a type needs a key function, state function, and stable type ID, pass them together in one call.
 
-- **Inheritance**: Declaring `__coco_memo_type_id__` on a base class is a deliberate statement that the family shares the same namespace, and propagates to subclasses. For dataclass and Pydantic instances, field tuples keep payloads distinct; a subclass can and should override the ID by declaring its own `__coco_memo_type_id__` when semantics diverge.
+- **Inheritance**: Declaring `__coco_memo_type_id__` on a base class is a deliberate statement that the family shares the same namespace, and propagates to subclasses. For dataclass and Pydantic instances, when a subclass's fields differ, field tuples keep payloads distinct; a subclass can and should override the ID by declaring its own `__coco_memo_type_id__` when semantics diverge.
 - **Precedence**: Type identity resolution follows this precedence:
   1. **Declared stable type ID** (`__coco_memo_type_id__`, own or inherited).
   2. **Registered stable type ID** (most specific registration across the type's MRO via `register_memo_type()`).
-  3. **Automatic fallback** (the type's canonical module and qualified name, `module.QualName`).
+  3. **Automatic fallback** (the canonical `module.QualName` of the type or, for a value handled by a registered key function, of the type the function is registered on).
 
 :::note[Pickle fallback]
-Types using pickle fallback fingerprint raw bytes without type namespacing. Setting or registering a stable type ID alone has no effect on them — register a memo key function together with the stable type ID.
+Types that fall back to pickle are fingerprinted from their pickle bytes, which name the class by module and qualified name, so a stable type ID has no effect on them. Register a memo key function together with the stable type ID.
 :::
 
 ### Class objects as inputs
