@@ -2261,13 +2261,6 @@ class _FunctionDecorator:
                 config, anything that changes at runtime — pass them as regular
                 function arguments instead.
 
-                Stable type IDs used by ``deps`` must therefore exist before the
-                decorator is applied: define ``__coco_memo_type_id__`` on the class
-                or call ``register_memo_type(..., stable_type_id=...)``
-                before decorating. A later registration can affect future argument
-                fingerprints, but it cannot retroactively update this function's
-                already-computed logic fingerprint.
-
                 Requires ``logic_tracking`` to be enabled; raises ``ValueError`` if
                 combined with ``logic_tracking=None``.
 
@@ -2405,11 +2398,9 @@ class _FunctionDecorator:
                 Ship such a change with a ``version`` bump or a memo-key change
                 on the memoized callers, so their entries are stored again.
             deps: Additional value(s) the function logic depends on but that
-                aren't visible in its body. See :func:`fn` for the full contract,
-                including stable type IDs and their decoration-time registration
-                order requirement for ``deps``. The value is canonicalized through
-                the memoization-key pipeline and folded into the function's logic
-                fingerprint.
+                aren't visible in its body. See :func:`fn` for the full
+                contract — the value is canonicalized through the memoization
+                key pipeline and folded into the function's logic fingerprint.
 
         Batching and runner are fully supported since the result is always async.
 

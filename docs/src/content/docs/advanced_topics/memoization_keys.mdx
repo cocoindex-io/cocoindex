@@ -13,6 +13,9 @@ Fingerprinting happens at these points:
 - **Function arguments** — when the function is called.
 - **Change-detected context values** — when they are provided (for example, by `builder.provide()`), before `use_context()` reads them.
 - **`deps` values** — once, when the `@coco.fn(..., deps=...)` or `@coco.fn.as_async(..., deps=...)` decorator is applied.
+- **`coco.LogicDep` values** — once, when the `LogicDep` is constructed (normally at module import).
+
+A stable type ID or a memo key function must be in place before a value is fingerprinted. For `deps` and `LogicDep` values, that means before the decorator runs or the `LogicDep` is constructed.
 
 You can customize fingerprinting and validation with:
 
