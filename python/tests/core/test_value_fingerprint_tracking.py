@@ -10,7 +10,7 @@ import pytest
 import cocoindex as coco
 from cocoindex._internal.memo_fingerprint import (
     register_memo_key_function,
-    unregister_memo_key_function,
+    unregister_memo_type,
 )
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
@@ -344,7 +344,7 @@ def test_memo_key_function_for_a_plain_type_keeps_reconcile_in_charge() -> None:
         assert _store.take_reconciles() == [_ReconcileCall("a", 1, False)]
         assert _store.data == {"a": (1, 2)}
     finally:
-        unregister_memo_key_function(tuple)
+        unregister_memo_type(tuple)
 
     # Back to the default canonical form: the record no longer matches.
     app.update_blocking()

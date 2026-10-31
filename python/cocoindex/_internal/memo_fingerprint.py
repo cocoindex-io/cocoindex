@@ -464,12 +464,8 @@ def register_memo_key_function(
     *,
     state_fn: _StateFn | None = None,
 ) -> None:
-    """Register a memo key function for a type, preserving any registered stable type ID."""
-    existing = _registered_memo_type_registry(typ) if isinstance(typ, type) else None
-    stable_type_id = existing.stable_type_id if existing is not None else None
-    register_memo_type(
-        typ, key_fn=key_fn, state_fn=state_fn, stable_type_id=stable_type_id
-    )
+    """Shortcut for ``register_memo_type(typ, key_fn, state_fn=state_fn)``."""
+    register_memo_type(typ, key_fn, state_fn=state_fn)
 
 
 def register_not_memo_keyable(typ: type) -> None:
@@ -501,24 +497,8 @@ def register_not_memo_keyable(typ: type) -> None:
 
 
 def unregister_memo_type(typ: type) -> None:
-    """Remove registered memo configuration for a type."""
-
-    if isinstance(typ, type):
-        _unregister_memo_type_registry(typ)
-
-
-def unregister_memo_key_function(typ: type) -> None:
-    """Remove a registered memo key function, preserving any registered stable type ID."""
-
-    if not isinstance(typ, type):
-        return
-    reg = _registered_memo_type_registry(typ)
-    if reg is None:
-        return
-    if reg.stable_type_id is not None:
-        register_memo_type(typ, stable_type_id=reg.stable_type_id)
-    else:
-        _unregister_memo_type_registry(typ)
+    """Remove the memo registration for ``typ``, if any."""
+    _unregister_memo_type_registry(typ)
 
 
 def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
@@ -743,6 +723,5 @@ __all__ = [
     "register_memo_key_function",
     "register_memo_type",
     "register_not_memo_keyable",
-    "unregister_memo_key_function",
     "unregister_memo_type",
 ]
