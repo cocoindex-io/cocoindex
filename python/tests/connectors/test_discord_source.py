@@ -33,8 +33,13 @@ from cocoindex.resources.rate_limit import RateLimiter
 
 # IDs of different lengths, so that comparing them as strings would show.
 _GUILD = "1001"
+_OTHER_GUILD = "901"
 _CHANNEL = "1002"
 _OTHER_CHANNEL = "902"
+_BOT_ID = "1003"
+
+# The Message Content intent as the Developer Portal's toggle grants it.
+_INTENT_ON = 1 << 19
 
 _ROUTE_CHANNEL = "/channels/{id}"
 
@@ -72,8 +77,10 @@ def _raw_channel(
 # Discord's message for each error the fake answers.
 _ERROR_MESSAGES = {
     (401, 0): "401: Unauthorized",
+    (403, 50001): "Missing Access",
     (404, 0): "404: Not Found",
     (404, 10003): "Unknown Channel",
+    (404, 10004): "Unknown Guild",
 }
 
 
@@ -106,7 +113,7 @@ def _bucket_headers(*, remaining: int, reset_after: float) -> dict[str, str]:
 
 class _FakeDiscord:
     """An in-memory Discord server. It answers the connector's routes from
-    its state as Discord does, with 404 for an unknown channel.
+    its state as Discord does, with 404 for an unknown channel or server.
 
     Knobs: ``fail[path]`` answers ``(status, code)``; ``script[path]`` answers
     the next requests to ``path`` in order (an exception is raised, as a
@@ -116,6 +123,9 @@ class _FakeDiscord:
     """
 
     def __init__(self) -> None:
+        # The application's flags, which grant the Message Content intent.
+        self.flags = _INTENT_ON
+        self.guild_ids = {_GUILD}
         self.channels: dict[str, dict[str, Any]] = {}
         self.fail: dict[str, tuple[int, int]] = {}
         self.script: dict[str, list[httpx.Response | httpx.HTTPError]] = {}
@@ -124,6 +134,7 @@ class _FakeDiscord:
 
     def add_channel(self, raw_channel: dict[str, Any]) -> None:
         self.channels[raw_channel["id"]] = raw_channel
+        self.guild_ids.add(raw_channel["guild_id"])
 
     def count(self, path: str) -> int:
         return sum(1 for _, logged, _ in self.requests if logged == path)
@@ -146,6 +157,14 @@ class _FakeDiscord:
         return resp
 
     def _answer(self, path: str) -> httpx.Response:
+        if path == "/applications/@me":
+            return httpx.Response(200, json={"id": _BOT_ID, "flags": self.flags})
+        if m := re.fullmatch(r"/guilds/(\d+)/channels", path):
+            if m[1] not in self.guild_ids:
+                return _discord_error(404, 10004)
+            return httpx.Response(
+                200, json=[c for c in self.channels.values() if c["guild_id"] == m[1]]
+            )
         if m := re.fullmatch(r"/channels/(\d+)", path):
             raw = self.channels.get(m[1])
             if raw is None:
@@ -570,3 +589,103 @@ class TestPacing:
             assert created[0].max_rows_per_second == 50
             assert created[0].acquired == 2
         assert caller.acquired == 2
+
+
+# ---------------------------------------------------------------------------
+# Message Content intent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestIntentCheck:
+    @pytest.mark.parametrize(
+        ("flags", "intent_on"),
+        [
+            pytest.param(1 << 19, True, id="toggle"),
+            pytest.param(1 << 18, True, id="reviewed"),
+            pytest.param(1 << 12 | 1 << 15, False, id="neither"),
+        ],
+    )
+    async def test_flags(self, flags: int, intent_on: bool) -> None:
+        fake = _FakeDiscord()
+        fake.flags = flags
+        app, ctx = await _setup(fake)
+        async with app:
+            if intent_on:
+                await ctx.check_message_content_intent()
+            else:
+                with pytest.raises(
+                    _DiscordError,
+                    match=r"^The Message Content intent is off.*Message Content Intent\.$",
+                ):
+                    await ctx.check_message_content_intent()
+
+    async def test_success_cached_failure_not(self) -> None:
+        fake = _FakeDiscord()
+        fake.flags = 0
+        app, ctx = await _setup(fake)
+        async with app:
+            for _ in range(2):
+                with pytest.raises(_DiscordError):
+                    await ctx.check_message_content_intent()
+            assert fake.count("/applications/@me") == 2
+            fake.flags = _INTENT_ON
+            for _ in range(2):
+                await ctx.check_message_content_intent()
+        assert fake.count("/applications/@me") == 3
+
+    async def test_concurrent_first_checks_send_one(self) -> None:
+        fake = _FakeDiscord()
+        app, ctx = await _setup(fake)
+        async with app:
+            await asyncio.gather(
+                *(ctx.check_message_content_intent() for _ in range(5))
+            )
+        assert fake.count("/applications/@me") == 1
+
+
+# ---------------------------------------------------------------------------
+# DiscordApp.list_channels
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestListChannels:
+    async def test_every_channel(self) -> None:
+        category, voice, forum, news = (
+            "1010",
+            "904",
+            "1011",
+            "1012",
+        )
+        fake = _FakeDiscord()
+        fake.add_channel(_raw_channel(category, 4, name="Text Channels"))
+        fake.add_channel(_raw_channel(_CHANNEL, 0, name="general", parent_id=category))
+        fake.add_channel(_raw_channel(voice, 2, name="Lounge"))
+        fake.add_channel(_raw_channel(forum, 15, name="help", available_tags=[]))
+        fake.add_channel(_raw_channel(news, 5, name="news"))
+        fake.add_channel(
+            _raw_channel("905", 0, name="elsewhere", guild_id=_OTHER_GUILD)
+        )
+        app, _ = await _setup(fake)
+        async with app:
+            channels = await app.list_channels(_GUILD)
+        info = discord.DiscordChannelInfo
+        assert channels == [
+            info(id=category, name="Text Channels", type=4, category_id=None),
+            info(id=_CHANNEL, name="general", type=0, category_id=category),
+            info(id=voice, name="Lounge", type=2, category_id=None),
+            info(id=forum, name="help", type=15, category_id=None),
+            info(id=news, name="news", type=5, category_id=None),
+        ]
+        assert fake.requests == [("GET", f"/guilds/{_GUILD}/channels", {})]
+
+    async def test_error_raises(self) -> None:
+        fake = _fake_with_channels()
+        fake.fail[f"/guilds/{_GUILD}/channels"] = (403, 50001)
+        app, _ = await _setup(fake)
+        async with app:
+            with pytest.raises(
+                _DiscordError, match=r"HTTP 403, code 50001 \(Missing Access\)"
+            ):
+                await app.list_channels(_GUILD)

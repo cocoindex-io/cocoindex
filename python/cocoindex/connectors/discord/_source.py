@@ -38,12 +38,17 @@ except ImportError as e:  # pragma: no cover - import-time guard
 from cocoindex._version import __version__
 from cocoindex.resources.rate_limit import RateLimiter
 
-__all__ = ["DiscordApp"]
+__all__ = ["DiscordApp", "DiscordChannelInfo"]
 
 _log = logging.getLogger(__name__)
 
 # Unversioned URLs get API v6.
 _BASE_URL = "https://discord.com/api/v10"
+
+# Routes, as path templates. ``{id}`` is the top-level ID Discord counts rate
+# limits by.
+_ROUTE_APPLICATION = "/applications/@me"
+_ROUTE_GUILD_CHANNELS = "/guilds/{id}/channels"
 
 # Discord's largest page of messages.
 _PAGE_SIZE = 100
@@ -77,6 +82,12 @@ _TOKEN_HINT = (
     "and start again."
 )
 
+_INTENT_HINT = (
+    "The Message Content intent is off, so Discord would send messages without "
+    "their text. Turn it on: Developer Portal → your app → Bot → Message "
+    "Content Intent."
+)
+
 # Likely fixes for Discord's errors, by HTTP status and Discord's error code.
 # Any 401 gets _TOKEN_HINT, whatever its code.
 _ERROR_HINTS = {
@@ -94,9 +105,9 @@ _ERROR_HINTS = {
 
 
 class _DiscordError(Exception):
-    """Discord answered with an error, or the connector won't send a request
-    because Discord rejected the token earlier. The message names the
-    request, Discord's error code and the likely fix."""
+    """Discord answered with an error, or the connector won't go on: Discord
+    rejected the token earlier, or the Message Content intent is off. The
+    message names the request, Discord's error code and the likely fix."""
 
 
 def _error_hint(status: int, code: int | None) -> str | None:
@@ -183,6 +194,7 @@ class DiscordApp:
     manager, or call :meth:`aclose`, to release connections::
 
         async with discord.DiscordApp(token=os.environ["DISCORD_BOT_TOKEN"]) as app:
+            channels = await app.list_channels(guild_id)
             ...
 
     The HTTP client, Discord's rate-limit state and the record of a rejected
@@ -218,6 +230,28 @@ class DiscordApp:
                 self._state.context = _ApiContext(self)
             return self._state.context
 
+    async def list_channels(self, guild_id: str) -> list[DiscordChannelInfo]:
+        """Every channel in the server ``guild_id``, threads aside, in
+        Discord's order. One request; Discord allows about 10 a minute per
+        server.
+
+        A pipeline that mounts one component per listed channel deletes a
+        channel's outputs once it drops out of this list, and from 2026-11-16
+        Discord leaves out channels the bot can't view. To keep a channel's
+        outputs when the bot loses access to it, name the channel's ID
+        instead."""
+        ctx = await self._get_context()
+        channels = await ctx.get(_ROUTE_GUILD_CHANNELS, guild_id)
+        return [
+            DiscordChannelInfo(
+                id=channel["id"],
+                name=channel["name"],
+                type=channel["type"],
+                category_id=channel.get("parent_id"),
+            )
+            for channel in channels
+        ]
+
     async def aclose(self) -> None:
         """Close the HTTP connections this App opened. Idempotent; a request
         after it opens a new client, with no rate-limit state or rejected
@@ -232,6 +266,19 @@ class DiscordApp:
 
     async def __aexit__(self, *_exc_info: Any) -> None:
         await self.aclose()
+
+
+@dataclass(frozen=True)
+class DiscordChannelInfo:
+    """One channel of a server, as :meth:`DiscordApp.list_channels` lists it."""
+
+    id: str
+    name: str
+    # Discord's channel type, such as 0 for text, 2 voice, 4 a category, 5
+    # announcement and 15 forum.
+    type: int
+    # The category the channel sits under, if any.
+    category_id: str | None
 
 
 class _BucketState(NamedTuple):
@@ -257,6 +304,8 @@ class _ApiContext:
         "_bucket_states",
         "_client",
         "_global_limiter",
+        "_intent_lock",
+        "_intent_ok",
         "_rate_limiter",
         "_route_buckets",
         "_token_rejected",
@@ -274,6 +323,8 @@ class _ApiContext:
         # Set by a 401. Discord bans an IP that gets 10,000 responses of 401,
         # 403 or 429 in 10 minutes, so a rejected token stops every request.
         self._token_rejected = False
+        self._intent_ok = False
+        self._intent_lock = asyncio.Lock()
         self._client = httpx.AsyncClient(
             base_url=_BASE_URL,
             timeout=httpx.Timeout(60.0, connect=30.0),
@@ -405,6 +456,21 @@ class _ApiContext:
             return
         self._route_buckets[route] = bucket
         self._bucket_states[(bucket, major)] = state
+
+    async def check_message_content_intent(self) -> None:
+        """Raise unless the app has the Message Content intent. Without it,
+        Discord sends messages with their text empty rather than an error. A
+        success is kept for the context's life; a failure isn't, so the next
+        check asks again."""
+        if self._intent_ok:
+            return
+        async with self._intent_lock:
+            if self._intent_ok:
+                return
+            application = await self.get(_ROUTE_APPLICATION, None)
+            if not application.get("flags", 0) & _MESSAGE_CONTENT_INTENT_FLAGS:
+                raise _DiscordError(_INTENT_HINT)
+            self._intent_ok = True
 
     async def aclose(self) -> None:
         await self._client.aclose()
