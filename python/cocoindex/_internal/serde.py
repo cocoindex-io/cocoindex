@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any, TypeAlias
 
 import msgspec.msgpack
+import numpy as np
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,32 @@ def _all_subclasses(cls: type) -> list[type]:
     return result
 
 
+def _is_concrete_numpy_scalar(cls: type) -> bool:
+    """Check a class is one of numpy's own concrete scalar classes.
+
+    Abstract scalar classes (``np.floating``, ``np.number``, ...) have no dtype
+    of their own: numpy 2.3+ raises on ``np.dtype(np.floating)``, and older
+    versions warn and return another type's dtype (``float64``). Classes from
+    other packages (``ml_dtypes.bfloat16``) are left out, so the allow-list
+    does not depend on what was imported before cocoindex.
+    """
+    if cls.__module__ != "numpy":
+        return False
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            return np.dtype(cls).type is cls
+        except (TypeError, ValueError):
+            return False
+
+
+# Concrete numpy scalar classes (e.g. np.float32), computed once and reused
+# both for the reader allow-list below and for write-path decisions in _enc_hook.
+_NUMPY_SCALAR_TYPES: frozenset[type] = frozenset(
+    cls for cls in _all_subclasses(np.generic) if _is_concrete_numpy_scalar(cls)
+)
+
+
 _STDLIB_UNPICKLE_SAFE_TYPES: tuple[type, ...] = (
     pathlib.PurePath,
     *_all_subclasses(pathlib.PurePath),
@@ -67,36 +94,39 @@ def _register_builtin_types() -> None:
     for t in _STDLIB_UNPICKLE_SAFE_TYPES:
         _UNPICKLE_SAFE_GLOBALS[(t.__module__, t.__qualname__)] = t
 
-    # numpy (optional): register reconstruct globals needed for ndarray unpickling
-    try:
-        import numpy as np
-
-        _UNPICKLE_SAFE_GLOBALS[("numpy", "dtype")] = np.dtype
-        _UNPICKLE_SAFE_GLOBALS[("numpy", "ndarray")] = np.ndarray
-        for _dtype_sub in _all_subclasses(np.dtype):
-            _UNPICKLE_SAFE_GLOBALS[(_dtype_sub.__module__, _dtype_sub.__qualname__)] = (
-                _dtype_sub
-            )
-        _numeric = None
-        for _root_name in ("_core", "core"):
-            _root = getattr(np, _root_name, None)
-            if _root is None:
-                continue
-            _candidate = getattr(_root, "numeric", None)
-            if _candidate is not None:
-                _numeric = _candidate
-                break
-        if _numeric is not None:
-            _frombuffer = getattr(_numeric, "_frombuffer", None)
-            if _frombuffer is not None:
-                _UNPICKLE_SAFE_GLOBALS[("numpy.core.numeric", "_frombuffer")] = (
-                    _frombuffer
-                )
-                _UNPICKLE_SAFE_GLOBALS[("numpy._core.numeric", "_frombuffer")] = (
-                    _frombuffer
-                )
-    except ImportError:
-        pass
+    # numpy: register reconstruct globals needed for ndarray unpickling
+    _UNPICKLE_SAFE_GLOBALS[("numpy", "dtype")] = np.dtype
+    _UNPICKLE_SAFE_GLOBALS[("numpy", "ndarray")] = np.ndarray
+    for _dtype_sub in _all_subclasses(np.dtype):
+        _UNPICKLE_SAFE_GLOBALS[(_dtype_sub.__module__, _dtype_sub.__qualname__)] = (
+            _dtype_sub
+        )
+    # numpy scalar *classes* (e.g. np.float32): allow-listed so records that
+    # pickled these as global references decode again — both records written
+    # before the fix and new writes using the class form (the writer's
+    # write-time check reads this same dict, so the class form keeps working).
+    # Scalar *instances* (e.g. np.float32(1.0)) reduce via
+    # numpy._core.multiarray.scalar, which stays unregistered — they keep
+    # failing at write time, as on main. np.dtype("float32") == np.float32, so
+    # old and new records still compare equal.
+    for _scalar_sub in _NUMPY_SCALAR_TYPES:
+        _UNPICKLE_SAFE_GLOBALS[(_scalar_sub.__module__, _scalar_sub.__qualname__)] = (
+            _scalar_sub
+        )
+    _numeric = None
+    for _root_name in ("_core", "core"):
+        _root = getattr(np, _root_name, None)
+        if _root is None:
+            continue
+        _candidate = getattr(_root, "numeric", None)
+        if _candidate is not None:
+            _numeric = _candidate
+            break
+    if _numeric is not None:
+        _frombuffer = getattr(_numeric, "_frombuffer", None)
+        if _frombuffer is not None:
+            _UNPICKLE_SAFE_GLOBALS[("numpy.core.numeric", "_frombuffer")] = _frombuffer
+            _UNPICKLE_SAFE_GLOBALS[("numpy._core.numeric", "_frombuffer")] = _frombuffer
 
 
 _register_builtin_types()
@@ -118,14 +148,9 @@ def _register_builtin_pickle_types() -> None:
     _SERIALIZE_BY_PICKLE_TYPES.add(pathlib.PurePath)
     for sub in _all_subclasses(pathlib.PurePath):
         _SERIALIZE_BY_PICKLE_TYPES.add(sub)
-    # numpy (optional)
-    try:
-        import numpy as np
-
-        _SERIALIZE_BY_PICKLE_TYPES.add(np.ndarray)
-        _SERIALIZE_BY_PICKLE_TYPES.add(np.dtype)
-    except ImportError:
-        pass
+    # numpy
+    _SERIALIZE_BY_PICKLE_TYPES.add(np.ndarray)
+    _SERIALIZE_BY_PICKLE_TYPES.add(np.dtype)
 
 
 _register_builtin_pickle_types()
@@ -203,33 +228,6 @@ def enable_strict_serialize() -> None:
     _strict_serialize = True
 
 
-class _StrictPickler(pickle.Pickler):
-    """Pickler that validates every object's type is in the unpickle allow-list."""
-
-    # Returns `NotImplemented` (defer to the default reducer) in every path;
-    # typeshed's declared return type doesn't cover it, hence `Any`.
-    def reducer_override(self, obj: object) -> Any:
-        # When obj is a class being pickled as a global reference, check it directly.
-        if isinstance(obj, type):
-            if obj.__module__ != "builtins":
-                key = (obj.__module__, obj.__qualname__)
-                if key not in _UNPICKLE_SAFE_GLOBALS:
-                    raise pickle.PicklingError(
-                        f"Type not registered for safe unpickling: {obj.__module__}.{obj.__qualname__}"
-                    )
-            return NotImplemented
-        # For instances, check their type.
-        t = type(obj)
-        if t.__module__ == "builtins":
-            return NotImplemented
-        key = (t.__module__, t.__qualname__)
-        if key not in _UNPICKLE_SAFE_GLOBALS:
-            raise pickle.PicklingError(
-                f"Type not registered for safe unpickling: {t.__module__}.{t.__qualname__}"
-            )
-        return NotImplemented
-
-
 # ---------------------------------------------------------------------------
 # Pydantic detection (conditional — pydantic is optional)
 # ---------------------------------------------------------------------------
@@ -249,17 +247,49 @@ def _is_pydantic_model_type(tp: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Strict pickle dumps (validates all nested types)
+# Strict pickle dumps (round-trips the bytes through the restricted reader)
 # ---------------------------------------------------------------------------
 
 
 def _strict_pickle_dumps(value: Any) -> bytes:
-    """Pickle with strict type validation. Always uses protocol 5."""
+    """Pickle with strict type validation (when enabled). Always uses protocol 5.
+
+    The restricted unpickler is the single source of truth for what the reader
+    accepts: the value is pickled, then the bytes are loaded back through
+    ``_RestrictedUnpickler``. A value the reader would refuse fails here, on
+    the run that writes it, instead of surfacing on a later run inside
+    ``reconcile()``.
+    """
+    data = pickle.dumps(value, 5)
     if _strict_serialize:
-        buf = io.BytesIO()
-        _StrictPickler(buf, 5).dump(value)
-        return buf.getvalue()
-    return pickle.dumps(value, 5)
+        try:
+            _RestrictedUnpickler(io.BytesIO(data)).load()
+        except pickle.UnpicklingError as e:
+            raise pickle.PicklingError(
+                f"Strict serialization refused a value not registered for safe "
+                f"unpickling: {e}"
+            ) from e
+    return data
+
+
+def _raise_if_class_not_unpickle_safe(obj: Any) -> None:
+    """Fail fast when pickling a class the restricted reader would reject.
+
+    ``type`` is in ``_SERIALIZE_BY_PICKLE_TYPES``, so any class value is
+    pickled as a global reference with no further checks. This one-dict-lookup
+    check closes that gap (#2535): the writer refuses the class on the run
+    that writes it instead of the reader failing on a later run. The full
+    strict pickle round-trip stays tests-only; this keeps the production write
+    path cheap.
+    """
+    if isinstance(obj, type):
+        key = (obj.__module__, obj.__qualname__)
+        if key not in _UNPICKLE_SAFE_GLOBALS:
+            raise pickle.PicklingError(
+                f"Type not registered for safe unpickling: "
+                f"{obj.__module__}.{obj.__qualname__}. If this is your own "
+                f"class, register it with coco.unpickle_safe."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +301,15 @@ def _enc_hook(obj: Any) -> Any:
     """Msgspec enc_hook: handles types msgspec can't encode natively."""
     # C: Quarantine pickle types (check first — explicit opt-in wins)
     if type(obj) in _SERIALIZE_BY_PICKLE_TYPES:
+        _raise_if_class_not_unpickle_safe(obj)
         return msgspec.msgpack.Ext(100, _strict_pickle_dumps(obj))
+    # Also pickle values whose type is allow-listed — except numpy scalar
+    # *instances*: the scalar classes are allow-listed (they decode again as
+    # global references, coercing to np.dtype in _dec_hook), but instances
+    # reduce via numpy._core.multiarray.scalar, which stays unregistered — they
+    # keep failing at write time, as on main.
     key = (type(obj).__module__, type(obj).__qualname__)
-    if key in _UNPICKLE_SAFE_GLOBALS:
+    if key in _UNPICKLE_SAFE_GLOBALS and type(obj) not in _NUMPY_SCALAR_TYPES:
         return msgspec.msgpack.Ext(100, _strict_pickle_dumps(obj))
     # B: Bridge Pydantic into msgspec
     if _is_pydantic_instance(obj):
@@ -300,15 +336,27 @@ def _dec_hook(type_hint: Any, obj: Any) -> Any:
     """Handle custom types during msgspec decoding.
 
     Called when msgspec encounters a type it doesn't natively support.
-    Only two cases reach here:
+    Only three cases reach here:
 
     1. Pydantic models — enc_hook serialized via model_dump(mode="json"),
        so *obj* is a dict that needs model_validate to reconstruct.
     2. Pickle-quarantined values — ext_hook already reconstructed the
        correct object; just pass through.
+    3. Numpy scalar *classes* (e.g. ``np.float32``) pickled as global
+       references into ``np.dtype``-annotated fields — coerced to ``np.dtype``
+       so the record decodes (msgspec would otherwise reject the class with
+       a ValidationError after ext_hook succeeds). This covers both records
+       written before the scalar classes were allow-listed and new writes
+       using the class form.
     """
     if _is_pydantic_model_type(type_hint):
         return type_hint.model_validate(obj)
+    if type_hint is np.dtype and isinstance(obj, type) and obj in _NUMPY_SCALAR_TYPES:
+        # Scalar classes pickled as global references — both pre-fix records
+        # and current writes using the class form. Coercing to np.dtype lets
+        # those records load; equality with new records still holds
+        # (np.dtype("float32") == np.float32).
+        return np.dtype(obj)
     return obj
 
 
@@ -446,6 +494,7 @@ def serialize(value: Any) -> bytes:
     """Serialize a value using the routing-byte protocol (C → B → A priority)."""
     # C: Explicit pickle (user opted in — highest priority)
     if type(value) in _SERIALIZE_BY_PICKLE_TYPES:
+        _raise_if_class_not_unpickle_safe(value)
         return _strict_pickle_dumps(value)
 
     # B: Pydantic BaseModel
