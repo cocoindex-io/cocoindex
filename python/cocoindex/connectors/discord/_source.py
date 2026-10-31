@@ -23,7 +23,8 @@ import logging
 import ssl
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
+from datetime import datetime
 from typing import Any, NamedTuple, Self
 
 from cocoindex._internal.extras import install_hint
@@ -38,7 +39,16 @@ except ImportError as e:  # pragma: no cover - import-time guard
 from cocoindex._version import __version__
 from cocoindex.resources.rate_limit import RateLimiter
 
-__all__ = ["DiscordApp", "DiscordChannelInfo"]
+__all__ = [
+    "DiscordApp",
+    "DiscordAttachment",
+    "DiscordChannelInfo",
+    "DiscordEmbed",
+    "DiscordMessage",
+    "DiscordMessageRef",
+    "DiscordReaction",
+    "DiscordUser",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -72,6 +82,15 @@ _GLOBAL_REQUESTS_PER_SECOND = 50
 # Message types that are conversation: default, reply, slash command and
 # context-menu command. Others are notices, such as a member added to a thread.
 _CONVERSATION_MESSAGE_TYPES = frozenset({0, 19, 20, 23})
+
+# A reply's message type. The type, not the ``message_reference``, marks a
+# reply: crossposts, pin and thread notices and thread starters' stubs carry a
+# reference too.
+_REPLY_MESSAGE_TYPE = 19
+
+# A forward's ``message_reference.type``; 0, the default, is any other
+# reference.
+_FORWARD_REFERENCE_TYPE = 1
 
 # Application flags granting the Message Content intent: bit 19 is set by the
 # toggle on the Developer Portal's Bot page, bit 18 after Discord's review.
@@ -474,3 +493,228 @@ class _ApiContext:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+# ============================================================================
+# Messages
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class DiscordUser:
+    """A message's author, or a user it mentions. For a webhook's post, the
+    webhook, under the name it posted with."""
+
+    id: str
+    username: str
+    # The display name the user chose; ``None`` if unset.
+    global_name: str | None
+    # Also true for a webhook's post.
+    bot: bool
+
+
+@dataclass(frozen=True)
+class DiscordAttachment:
+    """A file attached to a message.
+
+    ``url`` is signed, and a listing after it expires returns it signed anew,
+    so it's left out of the memo key. The ID stands for the content:
+    replacing a file uploads a new one, with a new ID."""
+
+    id: str
+    filename: str
+    size: int
+    content_type: str | None
+    # The alt text. An edit can change it under the same ID.
+    description: str | None
+    url: str
+
+    def __coco_memo_key__(self) -> object:
+        return (self.id, self.filename, self.size, self.content_type, self.description)
+
+
+@dataclass(frozen=True)
+class DiscordReaction:
+    """A message's reactions with one emoji."""
+
+    # A custom emoji's ID; ``None`` for a Unicode emoji.
+    emoji_id: str | None
+    # The Unicode emoji itself, or a custom emoji's name.
+    emoji_name: str | None
+    # Super reactions included.
+    count: int
+
+
+@dataclass(frozen=True)
+class DiscordEmbed:
+    """A rich embed on a bot's or a webhook's post."""
+
+    title: str | None
+    description: str | None
+    # The embed's own link.
+    url: str | None
+    # The embed author's name.
+    author: str | None
+    # The footer's text.
+    footer: str | None
+    # ``(name, value)`` pairs.
+    fields: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class DiscordMessageRef:
+    """The message a forward was made from."""
+
+    # ``None`` if Discord leaves it out.
+    guild_id: str | None
+    channel_id: str
+    message_id: str
+
+
+@dataclass(frozen=True)
+class DiscordMessage:
+    """One message: in a channel's main stream, starting a thread, or inside
+    one.
+
+    A forward holds the forwarded message's text, mentions, attachments and
+    embeds; its other fields are the forward's own. Embeds are kept on bots'
+    and webhooks' posts only: on people's posts they're link previews,
+    which Discord makes from the linked page.
+
+    A field the channel's ``message_fields`` leaves out holds ``None``, or
+    ``()`` for a tuple field; ``id`` is always set. A change to any other
+    field reruns a memoized function that takes the message, except a newly
+    signed attachment URL.
+    """
+
+    id: str
+    guild_id: str | None
+    # Where it was posted: the channel, or the thread.
+    channel_id: str | None
+    # Discord's message type: 0 default, 19 reply, 7 a member joined, ...
+    type: int | None
+    author: DiscordUser | None
+    webhook_id: str | None
+    # Discord's Markdown, as stored.
+    content: str | None
+    mentions: tuple[DiscordUser, ...]
+    # The IDs of the roles it mentions.
+    mention_roles: tuple[str, ...]
+    mention_everyone: bool | None
+    attachments: tuple[DiscordAttachment, ...]
+    embeds: tuple[DiscordEmbed, ...]
+    # In Discord's order.
+    reactions: tuple[DiscordReaction, ...]
+    pinned: bool | None
+    timestamp: datetime | None
+    edited_timestamp: datetime | None
+    # A reply's parent. The ID stays after the parent is deleted.
+    reply_to: str | None
+    forwarded_from: DiscordMessageRef | None
+
+
+def _parse_user(raw: dict[str, Any]) -> DiscordUser:
+    return DiscordUser(
+        id=raw["id"],
+        username=raw["username"],
+        global_name=raw.get("global_name"),
+        bot=raw.get("bot", False),
+    )
+
+
+def _parse_embed(raw: dict[str, Any]) -> DiscordEmbed:
+    return DiscordEmbed(
+        title=raw.get("title"),
+        description=raw.get("description"),
+        url=raw.get("url"),
+        author=raw.get("author", {}).get("name"),
+        footer=raw.get("footer", {}).get("text"),
+        fields=tuple((f["name"], f["value"]) for f in raw.get("fields", [])),
+    )
+
+
+def _parse_message(
+    raw: dict[str, Any], guild_id: str, message_fields: tuple[str, ...] | None
+) -> DiscordMessage:
+    """A message object from Discord as a :class:`DiscordMessage`.
+
+    ``guild_id`` is the channel's, since message objects don't carry it.
+    ``message_fields`` is the channel's normalized selection: ``None`` for
+    every field, else the names to keep, ``id`` among them. Which message is
+    a reply and which embeds are kept are read from ``raw``, whatever the
+    selection leaves out. A forward's snapshot has no author, so the
+    forwarder decides whether the snapshot's embeds are kept.
+    """
+    reference = raw.get("message_reference", {})
+    forwarded = reference.get("type", 0) == _FORWARD_REFERENCE_TYPE
+    source = raw["message_snapshots"][0]["message"] if forwarded else raw
+    by_bot = raw["author"].get("bot", False) or raw.get("webhook_id") is not None
+    embeds = (
+        tuple(
+            _parse_embed(e) for e in source.get("embeds", []) if e.get("type") == "rich"
+        )
+        if by_bot
+        else ()
+    )
+    forwarded_from = (
+        DiscordMessageRef(
+            guild_id=reference.get("guild_id"),
+            channel_id=reference["channel_id"],
+            message_id=reference["message_id"],
+        )
+        if forwarded
+        else None
+    )
+    edited_timestamp = raw.get("edited_timestamp")
+    message = DiscordMessage(
+        id=raw["id"],
+        guild_id=guild_id,
+        channel_id=raw["channel_id"],
+        type=raw["type"],
+        author=_parse_user(raw["author"]),
+        webhook_id=raw.get("webhook_id"),
+        content=source.get("content", ""),
+        mentions=tuple(_parse_user(u) for u in source.get("mentions", [])),
+        mention_roles=tuple(source.get("mention_roles", [])),
+        mention_everyone=raw.get("mention_everyone", False),
+        attachments=tuple(
+            DiscordAttachment(
+                id=a["id"],
+                filename=a["filename"],
+                size=a["size"],
+                content_type=a.get("content_type"),
+                description=a.get("description"),
+                url=a["url"],
+            )
+            for a in source.get("attachments", [])
+        ),
+        embeds=embeds,
+        reactions=tuple(
+            DiscordReaction(
+                emoji_id=r["emoji"].get("id"),
+                emoji_name=r["emoji"].get("name"),
+                count=r["count"],
+            )
+            for r in raw.get("reactions", [])
+        ),
+        pinned=raw.get("pinned", False),
+        timestamp=datetime.fromisoformat(raw["timestamp"]),
+        edited_timestamp=(
+            datetime.fromisoformat(edited_timestamp)
+            if edited_timestamp is not None
+            else None
+        ),
+        reply_to=(
+            reference.get("message_id") if raw["type"] == _REPLY_MESSAGE_TYPE else None
+        ),
+        forwarded_from=forwarded_from,
+    )
+    if message_fields is None:
+        return message
+    # A field left out holds a constant, so it never reruns anything.
+    left_out: dict[str, Any] = {
+        f.name: () if isinstance(getattr(message, f.name), tuple) else None
+        for f in fields(message)
+        if f.name not in message_fields
+    }
+    return replace(message, **left_out)
