@@ -41,7 +41,7 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
 
     type TargetHdl: TargetHandler<Self>;
     type TargetStateTrackingRecord: Send + Persist + 'static;
-    type TargetAction: Send + 'static;
+    type TargetAction: Send + Sync + 'static;
     type TargetActionSink: TargetActionSink<Self>;
     type TargetStateValue: Send + 'static;
 }

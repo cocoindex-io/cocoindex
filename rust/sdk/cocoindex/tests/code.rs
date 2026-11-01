@@ -380,7 +380,7 @@ fn index_terms_deduplicates() {
 fn index_terms_unknown_language_errors() {
     let result = index_terms("x", "cobol_2025", 3);
     assert!(result.is_err(), "expected error for unknown language");
-    let msg = result.err().expect("expected error").to_string();
+    let msg = result.expect_err("expected error").to_string();
     assert!(
         msg.contains("cobol_2025"),
         "error should mention the bad language: {msg}"

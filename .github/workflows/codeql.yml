@@ -1,0 +1,42 @@
+name: CodeQL
+
+# Scans main once a day instead of every pull request and push. The Rust
+# analysis takes about 25 minutes, and its findings here have been false
+# positives or test credentials; the Actions and Python analyses take a
+# minute. New alerts appear in the Security tab within a day. Start a scan by
+# hand with `gh workflow run codeql.yml`. This replaces GitHub's default
+# setup, which scans every pull request and can't be told not to.
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Upload the results to code scanning.
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python, rust]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      # No build: CodeQL extracts all three languages from source, as the
+      # default setup did.
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

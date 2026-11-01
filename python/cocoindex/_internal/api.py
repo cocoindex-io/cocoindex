@@ -44,6 +44,8 @@ from .component_ctx import (
 
 from .stable_path import StableKey
 from .batching import RetryWithSmallerBatch
+from .logic_propagated_to_callers import logic_propagated_to_callers, logic_tracked
+from .logic_dep import LogicDep, use_logic_dep
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -79,6 +81,7 @@ from cocoindex.connectorkits import default_subpath_name as _default_subpath_nam
 from .context_keys import ContextKey, ContextProvider
 
 from .target_state import (
+    ChildSlot,
     ChildTargetDef,
     TargetReconcileOutput,
     TargetActionSink,
@@ -90,9 +93,10 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
+from .core import GPUPool
+
 from .runner import (
     GPU,
-    GPUPool,
     GPURunner,
     Runner,
     configure_gpu_pool,
@@ -461,11 +465,16 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
             live component instance is created per item (the item value is passed
             as the first constructor argument, mirroring the plain-function shape).
         items: A keyed iterable of (key, value) pairs, or a LiveMapFeed/LiveMapView for live mode.
+            Each key is the item's component key under *subpath*, so keys must be
+            unique within one call.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
 
     Returns:
         A handle that can be used to wait until all processing units are ready.
+
+    Raises:
+        ValueError: If a keyed iterable yields the same key more than once.
     """
     check_cancellation()
     check_not_in_process_live("coco.mount_each")
@@ -495,7 +504,9 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # LiveComponent class) is dispatched through `mount()` / `operator.update()`
         # inside `_MountEachLiveComponent`, both of which already handle live
         # component classes — so no special-casing of `fn` is needed here.
-        instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
+        instance = _MountEachLiveComponent(
+            items, fn, extra_args, kwargs, parent_ctx._exception_handler_chain
+        )
         return await _mount_live_component(parent_ctx, child_path, instance)
 
     # Static data source: mount one component per item. When `fn` is a
@@ -804,9 +815,9 @@ def use_state(
 
     The value is serialized lazily, once, when the component commits — not at
     assignment. Two consequences: (1) if the value is not serializable, the
-    error surfaces at commit (identifying the state key) rather than at the
-    `handle.value = ...` line; (2) the persisted value reflects the object as it
-    is at commit, so mutating it in place after assignment is captured.
+    error surfaces at commit rather than at the `handle.value = ...` line;
+    (2) the persisted value reflects the object as it is at commit, so
+    mutating it in place after assignment is captured.
 
     Args:
         key: Unique StableKey within this component (None, bool, int, str,
@@ -905,6 +916,10 @@ __all__ = [
     # .function
     "fn",
     "LogicTracking",
+    "logic_propagated_to_callers",
+    "logic_tracked",
+    "LogicDep",
+    "use_logic_dep",
     "timeout",
     "check_cancellation",
     "DeadlineExceededError",
@@ -914,6 +929,7 @@ __all__ = [
     "ContextKey",
     "ContextProvider",
     # .target_state
+    "ChildSlot",
     "ChildTargetDef",
     "TargetState",
     "TargetStateProvider",

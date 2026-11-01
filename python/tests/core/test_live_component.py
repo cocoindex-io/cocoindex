@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -499,6 +500,115 @@ def test_live_component_incremental_delete_direct() -> None:
     assert "b" not in GlobalDictTarget.store.data
 
 
+class _DeleteOnRequestLiveComponent:
+    """Mounts a child per source key; deletes child "b" through
+    operator.delete() when `delete_b` is set."""
+
+    delete_b = False
+
+    async def process(self) -> None:
+        for key, value in _source_data.items():
+            await coco.mount(coco.component_subpath(key), _declare_item, key, value)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        if _DeleteOnRequestLiveComponent.delete_b:
+            handle = await operator.delete(coco.component_subpath("b"))
+            await handle.ready()
+        await operator.mark_ready()
+
+
+def test_live_component_delete_in_preview_applies_nothing() -> None:
+    """In a preview, operator.delete() neither deletes the child nor leaves a
+    tombstone, and (like the deletes of components an update no longer mounts)
+    it is not previewed: the next real update keeps the child."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _DeleteOnRequestLiveComponent.delete_b = False
+
+    _source_data["a"] = 1
+    _source_data["b"] = 2
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _DeleteOnRequestLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_component_delete_in_preview", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking()
+    assert set(GlobalDictTarget.store.data) == {"a", "b"}
+    GlobalDictTarget.store.metrics.clear()
+
+    _DeleteOnRequestLiveComponent.delete_b = True
+    try:
+        actions = app.update_blocking(preview=True)
+    finally:
+        _DeleteOnRequestLiveComponent.delete_b = False
+    # Neither applied nor planned.
+    assert actions == []
+    assert set(GlobalDictTarget.store.data) == {"a", "b"}
+    assert GlobalDictTarget.store.metrics.collect() == {}
+
+    # Nothing is written: a tombstone left by the preview would have `b`
+    # re-upserted here.
+    app.update_blocking()
+    assert set(GlobalDictTarget.store.data) == {"a", "b"}
+    assert GlobalDictTarget.store.metrics.collect() == {}
+
+
+class _CommittedStateLiveComponent:
+    """Records the committed value it reads, then commits a new one."""
+
+    seen: list[Any] = []
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        _CommittedStateLiveComponent.seen.append(
+            await operator.read_committed_state("marker")
+        )
+        await operator.write_committed_state("marker", "done")
+        # Read back within the run: also in a preview, which persists nothing.
+        _CommittedStateLiveComponent.seen.append(
+            await operator.read_committed_state("marker")
+        )
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_live_component_preview_commits_no_state() -> None:
+    """write_committed_state() in a preview is not persisted, so the next real
+    run does not skip work the preview never did; within the preview, a later
+    read sees it, as in a real run."""
+    _CommittedStateLiveComponent.seen = []
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _CommittedStateLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_component_preview_commits_no_state",
+            environment=coco_env,
+        ),
+        _main,
+    )
+    app.update_blocking(live=True, preview=True)
+    app.update_blocking(live=True)
+    app.update_blocking(live=True)
+    assert _CommittedStateLiveComponent.seen == [
+        None,
+        "done",  # preview: read back in the run, not persisted
+        None,
+        "done",  # first real run
+        "done",
+        "done",  # persisted
+    ]
+
+
 class _IncrementalDeleteNoStaleComponent:
     """LiveComponent for testing that incremental delete doesn't leave stale tombstones.
 
@@ -744,8 +854,8 @@ def test_report_exception_routes_to_global_handler() -> None:
 
     assert len(seen) == 1
     exc_name, mount_kind, stable_path, parent_path, processor_name = seen[0]
-    # resolve_handler synthesizes a RuntimeError from the stringified error
-    assert exc_name == "RuntimeError"
+    # report_exception passes the original exception through unchanged
+    assert exc_name == "ValueError"
     assert mount_kind == "process_live"
     # The live component's path includes the "live" subpath component
     assert "live" in stable_path
@@ -755,13 +865,13 @@ def test_report_exception_routes_to_global_handler() -> None:
 
 
 def test_report_exception_surfaces_python_traceback() -> None:
-    """The handler should see the original Python traceback, not just the message."""
+    """The handler should see the original exception with its traceback intact."""
     GlobalDictTarget.store.clear()
 
-    seen_messages: list[str] = []
+    seen: list[BaseException] = []
 
     def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
-        seen_messages.append(str(exc))
+        seen.append(exc)
 
     env = common.create_test_env(
         __file__, suffix="report_exc_trace", exception_handler=handler
@@ -773,12 +883,14 @@ def test_report_exception_surfaces_python_traceback() -> None:
     app = coco.App(coco.AppConfig(name="test_report_exc_trace", environment=env), _root)
     app.update_blocking(live=True)
 
-    assert len(seen_messages) == 1
-    msg = seen_messages[0]
-    assert "ValueError" in msg
-    assert "traceful boom" in msg
-    assert "Traceback (most recent call last)" in msg
-    assert "_raise_for_trace_test" in msg
+    assert len(seen) == 1
+    exc = seen[0]
+    assert isinstance(exc, ValueError)
+    assert str(exc) == "traceful boom"
+    assert exc.__traceback__ is not None
+    formatted = "".join(traceback.format_exception(exc))
+    assert "Traceback (most recent call last)" in formatted
+    assert "_raise_for_trace_test" in formatted
 
 
 async def _failing_child(value: int) -> None:
@@ -840,7 +952,7 @@ def test_operator_delete_failure_routes_to_handler() -> None:
 
     assert len(seen) == 1
     exc_name, mount_kind, stable_path = seen[0]
-    assert exc_name == "RuntimeError"
+    assert exc_name == "ValueError"
     assert mount_kind == "process_live"
     assert "c" in stable_path
 
@@ -958,7 +1070,7 @@ def test_operator_update_child_failure_routes_to_handler() -> None:
 
     assert len(seen) == 1
     exc_name, mount_kind, stable_path = seen[0]
-    assert exc_name == "RuntimeError"
+    assert exc_name == "ValueError"
     assert mount_kind == "process_live"
     assert "bad_child" in stable_path
     # Swallowing handler → no propagation
@@ -1012,7 +1124,13 @@ def test_report_exception_falls_back_to_log_when_no_handler(
     with caplog.at_level("ERROR"):
         app.update_blocking(live=True)
 
-    assert any("no handler boom" in record.getMessage() for record in caplog.records)
+    assert any(
+        record.levelname == "ERROR"
+        and "no handler boom" in record.getMessage()
+        and record.exc_info is not None
+        and "no handler boom" in str(record.exc_info[1])
+        for record in caplog.records
+    )
 
 
 # ============================================================================

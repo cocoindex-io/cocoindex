@@ -41,6 +41,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
+from cocoindex._internal.extras import install_hint
 from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
@@ -59,7 +60,7 @@ class ConnectionConfig:
 
     account: str
     user: str
-    password: str
+    password: str = dataclasses.field(repr=False)
     warehouse: str | None = None
     role: str | None = None
 
@@ -336,7 +337,7 @@ def _connect(config: ConnectionConfig) -> Iterator[Any]:
     except ImportError as e:
         raise ImportError(
             "snowflake-connector-python is required to use the Snowflake connector. "
-            "Please install cocoindex[snowflake]."
+            + install_hint("snowflake")
         ) from e
 
     kwargs: dict[str, str] = {
@@ -366,12 +367,14 @@ class _RowAction(NamedTuple):
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
+    tracks_value_fingerprint = True
+
     _db_key: str
     _database: str | None
     _schema: str | None
     _table_name: str
     _table_schema: TableSchema[Any]
-    _sink: coco.TargetActionSink[_RowAction, None]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -386,9 +389,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._schema = schema
         self._table_name = table_name
         self._table_schema = table_schema
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_RowAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -639,51 +640,52 @@ def _apply_column_actions(
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
-    _sink: coco.TargetActionSink[_TableAction, _RowHandler]
+    _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
-            self._apply_actions
+        self._sink = coco.TargetActionSink[_TableAction].from_fn(
+            self._apply_actions, child_handler=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RowHandler:
+        """The row handler for a created or updated table's rows."""
+        key = action.key
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            db_key=key.db_key,
+            database=key.database,
+            schema=key.schema,
+            table_name=key.table_name,
+            table_schema=action.spec.table_schema,
         )
 
     def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_TableAction]
-    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
-            actions_list
-        )
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_TableAction],
+        /,
+    ) -> None:
+        """Apply table actions (DDL)."""
+        by_key: dict[_TableKey, list[_TableAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
-            by_key.setdefault(action.key, []).append(i)
-
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             config = context_provider.get(key.db_key, ConnectionConfig)
             with _connect(config) as conn:
                 cursor = conn.cursor()
                 try:
-                    for i in idxs:
-                        action = actions_list[i]
-                        assert action.key == key
-
+                    for action in key_actions:
                         if action.main_action in ("replace", "delete"):
                             _drop_table(cursor, key)
 
                         if coco.is_non_existence(action.spec):
-                            outputs[i] = None
                             continue
 
                         spec = action.spec
-                        outputs[i] = coco.ChildTargetDef(
-                            handler=_RowHandler(
-                                db_key=key.db_key,
-                                database=key.database,
-                                schema=key.schema,
-                                table_name=key.table_name,
-                                table_schema=spec.table_schema,
-                            )
-                        )
 
                         if action.main_action in ("insert", "upsert", "replace"):
                             _create_table(
@@ -710,8 +712,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     raise
                 finally:
                     cursor.close()
-
-        return outputs
 
     def reconcile(
         self,

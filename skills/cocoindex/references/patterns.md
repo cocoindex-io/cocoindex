@@ -354,7 +354,7 @@ async def app_main() -> None:
         "enable.auto.commit": "false",
         "auto.offset.reset": "earliest",
     })
-    items = kafka.topic_as_map(consumer, ["products-topic"])
+    items = kafka.topic_as_map(consumer, "products-topic")
     await coco.mount_each(process_message, items, products_table)
 
 app = coco.App(coco.AppConfig(name="KafkaToLanceDB"), app_main)

@@ -15,7 +15,7 @@ use utils::ratelimit::{RateLimit, RateLimiter};
 /// Concurrent callers are served in FIFO order.
 #[pyclass(name = "RateLimiter")]
 pub struct PyRateLimiter {
-    inner: Arc<RateLimiter>,
+    pub(crate) inner: Arc<RateLimiter>,
 }
 
 #[pymethods]

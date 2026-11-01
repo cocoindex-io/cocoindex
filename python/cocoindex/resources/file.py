@@ -30,7 +30,6 @@ from cocoindex._internal.typing import (
     NonExistenceType as _NonExistenceType,
     is_non_existence as _is_non_existence,
 )
-from cocoindex import StableKey as _StableKey
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes as _fingerprint_bytes
 
 # Type variable for the resolved path type (e.g., pathlib.Path for local filesystem)
@@ -45,7 +44,8 @@ class FileMetadata(_NamedTuple):
         modified_time: File modification time.
         content_fingerprint: Optional backend-provided content fingerprint (e.g., S3 ETag).
             When present, used directly by :meth:`FileLike.content_fingerprint` instead of
-            hashing the full content.
+            hashing the full content, and checked for changes even when the modification
+            time is unchanged.
     """
 
     size: int
@@ -192,7 +192,9 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
 
         assert isinstance(prev_state, tuple)
         prev_mtime, prev_fp = prev_state
-        if current_mtime == prev_mtime:
+        # An equal mtime skips the fingerprint, unless the backend gives one for free:
+        # mtimes can be coarse (S3 has whole seconds) and miss a quick overwrite.
+        if current_mtime == prev_mtime and metadata.content_fingerprint is None:
             return _MemoStateOutcome(state=prev_state, memo_valid=True)
 
         fp = await self.content_fingerprint()
@@ -470,8 +472,10 @@ class FilePath(_Generic[ResolvedPathT]):
     def _base_dir_key(self) -> str | None:
         return self._base_dir.key if self._base_dir is not None else None
 
+    # Paths of different types never compare, as their memo keys never match.
+
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, FilePath):
+        if not isinstance(other, FilePath) or type(other) is not type(self):
             return NotImplemented
         return (
             self._base_dir_key() == other._base_dir_key() and self._path == other._path
@@ -481,7 +485,7 @@ class FilePath(_Generic[ResolvedPathT]):
         return hash((self._base_dir_key(), self._path))
 
     def __lt__(self, other: _Self) -> bool:
-        if not isinstance(other, FilePath):
+        if not isinstance(other, FilePath) or type(other) is not type(self):
             return NotImplemented
         sk_self = self._base_dir_key()
         sk_other = other._base_dir_key()
@@ -497,7 +501,7 @@ class FilePath(_Generic[ResolvedPathT]):
         return self == other or self < other
 
     def __gt__(self, other: _Self) -> bool:
-        if not isinstance(other, FilePath):
+        if not isinstance(other, FilePath) or type(other) is not type(self):
             return NotImplemented
         return other < self
 

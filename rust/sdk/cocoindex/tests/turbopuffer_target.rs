@@ -8,18 +8,17 @@
 //!     cargo test -p cocoindex --features turbopuffer --test turbopuffer_target
 #![cfg(feature = "turbopuffer")]
 
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
-use cocoindex::{ContextKey, Environment, Result};
+use cocoindex::connectors::turbopuffer::{
+    self, DistanceMetric, NamespaceSchema, TurbopufferConnection,
+};
+use cocoindex::{Environment, Result};
 use serde_json::json;
 
-static DB: LazyLock<ContextKey<TurbopufferConnection>> = LazyLock::new(|| {
-    ContextKey::new_with_state("turbopuffer_test", |c: &TurbopufferConnection| {
-        c.state_id().to_string()
-    })
-});
+cocoindex::context_key!(
+    static DB: TurbopufferConnection, key = "turbopuffer_test"
+);
 
 type RowSpec = (&'static str, Vec<f32>, &'static str);
 
@@ -130,5 +129,143 @@ async fn turbopuffer_target_upserts_searches_and_reconciles() -> Result<()> {
 
     // cleanup: explicit namespace teardown (the nonce namespace is test-only).
     conn.delete_namespace(&namespace).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn turbopuffer_undeclared_and_dropped_namespaces_are_removed_when_available() -> Result<()> {
+    let Ok(api_key) = std::env::var("TURBOPUFFER_API_KEY") else {
+        eprintln!(
+            "skipping live Turbopuffer namespace-removal test; TURBOPUFFER_API_KEY is not set"
+        );
+        return Ok(());
+    };
+    let region = std::env::var("TURBOPUFFER_REGION").unwrap_or_else(|_| "gcp-us-central1".into());
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let namespace = format!("coco_tpuf_removal_{nonce}");
+    let conn = TurbopufferConnection::new(&region, &api_key);
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, conn.clone())
+        .build()
+        .await?
+        .app("TurbopufferNamespaceRemovalTest")
+        .await?;
+    let declare = |namespace: String| {
+        move |ctx: cocoindex::Ctx| async move {
+            let target = turbopuffer::mount_namespace_target(
+                &ctx,
+                &DB,
+                &namespace,
+                NamespaceSchema::new(3, DistanceMetric::CosineDistance),
+            )
+            .await?;
+            target.declare_row(&ctx, "1", vec![1.0, 0.0, 0.0], attrs("alpha"))?;
+            Ok::<_, cocoindex::Error>(())
+        }
+    };
+    // Querying a deleted namespace fails with 404 Not Found.
+    let exists = |namespace: String| {
+        let conn = conn.clone();
+        async move {
+            match turbopuffer::vector_search(&conn, &namespace, vec![1.0, 0.0, 0.0], 1).await {
+                Ok(_) => true,
+                Err(e) if e.to_string().contains("404") => false,
+                Err(e) => panic!("turbopuffer query: {e}"),
+            }
+        }
+    };
+
+    app.run(declare(namespace.clone())).await?;
+    assert!(exists(namespace.clone()).await);
+
+    // A run that no longer declares the namespace deletes it.
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert!(
+        !exists(namespace.clone()).await,
+        "a namespace no longer declared is deleted"
+    );
+
+    app.run(declare(namespace.clone())).await?;
+    assert!(exists(namespace.clone()).await);
+
+    app.drop_state().await?;
+    assert!(
+        !exists(namespace.clone()).await,
+        "drop_state deletes the namespace"
+    );
+
+    conn.delete_namespace(&namespace).await?;
+    Ok(())
+}
+
+/// The removal paths against a mock Turbopuffer API, so they run without an
+/// API key: a namespace no longer declared, and `drop_state`, each send one
+/// `DELETE /v2/namespaces/{namespace}`.
+#[tokio::test]
+async fn turbopuffer_undeclared_and_dropped_namespaces_are_deleted_on_mock_server() -> Result<()> {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v2/namespaces/ns_mock"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/v2/namespaces/ns_mock"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let deletes = || async {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method.as_str() == "DELETE")
+            .count()
+    };
+
+    let conn = TurbopufferConnection::new("mock", "key").with_base_url(server.uri());
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, conn)
+        .build()
+        .await?
+        .app("TurbopufferNamespaceRemovalMockTest")
+        .await?;
+    let declare = |ctx: cocoindex::Ctx| async move {
+        let target = turbopuffer::mount_namespace_target(
+            &ctx,
+            &DB,
+            "ns_mock",
+            NamespaceSchema::new(3, DistanceMetric::CosineDistance),
+        )
+        .await?;
+        target.declare_row(&ctx, "1", vec![1.0, 0.0, 0.0], attrs("alpha"))?;
+        Ok::<_, cocoindex::Error>(())
+    };
+
+    app.run(declare).await?;
+    assert_eq!(deletes().await, 0);
+
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert_eq!(
+        deletes().await,
+        1,
+        "a namespace no longer declared is deleted"
+    );
+
+    app.run(declare).await?;
+    app.drop_state().await?;
+    assert_eq!(deletes().await, 2, "drop_state deletes the namespace");
     Ok(())
 }

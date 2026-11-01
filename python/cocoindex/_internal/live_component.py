@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
-import traceback
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from typing import (
@@ -23,6 +22,7 @@ from typing import (
 from . import core
 from .component_ctx import (
     ComponentSubpath,
+    ExceptionHandlerChain,
     get_context_from_ctx,
 )
 from .deadline import without_deadline as _without_deadline
@@ -271,7 +271,9 @@ class LiveComponentOperator:
             )
         return ctrl
 
-    def _resolve_exception_handler(self) -> Callable[[str], Awaitable[None]]:
+    def _resolve_exception_handler(
+        self,
+    ) -> Callable[[BaseException], Awaitable[None]]:
         """Build a resolver for the parent's exception handler chain.
 
         Delegates to :meth:`ComponentContext.resolve_exception_handler`
@@ -279,7 +281,7 @@ class LiveComponentOperator:
         so component-failure logs go through one canonical Python
         fallback. Always non-None. Used both by :meth:`update_full`
         (passes to Rust as ``on_error``) and :meth:`report_exception`
-        (invokes directly with a stringified exception).
+        (invokes directly with the reported exception).
         """
         return get_context_from_ctx().resolve_exception_handler(
             stable_path=self._path.to_string(),
@@ -450,20 +452,19 @@ class LiveComponentOperator:
         cycle failures from initial build failures (``"mount"`` /
         ``"mount_each"``).
 
-        The exception is formatted via :func:`traceback.format_exception`
-        so handlers and the fallback log both see the full Python
-        traceback (when ``exc.__traceback__`` is set — i.e. when the
-        caller is reporting a caught exception). This matches the
-        text-with-trace shape that the Rust-side ``on_error`` path
-        produces for background ``mount`` / ``mount_each`` failures.
+        Handlers receive ``exc`` itself, so they can route by type and
+        recover the traceback via :func:`traceback.format_exception` (when
+        ``exc.__traceback__`` is set, i.e. when the caller is reporting a
+        caught exception). This matches what the Rust-side ``on_error``
+        path delivers for background ``mount`` / ``mount_each`` failures.
 
-        Falls back to ERROR-level logging if no handler is registered or
-        every handler re-raises. Intended for surfacing recoverable errors
-        (e.g. an external watcher emits a malformed event) without
-        tearing down the live component.
+        Falls back to ERROR-level logging if no handler is registered. If
+        every handler re-raises, the final handler's exception propagates
+        to the caller. Intended for surfacing recoverable errors (e.g. an
+        external watcher emits a malformed event) without tearing down the
+        live component.
         """
-        err_text = "".join(traceback.format_exception(exc))
-        await self._resolve_exception_handler()(err_text)
+        await self._resolve_exception_handler()(exc)
 
 
 @runtime_checkable
@@ -559,7 +560,15 @@ class LiveMapSubscriber(Generic[_K, _V]):
 
 
 class _MountEachLiveComponent:
-    """Internal LiveComponent created by mount_each() for LiveMapFeed/LiveMapView items."""
+    """Internal LiveComponent created by mount_each() for LiveMapFeed/LiveMapView items.
+
+    The per-item components are the ``mount_each`` caller's children in all but
+    their path, so their failures route through the caller's exception handler
+    chain, captured at ``mount_each`` time. This component's own context would
+    not do: like every component's, it starts from the environment's handler
+    alone, so a handler scoped around the ``mount_each`` call would never see
+    the items mounted by a full scan.
+    """
 
     def __init__(
         self,
@@ -567,11 +576,13 @@ class _MountEachLiveComponent:
         fn: Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        exception_handler_chain: ExceptionHandlerChain | None,
     ) -> None:
         self._items = items
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._exception_handler_chain = exception_handler_chain
 
     async def process(self) -> None:
         if not isinstance(self._items, LiveMapView):
@@ -582,10 +593,17 @@ class _MountEachLiveComponent:
             )
         from .api import mount
 
-        async for key, value in self._items:
-            await mount(
-                ComponentSubpath(key), self._fn, value, *self._args, **self._kwargs
-            )  # type: ignore[arg-type]
+        # Live items (e.g. `auto_refresh`) inherit this context too: their
+        # `process_live` tasks start from it, and their cycles resolve the
+        # handler chain there.
+        ctx = get_context_from_ctx()._with_exception_handler_chain(
+            self._exception_handler_chain
+        )
+        with ctx.attach():
+            async for key, value in self._items:
+                await mount(
+                    ComponentSubpath(key), self._fn, value, *self._args, **self._kwargs
+                )  # type: ignore[arg-type]
 
     async def process_live(self, operator: LiveComponentOperator) -> None:
         subscriber: LiveMapSubscriber[Any, Any] = LiveMapSubscriber(

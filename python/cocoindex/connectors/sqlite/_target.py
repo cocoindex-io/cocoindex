@@ -426,11 +426,13 @@ class _RowAction(NamedTuple):
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
+    tracks_value_fingerprint = True
+
     _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]
     _is_virtual_table: bool
-    _sink: coco.TargetActionSink[_RowAction, None]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -443,9 +445,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_name = table_name
         self._table_schema = table_schema
         self._is_virtual_table = is_virtual_table
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
+        self._sink = coco.TargetActionSink[_RowAction].from_fn(self._apply_actions)
 
     def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
@@ -873,28 +873,37 @@ def _apply_column_actions(
             continue
 
 
+def _row_handler(
+    context_provider: ContextProvider, action: _TableAction, /
+) -> _RowHandler:
+    """The row handler for a created or updated table's rows."""
+    key = action.key
+    assert not coco.is_non_existence(action.spec)
+    return _RowHandler(
+        managed_conn=context_provider.get(key.db_key, ManagedConnection),
+        table_name=key.table_name,
+        table_schema=action.spec.table_schema,
+        is_virtual_table=(action.spec.virtual_table_def is not None),
+    )
+
+
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-) -> list[coco.ChildTargetDef["_RowHandler"] | None]:
-    """Apply table actions (DDL) and return child row handlers."""
-    actions_list = list(actions)
-    outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(actions_list)
-
+    /,
+) -> None:
+    """Apply table actions (DDL)."""
     # Group actions by table key so we can apply all DDL for the same table
-    by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions_list):
-        by_key.setdefault(action.key, []).append(i)
+    by_key: dict[_TableKey, list[_TableAction]] = {}
+    for action in actions:
+        by_key.setdefault(action.key, []).append(action)
 
-    for key, idxs in by_key.items():
+    for key, key_actions in by_key.items():
         managed_conn = context_provider.get(key.db_key, ManagedConnection)
         has_vec = _VEC_EXTENSION in managed_conn.loaded_extensions
 
         with managed_conn.transaction() as conn:
-            for i in idxs:
-                action = actions_list[i]
-                assert action.key == key
-
+            for action in key_actions:
                 # Check if this is a virtual table (for special handling)
                 is_virtual = (
                     not coco.is_non_existence(action.spec)
@@ -919,18 +928,9 @@ def _apply_table_actions(
                     _drop_table(conn, key.table_name)
 
                 if coco.is_non_existence(action.spec):
-                    outputs[i] = None
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_RowHandler(
-                        managed_conn=managed_conn,
-                        table_name=key.table_name,
-                        table_schema=spec.table_schema,
-                        is_virtual_table=(spec.virtual_table_def is not None),
-                    )
-                )
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     # Route to virtual or regular table creation
@@ -967,12 +967,10 @@ def _apply_table_actions(
                         action.column_actions,
                     )
 
-    return outputs
-
 
 # Shared action sink for table-level actions
-_table_action_sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
-    _apply_table_actions
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn(
+    _apply_table_actions, child_handler=_row_handler
 )
 
 

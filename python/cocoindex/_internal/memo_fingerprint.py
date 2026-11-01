@@ -205,6 +205,7 @@ def register_memo_key_function(
     """
 
     _memo_fns[typ] = _MemoFns(key_fn, state_fn)
+    _sync_plain_canonical_form_overridden()
 
 
 def register_not_memo_keyable(typ: type) -> None:
@@ -227,12 +228,26 @@ def register_not_memo_keyable(typ: type) -> None:
         )
 
     _memo_fns[typ] = _MemoFns(_raise_not_memo_keyable)
+    _sync_plain_canonical_form_overridden()
 
 
 def unregister_memo_key_function(typ: type) -> None:
     """Remove a previously registered memo key function (best-effort)."""
 
     _memo_fns.pop(typ, None)
+    _sync_plain_canonical_form_overridden()
+
+
+# The container types the native plain-data walker handles. A memo key function
+# registered for any type in their MROs overrides their default canonical form.
+_PLAIN_CONTAINER_BASES = frozenset({dict, list, tuple, object})
+
+
+def _sync_plain_canonical_form_overridden() -> None:
+    """Tell the native plain-data walker whether it still applies."""
+    core.set_plain_canonical_form_overridden(
+        not _memo_fns.keys().isdisjoint(_PLAIN_CONTAINER_BASES)
+    )
 
 
 def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
@@ -402,6 +417,11 @@ def _make_call_canonical(
 
 
 def memo_fingerprint(obj: object) -> core.Fingerprint:
+    # Plain data is fingerprinted natively, to the same result as the canonical
+    # form below; anything else goes through the Python canonicalizer.
+    fp = core.fingerprint_plain_object(obj)
+    if fp is not None:
+        return fp
     # State methods are meaningless for an object-only fingerprint; collect
     # into a throwaway list so the canonicalizer signature stays uniform.
     return core.fingerprint_simple_object(

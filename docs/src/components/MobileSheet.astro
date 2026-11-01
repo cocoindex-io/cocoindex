@@ -10,7 +10,7 @@
 // search styling stays in globals.css; the shell styling is brand nav.css.
 import type { MarkdownHeading } from 'astro';
 import { sidebar, type SidebarItem } from '../data/docs-sidebar';
-import { SITE_MAIN, SITE_BLOG } from '../consts';
+import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES } from '../consts';
 import Search from './Search.astro';
 import MobileSheet from '@cocoindex/brand/MobileSheet.astro';
 
@@ -39,8 +39,8 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 // Enterprise / Blog when `.nav-links` is hidden.
 const SITE_LINKS: Array<{ href: string; label: string }> = [
   { href: `${SITE_MAIN}/cocoindex-code`, label: 'CocoIndex Code' },
-  { href: `${base}/examples`,            label: 'Examples'       },
-  { href: base || '/',                   label: 'Documentation'  },
+  { href: SITE_EXAMPLES,                 label: 'Examples'       },
+  { href: `${base}/`,                    label: 'Documentation'  },
   { href: `${SITE_MAIN}/enterprise`,     label: 'Enterprise'     },
   { href: SITE_BLOG,                     label: 'Blog'           },
 ];

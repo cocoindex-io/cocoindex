@@ -23,7 +23,6 @@ tokio-stream = { workspace = true }
 rmp = { workspace = true }
 rmp-serde = { workspace = true }
 rpds = { workspace = true }
-serde_bytes = { workspace = true }
 serde_with = { workspace = true }
 uuid = { workspace = true }
 indexmap = { workspace = true }
@@ -35,6 +34,15 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
+
+# On macOS, LMDB's default SysV semaphores are keyed by `ftok(lock.mdb)`, which
+# keeps only 16 bits of the inode. Two environments whose keys collide (in one
+# process or across processes) share one semaphore set, and closing either one
+# removes it, so the other's next write fails with EINVAL. POSIX semaphores are
+# named by a hash of the full device and inode. Linux keeps LMDB's default
+# robust mutexes.
+[target.'cfg(target_os = "macos")'.dependencies]
+heed = { version = "0.22.0", features = ["posix-sem"] }
 
 [features]
 # Extra store hooks for the state-store read benchmarks (see the SDK crate's

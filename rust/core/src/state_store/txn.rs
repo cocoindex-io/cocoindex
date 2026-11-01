@@ -1,34 +1,48 @@
 //! LMDB transaction wrappers and the shared transaction/resize coordinator.
 //!
-//! Every read or write LMDB transaction in this process acquires a read guard
-//! on `StorageInner::coord` for its full lifetime. [`TxnRunner`] acquires the
-//! write guard before calling `unsafe Env::resize()`, guaranteeing no
-//! participating transaction is active.
+//! The coordinator is an [`EnvSlot`]: a lock around the LMDB env itself.
+//! Every read or write LMDB transaction in this process holds a read guard on
+//! it for its full lifetime, and reaches the env only through that guard.
+//! The write guard is taken to call `unsafe Env::resize()` and to close the
+//! env, guaranteeing no participating transaction is active.
+
+use crate::prelude::*;
 
 use std::ops::{Deref, DerefMut};
 
-/// Guarded LMDB read transaction returned to callers. Holds a coordinator read
-/// lock for the lifetime of the inner `RoTxn` and borrows the parent env via
-/// `'store`.
-pub struct ReadTxn<'store> {
-    // Must be declared before `_guard` so the LMDB transaction is dropped
-    // before the coordinator guard is released (Rust drops fields in
-    // declaration order).
-    txn: heed::RoTxn<'store, heed::WithoutTls>,
-    _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+pub(crate) type Env = heed::Env<heed::WithoutTls>;
+
+/// The LMDB env behind the transaction/resize coordinator. `None` once the
+/// storage is closed.
+pub(crate) type EnvSlot = tokio::sync::RwLock<Option<Env>>;
+
+/// The env in a guarded [`EnvSlot`], or an error if the storage is closed.
+pub(crate) fn opened_env(slot: &Option<Env>) -> Result<&Env> {
+    slot.as_ref()
+        .ok_or_else(|| client_error!("The CocoIndex environment is closed"))
 }
 
-impl<'store> ReadTxn<'store> {
+/// Guarded LMDB read transaction returned to callers. Holds a coordinator read
+/// lock for the lifetime of the inner `RoTxn`, which owns a clone of the env.
+pub struct ReadTxn {
+    // Must be declared before `_guard` so the LMDB transaction (and its env
+    // clone) is dropped before the coordinator guard is released (Rust drops
+    // fields in declaration order).
+    txn: heed::RoTxn<'static, heed::WithoutTls>,
+    _guard: tokio::sync::OwnedRwLockReadGuard<Option<Env>>,
+}
+
+impl ReadTxn {
     pub(crate) fn new(
-        guard: tokio::sync::OwnedRwLockReadGuard<()>,
-        txn: heed::RoTxn<'store, heed::WithoutTls>,
+        guard: tokio::sync::OwnedRwLockReadGuard<Option<Env>>,
+        txn: heed::RoTxn<'static, heed::WithoutTls>,
     ) -> Self {
         Self { txn, _guard: guard }
     }
 }
 
-impl<'store> Deref for ReadTxn<'store> {
-    type Target = heed::RoTxn<'store, heed::WithoutTls>;
+impl Deref for ReadTxn {
+    type Target = heed::RoTxn<'static, heed::WithoutTls>;
 
     fn deref(&self) -> &Self::Target {
         &self.txn

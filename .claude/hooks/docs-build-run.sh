@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop hook: if docs/ files were changed during this turn, run yarn build.
+# Stop hook: if docs/ files were changed during this turn, run the docs build check.
 
 FLAG="$CLAUDE_PROJECT_DIR/.claude/hooks/.docs-changed"
 

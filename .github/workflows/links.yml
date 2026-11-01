@@ -3,6 +3,7 @@ name: Link Check
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, stacked]
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"
@@ -19,6 +20,12 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
+# A new push to a pull request cancels its running checks. Other runs get a
+# group of their own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   issues: write
@@ -26,6 +33,7 @@ permissions:
 jobs:
   link-check:
     name: Check links
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

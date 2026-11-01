@@ -28,7 +28,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use cocoindex::prelude::*;
-use cocoindex::walk;
 use serde::Deserialize;
 
 use clients::{Embedder, Graph, LlmClient};

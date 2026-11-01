@@ -135,8 +135,7 @@ mod fixture {
     }
 
     /// The root (container) handler: tables reconcile like nodes, and the
-    /// sink fulfills each table's child provider with a level-0
-    /// [`NodeHandler`].
+    /// sink gives each table's child provider a level-0 [`NodeHandler`].
     struct RootHandler {
         extra_depth: usize,
     }
@@ -155,17 +154,13 @@ mod fixture {
             assert!(prev.is_empty() && desired.is_some());
             let extra_depth = self.extra_depth;
             Ok(Some(TargetReconcileOutput {
-                sink: TargetActionSink::from_async_fn_with_children(
-                    move |actions: Vec<TargetAction<()>>| async move {
-                        Ok(actions
-                            .iter()
-                            .map(|_| {
-                                Some(ChildTargetDef::new::<(), _>(NodeHandler {
-                                    level: 0,
-                                    extra_depth,
-                                }))
-                            })
-                            .collect())
+                sink: TargetActionSink::from_async_fn_with_child_handler(
+                    |_actions| async { Ok(()) },
+                    move |_: &()| {
+                        Ok(ChildTargetDef::new::<(), _>(NodeHandler {
+                            level: 0,
+                            extra_depth,
+                        }))
                     },
                 ),
                 ..create_output()

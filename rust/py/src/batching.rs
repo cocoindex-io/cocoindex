@@ -7,11 +7,14 @@
 //! that batch carries the batcher's runner function.
 
 use crate::prelude::*;
+use crate::ratelimit::PyRateLimiter;
 use crate::runtime::{PyAsyncContext, PyCallback};
 
 use async_trait::async_trait;
-use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
+use cocoindex_utils::batching::{BatchGate, BatchQueue, Batcher, BatchingOptions, Runner};
+use cocoindex_utils::ratelimit::RateLimiter;
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::num::NonZeroUsize;
 
 /// Options for batching behavior.
 #[pyclass(name = "BatchingOptions", from_py_object)]
@@ -19,14 +22,28 @@ use pyo3_async_runtimes::tokio::future_into_py;
 pub struct PyBatchingOptions {
     #[pyo3(get, set)]
     pub max_batch_size: Option<usize>,
+    /// See `BatchingOptions::max_in_flight`; must be positive when set.
+    #[pyo3(get, set)]
+    pub max_in_flight: Option<NonZeroUsize>,
+    /// See `BatchingOptions::gate`: the limiter whose token each batch takes
+    /// before it runs.
+    pub rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 #[pymethods]
 impl PyBatchingOptions {
     #[new]
-    #[pyo3(signature = (max_batch_size=None))]
-    pub fn new(max_batch_size: Option<usize>) -> Self {
-        Self { max_batch_size }
+    #[pyo3(signature = (max_batch_size=None, max_in_flight=None, rate_limiter=None))]
+    pub fn new(
+        max_batch_size: Option<usize>,
+        max_in_flight: Option<NonZeroUsize>,
+        rate_limiter: Option<PyRef<'_, PyRateLimiter>>,
+    ) -> Self {
+        Self {
+            max_batch_size,
+            max_in_flight,
+            rate_limiter: rate_limiter.map(|limiter| limiter.inner.clone()),
+        }
     }
 }
 
@@ -34,6 +51,10 @@ impl From<PyBatchingOptions> for BatchingOptions {
     fn from(opts: PyBatchingOptions) -> Self {
         BatchingOptions {
             max_batch_size: opts.max_batch_size,
+            max_in_flight: opts.max_in_flight,
+            gate: opts
+                .rate_limiter
+                .map(|limiter| limiter as Arc<dyn BatchGate>),
         }
     }
 }

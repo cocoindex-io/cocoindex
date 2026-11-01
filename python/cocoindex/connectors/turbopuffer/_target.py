@@ -25,12 +25,14 @@ from typing import (
 import msgspec
 import numpy as np
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from turbopuffer import AsyncTurbopuffer, NotFoundError  # type: ignore
 except ImportError as e:
     raise ImportError(
         "turbopuffer is required to use the Turbopuffer connector. "
-        "Please install cocoindex[turbopuffer]."
+        + install_hint("turbopuffer")
     ) from e
 
 import cocoindex as coco
@@ -378,20 +380,32 @@ class _NamespaceAction(NamedTuple):
 class _NamespaceHandler(
     coco.TargetHandler[_NamespaceSpec, _NamespaceTrackingRecord, _RowHandler]
 ):
-    _sink: coco.TargetActionSink[_NamespaceAction, _RowHandler]
+    _sink: coco.TargetActionSink[_NamespaceAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_NamespaceAction]
-    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
-            actions_list
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._row_handler
         )
 
-        for i, action in enumerate(actions_list):
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _NamespaceAction, /
+    ) -> _RowHandler:
+        """The row handler for a created or updated namespace's rows."""
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            client=context_provider.get(action.key.db_key, AsyncTurbopuffer),
+            namespace_name=action.key.namespace_name,
+            schema=action.spec.schema,
+        )
+
+    async def _apply_actions(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_NamespaceAction],
+        /,
+    ) -> None:
+        for action in actions:
             client = context_provider.get(action.key.db_key, AsyncTurbopuffer)
 
             if action.main_action in ("replace", "delete"):
@@ -401,21 +415,6 @@ class _NamespaceHandler(
                 except NotFoundError:
                     # Namespace was deleted out-of-band (e.g. via the dashboard).
                     pass
-
-            if coco.is_non_existence(action.spec):
-                outputs[i] = None
-                continue
-
-            spec = action.spec
-            outputs[i] = coco.ChildTargetDef(
-                handler=_RowHandler(
-                    client=client,
-                    namespace_name=action.key.namespace_name,
-                    schema=spec.schema,
-                )
-            )
-
-        return outputs
 
     def reconcile(
         self,

@@ -9,8 +9,6 @@ import cocoindex as coco
 import instructor
 import litellm
 
-litellm.drop_params = True
-
 from .models import (
     ENTITY_TYPES,
     LLM_MODEL,
@@ -21,6 +19,8 @@ from .models import (
     Utterance,
     is_speaker_label,
 )
+
+litellm.drop_params = True
 
 # ---------------------------------------------------------------------------
 # Shared transcript formatter
@@ -61,7 +61,7 @@ Given the transcript (with speaker labels like "(Speaker A)") and YouTube metada
 and channel name as hints but make it informative.
 2. **description**: A brief 1-2 sentence description of the session's main topics.
 3. **date**: The date of the session in ISO format (YYYY-MM-DD) if mentioned in the \
-conversation. Otherwise use the upload date provid)ed.
+conversation. Otherwise use the upload date provided.
 4. **speakers**: For each speaker label (A, B, ...) in the transcript, identify who \
 they are. Use the channel name, video title, description, and conversation content as \
 clues. Return their full, canonical, Wikipedia-style name (e.g. "Lex Fridman", \

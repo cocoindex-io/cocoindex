@@ -63,21 +63,20 @@ LLM_MODEL = coco.ContextKey[str]("llm_model", detect_change=True)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(
-        KG_DB,
-        neo4j.ConnectionFactory(
-            uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-            auth=(
-                os.environ.get("NEO4J_USER", "neo4j"),
-                os.environ.get("NEO4J_PASSWORD", "cocoindex"),
-            ),
-            database=os.environ.get("NEO4J_DATABASE", "neo4j"),
+    kg_db = neo4j.ConnectionFactory(
+        uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+        auth=(
+            os.environ.get("NEO4J_USER", "neo4j"),
+            os.environ.get("NEO4J_PASSWORD", "cocoindex"),
         ),
+        database=os.environ.get("NEO4J_DATABASE", "neo4j"),
     )
+    builder.provide(KG_DB, kg_db)
     # LiteLLM-prefixed model id. Defaults to OpenAI; set LLM_MODEL=ollama/llama3.2
     # (or any LiteLLM provider) to run the extraction locally.
     builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     yield
+    await kg_db.close()
 
 
 # ---------------------------------------------------------------------------

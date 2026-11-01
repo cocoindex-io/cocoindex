@@ -1,7 +1,7 @@
 # Kafka consume (Rust)
 
 A self-contained example of the Rust SDK's native Kafka **source**
-(`cocoindex::kafka::topic_as_map` + `Ctx::mount_each_live`) — the analogue of
+(`cocoindex::connectors::kafka::topic_as_map` + `Ctx::mount_each_live`) — the analogue of
 Python's `topic_as_map`. Pairs with the [`csv_to_kafka`](../csv_to_kafka) target
 example: produce with that, consume with this.
 

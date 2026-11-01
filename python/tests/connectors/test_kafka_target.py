@@ -5,43 +5,19 @@ These tests mock the AIOProducer to verify handler behavior without a real Kafka
 
 from __future__ import annotations
 
-import asyncio
-import sys
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any, NamedTuple, cast
 from unittest.mock import MagicMock
 
 import pytest
+import pytest_asyncio
 
-# --- Mock confluent_kafka before importing the connector ---
+from tests.common.kafka_stub import MockAIOProducer
 
-
-class MockAIOProducer:
-    """Mock AIOProducer that records produce calls and returns resolved futures."""
-
-    def __init__(self) -> None:
-        self.produced_messages: list[tuple[str, Any, Any]] = []
-
-    async def produce(
-        self, topic: str, *, key: Any = None, value: Any = None
-    ) -> asyncio.Future[None]:
-        self.produced_messages.append((topic, key, value))
-        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        fut.set_result(None)
-        return fut
-
-    def clear(self) -> None:
-        self.produced_messages.clear()
-
-
-_mock_aio = MagicMock()
-_mock_aio.AIOProducer = MockAIOProducer
-_mock_module = MagicMock()
-_mock_module.aio = _mock_aio
-sys.modules.setdefault("confluent_kafka", _mock_module)
-sys.modules.setdefault("confluent_kafka.aio", _mock_aio)
-
-from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]  # noqa: E402
-from cocoindex.connectors.kafka._target import (  # noqa: E402
+# ``tests.common.kafka_stub`` must be imported before the connector so that the
+# connector binds the stub SDK.
+from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]
+from cocoindex.connectors.kafka._target import (
     _MessageAction,
     _MessageHandler,
     _TopicAction,
@@ -50,8 +26,10 @@ from cocoindex.connectors.kafka._target import (  # noqa: E402
     _TopicSpec,
     KafkaTopicTarget,
 )
-import cocoindex as coco  # noqa: E402
-from cocoindex._internal.context_keys import ContextProvider  # noqa: E402
+import cocoindex as coco
+from cocoindex.connectors import kafka
+from tests import common
+from cocoindex._internal.context_keys import ContextProvider
 
 
 # =============================================================================
@@ -120,7 +98,9 @@ class TestTopicHandler:
         assert coco.is_non_existence(result.tracking_record)
 
     @pytest.mark.asyncio
-    async def test_sink_creates_child_handler(self, producer: MockAIOProducer) -> None:
+    async def test_child_handler_is_message_handler(
+        self, producer: MockAIOProducer
+    ) -> None:
         handler = _TopicHandler()
         spec = _TopicSpec(deletion_value_fn=None)
         key = _TopicKey(producer_key="pk", topic="my-topic")
@@ -129,24 +109,19 @@ class TestTopicHandler:
         context_provider = MagicMock(spec=ContextProvider)
         context_provider.get.return_value = producer
 
-        children = await handler._apply_actions(context_provider, [action])
+        await handler._apply_actions(context_provider, [action])
+        child = handler._message_handler(context_provider, action)
 
-        assert len(children) == 1
-        child_def = children[0]
-        assert child_def is not None
-        assert isinstance(child_def.handler, _MessageHandler)
+        assert isinstance(child, _MessageHandler)
 
     @pytest.mark.asyncio
-    async def test_sink_returns_none_for_deletion(self) -> None:
+    async def test_sink_applies_deletion(self) -> None:
         handler = _TopicHandler()
         key = _TopicKey(producer_key="pk", topic="my-topic")
         action = _TopicAction(key=key, spec=coco.NON_EXISTENCE)
 
         context_provider = MagicMock(spec=ContextProvider)
-        children = await handler._apply_actions(context_provider, [action])
-
-        assert len(children) == 1
-        assert children[0] is None
+        await handler._apply_actions(context_provider, [action])
 
 
 # =============================================================================
@@ -202,16 +177,23 @@ class TestMessageHandlerReconcile:
         assert result.action.value is None  # Tombstone
         assert coco.is_non_existence(result.tracking_record)
 
-    def test_delete_with_callback(
-        self, message_handler_with_deletion: _MessageHandler
+    @pytest.mark.asyncio
+    async def test_delete_with_callback(
+        self,
+        message_handler_with_deletion: _MessageHandler,
+        producer: MockAIOProducer,
     ) -> None:
         result = message_handler_with_deletion.reconcile(
             b"k1", coco.NON_EXISTENCE, [b"fp"], False
         )
 
         assert result is not None
-        assert result.action.key == b"k1"
-        assert result.action.value == b"deleted:k1"
+        assert result.action == _MessageAction(key=b"k1", value=None)
+        # The sink turns the deletion into the callback's value.
+        await message_handler_with_deletion._apply_actions(
+            MagicMock(spec=ContextProvider), [result.action]
+        )
+        assert producer.produced_messages == [("test-topic", b"k1", b"deleted:k1")]
 
     def test_delete_no_prev_no_missing_skips(
         self, message_handler: _MessageHandler
@@ -274,12 +256,47 @@ class TestMessageHandlerSink:
             ),
         )
 
-        action = _MessageAction(key=b"k1", value=b"del:k1")
+        action = _MessageAction(key=b"k1", value=None)
 
         context_provider = MagicMock(spec=ContextProvider)
         await handler._apply_actions(context_provider, [action])
 
-        assert producer.produced_messages[0] == ("test-topic", b"k1", b"del:k1")
+        assert producer.produced_messages == [("test-topic", b"k1", b"del:k1")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("published", "deleted"),
+        [("k1", b"k1"), (b"k1", "k1")],
+        ids=["str_published", "bytes_published"],
+    )
+    @pytest.mark.parametrize("with_deletion_value", [False, True])
+    async def test_deletion_of_key_published_in_same_call_is_skipped(
+        self,
+        producer: MockAIOProducer,
+        published: bytes | str,
+        deleted: bytes | str,
+        with_deletion_value: bool,
+    ) -> None:
+        # "k1" and b"k1" are one Kafka key: a deletion of one form must not
+        # follow (and erase) a publish of the other in the same call.
+        handler = _MessageHandler(
+            producer=_as_producer(producer),
+            topic="test-topic",
+            deletion_value_fn=(lambda k: b"del") if with_deletion_value else None,
+        )
+        await handler._apply_actions(
+            MagicMock(spec=ContextProvider),
+            [
+                _MessageAction(key=published, value=b"v1"),
+                _MessageAction(key=deleted, value=None),
+                _MessageAction(key=b"k2", value=None),
+            ],
+        )
+
+        assert producer.produced_messages == [
+            ("test-topic", published, b"v1"),
+            ("test-topic", b"k2", b"del" if with_deletion_value else None),
+        ]
 
     @pytest.mark.asyncio
     async def test_multiple_topics(self, producer: MockAIOProducer) -> None:
@@ -314,3 +331,142 @@ class TestKafkaTopicTarget:
         target = KafkaTopicTarget(provider)
 
         assert target.__coco_memo_key__() == "test-memo-key"
+
+
+# =============================================================================
+# App-level tests — container-deletion semantics
+# =============================================================================
+#
+# The topic is user-managed, so CocoIndex reconciles its messages one by one
+# only while the topic itself stays declared. Removing the topic declaration,
+# or dropping the app, abandons the topic: no tombstones are produced for the
+# messages it held.
+
+_PRODUCER_KEY: coco.ContextKey[Any] = coco.ContextKey("test_kafka_target_producer")
+
+
+@dataclass
+class _TopicScenario:
+    """What ``_app_main`` declares; tests mutate it between runs."""
+
+    declare_topic: bool = True
+    messages: dict[bytes | str, bytes] = field(default_factory=dict)
+
+
+@coco.fn
+async def _app_main(scenario: _TopicScenario) -> None:
+    if not scenario.declare_topic:
+        return
+    target = await kafka.mount_kafka_topic_target(_PRODUCER_KEY, "exp-topic")
+    for key, value in scenario.messages.items():
+        target.declare_target_state(key=key, value=value)
+
+
+class _TopicApp(NamedTuple):
+    app: coco.App[Any, Any]
+    producer: MockAIOProducer
+    scenario: _TopicScenario
+
+
+@pytest_asyncio.fixture
+async def topic_app(
+    request: pytest.FixtureRequest,
+    producer: MockAIOProducer,
+) -> _TopicApp:
+    # Created inside an async fixture so the Environment binds to the test's
+    # running event loop.
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    env.context_provider.provide(_PRODUCER_KEY, producer)
+    scenario = _TopicScenario()
+    app = coco.App(
+        coco.AppConfig(name=request.node.name, environment=env), _app_main, scenario
+    )
+    return _TopicApp(app=app, producer=producer, scenario=scenario)
+
+
+@pytest.mark.asyncio
+async def test_app_child_removal_produces_tombstone(topic_app: _TopicApp) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", "k1", b"v1")]
+
+    topic_app.producer.clear()
+    del topic_app.scenario.messages["k1"]
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", "k1", None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("old_key", "new_key"),
+    [("k1", b"k1"), (b"k1", "k1")],
+    ids=["str_to_bytes", "bytes_to_str"],
+)
+async def test_app_key_switching_str_and_bytes_keeps_record(
+    topic_app: _TopicApp, old_key: bytes | str, new_key: bytes | str
+) -> None:
+    topic_app.scenario.messages[old_key] = b"v1"
+    await topic_app.app.update()
+
+    # The new form is a new target state and the old form's is removed, but
+    # both are one Kafka key: the update publishes the record and must not
+    # tombstone it after.
+    topic_app.producer.clear()
+    del topic_app.scenario.messages[old_key]
+    topic_app.scenario.messages[new_key] = b"v2"
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", new_key, b"v2")]
+
+    # The old form's tracking is gone, so removing the new form tombstones once.
+    topic_app.producer.clear()
+    del topic_app.scenario.messages[new_key]
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", new_key, None)]
+
+
+@pytest.mark.asyncio
+async def test_app_parent_removal_abandons_messages(topic_app: _TopicApp) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+
+    topic_app.producer.clear()
+    topic_app.scenario.declare_topic = False
+    await topic_app.app.update()
+    # Intended: un-declaring the user-managed topic abandons it, messages
+    # included, so k1 gets no tombstone.
+    assert topic_app.producer.produced_messages == []
+
+
+@pytest.mark.asyncio
+async def test_app_drop_abandons_messages(topic_app: _TopicApp) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+
+    topic_app.producer.clear()
+    await topic_app.app.drop()
+    # Intended: dropping the app abandons the user-managed topic, messages
+    # included, so k1 gets no tombstone.
+    assert topic_app.producer.produced_messages == []
+
+
+@pytest.mark.asyncio
+async def test_app_redeclared_topic_starts_from_scratch(
+    topic_app: _TopicApp,
+) -> None:
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+    topic_app.scenario.declare_topic = False
+    await topic_app.app.update()
+
+    # Abandoning the topic pruned k1's tracking entry, so bringing the topic
+    # back without k1 has nothing to tombstone...
+    topic_app.producer.clear()
+    topic_app.scenario.declare_topic = True
+    del topic_app.scenario.messages["k1"]
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == []
+
+    # ...and re-declaring k1 with its old value republishes it as new.
+    topic_app.scenario.messages["k1"] = b"v1"
+    await topic_app.app.update()
+    assert topic_app.producer.produced_messages == [("exp-topic", "k1", b"v1")]

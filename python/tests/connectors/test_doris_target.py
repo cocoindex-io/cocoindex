@@ -360,6 +360,50 @@ def test_delete_row(
     assert "2" not in ids
 
 
+def test_keys_with_backslashes_and_quotes(
+    managed_conn: "doris.ManagedConnection",
+    config: "doris.DorisConnectionConfig",
+    table_name: str,
+) -> None:
+    """Keys with `\\` and `'` are matched by the delete that runs before each
+    upsert and on removal, so an update leaves no duplicate and a removed row
+    is gone."""
+    global _source_rows, _row_type, _table_name
+
+    _source_rows = []
+    _row_type = SimpleRow
+    _table_name = table_name
+    keys = ["C:\\temp\\a", "ends\\", "it's", "\\'"]
+
+    coco_env.context_provider.provide(DORIS_DB_KEY, managed_conn)
+    app = coco.App(
+        coco.AppConfig(name="test_doris_escaped_keys", environment=coco_env),
+        _declare_table_and_rows,
+    )
+
+    def rows_by_id() -> dict[str, list[int]]:
+        data = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}`")
+        by_id: dict[str, list[int]] = {}
+        for r in data:
+            by_id.setdefault(r["id"], []).append(r["value"])
+        return by_id
+
+    _source_rows = [SimpleRow(id=k, name="v1", value=1) for k in keys]
+    app.update_blocking()
+    time.sleep(2)
+    assert rows_by_id() == {k: [1] for k in keys}
+
+    _source_rows = [SimpleRow(id=k, name="v2", value=2) for k in keys]
+    app.update_blocking()
+    time.sleep(2)
+    assert rows_by_id() == {k: [2] for k in keys}
+
+    _source_rows = [SimpleRow(id=keys[0], name="v2", value=2)]
+    app.update_blocking()
+    time.sleep(2)
+    assert rows_by_id() == {keys[0]: [2]}
+
+
 def test_dict_rows(
     managed_conn: "doris.ManagedConnection",
     config: "doris.DorisConnectionConfig",

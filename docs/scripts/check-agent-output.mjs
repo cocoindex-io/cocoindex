@@ -2,17 +2,21 @@
 // silent-corruption class no human reads: MDX scaffolding leaking into .md
 // output, fenced code rewritten by the converter, HTML pages missing their
 // advertised .md twins, and drift between the artifacts that must agree
-// (catalog ↔ example posts, install commands ↔ hosted references, tracked
-// .env ↔ .env.example). Run after `astro build` (see package.json).
+// (catalog ↔ example posts, root-relative links ↔ emitted pages, install
+// commands ↔ hosted references, tracked .env ↔ .env.example). Run after
+// `astro build` (see package.json).
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FENCE, MDX_COMMENT } from '../src/lib/fence.mjs';
+import { FENCE, INLINE_CODE, MDX_COMMENT } from '../src/lib/fence.mjs';
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
+const REPO_ROOT = here('../../');
 const DIST = here('../dist/');
 const DOCS_SRC = here('../src/content/docs/');
 const POSTS_SRC = here('../src/content/example-posts/');
+// Files read outside docs/ must also match the `paths:` filters in
+// .github/workflows/docs_test.yml, or PRs touching only them skip these checks.
 const EXAMPLES_DIR = here('../../examples/');
 const REFERENCES_DIR = here('../../skills/cocoindex/references/');
 const errors = [];
@@ -168,6 +172,97 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
       if (!main.includes(`/docs/${page}/`) && !main.includes(`/docs/${page}"`))
         errors.push(`section overview /docs/${section}/ does not link /docs/${page}/`);
     }
+  }
+}
+
+// 9. Root-relative links (`/docs/...`) resolve in this build: those written
+//    in docs and example-post Markdown, then every one the build emits.
+//    Checked here rather than in remark-link-checker (which covers
+//    source-relative links) because their targets include catalog example
+//    pages, redirect stubs and endpoint files that only dist/ holds in full
+//    (and downstream builds move or drop pages), and because Astro's content
+//    cache skips re-rendering unchanged .md posts, so a render-time check
+//    misses a post whose target page went away.
+{
+  const isFile = (p) => existsSync(p) && statSync(p).isFile();
+  // Why a root-relative `url` fails to resolve in dist/; null if it resolves.
+  const rootLinkProblem = (url) => {
+    const [, path, fragment] = url.match(/^([^?#]*)(?:\?[^#]*)?(?:#(.*))?$/);
+    if (path !== '/docs' && !path.startsWith('/docs/'))
+      return 'points outside /docs/ (link docs pages as /docs/<page>/, other sites by absolute URL)';
+    const rel = path.slice('/docs/'.length);
+    // A page is `<path>/index.html`, linked with the trailing slash
+    // (trailingSlash: 'always'); any other link names an emitted file.
+    const page = join(DIST, rel, 'index.html');
+    const target = path.endsWith('/') ? page : join(DIST, rel);
+    if (!isFile(target)) {
+      return !path.endsWith('/') && existsSync(page)
+        ? `lacks the trailing slash, so it 404s under astro dev (write ${path}/${url.slice(path.length)})`
+        : `does not resolve (no dist/${relative(DIST, target)})`;
+    }
+    if (!fragment) return null;
+    const html = read(target);
+    if ([...html.matchAll(/\sid="([^"]*)"/g)].some((m) => m[1] === fragment)) return null;
+    const where = `dist/${relative(DIST, target)}`;
+    return html.includes('http-equiv="refresh"')
+      ? `has fragment #${fragment}, but ${where} is a redirect stub, which drops it (link the destination page)`
+      : `has fragment #${fragment}, but no id in ${where} matches it`;
+  };
+  // Inline link and image targets; `//host/...` is absolute, not root-relative.
+  const MD_ROOT_LINK = /(?<=\]\()\/(?!\/)[^)\s]*/g;
+  // Blank fenced and inline code and MDX comments, keeping newlines so line
+  // numbers hold: link-shaped text there is not a link.
+  const blank = (m) => m.replace(/[^\n]/g, ' ');
+  // URLs already reported at their source line, which the dist pass skips.
+  const reported = new Set();
+  for (const src of [...contentFiles(DOCS_SRC), ...contentFiles(POSTS_SRC)]) {
+    const prose = read(src).replace(FENCE, blank).replace(INLINE_CODE, blank).replace(MDX_COMMENT, blank);
+    prose.split('\n').forEach((line, i) => {
+      for (const { 0: url, index } of line.matchAll(MD_ROOT_LINK)) {
+        const problem = rootLinkProblem(url);
+        if (!problem) continue;
+        errors.push(`${relative(REPO_ROOT, src)}:${i + 1}:${index + 1}: link ${url} ${problem}`);
+        reported.add(url);
+      }
+    });
+  }
+  // Then every root-relative link the build emits: hrefs in the HTML pages
+  // (the .astro chrome, such as the sidebar, breadcrumbs, example nav and
+  // buttons, and redirect stubs) and links in the .md twins and
+  // llms-full.txt (the converter's output). GitHub Pages 301-redirects a
+  // page URL that lacks the trailing slash, but astro dev 404s it, so
+  // without this a chrome href that drops the slash ships unnoticed. Chrome
+  // repeats on every page, so each URL is reported once.
+  const emitters = new Map(); // url → the dist files that emit it
+  const emit = (url, file) => {
+    if (!emitters.has(url)) emitters.set(url, new Set());
+    emitters.get(url).add(relative(REPO_ROOT, file));
+  };
+  // The renderer percent-encodes non-ASCII characters in hrefs (it links the
+  // heading id `café` as `#caf%C3%A9`); decode back to the form the Markdown
+  // and the ids use. An invalid escape stays as written and fails to resolve.
+  const decodeHref = (href) => {
+    try {
+      return decodeURI(href);
+    } catch {
+      return href;
+    }
+  };
+  for (const f of walk(DIST, /\.html$/)) {
+    // Attributes of a real tag only: an escaped `&lt;a href="…"` in a code
+    // sample is text.
+    for (const m of read(f).matchAll(/<[a-z][^>]*?\shref="(\/(?!\/)[^"]*)"/gi)) emit(decodeHref(m[1]), f);
+  }
+  for (const [f, text] of agentFiles) {
+    const prose = text.replace(FENCE, '\n').replace(INLINE_CODE, '');
+    for (const { 0: url } of prose.matchAll(MD_ROOT_LINK)) emit(url, f);
+  }
+  for (const [url, files] of emitters) {
+    if (reported.has(url)) continue;
+    const problem = rootLinkProblem(url);
+    if (!problem) continue;
+    const [first, ...more] = [...files].sort();
+    errors.push(`${first}${more.length ? ` (and ${more.length} more)` : ''}: link ${url} ${problem}`);
   }
 }
 

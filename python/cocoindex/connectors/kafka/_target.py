@@ -12,12 +12,14 @@ import asyncio
 from dataclasses import dataclass
 from typing import Callable, Collection, Generic, NamedTuple, Sequence
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
         "confluent_kafka is required to use the Kafka connector. "
-        "Please install cocoindex[kafka]."
+        + install_hint("kafka")
     ) from e
 
 import cocoindex as coco
@@ -52,13 +54,18 @@ class _TopicAction(NamedTuple):
 
 class _MessageAction(NamedTuple):
     key: bytes | str
-    value: bytes | str | None  # None = tombstone (no deletion_value_fn)
+    value: bytes | str | None  # None = deletion
+
+
+def _kafka_key(key: bytes | str) -> bytes:
+    """The key as Kafka stores it: the producer encodes a ``str`` key as UTF-8."""
+    return key.encode() if isinstance(key, str) else key
 
 
 # --- Message handler (child level) ---
 
 
-class _MessageHandler:
+class _MessageHandler(coco.TargetHandler[bytes | str, _MessageFingerprint, None]):
     """Handler for message-level target states within a topic."""
 
     __slots__ = ("_producer", "_topic", "_deletion_value_fn", "_sink")
@@ -87,14 +94,30 @@ class _MessageHandler:
     ) -> None:
         if not actions:
             return
+        # A str key and its UTF-8 bytes are distinct target states but one Kafka
+        # key. When a key switches between the two forms across runs, this call
+        # carries both the new form's publish and the old form's deletion; the
+        # deletion would erase the record just published, so skip it.
+        published_keys = {
+            _kafka_key(action.key) for action in actions if action.value is not None
+        }
+        messages: list[tuple[bytes | str, bytes | str | None]] = []
+        for action in actions:
+            value = action.value
+            if value is None:
+                if _kafka_key(action.key) in published_keys:
+                    continue
+                if self._deletion_value_fn is not None:
+                    value = self._deletion_value_fn(action.key)
+            messages.append((action.key, value))
         # AIOProducer.produce() is an async method that enqueues the message into
         # the batch buffer and returns an asyncio.Future resolved by the delivery
         # report. We must await the produce coroutines to obtain those futures,
         # then await the futures to ensure messages are actually delivered.
         delivery_futures = await asyncio.gather(
             *(
-                self._producer.produce(self._topic, key=action.key, value=action.value)
-                for action in actions
+                self._producer.produce(self._topic, key=key, value=value)
+                for key, value in messages
             )
         )
         await asyncio.gather(*delivery_futures)
@@ -112,11 +135,8 @@ class _MessageHandler:
         if coco.is_non_existence(desired_target_state):
             if not prev_possible_records and not prev_may_be_missing:
                 return None
-            deletion_value: bytes | str | None = None
-            if self._deletion_value_fn is not None:
-                deletion_value = self._deletion_value_fn(key)
             return coco.TargetReconcileOutput(
-                action=_MessageAction(key=key, value=deletion_value),
+                action=_MessageAction(key=key, value=None),
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
@@ -142,35 +162,37 @@ class _MessageHandler:
 # --- Topic handler (root level) ---
 
 
-class _TopicHandler:
+class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
     """Handler for topic-level target states. Always returns output for generation tracking."""
 
     __slots__ = ("_sink",)
 
-    _sink: coco.TargetActionSink[_TopicAction, _MessageHandler]
+    _sink: coco.TargetActionSink[_TopicAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._message_handler
+        )
+
+    @staticmethod
+    def _message_handler(
+        context_provider: ContextProvider, action: _TopicAction, /
+    ) -> _MessageHandler:
+        """The message handler for a declared topic's messages."""
+        assert not coco.is_non_existence(action.spec)
+        return _MessageHandler(
+            producer=context_provider.get(action.key.producer_key, AIOProducer),
+            topic=action.key.topic,
+            deletion_value_fn=action.spec.deletion_value_fn,
+        )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TopicAction],
         /,
-    ) -> list[coco.ChildTargetDef[_MessageHandler] | None]:
-        outputs: list[coco.ChildTargetDef[_MessageHandler] | None] = []
-        for action in actions:
-            if coco.is_non_existence(action.spec):
-                outputs.append(None)
-            else:
-                producer = context_provider.get(action.key.producer_key, AIOProducer)
-                handler = _MessageHandler(
-                    producer=producer,
-                    topic=action.key.topic,
-                    deletion_value_fn=action.spec.deletion_value_fn,
-                )
-                outputs.append(coco.ChildTargetDef(handler=handler))
-        return outputs
+    ) -> None:
+        """Topics are not created or deleted, so there is nothing to apply."""
 
     def reconcile(
         self,
@@ -216,15 +238,11 @@ class KafkaTopicTarget(
     Messages are produced for upserts and deletes of declared target states.
     """
 
-    _provider: coco.TargetStateProvider[
-        bytes | str | coco.NonExistenceType, None, coco.MaybePendingS
-    ]
+    _provider: coco.TargetStateProvider[bytes | str, None, coco.MaybePendingS]
 
     def __init__(
         self,
-        provider: coco.TargetStateProvider[
-            bytes | str | coco.NonExistenceType, None, coco.MaybePendingS
-        ],
+        provider: coco.TargetStateProvider[bytes | str, None, coco.MaybePendingS],
     ) -> None:
         self._provider = provider
 

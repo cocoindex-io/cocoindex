@@ -207,6 +207,35 @@ def path_state(p: Path, prev_state: tuple[int, int] | coco.NonExistenceType) -> 
 register_memo_key_function(Path, path_key, state_fn=path_state)
 ```
 
+### State that depends on what the function did
+
+By default the state stored after a re-run is the one the state function returned when it rejected the cached result, before the function ran. That fits a state read from the outside, such as a file's modification time.
+
+Some states are only known once the function has run, for example the set of things it read. Return `recollect_after_run=True` and CocoIndex calls the state function a second time after the function body, with `NON_EXISTENCE` as on a first run, and stores that state:
+
+```python
+class Tracked:
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.observed: list[tuple[str, int]] = []  # filled by the function
+
+    def __coco_memo_key__(self) -> object:
+        return self.key
+
+    def __coco_memo_state__(
+        self, prev_state: list[tuple[str, int]] | coco.NonExistenceType
+    ) -> coco.MemoStateOutcome:
+        if coco.is_non_existence(prev_state):
+            # After the function ran: report what it read.
+            return coco.MemoStateOutcome(state=list(self.observed))
+        valid = all(current_version(name) == version for name, version in prev_state)
+        return coco.MemoStateOutcome(
+            state=prev_state, memo_valid=valid, recollect_after_run=True
+        )
+```
+
+The flag is only read when the cached result is not reused. It applies to memoized functions; a memoized component that returns it raises an error.
+
 ### Async state methods
 
 A state method can return an `Awaitable`. CocoIndex handles this automatically:
@@ -233,6 +262,127 @@ class S3Object:
     async def _head_object(self) -> str:
         ...  # boto3 / aioboto3 HEAD call
 ```
+
+## Rust SDK
+
+The Rust SDK follows the same split between **identity** and **freshness**, but
+expresses type-level behavior with the `MemoInput` trait. Arguments of a
+`#[cocoindex::function(memo)]` function use `MemoInput` automatically. A
+`context_key!` value participates only when the declaration includes
+`detect_change`; plain context keys do not invalidate memoized work, matching
+Python's default `detect_change=False`.
+
+### Derive structural keys
+
+Derive `MemoInput` for ordinary structs and enums. The derive visits fields
+recursively and does not require the containing type to implement `Serialize`:
+
+```rust
+use std::sync::Arc;
+
+#[derive(cocoindex::MemoInput)]
+struct Batch {
+    model: String,
+    documents: Vec<Arc<Document>>,
+}
+
+#[derive(cocoindex::MemoInput)]
+struct Document {
+    id: uuid::Uuid,
+    tags: std::collections::BTreeSet<String>,
+}
+```
+
+`Option`, arrays, slices, `Vec`, tuples, maps, sets, `Box`, and `Arc` all
+compose their children's `MemoInput` behavior. Ordered containers preserve
+order; maps and sets use a deterministic order. If a nested resource defines
+freshness validation, that validation is retained through every enclosing
+container and derived type.
+
+The SDK always provides a UUID leaf implementation. Enable the standalone
+`serde_json`, `chrono`, or `rust_decimal` feature for JSON values, Chrono
+date/time values, or `rust_decimal::Decimal`; connector features enable the
+corresponding leaf features automatically. Rust's orphan rules prevent an
+application from implementing `MemoInput` directly for an unrelated
+third-party type, so wrap any other foreign leaf in a local newtype:
+
+```rust
+struct ForeignId(third_party::Id);
+
+#[cocoindex::async_trait]
+impl cocoindex::MemoInput for ForeignId {
+    fn write_memo_key(
+        &self,
+        writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+    ) -> cocoindex::Result<()> {
+        writer.write(&self.0.to_string())
+    }
+}
+```
+
+Moving or renaming a derived type, or renaming one of its named fields, changes
+its structural identity and causes a one-time cache miss. It does not rename
+context keys: those use the identifier passed to `context_key!`, or an explicit
+`key = "..."` override.
+
+### Add freshness validation to resource types
+
+A resource implementation can keep stable identity in `write_memo_key` and
+perform async validation in `memo_state`. The previous opaque state is supplied
+after an identity match:
+
+```rust
+#[cocoindex::async_trait]
+impl cocoindex::MemoInput for RemoteObject {
+    fn write_memo_key(
+        &self,
+        writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+    ) -> cocoindex::Result<()> {
+        writer.write(&(self.bucket(), self.key()))
+    }
+
+    async fn memo_state(
+        &self,
+        previous: Option<&cocoindex::memo::MemoStateValue>,
+    ) -> cocoindex::Result<Option<cocoindex::memo::MemoStateDecision>> {
+        let etag = self.head_etag().await?;
+        let unchanged = previous
+            .and_then(|state| state.deserialize::<String>().ok())
+            .is_some_and(|old| old == etag);
+        Ok(Some(cocoindex::memo::MemoStateDecision::new(
+            &etag,
+            unchanged,
+        )?))
+    }
+}
+```
+
+Nested state checks run concurrently. CocoIndex stores their results as one
+opaque state per top-level function argument or context dependency, so this
+composition does not change the engine's memo-state storage schema. A malformed
+or older nested state is treated as a cache miss rather than an application
+error.
+
+### Override a function argument at the call site
+
+Use a projection when one function needs different identity semantics, or when
+an unwrapped foreign value appears directly in its arguments:
+
+```rust
+#[cocoindex::function(memo, memo_key(client = |c: &Client| c.endpoint()))]
+async fn fetch(ctx: &cocoindex::Ctx, client: &Client) -> cocoindex::Result<Data> {
+    // ...
+}
+```
+
+As in Python, a projection **replaces** the original value before
+fingerprinting. In Rust it also suppresses that value type's `memo_state`
+validation. Use a newtype instead when freshness validation must be preserved
+or the behavior should be reusable.
+
+`Vec<u8>` intentionally follows the normal recursive `Vec<T>` representation.
+For large byte buffers, use `bytes::Bytes` for bulk hashing or pass a precomputed
+`Fingerprint` when the content has already been hashed.
 
 ## Preventing memoization
 

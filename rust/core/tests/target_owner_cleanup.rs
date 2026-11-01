@@ -29,6 +29,14 @@ fn comp_path(name: &str) -> StablePath {
     StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
 }
 
+/// `/"process"/<segment>`: a component path whose last segment is not a `Str`.
+fn typed_comp_path(segment: StableKey) -> StablePath {
+    StablePath(Arc::from(vec![
+        StableKey::Str(Arc::from("process")),
+        segment,
+    ]))
+}
+
 fn target_path(name: &str) -> TargetStatePath {
     TargetStatePath::new(Fingerprint::from(name).unwrap(), None)
 }
@@ -109,4 +117,78 @@ async fn delete_preserves_owner_row_preempted_by_other_component() {
     commit_owner_deletes(&store, &old_owner, vec![tsp.clone()]).await;
 
     assert_eq!(read_owner(&storage, &store, &tsp).await, Some(new_owner));
+}
+
+/// A component whose path contains a tuple segment must be able to delete its
+/// own owner row. Before the msgpack codec fix the stored path decoded as
+/// bytes, the equality guard failed, and the row leaked.
+#[tokio::test]
+async fn delete_removes_own_owner_row_with_non_str_segments() {
+    let (storage, store, _dir) = make_test_store().await;
+    for (label, owner) in [
+        (
+            "tuple",
+            typed_comp_path(StableKey::Array(Arc::from(vec![
+                StableKey::Int(1),
+                StableKey::Int(2),
+            ]))),
+        ),
+        (
+            "utf8 bytes",
+            typed_comp_path(StableKey::Bytes(Arc::from(&b"abc"[..]))),
+        ),
+        (
+            "empty tuple",
+            typed_comp_path(StableKey::Array(Arc::from(vec![]))),
+        ),
+    ] {
+        let tsp = target_path(label);
+        upsert_owner(&storage, &store, &tsp, &owner).await;
+        assert_eq!(
+            read_owner(&storage, &store, &tsp).await,
+            Some(owner.clone()),
+            "{label}: owner path must read back unchanged"
+        );
+
+        commit_owner_deletes(&store, &owner, vec![tsp.clone()]).await;
+        assert_eq!(
+            read_owner(&storage, &store, &tsp).await,
+            None,
+            "{label}: own owner row must be deleted"
+        );
+    }
+}
+
+/// Paths that differ only by segment *type* are different components, so a
+/// delete issued from one must never drop the other's owner row. The msgpack
+/// codec used to collapse array->bytes and bytes->string, making the
+/// ownership guard treat these pairs as equal.
+#[tokio::test]
+async fn delete_preserves_owner_row_differing_only_by_segment_type() {
+    let (storage, store, _dir) = make_test_store().await;
+    let tuple = StableKey::Array(Arc::from(vec![StableKey::Int(1), StableKey::Int(2)]));
+    let tuple_as_bytes = StableKey::Bytes(Arc::from(&[1u8, 2u8][..]));
+    let text = StableKey::Str(Arc::from("abc"));
+    let text_as_bytes = StableKey::Bytes(Arc::from(&b"abc"[..]));
+
+    for (label, owner_segment, deleter_segment) in [
+        ("tuple owner, bytes deleter", &tuple, &tuple_as_bytes),
+        ("bytes owner, tuple deleter", &tuple_as_bytes, &tuple),
+        ("str owner, bytes deleter", &text, &text_as_bytes),
+        ("bytes owner, str deleter", &text_as_bytes, &text),
+    ] {
+        let owner = typed_comp_path(owner_segment.clone());
+        let deleter = typed_comp_path(deleter_segment.clone());
+        assert_ne!(owner, deleter);
+        let tsp = target_path(label);
+
+        upsert_owner(&storage, &store, &tsp, &owner).await;
+        commit_owner_deletes(&store, &deleter, vec![tsp.clone()]).await;
+
+        assert_eq!(
+            read_owner(&storage, &store, &tsp).await,
+            Some(owner),
+            "{label}: another component's owner row must survive"
+        );
+    }
 }

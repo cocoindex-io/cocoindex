@@ -145,7 +145,7 @@ class VectorDef(NamedTuple):
     schema: VectorSchemaProvider | ContextKey[VectorSchemaProvider]
 ```
 
-The `schema` field accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema`. The dtype on the `VectorSchema` (must be `np.float32` or `np.float16`) controls turbopuffer's vector type — `[N]f32` or `[N]f16`.
+The `schema` field accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema`. The dtype on the `VectorSchema` (must be `np.dtype(np.float32)` or `np.dtype(np.float16)`) controls turbopuffer's vector type — `[N]f32` or `[N]f16`.
 
 #### Single (unnamed) vector
 
@@ -182,10 +182,10 @@ import numpy as np
 schema = await turbopuffer.NamespaceSchema.create(
     vectors={
         "text_embedding": turbopuffer.VectorDef(
-            schema=VectorSchema(dtype=np.float32, size=384),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
         ),
         "image_embedding": turbopuffer.VectorDef(
-            schema=VectorSchema(dtype=np.float32, size=512),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=512),
         ),
     },
     distance="cosine_distance",

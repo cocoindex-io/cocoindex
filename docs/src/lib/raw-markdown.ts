@@ -22,12 +22,11 @@
 import { posix } from 'node:path';
 import type { CollectionEntry } from 'astro:content';
 import { getCollection, getEntry } from 'astro:content';
-import { GITHUB_REPO, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
+import { DOCS_BASE, GITHUB_REPO, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
 import { findExample } from '../data/examples';
-import { FENCE, MDX_COMMENT } from './fence.mjs';
+import { FENCE, INLINE_CODE, MDX_COMMENT } from './fence.mjs';
 
 const SENT = '\x00'; // sentinel: cannot occur in source text
-const INLINE = /`[^`\n]+`/g;
 const RESTORE_INLINE = /\x00C(\d+)\x00/g;
 const RESTORE_FENCE = /\x00F(\d+)\x00/g;
 
@@ -59,9 +58,9 @@ const memo = import.meta.env.DEV ? null : new Map<string, string>();
 
 // `srcDir` is the source file's directory relative to the content root ('' for
 // top-level pages, 'connectors' for connectors/*). Source-relative links are
-// resolved against it and emitted as absolute /docs/... paths — the HTML
-// pipeline gets this from remark-link-checker, but the .md twins serve the
-// body verbatim and index pages sit one level shallower than their source.
+// resolved against it and emitted as root-relative page URLs (/docs/<slug>/),
+// the form remark-link-checker gives the HTML pages; the .md twins serve the
+// body verbatim, and index pages sit one level shallower than their source.
 export function mdxToMarkdown(body: string, srcDir = ''): string {
   const key = `${srcDir}\u0000${body ?? ''}`;
   const cached = memo?.get(key);
@@ -73,7 +72,7 @@ export function mdxToMarkdown(body: string, srcDir = ''): string {
   const fences: string[] = [];
   s = protect(s, FENCE, fences, 'F');
   const inlines: string[] = [];
-  s = protect(s, INLINE, inlines, 'C');
+  s = protect(s, INLINE_CODE, inlines, 'C');
 
   // 2. Strip ESM import lines (require `from` so we never eat prose starting
   //    with the word "import"), MDX `export …` scaffolding, and MDX comments.
@@ -81,13 +80,14 @@ export function mdxToMarkdown(body: string, srcDir = ''): string {
   s = s.replace(/^[ \t]*export\s+(?:const|let|var|default|function|\{).+$/gm, '');
   s = s.replace(MDX_COMMENT, '');
 
-  // 2b. Resolve source-relative links to absolute /docs/... paths (fenced and
-  //     inline code are already behind sentinels, so hrefs in code are safe).
+  // 2b. Resolve source-relative links to page URLs, ending in the slash that
+  //     trailingSlash: 'always' requires (fenced and inline code are already
+  //     behind sentinels, so hrefs in code are safe).
   s = s.replace(/\]\((\.{1,2}\/[^)\s]*)\)/g, (m, target: string) => {
     const [rel, frag] = target.split('#');
     const path = posix.normalize(posix.join(srcDir, rel)).replace(/\/$/, '');
     if (path.startsWith('..')) return m;
-    return `](/docs/${path}${frag ? `#${frag}` : ''})`;
+    return `](${DOCS_BASE}/${path}/${frag ? `#${frag}` : ''})`;
   });
 
   // 3. Flatten admonitions to a bold callout lead-in, keeping the body prose.

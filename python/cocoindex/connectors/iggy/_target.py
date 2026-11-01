@@ -11,19 +11,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Collection, Generic, NamedTuple, Sequence
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from apache_iggy import IggyClient  # type: ignore[import-not-found]
     from apache_iggy import SendMessage as Message  # type: ignore[import-not-found]
 except ImportError as e:
     raise ImportError(
-        "apache-iggy is required to use the Iggy connector. "
-        "Please install cocoindex[iggy]."
+        "apache-iggy is required to use the Iggy connector. " + install_hint("iggy")
     ) from e
 
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import TypeChecker
-from cocoindex._internal.target_state import AsyncTargetActionSinkFn
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes, fingerprint_str
 
 # --- Type aliases ---
@@ -78,7 +78,7 @@ class _MessageHandler(coco.TargetHandler[bytes | str, _MessageFingerprint, None]
     _stream: str
     _partition: int
     _deletion_value_fn: Callable[[bytes | str], bytes | str] | None
-    _sink: coco.TargetActionSink[_MessageAction, None]
+    _sink: coco.TargetActionSink[_MessageAction]
 
     def __init__(
         self,
@@ -162,35 +162,34 @@ class _TopicHandler(coco.TargetHandler[_TopicSpec, None, _MessageHandler]):
 
     __slots__ = ("_sink",)
 
-    _sink: coco.TargetActionSink[_TopicAction, _MessageHandler]
+    _sink: coco.TargetActionSink[_TopicAction]
 
     def __init__(self) -> None:
-        sink_fn: AsyncTargetActionSinkFn[_TopicAction, _MessageHandler] = (
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._message_handler
         )
-        self._sink = coco.TargetActionSink.from_async_fn(sink_fn)
+
+    @staticmethod
+    def _message_handler(
+        context_provider: ContextProvider, action: _TopicAction, /
+    ) -> _MessageHandler:
+        """The message handler for a declared topic's messages."""
+        assert not coco.is_non_existence(action.spec)
+        return _MessageHandler(
+            client=context_provider.get(action.key.client_key, IggyClient),
+            topic=action.key.topic,
+            stream=action.key.stream,
+            partition=action.key.partition,
+            deletion_value_fn=action.spec.deletion_value_fn,
+        )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TopicAction],
         /,
-    ) -> list[coco.ChildTargetDef[_MessageHandler] | None]:
-        outputs: list[coco.ChildTargetDef[_MessageHandler] | None] = []
-        for action in actions:
-            if coco.is_non_existence(action.spec):
-                outputs.append(None)
-            else:
-                client = context_provider.get(action.key.client_key, IggyClient)
-                handler = _MessageHandler(
-                    client=client,
-                    topic=action.key.topic,
-                    stream=action.key.stream,
-                    partition=action.key.partition,
-                    deletion_value_fn=action.spec.deletion_value_fn,
-                )
-                outputs.append(coco.ChildTargetDef(handler=handler))
-        return outputs
+    ) -> None:
+        """Topics are not created or deleted, so there is nothing to apply."""
 
     def reconcile(
         self,

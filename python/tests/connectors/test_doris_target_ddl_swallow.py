@@ -61,6 +61,27 @@ def _schema() -> "TableSchema[dict[str, object]]":
 
 
 # ============================================================
+# DorisConnectionConfig repr
+# ============================================================
+
+
+def test_connection_config_repr_omits_password() -> None:
+    config = doris.DorisConnectionConfig(
+        fe_host="doris-test-host", database="testdb", password="secret-pw"
+    )
+    assert "secret-pw" not in repr(config)
+    assert "doris-test-host" in repr(config)
+    # ManagedConnection shows its config, so it must not show the password either.
+    assert "secret-pw" not in repr(doris.ManagedConnection(config=config))
+
+
+def test_connection_configs_with_different_passwords_are_unequal() -> None:
+    assert doris.DorisConnectionConfig(
+        fe_host="h", database="d", password="a"
+    ) != doris.DorisConnectionConfig(fe_host="h", database="d", password="b")
+
+
+# ============================================================
 # _is_benign_column_ddl_error
 # ============================================================
 

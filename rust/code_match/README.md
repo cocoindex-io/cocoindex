@@ -35,9 +35,10 @@ Use raw strings (`r"..."`) when writing patterns in Rust so the backslashes stay
 
 ## Supported languages
 
-Parity with the cocoindex chunk splitter — each a one-line `LangConfig` constructor; the matcher and lexer are language-agnostic:
+Parity with the cocoindex chunk splitter. Each language supplies a `LangConfig`
+describing its literal syntax; the matcher remains language-agnostic:
 
-- **Programming:** TypeScript/TSX, JavaScript, C, C++, Python, Rust, Go, Java, C#, Ruby, PHP, Scala, Bash, SQL, Kotlin, Swift, Julia, R, Fortran, Pascal, Elm, Solidity, HCL, CMake.
+- **Programming:** TypeScript/TSX, JavaScript, C, C++, Python, Rust, Go, Java, C#, Ruby, PHP, Scala, Bash, SQL, Kotlin, Swift, Julia, R, Fortran, Pascal, Elm, Solidity, HCL, CMake, Nix.
 - **Data:** JSON, TOML, YAML.
 - **Markup:** HTML, CSS, XML.
 

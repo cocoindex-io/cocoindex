@@ -16,10 +16,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cocoindex::oci_object_storage::{
+use cocoindex::connectors::oci_object_storage::{
     ListOptions, OciClient, OciConfig, OciFile, list_objects_live,
 };
-use cocoindex::{App, LiveMapView, PatternFilePathMatcher, Result, UpdateOptions};
+use cocoindex::resources::file::PatternFilePathMatcher;
+use cocoindex::{App, LiveMapView, Result, UpdateOptions};
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use serde_json::json;
@@ -281,8 +282,8 @@ async fn run_live_until(
     }
     let _ = app.drop_state().await;
     let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
-    let out = processed.lock().unwrap().clone();
-    out
+
+    processed.lock().unwrap().clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

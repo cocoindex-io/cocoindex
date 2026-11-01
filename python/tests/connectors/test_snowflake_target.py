@@ -166,6 +166,17 @@ async def test_snowflake_type_override_is_used() -> None:
     assert schema.columns["vector"].use_parse_json is False
 
 
+def test_connection_config_repr_omits_password() -> None:
+    config = _connection_config()
+    assert "test_password" not in repr(config)
+    assert "test_account" in repr(config)
+
+
+def test_connection_configs_with_different_passwords_are_unequal() -> None:
+    config = _connection_config()
+    assert config != dataclasses.replace(config, password="other_password")
+
+
 def test_qualified_table_name_quotes_each_part() -> None:
     assert (
         _target._qualified_table_name("analytics", "public", "events")
@@ -319,12 +330,11 @@ def test_table_handler_creates_database_schema_and_table(
         column_actions={},
     )
 
-    children = _target._TableHandler()._apply_actions(
-        cast(Any, FakeContextProvider(_connection_config())), [action]
-    )
+    ctx = cast(Any, FakeContextProvider(_connection_config()))
+    handler = _target._TableHandler()
+    handler._apply_actions(ctx, [action])
 
-    assert len(children) == 1
-    assert children[0] is not None
+    assert isinstance(handler._row_handler(ctx, action), _target._RowHandler)
     assert conn.cursor_obj.calls == [
         ('CREATE DATABASE IF NOT EXISTS "analytics"', None),
         ('CREATE SCHEMA IF NOT EXISTS "analytics"."public"', None),

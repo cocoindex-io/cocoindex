@@ -36,7 +36,7 @@ async def process_file(file: FileLike) -> str:
 
 **Memoization:**
 
-`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged.
+`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged. When the backend reports a fingerprint at no cost (for example an S3 ETag), CocoIndex compares it even when the modification time is unchanged. This catches an overwrite within the resolution of the modification time (S3 reports whole seconds).
 
 ### FilePath
 

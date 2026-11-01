@@ -7,17 +7,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorInfo};
-use cocoindex_core::engine::context::ComponentProcessorContext;
+use cocoindex_core::engine::context::{ComponentProcessorContext, MemoStatesPayload};
 use cocoindex_core::engine::profile::{EngineProfile, Persist};
 use cocoindex_core::engine::target_state::{
-    ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    ChildHandling, TargetActionSink, TargetActionWithChildSlot, TargetHandler,
+    TargetReconcileOutput,
 };
 use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::ContextStore;
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::memo::{MemoInput, collect_component_states};
 
 // ---------------------------------------------------------------------------
 // RustProfile — the sealed EngineProfile implementation
@@ -98,6 +100,9 @@ type ProcessFn = Box<
 pub(crate) struct BoxedProcessor {
     process_fn: std::sync::Mutex<Option<ProcessFn>>,
     memo_fp: Option<Fingerprint>,
+    has_memo_state_handler: bool,
+    /// Mount arguments whose memo states gate a component-memo hit.
+    state_inputs: Vec<Arc<dyn MemoInput>>,
     info: Arc<ComponentProcessorInfo>,
 }
 
@@ -115,8 +120,20 @@ impl BoxedProcessor {
         Self {
             process_fn: std::sync::Mutex::new(Some(Box::new(process_fn))),
             memo_fp,
+            has_memo_state_handler: false,
+            state_inputs: Vec::new(),
             info: Arc::new(ComponentProcessorInfo::new(name)),
         }
+    }
+
+    pub(crate) fn with_memo_state_handler(mut self, enabled: bool) -> Self {
+        self.has_memo_state_handler = enabled;
+        self
+    }
+
+    pub(crate) fn with_state_inputs(mut self, state_inputs: Vec<Arc<dyn MemoInput>>) -> Self {
+        self.state_inputs = state_inputs;
+        self
     }
 }
 
@@ -144,6 +161,65 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
         self.memo_fp
     }
 
+    fn has_memo_state_handler(&self) -> bool {
+        self.has_memo_state_handler || !self.state_inputs.is_empty()
+    }
+
+    fn handle_memo_states(
+        &self,
+        _host_runtime_ctx: &(),
+        comp_ctx: &ComponentProcessorContext<RustProfile>,
+        stored_states: Option<MemoStatesPayload<RustProfile>>,
+    ) -> cocoindex_utils::error::Result<
+        impl Future<
+            Output = cocoindex_utils::error::Result<(MemoStatesPayload<RustProfile>, bool, bool)>,
+        > + Send
+        + 'static,
+    > {
+        let context = Arc::clone(comp_ctx.host_ctx());
+        let state_inputs = self.state_inputs.clone();
+        let initial_context_states = stored_states
+            .is_none()
+            .then(|| comp_ctx.collect_context_initial_states());
+        let stored_states = stored_states.unwrap_or_default();
+        Ok(async move {
+            let Some(initial_context_states) = initial_context_states else {
+                let (positional, positional_valid) =
+                    collect_component_states(&state_inputs, Some(&stored_states.positional))
+                        .await
+                        .map_err(Error::into_core)?;
+                let positional_changed = positional.len() != stored_states.positional.len()
+                    || positional
+                        .iter()
+                        .zip(&stored_states.positional)
+                        .any(|(new, old)| new.0 != old.0);
+                let validation = context
+                    .validate_memo_states(&stored_states.by_context_fp)
+                    .await
+                    .map_err(Error::into_core)?;
+                return Ok((
+                    MemoStatesPayload {
+                        positional,
+                        by_context_fp: validation.states,
+                    },
+                    positional_valid && validation.memo_valid,
+                    positional_changed || validation.states_changed,
+                ));
+            };
+            let (positional, _) = collect_component_states(&state_inputs, None)
+                .await
+                .map_err(Error::into_core)?;
+            Ok((
+                MemoStatesPayload {
+                    positional,
+                    by_context_fp: initial_context_states,
+                },
+                true,
+                false,
+            ))
+        })
+    }
+
     fn processor_info(&self) -> &ComponentProcessorInfo {
         &self.info
     }
@@ -153,6 +229,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
 // Action — Reconciliation action.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub(crate) enum Action {
     Create(Value),
     Update(Value),
@@ -236,49 +313,84 @@ impl TargetHandler<RustProfile> for BoxedHandler {
 // BoxedSink — Type-erased action sink for batched target state application.
 // ---------------------------------------------------------------------------
 
-type SinkFuture = Pin<
-    Box<
-        dyn Future<
-                Output = cocoindex_utils::error::Result<
-                    Option<Vec<Option<ChildTargetDef<RustProfile>>>>,
-                >,
-            > + Send,
-    >,
->;
+pub(crate) type SinkFuture =
+    Pin<Box<dyn Future<Output = cocoindex_utils::error::Result<()>> + Send>>;
 
 // The sink receives the host context (the environment's `ContextStore`) so it
 // can resolve provided resources (pools/clients) by their stable key at apply
-// time. `BoxedSink::new` adapts host-ctx-free closures (the common case);
-// `new_with_ctx` is for connectors that resolve a connection at apply.
-type SinkFn = Arc<dyn Fn(Arc<ContextStore>, Vec<Action>) -> SinkFuture + Send + Sync>;
+// time, and each action paired with the slot for its child target provider
+// (`None` for leaf actions). The typed constructors on
+// `target_state::TargetActionSink` decode both for connector code.
+type SinkFn = Arc<
+    dyn Fn(Arc<ContextStore>, Vec<TargetActionWithChildSlot<RustProfile>>) -> SinkFuture
+        + Send
+        + Sync,
+>;
 
-#[derive(Clone)]
+// A container sink's child handler factory: the handler for the child target
+// states of one create/update action, built from the action alone.
+pub(crate) type ChildHandlerFn =
+    Arc<dyn Fn(&Action) -> cocoindex_utils::error::Result<BoxedHandler> + Send + Sync>;
+
+/// How a [`BoxedSink`] provides child handlers (see [`ChildHandling`]).
+pub(crate) enum SinkChildren {
+    Leaf,
+    LegacySlots,
+    Factory(ChildHandlerFn),
+}
+
 pub(crate) struct BoxedSink {
     apply_fn: SinkFn,
+    children: SinkChildren,
 }
 
 impl BoxedSink {
-    pub(crate) fn new(f: impl Fn(Vec<Action>) -> SinkFuture + Send + Sync + 'static) -> Self {
-        Self::new_with_ctx(move |_host_ctx, actions| f(actions))
-    }
-
-    pub(crate) fn new_with_ctx(
-        f: impl Fn(Arc<ContextStore>, Vec<Action>) -> SinkFuture + Send + Sync + 'static,
+    pub(crate) fn new(
+        f: impl Fn(Arc<ContextStore>, Vec<TargetActionWithChildSlot<RustProfile>>) -> SinkFuture
+        + Send
+        + Sync
+        + 'static,
+        children: SinkChildren,
     ) -> Self {
-        let arc: SinkFn = Arc::new(f);
-        Self { apply_fn: arc }
+        Self {
+            apply_fn: Arc::new(f),
+            children,
+        }
     }
 }
 
 #[async_trait]
 impl TargetActionSink<RustProfile> for BoxedSink {
+    fn child_handling(&self) -> ChildHandling {
+        match self.children {
+            SinkChildren::Leaf => ChildHandling::Leaf,
+            SinkChildren::LegacySlots => ChildHandling::LegacySlots,
+            SinkChildren::Factory(_) => ChildHandling::Factory,
+        }
+    }
+
+    async fn child_handlers(
+        &self,
+        _host_runtime_ctx: &(),
+        _host_ctx: Arc<ContextStore>,
+        actions: &[&Action],
+    ) -> cocoindex_utils::error::Result<Vec<BoxedHandler>> {
+        let SinkChildren::Factory(child_handler) = &self.children else {
+            cocoindex_utils::internal_bail!("target action sink has no child handler factory");
+        };
+        actions.iter().map(|action| child_handler(action)).collect()
+    }
+
     async fn apply(
         &self,
         _host_runtime_ctx: &(),
         host_ctx: Arc<ContextStore>,
-        actions: Vec<Action>,
-    ) -> cocoindex_utils::error::Result<Option<Vec<Option<ChildTargetDef<RustProfile>>>>> {
-        (self.apply_fn)(host_ctx, actions).await
+        actions: &[TargetActionWithChildSlot<RustProfile>],
+    ) -> cocoindex_utils::error::Result<()> {
+        // The engine keeps the actions to retry subsets of a failed batch; an
+        // `Action` wraps `Bytes` and a slot is an `Arc`, so this is a refcount
+        // bump per action.
+        (self.apply_fn)(host_ctx, actions.to_vec()).await
     }
 }
 

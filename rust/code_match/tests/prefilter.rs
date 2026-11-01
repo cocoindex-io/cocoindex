@@ -4,7 +4,9 @@
 
 use std::collections::HashSet;
 
-use cocoindex_code_match::{Boundary, Pattern, Prefilter, index_terms, lang};
+use cocoindex_code_match::{
+    Boundary, Pattern, Prefilter, index_terms, lang, regex_required_literals,
+};
 
 fn prefilter(pat: &str, min_len: usize) -> Prefilter {
     Pattern::compile(pat, &lang::python())
@@ -230,4 +232,134 @@ fn clause_structure_is_exposed() {
     assert_eq!(clauses[0].any_of.len(), 1);
     assert_eq!(clauses[0].any_of[0].text, "foobar");
     assert_eq!(clauses[0].any_of[0].boundary, Boundary::Word);
+}
+
+// ---- `regex_required_literals`: the standalone regex extraction ----
+
+/// Build the expected CNF from string slices.
+fn cnf(clauses: &[&[&str]]) -> Vec<Vec<String>> {
+    clauses
+        .iter()
+        .map(|c| c.iter().map(|s| s.to_string()).collect())
+        .collect()
+}
+
+#[test]
+fn regex_literals_plain_literal() {
+    assert_eq!(regex_required_literals("foobar"), cnf(&[&["foobar"]]));
+}
+
+#[test]
+fn regex_literals_concatenation_with_a_class_in_the_middle() {
+    assert_eq!(
+        regex_required_literals(r"foo\d+bar"),
+        cnf(&[&["foo"], &["bar"]])
+    );
+}
+
+#[test]
+fn regex_literals_alternation_is_one_disjunctive_clause() {
+    assert_eq!(regex_required_literals("get|set"), cnf(&[&["get", "set"]]));
+}
+
+#[test]
+fn regex_literals_unconstrained_branch_drops_the_alternation() {
+    assert_eq!(regex_required_literals("foo|.*"), cnf(&[]));
+}
+
+#[test]
+fn regex_literals_optional_group_is_not_required() {
+    assert_eq!(regex_required_literals("foo(bar)?"), cnf(&[&["foo"]]));
+}
+
+#[test]
+fn regex_literals_repetition_with_min_one_is_required() {
+    assert_eq!(regex_required_literals("(abc)+"), cnf(&[&["abc"]]));
+    assert_eq!(regex_required_literals("(abc)*"), cnf(&[]));
+}
+
+#[test]
+fn regex_literals_anchors_and_word_boundaries_contribute_nothing() {
+    assert_eq!(regex_required_literals("^foo$"), cnf(&[&["foo"]]));
+    assert_eq!(regex_required_literals(r"\bfoo\b"), cnf(&[&["foo"]]));
+    assert_eq!(regex_required_literals(r"^\b$"), cnf(&[]));
+}
+
+#[test]
+fn regex_literals_invalid_regex_yields_nothing() {
+    assert_eq!(regex_required_literals("foo("), cnf(&[]));
+    assert_eq!(regex_required_literals("["), cnf(&[]));
+}
+
+#[test]
+fn regex_literals_non_ascii_literal() {
+    assert_eq!(
+        regex_required_literals("héllo_wörld"),
+        cnf(&[&["héllo_wörld"]])
+    );
+    assert_eq!(
+        regex_required_literals(r"日本\d+語"),
+        cnf(&[&["日本"], &["語"]])
+    );
+}
+
+#[test]
+fn regex_literals_nested_alternation_keeps_every_alternative() {
+    // Soundness: `setx` matches `(get|set)x|put`, so the clause must list `set`
+    // — one representative *term* per branch would reject it.
+    assert_eq!(
+        regex_required_literals("(get|set)x|put"),
+        cnf(&[&["get", "set", "put"]])
+    );
+}
+
+#[test]
+fn regex_nested_alternation_does_not_reject_a_real_match() {
+    // `setx` matches through the nested `set` alternative. A clause holding one
+    // representative term per branch (`{get, put}`) rejected this source.
+    let src = "setx = 1\n";
+    let pat = Pattern::compile(r"\(/(get|set)x|put/\)", &lang::python()).unwrap();
+    assert!(
+        !pat.matches(src).is_empty(),
+        "sanity: pattern really matches"
+    );
+    assert!(
+        pat.prefilter(3).might_match(src),
+        "prefilter must never reject a real match",
+    );
+}
+
+#[test]
+fn regex_literals_case_is_not_folded() {
+    // `(?i)foo` compiles to character classes (case-insensitive), not a literal,
+    // so nothing is extracted — a caller wanting case-insensitive matching passes
+    // the raw pattern and chooses a case-insensitive search itself.
+    assert_eq!(regex_required_literals("(?i)foo"), cnf(&[]));
+    assert_eq!(regex_required_literals("Foo"), cnf(&[&["Foo"]]));
+}
+
+#[test]
+fn regex_literals_agree_with_the_pattern_prefilter() {
+    // The standalone extraction and the regex-metavar clauses of a compiled
+    // pattern are one function: no divergence between the two prefilters.
+    for re in [
+        "foobar",
+        r"foo\d+bar",
+        "get|set",
+        "(get|set)x|put",
+        "foo(bar)?",
+        "foo|.*",
+        "(?i)foo",
+    ] {
+        let pat = format!(r"\(/{re}/\)");
+        let clauses: Vec<Vec<String>> = prefilter(&pat, 1)
+            .clauses()
+            .iter()
+            .map(|c| {
+                assert!(c.any_of.iter().all(|t| t.boundary == Boundary::Substring));
+                c.any_of.iter().map(|t| t.text.clone()).collect()
+            })
+            .collect();
+        assert_eq!(clauses, regex_required_literals(re), "pattern {pat:?}");
+    }
 }

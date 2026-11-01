@@ -23,13 +23,15 @@ from typing import (
     cast,
 )
 
+from cocoindex._internal.extras import install_hint
 
 try:
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as qdrant_models
 except ImportError as e:
     raise ImportError(
-        "qdrant-client is required to use the Qdrant connector. Please install cocoindex[qdrant]."
+        "qdrant-client is required to use the Qdrant connector. "
+        + install_hint("qdrant")
     ) from e
 
 import cocoindex as coco
@@ -153,7 +155,7 @@ class CollectionSchema:
         schema = CollectionSchema(
             vectors={
                 "embedding": QdrantVectorDef(
-                    schema=VectorSchema(dtype=np.float32, size=384),
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
                     distance="cosine"
                 ),
             }
@@ -258,13 +260,20 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
             return
 
         upserts: list[qdrant_models.PointStruct] = []
+        upserted_ids: set[_PointId] = set()
         deletes: list[_PointId] = []
 
         for action in actions:
             if action.point is None:
-                deletes.append(action.point_id)
+                deletes.append(_canonical_point_id(action.point_id))
             else:
                 upserts.append(action.point)
+                upserted_ids.add(_canonical_point_id(action.point_id))
+
+        # A key from before point IDs were canonicalized (e.g. an upper-case
+        # UUID) names the same point as its canonical key upserted here, so
+        # deleting it would remove the point just written.
+        deletes = [point_id for point_id in deletes if point_id not in upserted_ids]
 
         if upserts:
             await asyncio.to_thread(
@@ -360,28 +369,36 @@ def create_client(url: str, *, prefer_grpc: bool = True, **kwargs: Any) -> Qdran
 class _CollectionHandler(
     coco.TargetHandler[_CollectionSpec, _CollectionTrackingRecord, _PointHandler]
 ):
-    _sink: coco.TargetActionSink[_CollectionAction, _PointHandler]
+    _sink: coco.TargetActionSink[_CollectionAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
-        self, context_provider: ContextProvider, actions: Collection[_CollectionAction]
-    ) -> list[coco.ChildTargetDef[_PointHandler] | None]:
-        actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_PointHandler] | None] = [None] * len(
-            actions_list
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._point_handler
         )
 
-        by_key: dict[_CollectionKey, list[int]] = {}
-        for i, action in enumerate(actions_list):
-            by_key.setdefault(action.key, []).append(i)
+    @staticmethod
+    def _point_handler(
+        context_provider: ContextProvider, action: _CollectionAction, /
+    ) -> _PointHandler:
+        """The point handler for a created or updated collection's points."""
+        return _PointHandler(
+            client=context_provider.get(action.key.db_key, QdrantClient),
+            collection_name=action.key.collection_name,
+        )
 
-        for key, idxs in by_key.items():
+    async def _apply_actions(
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_CollectionAction],
+        /,
+    ) -> None:
+        by_key: dict[_CollectionKey, list[_CollectionAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
+
+        for key, key_actions in by_key.items():
             client = context_provider.get(key.db_key, QdrantClient)
-            for i in idxs:
-                action = actions_list[i]
-
+            for action in key_actions:
                 if action.main_action in ("replace", "delete"):
                     try:
                         await asyncio.to_thread(
@@ -392,16 +409,9 @@ class _CollectionHandler(
                         pass
 
                 if coco.is_non_existence(action.spec):
-                    outputs[i] = None
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_PointHandler(
-                        client=client,
-                        collection_name=key.collection_name,
-                    )
-                )
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     await self._create_collection(
@@ -410,8 +420,6 @@ class _CollectionHandler(
                         spec.schema,
                         if_not_exists=(action.main_action == "upsert"),
                     )
-
-        return outputs
 
     async def _create_collection(
         self,
@@ -554,6 +562,11 @@ class CollectionTarget(
 
         Args:
             point: PointStruct defining the point ID, vectors, and payload
+
+        A UUID point ID may be given in any text form Qdrant accepts (upper
+        case, 32-char hex, URN) or as a ``uuid.UUID``; all forms of one UUID
+        name the same point, so declaring two of them in one run fails as a
+        duplicate declaration.
 
         Raises:
             ValueError: If the point ID is not an unsigned 64-bit integer or
@@ -734,8 +747,24 @@ _POINT_ID_RULE = (
 )
 
 
+def _canonical_point_id(point_id: _PointId) -> _PointId:
+    """The ID Qdrant stores a point under.
+
+    Qdrant parses every UUID text form (upper case, 32-char hex, URN) to the
+    same point, so a UUID string becomes its hyphenated lower-case form. A
+    string that is not a UUID names no point; it stays as it is.
+    """
+    if isinstance(point_id, str):
+        try:
+            return str(uuid.UUID(point_id))
+        except ValueError:
+            return point_id
+    return point_id
+
+
 def _validate_point_id(raw: object) -> _PointId:
-    """Validate a point ID against Qdrant's server-side rules, eagerly.
+    """Validate a point ID against Qdrant's server-side rules, eagerly, and
+    return its canonical form (see :func:`_canonical_point_id`).
 
     Qdrant only accepts unsigned 64-bit integers and UUIDs (any textual
     form: hyphenated, 32-char hex, or URN); everything else is rejected at
@@ -753,13 +782,12 @@ def _validate_point_id(raw: object) -> _PointId:
         return str(raw)
     if isinstance(raw, str):
         try:
-            uuid.UUID(raw)
+            return str(uuid.UUID(raw))
         except ValueError:
             raise ValueError(
                 f"Invalid Qdrant point ID {raw!r}: strings must be UUIDs. "
                 f"{_POINT_ID_RULE}"
             ) from None
-        return raw
     raise ValueError(
         f"Invalid Qdrant point ID of type {type(raw).__name__}. {_POINT_ID_RULE}"
     )

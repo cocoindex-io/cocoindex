@@ -344,12 +344,11 @@ def test_table_handler_creates_dataset_and_table(
         column_actions={},
     )
 
-    children = _target._TableHandler()._apply_actions(
-        cast(Any, FakeContextProvider(_connection_config())), [action]
-    )
+    ctx = cast(Any, FakeContextProvider(_connection_config()))
+    handler = _target._TableHandler()
+    handler._apply_actions(ctx, [action])
 
-    assert len(children) == 1
-    assert children[0] is not None
+    assert isinstance(handler._row_handler(ctx, action), _target._RowHandler)
     assert client.calls == [
         ("CREATE SCHEMA IF NOT EXISTS `demo-project.analytics`", ()),
         (

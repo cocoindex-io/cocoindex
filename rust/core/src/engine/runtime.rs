@@ -30,7 +30,7 @@ static GLOBAL_CANCEL: LazyLock<Mutex<CancellationToken>> =
     LazyLock::new(|| Mutex::new(CancellationToken::new()));
 
 pub fn get_runtime() -> &'static Runtime {
-    &**TOKIO_RUNTIME
+    &TOKIO_RUNTIME
 }
 
 /// Returns `true` if the global Tokio runtime has been shut down.
@@ -81,7 +81,7 @@ pub fn shutdown_runtime() {
     }
     let _ = &**TOKIO_RUNTIME;
     let runtime = unsafe {
-        let md_ref: &ManuallyDrop<Runtime> = &*TOKIO_RUNTIME;
+        let md_ref: &ManuallyDrop<Runtime> = &TOKIO_RUNTIME;
         std::ptr::read(md_ref as *const ManuallyDrop<Runtime> as *const Runtime)
     };
     runtime.shutdown_timeout(std::time::Duration::from_secs(5));
