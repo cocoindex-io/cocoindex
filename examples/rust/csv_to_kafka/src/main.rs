@@ -22,8 +22,8 @@
 //! Note: unlike the Python example (`live=True` continuous watch), this runs a
 //! single pass per `index` invocation — the Rust SDK's `fs::walk` is one-shot.
 
-use cocoindex::fs::FileEntry;
-use cocoindex::kafka::{self, KafkaProducer};
+use cocoindex::resources::fs::FileEntry;
+use cocoindex::connectors::kafka::{self, KafkaProducer};
 use cocoindex::prelude::*;
 use rskafka::client::ClientBuilder;
 use rskafka::client::partition::UnknownTopicHandling;
@@ -38,7 +38,7 @@ fn topic_name() -> String {
 
 /// Parse one CSV file into `(message_key, json_value)` pairs. Memoized: a file
 /// whose content is unchanged since the last run is not re-parsed.
-#[cocoindex::function]
+#[cocoindex::function(memo)]
 async fn process_csv(_ctx: &Ctx, file: FileEntry) -> Result<Vec<(String, String)>> {
     let text = file.content_str()?;
     let mut reader = csv::Reader::from_reader(text.as_bytes());
@@ -90,7 +90,7 @@ async fn index(producer: KafkaProducer, topic: String) -> Result<()> {
                     kafka::KafkaTopicOptions::default(),
                 )?;
 
-                let files = cocoindex::fs::walk_items("./data", &["**/*.csv"])?;
+                let files = cocoindex::resources::fs::walk_items("./data", &["**/*.csv"])?;
                 println!("found {} CSV file(s)", files.len());
 
                 let per_file = mount_each!(files, |file| process_csv(ctx, file)).await?;

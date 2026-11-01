@@ -149,10 +149,12 @@ Under the hood, CocoIndex compares your declared target states with the previous
 
 CocoIndex ensures a container exists before its contents are added, and syncs the contents individually only while the container is still declared. Once a container is no longer declared, its contents are handled by the container's own removal, in one of two ways defined by the connector:
 
-- **Destroy** — CocoIndex owns the container and removes it together with its contents: dropping a table takes its rows with it, removing a directory takes its files.
+- **Destroy** — CocoIndex owns the container and removes it together with its contents: dropping a table takes its rows with it, removing a directory takes its files, dropping a graph node table takes every node carrying its label.
 - **Abandon** — the container is user-managed (a Kafka or Iggy topic, or a table or collection declared with `managed_by="user"`). CocoIndex stops writing to it and leaves its contents untouched: no per-row deletes or per-message tombstones are issued.
 
 `App.drop()` follows the same rule: it destroys CocoIndex-owned containers and abandons user-managed ones. To remove the contents of a user-managed container, drain it first by keeping the container declared with no contents for one update — see [Kafka](../connectors/kafka#abandoning-a-topic) and [Iggy](../connectors/iggy#abandoning-a-topic) for the recipe.
+
+A target state's identity is its key. CocoIndex doesn't detect two different keys that reach the same physical object: two directories that overlap or alias through a symlink, two [`ContextKey`s](./context#contextkey-as-stable-identity) for one database, or two names or IDs that the backend treats as equal (for example, table names that differ only in case). CocoIndex syncs them as two target states, so syncing one can overwrite or delete the other. Keeping the objects behind different keys apart is your responsibility.
 
 ### What happens when a target's schema changes
 

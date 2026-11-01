@@ -68,6 +68,10 @@ embedding = await embedder.embed("Hello, world!")
 table.declare_row(row=DocEmbedding(text="Hello, world!", embedding=embedding))
 ```
 
+#### Text that looks like a media reference
+
+litellm's Gemini embedding path reads a string that starts with `data:` and contains `;base64,`, or that starts with `gs://` or `files/`, as a file to embed rather than text — an inline file, a Cloud Storage object, or an uploaded file. Ordinary corpus text hits all three (a glTF file's buffer, an HTML page's inline image, a list of paths beginning `files/`), and the request would then fail before it is sent or silently embed an image. `LiteLLMEmbedder` sends such a text with one leading space, for every provider, so it embeds as text — litellm has no way to send such a string as text ([BerriAI/litellm#46719](https://github.com/BerriAI/litellm/issues/46719)). To embed media through Gemini, call `litellm.aembedding` directly.
+
 ### Limiting concurrent requests
 
 Concurrent `embed()` calls are batched: CocoIndex groups them into requests of
@@ -205,6 +209,7 @@ Within the `timeout` window a failed request is retried with exponential backoff
 | A refused, reset, or dropped connection | Yes |
 | A timeout — CocoIndex's, litellm's, or the HTTP client's | No — terminal |
 | Bad credentials, unknown model, permission denied | No — terminal |
+| A request litellm refuses to build — an input or argument its provider path rejects | No — terminal; in a batch, that input fails alone |
 
 The 408 row and the timeout row look contradictory and aren't: an HTTP 408 *response* arrives quickly, so nothing has spent the budget, while a timeout we observed ourselves has by definition already spent its duration. Retrying that inside the request's own bound just re-spends what is left, and against an overloaded backend it amplifies the load that caused it. The remedy for a genuine timeout is a longer `timeout`, not more requests.
 

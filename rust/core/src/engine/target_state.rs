@@ -22,7 +22,8 @@ enum ChildTargetSlotState<H> {
     Consumed,
 }
 
-/// Fulfillment handle for the child target provider of one action.
+/// Fulfillment handle for the child target provider of one action, for a
+/// deprecated [`ChildHandling::LegacySlots`] sink.
 ///
 /// The engine mints one slot per action whose target state was declared with
 /// `declare_target_state_with_child`, hands it to the sink alongside the action,
@@ -91,6 +92,12 @@ impl<Prof: EngineProfile> ChildTargetSlot<Prof> {
     }
 }
 
+impl<Prof: EngineProfile> Default for ChildTargetSlot<Prof> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One action for a sink call, with the slot for its child target provider
 /// when the declaring call was `declare_target_state_with_child`.
 pub type TargetActionWithChildSlot<Prof> = (
@@ -98,13 +105,45 @@ pub type TargetActionWithChildSlot<Prof> = (
     Option<ChildTargetSlot<Prof>>,
 );
 
+/// How a sink provides the handlers for the child target states of its
+/// actions (the actions whose target state was declared with a child).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildHandling {
+    /// The sink takes no child-bearing actions; declaring a child under it is
+    /// an error. Python sinks never report it: a Python leaf sink may still
+    /// return the deprecated child-definition list, so it reports
+    /// [`ChildHandling::LegacySlots`].
+    Leaf,
+    /// Deprecated: [`TargetActionSink::apply`] fulfills a [`ChildTargetSlot`]
+    /// per child-bearing action. Such a sink cannot be previewed.
+    LegacySlots,
+    /// [`TargetActionSink::child_handlers`] builds the handlers from the
+    /// actions alone. The engine calls it before `apply`, and in preview in
+    /// place of `apply`.
+    Factory,
+}
+
 #[async_trait]
 pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    /// Apply `actions` to the external system as one unit. Every child slot
-    /// handed over must be fulfilled before this returns; the engine reads
-    /// them back afterwards.
+    /// How this sink provides child handlers. Answered from the sink's own
+    /// fields: the engine asks it inside the precommit txn.
+    fn child_handling(&self) -> ChildHandling;
+
+    /// For a [`ChildHandling::Factory`] sink: the child handler of each of
+    /// `actions`, in order. Must be free of side effects: it runs for previews
+    /// too, and before `apply` in a real update.
+    async fn child_handlers(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: &[&Prof::TargetAction],
+    ) -> Result<Vec<Prof::TargetHdl>>;
+
+    /// Apply `actions` to the external system as one unit. A
+    /// [`ChildHandling::LegacySlots`] sink must fulfill every child slot handed
+    /// over before this returns; the engine reads them back afterwards.
     ///
     /// One call may carry the actions of several processing components: the
     /// engine merges the actions of components that finish while an earlier
@@ -130,6 +169,7 @@ pub struct TargetActionSinkKeeper<Prof: EngineProfile> {
 }
 
 struct TargetActionSinkKeeperInner<Prof: EngineProfile> {
+    sink: Arc<Prof::TargetActionSink>,
     batcher: Batcher<TargetActionRunner<Prof>>,
 }
 
@@ -138,6 +178,7 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
         let sink = Arc::new(sink);
         Self {
             inner: Arc::new(TargetActionSinkKeeperInner {
+                sink: Arc::clone(&sink),
                 batcher: Batcher::new(
                     TargetActionRunner { sink },
                     Arc::new(BatchQueue::new()),
@@ -145,6 +186,24 @@ impl<Prof: EngineProfile> TargetActionSinkKeeper<Prof> {
                 ),
             }),
         }
+    }
+
+    pub fn child_handling(&self) -> ChildHandling {
+        self.inner.sink.child_handling()
+    }
+
+    /// See [`TargetActionSink::child_handlers`]. Not batched: nothing is
+    /// applied, so there is no sink call to share.
+    pub async fn child_handlers(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
+        actions: &[&Prof::TargetAction],
+    ) -> Result<Vec<Prof::TargetHdl>> {
+        self.inner
+            .sink
+            .child_handlers(host_runtime_ctx, host_ctx, actions)
+            .await
     }
 
     pub async fn apply(
@@ -339,6 +398,7 @@ where
     // Sub-batches still to apply, as index ranges over `spans`. The second
     // half of a split is pushed first, so sub-batches complete in component
     // order and each one's results are simply appended.
+    #[allow(clippy::single_range_in_vec_init)]
     let mut pending = vec![0..spans.len()];
     while let Some(sub) = pending.pop() {
         debug_assert_eq!(results.len(), sub.start);
@@ -402,16 +462,23 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     /// Reconcile the desired target state against the previously-tracked
     /// records, returning the action to take.
     ///
+    /// Runs inside the precommit txn, which may be retried, so it can be
+    /// called more than once for the same target state in one update; only
+    /// the output of the attempt that commits is applied. Implementations
+    /// must therefore be free of side effects.
+    ///
     /// `desired_target_state` is borrowed (not owned) because the engine
     /// holds it under a short-lived `tokio::sync::MutexGuard` for the
     /// duration of this call — see the lock-scoped call site in
-    /// `submit()`'s `pre_commit`. Borrowing here lets the host-specific
-    /// implementation decide whether (and how) to clone:
+    /// `submit()`'s `pre_commit` — and may call again for the same value
+    /// when the pre-commit is retried. Borrowing here lets the host-specific
+    /// implementation decide whether (and how) to materialize it:
     ///
     /// * Native Rust profile (`Value: Clone`): typically `value.clone()`
     ///   when constructing the `Action`.
-    /// * Python profile (`Py<PyAny>: !Clone`): `value.clone_ref(py)`
-    ///   under the GIL.
+    /// * Python profile: the value is held encoded where it is plain data,
+    ///   decoded for each call, and the returned action is held encoded in
+    ///   turn (`rust/py/src/target_state_codec.rs`).
     ///
     /// Avoids forcing every call site to round-trip through an
     /// engine-level `clone_target_state_value` even when the impl
@@ -423,6 +490,20 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         prev_possible_records: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
+
+    /// For a handler whose tracking record is a fingerprint of the declared
+    /// value: the serialized tracking record `reconcile` would return for
+    /// `desired_target_state`. The engine then skips `reconcile` for a state
+    /// that is surely present and whose previous records all equal it.
+    ///
+    /// `None` (the default) means `reconcile` must decide — the handler tracks
+    /// something else, or cannot fingerprint this value without `reconcile`.
+    fn value_fingerprint_record(
+        &self,
+        _desired_target_state: &Prof::TargetStateValue,
+    ) -> Result<Option<bytes::Bytes>> {
+        Ok(None)
+    }
 
     /// Return all attachment types this handler supports, keyed by type name.
     /// The engine eagerly registers these as providers so that orphaned
@@ -478,6 +559,16 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
 
     pub fn stable_key(&self) -> &StableKey {
         &self.inner.stable_key
+    }
+
+    /// The stable keys from the root provider down to this one, joined with
+    /// `/`: how messages name a target state (its path is fingerprints).
+    pub fn display_name(&self) -> String {
+        self.stable_key_chain()
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     pub fn stable_key_chain(&self) -> Vec<StableKey> {

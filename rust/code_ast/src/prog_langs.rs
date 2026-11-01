@@ -368,7 +368,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<HashMap<UniCase<String>, &'static Program
             None,
         );
         add("ninja", &[".ninja"], None);
-        add("nix", &[".nix"], None);
+        add(
+            "nix",
+            &[".nix"],
+            Some(TreeSitterLanguageInfo::new(tree_sitter_nix::LANGUAGE, [])),
+        );
         add("nqc", &[".nqc"], None);
         add(
             "pascal",
@@ -555,6 +559,33 @@ pub fn get_language_info(name: &str) -> Option<&'static ProgrammingLanguageInfo>
         .copied()
 }
 
+/// One entry of the registry's alias table: a registered name — a language
+/// name or a file extension — and the language it resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LanguageAlias {
+    pub alias: &'static str,
+    pub language: &'static str,
+}
+
+/// Every registered alias with the language it resolves to, sorted by alias.
+///
+/// The registry's identity, for a consumer whose stored work depends on what
+/// a file name resolves to (a memoized walk that decides a file's eligibility
+/// by [`detect_language`]): hash the entries it cares about, and a newly
+/// recognized extension moves the hash where nothing else would. Sorted so
+/// the hash is stable across processes.
+pub fn language_aliases() -> Vec<LanguageAlias> {
+    let mut aliases: Vec<LanguageAlias> = LANGUAGE_INFO_BY_NAME
+        .iter()
+        .map(|(alias, info)| LanguageAlias {
+            alias: alias.as_str(),
+            language: info.name.as_ref(),
+        })
+        .collect();
+    aliases.sort_unstable();
+    aliases
+}
+
 /// Detect programming language from a filename.
 ///
 /// Returns the language name if the file extension is recognized.
@@ -567,6 +598,22 @@ pub fn detect_language(filename: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_language_aliases_lists_the_registry_sorted() {
+        let aliases = language_aliases();
+        let entry = |alias, language| LanguageAlias { alias, language };
+        assert!(aliases.contains(&entry(".rs", "rust")));
+        assert!(aliases.contains(&entry("rust", "rust")));
+        assert!(
+            aliases.windows(2).all(|w| w[0].alias < w[1].alias),
+            "sorted by alias, no duplicates"
+        );
+        for LanguageAlias { alias, language } in &aliases {
+            let info = get_language_info(alias).expect("every listed alias resolves");
+            assert_eq!(info.name.as_ref(), *language, "alias {alias:?}");
+        }
+    }
 
     #[test]
     fn test_get_language_info() {
@@ -627,6 +674,12 @@ mod tests {
         let lua = get_language_info(".lua").unwrap();
         assert_eq!(lua.name.as_ref(), "lua");
         assert!(lua.treesitter_info.is_some());
+    }
+    #[test]
+    fn test_nix_has_treesitter() {
+        let nix = get_language_info(".nix").unwrap();
+        assert_eq!(nix.name.as_ref(), "nix");
+        assert!(nix.treesitter_info.is_some());
     }
 
     #[test]

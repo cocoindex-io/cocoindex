@@ -62,7 +62,7 @@ async def app_main() -> None:
     config = {"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "group.id": KAFKA_GROUP_ID,
               "enable.auto.commit": "false", "auto.offset.reset": "earliest"}
     consumer = AIOConsumer(config)
-    items = kafka.topic_as_map(consumer, [KAFKA_TOPIC])
+    items = kafka.topic_as_map(consumer, KAFKA_TOPIC)
     await coco.mount_each(process_message, items, products_table, employees_table)
 ```
 

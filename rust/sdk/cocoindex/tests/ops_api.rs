@@ -320,3 +320,75 @@ async fn llm_pair_resolver_gives_up_after_retries() {
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 3);
 }
+
+/// A rate-limited (429) response is retried, honoring `Retry-After`.
+#[tokio::test]
+async fn api_embedder_retries_rate_limited_requests() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    struct RateLimitedOnce(AtomicUsize);
+    impl Respond for RateLimitedOnce {
+        fn respond(&self, _: &Request) -> ResponseTemplate {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(429).insert_header("retry-after", "0")
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": [{"embedding": [1.0, 2.0]}]
+                }))
+            }
+        }
+    }
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(RateLimitedOnce(AtomicUsize::new(0)))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+
+    assert_eq!(embedder.embed("hello").await.unwrap(), vec![1.0, 2.0]);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+/// A client error is not retried.
+#[tokio::test]
+async fn api_embedder_does_not_retry_client_errors() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad input"))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+
+    let err = embedder.embed("hello").await.unwrap_err();
+    assert!(err.to_string().contains("bad input"), "{err}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// Results are matched to inputs by `index`, not by response order.
+#[tokio::test]
+async fn api_embedder_orders_batch_results_by_index() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                {"index": 1, "embedding": [2.0]},
+                {"index": 0, "embedding": [1.0]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+
+    let out = embedder
+        .embed_batch(vec!["a".to_string(), "b".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(out, vec![vec![1.0], vec![2.0]]);
+}

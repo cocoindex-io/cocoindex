@@ -26,7 +26,7 @@ Targets Neo4j 5.18+. Vector-index DDL (`CREATE VECTOR INDEX … OPTIONS { indexC
 
 ## Connection setup
 
-Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the Bolt URI, optional auth, and the target database name; it lazily opens a Neo4j async driver and returns a graph handle on demand.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the Bolt URI, optional auth, and the target database name; it opens one connection-pooled Neo4j async driver per event loop, on first use on that loop, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -41,15 +41,14 @@ KG_DB: coco.ContextKey[neo4j.ConnectionFactory] = coco.ContextKey("kg_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(
-        KG_DB,
-        neo4j.ConnectionFactory(
-            uri="bolt://localhost:7687",
-            auth=("neo4j", "cocoindex"),
-            database="neo4j",
-        ),
+    factory = neo4j.ConnectionFactory(
+        uri="bolt://localhost:7687",
+        auth=("neo4j", "cocoindex"),
+        database="neo4j",
     )
+    builder.provide(KG_DB, factory)
     yield
+    await factory.close()
 ```
 
 `auth` is optional — omit it for unauthenticated dev instances. `database` defaults to `"neo4j"` (the default db that ships with every Neo4j 5 installation).
@@ -66,52 +65,60 @@ APIS_DB: coco.ContextKey[neo4j.ConnectionFactory] = coco.ContextKey("apis_db")
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     uri = "bolt://localhost:7687"
     auth = ("neo4j", "cocoindex")
-    builder.provide(KG_DB, neo4j.ConnectionFactory(uri=uri, auth=auth, database="kg"))
-    builder.provide(APIS_DB, neo4j.ConnectionFactory(uri=uri, auth=auth, database="apis"))
+    kg_factory = neo4j.ConnectionFactory(uri=uri, auth=auth, database="kg")
+    apis_factory = neo4j.ConnectionFactory(uri=uri, auth=auth, database="apis")
+    builder.provide(KG_DB, kg_factory)
+    builder.provide(APIS_DB, apis_factory)
     yield
+    await kg_factory.close()
+    await apis_factory.close()
 ```
 
 Different `ContextKey`s with different database names produce fully separate target-state trees — changes to one never spill into the other.
 
 ## As target
 
-The `neo4j` connector provides target state APIs for writing records to node tables and relation tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
+The `neo4j` connector provides target state APIs for writing nodes to node tables and edges to relationship tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
 
-Each apply batch is wrapped in a single Neo4j transaction (`tx.commit()` on success, rollback on exception), so partial writes never leak into the database. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints.
+Each apply batch is wrapped in a single Neo4j transaction (`tx.commit()` on success, rollback on exception), so partial writes never leak into the database. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch that fails with a transient error — typically a deadlock between concurrent batches merging edges onto the same nodes — is rolled back and retried with backoff before the failure is reported.
+
+:::note
+The node and relationship APIs below replace the table and relation APIs (`mount_table_target`, `mount_relation_target`, …), which are deprecated. To move an existing table over, see [Deprecated: table and relation APIs](#deprecated-table-and-relation-apis).
+:::
 
 ### Declaring target states
 
 #### Node tables (parent state)
 
-Declares a node label as a target state. Returns a `TableTarget` for declaring records.
+Declares a node label as a target state. Returns a `NodeTarget` for declaring nodes.
 
 ```python
-def declare_table_target(
+def declare_node_target(
     db: ContextKey,
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
     primary_key: str = "id",
     managed_by: Literal["system", "user"] = "system",
-) -> TableTarget[RowT, coco.PendingS]
+) -> NodeTarget[RowT, coco.PendingS]
 ```
 
 **Parameters:**
 
 - `db` — A `ContextKey[neo4j.ConnectionFactory]` for the Neo4j connection.
-- `table_name` — The Cypher node label (e.g. `"Document"`).
+- `table_name` — The Cypher node label (e.g. `"Document"`). It must not contain `__` or end with `_`: constraint and index names join the label to a property name with `__`, so such a label could share a name with another table's.
 - `table_schema` — Optional schema definition (see [Table Schema](#table-schema-from-python-class)). The schema participates in CocoIndex's fingerprint (so two flows declaring the same label must agree); per-property type DDL is not emitted in v1.
-- `primary_key` — Single property name used as the node's primary key. Defaults to `"id"`. Compound primary keys are not supported in v1.0.
+- `primary_key` — Single property name used as the node's primary key. Defaults to `"id"`. Must match the schema's primary key when `table_schema` is given. Compound primary keys are not supported in v1.0.
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use `await neo4j.mount_table_target(KG_DB, ...)` to get a resolved target.
+**Returns:** A pending `NodeTarget`. Use `await neo4j.mount_node_target(KG_DB, ...)` to get a resolved target.
 
-#### Records (child states)
+#### Nodes (child states)
 
-Once a `TableTarget` is resolved, declare records to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n += $props`):
+Once a `NodeTarget` is resolved, declare nodes to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n += $props`):
 
 ```python
-def TableTarget.declare_record(
+def NodeTarget.declare_record(
     self,
     *,
     row: RowT,
@@ -124,41 +131,41 @@ def TableTarget.declare_record(
 
 `declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
 
-#### Relation tables (parent state)
+#### Relationship tables (parent state)
 
-Declares a relationship type as a target state. Returns a `RelationTarget` for declaring edges.
+Declares a relationship type as a target state. Returns a `RelationshipTarget` for declaring edges.
 
 ```python
-def declare_relation_target(
+def declare_relationship_target(
     db: ContextKey,
     table_name: str,
-    from_table: TableTarget,
-    to_table: TableTarget,
+    from_table: NodeTarget,
+    to_table: NodeTarget,
     table_schema: TableSchema[RowT] | None = None,
     *,
     primary_key: str = "id",
     managed_by: Literal["system", "user"] = "system",
-) -> RelationTarget[RowT, coco.PendingS]
+) -> RelationshipTarget[RowT, coco.PendingS]
 ```
 
 **Parameters:**
 
 - `db` — A `ContextKey[neo4j.ConnectionFactory]` for the Neo4j connection.
-- `table_name` — The Cypher relationship type (e.g. `"MENTION"`).
-- `from_table` — The `TableTarget` whose nodes are the *source* endpoints of edges in this relationship.
-- `to_table` — The `TableTarget` whose nodes are the *target* endpoints of edges in this relationship.
+- `table_name` — The Cypher relationship type (e.g. `"MENTION"`). Same naming rule as a node label: no `__`, no trailing `_`. A node label and a relationship type may share a name.
+- `from_table` — The node target whose nodes are the *source* endpoints of edges in this relationship. A `TableTarget` of the deprecated table API works too.
+- `to_table` — The node target whose nodes are the *target* endpoints of edges in this relationship.
 - `table_schema` — Optional schema for the relationship's own properties. The relationship's `primary_key` field uniquely identifies each edge.
-- `primary_key` — Single property name used as the edge's primary key. Defaults to `"id"`.
+- `primary_key` — Single property name used as the edge's primary key. Defaults to `"id"`. Must match the schema's primary key when `table_schema` is given.
 - `managed_by` — Whether CocoIndex manages the relationship lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `RelationTarget`. Use `await neo4j.mount_relation_target(KG_DB, ...)` to get a resolved target.
+**Returns:** A pending `RelationshipTarget`. Use `await neo4j.mount_relationship_target(KG_DB, ...)` to get a resolved target.
 
-#### Relations (child states)
+#### Relationships (child states)
 
-Once a `RelationTarget` is resolved, declare edges. Each declaration produces a triple-MERGE: source endpoint, target endpoint, then the relationship.
+Once a `RelationshipTarget` is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
 
 ```python
-def RelationTarget.declare_relation(
+def RelationshipTarget.declare_relationship(
     self,
     *,
     from_id: Any,
@@ -171,16 +178,18 @@ def RelationTarget.declare_relation(
 
 - `from_id` — The source node's primary-key value. The connector MERGEs `(s:FromLabel {pk: $from_id})` so endpoints are auto-created if absent.
 - `to_id` — The target node's primary-key value. Same MERGE behavior.
-- `record` — Optional row object whose fields populate the relationship's properties. Must include the relationship's `primary_key` field if provided.
+- `record` — Optional row object whose fields populate the relationship's properties. Its `primary_key` field, if present, is the edge's id.
 
-If `record` is omitted, the connector derives a deterministic edge id of the form `{from_label}_{from_id}_{to_label}_{to_id}`. Convenient when an edge has no properties of its own.
+If `record` is omitted or has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.
+
+An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relationship table has an index on it; for a `managed_by="user"` table, create one yourself.
 
 #### Vector indexes (attachment)
 
-Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
+Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `NodeTarget`:
 
 ```python
-def TableTarget.declare_vector_index(
+def NodeTarget.declare_vector_index(
     self,
     *,
     name: str | None = None,
@@ -207,6 +216,8 @@ OPTIONS { indexConfig: {
   `vector.similarity_function`: '<metric>'
 } }
 ```
+
+The Neo4j index is named after the label and field, not after `name`, so a field has at most one vector index. Renaming `name` keeps the index. Declaring a second name for the same field is an error.
 
 Vectors are float32 only.
 
@@ -315,15 +326,17 @@ For each managed table, the connector creates supporting Cypher artifacts on fir
   FOR (n:`<Label>`) REQUIRE n.`<pk>` IS UNIQUE
   ```
   Neo4j auto-creates a backing index for each constraint, so a separate `CREATE INDEX` is redundant on nodes.
-- For relation tables:
+- For relationship tables:
   ```cypher
   CREATE INDEX `coco_idx_rel_<RelType>__<pk>` IF NOT EXISTS
   FOR ()-[r:`<RelType>`]-() ON (r.`<pk>`)
   ```
 
-Indexes and constraints are dropped on `cocoindex drop` or when the table is no longer declared.
+A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the constraint or index is dropped. A node table's vector indexes (the `coco_vec_<Label>__<field>` indexes on its label) are dropped with it. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a label with data CocoIndex doesn't own, declare the table with `managed_by="user"`.
 
-When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the schema. Record-level upserts and deletes still work.
+The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Its vector indexes are dropped and created again. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
+
+When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the schema — and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
 
 ### Example: Node tables
 
@@ -345,18 +358,20 @@ class Document:
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(KG_DB, neo4j.ConnectionFactory(
+    factory = neo4j.ConnectionFactory(
         uri="bolt://localhost:7687",
         auth=("neo4j", "cocoindex"),
         database="neo4j",
-    ))
+    )
+    builder.provide(KG_DB, factory)
     yield
+    await factory.close()
 
 
 @coco.fn
 async def app_main() -> None:
     schema = await neo4j.TableSchema.from_class(Document, primary_key="filename")
-    documents = await neo4j.mount_table_target(
+    documents = await neo4j.mount_node_target(
         KG_DB, "Document", schema, primary_key="filename",
     )
     documents.declare_record(
@@ -371,7 +386,7 @@ async def app_main() -> None:
 app = coco.App(coco.AppConfig(name="docs_to_neo4j"), app_main)
 ```
 
-### Example: Relation tables (knowledge graph)
+### Example: Relationship tables (knowledge graph)
 
 ```python
 @dataclass
@@ -387,17 +402,17 @@ class RelationshipRow:
 
 @coco.fn
 async def kg_app_main() -> None:
-    documents = await neo4j.mount_table_target(
+    documents = await neo4j.mount_node_target(
         KG_DB, "Document",
         await neo4j.TableSchema.from_class(Document, primary_key="filename"),
         primary_key="filename",
     )
-    entities = await neo4j.mount_table_target(
+    entities = await neo4j.mount_node_target(
         KG_DB, "Entity",
         await neo4j.TableSchema.from_class(Entity, primary_key="value"),
         primary_key="value",
     )
-    relationships = await neo4j.mount_relation_target(
+    relationships = await neo4j.mount_relationship_target(
         KG_DB, "RELATIONSHIP",
         entities, entities,
         await neo4j.TableSchema.from_class(RelationshipRow, primary_key="id"),
@@ -408,7 +423,7 @@ async def kg_app_main() -> None:
     documents.declare_record(row=Document(filename="overview.md", title="Overview", summary="..."))
     entities.declare_record(row=Entity(value="CocoIndex"))
     entities.declare_record(row=Entity(value="Neo4j"))
-    relationships.declare_relation(
+    relationships.declare_relationship(
         from_id="CocoIndex",
         to_id="Neo4j",
         record=RelationshipRow(id="rel-1", predicate="writes_to"),
@@ -418,4 +433,35 @@ async def kg_app_main() -> None:
 kg_app = coco.App(coco.AppConfig(name="kg_app"), kg_app_main)
 ```
 
-The `Entity` table is declared up-front (via `mount_table_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints. The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+The `Entity` table is declared up-front (via `mount_node_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints. The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+
+## Deprecated: table and relation APIs
+
+The table and relation APIs are deprecated. They emit a `DeprecationWarning` and otherwise work as before. Each has a replacement with the same parameters:
+
+| Deprecated | Replacement |
+|---|---|
+| `table_target`, `declare_table_target`, `mount_table_target` (returns `TableTarget`) | `node_target`, `declare_node_target`, `mount_node_target` (returns `NodeTarget`) |
+| `relation_target`, `declare_relation_target`, `mount_relation_target` (returns `RelationTarget`) | `relationship_target`, `declare_relationship_target`, `mount_relationship_target` (returns `RelationshipTarget`) |
+| `RelationTarget.declare_relation` | `RelationshipTarget.declare_relationship` |
+
+One parameter check differs: the relationship APIs require `primary_key` to match the schema's primary key, as the node APIs do, where the relation APIs used the schema's.
+
+The deprecated APIs keep the keys and edge ids of existing tables, and with them three limits the replacements remove:
+
+- A node table and a relationship table share one key space, so a label and a relationship type must have different names. Declaring both under one name fails the update.
+- The derived edge id is `{from_label}_{from_id}_{to_label}_{to_id}`. Two endpoint pairs can share it (the ids `1` and `"1"`, or ids that contain `_`), and declaring both fails the update.
+- A label or relationship type may contain `__` or end with `_`, so two tables' constraint or index names can coincide.
+
+A label belongs to one table: don't declare the same label (or relationship type) through both the deprecated and the new API. The two declarations are separate tables, and removing either one deletes every node of the label (or edge of the type).
+
+### Switching an existing table
+
+Switching a table from the deprecated API to its replacement keeps its nodes, edges, constraints and indexes. It takes two updates:
+
+1. Add `managed_by="user"` to each deprecated declaration you switch, and run one update. Nothing in the database changes. From now on, removing these declarations deletes nothing.
+2. Replace the deprecated calls with their replacements (and `declare_relation` with `declare_relationship`), without `managed_by="user"`, and run one update. The new tables find their constraints and indexes in place, under the same names. Every node and edge of a switched table is written once more, and its vector indexes are rebuilt. An edge with a derived id gets the new id: the edge with the old id between the same endpoints is replaced.
+
+Run the two steps as separate updates, in this order. Without step 1, removing a deprecated declaration destroys its table: every node of the label or edge of the type is deleted, possibly after the new table has written it.
+
+You can switch tables one at a time: a new relationship table accepts node targets of both APIs.

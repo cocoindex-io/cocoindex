@@ -425,7 +425,7 @@ pub struct TargetStateOwnerInfo {
     pub component_path: StablePath,
 }
 
-pub const UNKNOWN_PROCESSOR_NAME: &'static str = "<unknown>";
+pub const UNKNOWN_PROCESSOR_NAME: &str = "<unknown>";
 
 fn unknown_processor_name() -> Cow<'static, str> {
     Cow::Borrowed(UNKNOWN_PROCESSOR_NAME)

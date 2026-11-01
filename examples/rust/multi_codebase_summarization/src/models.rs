@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Information about a public function.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 pub struct FunctionInfo {
     /// Function name.
     pub name: String,
@@ -16,7 +16,7 @@ pub struct FunctionInfo {
 }
 
 /// Information about a public class.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
 pub struct ClassInfo {
     /// Class name.
     pub name: String,
@@ -25,7 +25,7 @@ pub struct ClassInfo {
 }
 
 /// Extracted information from Python code (file or project level).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, cocoindex::MemoInput)]
 pub struct CodebaseInfo {
     /// File path (for files) or project name (for projects).
     pub name: String,

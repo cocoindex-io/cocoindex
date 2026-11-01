@@ -43,6 +43,7 @@ from typing_extensions import TypeVar as _TypeVar
 import msgspec as _msgspec
 
 import cocoindex as _coco
+from cocoindex.connectorkits.target import ManagedBy as ManagedBy
 
 _TrackingRecordT = _TypeVar("_TrackingRecordT")
 _MainTrackingRecordT = _TypeVar("_MainTrackingRecordT")
@@ -93,9 +94,6 @@ class TrackingRecordTransition(_Generic[_TrackingRecordT], _NamedTuple):
     desired: _TrackingRecordT | _coco.NonExistenceType
     prev: _Collection[_TrackingRecordT]
     prev_may_be_missing: bool
-
-
-from cocoindex.connectorkits.target import ManagedBy as ManagedBy
 
 
 class MutualTrackingRecord(

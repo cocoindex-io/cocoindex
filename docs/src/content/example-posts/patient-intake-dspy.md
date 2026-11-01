@@ -10,7 +10,7 @@ tags: [structured-extraction, dspy]
 
 We'll take a folder of patient intake PDFs — names, addresses, insurance, medications, allergies, consent — and turn each one into a clean, validated JSON record. The hard part isn't the file plumbing; it's that intake forms are *visual*: checkboxes, hand-filled fields, tables of medications. So instead of extracting text, we render each PDF page to an image and let a vision model read the form the way a person would. [DSPy](https://github.com/stanfordnlp/dspy) handles the prompting — you declare a typed `Signature` and it produces a [Pydantic](https://docs.pydantic.dev/) `Patient`, no prompt strings to hand-tune.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed forms get re-extracted, and each one becomes exactly one JSON file on disk.
+The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed forms get re-extracted, and each one becomes exactly one JSON file on disk.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy)
 
@@ -22,9 +22,9 @@ From a high level, these are the steps:
 
 1. Read PDF intake forms from a local directory.
 2. [Render each page to an image](https://pymupdf.readthedocs.io/) with PyMuPDF, then extract a typed `Patient` with a [DSPy `ChainOfThought`](https://github.com/stanfordnlp/dspy) vision module on Gemini.
-3. Write one JSON file per form to a local directory (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+3. Write one JSON file per form to a local directory (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## Setup
 
@@ -134,7 +134,7 @@ def extract_patient(pdf_content: bytes) -> Patient:
     return patient
 ```
 
-[`@coco.fn`](https://cocoindex.io/docs/programming_guide/function/) makes this a CocoIndex function so the engine can track it. Rendering at `Matrix(2, 2)` matters: forms are full of small, hand-entered text, and the extra resolution is the difference between the model reading a zip code and guessing one.
+[`@coco.fn`](/docs/programming_guide/function/) makes this a CocoIndex function so the engine can track it. Rendering at `Matrix(2, 2)` matters: forms are full of small, hand-entered text, and the extra resolution is the difference between the model reading a zip code and guessing one.
 
 ## Process a file
 
@@ -155,11 +155,11 @@ async def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     )
 ```
 
-[`@coco.fn`](https://cocoindex.io/docs/programming_guide/function/) with [`memo=True`](https://cocoindex.io/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a form's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never re-run the (paid, slow) vision extraction on a form you've already processed. `localfs.declare_file` declares the JSON as a [target state](https://cocoindex.io/docs/programming_guide/target_state/); CocoIndex writes, rewrites, or deletes it to match.
+[`@coco.fn`](/docs/programming_guide/function/) with [`memo=True`](/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a form's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never re-run the (paid, slow) vision extraction on a form you've already processed. `localfs.declare_file` declares the JSON as a [target state](/docs/programming_guide/target_state/); CocoIndex writes, rewrites, or deletes it to match.
 
 ## Define the main function
 
-`app_main` wires the source to the target. It walks the source directory for PDFs and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file.
+`app_main` wires the source to the target. It walks the source directory for PDFs and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
 ```python title="main.py"
 @coco.fn
@@ -180,11 +180,11 @@ app = coco.App(
 )
 ```
 
-[`walk_dir`](https://cocoindex.io/docs/connectors/localfs/) scans the [filesystem source](https://cocoindex.io/docs/connectors/localfs/) for `*.pdf` files, and [`mount_each`](https://cocoindex.io/docs/programming_guide/processing_component/) runs one component per file so the engine can track and update them independently. Each component owns exactly one output JSON, so the mapping from form to record is one-to-one — and when a form disappears, its JSON is cleaned up automatically.
+[`walk_dir`](/docs/connectors/localfs/) scans the [filesystem source](/docs/connectors/localfs/) for `*.pdf` files, and [`mount_each`](/docs/programming_guide/processing_component/) runs one component per file so the engine can track and update them independently. Each component owns exactly one output JSON, so the mapping from form to record is one-to-one — and when a form disappears, its JSON is cleaned up automatically.
 
 ## Run the pipeline
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build the index — scan the forms, extract, write the JSON files, and exit:
+Run the [`cocoindex` CLI](/docs/cli/) to build the index — scan the forms, extract, write the JSON files, and exit:
 
 ```sh
 cocoindex update main.py

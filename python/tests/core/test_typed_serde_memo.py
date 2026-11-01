@@ -7,11 +7,13 @@ Tests cover:
 - State changed but reusable skips re-execution
 """
 
+import pathlib
 from dataclasses import dataclass
 from typing import Any
 
 import cocoindex as coco
 import pytest
+from cocoindex.connectors import localfs
 
 from tests import common
 from tests.common.target_states import (
@@ -521,9 +523,6 @@ def test_memo_roundtrip_forward_reference_return() -> None:
 # ============================================================================
 # Memo state with NonExistenceType in union (real FileLike via localfs)
 # ============================================================================
-
-import pathlib
-from cocoindex.connectors import localfs
 
 _filelike_metrics = Metrics()
 _filelike_source_dir: pathlib.Path | None = None

@@ -6,7 +6,7 @@ use std::ops::Deref;
 #[derive(Debug)]
 pub struct Pythonized<T>(pub T);
 
-impl<'py, T: DeserializeOwned> FromPyObject<'_, '_> for Pythonized<T> {
+impl<T: DeserializeOwned> FromPyObject<'_, '_> for Pythonized<T> {
     type Error = PyErr;
 
     fn extract(obj: Borrowed<'_, '_, PyAny>) -> PyResult<Self> {

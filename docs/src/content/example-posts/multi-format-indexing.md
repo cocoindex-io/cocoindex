@@ -10,7 +10,7 @@ tags: [multimodal, colpali]
 
 Real document sets are a mix — scanned reports, slide exports, screenshots, and PDFs all jumbled together. Parsing each format into clean text is brittle and loses the layout (tables, charts, figures) that often *is* the answer. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that sidesteps parsing entirely: render every PDF page to an image, embed pages and standalone images alike with the multi-vector [ColPali](https://huggingface.co/vidore/colpali-v1.2) model, and store them in one [Qdrant](https://qdrant.tech/) collection. A text query then retrieves the most relevant *page*, no matter what format it started as.
 
-The whole pipeline is ordinary `async` Python. The slow per-page model inference runs on a [GPU runner](https://cocoindex.io/docs/programming_guide/function/), and the Rust engine handles [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/) — add a document and only its pages get embedded.
+The whole pipeline is ordinary `async` Python. The slow per-page model inference runs on a [GPU runner](/docs/programming_guide/function/), and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — add a document and only its pages get embedded.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing)
 
@@ -69,11 +69,11 @@ async def process_file(file: FileLike, target: qdrant.CollectionTarget) -> None:
     await coco.map(process_page, pages, str(file.file_path.path), target)
 ```
 
-`embed_page` runs the ColPali model (loaded once via `@functools.cache`) and returns a *list of* vectors — the multi-vector representation. [`coco.map`](https://cocoindex.io/docs/programming_guide/app/) fans out one `process_page` per page, and [`@coco.fn(memo=True)`](https://cocoindex.io/docs/programming_guide/function/) skips files that haven't changed.
+`embed_page` runs the ColPali model (loaded once via `@functools.cache`) and returns a *list of* vectors — the multi-vector representation. [`coco.map`](/docs/programming_guide/app/) fans out one `process_page` per page, and [`@coco.fn(memo=True)`](/docs/programming_guide/function/) skips files that haven't changed.
 
 ## The multi-vector Qdrant collection
 
-The collection is declared with a [`MultiVectorSchema`](https://cocoindex.io/docs/connectors/qdrant/) and a MaxSim comparator — that's what makes Qdrant score a query against the *best-matching patch* of each page:
+The collection is declared with a [`MultiVectorSchema`](/docs/connectors/qdrant/) and a MaxSim comparator — that's what makes Qdrant score a query against the *best-matching patch* of each page:
 
 ```python title="main.py"
 target_collection = await qdrant.mount_collection_target(
@@ -120,6 +120,6 @@ On the sample set, *"revenue growth"* ranks the two financial-report images at t
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/multi_format_indexing](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing). For the image-only version with a web UI, see [Search Images by Text · ColPali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali); for a text-extraction pipeline over PDFs instead, see [Semantic Search over PDFs](https://cocoindex.io/docs/examples/pdf-embedding/).
+The full, runnable example is in the CocoIndex repo: [examples/multi_format_indexing](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing). For the image-only version with a web UI, see [Search Images by Text · ColPali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali); for a text-extraction pipeline over PDFs instead, see [Semantic Search over PDFs](/docs/examples/pdf-embedding/).
 
 Got a pile of mixed-format documents to make searchable? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

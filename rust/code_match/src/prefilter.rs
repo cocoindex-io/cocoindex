@@ -309,7 +309,19 @@ fn word_bounded(s: &str, start: usize, end: usize) -> bool {
 /// alternative literal strings. Every clause must hold (a literal in it appears);
 /// an empty result means the regex imposes no extractable requirement. Sound: we
 /// only emit literals that must appear in *every* match of the regex.
-fn regex_required_literals(pattern: &str) -> Vec<Vec<String>> {
+///
+/// `pattern` is parsed exactly as written (`regex-syntax` syntax; no case
+/// folding, so a case-insensitive construct such as `(?i)foo` yields nothing). A
+/// pattern that does not parse yields the empty, unconstrained result too — the
+/// caller validates its regex separately. No minimum length is applied; a caller
+/// that drops short literals must drop the whole clause, since dropping one
+/// alternative of a disjunction would be unsound.
+///
+/// This is the extraction [`Pattern::prefilter`](crate::Pattern::prefilter)
+/// applies to a regex metavar `\(/re/\)` (there followed by its `min_len`
+/// filter); it is public so a caller can prefilter a plain-text regex search
+/// the same way.
+pub fn regex_required_literals(pattern: &str) -> Vec<Vec<String>> {
     match regex_syntax::parse(pattern) {
         Ok(hir) => required_lits(&hir),
         Err(_) => Vec::new(),
@@ -328,13 +340,17 @@ fn required_lits(hir: &regex_syntax::hir::Hir) -> Vec<Vec<String>> {
         HirKind::Capture(cap) => required_lits(&cap.sub),
         // Concatenation: every part's requirements hold (AND).
         HirKind::Concat(subs) => subs.iter().flat_map(required_lits).collect(),
-        // Alternation: one representative literal per branch (disjunction). If any
-        // branch has no required literal, the whole alternation is unconstrained.
+        // Alternation: one representative clause per branch, merged into one
+        // disjunction. Any one of a branch's clauses is a sound (weaker) stand-in
+        // for the branch, but it must be kept whole: keeping one *alternative* of
+        // it would reject a source the branch matches through another (`setx`
+        // for `(get|set)x|put`). If any branch has no required literal, the whole
+        // alternation is unconstrained.
         HirKind::Alternation(subs) => {
             let mut alts = Vec::with_capacity(subs.len());
             for sub in subs {
-                match required_lits(sub).first().and_then(|c| c.first()) {
-                    Some(rep) => alts.push(rep.clone()),
+                match required_lits(sub).into_iter().next() {
+                    Some(clause) => alts.extend(clause),
                     None => return Vec::new(),
                 }
             }

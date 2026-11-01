@@ -114,7 +114,7 @@ app = coco.App(
 
 - The app scans `projects/` and outputs documentation to `output/`
 
-[→ App](/docs/programming_guide/app)
+[→ App](/docs/programming_guide/app/)
 
 ## Define the main function
 
@@ -172,7 +172,7 @@ The main function does two things:
 **Why processing components?** A processing component groups an item's processing together with its target states. Each component runs independently and in parallel. In this case, when `project_a` finishes, its results are applied to the external system immediately, without waiting for `project_b` or any other project.
 
 To learn more about processing components, you can read the documentation:
-[→ Processing Component](/docs/programming_guide/processing_component)
+[→ Processing Component](/docs/programming_guide/processing_component/)
 
 ## Process each project
 For each project, we will
@@ -204,7 +204,7 @@ async def process_project(
 ```
 **Concurrent processing with async** — By using `coco.map()`, all file extractions run concurrently while keeping CocoIndex function calls visible to the pipeline. This is significantly faster than sequential processing, especially when making LLM API calls.
 
-[→ Function](/docs/programming_guide/function)
+[→ Function](/docs/programming_guide/function/)
 
 
 ## Extract file information with LLM
@@ -289,7 +289,7 @@ Instructions:
 
 **Why `memo=True` matters:** LLM calls are expensive. With memoization, CocoIndex caches the result keyed by the file content. If you run the pipeline again without changing a file, the cached result is used—no LLM call needed.
 
-[→ Function](/docs/programming_guide/function)
+[→ Function](/docs/programming_guide/function/)
 
 
 
@@ -370,7 +370,7 @@ This function combines file-level extractions into a single project summary:
 
 The result is a unified `CodebaseInfo` that represents the entire project, not individual files.
 
-[→ Function](/docs/programming_guide/function)
+[→ Function](/docs/programming_guide/function/)
 
 ## Generate markdown output
 

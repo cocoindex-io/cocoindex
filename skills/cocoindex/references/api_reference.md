@@ -304,7 +304,7 @@ async for snapshot in handle.watch():
 
 Sources that support live mode:
 - `localfs.walk_dir(..., live=True)` -- File watching
-- `kafka.topic_as_map(consumer, topics)` -- Kafka topic consumption
+- `kafka.topic_as_map(consumer, topic)` -- Kafka topic consumption
 
 ---
 

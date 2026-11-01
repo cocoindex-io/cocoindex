@@ -153,6 +153,19 @@ await coco.mount_each(coco.component_subpath("files"), process_file, files.items
 
 Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
 
+Keys must be unique within one `mount_each()` call. If the iterable yields the same key twice, `mount_each()` raises a `ValueError` that names the repeated component path.
+
+An item's key is relative to its source, so two sources can yield the same key. When you mount several sources under one parent component, give each `mount_each()` its own subpath:
+
+```python
+docs = localfs.walk_dir(docs_dir, path_matcher=md_files)
+notes = localfs.walk_dir(notes_dir, path_matcher=md_files)
+await coco.mount_each(coco.component_subpath("docs"), process_file, docs.items(), docs_target)
+await coco.mount_each(coco.component_subpath("notes"), process_file, notes.items(), notes_target)
+```
+
+Without the subpaths, both calls mount under `Symbol("process_file")`, so a `README.md` in each source gets the same component path, and the second call raises the same error. The target states that the items declare need distinct keys too; here each source writes to its own target.
+
 It also does one thing a hand-written loop can't: when a source connector supports live watching, its `items()` returns a `LiveMapView` or `LiveMapFeed` instead of a plain iterable, and `mount_each()` detects this and automatically adds, updates, and removes per-item components as the source changes — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode).
 
 ### `mount_target()`

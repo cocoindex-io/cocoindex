@@ -21,14 +21,21 @@ __all__ = [
 from pathlib import PurePath
 from typing import AsyncIterator, overload
 
+from cocoindex._internal.extras import install_hint
+
 try:
     from aiobotocore.client import AioBaseClient  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "aiobotocore is required to use the Amazon S3 source connector. "
-        "Please install cocoindex[amazon_s3]."
+        + install_hint("amazon_s3")
     ) from e
 
+from cocoindex.connectorkits._object_store import (
+    ObjectStoreFilePath,
+    folder_prefix,
+    relative_key,
+)
 from cocoindex.resources import file
 
 
@@ -55,19 +62,18 @@ def _parse_s3_uri(uri: str) -> tuple[str, str]:
     return without_scheme[:slash_idx], without_scheme[slash_idx + 1 :]
 
 
-class S3FilePath(file.FilePath[str]):
+class S3FilePath(ObjectStoreFilePath):
     """
     File path for Amazon S3 objects.
 
     The resolved path is the full S3 object key (string).
     The relative path is the object key relative to the walker prefix (or the full key
-    if no prefix was used).
+    if no prefix was used); ``object_key`` must end with it.
     """
 
-    __slots__ = ("_bucket_name", "_object_key")
+    __slots__ = ("_bucket_name",)
 
     _bucket_name: str
-    _object_key: str
 
     def __init__(
         self,
@@ -76,26 +82,20 @@ class S3FilePath(file.FilePath[str]):
         *,
         object_key: str,
     ) -> None:
-        super().__init__(None, PurePath(path))
+        super().__init__(path, object_key=object_key)
         self._bucket_name = bucket_name
-        self._object_key = object_key
 
     @property
     def bucket_name(self) -> str:
         """The S3 bucket name."""
         return self._bucket_name
 
-    def resolve(self) -> str:
-        """Return the full S3 object key."""
-        return self._object_key
+    def _store(self) -> tuple[str, ...]:
+        return (self._bucket_name,)
 
     def _with_path(self, path: PurePath) -> S3FilePath:
         """Create a new S3FilePath with the given path."""
-        return type(self)(self._bucket_name, path, object_key=self._object_key)
-
-    def __coco_memo_key__(self) -> object:
-        """Return a memo key incorporating the bucket name for stability across buckets."""
-        return (self._bucket_name, self._path)
+        return type(self)(self._bucket_name, path, object_key=self._object_key_of(path))
 
 
 class S3File(file.FileLike[str]):
@@ -130,6 +130,9 @@ class S3File(file.FileLike[str]):
 
     async def _read_impl(self, size: int = -1) -> bytes:
         """Asynchronously read file content from S3."""
+        if size == 0 or (size > 0 and await self.size() == 0):
+            return b""
+
         bucket_name: str = self._file_path.bucket_name
         object_key: str = self._file_path.resolve()
         if size >= 0:
@@ -267,7 +270,7 @@ class S3Walker:
 
     _client: AioBaseClient
     _bucket_name: str
-    _prefix: str
+    _folder: str
     _path_matcher: file.FilePathMatcher
     _max_file_size: int | None
 
@@ -282,39 +285,36 @@ class S3Walker:
     ) -> None:
         self._client = client
         self._bucket_name = bucket_name
-        self._prefix = prefix
+        self._folder = folder_prefix(prefix)
         self._path_matcher = path_matcher or file.MatchAllFilePathMatcher()
         self._max_file_size = max_file_size
 
-    async def _aiter_s3files(self) -> AsyncIterator[S3File]:
-        """Primary async iteration over S3 objects, yielding S3File objects."""
+    async def items(self) -> AsyncIterator[tuple[str, S3File]]:
+        """Async iterate over (key, file) pairs.
+
+        The key is the object key relative to the prefix, exactly as stored.
+
+        Example::
+
+            async for key, file in walker.items():
+                content = await file.read()
+        """
         page_kwargs: dict[str, str] = {"Bucket": self._bucket_name}
-        if self._prefix:
-            page_kwargs["Prefix"] = self._prefix
+        if self._folder:
+            page_kwargs["Prefix"] = self._folder
 
         paginator = self._client.get_paginator("list_objects_v2")
         async for page in paginator.paginate(**page_kwargs):
             for obj in page.get("Contents", []):
                 key: str = obj["Key"]
 
-                # Skip directory markers (keys ending with /)
-                if key.endswith("/"):
+                # None for a directory marker (a key ending with /)
+                rel_key = relative_key(key, self._folder)
+                if rel_key is None:
                     continue
-
-                # Compute relative path (strip prefix)
-                if self._prefix:
-                    relative_key = key[len(self._prefix) :]
-                    relative_key = relative_key.lstrip("/")
-                else:
-                    relative_key = key
-
-                if not relative_key:
-                    continue
-
-                relative_path = PurePath(relative_key)
 
                 # Apply path matcher
-                if not self._path_matcher.is_file_included(relative_path):
+                if not self._path_matcher.is_file_included(PurePath(rel_key)):
                     continue
 
                 obj_size: int = obj["Size"]
@@ -325,7 +325,7 @@ class S3Walker:
 
                 file_path = S3FilePath(
                     self._bucket_name,
-                    relative_key,
+                    rel_key,
                     object_key=key,
                 )
 
@@ -335,29 +335,19 @@ class S3Walker:
                     content_fingerprint=_etag_to_fingerprint(obj.get("ETag")),
                 )
 
-                yield S3File(
-                    client=self._client,
-                    file_path=file_path,
-                    _metadata=metadata,
+                yield (
+                    rel_key,
+                    S3File(
+                        client=self._client,
+                        file_path=file_path,
+                        _metadata=metadata,
+                    ),
                 )
 
     async def __aiter__(self) -> AsyncIterator[S3File]:
         """Asynchronously iterate over S3 objects, yielding S3File objects."""
-        async for f in self._aiter_s3files():
+        async for _, f in self.items():
             yield f
-
-    async def items(self) -> AsyncIterator[tuple[str, S3File]]:
-        """Async iterate over (key, file) pairs.
-
-        The key is the file's relative path within the bucket (after prefix stripping).
-
-        Example::
-
-            async for key, file in walker.items():
-                content = await file.read()
-        """
-        async for f in self._aiter_s3files():
-            yield (f.file_path.path.as_posix(), f)
 
 
 def list_objects(
@@ -376,7 +366,9 @@ def list_objects(
     Args:
         client: An aiobotocore S3 client.
         bucket_name: The S3 bucket name.
-        prefix: Only list objects whose key starts with this prefix.
+        prefix: Only list objects in this folder. The prefix names a folder:
+            ``"data"`` and ``"data/"`` both list ``data/...``, and neither lists
+            ``database.csv``.
         path_matcher: Optional file path matcher to filter files by glob patterns.
             Patterns are matched against the relative path (after prefix stripping).
         max_file_size: Skip objects larger than this size in bytes.
