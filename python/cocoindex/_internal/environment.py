@@ -481,6 +481,10 @@ class LazyEnvironment:
             self._exit_stack = None
             self._env = None
 
+            if env is not None:
+                for app in self._info.get_apps():
+                    app._release_core_env_app(self)
+
         try:
             if exit_stack is not None:
                 await exit_stack.aclose()

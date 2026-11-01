@@ -690,3 +690,53 @@ def test_ownership_transfer_between_typed_component_paths() -> None:
     app.update_blocking()
     assert GlobalDictTarget.store.data == {}
     assert common.list_target_state_owners_sync(app) == {}
+
+
+@coco.fn
+async def _app_main_one_at_a_time() -> None:
+    """Like _app_main, but each child is ready before the next one mounts."""
+    for name in sorted(_source_data):
+        handle = await coco.mount(
+            coco.component_subpath(name), _process_component, name
+        )
+        await handle.ready()
+
+
+def test_bulk_ownership_transfer_keeps_the_old_owners_other_items() -> None:
+    """One commit takes many target states from one owner. The owner keeps
+    tracking the rest, so it still deletes them when it unmounts."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    count = 1000
+    moved = [f"k{i}" for i in range(count)]
+
+    app = coco.App(
+        coco.AppConfig(name="test_bulk_ownership_transfer", environment=coco_env),
+        _app_main_one_at_a_time,
+    )
+
+    # Run 1: A owns every key.
+    _source_data["A"] = dict.fromkeys(moved, 1)
+    _source_data["A"]["keep"] = 9
+    app.update_blocking()
+
+    # Run 2: A re-runs unchanged, then B takes all keys but "keep" from A.
+    _source_data["B"] = dict.fromkeys(moved, 2)
+    app.update_blocking()
+    assert {k: v.data for k, v in GlobalDictTarget.store.data.items()} == {
+        **dict.fromkeys(moved, 2),
+        "keep": 9,
+    }
+    assert common.list_target_state_owners_sync(app) == {
+        **{
+            f'/@test_target_state/global_dict/"{key}"': coco.ROOT_PATH / "B"
+            for key in moved
+        },
+        '/@test_target_state/global_dict/"keep"': coco.ROOT_PATH / "A",
+    }
+
+    # Run 3: unmount both. A must still track "keep" to delete it.
+    _source_data.clear()
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {}
+    assert common.list_target_state_owners_sync(app) == {}

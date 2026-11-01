@@ -17,7 +17,7 @@ jobs:
     # Everything whose result depends on the Python interpreter: the
     # extension build, the workspace tests (the `rust/py` crate links
     # libpython), and the Python test suite. Runs on every (platform, Python)
-    # pair. Hooks that only depend on the platform run once per platform in
+    # pair. Hooks that don't depend on the interpreter run once in
     # `rust-checks` below, concurrently with this job.
     build-test:
         strategy:
@@ -75,83 +75,54 @@ jobs:
           env:
             UV_NO_SYNC: "1"
           with:
-            # mypy-check runs in the e2e_type_check workflow. The rest are the
-            # platform-only hooks that `rust-checks` runs.
-            skip: mypy-check,cargo-test-sdk-features,cargo-clippy,update-rust-extern-locks,cargo-test-rust-externs,cargo-tree-sdk-no-pyo3
+            # mypy-check runs in the e2e_type_check workflow, and
+            # update-rust-extern-locks in the fast_check one. cargo-clippy and
+            # cargo-tree-sdk-no-pyo3 run in `rust-checks`. The rest are the
+            # Rust SDK hooks, which `_rust_sdk.yml` runs.
+            skip: mypy-check,update-rust-extern-locks,cargo-clippy,cargo-tree-sdk-no-pyo3,cargo-test-sdk,cargo-clippy-sdk,cargo-test-rust-externs
 
         # Last, so it sees every object the job's hooks compiled.
         - name: Save sccache's local cache
           if: ${{ !cancelled() }}
           uses: ./.github/actions/save-sccache
 
-    # Hooks whose result depends on the platform but not on the Python
-    # interpreter: the SDK's optional-features build and tests (the SDK must
-    # not depend on pyo3, and a hook below enforces that), clippy, and the
-    # `cargo check` of the external example/benchmark workspaces. Each ran on
-    # every `build-test` leg and rebuilt the same code per interpreter; the SDK
-    # all-features build alone was 2-5 min of every leg. They run here once per
-    # platform instead.
-    #
-    # Clippy and the external-workspace check run on Linux x86_64 only. The
-    # lints are the same on every platform bar a few `cfg(not(unix))` lines,
-    # and the external check costs 13-28 min on a cold Rust cache (every leg
-    # is cold after a rustc release), which pushed the macOS Intel and Windows
-    # legs past `timeout-minutes` when it ran there. The SDK's optional
-    # features skip macOS Intel, the slowest runner: x86_64 is covered by
-    # Linux and Darwin by the arm64 leg.
+    # Hooks whose result doesn't depend on the Python interpreter, run once
+    # instead of on every `build-test` leg: clippy, and the check that the
+    # Rust SDK doesn't depend on pyo3. Linux x86_64 covers every platform for
+    # both: the lints are the same on every platform bar a few
+    # `cfg(not(unix))` lines, and the pyo3 check reads the dependencies of
+    # every platform. The Rust SDK's own hooks run in `_rust_sdk.yml`.
     rust-checks:
-        # The default name would list the matrix's hook list.
-        name: rust-checks (${{ matrix.platform.runner }})
-        strategy:
-            fail-fast: ${{ contains(fromJSON('["pull_request", "merge_group"]'), github.event_name) }}
-            matrix:
-                platform:
-                  - runner: ubuntu-latest
-                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3 cargo-clippy update-rust-extern-locks cargo-test-rust-externs
-                  - runner: ubuntu-24.04-arm
-                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3
-                  - runner: macos-latest
-                    extra_rustflags: "-C split-debuginfo=off"
-                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3
-                  - runner: windows-latest
-                    hooks: cargo-test-sdk-features cargo-tree-sdk-no-pyo3
-        runs-on: ${{ matrix.platform.runner }}
+        runs-on: ubuntu-latest
         timeout-minutes: 60
         env:
-          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+          RUSTFLAGS: "-C debuginfo=0"
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: "sccache"
 
         steps:
-        - name: Disable Git autocrlf on Windows
-          if: runner.os == 'Windows'
-          shell: bash
-          run: git config --global core.autocrlf false
-
         - uses: actions/checkout@v7
           with:
             fetch-depth: 1
 
-        # Only clippy needs Python: it lints `rust/py`, which links libpython,
-        # and it runs through `uv run`, so the venv has to exist. The SDK
-        # hooks build nothing that touches Python (the SDK must not depend on
-        # pyo3).
+        # Clippy lints `rust/py`, which links libpython, and it runs through
+        # `uv run`, so the venv has to exist.
         - uses: ./.github/actions/setup-ci
           with:
-            python-version: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && '3.11' || '' }}
-            rust-cache-key: rust-checks-${{ matrix.platform.runner }}
-            # Peak use on a 14 GiB runner: about 18 GiB (`target/` is
-            # 16 GiB), plus 2.7 GiB when it saves a missed Rust cache.
-            min-free-disk-gib: 30
-            uv-cache-suffix: ${{ contains(matrix.platform.hooks, 'cargo-clippy') && format('rust-checks-{0}', matrix.platform.runner) || '' }}
-            clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy') }}
+            python-version: "3.11"
+            rust-cache-key: rust-checks
+            # Less than `build-test` uses: clippy compiles the same crates,
+            # without codegen.
+            min-free-disk-gib: 20
+            uv-cache-suffix: rust-checks
+            clippy: true
 
         - name: Run rust-checks hooks
           uses: ./.github/actions/run-prek
           env:
             UV_NO_SYNC: "1"
           with:
-            hooks: ${{ matrix.platform.hooks }}
+            hooks: cargo-clippy cargo-tree-sdk-no-pyo3
 
         # Last, so it sees every object the job's hooks compiled.
         - name: Save sccache's local cache

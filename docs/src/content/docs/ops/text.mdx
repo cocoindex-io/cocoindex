@@ -47,19 +47,16 @@ Split text by regex separators.
 ```python
 from cocoindex.ops.text import SeparatorSplitter
 
-splitter = SeparatorSplitter()
+splitter = SeparatorSplitter([r"\.\s+"], keep_separator="left")
 
 text = "First sentence. Second sentence. Third sentence."
-chunks = splitter.split(
-    text,
-    chunk_size=100,
-    chunk_overlap=20,
-    separators=[r"\.\s+"]  # Split on periods followed by whitespace
-)
+chunks = splitter.split(text)
 
 for chunk in chunks:
     print(chunk.text)
 ```
+
+Use `RecursiveSplitter` below to configure chunk size and overlap.
 
 ### `RecursiveSplitter`
 

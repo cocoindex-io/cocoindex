@@ -688,6 +688,78 @@ async def test_auto_refresh_under_a_pool_of_one_live() -> None:
         _core.reset_global_cancellation()
 
 
+# ── Fairness between live components ────────────────────────────────────
+
+_FAIR_POOL = 8
+_FAIR_BIG = 400
+# Wide enough that running on its own lent slot alone, one child at a time,
+# would take most of the big refresh's time.
+_FAIR_SMALL = 40
+_fair = {"big_started": 0, "big_done": 0, "big_done_at_small_end": -1}
+
+
+@coco.fn
+async def _big_leaf(i: int) -> None:
+    _fair["big_started"] += 1
+    await asyncio.sleep(0.01)
+    _fair["big_done"] += 1
+
+
+@coco.fn
+async def _small_leaf(i: int) -> None:
+    await asyncio.sleep(0.01)
+
+
+async def _big_refresh() -> None:
+    await asyncio.gather(
+        *(
+            coco.use_mount(coco.component_subpath(str(i)), _big_leaf, i)
+            for i in range(_FAIR_BIG)
+        )
+    )
+
+
+async def _small_refresh() -> None:
+    # Start once the big refresh has filled the pool and queued its backlog.
+    while _fair["big_started"] < _FAIR_POOL:
+        await asyncio.sleep(0.005)
+    await asyncio.gather(
+        *(
+            coco.use_mount(coco.component_subpath(str(i)), _small_leaf, i)
+            for i in range(_FAIR_SMALL)
+        )
+    )
+    _fair["big_done_at_small_end"] = _fair["big_done"]
+
+
+_BigRefresh = coco.auto_refresh(_big_refresh, interval=datetime.timedelta(hours=1))
+_SmallRefresh = coco.auto_refresh(_small_refresh, interval=datetime.timedelta(hours=1))
+
+
+async def _main_two_live_components() -> None:
+    await coco.mount(coco.component_subpath("big"), _BigRefresh)
+    await coco.mount(coco.component_subpath("small"), _SmallRefresh)
+
+
+def test_a_small_update_does_not_wait_for_another_live_components_backlog() -> None:
+    """A freed slot goes to the live component holding the fewest, so the
+    small refresh runs with a share of the pool and finishes while most of
+    the big one's backlog still waits. In arrival order it would get only
+    its own lent slot until the backlog drained."""
+    _fair.update(big_started=0, big_done=0, big_done_at_small_end=-1)
+    app = coco.App(
+        coco.AppConfig(
+            name="test_fair_live_components",
+            environment=coco_env,
+            max_inflight_components=_FAIR_POOL,
+        ),
+        _main_two_live_components,
+    )
+    app.update_blocking()
+    assert _fair["big_done"] == _FAIR_BIG
+    assert 0 <= _fair["big_done_at_small_end"] < _FAIR_BIG // 3, _fair
+
+
 # ── Delete-mode processing ──────────────────────────────────────────────
 
 

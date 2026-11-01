@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 
-use crate::engine::admission::Lender;
+use crate::engine::admission::{Lender, LiveShare};
 use crate::engine::component::{
     ActivityGuard, Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle,
     OnError,
@@ -170,6 +170,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.app_store().clone(),
             providers,
             parent_ctx.admission().lender().clone(),
+            parent_ctx.admission().share().new_live(),
         );
 
         // 9. Create readiness handle that resolves when mark_ready is called.
@@ -472,11 +473,16 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// it waits for this component's readiness, so without the loan a full
     /// pool would deadlock them. Once it ends, they take pool tokens.
     lender: Lender,
+
+    /// This live component's share of the pool, divided between its updates
+    /// (each cycle and each per-subpath op is one) and the live components
+    /// they mount; see [`crate::engine::admission`].
+    share: LiveShare,
 }
 
 impl<Prof: EngineProfile> LiveComponentController<Prof> {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         component: Component<Prof>,
         state: Arc<LiveComponentState<Prof>>,
         processing_stats: ProcessingStats,
@@ -487,6 +493,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         app_store: AppStore,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
+        share: LiveShare,
     ) -> Self {
         Self {
             component,
@@ -499,6 +506,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             app_store,
             providers,
             lender,
+            share,
         }
     }
 
@@ -592,8 +600,8 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // silently swallow cycle failures.
         let context = ComponentProcessorContext::new_borrowing_from(
             self.component.clone(),
-            None,
             Some(self.lender.clone()),
+            self.share.new_update(),
             self.processing_stats.clone(),
             self.host_ctx.clone(),
             // Mirror `Component::mount`: store the same on_error on the
@@ -762,6 +770,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let preview_collector = self.preview_collector.clone();
         let app_store = self.app_store.clone();
         let lender = self.lender.clone();
+        let share = self.share.clone();
 
         // Queued ops keep the live component active until the drain task
         // exits, whether or not `process_live` is still running.
@@ -780,6 +789,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 preview_collector,
                 app_store,
                 lender,
+                share,
             )
             .await;
         });
@@ -909,12 +919,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // (mirroring `update_full`'s ctx construction). The building state
         // is local to this context — child registration in `child_path_set`
         // is benign: nothing else reads this isolated state.
+        // Its update share puts the inner live component under this one. It
+        // has no lender: it admits nothing itself.
         let parent_ctx = ComponentProcessorContext::new_borrowing_from(
             self.component.clone(),
             None,
-            // No lender, as before this context took the store handle: it
-            // admits nothing itself.
-            None,
+            self.share.new_update(),
             self.processing_stats.clone(),
             self.host_ctx.clone(),
             // No on_error on this synthetic parent context — it only
@@ -1091,6 +1101,7 @@ async fn drain_task_body<Prof: EngineProfile>(
     preview_collector: Option<PreviewActionCollector<Prof>>,
     app_store: AppStore,
     lender: Lender,
+    share: LiveShare,
 ) {
     loop {
         // ── Step 1: take queued op (or gate / exit) ──
@@ -1160,6 +1171,7 @@ async fn drain_task_body<Prof: EngineProfile>(
             &preview_collector,
             &app_store,
             &lender,
+            &share,
         )
         .await;
 
@@ -1219,6 +1231,7 @@ async fn run_op<Prof: EngineProfile>(
     preview_collector: &Option<PreviewActionCollector<Prof>>,
     app_store: &AppStore,
     lender: &Lender,
+    share: &LiveShare,
 ) -> Result<()> {
     let _ = state; // kept for symmetry / future use
     let child = component.get_child(subpath.clone());
@@ -1229,8 +1242,8 @@ async fn run_op<Prof: EngineProfile>(
         } => {
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
-                None,
                 Some(lender.clone()),
+                share.new_update(),
                 processing_stats.clone(),
                 host_ctx.clone(),
                 // Mirror `Component::mount`: same on_error stored on the
@@ -1258,8 +1271,8 @@ async fn run_op<Prof: EngineProfile>(
             }
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
-                None,
                 Some(lender.clone()),
+                share.new_update(),
                 processing_stats.clone(),
                 host_ctx.clone(),
                 ComponentProcessingAction::new_delete(providers.clone(), on_error),

@@ -10,7 +10,8 @@
 use crate::positions::TextRange;
 
 use super::lang::{
-    LangCtx, LayerClass, PrimaryRegion, RawCut, cut_candidate, is_section_heading, region_interior,
+    LangCtx, LayerClass, PrimaryRegion, RawCut, cut_candidate, implicit_body_container,
+    region_interior,
 };
 
 /// A frame line longer than this is truncated with `…` (defends against
@@ -142,13 +143,7 @@ pub fn context_frames(source: &crate::CodeSource<'_>, range: TextRange) -> Vec<C
                 walk = region;
             }
             PrimaryRegion::Implicit(body) => {
-                // Virtual setext sections: the body's sibling nodes live under the
-                // flat parent section, not under the heading node itself.
-                walk = if is_section_heading(&ctx, cut.node.kind()) {
-                    cut.node.parent().unwrap_or(cut.node)
-                } else {
-                    cut.node
-                };
+                walk = implicit_body_container(&cut.node, &ctx);
                 interior = body;
             }
         }
@@ -317,6 +312,77 @@ Run the installer now.
             [
                 ("# Title\n".to_string(), true),
                 ("## Install\n".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn markdown_setext_sections() {
+        // tree-sitter-md puts a setext run in one flat section: each heading's body
+        // is its following siblings, under that section rather than the heading.
+        let src = "\
+Title
+=====
+
+Intro paragraph.
+
+Install
+-------
+
+Run the installer now.
+";
+        assert_eq!(
+            frames_at(src, "markdown", "Run the installer now."),
+            [
+                ("Title\n".to_string(), true),
+                ("Install\n".to_string(), true)
+            ]
+        );
+    }
+
+    #[test]
+    fn csharp_file_scoped_namespace_frames_following_declarations() {
+        // `namespace X;` holds only its own line: the declarations after it are its
+        // siblings in the tree, yet it scopes all of them.
+        let src = "\
+using System;
+
+namespace Example.Tools;
+
+public class ScopedType
+{
+    public int Value => 1;
+}
+";
+        assert_eq!(
+            frames_at(src, "csharp", "public int Value"),
+            [
+                ("namespace Example.Tools;\n".to_string(), true),
+                ("public class ScopedType\n".to_string(), true),
+            ]
+        );
+        assert_eq!(
+            frames_at(src, "csharp", "public class ScopedType"),
+            [("namespace Example.Tools;\n".to_string(), true)]
+        );
+        // What precedes the namespace is outside it.
+        assert_eq!(frames_at(src, "csharp", "using System;"), []);
+    }
+
+    #[test]
+    fn csharp_file_scoped_namespace_sharing_a_line() {
+        // The namespace and a class share a line: that line frames once, and the
+        // namespace still scopes the declarations on later lines.
+        let src = "namespace A; class B {\n    int X => 1;\n}\nclass C\n{\n    int Y => 2;\n}\n";
+        assert_eq!(
+            frames_at(src, "csharp", "int X => 1;"),
+            [("namespace A; class B {\n".to_string(), true)]
+        );
+        assert_eq!(
+            frames_at(src, "csharp", "int Y => 2;"),
+            [
+                ("namespace A; class B {\n".to_string(), true),
+                ("class C\n".to_string(), true),
             ]
         );
     }

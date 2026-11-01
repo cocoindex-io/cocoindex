@@ -74,6 +74,14 @@ pub struct ValueDeclKind {
     pub value_field: &'static str,
 }
 
+/// A file-scoped declaration kind: a node holding only its head (C#'s `namespace X;`)
+/// that scopes the rest of its parent. The declarations it scopes are its siblings in
+/// the tree, not its children.
+pub struct FileScopedKind {
+    pub kind: &'static str,
+    pub name_field: &'static str,
+}
+
 /// The irreducible per-language facts (spec §Per-language configuration).
 pub struct StructuralLanguageExt {
     /// Region kinds delimited by indentation / implicit extent instead of token pairs.
@@ -84,6 +92,8 @@ pub struct StructuralLanguageExt {
     pub non_region_kinds: &'static [&'static str],
     /// Named-value declaration kinds (§Named values).
     pub value_decl_kinds: &'static [ValueDeclKind],
+    /// File-scoped declaration kinds: each is a scoped layer over the rest of its parent.
+    pub file_scoped_kinds: &'static [FileScopedKind],
     /// Attached-prefix kinds beyond the universal comment set (attributes, decorators).
     pub extra_attached_prefix_kinds: &'static [&'static str],
     /// Line-comment prefix, for roster rendering and doc-paragraph detection.
@@ -191,6 +201,7 @@ static PYTHON_EXT: StructuralLanguageExt = StructuralLanguageExt {
         name_field: "left",
         value_field: "right",
     }],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &["decorator"],
     line_comment_prefix: "#",
     doc_convention: DocConvention::Docstring,
@@ -219,6 +230,7 @@ static RUST_EXT: StructuralLanguageExt = StructuralLanguageExt {
             value_field: "value",
         },
     ],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &["attribute_item"],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -235,6 +247,7 @@ static TS_EXT: StructuralLanguageExt = StructuralLanguageExt {
         name_field: "name",
         value_field: "value",
     }],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &["decorator"],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -258,6 +271,7 @@ static GO_EXT: StructuralLanguageExt = StructuralLanguageExt {
             value_field: "value",
         },
     ],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -270,6 +284,7 @@ static JAVA_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -282,6 +297,7 @@ static SWIFT_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -294,6 +310,7 @@ static KOTLIN_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -306,6 +323,7 @@ static CFAMILY_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -320,6 +338,10 @@ static CSHARP_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[FileScopedKind {
+        kind: "file_scoped_namespace_declaration",
+        name_field: "name",
+    }],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -335,6 +357,7 @@ static SCALA_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -347,6 +370,7 @@ static BASH_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "#",
     doc_convention: DocConvention::PrecedingComments,
@@ -359,6 +383,7 @@ static SQL_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "--",
     doc_convention: DocConvention::PrecedingComments,
@@ -371,6 +396,7 @@ static HASH_COMMENT_GENERIC_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "#",
     doc_convention: DocConvention::PrecedingComments,
@@ -383,6 +409,7 @@ static SLASH_COMMENT_GENERIC_EXT: StructuralLanguageExt = StructuralLanguageExt 
     extra_delimiter_pairs: &[],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: "//",
     doc_convention: DocConvention::PrecedingComments,
@@ -395,6 +422,7 @@ static MARKDOWN_EXT: StructuralLanguageExt = StructuralLanguageExt {
     extra_delimiter_pairs: &[("```", "```"), ("~~~", "~~~")],
     non_region_kinds: &[],
     value_decl_kinds: &[],
+    file_scoped_kinds: &[],
     extra_attached_prefix_kinds: &[],
     line_comment_prefix: ">",
     doc_convention: DocConvention::PrecedingComments,
@@ -613,7 +641,9 @@ pub struct ScopeInfo {
 #[derive(Clone, Copy)]
 pub enum PrimaryRegion<'t> {
     Node(tree_sitter::Node<'t>),
-    /// Markdown section body: no node, just the span after the heading.
+    /// No node, just a span: a Markdown section's body after its heading, or what a
+    /// file-scoped declaration scopes. `implicit_body_container` names the node
+    /// holding the nodes in that span.
     Implicit(TextRange),
 }
 
@@ -622,7 +652,8 @@ pub struct Classified<'t> {
     pub class: LayerClass,
     pub primary: PrimaryRegion<'t>,
     /// Span end override: virtual setext sections own the sibling run past their
-    /// heading node (tree-sitter-md wraps a whole setext run in one flat `section`).
+    /// heading node (tree-sitter-md wraps a whole setext run in one flat `section`),
+    /// and a file-scoped declaration owns the sibling run after it.
     pub span_end: Option<usize>,
 }
 
@@ -644,6 +675,26 @@ pub fn is_section_heading(ctx: &LangCtx, kind: &str) -> bool {
     ctx.ext
         .section_kinds
         .is_some_and(|(_, heading_kinds)| heading_kinds.contains(&kind))
+}
+
+fn file_scoped_kind<'a>(ctx: &'a LangCtx, kind: &str) -> Option<&'a FileScopedKind> {
+    ctx.ext.file_scoped_kinds.iter().find(|fs| fs.kind == kind)
+}
+
+/// The node whose children make up the body of an `Implicit`-primary layer anchored
+/// at `node`. A virtual setext section's heading and a file-scoped declaration own
+/// the sibling run after them, so their body lives under their parent; a
+/// single-heading section holds its body itself.
+pub fn implicit_body_container<'t>(
+    node: &tree_sitter::Node<'t>,
+    ctx: &LangCtx,
+) -> tree_sitter::Node<'t> {
+    let kind = node.kind();
+    if is_section_heading(ctx, kind) || file_scoped_kind(ctx, kind).is_some() {
+        node.parent().unwrap_or(*node)
+    } else {
+        *node
+    }
 }
 
 fn count_headings(node: &tree_sitter::Node, heading_kinds: &[&str]) -> usize {
@@ -738,6 +789,23 @@ pub fn classify<'t>(
                 primary: PrimaryRegion::Implicit(TextRange::new(node.end_byte(), end)),
             });
         }
+    }
+
+    // File-scoped declarations: the node holds only its head, and the layer owns the
+    // sibling run after it, to the end of its parent.
+    if let Some(fs) = file_scoped_kind(ctx, kind)
+        && let Some(name) = node.child_by_field_name(fs.name_field)
+        && let Some(parent) = node.parent()
+    {
+        let end = parent.end_byte();
+        return Some(Classified {
+            span_end: Some(end),
+            class: LayerClass::Scoped(ScopeInfo {
+                name_range: TextRange::new(name.start_byte(), name.end_byte()),
+                type_like: false,
+            }),
+            primary: PrimaryRegion::Implicit(TextRange::new(node.end_byte(), end)),
+        });
     }
 
     if let Some(tables) = ctx.tables {

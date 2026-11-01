@@ -268,6 +268,13 @@ class App(Generic[P, R]):
                 )
             return self._core_env_app
 
+    def _release_core_env_app(self, environment: LazyEnvironment) -> None:
+        """Release transient core objects owned by a stopped lazy environment."""
+        if self._environment is not environment:
+            return
+        with self._lock:
+            self._core_env_app = None
+
     def update(
         self,
         *,

@@ -233,7 +233,7 @@ fn write_plain_map(
 /// Returns `false`, leaving `fp` in an unspecified state, when it is not: a type
 /// other than exactly `None` / `bool` / `int` / `float` / `str` / `bytes` /
 /// `list` / `tuple` / `dict`, a `dict` key that is not a `str`, a container
-/// reached twice (the canonical form encodes those as ordinal back-references),
+/// reached twice (left to the Python canonicalizer, which tells a cycle from a shared container),
 /// or nesting deeper than `MAX_PLAIN_DEPTH`.
 fn write_plain(
     fp: &mut Fingerprinter,

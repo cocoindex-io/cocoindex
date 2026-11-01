@@ -87,7 +87,11 @@ T = TypeVar("T")
 
 
 def _get_aiohttp() -> Any:
-    """Lazily import aiohttp."""
+    """Lazily import aiohttp.
+
+    The repo convention is ``httpx``, but Stream Load needs ``aiohttp``: see
+    the ``Expect: 100-continue`` note in ``_stream_load``.
+    """
     try:
         import aiohttp  # type: ignore[import-not-found]
 
@@ -577,6 +581,9 @@ async def _stream_load(
     # Create a session bound to the current event loop. _apply_actions may run
     # on a fresh per-thread loop, so a session cached on the connection (and its
     # original loop) cannot be reused here without "attached to a different loop".
+    # Session-level auth, not an Authorization header: aiohttp strips the header
+    # on the cross-origin 307 below but re-applies session auth, so the
+    # credentials reach the BE.
     session = aiohttp_mod.ClientSession(
         auth=aiohttp_mod.BasicAuth(config.username, config.password)
     )
@@ -592,6 +599,13 @@ async def _stream_load(
         "format": "json",
         "strip_outer_array": "true",
         "label": label,
+        # The FE answers a Stream Load PUT with a 307 to a BE without reading
+        # the body, and a client still writing the body when the 307 arrives
+        # gets a reset on Doris >= 3.1.3 (Jetty 12). aiohttp honors this header:
+        # it sends the headers, waits for the server's verdict, and the redirect
+        # cancels the pending body write, so the body only ever goes to the BE
+        # (which answers 100 Continue). This is why the connector uses aiohttp
+        # rather than httpx, which has no 100-continue support.
         "Expect": "100-continue",
     }
     if columns:
