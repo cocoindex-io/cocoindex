@@ -156,7 +156,7 @@ class _GraphHandle:
     ) -> list[dict[str, Any]]:
         """Run a single statement against this database and return the rows."""
         async with self._driver.session(database=self._database) as session:
-            result = await session.run(cypher, **(params or {}))
+            result = await session.run(cypher, parameters=params)
             return [dict(record) async for record in result]
 
 
