@@ -12,7 +12,6 @@
 //! persisting run would. See [`super::AppStore::discarding_writes`].
 
 use crate::prelude::*;
-use crate::state_store::app_store::FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING;
 
 pub(crate) type Env = heed::Env<heed::WithoutTls>;
 
@@ -300,14 +299,9 @@ impl<'env> WriteTxn<'env> {
         }
     }
 
-    /// The lowest id this txn's id reservations may hand out: 1 when they
-    /// persist; past every id a persisting run will reach when they belong to
-    /// a run that persists nothing, so the two never hand out the same id.
-    pub(crate) fn first_reservable_id(&self) -> u64 {
-        match self.inner {
-            WriteTxnInner::Applying(_) => 1,
-            WriteTxnInner::Discarding { .. } => FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING,
-        }
+    /// Whether this txn's writes reach LMDB.
+    pub(crate) fn persists(&self) -> bool {
+        matches!(self.inner, WriteTxnInner::Applying(_))
     }
 
     /// Commits the writes: to LMDB if this txn persists them, else into the
@@ -379,15 +373,17 @@ impl<'env> WriteTxn<'env> {
     }
 
     /// Store `value` under `key` in `db` if this txn persists its writes;
-    /// otherwise forget `key` for the rest of the run, as if it had been
-    /// deleted. For large values that a run can recompute when it misses
-    /// them (function memos), so a run that persists nothing does not hold
-    /// every one of them in memory.
+    /// otherwise drop only the run's own write of `key`, so the run reads
+    /// whatever LMDB holds there. For large values a run can recompute when
+    /// it misses them (function memos): a run that persists nothing holds
+    /// none of them in memory, and still finds the stored ones, as an update
+    /// would.
     pub(crate) fn put_or_forget(&mut self, db: &Db, key: &[u8], value: &[u8]) -> Result<()> {
         match &mut self.inner {
             WriteTxnInner::Applying(txn) => db.raw.put(txn, key, value)?,
-            WriteTxnInner::Discarding { snapshot, view, .. } => {
-                Self::record_forget(snapshot, view, db, key)?
+            WriteTxnInner::Discarding { view, .. } => {
+                view.writes_of(db)?;
+                view.writes.remove_mut(key);
             }
         }
         Ok(())

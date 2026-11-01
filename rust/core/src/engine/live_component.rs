@@ -1251,9 +1251,9 @@ async fn run_op<Prof: EngineProfile>(
             inner_handle.ready().await
         }
         Op::Delete { on_error } => {
-            // A preview previews no deletes of components (see
-            // `LiveComponentController::delete`).
-            if preview_collector.is_some() {
+            // A run that persists nothing (a preview) previews no deletes of
+            // components (see `LiveComponentController::delete`).
+            if app_store.write_scope() != crate::state_store::WriteScope::Persisted {
                 return Ok(());
             }
             let context = ComponentProcessorContext::new_borrowing_from(

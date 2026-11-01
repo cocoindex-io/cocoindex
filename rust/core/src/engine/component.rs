@@ -2680,7 +2680,7 @@ mod tests {
 
     /// Every key and value of the app's state store.
     async fn app_store_contents(app: &App<TestProfile>) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let app_store = app.app_ctx().app_store();
+        let app_store = app.app_ctx().persisting_app_store();
         let read = app_store.read_txn().await.unwrap();
         app_store
             .db()
@@ -2946,7 +2946,7 @@ mod tests {
     #[tokio::test]
     async fn a_previews_stored_memo_does_not_hide_the_persisted_one() {
         let (app, _dir) = test_app("stored_memo_scopes").await;
-        let store = app.app_ctx().app_store();
+        let store = app.app_ctx().persisting_app_store();
         let preview = store.discarding_writes();
         let fp = |name: &str| Fingerprint::from(&name).unwrap();
         let memo = |name: &str| super::StoredMemo {

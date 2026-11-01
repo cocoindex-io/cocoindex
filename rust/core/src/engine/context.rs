@@ -131,10 +131,11 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         &self.inner.env
     }
 
-    /// The app's state store, persisting every write. A component run reads
-    /// and writes through [`ComponentProcessorContext::app_store`] instead,
-    /// which persists nothing in a preview.
-    pub fn app_store(&self) -> &AppStore {
+    /// The app's state store, persisting every write: for deriving a root
+    /// run's handle, and for inspection. A component run reads and writes
+    /// through [`ComponentProcessorContext::app_store`] instead, which
+    /// persists nothing in a preview.
+    pub(crate) fn persisting_app_store(&self) -> &AppStore {
         &self.inner.app_store
     }
 
@@ -777,10 +778,13 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 ComponentProcessingAction::Build(build_ctx)
                     if build_ctx.preview_collector.is_some() =>
                 {
-                    component.app_ctx().app_store().discarding_writes()
+                    component
+                        .app_ctx()
+                        .persisting_app_store()
+                        .discarding_writes()
                 }
                 ComponentProcessingAction::Build(_) | ComponentProcessingAction::Delete(_) => {
-                    component.app_ctx().app_store().clone()
+                    component.app_ctx().persisting_app_store().clone()
                 }
             },
         };

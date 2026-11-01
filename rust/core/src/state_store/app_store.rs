@@ -484,9 +484,10 @@ impl AppStore {
     }
 
     /// Store a pre-serialized function memo. A run that persists nothing
-    /// keeps none (see [`WriteTxn::put_or_forget`]): memo values can be large
-    /// (embeddings, model outputs), and a later run of the same component in
-    /// that run recomputes what it misses.
+    /// keeps none of its own (see [`WriteTxn::put_or_forget`]): memo values
+    /// can be large (embeddings, model outputs). A later run of the same
+    /// component in that run reads the memo the store holds, if any, and
+    /// validates it as an update would; it recomputes only what it misses.
     pub async fn write_fn_memo_raw(
         &self,
         txn: &mut WriteTxn<'_>,
@@ -749,7 +750,13 @@ impl AppStore {
         key: &StableKey,
         count: u64,
     ) -> Result<u64> {
-        let first_id = txn.first_reservable_id();
+        // A run that persists nothing reserves past every id a persisting
+        // run will reach, so the two never hand out the same id.
+        let first_id = if txn.persists() {
+            1
+        } else {
+            FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING
+        };
         let current_next_id = self
             .peek_id_sequence_in_txn(&mut *txn, key)
             .await?
@@ -1048,11 +1055,11 @@ mod tests {
         assert_eq!(reserve_one(&store, &key).await, 3);
     }
 
-    /// A discarding run keeps no function memo it writes: a later read in the
-    /// run finds none, not even the one the store holds, so the run
-    /// recomputes rather than holding every memo value in memory.
+    /// A discarding run keeps no function memo value it writes, but a later
+    /// read in the run still finds the memo the store holds, as an update's
+    /// would; with none stored, it finds nothing and recomputes.
     #[tokio::test]
-    async fn discarding_run_forgets_the_function_memos_it_writes() {
+    async fn discarding_run_keeps_no_function_memo_but_reads_the_stored_one() {
         let (store, _dir) = make_test_store().await;
         let path = comp_path("component");
         let fp = Fingerprint::from(&"memo").unwrap();
@@ -1073,13 +1080,21 @@ mod tests {
                     .unwrap()
             }
         };
+        // Nothing stored yet: the preview's own value is not kept.
+        assert_eq!(
+            write_then_read(store.discarding_writes(), b"previewed").await,
+            None
+        );
         assert_eq!(
             write_then_read(store.clone(), b"stored").await.as_deref(),
             Some(&b"stored"[..])
         );
+        // A stored memo stays visible to the preview after it rewrites it.
         assert_eq!(
-            write_then_read(store.discarding_writes(), b"previewed").await,
-            None
+            write_then_read(store.discarding_writes(), b"previewed")
+                .await
+                .as_deref(),
+            Some(&b"stored"[..])
         );
         // The store still holds its own memo.
         let read = store.read_txn().await.unwrap();

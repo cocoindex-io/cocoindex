@@ -29,7 +29,7 @@ pub use db_schema::StablePathNodeType;
 pub async fn iter_stable_paths<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static + use<Prof> {
-    let app_store = app.app_ctx().app_store().clone();
+    let app_store = app.app_ctx().persisting_app_store().clone();
     let rx = app_store.spawn_stable_path_iter().await;
     receiver_to_stable_path_info_stream(rx)
 }
@@ -456,7 +456,7 @@ pub async fn get_stable_path_detail<Prof: EngineProfile>(
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
     let seed = provider_key_seed(app.app_ctx().env());
-    get_stable_path_detail_from_store(app.app_ctx().app_store(), seed, path).await
+    get_stable_path_detail_from_store(app.app_ctx().persisting_app_store(), seed, path).await
 }
 
 pub async fn get_stable_path_detail_by_name<Prof: EngineProfile>(
@@ -500,7 +500,7 @@ pub async fn iter_stable_path_details<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathDetail>> + Send + 'static + use<Prof> {
     let seed = provider_key_seed(app.app_ctx().env());
-    spawn_stable_path_detail_iter(app.app_ctx().app_store().clone(), seed).await
+    spawn_stable_path_detail_iter(app.app_ctx().persisting_app_store().clone(), seed).await
 }
 
 /// Like [`iter_stable_path_details`], but takes an environment and an app
@@ -615,7 +615,7 @@ pub async fn query_stable_path_details<Prof: EngineProfile>(
     include_parents: bool,
 ) -> Result<Vec<StablePathDetail>> {
     query_details_from_store(
-        app.app_ctx().app_store(),
+        app.app_ctx().persisting_app_store(),
         provider_key_seed(app.app_ctx().env()),
         path,
         include_children,
@@ -735,7 +735,7 @@ pub async fn iter_target_states<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static + use<Prof> {
     let seed = provider_key_seed(app.app_ctx().env());
-    spawn_target_state_iter(app.app_ctx().app_store().clone(), seed).await
+    spawn_target_state_iter(app.app_ctx().persisting_app_store().clone(), seed).await
 }
 
 /// Like [`iter_target_states`], but takes an environment and an app name.
@@ -795,7 +795,6 @@ mod tests {
     ) {
         let store2 = store.clone();
         store
-            .storage
             .run_txn(move |wtxn| {
                 let store = store2.clone();
                 let tracking = tracking.clone();
@@ -819,7 +818,6 @@ mod tests {
     async fn commit_segment_names(store: &AppStore, names: Vec<(Fingerprint, StableKey)>) {
         let store2 = store.clone();
         store
-            .storage
             .run_txn(move |wtxn| {
                 let store = store2.clone();
                 let names = names.clone();

@@ -25,7 +25,7 @@ use crate::state::target_state_path::{
 };
 use crate::state_store::{
     AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
-    PrecommitReadPlan, PrecommitWritePlan, WriteTxn, reconcile_child_existence,
+    PrecommitReadPlan, PrecommitWritePlan, WriteScope, WriteTxn, reconcile_child_existence,
 };
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -1730,7 +1730,17 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // later reads find the component committed as an update would leave it,
     // and nothing persists. The commit's Phase 5 deletes of the child
     // components this run no longer declares are not previewed.
-    if let Some(collector) = comp_ctx.preview_collector() {
+    // Whether the run applies its actions follows its store handle, as
+    // whether it persists does: a run whose writes do not persist must not
+    // apply its actions either, or LMDB would record states the targets no
+    // longer have.
+    if comp_ctx.app_store().write_scope() != WriteScope::Persisted {
+        let Some(collector) = comp_ctx.preview_collector() else {
+            cleanup_pending_token(comp_ctx, process_token).await;
+            return Err(internal_error!(
+                "a run that persists nothing reached submit without a preview collector"
+            ));
+        };
         let planned: Result<Vec<_>> = async {
             if let Some((child_provider, _)) = actions_by_sinks
                 .values()

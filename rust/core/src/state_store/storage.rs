@@ -477,7 +477,7 @@ impl Storage {
     /// The future must be boxed (`BoxFuture<'a, _>` = `Pin<Box<dyn Future +
     /// Send + 'a>>`) because stable Rust can't yet express a `Send` bound on
     /// the future returned by an `AsyncFnOnce` borrowing from the txn.
-    pub(crate) async fn run_txn<T, F>(&self, body: F) -> Result<T>
+    pub(super) async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
         F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
