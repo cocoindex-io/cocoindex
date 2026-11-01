@@ -33,6 +33,10 @@ settings = coco.Settings(db_path=pathlib.Path("./cocoindex.db"))
 
 Setting `db_path` in the lifespan or `Settings` takes precedence over the `COCOINDEX_DB` environment variable. If neither is provided, CocoIndex will raise an error.
 
+## Opening and closing the database
+
+Opening a `db_path` opens its LMDB environment, and LMDB allows one environment per path per process. Opening the same path again while the first one is still held fails. See [Closing an Environment](./multiple_environments#closing-an-environment) for when an explicit environment releases its store, and the error you get when you reopen a path too early.
+
 ## LMDB tuning
 
 The LMDB database has two tunable settings, grouped under `coco.LmdbSettings` and attached to `Settings` as `db_settings`. The defaults work well for most use cases — you only need to adjust them for large-scale deployments.
