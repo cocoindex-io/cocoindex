@@ -58,7 +58,7 @@ POSTGRES_URL=postgres://cocoindex:cocoindex@localhost:5432/cocoindex
 ### Installation
 
 ```bash
-pip install sqlite-vec
+uv add sqlite-vec
 ```
 
 **Note for macOS**: Use Homebrew Python for extension support:
@@ -84,7 +84,7 @@ conn = sqlite.connect("./data.db", load_vec=False)   # No vector support
 ### Installation
 
 ```bash
-pip install lancedb
+uv add lancedb
 ```
 
 ### Local Storage

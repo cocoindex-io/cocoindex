@@ -1,3 +1,8 @@
+#![allow(
+    clippy::clone_on_copy,
+    reason = "pyo3's `from_py_object` impl clones the pyclass, out of reach of an item-level allow"
+)]
+
 use crate::prelude::*;
 
 use pyo3::types::PyBytes;
@@ -23,6 +28,7 @@ impl PyFingerprint {
     }
 
     /// Base64 encoding used by CocoIndex for human-readable fingerprints.
+    #[allow(clippy::wrong_self_convention, reason = "pymethods take `&self`")]
     pub fn to_base64(&self) -> String {
         self.0.to_base64()
     }

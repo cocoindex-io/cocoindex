@@ -5,15 +5,19 @@ This module provides a two-level target state system for SurrealDB:
 1. Table level: Creates/drops tables in the database (DEFINE TABLE / REMOVE TABLE)
 2. Record level: Upserts/deletes records within tables (UPSERT / DELETE / RELATE)
 
+Record-level writes send every value as a typed CBOR parameter, raise on any
+statement error, and run in bounded transactions (see ``_SharedRecordApplier``).
+
 Supports both normal tables and relation (graph edge) tables, with optional
 schema enforcement (SCHEMAFULL/SCHEMALESS) and vector index support.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import decimal
-import json
+import random
 import re
 import uuid
 from dataclasses import dataclass
@@ -31,32 +35,35 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+from cocoindex._internal.extras import install_hint
+
 try:
     import surrealdb as _surrealdb  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "surrealdb is required to use the SurrealDB connector. "
-        "Please install cocoindex[surrealdb]."
+        + install_hint("surrealdb")
     ) from e
 
 if TYPE_CHECKING:
     # surrealdb is untyped; use Any so mypy doesn't complain about attribute access.
     AsyncSurreal = Any
+    RecordID = Any
 else:
     AsyncSurreal = _surrealdb.AsyncSurreal
+    RecordID = _surrealdb.RecordID
 
 import numpy as np
+from surrealdb.cbor import CBORTag as _CBORTag  # type: ignore[import-untyped]
 
 import cocoindex as coco
 from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
-    AnyType,
     MappingType,
     SequenceType,
     RecordType,
     TypeChecker,
-    UnionType,
     analyze_type_info,
     is_record_type,
 )
@@ -64,6 +71,7 @@ import msgspec
 
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+from cocoindex.connectorkits._per_loop_connections import PerLoopConnections
 
 # ---------------------------------------------------------------------------
 # Identifier validation & record ID formatting
@@ -84,18 +92,50 @@ def _validate_identifier(name: str, kind: str) -> None:
         )
 
 
-def _format_record_id(value: Any) -> str:
-    """Format a record ID for inline use in SurrealQL, preserving type.
+def _to_record_id(table: str, value: Any) -> Any:
+    """Build a typed record ID. A tuple / list ID becomes an array ID (``t:['a', 1]``)."""
+    if isinstance(value, (tuple, list)):
+        value = [_sanitize(v) for v in value]
+    return RecordID(table, value)
 
-    * ``int`` / ``float`` → bare numeric literal (``123``, ``3.14``)
-    * ``str`` (and everything else) → backtick-quoted with ``\\`` and
-      backtick escaping (`` `alice` ``, `` `has\\`tick` ``)
+
+def _relation_id_part(value: str) -> str:
+    """Length-prefix ``value``, so concatenated parts split back only one way."""
+    return f"{len(value)}:{value};"
+
+
+def _endpoint_id_fragment(value: Any) -> str:
+    """Encode an endpoint record ID as ``<type tag>:<value>``, so ``1`` and ``"1"`` differ.
+
+    A tuple and a list name the same array ID (see :func:`_to_record_id`), so they
+    encode the same. Other types are tagged with their qualified type name, which
+    always contains a ``.`` and so never equals the ``str`` / ``int`` / ``array`` tags.
     """
-    if isinstance(value, (int, float)):
-        return str(value)
-    s = str(value)
-    s = s.replace("\\", "\\\\").replace("`", "\\`")
-    return f"`{s}`"
+    if isinstance(value, str):
+        return f"str:{value}"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"int:{value}"
+    if isinstance(value, (tuple, list)):
+        parts = "".join(_relation_id_part(_endpoint_id_fragment(v)) for v in value)
+        return f"array:{parts}"
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}:{value}"
+
+
+def _auto_relation_id(from_table: str, from_id: Any, to_table: str, to_id: Any) -> str:
+    """The record ID of a relation declared without an explicit ``id``.
+
+    Each part is length-prefixed and each endpoint ID type-tagged, so distinct
+    endpoints never give the same ID.
+    """
+    return "".join(
+        (
+            _relation_id_part(from_table),
+            _relation_id_part(_endpoint_id_fragment(from_id)),
+            _relation_id_part(to_table),
+            _relation_id_part(_endpoint_id_fragment(to_id)),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +147,8 @@ class ConnectionFactory:
     """
     Connection factory for SurrealDB.
 
-    Holds connection parameters and creates authenticated connections on demand.
+    Holds connection parameters and creates authenticated connections on demand,
+    one per event loop.
 
     Example::
 
@@ -132,31 +173,78 @@ class ConnectionFactory:
         self._namespace = namespace
         self._database = database
         self._credentials = credentials
+        self._connections: PerLoopConnections[AsyncSurreal] = PerLoopConnections(
+            self._connect, _close_connection, owner="SurrealDB ConnectionFactory"
+        )
+
+    def __coco_memo_key__(self) -> tuple[str, str, str]:
+        # Where the data lives, not how to sign in: the credentials and the
+        # open connections are not part of it.
+        return (self._url, self._namespace, self._database)
 
     async def acquire(self) -> AsyncSurreal:
-        """Create a new authenticated connection on the current event loop."""
+        """Return the authenticated connection for the current event loop.
+
+        The connection is opened once per event loop (a connection is bound to
+        the loop it is used on) and reused by every table and batch on that
+        loop (a SurrealDB WebSocket multiplexes concurrent requests).
+        """
+        # ponytail: one shared connection per loop; add a pool if a single
+        # WebSocket becomes the throughput limit.
+        return await self._connections.acquire()
+
+    async def _connect(self) -> AsyncSurreal:
         conn = AsyncSurreal(self._url)
         await conn.connect()  # type: ignore[call-arg]
-        if self._credentials:
-            await conn.signin(self._credentials)  # type: ignore[arg-type]
-        await conn.use(self._namespace, self._database)
+        try:
+            if self._credentials:
+                await conn.signin(self._credentials)  # type: ignore[arg-type]
+            await conn.use(self._namespace, self._database)
+        except BaseException:
+            await conn.close()
+            raise
         return conn
+
+    async def close(self) -> None:
+        """Close the connection of the running event loop, if any. Call it on
+        the loop that used the factory (e.g. in the lifespan, after ``yield``);
+        a later ``acquire()`` opens a new connection. Connections of other
+        loops can't be closed here; they are left open, with a warning."""
+        await self._connections.close()
+
+
+async def _close_connection(conn: AsyncSurreal) -> None:
+    await conn.close()
 
 
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
 
-_RowKey = tuple[Any, ...]  # Primary key values as tuple (always (id,))
+_RowKey = tuple[Any, ...]  # (id,) for record mode; (id, group) for fields mode
 _ROW_KEY_CHECKER = TypeChecker(tuple[Any, ...])
 _RowFingerprint = bytes
+
+
+class _FieldsTracking(msgspec.Struct, frozen=True, array_like=True):
+    """Tracking record of a ``fields``-mode target: fingerprint plus owned field names.
+
+    The names let a delete (or a shrunk field group) ``UNSET`` exactly the fields this
+    group owned.
+    """
+
+    fp: bytes
+    names: tuple[str, ...]
+
+
+_RowTracking = bytes | _FieldsTracking
 
 
 class _RelationRowValue(NamedTuple):
     """Value type for relation records, carrying endpoint metadata separately from field data."""
 
-    from_record: str  # e.g. "person:`alice`"
-    to_record: str  # e.g. "post:`p1`"
+    from_record: tuple[str, Any]  # (table, id), e.g. ("person", "alice")
+    to_record: tuple[str, Any]  # (table, id), e.g. ("post", ["p", 1])
     fields: dict[str, Any]
 
 
@@ -194,16 +282,58 @@ class SurrealType(NamedTuple):
 # ---------------------------------------------------------------------------
 
 
-def _json_encoder(value: Any) -> str:
-    """Encode a value to JSON string for SurrealDB."""
-    return json.dumps(value, default=str)
-
-
 def _ndarray_encoder(value: Any) -> list[Any]:
     """Convert a NumPy ndarray to a Python list for SurrealDB."""
     if isinstance(value, list):
         return value
     return value.tolist()  # type: ignore[no-any-return]
+
+
+def _sanitize(value: Any) -> Any:
+    """Convert a Python value to one the SurrealDB SDK can encode as CBOR.
+
+    Applied exactly once per value, when the action is built. datetime, Decimal, UUID,
+    bytes and RecordID pass through, so they arrive typed.
+    """
+    if value is None or isinstance(  # type: ignore[misc]
+        value, (bool, int, float, str, bytes, decimal.Decimal, uuid.UUID, RecordID)
+    ):
+        return value
+    if isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, datetime.date):
+        return datetime.datetime.combine(value, datetime.time(), tzinfo=datetime.UTC)
+    if isinstance(value, datetime.time):
+        # ponytail: SurrealDB has no time-of-day type; stored as an ISO string.
+        return value.isoformat()
+    if isinstance(value, datetime.timedelta):
+        # Raw CBOR duration tag (14): surrealdb SDK 2.0.0 hangs when sent a ``Duration``.
+        seconds, rem = divmod(value // datetime.timedelta(microseconds=1), 1_000_000)
+        return _CBORTag(_CBOR_TAG_DURATION, [seconds, rem * 1000])
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Mapping):
+        return {str(k): _sanitize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_sanitize(v) for v in value]
+    if isinstance(value, msgspec.Struct) or is_record_type(type(value)):
+        return _sanitize(msgspec.to_builtins(value, builtin_types=_BUILTIN_TYPES))
+    return value
+
+
+_CBOR_TAG_DURATION = 14
+
+_BUILTIN_TYPES = (
+    bytes,
+    datetime.datetime,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    decimal.Decimal,
+    uuid.UUID,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -248,13 +378,15 @@ _LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
     uuid.UUID: _TypeMapping("uuid"),
     # Date/time types
     datetime.date: _TypeMapping("datetime"),
-    datetime.time: _TypeMapping("datetime"),
+    datetime.time: _TypeMapping("string"),
     datetime.datetime: _TypeMapping("datetime"),
     datetime.timedelta: _TypeMapping("duration"),
 }
 
-# Default mapping for complex types that need JSON encoding
-_OBJECT_MAPPING = _TypeMapping("object", _json_encoder)
+# Complex values are sent as native SurrealDB objects / arrays, not JSON strings
+_OBJECT_MAPPING = _TypeMapping("object")
+_ARRAY_MAPPING = _TypeMapping("array")
+_ANY_MAPPING = _TypeMapping("any")
 
 
 async def _get_type_mapping(
@@ -297,14 +429,13 @@ async def _get_type_mapping(
             f"Got type: {python_type}"
         )
 
-    # Complex types that need JSON encoding
-    if isinstance(
-        type_info.variant, (SequenceType, MappingType, RecordType, UnionType, AnyType)
-    ):
+    if isinstance(type_info.variant, SequenceType):
+        return _ARRAY_MAPPING
+    if isinstance(type_info.variant, (MappingType, RecordType)):
         return _OBJECT_MAPPING
 
-    # Default fallback
-    return _OBJECT_MAPPING
+    # Unions, Any and unknown types: no type constraint
+    return _ANY_MAPPING
 
 
 # ---------------------------------------------------------------------------
@@ -449,87 +580,135 @@ class _RecordAction(NamedTuple):
     is_relation: bool
     record_id: Any
     value: dict[str, Any] | None  # None = delete
-    from_record: str | None  # e.g. "person:alice" (relations only)
-    to_record: str | None  # e.g. "post:123" (relations only)
+    from_record: tuple[str, Any] | None  # (table, id) (relations only)
+    to_record: tuple[str, Any] | None  # (table, id) (relations only)
+    # ``fields`` mode: "set" MERGEs into an existing record (zero rows affected
+    # raises), "unset" MERGEs NONE values (a missing record is fine).
+    fields_op: Literal["set", "unset"] | None = None
 
 
+_MAX_ACTIONS_PER_TXN = 500
+_MAX_ATTEMPTS = 5
+
+# One transaction per chunk. Values are bound as typed CBOR parameters.
+# ``MERGE`` with a NONE value removes the field, so owned fields that became
+# None are unset without touching fields written by other owners.
+_BATCH_SURQL = """\
+BEGIN;
+FOR $r IN $ups { UPSERT $r.id MERGE $r.c RETURN NONE; };
+FOR $r IN $flds {
+    LET $n = (UPDATE ONLY $r.id MERGE $r.c RETURN id);
+    IF $n = NONE { THROW 'fields target record missing: ' + <string>$r.id; };
+};
+FOR $r IN $unf { UPDATE $r.id MERGE $r.c RETURN NONE; };
+FOR $r IN $rels {
+    DELETE $r.id RETURN NONE;
+    RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE;
+};
+FOR $d IN $dels { DELETE $d RETURN NONE; };
+COMMIT;
+"""
+
+
+class _RetryableError(RuntimeError):
+    """A transaction conflict: safe to retry the whole chunk."""
+
+
+def _check_response(res: Any) -> None:
+    """Raise if any statement of a ``query_raw`` response failed."""
+    if isinstance(res, dict) and res.get("error"):
+        err = res["error"]
+        msg = err.get("message", err) if isinstance(err, dict) else err
+        raise RuntimeError(f"SurrealDB batch failed: {msg}")
+    for stmt in res.get("result", []) if isinstance(res, dict) else []:
+        if stmt.get("status") == "OK":
+            continue
+        # Skip the "not executed" echoes that follow the real failure.
+        if (stmt.get("details") or {}).get("kind") in ("NotExecuted", "Cancelled"):
+            continue
+        msg = str(stmt.get("result"))
+        if "can be retried" in msg or "conflict" in msg.lower():
+            raise _RetryableError(msg)
+        raise RuntimeError(f"SurrealDB batch failed: {msg}")
+
+
+@dataclass(frozen=True)
 class _SharedRecordApplier:
-    """Owns a TargetActionSink shared by all record handlers for one database."""
+    """The record sink callback shared by every record handler of one database.
 
-    _conn: AsyncSurreal
-    sink: coco.TargetActionSink[_RecordAction]
+    Equal for the same ``ConnectionFactory``, so the record sinks of all tables
+    of one database — node and relation tables alike — share one identity (see
+    ``coco.TargetActionSink``) and the engine batches their actions together;
+    each batch is ordered by :meth:`_rank` so a relation is never written
+    before its endpoints exist.
 
-    def __init__(self, conn: AsyncSurreal) -> None:
-        self._conn = conn
-        self.sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+    Atomicity scope: the engine batches the actions of all components that share
+    this sink; they are applied in chunks of ``_MAX_ACTIONS_PER_TXN``, each chunk one
+    transaction. A failed chunk rolls back and raises, so the components are
+    retried on the next run. Earlier chunks stay committed (writes are idempotent).
+    """
 
-    async def _apply_actions(
+    factory: ConnectionFactory
+
+    @staticmethod
+    def _rank(action: _RecordAction) -> int:
+        # Order: upserts, fields writes, relation upserts, relation deletes, deletes.
+        if action.value is not None:
+            if action.fields_op is not None:
+                return 1
+            return 2 if action.is_relation else 0
+        return 3 if action.is_relation else 4
+
+    async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[_RecordAction]
     ) -> None:
         if not actions:
             return
+        conn = await self.factory.acquire()
+        ordered = sorted(actions, key=self._rank)  # stable
+        for start in range(0, len(ordered), _MAX_ACTIONS_PER_TXN):
+            await self._apply_chunk(conn, ordered[start : start + _MAX_ACTIONS_PER_TXN])
 
-        # Sort actions into 4 ordered buckets
-        upsert_normal: list[_RecordAction] = []
-        upsert_relation: list[_RecordAction] = []
-        delete_relation: list[_RecordAction] = []
-        delete_normal: list[_RecordAction] = []
-
-        for action in actions:
-            if action.value is not None:
-                if action.is_relation:
-                    upsert_relation.append(action)
-                else:
-                    upsert_normal.append(action)
+    async def _apply_chunk(
+        self, conn: AsyncSurreal, chunk: Sequence[_RecordAction]
+    ) -> None:
+        ups: list[dict[str, Any]] = []
+        flds: list[dict[str, Any]] = []
+        unf: list[dict[str, Any]] = []
+        rels: list[dict[str, Any]] = []
+        dels: list[Any] = []
+        for a in chunk:
+            rid = _to_record_id(a.table_name, a.record_id)
+            if a.value is None:
+                dels.append(rid)
+                continue
+            content = {k: _sanitize(v) for k, v in a.value.items() if k != "id"}
+            if a.fields_op == "set":
+                flds.append({"id": rid, "c": content})
+            elif a.fields_op == "unset":
+                unf.append({"id": rid, "c": content})
+            elif a.is_relation:
+                assert a.from_record is not None and a.to_record is not None
+                rels.append(
+                    {
+                        "id": rid,
+                        "f": _to_record_id(*a.from_record),
+                        "t": _to_record_id(*a.to_record),
+                        "c": content,
+                    }
+                )
             else:
-                if action.is_relation:
-                    delete_relation.append(action)
-                else:
-                    delete_normal.append(action)
+                ups.append({"id": rid, "c": content})
+        params = {"ups": ups, "flds": flds, "unf": unf, "rels": rels, "dels": dels}
 
-        # Build all statements into a single multi-statement query to avoid
-        # N round-trips (one per record). Content is inlined as JSON literals
-        # since $content variable binding doesn't work across batched statements.
-        statements: list[str] = ["BEGIN TRANSACTION;\n"]
-
-        for action in upsert_normal:
-            assert action.value is not None
-            content = {k: v for k, v in action.value.items() if k != "id"}
-            statements.append(
-                f"UPSERT {action.table_name}:{_format_record_id(action.record_id)}"
-                f" CONTENT {json.dumps(content, default=str)};\n"
-            )
-
-        for action in upsert_relation:
-            assert action.value is not None
-            assert action.from_record is not None
-            assert action.to_record is not None
-            # Delete before RELATE: SurrealDB relation records bind
-            # in/out as part of identity, so changing endpoints requires
-            # removing the old record first.
-            statements.append(
-                f"DELETE {action.table_name}:{_format_record_id(action.record_id)};\n"
-            )
-            content = {k: v for k, v in action.value.items() if k != "id"}
-            statements.append(
-                f"RELATE {action.from_record}"
-                f"->{action.table_name}:{_format_record_id(action.record_id)}"
-                f"->{action.to_record}"
-                f" CONTENT {json.dumps(content, default=str)};\n"
-            )
-
-        for action in delete_relation:
-            statements.append(
-                f"DELETE {action.table_name}:{_format_record_id(action.record_id)};\n"
-            )
-
-        for action in delete_normal:
-            statements.append(
-                f"DELETE {action.table_name}:{_format_record_id(action.record_id)};\n"
-            )
-
-        statements.append("COMMIT TRANSACTION;\n")
-        await self._conn.query("".join(statements))
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                _check_response(await conn.query_raw(_BATCH_SURQL, params))
+                return
+            except _RetryableError:
+                if attempt == _MAX_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(0.05 * 2**attempt * (1 + random.random()))
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +721,7 @@ class _VectorIndexSpec(NamedTuple):
 
     field: str
     metric: str  # "cosine", "euclidean", "manhattan"
-    method: str  # "mtree", "hnsw"
+    method: str  # "hnsw"
     dimension: int
     vector_type: str  # "f32", "f64", "i16", "i32", "i64"
 
@@ -558,40 +737,45 @@ class _VectorIndexAction(NamedTuple):
     spec: _VectorIndexSpec | None  # None = delete
 
 
-class _VectorIndexHandler:
-    """Attachment handler for vector indexes on a SurrealDB table."""
+@dataclass(frozen=True)
+class _VectorIndexApplier:
+    """The vector index sink callback of one database (equal for the same
+    ``ConnectionFactory``, so one sink identity per database)."""
 
-    _conn: AsyncSurreal
-    _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction]
+    factory: ConnectionFactory
 
-    def __init__(self, conn: AsyncSurreal, table_name: str) -> None:
-        self._conn = conn
-        self._table_name = table_name
-        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
-
-    async def _apply_actions(
+    async def __call__(
         self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
     ) -> None:
+        if not actions:
+            return
+        conn = await self.factory.acquire()
         for action in actions:
             if action.spec is None:
-                await self._conn.query(
-                    f"REMOVE INDEX {action.name} ON TABLE {action.table_name}"
-                )
-            else:
-                # Drop and recreate
-                await self._conn.query(
+                await conn.query(
                     f"REMOVE INDEX IF EXISTS {action.name} ON TABLE {action.table_name}"
                 )
+            else:
                 method = action.spec.method.upper()
                 dist = action.spec.metric.upper()
                 surql = (
-                    f"DEFINE INDEX {action.name} ON {action.table_name} "
+                    f"DEFINE INDEX OVERWRITE {action.name} ON {action.table_name} "
                     f"FIELDS {action.spec.field} "
                     f"{method} DIMENSION {action.spec.dimension} "
                     f"DIST {dist} TYPE {action.spec.vector_type.upper()}"
                 )
-                await self._conn.query(surql)
+                await conn.query(surql)
+
+
+class _VectorIndexHandler:
+    """Attachment handler for vector indexes on a SurrealDB table."""
+
+    _table_name: str
+    _sink: coco.TargetActionSink[_VectorIndexAction]
+
+    def __init__(self, factory: ConnectionFactory, table_name: str) -> None:
+        self._table_name = table_name
+        self._sink = coco.TargetActionSink.from_async_fn(_VectorIndexApplier(factory))
 
     def reconcile(
         self,
@@ -633,13 +817,26 @@ class _VectorIndexHandler:
 # ---------------------------------------------------------------------------
 
 
-class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
-    """Handler for record-level target states within a SurrealDB table."""
+def _owned_names(prev_possible_records: Collection[_RowTracking]) -> set[str]:
+    """Field names any previous run may have written (legacy bytes records: none)."""
+    names: set[str] = set()
+    for prev in prev_possible_records:
+        if isinstance(prev, _FieldsTracking):
+            names.update(prev.names)
+    return names
+
+
+class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
+    """Handler for record-level target states within a SurrealDB table.
+
+    Built by the table sink's ``child_handler`` factory, so it holds no
+    connection: its sinks acquire one when they apply.
+    """
 
     _table_name: str
     _is_relation: bool
     _table_schema: TableSchema[Any] | None
-    _conn: AsyncSurreal
+    _factory: ConnectionFactory
     _sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(
@@ -647,42 +844,30 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         is_relation: bool,
         table_schema: TableSchema[Any] | None,
-        conn: AsyncSurreal,
-        sink: coco.TargetActionSink[_RecordAction],
+        factory: ConnectionFactory,
     ) -> None:
         self._table_name = table_name
         self._is_relation = is_relation
         self._table_schema = table_schema
-        self._conn = conn
-        self._sink = sink
+        self._factory = factory
+        self._sink = coco.TargetActionSink.from_async_fn(_SharedRecordApplier(factory))
 
-    def attachment(self, att_type: str) -> _VectorIndexHandler | None:
-        if att_type == "vector_index":
-            return _VectorIndexHandler(self._conn, self._table_name)
-        return None
-
-    def _encode_row(self, row_dict: dict[str, Any]) -> dict[str, Any]:
-        """Apply column encoders from schema if present."""
-        if self._table_schema is None:
-            return row_dict
-        out: dict[str, Any] = {}
-        for k, v in row_dict.items():
-            col = self._table_schema.columns.get(k)
-            if col is not None and col.encoder is not None and v is not None:
-                out[k] = col.encoder(v)
-            else:
-                out[k] = v
-        return out
+    def attachments(self) -> dict[str, _VectorIndexHandler]:
+        return {"vector_index": _VectorIndexHandler(self._factory, self._table_name)}
 
     def reconcile(
         self,
         key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
-        prev_possible_records: Collection[_RowFingerprint],
+        prev_possible_records: Collection[_RowTracking],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_RecordAction, _RowFingerprint] | None:
+    ) -> coco.TargetReconcileOutput[_RecordAction, _RowTracking] | None:
         key = _ROW_KEY_CHECKER.check(key)
+        if len(key) == 2:
+            return self._reconcile_fields(
+                key, desired_state, prev_possible_records, prev_may_be_missing
+            )
 
         if coco.is_non_existence(desired_state):
             if not prev_possible_records and not prev_may_be_missing:
@@ -700,33 +885,90 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 tracking_record=coco.NON_EXISTENCE,
             )
 
-        target_fp = fingerprint_object(desired_state)
+        # Column encoders already ran once, when the row was declared.
+        if isinstance(desired_state, _RelationRowValue):
+            # Relations are single-owner: DELETE + RELATE replaces the whole edge.
+            target_fp = fingerprint_object(desired_state)
+            if not prev_may_be_missing and all(
+                prev == target_fp for prev in prev_possible_records
+            ):
+                return None
+            return coco.TargetReconcileOutput(
+                action=_RecordAction(
+                    table_name=self._table_name,
+                    is_relation=True,
+                    record_id=key[0],
+                    value=desired_state.fields,
+                    from_record=desired_state.from_record,
+                    to_record=desired_state.to_record,
+                ),
+                sink=self._sink,
+                tracking_record=target_fp,
+            )
+        return self._merge_output(
+            key, desired_state, prev_possible_records, prev_may_be_missing, None
+        )
+
+    def _merge_output(
+        self,
+        key: _RowKey,
+        desired: dict[str, Any],
+        prev_possible_records: Collection[_RowTracking],
+        prev_may_be_missing: bool,
+        fields_op: Literal["set"] | None,
+    ) -> coco.TargetReconcileOutput[_RecordAction, _RowTracking] | None:
+        """Record mode (``fields_op=None``, UPSERT ... MERGE) and ``fields`` mode
+        (``"set"``, UPDATE ... MERGE). Neither ever replaces the whole record.
+        """
+        names = tuple(sorted(desired))
+        tracking = _FieldsTracking(fingerprint_object(desired), names)
         if not prev_may_be_missing and all(
-            prev == target_fp for prev in prev_possible_records
+            prev == tracking for prev in prev_possible_records
         ):
             return None
-
-        # Extract relation metadata and field data
-        if isinstance(desired_state, _RelationRowValue):
-            from_record = desired_state.from_record
-            to_record = desired_state.to_record
-            encoded = self._encode_row(desired_state.fields)
-        else:
-            from_record = None
-            to_record = None
-            encoded = self._encode_row(desired_state)
-
+        # Fields owned before but no longer declared become NONE.
+        prev_names = _owned_names(prev_possible_records)
+        value = {**dict.fromkeys(sorted(prev_names - set(names))), **desired}
         return coco.TargetReconcileOutput(
             action=_RecordAction(
                 table_name=self._table_name,
-                is_relation=self._is_relation,
+                is_relation=False,
                 record_id=key[0],
-                value=encoded,
-                from_record=from_record,
-                to_record=to_record,
+                value=value,
+                from_record=None,
+                to_record=None,
+                fields_op=fields_op,
             ),
             sink=self._sink,
-            tracking_record=target_fp,
+            tracking_record=tracking,
+        )
+
+    def _reconcile_fields(
+        self,
+        key: _RowKey,
+        desired_state: Any,
+        prev_possible_records: Collection[_RowTracking],
+        prev_may_be_missing: bool,
+    ) -> coco.TargetReconcileOutput[_RecordAction, _RowTracking] | None:
+        """``fields`` mode: key ``(id, group)``; MERGE this group's fields onto the record."""
+        if coco.is_non_existence(desired_state):
+            if not prev_possible_records and not prev_may_be_missing:
+                return None
+            return coco.TargetReconcileOutput(
+                action=_RecordAction(
+                    table_name=self._table_name,
+                    is_relation=False,
+                    record_id=key[0],
+                    value=dict.fromkeys(sorted(_owned_names(prev_possible_records))),
+                    from_record=None,
+                    to_record=None,
+                    fields_op="unset",
+                ),
+                sink=self._sink,
+                tracking_record=coco.NON_EXISTENCE,
+            )
+        return self._merge_output(
+            key, desired_state, prev_possible_records, prev_may_be_missing, "set"
         )
 
 
@@ -838,8 +1080,22 @@ class _TableHandler(
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._record_handler
+        )
+
+    @staticmethod
+    def _record_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RecordHandler:
+        """The record handler for a created or updated table's records."""
+        spec = action.spec
+        assert not coco.is_non_existence(spec)
+        return _RecordHandler(
+            table_name=action.key.table_name,
+            is_relation=spec.is_relation,
+            table_schema=spec.table_schema,
+            factory=context_provider.get(action.key.db_key, ConnectionFactory),
         )
 
     def reconcile(
@@ -918,43 +1174,37 @@ class _TableHandler(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RecordHandler]],
         /,
     ) -> None:
         # Group by db_key
-        by_db: dict[str, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_db.setdefault(action.key.db_key, []).append(i)
+        by_db: dict[str, list[_TableAction]] = {}
+        for action in actions:
+            by_db.setdefault(action.key.db_key, []).append(action)
 
-        for db_key, idxs in by_db.items():
-            factory: ConnectionFactory = context_provider.get(db_key)  # type: ignore[assignment]
-            conn = await factory.acquire()
-            shared_applier = _SharedRecordApplier(conn)
+        for db_key, db_actions in by_db.items():
+            conn = await context_provider.get(db_key, ConnectionFactory).acquire()
 
             # Sort into DDL ordering
-            create_normal: list[int] = []
-            create_relation: list[int] = []
-            remove_relation: list[int] = []
-            remove_normal: list[int] = []
+            create_normal: list[_TableAction] = []
+            create_relation: list[_TableAction] = []
+            remove_relation: list[_TableAction] = []
+            remove_normal: list[_TableAction] = []
 
-            for i in idxs:
-                action = actions[i]
+            for action in db_actions:
                 if coco.is_non_existence(action.spec):
                     if action.is_relation:
-                        remove_relation.append(i)
+                        remove_relation.append(action)
                     else:
-                        remove_normal.append(i)
+                        remove_normal.append(action)
                 else:
                     if action.is_relation:
-                        create_relation.append(i)
+                        create_relation.append(action)
                     else:
-                        create_normal.append(i)
+                        create_normal.append(action)
 
-            ordered = create_normal + create_relation + remove_relation + remove_normal
-
-            for i in ordered:
-                action = actions[i]
-
+            for action in (
+                create_normal + create_relation + remove_relation + remove_normal
+            ):
                 if action.main_action in ("replace", "delete"):
                     await conn.query(f"REMOVE TABLE IF EXISTS {action.key.table_name}")
 
@@ -974,16 +1224,6 @@ class _TableHandler(
                         conn, action.key, spec, action.column_actions
                     )
 
-                child_slots[i].fulfill(
-                    _RecordHandler(
-                        table_name=action.key.table_name,
-                        is_relation=spec.is_relation,
-                        table_schema=spec.table_schema,
-                        conn=conn,
-                        sink=shared_applier.sink,
-                    )
-                )
-
     @staticmethod
     async def _create_table(
         conn: AsyncSurreal, key: _TableKey, spec: _TableSpec
@@ -996,11 +1236,11 @@ class _TableHandler(
             from_clause = "|".join(spec.from_tables) if spec.from_tables else ""
             to_clause = "|".join(spec.to_tables) if spec.to_tables else ""
             surql = (
-                f"DEFINE TABLE {key.table_name} TYPE RELATION "
+                f"DEFINE TABLE OVERWRITE {key.table_name} TYPE RELATION "
                 f"FROM {from_clause} TO {to_clause} {schema_mode}"
             )
         else:
-            surql = f"DEFINE TABLE {key.table_name} {schema_mode}"
+            surql = f"DEFINE TABLE OVERWRITE {key.table_name} {schema_mode}"
 
         await conn.query(surql)
 
@@ -1012,7 +1252,7 @@ class _TableHandler(
                 if col_def.nullable:
                     type_expr = f"option<{type_expr}>"
                 await conn.query(
-                    f"DEFINE FIELD {col_name} ON {key.table_name} TYPE {type_expr}"
+                    f"DEFINE FIELD OVERWRITE {col_name} ON {key.table_name} TYPE {type_expr}"
                 )
 
     @staticmethod
@@ -1048,7 +1288,7 @@ class _TableHandler(
 
             if action in ("insert", "upsert", "replace"):
                 await conn.query(
-                    f"DEFINE FIELD {col_name} ON {key.table_name} TYPE {type_expr}"
+                    f"DEFINE FIELD OVERWRITE {col_name} ON {key.table_name} TYPE {type_expr}"
                 )
 
 
@@ -1097,6 +1337,26 @@ class TableTarget(
 
     declare_row = declare_record
 
+    def declare_fields(
+        self: TableTarget[RowT], *, id: Any, group: str, fields: dict[str, Any]
+    ) -> None:
+        """Declare the fields one owner (``group``) contributes to an existing record.
+
+        ``fields`` mode: writes ``UPDATE $id MERGE`` with only these fields, so fields
+        written by other owners (or by ``declare_record``) are never touched. When the
+        declaration goes away, or a field is dropped from it, those fields are unset.
+        If the record does not exist, the write raises and is retried on the next run.
+        """
+        columns = self._table_schema.columns if self._table_schema else {}
+        encoded: dict[str, Any] = {}
+        for name, value in fields.items():
+            _validate_identifier(name, "field name")
+            col = columns.get(name)
+            if col is not None and col.encoder is not None and value is not None:
+                value = col.encoder(value)
+            encoded[name] = value
+        coco.declare_target_state(self._provider.target_state((id, group), encoded))
+
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         """Convert a row (dict or struct) to dict, applying encoders if schema exists."""
         if self._table_schema is not None:
@@ -1122,7 +1382,7 @@ class TableTarget(
         name: str | None = None,
         field: str,
         metric: Literal["cosine", "euclidean", "manhattan"] = "cosine",
-        method: Literal["mtree", "hnsw"] = "mtree",
+        method: Literal["hnsw"] = "hnsw",
         dimension: int | None = None,
         vector_type: Literal["f32", "f64", "i16", "i32", "i64"] = "f32",
     ) -> None:
@@ -1251,12 +1511,14 @@ class RelationTarget(
 
         # Auto-derive id from endpoints when not explicitly provided
         if record_id is None:
-            record_id = f"{from_table_name}_{from_id}_{to_table_name}_{to_id}"
+            record_id = _auto_relation_id(
+                from_table_name, from_id, to_table_name, to_id
+            )
 
         # Wrap in _RelationRowValue
         row_value: _RowValue = _RelationRowValue(
-            from_record=f"{from_table_name}:{_format_record_id(from_id)}",
-            to_record=f"{to_table_name}:{_format_record_id(to_id)}",
+            from_record=(from_table_name, from_id),
+            to_record=(to_table_name, to_id),
             fields=row_dict,
         )
 

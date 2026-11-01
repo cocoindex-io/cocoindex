@@ -274,3 +274,77 @@ async fn on_resolution_delivers_one_event_per_entity_in_order() {
         assert!(e.decision.is_none());
     }
 }
+
+/// Fails whenever it is asked to resolve `failing`.
+struct FailingResolver {
+    failing: &'static str,
+}
+
+#[async_trait]
+impl PairResolver for FailingResolver {
+    async fn resolve_pair(
+        &self,
+        entity: &str,
+        _candidates: &[String],
+    ) -> cocoindex::Result<PairDecision> {
+        if entity == self.failing {
+            return Err(cocoindex::Error::engine("resolver unavailable"));
+        }
+        Ok(PairDecision::no_match())
+    }
+}
+
+#[tokio::test]
+async fn partial_failure_still_delivers_completed_events() {
+    // "A" and "B" are close (one component): "A" is seeded, then resolving
+    // "B" against it fails.
+    let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.999, 0.04])]);
+    let delivered = Mutex::new(Vec::new());
+    let on_resolution = |event: &ResolutionEvent| {
+        delivered.lock().unwrap().push(event.entity.clone());
+    };
+    let err = resolve_entities_with_events(
+        ["A", "B"],
+        &embedder,
+        &FailingResolver { failing: "B" },
+        None,
+        ResolveOptions::default(),
+        Some(&on_resolution),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("resolver unavailable"), "{err}");
+    assert_eq!(*delivered.lock().unwrap(), vec!["A".to_string()]);
+}
+
+#[tokio::test]
+async fn embeddings_of_different_dimensions_are_rejected() {
+    let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[1.0, 0.0, 0.0])]);
+    let err = resolve_entities(
+        ["A", "B"],
+        &embedder,
+        &ScriptedResolver::default(),
+        None,
+        ResolveOptions::default(),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("dimensions"), "{err}");
+}
+
+#[tokio::test]
+async fn a_zero_embedding_matches_nothing_instead_of_failing() {
+    let embedder = embedder(&[("A", &[1.0, 0.0]), ("Z", &[0.0, 0.0])]);
+    let resolver = ScriptedResolver::default();
+    let result = resolve_entities(
+        ["A", "Z"],
+        &embedder,
+        &resolver,
+        None,
+        ResolveOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.canonical_of("Z").unwrap(), "Z");
+    assert!(resolver.calls.lock().unwrap().is_empty());
+}

@@ -445,7 +445,7 @@ pub async fn get_stable_path_detail_from_store(
     let db = store.db();
     let txn = store.read_txn().await?;
     let mut resolver = TargetKeyResolver::new(provider_keys);
-    Ok(Some(read_detail_in_txn(&db, &*txn, &mut resolver, path)?))
+    Ok(Some(read_detail_in_txn(&db, &txn, &mut resolver, path)?))
 }
 
 /// Get detailed information about a single stable path from LMDB
@@ -584,15 +584,15 @@ async fn query_details_from_store(
     let mut results = Vec::new();
 
     if include_parents {
-        results.extend(list_parents_in_txn(&db, &*txn, &mut resolver, path)?);
+        results.extend(list_parents_in_txn(&db, &txn, &mut resolver, path)?);
     }
 
-    results.push(read_detail_in_txn(&db, &*txn, &mut resolver, path)?);
+    results.push(read_detail_in_txn(&db, &txn, &mut resolver, path)?);
 
     if include_children {
         results.extend(list_children_in_txn(
             &db,
-            &*txn,
+            &txn,
             &mut resolver,
             path,
             recursive,

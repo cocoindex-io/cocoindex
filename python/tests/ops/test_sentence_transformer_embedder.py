@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -19,6 +20,21 @@ import cocoindex as coco
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 _OOM_MESSAGE = "CUDA out of memory. Tried to allocate 20.00 GiB"
+
+
+@pytest.fixture(autouse=True)
+def empty_accelerator_cache(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Stand-in for ``_empty_accelerator_cache``, so OOMs never import torch.
+
+    Importing torch can abort the whole test process: on macOS, faiss-cpu and
+    torch each bundle libomp, and once an earlier test has run a faiss search,
+    initializing torch's copy calls abort().
+    """
+    stub = Mock()
+    monkeypatch.setattr(
+        "cocoindex.ops.sentence_transformers._empty_accelerator_cache", stub
+    )
+    return stub
 
 
 class _FakeModel:
@@ -90,12 +106,13 @@ class _AlwaysFailModel:
     ids=["cuda", "host"],
 )
 def test_sentence_transformer_oom_on_multi_text_raises_signal(
-    error: BaseException,
+    error: BaseException, empty_accelerator_cache: Mock
 ) -> None:
     embedder = _make_embedder(_AlwaysFailModel(error))
     with pytest.raises(coco.RetryWithSmallerBatch) as exc_info:
         embedder._embed._execute_orig_sync_fn(["a", "b", "c"])
     assert exc_info.value.__cause__ is error
+    empty_accelerator_cache.assert_called_once()
 
 
 @pytest.mark.asyncio

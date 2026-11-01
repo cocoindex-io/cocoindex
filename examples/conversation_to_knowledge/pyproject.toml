@@ -8,7 +8,7 @@ dependencies = [
     "yt-dlp",
     "assemblyai",
     "instructor",
-    "litellm",
+    "litellm!=1.107.0",
     "faiss-cpu",
     "numpy",
     "pydantic",

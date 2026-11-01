@@ -206,8 +206,22 @@ def test_sink_identity_is_keyed_by_callback_type() -> None:
 
 
 def test_non_weakrefable_callback_is_rejected() -> None:
-    with pytest.raises(TypeError, match="must support weak references"):
+    with pytest.raises(TypeError, match="sink callback of type .* must support weak"):
         coco.TargetActionSink.from_async_fn(_NtSink("a"))
+
+    # The error names the argument at fault: here the child handler factory.
+    class _NtHandler(NamedTuple):
+        group: str
+
+        def __call__(
+            self, context_provider: coco.ContextProvider, action: Any, /
+        ) -> coco.TargetHandler[Any, Any, Any]:
+            raise AssertionError("never called")
+
+    with pytest.raises(TypeError, match="child_handler of type .* must support weak"):
+        coco.TargetActionSink.from_async_fn(
+            _PermissiveSink("a"), child_handler=_NtHandler("a")
+        )
 
     @dataclass(frozen=True, slots=True)
     class _SlotsSink:
@@ -291,7 +305,7 @@ def test_idle_sink_identity_is_released() -> None:
 def test_dead_canonical_is_replaced() -> None:
     from cocoindex._internal.target_state import _ObjectDeduper
 
-    deduper = _ObjectDeduper()
+    deduper = _ObjectDeduper("object")
     a1 = _RecordingSink("turnover")
     assert deduper.get_canonical(a1) is a1
     a2 = _RecordingSink("turnover")

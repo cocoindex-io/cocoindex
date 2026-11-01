@@ -19,7 +19,7 @@ impl ChildStablePathSet {
             match current
                 .children
                 .entry(key.clone())
-                .or_insert_with(|| StablePathSet::directory())
+                .or_insert_with(StablePathSet::directory)
             {
                 StablePathSet::Directory(dir) => {
                     current = dir;
@@ -30,9 +30,17 @@ impl ChildStablePathSet {
             }
         }
         match current.children.entry(last.clone()) {
-            btree_map::Entry::Occupied(_) => {
-                client_bail!("Path {path} already exists");
-            }
+            btree_map::Entry::Occupied(entry) => match entry.get() {
+                StablePathSet::Component => client_bail!(
+                    "Child path {path} is mounted more than once in one run of its parent \
+                     component. Each mount needs its own path: keep item keys unique within \
+                     one mount_each() call, and give each call its own subpath"
+                ),
+                StablePathSet::Directory(_) => client_bail!(
+                    "Child path {path} is mounted as a component, but other children of the \
+                     same parent component run are already mounted under it"
+                ),
+            },
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(info);
                 Ok(())

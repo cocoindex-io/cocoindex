@@ -81,6 +81,12 @@ AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
 AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 
 LogicTracking: TypeAlias = Literal["full", "self"] | None
+# A batched function's rate limiter: the limiter itself, or — for a method whose
+# limiter lives on the instance — a callable that receives ``self`` (``None``
+# for a free function) and returns the limiter, or ``None`` for no gate.
+RateLimiterSpec: TypeAlias = (
+    core.RateLimiter | Callable[[Any], core.RateLimiter | None] | None
+)
 MemoKeyTransform: TypeAlias = Callable[[Any], Any]
 MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
 
@@ -111,32 +117,6 @@ class PreparedMemoKeySpec(NamedTuple):
 
 
 if TYPE_CHECKING:
-
-    class _AsyncBatchedDecorator(Protocol):
-        """Protocol for batched function decorator used by @cocoindex.function.
-
-        Only accepts async underlying functions, since @cocoindex.function preserves
-        sync/async and batching requires an async interface.
-
-        Transforms:
-        - Async: Callable[[list[T]], Awaitable[list[U]]] -> Callable[[T], Awaitable[U]]
-
-        For methods (functions with self parameter), the type transformation
-        is handled at runtime via descriptor protocol, but static typing is less
-        precise. The decorated method will work correctly when called on an instance.
-        """
-
-        # Async standalone functions (single list[T] parameter)
-        @overload
-        def __call__(
-            self, fn: Callable[[list[T]], Awaitable[list[U]]]
-        ) -> AsyncFunction[[T], U]: ...
-        # Methods with self parameter
-        @overload
-        def __call__(  # type: ignore[overload-overlap]
-            self, fn: Callable[[SelfT, list[T]], Awaitable[list[U]]]
-        ) -> AsyncFunction[[SelfT, T], U]: ...
-        def __call__(self, fn: Any) -> Any: ...
 
     class _BatchedDecorator(Protocol):
         """Protocol for batched function decorator used by @coco.fn.as_async.
@@ -199,6 +179,9 @@ class StateMethodsResult(NamedTuple):
     new_context_states: dict[core.Fingerprint, list[Any]]
     can_reuse: bool
     states_changed: bool
+    # Indices into `new_states` whose state function asked to be called again
+    # after the function body (`MemoStateOutcome.recollect_after_run`).
+    recollect: tuple[int, ...] = ()
 
 
 class _StateCallResult(NamedTuple):
@@ -388,7 +371,39 @@ def _aggregate_state_results(
         new_context_states=new_context,
         can_reuse=can_reuse,
         states_changed=states_changed,
+        recollect=tuple(
+            i for i, r in enumerate(positional_results) if r.outcome.recollect_after_run
+        ),
     )
+
+
+def _recollect_states_sync(
+    entries: list[StateFnEntry], states: list[Any], indices: tuple[int, ...]
+) -> list[Any]:
+    """Call the state functions at *indices* again, as on a first run, and
+    return *states* with their results substituted."""
+    if not indices:
+        return states
+    fresh = _call_state_methods_sync([entries[i] for i in indices], None).new_states
+    states = list(states)
+    for i, state in zip(indices, fresh):
+        states[i] = state
+    return states
+
+
+async def _recollect_states_async(
+    entries: list[StateFnEntry], states: list[Any], indices: tuple[int, ...]
+) -> list[Any]:
+    """Async variant of :func:`_recollect_states_sync`."""
+    if not indices:
+        return states
+    fresh = (
+        await _call_state_methods_async([entries[i] for i in indices], None)
+    ).new_states
+    states = list(states)
+    for i, state in zip(indices, fresh):
+        states[i] = state
+    return states
 
 
 def _collect_context_entries_from_stored(
@@ -755,6 +770,17 @@ class SyncFunction(Function[P, R_co]):
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
         return self
 
+    # Pickles by name, like a plain function (and like `AsyncFunction`), so a
+    # `@coco.fn` function can be passed as an argument to a memoized function:
+    # the memo-key pipeline's fallback pickles argument values.
+    def __reduce__(self) -> tuple[Any, ...]:
+        return SyncFunction._unpickle, (self._fn.__module__, self._fn.__qualname__)
+
+    @staticmethod
+    def _unpickle(module_name: str, qualname: str) -> SyncFunction[P, R_co]:
+        module = importlib.import_module(module_name)
+        return functools.reduce(getattr, qualname.split("."), module)  # type: ignore[arg-type]
+
     @overload
     def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
     @overload
@@ -828,6 +854,7 @@ class SyncFunction(Function[P, R_co]):
                     # Check if cached result is still valid
                     use_cache = False
                     memo_states_for_resolve: list[Any] | None = None
+                    recollect: tuple[int, ...] = ()
                     context_states_for_resolve: (
                         dict[core.Fingerprint, list[Any]] | None
                     ) = None
@@ -850,6 +877,7 @@ class SyncFunction(Function[P, R_co]):
                                 # (same across runs), so the validation result is
                                 # safe to reuse on the re-execution path.
                                 memo_states_for_resolve = state_result.new_states
+                                recollect = state_result.recollect
                                 # Context state is re-collected fresh from fn_ctx
                                 # below — re-execution may observe a different set
                                 # of change-detection context fps than the stored entry,
@@ -869,6 +897,12 @@ class SyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -886,6 +920,10 @@ class SyncFunction(Function[P, R_co]):
                     if memo_states_for_resolve is None and state_methods:
                         initial = _call_state_methods_sync(state_methods, None)
                         memo_states_for_resolve = initial.new_states
+                    elif memo_states_for_resolve is not None:
+                        memo_states_for_resolve = _recollect_states_sync(
+                            state_methods, memo_states_for_resolve, recollect
+                        )
                     fresh_context_states = fn_ctx.initial_context_memo_states(
                         env._core_env
                     )
@@ -984,12 +1022,18 @@ class SyncFunction(Function[P, R_co]):
                         context_entries = _collect_context_entries_from_stored(
                             env, context_stored
                         )
-                        return await _call_state_methods_async(
+                        validated = await _call_state_methods_async(
                             captured,
                             positional_stored,
                             context_entries=context_entries,
                             context_stored=context_stored,
                         )
+                        if validated.recollect and not validated.can_reuse:
+                            raise ValueError(
+                                "MemoStateOutcome.recollect_after_run is supported "
+                                "for memoized functions, not for memoized components"
+                            )
+                        return validated
                     # Cache miss: look up the eager initial states for the
                     # context fps observed during function execution, in a
                     # single Rust call — no Python-side iteration over the
@@ -1041,6 +1085,11 @@ class _BoundSyncMethod(Generic[SelfT]):
     ):
         self._func = func
         self._instance = instance
+
+    # Picklable (function by name, instance by value) like `_BoundAsyncMethod`,
+    # so a bound `@coco.fn` method can be a memoized function's argument.
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _BoundSyncMethod, (self._func, self._instance)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(self._instance, *args, **kwargs)
@@ -1206,6 +1255,8 @@ class AsyncFunction(Function[P, R_co]):
         "_logic_tracking",
         "_batching",
         "_max_batch_size",
+        "_max_in_flight",
+        "_rate_limiter",
         "_runner",
         "_has_self",
         "_batchers",
@@ -1223,6 +1274,8 @@ class AsyncFunction(Function[P, R_co]):
     _logic_tracking: LogicTracking
     _batching: bool
     _max_batch_size: int | None
+    _max_in_flight: int | None
+    _rate_limiter: RateLimiterSpec
     _runner: Runner | None
     _has_self: bool
     _return_deserializer: DeserializeFn | None
@@ -1240,6 +1293,8 @@ class AsyncFunction(Function[P, R_co]):
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -1248,6 +1303,23 @@ class AsyncFunction(Function[P, R_co]):
         fn = async_fn or sync_fn
         if fn is None:
             raise ValueError("Either async_fn or sync_fn must be provided")
+        if max_in_flight is not None:
+            if not batching:
+                raise ValueError("max_in_flight requires batching=True")
+            if max_in_flight < 1:
+                raise ValueError(
+                    f"max_in_flight must be a positive integer, got {max_in_flight}"
+                )
+        if rate_limiter is not None:
+            if not batching:
+                raise ValueError("rate_limiter requires batching=True")
+            if not isinstance(rate_limiter, core.RateLimiter) and not callable(
+                rate_limiter
+            ):
+                raise TypeError(
+                    "rate_limiter must be a RateLimiter or a callable returning "
+                    f"one, got {type(rate_limiter).__name__}"
+                )
         if logic_tracking is None and deps is not None:
             raise ValueError(
                 "deps= requires logic_tracking to be enabled; with "
@@ -1270,6 +1342,8 @@ class AsyncFunction(Function[P, R_co]):
             self._logic_fp = None
         self._batching = batching
         self._max_batch_size = max_batch_size
+        self._max_in_flight = max_in_flight
+        self._rate_limiter = rate_limiter
         self._runner = runner
         self._has_self = _has_self_parameter(fn) if (batching or runner) else False
         self._batchers = {}
@@ -1369,6 +1443,7 @@ class AsyncFunction(Function[P, R_co]):
         try:
             # Check memo (when enabled and context available)
             memo_states_for_resolve: list[Any] | None = None
+            recollect: tuple[int, ...] = ()
             context_states_for_resolve: dict[core.Fingerprint, list[Any]] | None = None
             if self._memo and parent_ctx is not None:
                 env = parent_ctx._env
@@ -1406,6 +1481,7 @@ class AsyncFunction(Function[P, R_co]):
                             # Positional states are stable across runs (same
                             # args ⇒ same state method list) — safe to reuse.
                             memo_states_for_resolve = state_result.new_states
+                            recollect = state_result.recollect
                             # Context states are re-collected fresh from fn_ctx
                             # below: re-execution may observe a different set
                             # of change-detection context fps than the stored entry.
@@ -1423,6 +1499,12 @@ class AsyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -1457,6 +1539,10 @@ class AsyncFunction(Function[P, R_co]):
                 if memo_states_for_resolve is None and state_methods:
                     initial = await _call_state_methods_async(state_methods, None)
                     memo_states_for_resolve = initial.new_states
+                elif memo_states_for_resolve is not None:
+                    memo_states_for_resolve = await _recollect_states_async(
+                        state_methods, memo_states_for_resolve, recollect
+                    )
                 fresh_context_states = fn_ctx.initial_context_memo_states(env._core_env)
                 if fresh_context_states:
                     context_states_for_resolve = fresh_context_states
@@ -1656,6 +1742,22 @@ class AsyncFunction(Function[P, R_co]):
             if slot.in_flight == 0:
                 del self._batchers[batcher_key]
 
+    def _resolve_rate_limiter(self, self_obj: Any) -> core.RateLimiter | None:
+        """The limiter this batcher's batches take a token from: the one given
+        at decoration, or the one its callable form returns for ``self_obj``
+        (the bound ``self`` for a method, ``None`` for a free function)."""
+        if self._rate_limiter is None:
+            return None
+        if isinstance(self._rate_limiter, core.RateLimiter):
+            return self._rate_limiter
+        limiter = self._rate_limiter(self_obj)
+        if limiter is not None and not isinstance(limiter, core.RateLimiter):
+            raise TypeError(
+                "rate_limiter callable must return a RateLimiter or None, "
+                f"got {type(limiter).__name__}"
+            )
+        return limiter
+
     def _create_batcher(
         self,
         async_ctx: core.AsyncContext,
@@ -1685,7 +1787,9 @@ class AsyncFunction(Function[P, R_co]):
         # When runner is specified without batching, use max_batch_size=1
         # to process items individually.
         options = core.BatchingOptions(
-            max_batch_size=self._max_batch_size if self._batching else 1
+            max_batch_size=self._max_batch_size if self._batching else 1,
+            max_in_flight=self._max_in_flight if self._batching else None,
+            rate_limiter=self._resolve_rate_limiter(self_obj),
         )
         # Honor RetryWithSmallerBatch raised by the batch body: split the
         # batch and retry the halves. Only meaningful in batching mode
@@ -1764,12 +1868,18 @@ class AsyncFunction(Function[P, R_co]):
                         context_entries = _collect_context_entries_from_stored(
                             env, context_stored
                         )
-                        return await _call_state_methods_async(
+                        validated = await _call_state_methods_async(
                             captured,
                             positional_stored,
                             context_entries=context_entries,
                             context_stored=context_stored,
                         )
+                        if validated.recollect and not validated.can_reuse:
+                            raise ValueError(
+                                "MemoStateOutcome.recollect_after_run is supported "
+                                "for memoized functions, not for memoized components"
+                            )
+                        return validated
                     # TODO(future simplification): this branch is pure data
                     # collection; should move out of the handler.
                     new_context = comp_ctx.initial_context_memo_states()
@@ -1851,6 +1961,8 @@ class _GenericFunctionBuilder:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -1860,17 +1972,15 @@ class _GenericFunctionBuilder:
         self._memo_key = memo_key
         self._batching = batching
         self._max_batch_size = max_batch_size
+        self._max_in_flight = max_in_flight
+        self._rate_limiter = rate_limiter
         self._runner = runner
         self._version = version
         self._logic_tracking = logic_tracking
         self._deps = deps
 
     def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
-        if self._batching or self._runner is not None:
-            raise ValueError(
-                "Batching and runner require the function to be async. "
-                "Use @coco.fn.as_async instead, or rewrite the function to be async."
-            )
+        assert not self._batching and self._runner is None
         wrapper = SyncFunction(
             fn,
             memo=self._memo,
@@ -1896,6 +2006,8 @@ class _GenericFunctionBuilder:
             memo_key=self._memo_key,
             batching=self._batching,
             max_batch_size=self._max_batch_size,
+            max_in_flight=self._max_in_flight,
+            rate_limiter=self._rate_limiter,
             runner=self._runner,
             version=self._version,
             logic_tracking=self._logic_tracking,
@@ -1903,18 +2015,6 @@ class _GenericFunctionBuilder:
         )
         functools.update_wrapper(wrapper, fn)
         return wrapper
-
-
-# Only supports sync function -> sync function
-class _SyncFunctionBuilder(_GenericFunctionBuilder):
-    def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
-        if inspect.iscoroutinefunction(fn):
-            raise ValueError(
-                "Async functions are not supported by @coco.fn decorator "
-                "when batching or runner is specified. "
-                "Please use @coco.fn.as_async instead."
-            )
-        return self._build_sync(fn)
 
 
 # Supports sync function -> sync function and async function -> async function
@@ -1974,7 +2074,9 @@ class _FunctionDecorator:
 
     # --- @coco.fn(...) / @coco.fn ---
 
-    # Without batching / runner, supports both sync and async functions
+    # Keyword form: supports both sync and async functions. batching / runner
+    # are deliberately absent — they need an async interface and are only
+    # available through @coco.fn.as_async; passing them here raises at runtime.
     @overload
     def __call__(
         self,
@@ -1985,34 +2087,6 @@ class _FunctionDecorator:
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
     ) -> _AutoFunctionBuilder: ...
-    # Overload for batching=True
-    @overload
-    def __call__(
-        self,
-        *,
-        memo: bool = False,
-        memo_key: MemoKeySpec = None,
-        batching: Literal[True],
-        max_batch_size: int | None = None,
-        runner: Runner | None = None,
-        version: int | None = None,
-        logic_tracking: LogicTracking = "full",
-        deps: Any = None,
-    ) -> _AsyncBatchedDecorator: ...
-    # With batching / runner, only supports sync functions
-    @overload
-    def __call__(
-        self,
-        *,
-        memo: bool = False,
-        memo_key: MemoKeySpec = None,
-        batching: Literal[False] = False,
-        max_batch_size: int | None = None,
-        runner: Runner | None = None,
-        version: int | None = None,
-        logic_tracking: LogicTracking = "full",
-        deps: Any = None,
-    ) -> _SyncFunctionBuilder: ...
     # Overloads for direct function decoration
     @overload
     def __call__(  # type: ignore[overload-overlap]
@@ -2029,6 +2103,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2049,6 +2125,10 @@ class _FunctionDecorator:
                 should be fingerprinted for memoization.
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
+            max_in_flight: Maximum number of batches running at once (only with
+                batching=True); see :func:`fn.as_async`.
+            rate_limiter: Limiter each batch takes one token from before it runs
+                (only with batching=True); see :func:`fn.as_async`.
             runner: Runner to execute the function (e.g., GPU for subprocess)
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
@@ -2057,6 +2137,12 @@ class _FunctionDecorator:
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
                 None: No function logic tracking (incompatible with ``deps``).
+                Adopting tracking later — decorating a function that memoized
+                callers already stored entries for, or raising its mode from
+                ``None`` — does not invalidate those entries: an entry records
+                only the fingerprints its writer offered when it was stored.
+                Ship such a change with a ``version`` bump or a memo-key change
+                on the memoized callers, so their entries are stored again.
             deps: External value(s) the function logic depends on but which
                 aren't visible in its body — for example a module-level prompt
                 string or model identifier. The value is canonicalized via the
@@ -2080,34 +2166,31 @@ class _FunctionDecorator:
                 Requires ``logic_tracking`` to be enabled; raises ``ValueError`` if
                 combined with ``logic_tracking=None``.
 
-        Batching and runner require an async interface. With this decorator, only
-        async underlying functions are accepted when batching/runner is specified.
-        Use @coco.fn.as_async for sync underlying functions that need
-        batching/runner.
+        Batching and runner require an async interface and are not supported by
+        this decorator, whichever kind of function it is applied to: use
+        @coco.fn.as_async for them.
 
-        Memoization works with all modes:
-            - Without batching/runner: requires ComponentContext
-            - With batching/runner: ComponentContext optional, memo checked when available
+        Memoization requires a ComponentContext: the call must happen inside a
+        processing component.
         """
-        builder = (
-            _SyncFunctionBuilder(
-                memo=memo,
-                memo_key=memo_key,
-                batching=batching,
-                max_batch_size=max_batch_size,
-                runner=runner,
-                version=version,
-                logic_tracking=logic_tracking,
-                deps=deps,
+        if (
+            batching
+            or max_batch_size is not None
+            or max_in_flight is not None
+            or rate_limiter is not None
+            or runner is not None
+        ):
+            raise ValueError(
+                "@coco.fn does not support batching, max_batch_size, max_in_flight, "
+                "rate_limiter or runner: they require an async interface. "
+                "Use @coco.fn.as_async instead."
             )
-            if batching or runner or max_batch_size is not None
-            else _AutoFunctionBuilder(
-                memo=memo,
-                memo_key=memo_key,
-                version=version,
-                logic_tracking=logic_tracking,
-                deps=deps,
-            )
+        builder = _AutoFunctionBuilder(
+            memo=memo,
+            memo_key=memo_key,
+            version=version,
+            logic_tracking=logic_tracking,
+            deps=deps,
         )
         if fn is not None:
             return builder(fn)
@@ -2125,6 +2208,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: Literal[True],
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2139,6 +2224,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: Literal[False] = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2166,6 +2253,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2181,6 +2270,21 @@ class _FunctionDecorator:
             memo: Enable memoization (skip execution when inputs unchanged)
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
+            max_in_flight: Maximum number of batches running at once (only with
+                batching=True; must be positive). ``None`` (the default) starts
+                a full batch as soon as it fills and the next partial batch only
+                once every running batch has finished; ``n`` bounds the
+                concurrently running batches to ``n`` and starts the next
+                pending batch, full or partial, whenever any batch finishes.
+            rate_limiter: A ``RateLimiter`` each batch takes one token from
+                before it runs (only with batching=True), so a token pays for
+                one batch rather than one call. With it no call runs inline:
+                calls join the open batch, and a pump runs the oldest pending
+                batch once a ``max_in_flight`` slot and a token are available,
+                so every call that arrives during the wait rides the next
+                token. For a method whose limiter lives on the instance, pass
+                a callable that receives ``self`` and returns the limiter (or
+                ``None`` for no gate); it is resolved once per batcher.
             runner: Runner to execute the function (e.g., GPU for subprocess)
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
@@ -2189,6 +2293,12 @@ class _FunctionDecorator:
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
                 None: No function logic tracking (incompatible with ``deps``).
+                Adopting tracking later — decorating a function that memoized
+                callers already stored entries for, or raising its mode from
+                ``None`` — does not invalidate those entries: an entry records
+                only the fingerprints its writer offered when it was stored.
+                Ship such a change with a ``version`` bump or a memo-key change
+                on the memoized callers, so their entries are stored again.
             deps: Additional value(s) the function logic depends on but that
                 aren't visible in its body. See :func:`fn` for the full
                 contract — the value is canonicalized through the memoization
@@ -2205,6 +2315,8 @@ class _FunctionDecorator:
             memo_key=memo_key,
             batching=batching,
             max_batch_size=max_batch_size,
+            max_in_flight=max_in_flight,
+            rate_limiter=rate_limiter,
             runner=runner,
             version=version,
             logic_tracking=logic_tracking,

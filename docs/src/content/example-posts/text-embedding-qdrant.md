@@ -8,9 +8,9 @@ tags: [vector-index, qdrant]
 
 ![Semantic Search with Qdrant on CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-qdrant/cover.png)
 
-This is the [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) example with one thing swapped: instead of Postgres + pgvector, the vectors land in a [Qdrant](https://qdrant.tech/) collection. Everything else — walk Markdown, chunk, embed locally with `all-MiniLM-L6-v2` — is identical, so this post stays short and spends its words on the connector, the collection setup, and how to run it.
+This is the [Semantic Search 101](/docs/examples/text-embedding/) example with one thing swapped: instead of Postgres + pgvector, the vectors land in a [Qdrant](https://qdrant.tech/) collection. Everything else — walk Markdown, chunk, embed locally with `all-MiniLM-L6-v2` — is identical, so this post stays short and spends its words on the connector, the collection setup, and how to run it.
 
-If you want the full chunk-and-embed walkthrough, read the [base example](https://cocoindex.io/docs/examples/text-embedding/) first; the only difference here is the target.
+If you want the full chunk-and-embed walkthrough, read the [base example](/docs/examples/text-embedding/) first; the only difference here is the target.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant)
 
@@ -21,10 +21,10 @@ If you want the full chunk-and-embed walkthrough, read the [base example](https:
 From a high level, these are the steps:
 
 1. Read Markdown files from a local directory.
-2. [Split each file into overlapping chunks](https://cocoindex.io/docs/ops/text/), then [embed](https://cocoindex.io/docs/ops/sentence_transformers/) every chunk.
-3. Upsert each chunk's embedding (with its text and metadata) as a point in a [Qdrant](https://cocoindex.io/docs/connectors/qdrant/) collection (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+2. [Split each file into overlapping chunks](/docs/ops/text/), then [embed](/docs/ops/sentence_transformers/) every chunk.
+3. Upsert each chunk's embedding (with its text and metadata) as a point in a [Qdrant](/docs/connectors/qdrant/) collection (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## Setup
 
@@ -44,7 +44,7 @@ You [declare the transformation logic](https://cocoindex.io/docs/programming_gui
 
 ## Connect to Qdrant
 
-The Qdrant client is a [shared resource](https://cocoindex.io/docs/programming_guide/context/): provide it once in the [lifespan](https://cocoindex.io/docs/programming_guide/app/) and every step reuses it. We connect over gRPC (`prefer_grpc=True`) for fast point upserts, and provide the same embedder the base example uses.
+The Qdrant client is a [shared resource](/docs/programming_guide/context/): provide it once in the [lifespan](/docs/programming_guide/app/) and every step reuses it. We connect over gRPC (`prefer_grpc=True`) for fast point upserts, and provide the same embedder the base example uses.
 
 ```python title="main.py"
 QDRANT_URL = "http://localhost:6334"
@@ -65,7 +65,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Mount the collection
 
-`app_main` wires the source to the target. The one Qdrant-specific call is [`mount_collection_target`](https://cocoindex.io/docs/connectors/qdrant/): it creates and manages the collection, deriving the vector dimensions straight from the embedder via `QdrantVectorDef(schema=EMBEDDER)` — no hardcoded `384`. The rest is the same `walk_dir` → `mount_each` shape as the base example.
+`app_main` wires the source to the target. The one Qdrant-specific call is [`mount_collection_target`](/docs/connectors/qdrant/): it creates and manages the collection, deriving the vector dimensions straight from the embedder via `QdrantVectorDef(schema=EMBEDDER)` — no hardcoded `384`. The rest is the same `walk_dir` → `mount_each` shape as the base example.
 
 ```python title="main.py"
 @coco.fn
@@ -90,7 +90,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
 
 ## Declare a point
 
-`process_file` chunks the text and maps each chunk to `process_chunk` (identical to the base walkthrough). The only difference is the target state: instead of a typed table row, each chunk becomes a Qdrant [`PointStruct`](https://cocoindex.io/docs/connectors/qdrant/). The chunk text and offsets go in the `payload`, the embedding is the `vector`, and `id_gen` derives a stable point id from the chunk text so re-runs upsert in place.
+`process_file` chunks the text and maps each chunk to `process_chunk` (identical to the base walkthrough). The only difference is the target state: instead of a typed table row, each chunk becomes a Qdrant [`PointStruct`](/docs/connectors/qdrant/). The chunk text and offsets go in the `payload`, the embedding is the `vector`, and `id_gen` derives a stable point id from the chunk text so re-runs upsert in place.
 
 ```python title="main.py"
 @coco.fn
@@ -119,7 +119,7 @@ async def process_chunk(
 
 ## Run the pipeline
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build and update the index. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
+Run the [`cocoindex` CLI](/docs/cli/) to build and update the index. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
 
 ```sh
 # Catch-up run
@@ -139,10 +139,10 @@ You can also browse the collection in the Qdrant dashboard at <http://localhost:
 
 ## Incremental updates
 
-CocoIndex keeps the Qdrant collection in sync and does the **minimum work** to get there — exactly as in the [base example](https://cocoindex.io/docs/examples/text-embedding/), just against Qdrant. `@coco.fn(memo=True)` on `process_file` decides what to *recompute* (a file is skipped when its content and code are unchanged), and each point's [`id`](https://cocoindex.io/docs/common_resources/id_generation/) is derived from its chunk's text, so `mount_collection_target` upserts only the points that changed and deletes points whose source is gone. Add a file and only it is embedded; edit one and unchanged chunks keep their id while new chunks are upserted and vanished chunks deleted; delete a file and its points are removed automatically. Swap the embedding model and `detect_change=True` re-embeds everything. A catch-up run applies the difference once and exits; live mode keeps watching.
+CocoIndex keeps the Qdrant collection in sync and does the **minimum work** to get there — exactly as in the [base example](/docs/examples/text-embedding/), just against Qdrant. `@coco.fn(memo=True)` on `process_file` decides what to *recompute* (a file is skipped when its content and code are unchanged), and each point's [`id`](/docs/common_resources/id_generation/) is derived from its chunk's text, so `mount_collection_target` upserts only the points that changed and deletes points whose source is gone. Add a file and only it is embedded; edit one and unchanged chunks keep their id while new chunks are upserted and vanished chunks deleted; delete a file and its points are removed automatically. Swap the embedding model and `detect_change=True` re-embeds everything. A catch-up run applies the difference once and exits; live mode keeps watching.
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/text_embedding_qdrant](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant). It's the [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) flow with Qdrant as the store — start there if you want the chunk-and-embed details, and see [the Postgres version](https://cocoindex.io/docs/examples/text-embedding/) to compare targets.
+The full, runnable example is in the CocoIndex repo: [examples/text_embedding_qdrant](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant). It's the [Semantic Search 101](/docs/examples/text-embedding/) flow with Qdrant as the store — start there if you want the chunk-and-embed details, and see [the Postgres version](/docs/examples/text-embedding/) to compare targets.
 
 Already running Qdrant and want your docs searchable by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

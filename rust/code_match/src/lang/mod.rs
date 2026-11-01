@@ -19,6 +19,7 @@ mod javascript;
 mod json;
 mod julia;
 mod kotlin;
+mod nix;
 mod pascal;
 mod php;
 mod python;
@@ -50,6 +51,7 @@ pub use javascript::javascript;
 pub use json::json;
 pub use julia::julia;
 pub use kotlin::kotlin;
+pub use nix::nix;
 pub use pascal::pascal;
 pub use php::php;
 pub use python::python;
@@ -91,6 +93,7 @@ pub fn by_name(name: &str) -> Option<crate::config::LangConfig> {
         "json" => json(),
         "julia" => julia(),
         "kotlin" => kotlin(),
+        "nix" => nix(),
         "pascal" => pascal(),
         "php" => php(),
         "python" => python(),

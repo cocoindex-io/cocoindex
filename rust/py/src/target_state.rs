@@ -6,7 +6,7 @@ use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
-    ChildInvalidation, ChildTargetSlot, TargetActionSink, TargetActionSinkKeeper,
+    ChildHandling, ChildInvalidation, ChildTargetSlot, TargetActionSink, TargetActionSinkKeeper,
     TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput, TargetStateProvider,
     TargetStateProviderRegistry, WeakTargetActionSinkKeeper,
 };
@@ -15,11 +15,13 @@ use pyo3::exceptions::PyDeprecationWarning;
 use pyo3::types::{PyDict, PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
+use crate::memo_fingerprint::plain_fingerprint;
 use crate::prelude::*;
 
 use crate::stable_path::PyStableKey;
 
 use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
+use crate::target_state_codec::{DesiredForReconcile, PyTargetAction, PyTargetStateValue};
 use crate::value::PyStoredValue;
 
 #[pyclass(name = "TargetActionSink", from_py_object)]
@@ -30,9 +32,22 @@ pub struct PyTargetActionSink {
 
 pub struct PyTargetActionSinkInner {
     callback: PyCallback,
-    /// Whether the callback takes the child-slot mapping as its third argument
-    /// (`from_fn_with_children` / `from_async_fn_with_children`).
-    with_children: bool,
+    convention: SinkConvention,
+}
+
+/// How a sink's callback is called, and where child handlers come from.
+enum SinkConvention {
+    /// `from_fn` / `from_async_fn`: `callback(context_provider, actions)`.
+    /// Child-bearing actions get slots, for the deprecated callback that
+    /// returns `ChildTargetDef`s.
+    Leaf,
+    /// Deprecated `from_fn_with_children` / `from_async_fn_with_children`:
+    /// `callback(context_provider, actions, child_slots)`.
+    LegacySlots,
+    /// `from_fn` / `from_async_fn` with `child_handler=`: the sync factory
+    /// `child_handler(context_provider, action) -> handler` builds the child
+    /// handlers; the callback is called as for `Leaf` and gets no slots.
+    Factory(Py<PyAny>),
 }
 
 /// Interns sink keepers by callback object and calling convention, so that
@@ -58,7 +73,38 @@ struct SinkKeeperRegistry {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct SinkKeeperKey {
     callback_ptr: usize,
-    with_children: bool,
+    convention: SinkConventionKey,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SinkConventionKey {
+    Leaf,
+    LegacySlots,
+    /// The canonical `child_handler` factory's address.
+    Factory(usize),
+}
+
+impl SinkConvention {
+    fn new(with_children: bool, child_handler: Option<Py<PyAny>>) -> PyResult<Self> {
+        match (with_children, child_handler) {
+            (false, None) => Ok(Self::Leaf),
+            (true, None) => Ok(Self::LegacySlots),
+            (false, Some(child_handler)) => Ok(Self::Factory(child_handler)),
+            (true, Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+                "a sink built with child slots takes no `child_handler`",
+            )),
+        }
+    }
+
+    fn key(&self) -> SinkConventionKey {
+        match self {
+            Self::Leaf => SinkConventionKey::Leaf,
+            Self::LegacySlots => SinkConventionKey::LegacySlots,
+            Self::Factory(child_handler) => {
+                SinkConventionKey::Factory(child_handler.as_ptr() as usize)
+            }
+        }
+    }
 }
 
 const SINK_REGISTRY_MIN_PRUNE_AT: usize = 64;
@@ -76,10 +122,10 @@ impl SinkKeeperRegistry {
         key: SinkKeeperKey,
         make: impl FnOnce() -> PyTargetActionSinkInner,
     ) -> TargetActionSinkKeeper<PyEngineProfile> {
-        if let Some(weak) = self.map.get(&key) {
-            if let Some(keeper) = weak.upgrade() {
-                return keeper;
-            }
+        if let Some(weak) = self.map.get(&key)
+            && let Some(keeper) = weak.upgrade()
+        {
+            return keeper;
         }
         let keeper = TargetActionSinkKeeper::new(make());
         if self.map.len() >= self.prune_at {
@@ -102,10 +148,16 @@ static ASYNC_SINK_REGISTRY: LazyLock<Mutex<SinkKeeperRegistry>> =
 #[pymethods]
 impl PyTargetActionSink {
     #[staticmethod]
-    pub fn new_sync(callback: Py<PyAny>, with_children: bool) -> Self {
+    #[pyo3(signature = (callback, with_children, child_handler=None))]
+    pub fn new_sync(
+        callback: Py<PyAny>,
+        with_children: bool,
+        child_handler: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let convention = SinkConvention::new(with_children, child_handler)?;
         let key = SinkKeeperKey {
             callback_ptr: callback.as_ptr() as usize,
-            with_children,
+            convention: convention.key(),
         };
         let keeper =
             SYNC_SINK_REGISTRY
@@ -113,16 +165,22 @@ impl PyTargetActionSink {
                 .unwrap()
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Sync(Arc::new(callback)),
-                    with_children,
+                    convention,
                 });
-        Self { keeper }
+        Ok(Self { keeper })
     }
 
     #[staticmethod]
-    pub fn new_async(callback: Py<PyAny>, with_children: bool) -> Self {
+    #[pyo3(signature = (callback, with_children, child_handler=None))]
+    pub fn new_async(
+        callback: Py<PyAny>,
+        with_children: bool,
+        child_handler: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let convention = SinkConvention::new(with_children, child_handler)?;
         let key = SinkKeeperKey {
             callback_ptr: callback.as_ptr() as usize,
-            with_children,
+            convention: convention.key(),
         };
         let keeper =
             ASYNC_SINK_REGISTRY
@@ -130,9 +188,9 @@ impl PyTargetActionSink {
                 .unwrap()
                 .get_or_create(key, || PyTargetActionSinkInner {
                     callback: PyCallback::Async(Arc::new(callback)),
-                    with_children,
+                    convention,
                 });
-        Self { keeper }
+        Ok(Self { keeper })
     }
 
     /// Two sinks are equal iff they share one batching identity: actions
@@ -159,6 +217,41 @@ fn get_core_field(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 
 #[async_trait]
 impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
+    fn child_handling(&self) -> ChildHandling {
+        match self.convention {
+            // A leaf sink's callback may still return the deprecated
+            // `ChildTargetDef` list, which fulfills slots.
+            SinkConvention::Leaf | SinkConvention::LegacySlots => ChildHandling::LegacySlots,
+            SinkConvention::Factory(_) => ChildHandling::Factory,
+        }
+    }
+
+    async fn child_handlers(
+        &self,
+        _host_runtime_ctx: &PyAsyncContext,
+        host_ctx: Arc<Py<PyAny>>,
+        actions: &[&PyTargetAction],
+    ) -> Result<Vec<PyTargetHandler>> {
+        let SinkConvention::Factory(child_handler) = &self.convention else {
+            internal_bail!("target action sink has no child handler factory");
+        };
+        Python::attach(|py| {
+            let context_provider = host_ctx.as_ref().bind(py);
+            let wrap = &python_objects().typed_target_handler_wrapper_fn;
+            actions
+                .iter()
+                .map(|action| {
+                    let action = action.to_object(py).from_py_result()?;
+                    let handler = child_handler
+                        .call1(py, (context_provider, action))
+                        .from_py_result()?;
+                    let handler = wrap.call1(py, (handler,)).from_py_result()?;
+                    PyTargetHandler::new(handler.into_bound(py)).from_py_result()
+                })
+                .collect()
+        })
+    }
+
     async fn apply(
         &self,
         host_runtime_ctx: &PyAsyncContext,
@@ -171,19 +264,17 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSinkInner {
             // Split the child slots off while building the action list, so a
             // leaf-only batch costs nothing beyond the list itself. The engine
             // keeps the actions (to retry subsets of a failed batch), hence
-            // the borrow.
+            // the borrow; an encoded action is decoded anew for each call.
             let mut child_slots = Vec::new();
-            let actions = PyList::new(
-                py,
-                actions.iter().enumerate().map(|(idx, (action, slot))| {
-                    if let Some(slot) = slot {
-                        child_slots.push((idx, slot.clone()));
-                    }
-                    action.bind(py)
-                }),
-            )
-            .from_py_result()?;
-            if self.with_children {
+            let mut objects = Vec::with_capacity(actions.len());
+            for (idx, (action, slot)) in actions.iter().enumerate() {
+                if let Some(slot) = slot {
+                    child_slots.push((idx, slot.clone()));
+                }
+                objects.push(action.to_object(py).from_py_result()?);
+            }
+            let actions = PyList::new(py, objects).from_py_result()?;
+            if matches!(self.convention, SinkConvention::LegacySlots) {
                 let slots = PyDict::new(py);
                 let wrap = &python_objects().child_slot_wrapper_fn;
                 for (idx, slot) in child_slots {
@@ -233,6 +324,16 @@ impl PyTargetActionSinkInner {
         actions_len: usize,
         child_slots: Vec<(usize, ChildTargetSlot<PyEngineProfile>)>,
     ) -> Result<()> {
+        if let SinkConvention::Factory(_) = self.convention {
+            if !ret.is_none() {
+                client_bail!(
+                    "target action sink built with `child_handler=` returned a value from \
+                     {}; it must return `None`, as `child_handler` builds the child handlers",
+                    callback_label(self.callback.object().bind(py))
+                );
+            }
+            return Ok(());
+        }
         if ret.is_none() {
             if child_slots.is_empty() {
                 return Ok(());
@@ -240,8 +341,7 @@ impl PyTargetActionSinkInner {
             client_bail!(
                 "target action sink built with `TargetActionSink.from_fn()` / \
                  `from_async_fn()` received {} action(s) with child target states; \
-                 build it with `from_fn_with_children()` / `from_async_fn_with_children()` \
-                 and fulfill their child slots",
+                 pass it a `child_handler=` factory that builds their handlers",
                 child_slots.len()
             );
         }
@@ -249,9 +349,10 @@ impl PyTargetActionSinkInner {
             let message = CString::new(format!(
                 "{} returned child handler definitions from a target action sink \
                  callback; that contract is deprecated and will be removed. Build the \
-                 sink with `TargetActionSink.from_fn_with_children()` / \
-                 `from_async_fn_with_children()` and fulfill the child slots instead \
-                 (see \"Migrating from ChildTargetDef\" in the custom target connector docs).",
+                 sink with `TargetActionSink.from_fn()` / `from_async_fn()` and pass a \
+                 `child_handler=` factory that builds the child handlers instead (see \
+                 \"Migrating from child slots and ChildTargetDef\" in the custom target \
+                 connector docs).",
                 callback_label(self.callback.object().bind(py))
             ))?;
             let category = py.get_type::<PyDeprecationWarning>();
@@ -323,19 +424,42 @@ pub struct PyChildTargetSlot(ChildTargetSlot<PyEngineProfile>);
 
 #[pymethods]
 impl PyChildTargetSlot {
-    fn fulfill(&self, handler: Py<PyAny>) -> PyResult<()> {
-        self.0.fulfill(PyTargetHandler(handler)).into_py_result()
+    fn fulfill(&self, py: Python<'_>, handler: Py<PyAny>) -> PyResult<()> {
+        self.0
+            .fulfill(PyTargetHandler::new(handler.into_bound(py))?)
+            .into_py_result()
     }
 }
 
 #[pyclass(name = "TargetHandler")]
-pub struct PyTargetHandler(Py<PyAny>);
+pub struct PyTargetHandler {
+    handler: Py<PyAny>,
+    /// The handler's `tracks_value_fingerprint` opt-in: its tracking record
+    /// for a declared value is `fingerprint_object(value)`.
+    tracks_value_fingerprint: bool,
+}
+
+impl PyTargetHandler {
+    fn new(handler: Bound<'_, PyAny>) -> PyResult<Self> {
+        let tracks_value_fingerprint = handler
+            .getattr(pyo3::intern!(handler.py(), "tracks_value_fingerprint"))?
+            .extract()?;
+        Ok(Self {
+            handler: handler.unbind(),
+            tracks_value_fingerprint,
+        })
+    }
+}
+
+/// `serde.serialize(fingerprint_object(value))` for plain data: the msgspec
+/// routing byte, then the 16-byte digest as a msgpack `bin 8`.
+const FINGERPRINT_RECORD_HEADER: [u8; 3] = [0x01, 0xc4, 16];
 
 impl TargetHandler<PyEngineProfile> for PyTargetHandler {
     fn reconcile(
         &self,
         key: cocoindex_core::state::stable_path::StableKey,
-        desired_effect: Option<&Py<PyAny>>,
+        desired_target_state: Option<&PyTargetStateValue>,
         prev_possible_records: &[PyStoredValue],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<PyEngineProfile>>> {
@@ -346,17 +470,18 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                     .iter()
                     .map(|s| Py::new(py, s.clone()).unwrap()),
             )?;
-            let non_existence = &python_objects().non_existence;
-            // `desired_effect` is a borrow from the engine's MutexGuard;
-            // PyO3's `.bind(py)` takes a reference, so no clone needed
-            // here. If Python retains the object across the call, its
-            // own refcounting handles the lifetime.
-            let py_output = self.0.call_method(
+            // A value held encoded is decoded for this call only: the action
+            // returned is held encoded too (see `DesiredForReconcile::hold_action`).
+            let desired = match desired_target_state {
+                Some(value) => DesiredForReconcile::new(py, value)?,
+                None => DesiredForReconcile::non_existence(py),
+            };
+            let py_output = self.handler.call_method(
                 py,
                 "reconcile",
                 (
                     PyStableKey(key),
-                    desired_effect.unwrap_or(non_existence).bind(py),
+                    desired.object.bind(py),
                     prev_possible_records,
                     prev_may_be_missing,
                 ),
@@ -381,16 +506,18 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                         }
                     }
                 };
+                let sink = get_core_field(py, sink)?
+                    .extract::<PyTargetActionSink>(py)?
+                    .keeper;
+                let tracking_record = if python_objects().non_existence.is(&state) {
+                    None
+                } else {
+                    Some(PyStoredValue::new(state))
+                };
                 Some(TargetReconcileOutput {
-                    action,
-                    sink: get_core_field(py, sink)?
-                        .extract::<PyTargetActionSink>(py)?
-                        .keeper,
-                    tracking_record: if non_existence.is(&state) {
-                        None
-                    } else {
-                        Some(PyStoredValue::new(state))
-                    },
+                    action: desired.hold_action(py, action)?,
+                    sink,
+                    tracking_record,
                     child_invalidation,
                 })
             };
@@ -399,9 +526,30 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         .from_py_result()
     }
 
+    fn value_fingerprint_record(
+        &self,
+        desired_target_state: &PyTargetStateValue,
+    ) -> Result<Option<bytes::Bytes>> {
+        if !self.tracks_value_fingerprint {
+            return Ok(None);
+        }
+        Python::attach(|py| -> PyResult<_> {
+            // A value held encoded is fingerprinted as its decoding: an exact
+            // copy, so it has the declared object's fingerprint.
+            let value = desired_target_state.to_object(py)?;
+            Ok(plain_fingerprint(value.bind(py))?.map(|fp| {
+                let mut record = Vec::with_capacity(FINGERPRINT_RECORD_HEADER.len() + 16);
+                record.extend_from_slice(&FINGERPRINT_RECORD_HEADER);
+                record.extend_from_slice(fp.as_slice());
+                record.into()
+            }))
+        })
+        .from_py_result()
+    }
+
     fn attachments(&self) -> Result<Vec<(Arc<str>, PyTargetHandler)>> {
         Python::attach(|py| -> PyResult<_> {
-            let obj = self.0.bind(py);
+            let obj = self.handler.bind(py);
             if !obj.hasattr("attachments")? {
                 return Ok(vec![]);
             }
@@ -410,7 +558,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
             let mut entries = Vec::with_capacity(dict.len());
             for (key, value) in dict.iter() {
                 let att_type: String = key.extract()?;
-                entries.push((Arc::from(att_type), PyTargetHandler(value.unbind())));
+                entries.push((Arc::from(att_type), PyTargetHandler::new(value)?));
             }
             Ok(entries)
         })
@@ -455,6 +603,7 @@ impl PyTargetStateProvider {
 
 #[pyfunction]
 pub fn declare_target_state<'py>(
+    py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
     provider: &PyTargetStateProvider,
@@ -466,7 +615,7 @@ pub fn declare_target_state<'py>(
         &fn_ctx.0,
         provider.0.clone(),
         key.0,
-        value,
+        PyTargetStateValue::new(py, value)?,
     )
     .into_py_result()?;
     Ok(())
@@ -480,12 +629,14 @@ pub fn declare_target_state_with_child<'py>(
     key: PyStableKey,
     value: Py<PyAny>,
 ) -> PyResult<PyTargetStateProvider> {
+    // A container's value (its spec) is held as is: there are few of them,
+    // and their actions go on to fulfill child slots.
     let output = cocoindex_core::engine::execution::declare_target_state_with_child(
         &comp_ctx.0,
         &fn_ctx.0,
         provider.0.clone(),
         key.0,
-        value,
+        PyTargetStateValue::Object(value),
     )
     .into_py_result()?;
     Ok(PyTargetStateProvider(output))
@@ -497,18 +648,18 @@ static ROOT_TARGET_STATE_PROVIDER_REGISTRY: LazyLock<
 
 pub fn root_target_states_provider_registry()
 -> &'static Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>> {
-    &**ROOT_TARGET_STATE_PROVIDER_REGISTRY
+    &ROOT_TARGET_STATE_PROVIDER_REGISTRY
 }
 
 #[pyfunction]
 pub fn register_root_target_states_provider(
     name: String,
-    handler: Py<PyAny>,
+    handler: Bound<'_, PyAny>,
 ) -> PyResult<PyTargetStateProvider> {
     let provider = root_target_states_provider_registry()
         .lock()
         .unwrap()
-        .register_root(name, PyTargetHandler(handler))
+        .register_root(name, PyTargetHandler::new(handler)?)
         .into_py_result()?;
     Ok(PyTargetStateProvider(provider))
 }

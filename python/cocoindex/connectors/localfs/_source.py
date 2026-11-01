@@ -109,17 +109,21 @@ class DirWalker:
         if not root_resolved.is_dir():
             raise ValueError(f"Path is not a directory: {root_resolved}")
 
-        dirs_to_process: list[Path] = [root_resolved]
+        root_stat = root_resolved.stat()
+        root_id = (root_stat.st_dev, root_stat.st_ino)
+        dirs_to_process: list[tuple[Path, frozenset[tuple[int, int]]]] = [
+            (root_resolved, frozenset({root_id}))
+        ]
 
         while dirs_to_process:
-            current_dir = dirs_to_process.pop()
+            current_dir, ancestor_ids = dirs_to_process.pop()
 
             try:
                 entries = list(current_dir.iterdir())
             except PermissionError:
                 continue
 
-            subdirs: list[Path] = []
+            subdirs: list[tuple[Path, frozenset[tuple[int, int]]]] = []
 
             for entry in entries:
                 try:
@@ -132,7 +136,13 @@ class DirWalker:
                     if self._recursive and self._path_matcher.is_dir_included(
                         relative_path
                     ):
-                        subdirs.append(entry)
+                        try:
+                            stat = entry.stat()
+                        except OSError:
+                            continue
+                        entry_id = (stat.st_dev, stat.st_ino)
+                        if entry_id not in ancestor_ids:
+                            subdirs.append((entry, ancestor_ids | {entry_id}))
                 elif entry.is_file():
                     if not self._path_matcher.is_file_included(relative_path):
                         continue

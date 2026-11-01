@@ -14,8 +14,10 @@ import decimal
 import ipaddress
 import json
 import logging
+import numbers
 import re
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -23,20 +25,22 @@ from typing import (
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
+    overload,
 )
 
 
-from typing_extensions import TypeVar
+from typing_extensions import TypeVar, deprecated
+
+from cocoindex._internal.extras import install_hint
 
 try:
     import asyncpg  # type: ignore
 except ImportError as e:
     raise ImportError(
         "asyncpg is required to use the PostgreSQL connector. "
-        "Please install cocoindex[postgres]."
+        + install_hint("postgres")
     ) from e
 
 import numpy as np
@@ -94,6 +98,24 @@ def _qualified_table_name(table_name: str, pg_schema_name: str | None) -> str:
     if pg_schema_name:
         return f'"{pg_schema_name}"."{table_name}"'
     return f'"{table_name}"'
+
+
+# PostgreSQL truncates identifiers longer than this many bytes (NAMEDATALEN - 1).
+_MAX_IDENTIFIER_BYTES = 63
+
+
+def _truncated_identifier(name: str) -> str:
+    """Return the identifier PostgreSQL uses for ``name`` in a UTF-8 database.
+
+    PostgreSQL cuts a longer identifier to 63 bytes, backing off to a character
+    boundary.
+    """
+    return name.encode()[:_MAX_IDENTIFIER_BYTES].decode(errors="ignore")
+
+
+def _vector_index_name(table_name: str, index_name: str) -> str:
+    """The name of the PostgreSQL index for a declared vector index, untruncated."""
+    return f"{table_name}__vector__{index_name}"
 
 
 class PgType(NamedTuple):
@@ -520,8 +542,11 @@ class _VectorIndexHandler:
         self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
     ) -> None:
         async with self._pool.acquire() as conn:
-            for action in actions:
-                index_base_name = f"{self._table_name}__vector__{action.name}"
+            # Drop deleted indexes first: a deleted index and a created one can
+            # share a PostgreSQL name after truncation, and the later drop would
+            # remove the new index.
+            for action in sorted(actions, key=lambda a: a.spec is not None):
+                index_base_name = _vector_index_name(self._table_name, action.name)
                 # `CREATE INDEX` takes an *unqualified* index name (it is created in
                 # the table's schema); `DROP INDEX` must be *schema-qualified* to
                 # find that index — an unqualified name resolves via `search_path`,
@@ -682,14 +707,130 @@ class _SqlCommandHandler:
         )
 
 
+# Rows per `unnest` upsert statement. Its parameter count doesn't grow with the
+# row count, so the bind limit doesn't apply; throughput is flat from about
+# 1,000 to 8,000 rows per statement, and smaller statements spread a large
+# batch over more connections.
+_UNNEST_UPSERT_ROWS: int = 2000
+
+# Builtin scalar types (`pg_type.typname`) upserted through `unnest`, each as
+# one array parameter of that type: asyncpg encodes the elements with the same
+# codec it uses for a single value of the column.
+_UNNEST_SCALAR_TYPES: frozenset[str] = frozenset(
+    {
+        "bool",
+        "int2",
+        "int4",
+        "int8",
+        "float4",
+        "float8",
+        "numeric",
+        "text",
+        "varchar",
+        "bytea",
+        "uuid",
+        "date",
+        "time",
+        "timetz",
+        "timestamp",
+        "timestamptz",
+        "interval",
+        "json",
+        "jsonb",
+        "inet",
+        "cidr",
+    }
+)
+
+# Element types of the array columns upserted through `unnest`. `unnest` would
+# flatten an array-of-arrays parameter, so such a column is passed as `text[]`
+# of array literals (see `_array_literal`) and cast back in the select list.
+_UNNEST_ARRAY_ELEMENT_TYPES: frozenset[str] = frozenset(
+    {
+        "bool",
+        "int2",
+        "int4",
+        "int8",
+        "float4",
+        "float8",
+        "numeric",
+        "text",
+        "varchar",
+        "uuid",
+    }
+)
+
+# Types of a table's columns, with an array column reported by its element type.
+_COLUMN_TYPES_SQL = """
+SELECT a.attname AS name,
+       n.nspname AS type_schema,
+       coalesce(e.typname, t.typname) AS type_name,
+       e.oid IS NOT NULL AS is_array
+FROM pg_catalog.pg_attribute a
+JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+LEFT JOIN pg_catalog.pg_type e ON t.typcategory = 'A' AND e.oid = t.typelem
+JOIN pg_catalog.pg_namespace n ON n.oid = coalesce(e.typnamespace, t.typnamespace)
+WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped
+"""
+
+
+def _array_literal(value: Any) -> str:
+    """Render a (possibly nested) list as a PostgreSQL array literal.
+
+    Covers the Python values of `_UNNEST_ARRAY_ELEMENT_TYPES` elements.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(
+            f"a list is expected for an array column, got {type(value).__name__!r}"
+        )
+    parts: list[str] = []
+    for v in value:
+        if v is None:
+            parts.append("NULL")
+        elif isinstance(v, str):
+            escaped = v.replace("\\", "\\\\").replace('"', '\\"')
+            parts.append(f'"{escaped}"')
+        elif isinstance(v, bool):
+            # `1` / `0` parse as both boolean and numeric elements; asyncpg
+            # likewise takes a bool for an integer.
+            parts.append("1" if v else "0")
+        elif isinstance(v, (numbers.Real, decimal.Decimal, uuid.UUID)):
+            parts.append(str(v))
+        elif isinstance(v, (list, tuple)):
+            parts.append(_array_literal(v))
+        else:
+            raise TypeError(
+                f"unsupported array element of type {type(v).__name__!r}: {v!r}"
+            )
+    return "{" + ",".join(parts) + "}"
+
+
+class _UnnestUpsert(NamedTuple):
+    """An upsert statement taking one array parameter per column."""
+
+    sql: str
+    # Indexes of the columns whose values are passed as array literals.
+    literal_columns: tuple[int, ...]
+
+
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
+
+    tracks_value_fingerprint = True
 
     _pool: asyncpg.Pool
     _table_name: str
     _schema_name: str | None
     _table_schema: TableSchema
     _sink: coco.TargetActionSink[_RowAction]
+    _col_names: list[str]
+    _col_list: str
+    _insert_into: str  # `INSERT INTO <table> (<columns>)`
+    _conflict_clause: str
+    # Resolved from the table's column types on the first upsert; None once
+    # resolved means the table is upserted through multi-row VALUES.
+    _unnest_upsert: _UnnestUpsert | None
+    _unnest_upsert_resolved: bool
 
     def __init__(
         self,
@@ -704,6 +845,25 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_schema = table_schema
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
+        pk_cols = table_schema.primary_key
+        self._col_names = list(table_schema.columns.keys())
+        self._col_list = ", ".join(f'"{c}"' for c in self._col_names)
+        pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+        self._insert_into = (
+            f"INSERT INTO {_qualified_table_name(table_name, pg_schema_name)} "
+            f"({self._col_list})"
+        )
+        non_pk_cols = [c for c in self._col_names if c not in pk_cols]
+        if non_pk_cols:
+            update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk_cols)
+            self._conflict_clause = (
+                f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
+            )
+        else:
+            self._conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
+        self._unnest_upsert = None
+        self._unnest_upsert_resolved = False
+
     async def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_RowAction]
     ) -> None:
@@ -712,84 +872,118 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         if not actions:
             return
 
-        upserts: list[_RowAction] = []
+        upserts: list[_RowValue] = []
         deletes: list[_RowAction] = []
 
         for action in actions:
             if action.value is None:
                 deletes.append(action)
             else:
-                upserts.append(action)
+                upserts.append(action.value)
+
+        if upserts and not self._unnest_upsert_resolved:
+            self._unnest_upsert = await self._resolve_unnest_upsert()
+            self._unnest_upsert_resolved = True
 
         async with asyncio.TaskGroup() as tg:
             self._schedule_upserts(tg, upserts)
             self._schedule_deletes(tg, deletes)
 
+    async def _resolve_unnest_upsert(self) -> _UnnestUpsert | None:
+        """Build the `unnest` upsert statement, if every column's type allows it.
+
+        `INSERT ... SELECT ... FROM unnest(<one array per column>)` costs about
+        half of the multi-row VALUES statement for large batches: its text and
+        parameter count don't grow with the row count. The array types come from
+        the table itself, like the parameter types Postgres infers for VALUES, so
+        both statements accept the same Python values.
+
+        Returns None for a table with any other column type (e.g. pgvector's,
+        where parsing the vectors dominates either statement).
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                _COLUMN_TYPES_SQL,
+                _qualified_table_name(self._table_name, self._schema_name),
+            )
+        types = {
+            row["name"]: (row["type_name"], row["is_array"])
+            for row in rows
+            if row["type_schema"] == "pg_catalog"
+        }
+        params: list[str] = []
+        exprs: list[str] = []
+        literal_columns: list[int] = []
+        for i, col_name in enumerate(self._col_names):
+            type_name, is_array = types.get(col_name, (None, False))
+            if is_array and type_name in _UNNEST_ARRAY_ELEMENT_TYPES:
+                params.append(f"${i + 1}::pg_catalog.text[]")
+                exprs.append(f'r."{col_name}"::pg_catalog."{type_name}"[]')
+                literal_columns.append(i)
+            elif not is_array and type_name in _UNNEST_SCALAR_TYPES:
+                params.append(f'${i + 1}::pg_catalog."{type_name}"[]')
+                exprs.append(f'r."{col_name}"')
+            else:
+                return None
+        return _UnnestUpsert(
+            sql=(
+                f"{self._insert_into} SELECT {', '.join(exprs)} "
+                f"FROM unnest({', '.join(params)}) AS r({self._col_list}) "
+                f"{self._conflict_clause}"
+            ),
+            literal_columns=tuple(literal_columns),
+        )
+
     def _schedule_upserts(
         self,
         tg: asyncio.TaskGroup,
-        upserts: list[_RowAction],
+        upserts: list[_RowValue],
     ) -> None:
         """Schedule upsert chunks as parallel tasks."""
-        if not upserts:
+        if not upserts or not self._col_names:
             return
 
-        table_name = _qualified_table_name(self._table_name, self._schema_name)
-        columns = self._table_schema.columns
-        pk_cols = self._table_schema.primary_key
-        all_col_names = list(columns.keys())
-        non_pk_cols = [c for c in all_col_names if c not in pk_cols]
-
-        col_list = ", ".join(f'"{c}"' for c in all_col_names)
-        pk_list = ", ".join(f'"{c}"' for c in pk_cols)
-
-        if non_pk_cols:
-            update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk_cols)
-            conflict_clause = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
-        else:
-            conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
-
-        num_parameters = len(all_col_names)
-        if num_parameters == 0:
-            return
-
-        chunk_size = max(1, _BIND_LIMIT // num_parameters)
+        unnest = self._unnest_upsert
+        chunk_size = (
+            _UNNEST_UPSERT_ROWS
+            if unnest is not None
+            else max(1, _BIND_LIMIT // len(self._col_names))
+        )
         for i in range(0, len(upserts), chunk_size):
             chunk = upserts[i : i + chunk_size]
             tg.create_task(
-                self._execute_upsert_chunk(
-                    table_name,
-                    col_list,
-                    conflict_clause,
-                    all_col_names,
-                    num_parameters,
-                    chunk,
-                )
+                self._execute_values_upsert_chunk(chunk)
+                if unnest is None
+                else self._execute_unnest_upsert_chunk(unnest, chunk)
             )
 
-    async def _execute_upsert_chunk(
-        self,
-        table_name: str,
-        col_list: str,
-        conflict_clause: str,
-        all_col_names: list[str],
-        num_parameters: int,
-        chunk: list[_RowAction],
-    ) -> None:
-        """Execute a single upsert chunk."""
+    async def _execute_values_upsert_chunk(self, chunk: list[_RowValue]) -> None:
+        """Upsert a chunk of rows through one multi-row VALUES statement."""
+        num_parameters = len(self._col_names)
         values_sql_parts: list[str] = []
         params: list[Any] = []
-        for row_idx, action in enumerate(chunk):
-            assert action.value is not None
+        for row_idx, row in enumerate(chunk):
             base = row_idx * num_parameters
             placeholders = ", ".join(f"${base + j + 1}" for j in range(num_parameters))
             values_sql_parts.append(f"({placeholders})")
-            params.extend(action.value.get(col_name) for col_name in all_col_names)
+            params.extend(row.get(col_name) for col_name in self._col_names)
 
         values_sql = ", ".join(values_sql_parts)
-        sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+        sql = f"{self._insert_into} VALUES {values_sql} {self._conflict_clause}"
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
+
+    async def _execute_unnest_upsert_chunk(
+        self, unnest: _UnnestUpsert, chunk: list[_RowValue]
+    ) -> None:
+        """Upsert a chunk of rows through the `unnest` statement."""
+        columns: list[list[Any]] = [
+            [row.get(col_name) for row in chunk] for col_name in self._col_names
+        ]
+        for i in unnest.literal_columns:
+            columns[i] = [None if v is None else _array_literal(v) for v in columns[i]]
+        async with self._pool.acquire() as conn:
+            await conn.execute(unnest.sql, *columns)
 
     def _schedule_deletes(
         self,
@@ -825,13 +1019,27 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             sql = f'DELETE FROM {table_name} WHERE "{pk_cols[0]}" IN ({placeholders})'
             params.extend(action.key[0] for action in chunk)
         else:
-            or_parts: list[str] = []
+            # Not an OR chain of per-key equalities: Postgres plans that as a
+            # BitmapOr whose planning time grows quadratically with the number of
+            # keys (tens of seconds for a full chunk), while `IN (VALUES ...)`
+            # plans as one join against the key list. VALUES columns don't take
+            # their types from the compared columns, so each placeholder is cast
+            # to the declared column type.
+            columns = self._table_schema.columns
+            pk_types = [columns[c].type for c in pk_cols]
+            value_rows: list[str] = []
             for row_idx, action in enumerate(chunk):
                 base = row_idx * num_pk
-                and_parts = [f'"{pk_cols[j]}" = ${base + j + 1}' for j in range(num_pk)]
-                or_parts.append(f"({' AND '.join(and_parts)})")
+                placeholders = ", ".join(
+                    f"${base + j + 1}::{pk_types[j]}" for j in range(num_pk)
+                )
+                value_rows.append(f"({placeholders})")
                 params.extend(action.key)
-            sql = f"DELETE FROM {table_name} WHERE {' OR '.join(or_parts)}"
+            pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+            sql = (
+                f"DELETE FROM {table_name} "
+                f"WHERE ({pk_list}) IN (VALUES {', '.join(value_rows)})"
+            )
 
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
@@ -975,32 +1183,42 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
     _sink: coco.TargetActionSink[_TableAction]
 
     def __init__(self) -> None:
-        self._sink = coco.TargetActionSink.from_async_fn_with_children(
-            self._apply_actions
+        self._sink = coco.TargetActionSink.from_async_fn(
+            self._apply_actions, child_handler=self._row_handler
+        )
+
+    @staticmethod
+    def _row_handler(
+        context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RowHandler:
+        """The row handler for a created or updated table's rows."""
+        key = action.key
+        assert not coco.is_non_existence(action.spec)
+        return _RowHandler(
+            pool=context_provider.get(key.db_key, asyncpg.Pool),
+            table_name=key.table_name,
+            pg_schema_name=key.pg_schema_name,
+            table_schema=action.spec.table_schema,
         )
 
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
         /,
     ) -> None:
-        """Apply table actions (DDL) and fulfill the child row handlers."""
+        """Apply table actions (DDL)."""
         # Group actions by table key so we can apply all DDL for the same table
         # within a single transaction/connection.
-        by_key: dict[_TableKey, list[int]] = {}
-        for i, action in enumerate(actions):
-            by_key.setdefault(action.key, []).append(i)
+        by_key: dict[_TableKey, list[_TableAction]] = {}
+        for action in actions:
+            by_key.setdefault(action.key, []).append(action)
 
-        for key, idxs in by_key.items():
+        for key, key_actions in by_key.items():
             pool = context_provider.get(key.db_key, asyncpg.Pool)
             async with pool.acquire() as conn:
                 async with conn.transaction():
-                    for i in idxs:
-                        action = actions[i]
-                        assert action.key == key
-
+                    for action in key_actions:
                         if action.main_action in ("replace", "delete"):
                             await self._drop_table(
                                 conn, key.table_name, key.pg_schema_name
@@ -1010,15 +1228,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                             continue
 
                         spec = action.spec
-                        child_slots[i].fulfill(
-                            _RowHandler(
-                                pool=pool,
-                                table_name=key.table_name,
-                                pg_schema_name=key.pg_schema_name,
-                                table_schema=spec.table_schema,
-                            )
-                        )
-
                         if action.main_action in ("insert", "upsert", "replace"):
                             await self._create_table(
                                 conn,
@@ -1257,6 +1466,12 @@ _table_provider = coco.register_root_target_states_provider(
 )
 
 
+_TABLE_TARGET_DEPRECATION = (
+    "TableTarget(provider, table_schema) is deprecated and skips the vector index "
+    "name check; pass the table name: TableTarget(provider, table_name, table_schema)."
+)
+
+
 class TableTarget(
     Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
 ):
@@ -1270,15 +1485,60 @@ class TableTarget(
     """
 
     _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
+    # None only for the deprecated two-argument form, which skips the vector
+    # index name check.
+    _table_name: str | None
     _table_schema: TableSchema[RowT]
+    # Vector index name by the (truncated) PostgreSQL index name it maps to.
+    _vector_index_names: dict[str, str]
 
+    @overload
+    def __init__(
+        self,
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        table_name: str,
+        table_schema: TableSchema[RowT],
+    ) -> None: ...
+
+    @overload
+    @deprecated(_TABLE_TARGET_DEPRECATION)
     def __init__(
         self,
         provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
         table_schema: TableSchema[RowT],
+        /,
+    ) -> None: ...
+
+    @overload
+    @deprecated(_TABLE_TARGET_DEPRECATION)
+    def __init__(
+        self,
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        *,
+        table_schema: TableSchema[RowT],
+    ) -> None: ...
+
+    def __init__(
+        self,
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+        table_name: str | TableSchema[RowT] | None = None,
+        table_schema: TableSchema[RowT] | None = None,
     ) -> None:
+        if isinstance(table_name, TableSchema):
+            # The deprecated form TableTarget(provider, table_schema).
+            if table_schema is not None:
+                raise TypeError(
+                    "TableTarget() takes table_name before table_schema, not two schemas"
+                )
+            table_name, table_schema = None, table_name
+        if table_schema is None:
+            raise TypeError("TableTarget() missing required argument: 'table_schema'")
+        if table_name is None:
+            warnings.warn(_TABLE_TARGET_DEPRECATION, DeprecationWarning, stacklevel=2)
         self._provider = provider
+        self._table_name = table_name
         self._table_schema = table_schema
+        self._vector_index_names = {}
 
     def declare_row(self: "TableTarget[RowT]", *, row: RowT) -> None:
         """
@@ -1329,6 +1589,9 @@ class TableTarget(
         Declare a pgvector index on a column of this table.
 
         The actual Postgres index will be named ``{table_name}__vector__{name}``.
+        PostgreSQL truncates a name longer than 63 bytes. Declaring two vector
+        indexes on this target whose names become the same after truncation
+        raises a ``ValueError``.
 
         Args:
             name: Logical index name (defaults to ``column``).
@@ -1346,6 +1609,7 @@ class TableTarget(
             raise ValueError(
                 f"Column '{column}' not found in table schema: {list(self._table_schema.columns.keys())}"
             )
+        self._check_vector_index_name(name)
         spec = _VectorIndexSpec(
             column=column,
             metric=metric,
@@ -1357,6 +1621,28 @@ class TableTarget(
         )
         att_provider = self._provider.attachment("vector_index")
         coco.declare_target_state(att_provider.target_state(name, spec))
+
+    def _check_vector_index_name(self, name: str) -> None:
+        """Raise if another vector index on this table gets the same PostgreSQL name."""
+        if self._table_name is None:
+            return
+        pg_name = _truncated_identifier(_vector_index_name(self._table_name, name))
+        other = self._vector_index_names.setdefault(pg_name, name)
+        if other == name:
+            return
+        prefix_bytes = len(_vector_index_name(self._table_name, "").encode())
+        if prefix_bytes >= _MAX_IDENTIFIER_BYTES:
+            hint = "Use a shorter table name to have more than one vector index."
+        else:
+            hint = (
+                "Use vector index names that differ within their first "
+                f"{_MAX_IDENTIFIER_BYTES - prefix_bytes} bytes, or a shorter table name."
+            )
+        raise ValueError(
+            f"Vector indexes {other!r} and {name!r} on table {self._table_name!r} "
+            f"both get the PostgreSQL index name {pg_name!r}: PostgreSQL truncates "
+            f"names to {_MAX_IDENTIFIER_BYTES} bytes. {hint}"
+        )
 
     def declare_sql_command_attachment(
         self: "TableTarget[RowT]",
@@ -1406,7 +1692,8 @@ def table_target(
         db: ContextKey for the asyncpg.Pool connection.
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
-        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        pg_schema_name: Optional PostgreSQL schema name. When None, the table
+            name is not schema-qualified, so `search_path` picks the schema.
         managed_by: Whether the table is managed by "system" or "user".
 
     Returns:
@@ -1445,7 +1732,8 @@ def declare_table_target(
         db: ContextKey for the asyncpg.Pool connection.
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
-        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        pg_schema_name: Optional PostgreSQL schema name. When None, the table
+            name is not schema-qualified, so `search_path` picks the schema.
         managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
                     or "user" (table must exist, CocoIndex only manages rows).
 
@@ -1461,7 +1749,7 @@ def declare_table_target(
             managed_by=managed_by,
         )
     )
-    return TableTarget(provider, table_schema)
+    return TableTarget(provider, table_name, table_schema)
 
 
 async def mount_table_target(
@@ -1481,7 +1769,8 @@ async def mount_table_target(
         db: ContextKey for the asyncpg.Pool connection.
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
-        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        pg_schema_name: Optional PostgreSQL schema name. When None, the table
+            name is not schema-qualified, so `search_path` picks the schema.
         managed_by: Whether the table is managed by "system" or "user".
 
     Returns:
@@ -1496,7 +1785,7 @@ async def mount_table_target(
             managed_by=managed_by,
         )
     )
-    return TableTarget(provider, table_schema)
+    return TableTarget(provider, table_name, table_schema)
 
 
 async def create_pool(

@@ -9,7 +9,7 @@ them in Postgres/pgvector — then serves similarity search.
 
 | Concern          | Python                                   | Rust (this example)                                |
 | ---------------- | ---------------------------------------- | -------------------------------------------------- |
-| Source           | `localfs.walk_dir` (`**/*.pdf`)          | `cocoindex::fs::walk` (`**/*.pdf`)                 |
+| Source           | `localfs.walk_dir` (`**/*.pdf`)          | `cocoindex::resources::fs::walk` (`**/*.pdf`)                 |
 | PDF → text       | `docling` (PDF → Markdown, ML pipeline)  | `lopdf` text extraction                            |
 | Per-file compute | `@coco.fn(memo=True) process_file`       | `#[cocoindex::function(memo)] process_file`         |
 | Chunking         | `RecursiveSplitter` (markdown, 2000/500) | `cocoindex_ops_text` `RecursiveChunker` (markdown, 2000/500) |

@@ -198,6 +198,15 @@ impl PyFnCallMemoGuard {
         }
     }
 
+    /// On a cache hit, re-offer the stored entry's logic deps through the
+    /// callee's own frame (`fn_ctx`, the context created for this call). Call
+    /// next to `join_cached_target_provider_deps` — see the core method.
+    pub fn join_cached_logic_deps(&self, fn_ctx: &PyFnCallContext) {
+        if let Some(guard) = &self.guard {
+            guard.join_cached_logic_deps(&fn_ctx.0);
+        }
+    }
+
     /// Release the underlying Rust write lock without resolving the memo entry.
     ///
     /// Users should call this in a `finally` block if they don't end up calling `resolve(...)`.

@@ -87,6 +87,19 @@ async def fetch_one(item: Item) -> Data:
 Because the key resolves to one shared instance, every `acquire()` across the app
 draws from the same 50/s budget.
 
+## Pacing a batched function
+
+A [batched function](../programming_guide/function#batching) whose every batch is one request can take its tokens from the limiter itself: pass it as `rate_limiter`, and each batch takes one token before it runs. A token then pays for one batch rather than one call, and calls that arrive while the batcher waits for a token ride the next batch, so a scarce quota is spent on full batches. See [Pacing batches with a rate limiter](../programming_guide/function#pacing-batches-with-a-rate-limiter).
+
+```python
+limiter = RateLimiter(max_rows_per_second=1.0)
+
+
+@coco.fn.as_async(batching=True, max_batch_size=100, rate_limiter=limiter)
+async def fetch_many(ids: list[str]) -> list[Item]:
+    return await call_external_api(ids)  # one request per batch, one token each
+```
+
 ## When to use it
 
 Reach for a `RateLimiter` whenever a pipeline makes outbound calls to a

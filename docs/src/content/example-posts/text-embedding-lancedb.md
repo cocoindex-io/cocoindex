@@ -8,9 +8,9 @@ tags: [vector-index, lancedb]
 
 ![Semantic Search with LanceDB and CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-lancedb/cover.png)
 
-This is the [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) example with one thing changed: the vectors land in [LanceDB](https://lancedb.github.io/lancedb/) instead of Postgres. LanceDB is an embedded, file-based vector store — no server to stand up, no `POSTGRES_URL`, just a directory on disk you can copy to move. Everything else — read Markdown, chunk, embed each chunk — is identical, so this post focuses on the one part that differs: the connector.
+This is the [Semantic Search 101](/docs/examples/text-embedding/) example with one thing changed: the vectors land in [LanceDB](https://lancedb.github.io/lancedb/) instead of Postgres. LanceDB is an embedded, file-based vector store — no server to stand up, no `POSTGRES_URL`, just a directory on disk you can copy to move. Everything else — read Markdown, chunk, embed each chunk — is identical, so this post focuses on the one part that differs: the connector.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only what changed gets re-embedded and re-upserted.
+The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only what changed gets re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_lancedb)
 
@@ -21,16 +21,16 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 From a high level, these are the steps:
 
 1. Read Markdown files from a local directory.
-2. [Split each file into overlapping chunks](https://cocoindex.io/docs/ops/text/), then [embed](https://cocoindex.io/docs/ops/sentence_transformers/) every chunk.
-3. Store the chunks and their embeddings in a LanceDB table (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+2. [Split each file into overlapping chunks](/docs/ops/text/), then [embed](/docs/ops/sentence_transformers/) every chunk.
+3. Store the chunks and their embeddings in a LanceDB table (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
-The chunk-and-embed half is unchanged from the base example — `RecursiveSplitter` cuts each file into overlapping Markdown chunks, and a local [`SentenceTransformerEmbedder`](https://cocoindex.io/docs/ops/sentence_transformers/) (`all-MiniLM-L6-v2`, no API key) turns each chunk into a 384-d vector. See the [base walkthrough](https://cocoindex.io/docs/examples/text-embedding/) for the chunk/embed details. What changes here is the target.
+The chunk-and-embed half is unchanged from the base example — `RecursiveSplitter` cuts each file into overlapping Markdown chunks, and a local [`SentenceTransformerEmbedder`](/docs/ops/sentence_transformers/) (`all-MiniLM-L6-v2`, no API key) turns each chunk into a 384-d vector. See the [base walkthrough](/docs/examples/text-embedding/) for the chunk/embed details. What changes here is the target.
 
 ## Connect to LanceDB
 
-LanceDB is embedded, so the "connection" is just a path on disk — the directory is created on first run. The [shared resources](https://cocoindex.io/docs/programming_guide/context/) the rest of the code builds on are the LanceDB connection and the embedding model, both provided once at startup in [`coco.lifespan`](https://cocoindex.io/docs/programming_guide/context/). `DocEmbedding` defines one output row — each chunk becomes one row.
+LanceDB is embedded, so the "connection" is just a path on disk — the directory is created on first run. The [shared resources](/docs/programming_guide/context/) the rest of the code builds on are the LanceDB connection and the embedding model, both provided once at startup in [`coco.lifespan`](/docs/programming_guide/context/). `DocEmbedding` defines one output row — each chunk becomes one row.
 
 ```python title="main.py"
 import cocoindex as coco
@@ -67,7 +67,7 @@ Compared to the Postgres version, the only difference is the resource: `lancedb.
 
 ## Mount the LanceDB table
 
-`app_main` wires the source to the target. It mounts the LanceDB table, walks the source directory, and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file.
+`app_main` wires the source to the target. It mounts the LanceDB table, walks the source directory, and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
 ```python title="main.py"
 @coco.fn
@@ -89,7 +89,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     await coco.mount_each(process_file, files.items(), target_table)
 ```
 
-`lancedb.mount_table_target` is the LanceDB counterpart to the Postgres `mount_table_target` — same call shape, same managed-table guarantees: it creates and manages the table for you, handles idempotent upserts keyed on the primary key, and cleans up orphan rows when a file disappears. `process_file` and `process_chunk` take a `lancedb.TableTarget[DocEmbedding]` and call `table.declare_row(...)` exactly as before; only the import changed. `live=True` makes the [filesystem source](https://cocoindex.io/docs/connectors/localfs/) [watch for changes](https://cocoindex.io/docs/programming_guide/live_mode/), and `mount_each` runs one component per file.
+`lancedb.mount_table_target` is the LanceDB counterpart to the Postgres `mount_table_target` — same call shape, same managed-table guarantees: it creates and manages the table for you, handles idempotent upserts keyed on the primary key, and cleans up orphan rows when a file disappears. `process_file` and `process_chunk` take a `lancedb.TableTarget[DocEmbedding]` and call `table.declare_row(...)` exactly as before; only the import changed. `live=True` makes the [filesystem source](/docs/connectors/localfs/) [watch for changes](/docs/programming_guide/live_mode/), and `mount_each` runs one component per file.
 
 The App binds it all together and points at the Markdown folder:
 
@@ -109,7 +109,7 @@ No database to install — LanceDB writes to `./lancedb_data/`, created on first
 pip install -U "cocoindex[sentence_transformers,lancedb]" python-dotenv
 ```
 
-Then build and update the index with the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) — catch-up (scan, sync, exit) or live (catch up, then keep watching):
+Then build and update the index with the [`cocoindex` CLI](/docs/cli/) — catch-up (scan, sync, exit) or live (catch up, then keep watching):
 
 ```sh
 # Catch-up run
@@ -146,7 +146,7 @@ The most semantically similar chunks come back ranked — even when they share n
 
 ## Incremental updates
 
-The incremental story is identical to the [base example](https://cocoindex.io/docs/examples/text-embedding/): `@coco.fn(memo=True)` decides what to *recompute* (a file is skipped when its content and the function's code are both unchanged), and `lancedb.mount_table_target` decides what to *write* — each row's [`id`](https://cocoindex.io/docs/common_resources/id_generation/) is derived from its chunk's text, so it upserts only the rows that actually changed and deletes rows whose source is gone.
+The incremental story is identical to the [base example](/docs/examples/text-embedding/): `@coco.fn(memo=True)` decides what to *recompute* (a file is skipped when its content and the function's code are both unchanged), and `lancedb.mount_table_target` decides what to *write* — each row's [`id`](/docs/common_resources/id_generation/) is derived from its chunk's text, so it upserts only the rows that actually changed and deletes rows whose source is gone.
 
 - **A file is added** — only that file is chunked and embedded, and its rows are inserted.
 - **A file is edited** — it is re-chunked; unchanged chunks keep their `id` and embedding, genuinely new chunks are embedded and inserted, and chunks that no longer exist are deleted.
@@ -156,6 +156,6 @@ A catch-up run (`cocoindex update main`) does this once and exits; live mode (`c
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/text_embedding_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_lancedb). For the chunk-and-embed walkthrough, see [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) — same flow, Postgres as the target.
+The full, runnable example is in the CocoIndex repo: [examples/text_embedding_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_lancedb). For the chunk-and-embed walkthrough, see [Semantic Search 101](/docs/examples/text-embedding/) — same flow, Postgres as the target.
 
 If this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord community](https://discord.com/invite/zpA9S2DR7s).

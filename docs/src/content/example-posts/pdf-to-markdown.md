@@ -73,7 +73,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 ```
 
-[→ CocoIndex App](/docs/programming_guide/app)
+[→ CocoIndex App](/docs/programming_guide/app/)
 
 ### Define the main function
 
@@ -97,7 +97,7 @@ file level, or page level.
 
 In this example, because we want to independently convert each file to Markdown, it is the most natural to pick it at the file level.
 
-[→ Processing Component](/docs/programming_guide/processing_component)
+[→ Processing Component](/docs/programming_guide/processing_component/)
 
 
 ### Define file processing
@@ -135,7 +135,7 @@ def process_file(
 
 We use `@coco.fn` with `memo=True` to create a memoized function that processes each file.
 
-[→ Function](/docs/programming_guide/function)
+[→ Function](/docs/programming_guide/function/)
 
 ### Create the App
 

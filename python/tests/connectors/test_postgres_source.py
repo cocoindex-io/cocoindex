@@ -36,12 +36,14 @@ try:
 except ImportError:
     TESTCONTAINERS_AVAILABLE = False
 
+_PG_IMAGE = "postgres:16-alpine"
+
 pytestmark = [
     pytest.mark.skipif(not ASYNCPG_AVAILABLE, reason="asyncpg not installed"),
     pytest.mark.skipif(
         not TESTCONTAINERS_AVAILABLE, reason="testcontainers not installed"
     ),
-    pytest.mark.requires_docker,
+    pytest.mark.requires_docker(_PG_IMAGE),
     pytest.mark.timeout(120),
 ]
 
@@ -104,7 +106,7 @@ async def _drop_table(
 def pg_dsn() -> Any:
     from testcontainers.community.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-    with PostgresContainer("postgres:16-alpine") as pg:
+    with PostgresContainer(_PG_IMAGE) as pg:
         dsn = pg.get_connection_url()
         # testcontainers may return a SQLAlchemy-style URL; normalize for asyncpg.
         dsn = dsn.replace("postgresql+psycopg2://", "postgresql://")

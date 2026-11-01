@@ -1,3 +1,8 @@
+#![allow(
+    clippy::clone_on_copy,
+    reason = "pyo3's `from_py_object` impl clones the pyclass, out of reach of an item-level allow"
+)]
+
 use std::time::Duration;
 
 use crate::prelude::*;

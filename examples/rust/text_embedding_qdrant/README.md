@@ -3,19 +3,19 @@
 Rust port of the Python [`text_embedding_qdrant`](../../text_embedding_qdrant) example.
 
 Same pipeline as [`text_embedding`](../text_embedding), but the vector store is
-**Qdrant** via the native `cocoindex::qdrant` collection target.
+**Qdrant** via the native `cocoindex::connectors::qdrant` collection target.
 
 ## Parallel to the Python example
 
 | Concern          | Python                                   | Rust (this example)                                |
 | ---------------- | ---------------------------------------- | -------------------------------------------------- |
-| Source           | `localfs.walk_dir`                       | `cocoindex::fs::walk`                              |
+| Source           | `localfs.walk_dir`                       | `cocoindex::resources::fs::walk`                              |
 | Chunking         | `RecursiveSplitter` (markdown)           | `cocoindex_ops_text` `RecursiveChunker` (markdown)  |
 | Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `fastembed` `AllMiniLML6V2` (same model, 384-dim)   |
-| Target           | `qdrant.CollectionTarget`                | `cocoindex::qdrant::CollectionTarget`              |
-| Search           | `client.query_points(...)`               | `cocoindex::qdrant::vector_search` (cosine score)   |
+| Target           | `qdrant.CollectionTarget`                | `cocoindex::connectors::qdrant::CollectionTarget`              |
+| Search           | `client.query_points(...)`               | `cocoindex::connectors::qdrant::named_vector_search` (cosine score) |
 
-The `cocoindex::qdrant` connector is a declarative two-level **managed target**
+The `cocoindex::connectors::qdrant` connector is a declarative two-level **managed target**
 (collection → points) built on CocoIndex's public target-state facade: it
 creates the collection to match the vector schema, upserts changed points, skips
 unchanged ones (fingerprint tracking), deletes orphaned points, and recreates

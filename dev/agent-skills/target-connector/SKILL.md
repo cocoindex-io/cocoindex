@@ -39,8 +39,8 @@ Use this skill when creating a new target connector for any external system (dat
 ### Root Target States
 
 1. **Define types**: Key, Spec, TrackingRecord, Action
-2. **Implement TargetHandler**: The `reconcile()` method must be non-blocking
-3. **Create TargetActionSink**: Use `TargetActionSink.from_fn()` or `from_async_fn()`. The callback receives `context_provider: ContextProvider` as its first positional argument, followed by `actions`, and returns `None`. A container target's sink uses `from_fn_with_children()` / `from_async_fn_with_children()` instead (see below)
+2. **Implement TargetHandler**: The `reconcile()` method must be non-blocking and free of side effects
+3. **Create TargetActionSink**: Use `TargetActionSink.from_fn()` or `from_async_fn()`. The callback receives `context_provider: ContextProvider` as its first positional argument, followed by `actions`, and returns `None`. A container target's sink also passes `child_handler=` (see below)
 4. **Register provider**: Call `register_root_target_states_provider(name, handler)`
 5. **Create user-facing API**: Wrap the provider in a user-friendly class
 
@@ -48,12 +48,13 @@ Use this skill when creating a new target connector for any external system (dat
 
 For targets nested inside another target (e.g., files inside a directory):
 
-1. Build the parent's sink with `TargetActionSink.from_fn_with_children()` / `from_async_fn_with_children()`. Its callback receives a third positional argument, `child_slots: Mapping[int, ChildSlot[ChildHandler]]` — one slot per action whose target state was declared with a child, keyed by the action's index in `actions` — and calls `child_slots[i].fulfill(handler)` for each. Orphan deletes (and leaf actions on a shared sink) have no slot; index with `child_slots[i]`, not `.get()`, so a missing slot surfaces as a bug
+1. Build the parent's sink with `TargetActionSink.from_fn(apply, child_handler=...)` / `from_async_fn(...)`. `apply(context_provider, actions)` only applies the actions (DDL). `child_handler(context_provider, action) -> ChildHandler` is sync and side-effect free and builds the child handler from the action alone (connections via `context_provider`). CocoIndex calls it for each created/updated container — never a delete — before `apply` in an update and in place of `apply` in a preview, so the two modes cannot disagree
 2. Call `declare_target_state_with_child(parent_ts)` to get an unresolved child provider
-3. CocoIndex resolves the child provider with the handler the sink fulfilled when the parent's sink executes; a slot left unfulfilled fails the commit
-4. Declare the child handler type as the third argument of the container handler's `reconcile()` return type, `coco.TargetReconcileOutput[Action, TrackingRecord, ChildHandler]` (or subclass `coco.TargetHandler[Spec, TrackingRecord, ChildHandler]` explicitly); it types the provider chain
+3. CocoIndex resolves the child provider with the handler `child_handler` returned
+4. A child whose identity the external system assigns on creation (a server-side id): the container's `apply` records `key → id` in a connector-level map, and the child handler's sink reads it by the container's key at apply time — the factory never needs it
+5. Declare the child handler type as the third argument of the container handler's `reconcile()` return type, `coco.TargetReconcileOutput[Action, TrackingRecord, ChildHandler]` (or subclass `coco.TargetHandler[Spec, TrackingRecord, ChildHandler]` explicitly); it types the provider chain
 
-`coco.ChildTargetDef` and sinks that return an index-aligned list of child handlers are deprecated (they still run, with a `DeprecationWarning`); never use them in new connectors. `coco.TargetActionSink` takes one type argument; a second one is deprecated and ignored.
+`from_fn_with_children()` / `from_async_fn_with_children()` (child slots), `coco.ChildTargetDef` and sinks that return an index-aligned list of child handlers are deprecated (they still run, with a `DeprecationWarning`, and cannot be previewed); never use them in new connectors. `coco.TargetActionSink` takes one type argument; a second one is deprecated and ignored.
 
 ### Child Invalidation
 
@@ -121,12 +122,12 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
 
 **Returns:**
 
-- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed (generic params: `[ActionT, TrackingRecordT, OptChildHandlerT]`; the third declares the child handler type a container's sink fulfills, `None` for leaf targets)
+- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed (generic params: `[ActionT, TrackingRecordT, OptChildHandlerT]`; the third declares the child handler type a container's sink's `child_handler` factory returns, `None` for leaf targets)
 - `None` if no changes are required
 
 The optional `child_invalidation` field is only relevant for container targets — see [Child Invalidation](#child-invalidation).
 
-**Important:** The `reconcile()` method must be non-blocking. It should only compare states and return an action — actual I/O happens in the sink.
+**Important:** The `reconcile()` method must be non-blocking and free of side effects. It should only compare states and return an action — actual I/O happens in the sink. CocoIndex may call `reconcile()` more than once for the same target state when it retries a commit internally; only the output of the committed attempt is applied.
 
 ## Best Practices
 
@@ -203,6 +204,8 @@ fp = fingerprint_str(text)
 fp = fingerprint_object(obj)
 ```
 
+When the tracking record is exactly `fingerprint_object(desired_target_state)` (the usual row handler), set `tracks_value_fingerprint = True` on the handler class. The engine then skips `reconcile()` for unchanged plain-data values. Keep the comparison in `reconcile()` — it still runs for values that aren't plain data. Don't set it when the record is a fingerprint of a derived value or is wrapped in another type.
+
 ### Shared Action Sinks
 
 Create module-level shared sinks when all handler instances use the same action logic. The callback must accept `context_provider: ContextProvider` as its first positional argument:
@@ -225,11 +228,16 @@ callback a frozen dataclass keyed by the resource and construct it on the fly in
 `reconcile()`; no module-level sink registry is needed.
 
 Such a sink can serve a container level and its leaf level at once (table DDL
-and row writes on one connection). Build it with `from_async_fn_with_children`;
-`child_slots` then has entries only for the container actions, and
+and row writes on one connection). Pass a `child_handler`; it only ever sees the
+container actions, and
 `TargetActionSink[ActionT]` is contravariant in the action type, so one
 `TargetActionSink[_TableAction | _RowAction]` is accepted by both handlers'
-`TargetReconcileOutput`s without casts:
+`TargetReconcileOutput`s without casts. The `child_handler` is part of the sink's
+identity too, so key it by value the same way — a bound method of a callback
+built per `reconcile()` is a new object each time (bound methods compare equal
+only when bound to the *same* instance), which would give every call its own
+sink — and build the sink for both levels in one place, so the table handler
+and the row handler pass the same factory:
 
 ```python
 @dataclasses.dataclass(frozen=True)
@@ -240,20 +248,33 @@ class _DbSink:
         self,
         context_provider: ContextProvider,
         actions: Sequence[_TableAction | _RowAction],
-        child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
         /,
     ) -> None:
         conn = context_provider.get(self.db_key, ConnType)
-        for i, action in enumerate(actions):
+        for action in actions:
             if isinstance(action, _TableAction):
                 ...  # DDL
-                if not coco.is_non_existence(action.spec):  # orphan deletes have no slot
-                    child_slots[i].fulfill(_RowHandler(conn, action.key))
             else:
-                ...  # row write; leaf actions carry no slot
+                ...  # row write
 
-# In reconcile(): equal callbacks yield the same sink identity.
-sink = coco.TargetActionSink.from_async_fn_with_children(_DbSink(key.db_key))
+
+@dataclasses.dataclass(frozen=True)
+class _DbRowHandlerFactory:
+    db_key: str
+
+    def __call__(
+        self, context_provider: ContextProvider, action: _TableAction, /
+    ) -> _RowHandler:
+        # Only container creates/updates reach the factory.
+        return _RowHandler(context_provider.get(self.db_key, ConnType), action.key)
+
+
+def _db_sink(db_key: str) -> coco.TargetActionSink[_TableAction | _RowAction]:
+    # Used by both the table and the row handler's reconcile(): equal callbacks
+    # and equal factories yield the same sink identity.
+    return coco.TargetActionSink.from_async_fn(
+        _DbSink(db_key), child_handler=_DbRowHandlerFactory(db_key)
+    )
 ```
 
 A value-keyed callback must have two properties, and the framework enforces
@@ -424,6 +445,10 @@ def test_vector_support(connector_with_vec: tuple[Connection, Path]) -> None:
 **Reference implementations:**
 
 - `python/tests/connectors/test_sqlite_target.py` - SQLite tests with vector support
+- Rust SDK target connectors live under `rust/sdk/cocoindex/src/connectors/`; see
+  `sqlite.rs`, `postgres.rs`, and `doris.rs` there for relational connector patterns. A Rust
+  container sink is built with `TargetActionSink::from_async_fn_with_child_handler`, the
+  counterpart of Python's `child_handler=` (see `table_sink` in `postgres.rs`).
 
 ## Attachment Providers
 

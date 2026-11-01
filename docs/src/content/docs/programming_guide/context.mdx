@@ -41,9 +41,11 @@ Beyond sharing resources, a `ContextKey` also serves as the **stable identity** 
 
 This has two consequences:
 
-1. **The underlying value can change without losing tracked state.** Rotating credentials, moving a database, or relocating a directory won't invalidate memoization or managed state, as long as the same `ContextKey` is used.
+1. **The underlying value can change without losing tracked state.** Rotating credentials, moving a database, or relocating a directory won't invalidate memoization or managed state, as long as the same `ContextKey` is used. A key names a *logical* location: when you point it at a new physical location, CocoIndex assumes the data moved with it. It doesn't recreate target states that are unchanged, and it doesn't clean up the old location. If the data doesn't move with the key, [drop the app](./app#drop-an-app) before you point the key elsewhere.
 
 2. **Renaming a `ContextKey` is a breaking change.** Two different keys are two different resources, even if they point to the same physical backend. Existing tracked state will be treated as orphaned. When migrating code, reuse the previous key name to preserve continuity.
+
+   The same holds within one run: CocoIndex doesn't detect two keys that reach one backend. If two keys point at the same database and you declare the same table through both, CocoIndex tracks two tables, and syncing one can overwrite or delete the other. Keeping the locations behind different keys apart is your responsibility.
 
 :::tip[Naming convention]
 Pick a `ContextKey` name that reflects the *logical* role of the resource, not its current address. The name is what CocoIndex persists.

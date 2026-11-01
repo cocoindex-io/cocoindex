@@ -142,6 +142,10 @@ pub fn add_error_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 pub trait FromPyResult<T> {
+    #[allow(
+        clippy::wrong_self_convention,
+        reason = "converts *from* a `PyResult`, the counterpart of `IntoPyResult::into_py_result`"
+    )]
     fn from_py_result(self) -> CResult<T>;
 }
 

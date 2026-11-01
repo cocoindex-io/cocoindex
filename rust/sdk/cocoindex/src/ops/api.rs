@@ -14,6 +14,7 @@
 //!   audio as a multipart upload, reading the bytes from any [`FileLike`].
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -21,7 +22,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
-use crate::file::FileLike;
+use crate::resources::file::FileLike;
 use crate::resources::schema::{VectorElementType, VectorSchema, VectorSchemaProvider};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -30,13 +31,44 @@ fn base_url_or_default(base_url: &str) -> &str {
     base_url.trim_end_matches('/')
 }
 
-async fn ensure_success(resp: reqwest::Response, what: &str) -> Result<reqwest::Response> {
-    if resp.status().is_success() {
-        return Ok(resp);
+/// Retries after the first attempt for a transient failure (429, 5xx, or a
+/// connection error), with exponential backoff from [`RETRY_BASE_DELAY`].
+const MAX_RETRIES: u32 = 3;
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+/// Upper bound on a server-requested `Retry-After` wait.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// Send a request built by `build`, retrying transient failures, and return
+/// the successful response. `build` is called once per attempt because a
+/// request body (such as a multipart upload) cannot be reused.
+async fn send_with_retry(
+    build: impl Fn() -> reqwest::RequestBuilder,
+    what: &str,
+) -> Result<reqwest::Response> {
+    let mut attempt = 0;
+    loop {
+        let retry_after = match build().send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(resp),
+            Ok(resp) => {
+                let status = resp.status();
+                let retryable =
+                    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                if !retryable || attempt == MAX_RETRIES {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(Error::engine(format!("{what} failed ({status}): {body}")));
+                }
+                resp.headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map(|secs| Duration::from_secs(secs).min(MAX_RETRY_AFTER))
+            }
+            Err(e) if (e.is_connect() || e.is_timeout()) && attempt < MAX_RETRIES => None,
+            Err(e) => return Err(Error::engine(format!("{what} failed: {e}"))),
+        };
+        tokio::time::sleep(retry_after.unwrap_or(RETRY_BASE_DELAY * 2u32.pow(attempt))).await;
+        attempt += 1;
     }
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    Err(Error::engine(format!("{what} failed ({status}): {body}")))
 }
 
 /// An embedder backed by an OpenAI-compatible `/embeddings` endpoint.
@@ -98,20 +130,23 @@ impl ApiEmbedder {
             return Ok(Vec::new());
         }
         let url = format!("{}/embeddings", base_url_or_default(&self.base_url));
-        let mut req = self.client.post(&url).json(&self.build_body(&texts));
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| Error::engine(format!("embedding request failed: {e}")))?;
-        let resp = ensure_success(resp, "embedding request").await?;
+        let body = self.build_body(&texts);
+        let resp = send_with_retry(
+            || {
+                let req = self.client.post(&url).json(&body);
+                match &self.api_key {
+                    Some(key) => req.bearer_auth(key),
+                    None => req,
+                }
+            },
+            "embedding request",
+        )
+        .await?;
         let parsed: EmbeddingResponse = resp
             .json()
             .await
             .map_err(|e| Error::engine(format!("embedding response decode failed: {e}")))?;
-        Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
+        embeddings_in_input_order(parsed.data, texts.len())
     }
 
     /// The embedding dimension, discovered by embedding a probe text and
@@ -156,6 +191,32 @@ struct EmbeddingResponse {
 #[derive(Deserialize)]
 struct EmbeddingData {
     embedding: Vec<f32>,
+    /// Position of the input this embedding belongs to. OpenAI returns data
+    /// in input order, but compatible servers are not required to.
+    index: Option<usize>,
+}
+
+/// The embeddings ordered like the inputs, checking that there is exactly
+/// one per input.
+fn embeddings_in_input_order(
+    mut data: Vec<EmbeddingData>,
+    num_inputs: usize,
+) -> Result<Vec<Vec<f32>>> {
+    if data.len() != num_inputs {
+        return Err(Error::engine(format!(
+            "embedding API returned {} vectors for {num_inputs} inputs",
+            data.len()
+        )));
+    }
+    if data.iter().all(|d| d.index.is_some()) {
+        data.sort_by_key(|d| d.index);
+        if data.iter().enumerate().any(|(i, d)| d.index != Some(i)) {
+            return Err(Error::engine(
+                "embedding API returned duplicate or out-of-range indices",
+            ));
+        }
+    }
+    Ok(data.into_iter().map(|d| d.embedding).collect())
 }
 
 /// A speech-to-text transcriber backed by an OpenAI-compatible
@@ -214,22 +275,25 @@ impl ApiTranscriber {
             "{}/audio/transcriptions",
             base_url_or_default(&self.base_url)
         );
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
-        let mut form = reqwest::multipart::Form::new()
-            .text("model", self.model.clone())
-            .part("file", part);
-        if let Some(language) = &self.language {
-            form = form.text("language", language.clone());
-        }
-        let mut req = self.client.post(&url).multipart(form);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| Error::engine(format!("transcription request failed: {e}")))?;
-        let resp = ensure_success(resp, "transcription request").await?;
+        let resp = send_with_retry(
+            || {
+                let part =
+                    reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
+                let mut form = reqwest::multipart::Form::new()
+                    .text("model", self.model.clone())
+                    .part("file", part);
+                if let Some(language) = &self.language {
+                    form = form.text("language", language.clone());
+                }
+                let req = self.client.post(&url).multipart(form);
+                match &self.api_key {
+                    Some(key) => req.bearer_auth(key),
+                    None => req,
+                }
+            },
+            "transcription request",
+        )
+        .await?;
         let parsed: TranscriptionResponse = resp
             .json()
             .await
@@ -326,15 +390,17 @@ impl ApiChatClient {
             "messages": messages,
             "response_format": { "type": "json_object" },
         });
-        let mut req = self.client.post(&url).json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| Error::engine(format!("chat request failed: {e}")))?;
-        let resp = ensure_success(resp, "chat request").await?;
+        let resp = send_with_retry(
+            || {
+                let req = self.client.post(&url).json(&body);
+                match &self.api_key {
+                    Some(key) => req.bearer_auth(key),
+                    None => req,
+                }
+            },
+            "chat request",
+        )
+        .await?;
         let parsed: ChatResponse = resp
             .json()
             .await

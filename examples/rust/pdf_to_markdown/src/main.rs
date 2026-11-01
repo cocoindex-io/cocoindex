@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
             let output_dir = output_dir.clone();
             async move {
                 let target = DirTarget::mount(&ctx, &output_dir)?;
-                let files = cocoindex::fs::walk_items(&source_dir, &["**/*.pdf"])?;
+                let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.pdf"])?;
                 println!(
                     "converting {} PDF(s) from {}",
                     files.len(),

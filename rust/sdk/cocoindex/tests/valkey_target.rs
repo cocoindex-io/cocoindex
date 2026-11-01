@@ -4,17 +4,15 @@
 #![cfg(feature = "valkey")]
 
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::resources::schema::VectorSchema;
-use cocoindex::valkey::{
+use cocoindex::Environment;
+use cocoindex::connectors::valkey::{
     self, Distance, Document, FieldDef, FieldType, IndexSchema, VectorAlgorithm, VectorDef,
 };
-use cocoindex::{ContextKey, Environment};
+use cocoindex::resources::schema::VectorSchema;
 
-static VK: LazyLock<ContextKey<valkey::Valkey>> =
-    LazyLock::new(|| ContextKey::new("valkey_target_conn"));
+cocoindex::context_key!(static VK: valkey::Valkey, key = "valkey_target_conn");
 
 fn nonce() -> u128 {
     SystemTime::now()
@@ -76,26 +74,17 @@ async fn key_exists(uri: &str, key: &str) -> bool {
         == 1
 }
 
-async fn ft_search_count(uri: &str, index: &str) -> i64 {
+/// The number of documents under the index's key prefix. Counted by key, not
+/// with `FT.SEARCH idx *`, which valkey-search rejects.
+async fn doc_count(uri: &str, index: &str) -> usize {
     let client = redis::Client::open(uri).unwrap();
     let mut conn = client.get_multiplexed_async_connection().await.unwrap();
-    // `FT.SEARCH idx * LIMIT 0 0` returns the total doc count as the first reply.
-    let value: redis::Value = redis::cmd("FT.SEARCH")
-        .arg(index)
-        .arg("*")
-        .arg("LIMIT")
-        .arg(0)
-        .arg(0)
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("{index}:*"))
         .query_async(&mut conn)
         .await
         .unwrap();
-    match value {
-        redis::Value::Array(items) => match items.first() {
-            Some(redis::Value::Int(n)) => *n,
-            _ => -1,
-        },
-        _ => -1,
-    }
+    keys.len()
 }
 
 async fn index_exists(uri: &str, index: &str) -> bool {
@@ -143,7 +132,7 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
     .expect("creating a Valkey index + documents should succeed");
 
     assert!(index_exists(&uri, &index_name).await);
-    assert_eq!(ft_search_count(&uri, &index_name).await, 2);
+    assert_eq!(doc_count(&uri, &index_name).await, 2);
     assert_eq!(
         hget(&uri, &format!("{index_name}:d1"), "text")
             .await
@@ -167,7 +156,7 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
     .await
     .expect("updating a Valkey document should succeed");
 
-    assert_eq!(ft_search_count(&uri, &index_name).await, 1);
+    assert_eq!(doc_count(&uri, &index_name).await, 1);
     assert_eq!(
         hget(&uri, &format!("{index_name}:d1"), "text")
             .await
@@ -176,9 +165,8 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
     );
     assert!(!key_exists(&uri, &format!("{index_name}:d2")).await);
 
-    // Run 3: re-register the provider but declare nothing on it → the orphaned
-    // system-managed index is dropped and its docs purged (handler present,
-    // index state absent).
+    // Run 3: build the index target state but don't declare it → the orphaned
+    // system-managed index is dropped and its docs purged.
     app.run({
         let index_name = index_name.clone();
         move |ctx| {
@@ -194,4 +182,105 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
 
     assert!(!index_exists(&uri, &index_name).await);
     assert!(!key_exists(&uri, &format!("{index_name}:d1")).await);
+}
+
+#[tokio::test]
+async fn valkey_undeclared_and_dropped_indexes_are_removed_when_available() {
+    let Some(vk) = try_connect().await else {
+        eprintln!("skipping live Valkey index-removal test; VALKEY_URI is not set or unavailable");
+        return;
+    };
+    let uri = std::env::var("VALKEY_URI").unwrap();
+    let index_name = format!("idx_removal_{}", nonce());
+    let doc_key = format!("{index_name}:d1");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tmp.path().join("db"))
+        .provide_key(&VK, vk.clone())
+        .build()
+        .await
+        .unwrap()
+        .app("ValkeyIndexRemovalE2ETest")
+        .await
+        .unwrap();
+    let declare = |index_name: String| {
+        move |ctx: cocoindex::Ctx| async move {
+            let index = valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
+            index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
+            Ok::<_, cocoindex::Error>(())
+        }
+    };
+
+    app.run(declare(index_name.clone())).await.unwrap();
+    assert!(index_exists(&uri, &index_name).await);
+    assert!(key_exists(&uri, &doc_key).await);
+
+    // A run that no longer declares the index drops it and purges its docs.
+    app.run(|_ctx| async { Ok(()) }).await.unwrap();
+    assert!(
+        !index_exists(&uri, &index_name).await,
+        "an index no longer declared is dropped"
+    );
+    assert!(!key_exists(&uri, &doc_key).await);
+
+    app.run(declare(index_name.clone())).await.unwrap();
+    assert!(index_exists(&uri, &index_name).await);
+    assert!(key_exists(&uri, &doc_key).await);
+
+    app.drop_state().await.unwrap();
+    assert!(
+        !index_exists(&uri, &index_name).await,
+        "drop_state drops the index"
+    );
+    assert!(!key_exists(&uri, &doc_key).await);
+}
+
+/// An index that exists without a tracking record (e.g. state from an earlier
+/// version that keyed target states differently) is adopted, not re-created.
+#[tokio::test]
+async fn valkey_adopts_untracked_existing_index_when_available() {
+    let Some(vk) = try_connect().await else {
+        eprintln!("skipping live Valkey index-adoption test; VALKEY_URI is not set or unavailable");
+        return;
+    };
+    let uri = std::env::var("VALKEY_URI").unwrap();
+    let index_name = format!("idx_adopt_{}", nonce());
+    let declare = |index_name: String| {
+        move |ctx: cocoindex::Ctx| async move {
+            let index = valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
+            index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
+            Ok::<_, cocoindex::Error>(())
+        }
+    };
+    let new_app = |db: std::path::PathBuf| {
+        let vk = vk.clone();
+        async move {
+            Environment::builder()
+                .db_path(db)
+                .provide_key(&VK, vk)
+                .build()
+                .await
+                .unwrap()
+                .app("ValkeyIndexAdoptionE2ETest")
+                .await
+                .unwrap()
+        }
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let first = new_app(tmp.path().join("first")).await;
+    first.run(declare(index_name.clone())).await.unwrap();
+    assert!(index_exists(&uri, &index_name).await);
+
+    // A fresh state db has no record of the index.
+    let second = new_app(tmp.path().join("second")).await;
+    second
+        .run(declare(index_name.clone()))
+        .await
+        .expect("declaring an index that already exists should adopt it");
+    assert!(index_exists(&uri, &index_name).await);
+
+    second.drop_state().await.unwrap();
+    assert!(!index_exists(&uri, &index_name).await);
 }

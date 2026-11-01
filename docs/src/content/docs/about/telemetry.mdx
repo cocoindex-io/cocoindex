@@ -20,10 +20,24 @@ lifecycle:
 - `app_update` — each time `app.update()` is called.
 - `app_drop` — each time `app.drop()` is called.
 
-Each event body contains exactly three fields:
+Each event body contains three fields, plus a fourth only if you set an
+application tag:
+
+- `event` — the event name above.
+- `platform` — CPU architecture and operating system, for example `aarch64-macos`.
+- `lang` — the language and its version, for example `python3.11`.
+- `application` — an application tag, sent only if you set one with the
+  `COCOINDEX_APPLICATION_FOR_TRACKING` environment variable (see
+  [Tagging your application](#tagging-your-application)).
 
 ```json
 { "event": "app_update", "platform": "aarch64-macos", "lang": "python3.11" }
+```
+
+With `COCOINDEX_APPLICATION_FOR_TRACKING=my-app` set, the same event is:
+
+```json
+{ "event": "app_update", "platform": "aarch64-macos", "lang": "python3.11", "application": "my-app" }
 ```
 
 The package identity and version travel in the request URL, for example
@@ -35,11 +49,14 @@ CocoIndex telemetry never sends:
 
 - Your data, flow definitions, or function code.
 - Source/target connector configuration, credentials, URLs, or database names.
-- App names, component names, file paths, or any user-provided identifiers.
+- `cocoindex.App` names, component names, file paths, or other identifiers from
+  your code. The only identifier ever sent is the application tag, and only if
+  you set it yourself.
 - Stats about row counts, processing times, or memory usage.
-- A persistent machine or user identifier. Requests are not tagged; the gateway
-  only sees whatever an HTTP request normally carries (IP address, which Scarf
-  uses for coarse geolocation and then discards).
+- A persistent machine or user identifier. Requests carry no identifier unless
+  you set an application tag; the gateway only sees whatever an HTTP request
+  normally carries (IP address, which Scarf uses for coarse geolocation and
+  then discards).
 
 ## When telemetry is active
 
@@ -62,6 +79,23 @@ export COCOINDEX_DISABLE_USAGE_TRACKING=1
 
 When this variable is set, CocoIndex skips all telemetry initialization — no
 events are ever constructed or dispatched.
+
+## Tagging your application
+
+If you build a tool or service on CocoIndex, you can label its events so they
+can be told apart in aggregate usage counts. Set the
+`COCOINDEX_APPLICATION_FOR_TRACKING` environment variable before CocoIndex is
+imported:
+
+```bash
+export COCOINDEX_APPLICATION_FOR_TRACKING=my-app
+```
+
+CocoIndex reads the variable once, when telemetry starts at import, and adds
+its value as the `application` field of every event that process sends. The
+value is sent exactly as you set it, so don't put anything in it you wouldn't
+want shared. Leaving the variable unset or empty sends no tag. The tag doesn't
+override opt-out: with `COCOINDEX_DISABLE_USAGE_TRACKING` set, nothing is sent.
 
 ## Why we collect this
 

@@ -1,20 +1,8 @@
 name: E2E Type Check
 
+# Pull requests and pushes run this through CI.yml, behind its `ci-gate`.
 on:
-  pull_request:
-    branches: [main, v1]
-    paths:
-      - python/**
-      - examples*/**
-      - "*.toml"
-      - ".github/workflows/e2e_type_check.yml"
-  push:
-    branches: [main, v1]
-    paths:
-      - python/**
-      - examples*/**
-      - "*.toml"
-      - ".github/workflows/e2e_type_check.yml"
+  workflow_call:
   workflow_dispatch:
 
 permissions:

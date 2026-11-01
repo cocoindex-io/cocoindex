@@ -119,7 +119,7 @@ pub fn from_py_future<'py, 'fut>(
     awaitable: Bound<'py, PyAny>,
 ) -> pyo3::PyResult<impl Future<Output = pyo3::PyResult<Py<PyAny>>> + Send + use<'fut>> {
     // 1) Capture loop + context from TaskLocals for thread-safe cancellation
-    let event_loop: Bound<'py, PyAny> = locals.event_loop(py).into();
+    let event_loop: Bound<'py, PyAny> = locals.event_loop(py);
     let ctx: Bound<'py, PyAny> = locals.context(py);
 
     let (result_tx, result_rx) = oneshot::channel();

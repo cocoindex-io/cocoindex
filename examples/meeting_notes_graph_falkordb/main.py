@@ -65,13 +65,11 @@ EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_chang
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    builder.provide(
-        KG_DB,
-        falkordb.ConnectionFactory(
-            uri=os.environ.get("FALKORDB_URI", "falkor://localhost:6379"),
-            graph=os.environ.get("FALKORDB_GRAPH", "meeting_notes"),
-        ),
+    kg_db = falkordb.ConnectionFactory(
+        uri=os.environ.get("FALKORDB_URI", "falkor://localhost:6379"),
+        graph=os.environ.get("FALKORDB_GRAPH", "meeting_notes"),
     )
+    builder.provide(KG_DB, kg_db)
     builder.provide(LLM_MODEL, os.environ.get("LLM_MODEL", "openai/gpt-5-mini"))
     builder.provide(
         RESOLUTION_LLM_MODEL,
@@ -82,6 +80,7 @@ async def coco_lifespan(
         SentenceTransformerEmbedder("Snowflake/snowflake-arctic-embed-xs"),
     )
     yield
+    await kg_db.close()
 
 
 # ---------------------------------------------------------------------------

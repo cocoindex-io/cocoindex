@@ -260,7 +260,9 @@ impl LiveComponent for DirectDelete {
         operator.mark_ready().await;
         // Directly delete the child mounted for key "a"; its target state is GC'd.
         operator.delete("a").await?;
-        self.done.notify_waiters();
+        // `notify_one` keeps a permit: the test may start waiting only after
+        // this runs (the engine drives the live component on its own threads).
+        self.done.notify_one();
         Ok(())
     }
 }
@@ -330,6 +332,64 @@ impl LiveComponent for Failing {
     async fn process(&self, _ctx: Ctx) -> Result<()> {
         Err(Error::engine("process boom"))
     }
+}
+
+/// With no handler registered, a failure is logged and not returned, as in
+/// the Python SDK ("background failures are reported, not raised").
+#[tokio::test]
+async fn mount_live_without_handler_logs_failure_instead_of_returning_it() {
+    let (app, _dir) = temp_app("live_no_handler").await;
+    app.update(|ctx| async move { ctx.mount_live(&"comp", Failing).await })
+        .await
+        .expect("an unhandled background failure is logged, not propagated");
+}
+
+#[derive(Debug)]
+struct QuotaExceeded;
+
+impl std::fmt::Display for QuotaExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("quota exceeded")
+    }
+}
+
+impl std::error::Error for QuotaExceeded {}
+
+struct FailingWithUserError;
+
+#[async_trait]
+impl LiveComponent for FailingWithUserError {
+    async fn process(&self, _ctx: Ctx) -> Result<()> {
+        Err(Error::user(QuotaExceeded))
+    }
+}
+
+/// A handler receives the component's original error, so it can match on the
+/// user's own error type rather than on its message.
+#[tokio::test]
+async fn exception_handler_receives_the_original_error() {
+    let (app, _dir) = temp_app("live_handler_original_error").await;
+    let matched = Arc::new(AtomicUsize::new(0));
+    let matched_for_update = matched.clone();
+
+    app.update(move |ctx| {
+        let matched = matched_for_update.clone();
+        async move {
+            ctx.mount_live_with_handler(&"comp", FailingWithUserError, move |err, _exc| {
+                if let Error::User(inner) = err
+                    && inner.downcast_ref::<QuotaExceeded>().is_some()
+                {
+                    matched.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            })
+            .await
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(matched.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -403,6 +463,48 @@ async fn exception_handler_chain_inherited_by_nested_components() {
     );
 }
 
+/// Mounts a failing live child from inside an `auto_refresh` body.
+struct RefreshMountingFailingChild;
+
+#[async_trait]
+impl LiveComponent for RefreshMountingFailingChild {
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        ctx.auto_refresh(&"poller", Duration::from_secs(60), |ctx| async move {
+            ctx.mount_live(&"child", Failing).await
+        })
+        .await
+    }
+}
+
+#[tokio::test]
+async fn live_child_mounted_from_auto_refresh_reaches_enclosing_handler() {
+    let (app, _dir) = temp_app("live_refresh_child_handler").await;
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_for_update = seen.clone();
+
+    app.update(move |ctx| {
+        let seen = seen_for_update.clone();
+        async move {
+            ctx.mount_live_with_handler(&"parent", RefreshMountingFailingChild, move |err, exc| {
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{} {err}", exc.stable_path));
+                Ok(())
+            })
+            .await
+        }
+    })
+    .await
+    .unwrap();
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|entry| entry.contains("child") && entry.contains("process boom")),
+        "the child's failure did not reach the parent's handler: {seen:?}"
+    );
+}
+
 struct AutoRefreshFailingCycle {
     calls: Arc<AtomicUsize>,
     third_call: Arc<Notify>,
@@ -422,7 +524,8 @@ impl LiveComponent for AutoRefreshFailingCycle {
                     return Err(Error::engine("cycle failed"));
                 }
                 if call >= 3 {
-                    third_call.notify_waiters();
+                    // Keeps a permit if the test is not waiting yet.
+                    third_call.notify_one();
                 }
                 Ok(())
             }
@@ -431,13 +534,16 @@ impl LiveComponent for AutoRefreshFailingCycle {
     }
 }
 
+/// What an exception handler saw: mount kind, background flag, stable path,
+/// error message.
+type HandlerReport = (MountKind, bool, String, String);
+
 #[tokio::test]
 async fn auto_refresh_cycle_failure_uses_inherited_handler_and_continues() {
     let (app, _dir) = temp_app("auto_refresh_handler_chain").await;
     let calls = Arc::new(AtomicUsize::new(0));
     let third_call = Arc::new(Notify::new());
-    let reports: Arc<Mutex<Vec<(MountKind, bool, String, String)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let reports: Arc<Mutex<Vec<HandlerReport>>> = Arc::new(Mutex::new(Vec::new()));
 
     let component = AutoRefreshFailingCycle {
         calls: calls.clone(),
@@ -469,7 +575,7 @@ async fn auto_refresh_cycle_failure_uses_inherited_handler_and_continues() {
         .await
         .unwrap();
     assert!(calls.load(Ordering::SeqCst) >= 3);
-    let reports = reports.lock().unwrap();
+    let reports = reports.lock().unwrap().clone();
     assert!(
         reports.iter().any(|(kind, background, path, err)| {
             *kind == MountKind::UpdateFull
@@ -575,7 +681,8 @@ impl LiveMapFeed<String, i64> for StreamFeed {
         for (k, v) in &self.items {
             subscriber.update(k.clone(), *v).await?;
         }
-        self.done.notify_waiters();
+        // Keeps a permit if the test is not waiting yet.
+        self.done.notify_one();
         Ok(())
     }
 }
@@ -586,6 +693,58 @@ impl LiveMapView<String, i64> for StreamFeed {
         // Empty initial snapshot; everything arrives via watch().
         Ok(Vec::new())
     }
+}
+
+/// A durable feed that always asks to resume from its cursor.
+struct SkippingFeed {
+    items: Vec<(String, i64)>,
+}
+
+#[async_trait]
+impl LiveMapFeed<String, i64> for SkippingFeed {
+    async fn skip_initial_scan(&self, _operator: &LiveComponentOperator) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn watch(&self, _subscriber: LiveMapSubscriber<String, i64>) -> Result<()> {
+        std::future::pending::<()>().await;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LiveMapView<String, i64> for SkippingFeed {
+    async fn scan(&self) -> Result<Vec<(String, i64)>> {
+        Ok(self.items.clone())
+    }
+}
+
+/// In catch-up mode `watch` never runs, so the scan is not skipped.
+#[tokio::test]
+async fn catch_up_run_scans_even_when_feed_would_skip_the_scan() {
+    let (app, _dir) = temp_app("each_live_skip_catch_up").await;
+    let processed: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
+    let processed_for_update = processed.clone();
+
+    app.update(move |ctx| async move {
+        let feed = SkippingFeed {
+            items: vec![("x".to_string(), 1), ("y".to_string(), 2)],
+        };
+        ctx.mount_each_live(&"each", feed, move |_ctx, value: i64| {
+            let processed = processed_for_update.clone();
+            async move {
+                processed.lock().unwrap().push(value);
+                Ok(())
+            }
+        })
+        .await
+    })
+    .await
+    .unwrap();
+
+    let mut processed = processed.lock().unwrap().clone();
+    processed.sort();
+    assert_eq!(processed, vec![1, 2]);
 }
 
 #[tokio::test]

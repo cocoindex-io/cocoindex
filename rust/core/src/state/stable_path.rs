@@ -152,7 +152,7 @@ impl std::fmt::Display for StableKey {
                 }
                 f.write_char('"')
             }
-            StableKey::Uuid(u) => write!(f, "{}", u.to_string()),
+            StableKey::Uuid(u) => write!(f, "{}", u),
             StableKey::Array(a) => {
                 f.write_char('[')?;
                 for (i, part) in a.iter().enumerate() {
@@ -361,7 +361,7 @@ impl std::ops::Deref for StablePath {
     }
 }
 
-impl<'a> std::borrow::Borrow<[StableKey]> for StablePath {
+impl std::borrow::Borrow<[StableKey]> for StablePath {
     fn borrow(&self) -> &[StableKey] {
         &self.0
     }

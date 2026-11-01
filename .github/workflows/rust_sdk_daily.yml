@@ -1,0 +1,51 @@
+name: Rust SDK Daily
+
+# The Rust SDK isn't launched yet, so CI runs its checks only for a change to
+# the SDK or to the Rust examples and benchmarks that build on it. This runs
+# them on main every day, to catch a change elsewhere (rust/core, a
+# dependency bump, ...) that breaks the SDK, and files an issue when they fail.
+on:
+  schedule:
+    # An hour after CI's nightly run, so the two don't compete for runners.
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-sdk:
+    name: Rust SDK
+    uses: ./.github/workflows/_rust_sdk.yml
+
+  # Files an issue when a run on main fails, or comments on the issue if one
+  # is still open. A leg that runs past its timeout counts as a failure; a
+  # cancelled run doesn't. A run on another branch reports only its status.
+  report-failure:
+    needs: rust-sdk
+    if: ${{ !cancelled() && needs.rust-sdk.result != 'success' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      # `gh run view` lists the failed jobs.
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      SHA: ${{ github.sha }}
+      TITLE: Daily Rust SDK check failed
+    steps:
+      - run: |
+          failed_jobs=$(gh run view "$RUN_ID" --json jobs --jq \
+            '.jobs[] | select(.conclusion | IN("failure", "cancelled", "timed_out")) | "- [\(.name)](\(.url)): \(.conclusion)"')
+          body=$(printf 'The [daily Rust SDK check](%s) failed on %s.\n\n%s\n' \
+            "$RUN_URL" "$SHA" "$failed_jobs")
+          number=$(gh issue list --state open --label "automated issue" \
+            --json number,title --jq 'map(select(.title == env.TITLE))[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$TITLE" --label bug --label "automated issue" --body "$body"
+          fi

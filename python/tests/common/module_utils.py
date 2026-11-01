@@ -4,6 +4,37 @@ import importlib.util
 import sys
 from types import ModuleType
 
+from cocoindex._internal import core
+from cocoindex._internal.function import AsyncFunction, SyncFunction
+
+
+def release_logic_fp(obj: object) -> None:
+    """Release a coco function's logic fingerprint registration now.
+
+    Clears ``_logic_fp`` so the object's ``__del__`` doesn't release it a second
+    time once the stale module is collected — that would drop the registration
+    held by an unchanged function in the next module version.
+    """
+    if isinstance(obj, (SyncFunction, AsyncFunction)) and obj._logic_fp is not None:
+        core.unregister_logic_fingerprint(obj._logic_fp)
+        obj._logic_fp = None
+
+
+def unload_module_functions(mod: ModuleType) -> None:
+    """Unregister logic fingerprints for all coco functions in a module.
+
+    Simulates editing a module in place: call it on the old version before
+    loading the new one under the same name, so fingerprints of edited
+    functions leave the current logic set.
+    """
+    for attr_name in dir(mod):
+        obj = getattr(mod, attr_name)
+        release_logic_fp(obj)
+        # Also scan class attributes for @coco.fn decorated methods.
+        if isinstance(obj, type):
+            for cls_attr_name in dir(obj):
+                release_logic_fp(getattr(obj, cls_attr_name, None))
+
 
 def load_module_as(source_path: str, fake_module_name: str) -> ModuleType:
     """
@@ -25,4 +56,25 @@ def load_module_as(source_path: str, fake_module_name: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[fake_module_name] = module
     spec.loader.exec_module(module)
+    return module
+
+
+def install_stub_module(name: str, **attrs: object) -> ModuleType:
+    """
+    Register a stub module under ``name`` in ``sys.modules``.
+
+    Use it to stand in for an optional third-party SDK before importing the
+    code under test, so that code binds the stub's attributes (typically stub
+    classes) instead of failing to import the SDK.
+
+    Args:
+        name: Fully qualified module name to register.
+        **attrs: Attributes to expose on the stub module.
+
+    Returns:
+        The registered module object.
+    """
+    module = ModuleType(name)
+    vars(module).update(attrs)
+    sys.modules[name] = module
     return module

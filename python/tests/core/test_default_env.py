@@ -83,6 +83,19 @@ def test_app_implicit_startup(_default_env: None) -> None:
     assert _num_active_resources == 1
 
 
+def test_app_across_restarts(_default_env: None) -> None:
+    app = coco.App(
+        coco.AppConfig(name="trivial_app_across_restarts"),
+        _trivial_fn,
+        "Hello",
+        1,
+    )
+    for _ in range(2):
+        # Stopping closes the environment's database; the next start opens it again.
+        with coco.runtime():
+            assert app.update_blocking() == "Hello 1"
+
+
 # =============================================================================
 # Test: Default DB path from COCOINDEX_DB environment variable
 # =============================================================================

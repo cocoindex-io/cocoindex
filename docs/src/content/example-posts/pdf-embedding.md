@@ -10,7 +10,7 @@ tags: [vector-index, pdf]
 
 We'll take a folder of PDFs — papers, RFCs, manuals, contracts — and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English. The trick PDFs add over plain text: they have to be *parsed* first. We use [docling](https://github.com/docling-project/docling) to convert each PDF to clean Markdown, then chunk, embed, and store the vectors in Postgres.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-parsed and re-embedded. The one genuinely expensive step (PDF parsing) runs on a [GPU runner](https://cocoindex.io/docs/programming_guide/function/) so it doesn't block the event loop.
+The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-parsed and re-embedded. The one genuinely expensive step (PDF parsing) runs on a [GPU runner](/docs/programming_guide/function/) so it doesn't block the event loop.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding)
 
@@ -21,10 +21,10 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 From a high level, these are the steps:
 
 1. Read PDF files from a local directory (live).
-2. [Convert each PDF to Markdown](https://github.com/docling-project/docling) with docling, [split it into overlapping chunks](https://cocoindex.io/docs/ops/text/), then [embed](https://cocoindex.io/docs/ops/sentence_transformers/) every chunk.
-3. Store the chunks and their embeddings in Postgres (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+2. [Convert each PDF to Markdown](https://github.com/docling-project/docling) with docling, [split it into overlapping chunks](/docs/ops/text/), then [embed](/docs/ops/sentence_transformers/) every chunk.
+3. Store the chunks and their embeddings in Postgres (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## Setup
 
@@ -45,7 +45,7 @@ You [declare the transformation logic](https://cocoindex.io/docs/programming_gui
 
 ## Define the data and shared resources
 
-`PdfEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, character offsets, text, and embedding vector. `coco_lifespan` provides the [shared resources](https://cocoindex.io/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+`PdfEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, character offsets, text, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -98,14 +98,14 @@ def pdf_to_markdown(content: bytes) -> str:
 
 Two things make this hold up at scale:
 
-- **`@coco.fn.as_async(runner=coco.GPU)`** wraps a *synchronous*, CPU/GPU-heavy function so CocoIndex runs it on a dedicated [GPU runner](https://cocoindex.io/docs/programming_guide/function/) instead of blocking the async event loop. PDF parsing is the slow part of this pipeline; offloading it keeps the rest of the flow responsive.
+- **`@coco.fn.as_async(runner=coco.GPU)`** wraps a *synchronous*, CPU/GPU-heavy function so CocoIndex runs it on a dedicated [GPU runner](/docs/programming_guide/function/) instead of blocking the async event loop. PDF parsing is the slow part of this pipeline; offloading it keeps the rest of the flow responsive.
 - **`@functools.cache`** builds the docling `DocumentConverter` once and reuses it across every PDF — model load happens a single time, not per file.
 
 ## Process a file
 
 ![One processing component per PDF: convert to Markdown, chunk, embed each chunk, and declare PdfEmbedding rows into Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-file-process.svg)
 
-`process_file` runs once per PDF. It converts the PDF to Markdown, [splits the text](https://cocoindex.io/docs/ops/text/) into overlapping chunks, and maps each chunk to `process_chunk`.
+`process_file` runs once per PDF. It converts the PDF to Markdown, [splits the text](/docs/ops/text/) into overlapping chunks, and maps each chunk to `process_chunk`.
 
 ```python title="main.py"
 @coco.fn(memo=True)
@@ -121,7 +121,7 @@ async def process_file(
     await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 ```
 
-[`@coco.fn`](https://cocoindex.io/docs/programming_guide/function/) with [`memo=True`](https://cocoindex.io/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a PDF's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never re-run docling on a PDF you've already parsed. `coco.map` fans out to one `process_chunk` call per chunk.
+[`@coco.fn`](/docs/programming_guide/function/) with [`memo=True`](/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a PDF's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never re-run docling on a PDF you've already parsed. `coco.map` fans out to one `process_chunk` call per chunk.
 
 ## Process a chunk
 
@@ -147,13 +147,13 @@ async def process_chunk(
     )
 ```
 
-We use [`SentenceTransformerEmbedder`](https://cocoindex.io/docs/ops/sentence_transformers/) with `all-MiniLM-L6-v2` — a small, fast model that runs locally with no API key. `table.declare_row` declares the row as a target state; CocoIndex handles inserting, updating, or deleting it to match. Each row's `id` is derived from the chunk text, so a chunk that survives a re-parse keeps its row.
+We use [`SentenceTransformerEmbedder`](/docs/ops/sentence_transformers/) with `all-MiniLM-L6-v2` — a small, fast model that runs locally with no API key. `table.declare_row` declares the row as a target state; CocoIndex handles inserting, updating, or deleting it to match. Each row's `id` is derived from the chunk text, so a chunk that survives a re-parse keeps its row.
 
 ## Define the main function
 
 ![mount_each fans out one processing component per PDF, from the filesystem source to the Postgres target](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-main-function.svg)
 
-`app_main` wires the source to the target. It mounts the Postgres table, walks the source directory for PDFs, and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file.
+`app_main` wires the source to the target. It mounts the Postgres table, walks the source directory for PDFs, and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
 ```python title="main.py"
 @coco.fn
@@ -183,13 +183,13 @@ app = coco.App(
 )
 ```
 
-`mount_table_target` creates and manages the Postgres table for you — schema, idempotent upserts, and orphan cleanup when a PDF disappears. `live=True` makes the [filesystem source](https://cocoindex.io/docs/connectors/localfs/) [watch for changes](https://cocoindex.io/docs/programming_guide/live_mode/), and `mount_each` runs one component per file so the engine can track and update them independently.
+`mount_table_target` creates and manages the Postgres table for you — schema, idempotent upserts, and orphan cleanup when a PDF disappears. `live=True` makes the [filesystem source](/docs/connectors/localfs/) [watch for changes](/docs/programming_guide/live_mode/), and `mount_each` runs one component per file so the engine can track and update them independently.
 
-> **No vector index here.** To keep the example minimal, this flow doesn't declare a vector index, so queries do a sequential scan — fine for a few PDFs. For a larger corpus, add one line — `target_table.declare_vector_index(column="embedding")` — exactly as the [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) example does, and pgvector serves approximate-nearest-neighbor queries instead.
+> **No vector index here.** To keep the example minimal, this flow doesn't declare a vector index, so queries do a sequential scan — fine for a few PDFs. For a larger corpus, add one line — `target_table.declare_vector_index(column="embedding")` — exactly as the [Semantic Search 101](/docs/examples/text-embedding/) example does, and pgvector serves approximate-nearest-neighbor queries instead.
 
 ## Run the pipeline
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build and update the index. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
+Run the [`cocoindex` CLI](/docs/cli/) to build and update the index. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
 
 ```sh
 # Catch-up run
@@ -233,7 +233,7 @@ With the sample papers indexed, the most semantically similar passages come back
 
 ## Incremental updates
 
-CocoIndex keeps the index in sync with your PDFs and does the **minimum work** to get there. You never compute a diff or write update logic. Two pieces make this work. `@coco.fn(memo=True)` decides what to *recompute* — a PDF is skipped when its bytes and the function's code are both unchanged, so docling never re-parses an unchanged file. `mount_table_target` decides what to *write* — each row's [`id`](https://cocoindex.io/docs/common_resources/id_generation/) is derived from its chunk's text, so it upserts only the rows that actually changed and deletes rows whose source is gone.
+CocoIndex keeps the index in sync with your PDFs and does the **minimum work** to get there. You never compute a diff or write update logic. Two pieces make this work. `@coco.fn(memo=True)` decides what to *recompute* — a PDF is skipped when its bytes and the function's code are both unchanged, so docling never re-parses an unchanged file. `mount_table_target` decides what to *write* — each row's [`id`](/docs/common_resources/id_generation/) is derived from its chunk's text, so it upserts only the rows that actually changed and deletes rows whose source is gone.
 
 - **A PDF is added** — only that file is parsed, chunked, and embedded; its rows are inserted. The rest is untouched.
 - **A PDF is replaced** — it is re-parsed and re-chunked; chunks whose text is unchanged keep their `id` and embedding, genuinely new chunks are embedded and inserted, and chunks that no longer exist are deleted.
@@ -243,6 +243,6 @@ The same machinery covers **logic** changes too: tune the chunk size or swap the
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/pdf_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding). If your inputs are already plain text or Markdown, [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) is the same flow without the docling step; if you want the Markdown itself as the output, see [PDF → Markdown](https://cocoindex.io/docs/examples/pdf-to-markdown/).
+The full, runnable example is in the CocoIndex repo: [examples/pdf_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding). If your inputs are already plain text or Markdown, [Semantic Search 101](/docs/examples/text-embedding/) is the same flow without the docling step; if you want the Markdown itself as the output, see [PDF → Markdown](/docs/examples/pdf-to-markdown/).
 
 Got a folder of papers, reports, or scanned docs you want to search by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

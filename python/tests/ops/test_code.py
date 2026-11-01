@@ -1,9 +1,8 @@
 """Tests for cocoindex.ops.code module."""
 
-import pytest
-
 from pathlib import Path
 
+import pytest
 from cocoindex.ops.code import (
     CodeMatch,
     CodePattern,
@@ -78,6 +77,15 @@ def test_language_alias() -> None:
     # "c++" alias resolves for both parsing and matching.
     src = CodeSource("int main() { return 0; }", language="c++")
     assert _cap(match_code(r"return \V;", src)[0], "V") == "0"
+
+
+def test_nix_structural_matching() -> None:
+    src = CodeSource(
+        "{ pkgs, ... }: { package-name = pkgs.callPackage ./package.nix {}; }",
+        language="nix",
+    )
+    matches = match_code(r"package-name = \VALUE;", src)
+    assert _cap(matches[0], "VALUE") == "pkgs.callPackage ./package.nix {}"
 
 
 def test_matching_unknown_language_raises() -> None:

@@ -10,7 +10,7 @@ tags: [llm-extraction, pdf]
 
 We'll take a folder of academic PDFs and pull out the parts you actually want to query — **title, authors, abstract** — as structured, typed rows. The first page of a paper holds almost all of this, so we read just that page, hand the text to an LLM with a strict schema, and get back clean JSON. The same metadata is then embedded so you can search papers by meaning, not just by exact words.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-extracted and re-embedded. One file fans out into three Postgres tables — paper metadata, an author-to-paper index, and embeddings — and CocoIndex keeps all three in sync for you.
+The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-extracted and re-embedded. One file fans out into three Postgres tables — paper metadata, an author-to-paper index, and embeddings — and CocoIndex keeps all three in sync for you.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata)
 
@@ -22,9 +22,9 @@ From a high level, these are the steps:
 
 1. Read PDF files from a local directory (live).
 2. Pull the first page out of each PDF, [extract its text](https://github.com/py-pdf/pypdf), and ask an LLM to return `title`, `authors`, and `abstract` as structured JSON.
-3. Embed the title and the [abstract chunks](https://cocoindex.io/docs/ops/text/), then declare the metadata, the author index, and the [embeddings](https://cocoindex.io/docs/ops/sentence_transformers/) into Postgres (as [target states](https://cocoindex.io/docs/programming_guide/target_state/)).
+3. Embed the title and the [abstract chunks](/docs/ops/text/), then declare the metadata, the author index, and the [embeddings](/docs/ops/sentence_transformers/) into Postgres (as [target states](/docs/programming_guide/target_state/)).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## Setup
 
@@ -68,7 +68,7 @@ class PaperMetadataModel(BaseModel):
 
 ## Define the data and shared resources
 
-Each output table maps to one dataclass: `PaperMetadataRow` is one row per paper, `AuthorPaperRow` is one row per (author, paper) pair — an index you can join against — and `MetadataEmbeddingRow` is one embedded chunk of text. `coco_lifespan` provides the [shared resources](https://cocoindex.io/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+Each output table maps to one dataclass: `PaperMetadataRow` is one row per paper, `AuthorPaperRow` is one row per (author, paper) pair — an index you can join against — and `MetadataEmbeddingRow` is one embedded chunk of text. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -215,11 +215,11 @@ async def process_file(
         )
 ```
 
-[`@coco.fn`](https://cocoindex.io/docs/programming_guide/function/) with [`memo=True`](https://cocoindex.io/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a PDF's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never pay for the LLM call or the embeddings on a PDF you've already processed. We embed the title as one row and the abstract as a few overlapping chunks (a [`RecursiveSplitter`](https://cocoindex.io/docs/ops/text/) tuned to break on sentence boundaries), and `location` marks which is which so a search can tell a title hit from an abstract hit. `table.declare_row` declares each row as a target state; CocoIndex handles inserting, updating, or deleting it to match.
+[`@coco.fn`](/docs/programming_guide/function/) with [`memo=True`](/docs/advanced_topics/memoization_keys/) is what makes this incremental: if a PDF's content and this function's code are both unchanged, the whole file is skipped on the next run — so you never pay for the LLM call or the embeddings on a PDF you've already processed. We embed the title as one row and the abstract as a few overlapping chunks (a [`RecursiveSplitter`](/docs/ops/text/) tuned to break on sentence boundaries), and `location` marks which is which so a search can tell a title hit from an abstract hit. `table.declare_row` declares each row as a target state; CocoIndex handles inserting, updating, or deleting it to match.
 
 ## Define the main function
 
-`app_main` wires the source to the targets. It mounts the three Postgres tables, walks the source directory for PDFs, and mounts one [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) per file.
+`app_main` wires the source to the targets. It mounts the three Postgres tables, walks the source directory for PDFs, and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
 ```python title="main.py"
 @coco.fn
@@ -264,13 +264,13 @@ app = coco.App(
 )
 ```
 
-Each `mount_table_target` creates and manages a Postgres table for you — schema, idempotent upserts, and orphan cleanup when a PDF disappears. Note the different primary keys: paper metadata is keyed by `filename`, the author index by the `(author_name, filename)` pair, and the embeddings by a generated `id`. `live=True` makes the [filesystem source](https://cocoindex.io/docs/connectors/localfs/) [watch for changes](https://cocoindex.io/docs/programming_guide/live_mode/), and `mount_each` runs one component per file so the engine can track and update each PDF independently while writing into all three tables.
+Each `mount_table_target` creates and manages a Postgres table for you — schema, idempotent upserts, and orphan cleanup when a PDF disappears. Note the different primary keys: paper metadata is keyed by `filename`, the author index by the `(author_name, filename)` pair, and the embeddings by a generated `id`. `live=True` makes the [filesystem source](/docs/connectors/localfs/) [watch for changes](/docs/programming_guide/live_mode/), and `mount_each` runs one component per file so the engine can track and update each PDF independently while writing into all three tables.
 
-> **No vector index here.** To keep the example minimal, this flow doesn't declare a vector index, so queries do a sequential scan — fine for a few papers. For a larger corpus, add one line — `embedding_table.declare_vector_index(column="embedding")` — exactly as the [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) example does, and pgvector serves approximate-nearest-neighbor queries instead.
+> **No vector index here.** To keep the example minimal, this flow doesn't declare a vector index, so queries do a sequential scan — fine for a few papers. For a larger corpus, add one line — `embedding_table.declare_vector_index(column="embedding")` — exactly as the [Semantic Search 101](/docs/examples/text-embedding/) example does, and pgvector serves approximate-nearest-neighbor queries instead.
 
 ## Run the pipeline
 
-Run the [`cocoindex` CLI](https://cocoindex.io/docs/cli/) to build and update the index. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
+Run the [`cocoindex` CLI](/docs/cli/) to build and update the index. Choose catch-up (scan, sync, exit) or live (catch up, then keep watching):
 
 ```sh
 # Catch-up run
@@ -324,6 +324,6 @@ The same machinery covers **logic** changes too: tweak the prompt, swap `gpt-4o`
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/paper_metadata](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata). If you just want to search PDFs by meaning without the structured extraction, [Semantic Search over PDFs](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding) chunks and embeds the full text instead; if you want the Markdown itself as the output, see [PDF → Markdown](https://cocoindex.io/docs/examples/pdf-to-markdown/).
+The full, runnable example is in the CocoIndex repo: [examples/paper_metadata](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata). If you just want to search PDFs by meaning without the structured extraction, [Semantic Search over PDFs](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding) chunks and embeds the full text instead; if you want the Markdown itself as the output, see [PDF → Markdown](/docs/examples/pdf-to-markdown/).
 
 Got a folder of papers, reports, or filings you want to turn into structured, searchable rows? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

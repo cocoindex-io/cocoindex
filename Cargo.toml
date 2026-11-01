@@ -15,7 +15,7 @@ resolver = "3"
 [workspace.package]
 version = "999.0.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.91.1"
 license = "Apache-2.0"
 
 [workspace.dependencies]
