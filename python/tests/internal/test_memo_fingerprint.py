@@ -496,6 +496,24 @@ def _not_memo_keyable_drops_stable_id(case: _Case) -> tuple[object, object]:
     return entry, twin
 
 
+def _registration_after_first_fingerprint(case: _Case) -> tuple[object, object]:
+    # The first fingerprint resolves Entry's identity before any registration.
+    entry, twin = _derive(_Keyed, "Entry"), _derive(_Keyed, "Twin")
+    memo_fingerprint(entry(1))
+    case.register(entry, stable_type_id="test.Entry/v1")
+    case.register(twin, stable_type_id="test.Entry/v1")
+    return entry(1), twin(1)
+
+
+def _unregistration_after_first_fingerprint(case: _Case) -> tuple[object, object]:
+    entry, twin = _derive(_Keyed, "Entry"), _derive(_Keyed, "Twin")
+    case.register(entry, stable_type_id="test.Entry/v1")
+    case.register(twin, stable_type_id="test.Entry/v1")
+    memo_fingerprint(entry(1))
+    unregister_memo_type(entry)
+    return entry(1), twin(1)
+
+
 def _memo_key_leads_back_to_parent(registered: bool) -> _Build:
     def build(case: _Case) -> tuple[object, object]:
         def parent_key(node: Any) -> object:
@@ -605,6 +623,13 @@ def _memo_key_leads_back_to_parent(registered: bool) -> _Build:
         pytest.param(_reregistering_drops_key_fn, False, id="replace-key-fn"),
         pytest.param(
             _not_memo_keyable_drops_stable_id, False, id="replace-id-via-not-keyable"
+        ),
+        # Registry changes apply to types already fingerprinted
+        pytest.param(
+            _registration_after_first_fingerprint, True, id="register-after-use"
+        ),
+        pytest.param(
+            _unregistration_after_first_fingerprint, False, id="unregister-after-use"
         ),
         # A memo key fragment shares the walk of the value holding it
         pytest.param(_memo_key_leads_back_to_parent(False), True, id="cycle-own-key"),

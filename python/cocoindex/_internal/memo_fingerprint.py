@@ -148,12 +148,14 @@ def prev_type_id(module: str, qualname: str) -> str:
 def _register_memo_type_registry(typ: type, registry: _MemoTypeRegistry) -> None:
     """Register memo configuration for one exact Python type."""
     _memo_type_registry[typ] = registry
+    _type_identity_cache.clear()
     _sync_plain_canonical_form_overridden()
 
 
 def _unregister_memo_type_registry(typ: type) -> None:
     """Best-effort removal of an exact-type memo registration."""
     _memo_type_registry.pop(typ, None)
+    _type_identity_cache.clear()
     _sync_plain_canonical_form_overridden()
 
 
@@ -180,23 +182,44 @@ _CLASS_OBJECT_OWNER_IDENTITY: tuple[Fingerprintable, Fingerprintable] = (
 )
 
 
+# Resolved identity parts per (type, key function owner, class object?). Every
+# registry write clears it. A type's own identity attributes are read once, the
+# first time a value of it is fingerprinted.
+_type_identity_cache: dict[
+    tuple[type, type | None, bool], tuple[Fingerprintable, Fingerprintable]
+] = {}
+
+
 def _type_identity_parts(
     typ: type,
-    registry: _MemoTypeRegistry | None,
     fallback_owner: type | None = None,
     *,
     is_class_object: bool = False,
 ) -> tuple[Fingerprintable, Fingerprintable]:
     """Return stable type ID or module+qualname type identity parts.
+
     The stable type ID case still returns two parts to preserve the existing
     module/qualname identity shape used by type-aware canonical forms. The
     tagged first slot keeps stable type IDs disjoint from ordinary module
     names; ``None`` fills the qualname slot.
+
     ``fallback_owner`` anchors the automatic module/qualname identity to the
     type that owns a registered key function selected via MRO: the runtime
     type's own declared or registered stable ID still wins, but when no stable
     ID applies the identity stays with the key function's owner type.
     """
+    key = (typ, fallback_owner, is_class_object)
+    parts = _type_identity_cache.get(key)
+    if parts is None:
+        parts = _type_identity_cache[key] = _resolve_type_identity_parts(
+            typ, fallback_owner, is_class_object
+        )
+    return parts
+
+
+def _resolve_type_identity_parts(
+    typ: type, fallback_owner: type | None, is_class_object: bool
+) -> tuple[Fingerprintable, Fingerprintable]:
     stable_type_id = next(
         (
             vars(c)["__coco_memo_type_id__"]
@@ -206,20 +229,13 @@ def _type_identity_parts(
         None,
     )
     if not isinstance(stable_type_id, str):
-        if registry is not None and registry.stable_type_id is not None:
-            stable_type_id = registry.stable_type_id
-        else:
-            for owner in typ.__mro__:
-                if is_class_object and owner is object and typ is not object:
-                    break
-                reg = (
-                    registry
-                    if (registry is not None and owner is typ)
-                    else _memo_type_registry.get(owner)
-                )
-                if reg is not None and reg.stable_type_id is not None:
-                    stable_type_id = reg.stable_type_id
-                    break
+        for owner in typ.__mro__:
+            if is_class_object and owner is object and typ is not object:
+                break
+            registry = _memo_type_registry.get(owner)
+            if registry is not None and registry.stable_type_id is not None:
+                stable_type_id = registry.stable_type_id
+                break
     if isinstance(stable_type_id, _PreviousTypeId):
         return stable_type_id._identity_parts
     if isinstance(stable_type_id, str):
@@ -249,17 +265,12 @@ def _canonicalize_registered_memo_key(
     if isinstance(obj, type):
         # Class objects keep the identity of the metaclass owner whose
         # registration supplied the key function.
-        identity = _type_identity_parts(owner, registry, is_class_object=True)
+        identity = _type_identity_parts(owner, is_class_object=True)
     else:
         # Instances resolve identity on the runtime type, so a subclass can
         # override an inherited registered stable ID by declaring or
         # registering its own; the automatic identity falls back to the owner.
-        typ = type(obj)
-        identity = _type_identity_parts(
-            typ,
-            registry if typ is owner else _memo_type_registry.get(typ),
-            fallback_owner=owner,
-        )
+        identity = _type_identity_parts(type(obj), fallback_owner=owner)
     return (
         tag,
         *identity,
@@ -275,27 +286,21 @@ def _canonicalize_class_object(
     """Canonicalize a class object without invoking memo attributes on it."""
 
     metaclass: type = type(cls)
-    metaclass_registry = _memo_type_registry.get(metaclass)
     for owner in metaclass.__mro__:
         if owner is object:
             break
-        registry = (
-            metaclass_registry if owner is metaclass else _memo_type_registry.get(owner)
-        )
+        registry = _memo_type_registry.get(owner)
         if registry is not None and registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
                 cls, owner, registry, _seen, state_methods
             )
 
-    cls_registry = (
-        metaclass_registry if cls is metaclass else _memo_type_registry.get(cls)
-    )
     return (
         "hook",
         *_CLASS_OBJECT_OWNER_IDENTITY,
         # This synthesized identity is already canonical; do not re-enter memo-key
         # dispatch, where a registration on ``object`` could intercept it.
-        ("seq", _type_identity_parts(cls, cls_registry, is_class_object=True)),
+        ("seq", _type_identity_parts(cls, is_class_object=True)),
     )
 
 
@@ -311,7 +316,6 @@ def _is_pydantic_model(obj: object) -> bool:
 
 def _canonicalize_dataclass(
     obj: object,
-    registry: _MemoTypeRegistry | None,
     _seen: dict[int, int],
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
@@ -324,7 +328,7 @@ def _canonicalize_dataclass(
     fields = dataclasses.fields(obj)  # type: ignore[arg-type]
     return (
         "dataclass",
-        *_type_identity_parts(typ, registry),
+        *_type_identity_parts(typ),
         tuple(
             (field.name, _canonicalize(getattr(obj, field.name), _seen, state_methods))
             for field in fields
@@ -334,7 +338,6 @@ def _canonicalize_dataclass(
 
 def _canonicalize_pydantic(
     obj: object,
-    registry: _MemoTypeRegistry | None,
     _seen: dict[int, int],
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
@@ -347,7 +350,7 @@ def _canonicalize_pydantic(
     field_names = obj.__pydantic_fields__.keys()  # type: ignore[attr-defined]
     return (
         "pydantic",
-        *_type_identity_parts(typ, registry),
+        *_type_identity_parts(typ),
         tuple(
             (name, _canonicalize(getattr(obj, name), _seen, state_methods))
             for name in field_names
@@ -544,7 +547,6 @@ def _canonicalize(
 
     typ = type(obj)
     hook = getattr(obj, _MEMO_KEY_ATTR, None)
-    registry = _memo_type_registry.get(typ)
     if hook is not None and callable(hook):
         k = hook()
         tag = "hook"
@@ -556,15 +558,15 @@ def _canonicalize(
             state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
-            *_type_identity_parts(typ, registry),
+            *_type_identity_parts(typ),
             _canonicalize(k, _seen, state_methods),
         )
 
     for owner in typ.__mro__:
-        owner_registry = registry if owner is typ else _memo_type_registry.get(owner)
-        if owner_registry is not None and owner_registry.key_fn is not None:
+        registry = _memo_type_registry.get(owner)
+        if registry is not None and registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
-                obj, owner, owner_registry, _seen, state_methods
+                obj, owner, registry, _seen, state_methods
             )
 
     # 3) Cycle tracking
@@ -602,11 +604,11 @@ def _canonicalize(
 
     # 5) Dataclass instances
     elif _is_dataclass_instance(obj):
-        result = _canonicalize_dataclass(obj, registry, _seen, state_methods)
+        result = _canonicalize_dataclass(obj, _seen, state_methods)
 
     # 6) Pydantic v2 models
     elif _is_pydantic_model(obj):
-        result = _canonicalize_pydantic(obj, registry, _seen, state_methods)
+        result = _canonicalize_pydantic(obj, _seen, state_methods)
 
     # 7) Fallback
     else:
