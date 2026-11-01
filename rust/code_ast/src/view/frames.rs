@@ -317,6 +317,30 @@ Run the installer now.
     }
 
     #[test]
+    fn markdown_setext_sections() {
+        // tree-sitter-md puts a setext run in one flat section: each heading's body
+        // is its following siblings, under that section rather than the heading.
+        let src = "\
+Title
+=====
+
+Intro paragraph.
+
+Install
+-------
+
+Run the installer now.
+";
+        assert_eq!(
+            frames_at(src, "markdown", "Run the installer now."),
+            [
+                ("Title\n".to_string(), true),
+                ("Install\n".to_string(), true)
+            ]
+        );
+    }
+
+    #[test]
     fn csharp_file_scoped_namespace_frames_following_declarations() {
         // `namespace X;` holds only its own line: the declarations after it are its
         // siblings in the tree, yet it scopes all of them.

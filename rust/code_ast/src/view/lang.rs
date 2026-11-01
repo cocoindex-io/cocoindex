@@ -642,7 +642,8 @@ pub struct ScopeInfo {
 pub enum PrimaryRegion<'t> {
     Node(tree_sitter::Node<'t>),
     /// No node, just a span: a Markdown section's body after its heading, or what a
-    /// file-scoped declaration scopes. `implicit_body_container` holds its nodes.
+    /// file-scoped declaration scopes. `implicit_body_container` names the node
+    /// holding the nodes in that span.
     Implicit(TextRange),
 }
 
