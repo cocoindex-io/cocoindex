@@ -20,7 +20,7 @@ import asyncio
 import dataclasses
 import re
 import ssl
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -33,6 +33,7 @@ from cocoindex._internal.memo_fingerprint import memo_fingerprint
 from cocoindex.connectors import discord
 from cocoindex.connectors.discord import _source
 from cocoindex.connectors.discord._source import (
+    _ROUTE_CHANNEL,
     _DiscordError,
     _error_hint,
     _parse_message,
@@ -50,8 +51,6 @@ _PERSON_ID = "1004"
 
 # The Message Content intent as the Developer Portal's toggle grants it.
 _INTENT_ON = 1 << 19
-
-_ROUTE_CHANNEL = "/channels/{id}"
 
 # Taken before the ``sleeps`` fixture patches it, for the fake's yields.
 _real_sleep = asyncio.sleep
@@ -161,15 +160,22 @@ def _bucket_headers(*, remaining: int, reset_after: float) -> dict[str, str]:
     }
 
 
+def _archived_at(raw_thread: dict[str, Any]) -> datetime:
+    return datetime.fromisoformat(raw_thread["thread_metadata"]["archive_timestamp"])
+
+
 class _FakeDiscord:
     """An in-memory Discord server. It answers the connector's routes from
-    its state as Discord does, with 404 for an unknown channel or server.
+    its state as Discord does, with 404 for an unknown channel or server. A
+    thread is a channel too, so ``/channels/{id}`` answers a thread's ID.
 
     Knobs: ``fail[path]`` answers ``(status, code)``; ``script[path]`` answers
     the next requests to ``path`` in order (an exception is raised, as a
-    network error), then normal handling resumes; ``rate_limit_headers[path]``
-    are added to every answer for ``path`` but scripted ones; ``page_cap``
-    answers fewer messages per page than asked for, as Discord may.
+    network error), then normal handling resumes; ``before_request[path]`` is
+    called once, just before the next request to ``path`` is answered, to
+    change the state mid-listing; ``rate_limit_headers[path]`` are added to
+    every answer for ``path`` but scripted ones; ``page_cap`` answers fewer
+    messages or threads per page than asked for, as Discord may.
     ``requests`` logs every request as ``(method, path, params)``.
     """
 
@@ -178,10 +184,16 @@ class _FakeDiscord:
         self.flags = _INTENT_ON
         self.guild_ids = {_GUILD}
         self.channels: dict[str, dict[str, Any]] = {}
+        # Raw thread objects, whose thread_metadata says whether each is
+        # archived.
+        self.threads: dict[str, dict[str, Any]] = {}
+        # The threads the bot is a member of.
+        self.joined: set[str] = set()
         # Each channel's messages, a thread's included.
         self.messages: dict[str, list[dict[str, Any]]] = {}
         self.fail: dict[str, tuple[int, int]] = {}
         self.script: dict[str, list[httpx.Response | httpx.HTTPError]] = {}
+        self.before_request: dict[str, Callable[[], None]] = {}
         self.rate_limit_headers: dict[str, dict[str, str]] = {}
         self.page_cap: int | None = None
         self.requests: list[tuple[str, str, dict[str, str]]] = []
@@ -189,6 +201,11 @@ class _FakeDiscord:
     def add_channel(self, raw_channel: dict[str, Any]) -> None:
         self.channels[raw_channel["id"]] = raw_channel
         self.guild_ids.add(raw_channel["guild_id"])
+
+    def add_thread(self, raw_thread: dict[str, Any], *, joined: bool = False) -> None:
+        self.threads[raw_thread["id"]] = raw_thread
+        if joined:
+            self.joined.add(raw_thread["id"])
 
     def post(self, channel_id: str, *messages: dict[str, Any]) -> None:
         """Add ``messages`` to the channel or thread ``channel_id``."""
@@ -205,6 +222,8 @@ class _FakeDiscord:
         path = request.url.path.removeprefix("/api/v10")
         params = dict(request.url.params)
         self.requests.append((request.method, path, params))
+        if (change := self.before_request.pop(path, None)) is not None:
+            change()
         if queue := self.script.get(path):
             answer = queue.pop(0)
             if isinstance(answer, httpx.HTTPError):
@@ -217,20 +236,61 @@ class _FakeDiscord:
         resp.headers.update(self.rate_limit_headers.get(path, {}))
         return resp
 
+    def _limit(self, params: dict[str, str]) -> int:
+        """``limit``, 50 when it's missing (Discord's default for messages),
+        and at most ``page_cap``."""
+        limit = int(params.get("limit", 50))
+        return limit if self.page_cap is None else min(limit, self.page_cap)
+
     def _message_page(
         self, channel_id: str, params: dict[str, str]
     ) -> list[dict[str, Any]]:
         """Newest first, before the ``before`` ID (strictly, compared as
-        numbers), and at most ``limit`` (Discord's default is 50)."""
+        numbers), and at most ``limit``."""
         page = sorted(
             self.messages.get(channel_id, []), key=lambda m: int(m["id"]), reverse=True
         )
         if (before := params.get("before")) is not None:
             page = [m for m in page if int(m["id"]) < int(before)]
-        limit = int(params.get("limit", 50))
-        if self.page_cap is not None:
-            limit = min(limit, self.page_cap)
-        return page[:limit]
+        return page[: self._limit(params)]
+
+    def _members(self, threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The bot's memberships of ``threads``, as Discord's thread member
+        objects."""
+        return [
+            {
+                "id": thread["id"],
+                "user_id": _BOT_ID,
+                "join_timestamp": "2026-01-15T12:05:00.500000+00:00",
+                "flags": 0,
+            }
+            for thread in threads
+            if thread["id"] in self.joined
+        ]
+
+    def _thread_page(
+        self, threads: list[dict[str, Any]], params: dict[str, str]
+    ) -> httpx.Response:
+        """A page of an archived listing: at most ``limit`` of ``threads``,
+        and whether more are left."""
+        limit = self._limit(params)
+        page = threads[:limit]
+        return httpx.Response(
+            200,
+            json={
+                "threads": page,
+                "members": self._members(page),
+                "has_more": len(threads) > limit,
+            },
+        )
+
+    def _archived(self, channel_id: str) -> list[dict[str, Any]]:
+        return [
+            thread
+            for thread in self.threads.values()
+            if thread["parent_id"] == channel_id
+            and thread["thread_metadata"]["archived"]
+        ]
 
     def _answer(self, path: str, params: dict[str, str]) -> httpx.Response:
         if path == "/applications/@me":
@@ -241,15 +301,73 @@ class _FakeDiscord:
             return httpx.Response(
                 200, json=[c for c in self.channels.values() if c["guild_id"] == m[1]]
             )
+        if m := re.fullmatch(r"/guilds/(\d+)/threads/active", path):
+            if m[1] not in self.guild_ids:
+                return _discord_error(404, 10004)
+            # Every server's, unjoined private threads included, as for a bot
+            # with Manage Threads.
+            active = [
+                thread
+                for thread in self.threads.values()
+                if thread["guild_id"] == m[1]
+                and not thread["thread_metadata"]["archived"]
+            ]
+            return httpx.Response(
+                200,
+                json={
+                    "threads": active,
+                    "members": self._members(active),
+                    "has_more": False,
+                },
+            )
         if m := re.fullmatch(r"/channels/(\d+)", path):
-            raw = self.channels.get(m[1])
+            raw = self.channels.get(m[1]) or self.threads.get(m[1])
             if raw is None:
                 return _discord_error(404, 10003)
             return httpx.Response(200, json=raw)
         if m := re.fullmatch(r"/channels/(\d+)/messages", path):
-            if m[1] not in self.channels and m[1] not in self.messages:
+            if (
+                m[1] not in self.channels
+                and m[1] not in self.threads
+                and m[1] not in self.messages
+            ):
                 return _discord_error(404, 10003)
             return httpx.Response(200, json=self._message_page(m[1], params))
+        if m := re.fullmatch(r"/channels/(\d+)/threads/archived/public", path):
+            if m[1] not in self.channels:
+                return _discord_error(404, 10003)
+            # Newest archive first, and before ``before`` strictly, as live.
+            # Ties keep the order they were added in.
+            public = sorted(
+                (t for t in self._archived(m[1]) if t["type"] != 12),
+                key=_archived_at,
+                reverse=True,
+            )
+            if (before := params.get("before")) is not None:
+                public = [
+                    t
+                    for t in public
+                    if _archived_at(t) < datetime.fromisoformat(before)
+                ]
+            return self._thread_page(public, params)
+        if m := re.fullmatch(
+            r"/channels/(\d+)/users/@me/threads/archived/private", path
+        ):
+            if m[1] not in self.channels:
+                return _discord_error(404, 10003)
+            # The joined ones only, by ID newest first, before the ``before`` ID.
+            private = sorted(
+                (
+                    t
+                    for t in self._archived(m[1])
+                    if t["type"] == 12 and t["id"] in self.joined
+                ),
+                key=lambda t: int(t["id"]),
+                reverse=True,
+            )
+            if (before := params.get("before")) is not None:
+                private = [t for t in private if int(t["id"]) < int(before)]
+            return self._thread_page(private, params)
         return _discord_error(404, 0)
 
 
@@ -325,6 +443,19 @@ class TestDiscordAppLifecycle:
             contexts = await asyncio.gather(*(app._get_context() for _ in range(10)))
             assert all(ctx is contexts[0] for ctx in contexts)
             assert await app._get_context() is contexts[0]
+
+    async def test_channels_share_one_context(self) -> None:
+        # The intent check is kept per context, so each channel opening its
+        # own would check twice.
+        fake = _fake_with_channels()
+        app, ctx = await _setup(fake)
+        async with app:
+            for channel_id in (_CHANNEL, _OTHER_CHANNEL):
+                await _items(_channel(app, channel_id))
+            assert app._state.context is ctx
+        assert fake.count("/applications/@me") == 1
+        assert fake.count(f"/channels/{_CHANNEL}") == 1
+        assert fake.count(f"/channels/{_OTHER_CHANNEL}") == 1
 
     async def test_aclose(self) -> None:
         fake = _fake_with_channels()
@@ -2250,3 +2381,581 @@ class TestDiscordChannel:
         assert memo_fingerprint(_channel(app)) != memo_fingerprint(
             _channel(app, _OTHER_CHANNEL)
         )
+
+
+# ---------------------------------------------------------------------------
+# DiscordChannel.items()
+# ---------------------------------------------------------------------------
+
+_ACTIVE_PATH = f"/guilds/{_GUILD}/threads/active"
+_PUBLIC_PATH = f"/channels/{_CHANNEL}/threads/archived/public"
+_PRIVATE_PATH = f"/channels/{_CHANNEL}/users/@me/threads/archived/private"
+_MESSAGES_PATH = f"/channels/{_CHANNEL}/messages"
+# The parameters of a listing's first page.
+_PAGE = {"limit": "100"}
+
+# _FORUM_ID's tags, as its channel object lists them.
+_AVAILABLE_TAGS = [
+    {
+        "id": tag_id,
+        "name": name,
+        "moderated": False,
+        "emoji_id": None,
+        "emoji_name": None,
+    }
+    for tag_id, name in _TAG_NAMES.items()
+]
+
+_Item = discord.DiscordMessage | discord.DiscordThread
+
+
+def _archived_thread(
+    thread_id: str, archived_at: str, parent_id: str = _CHANNEL, **fields: Any
+) -> dict[str, Any]:
+    """A thread archived at ``archived_at``, otherwise as ``_raw_thread``."""
+    return _raw_thread(
+        thread_id,
+        parent_id,
+        metadata={"archived": True, "archive_timestamp": archived_at},
+        **fields,
+    )
+
+
+async def _items(channel: discord.DiscordChannel) -> list[tuple[str, _Item]]:
+    return [pair async for pair in channel.items()]
+
+
+def _keys(items: list[tuple[str, _Item]]) -> list[str]:
+    return [key for key, _ in items]
+
+
+def _threads(items: list[tuple[str, _Item]]) -> dict[str, discord.DiscordThread]:
+    """The thread items by key, in the order listed."""
+    return {key: item for key, item in items if isinstance(item, discord.DiscordThread)}
+
+
+def _requests(fake: _FakeDiscord) -> list[tuple[str, dict[str, str]]]:
+    """Every request's path and parameters; the connector only GETs."""
+    return [(path, params) for _, path, params in fake.requests]
+
+
+def _params(fake: _FakeDiscord, path: str) -> list[dict[str, str]]:
+    """The parameters of each request to ``path``, in order."""
+    return [params for logged, params in _requests(fake) if logged == path]
+
+
+def _set_fields(message: discord.DiscordMessage) -> dict[str, object]:
+    """The message's fields that hold something."""
+    values = {f.name: getattr(message, f.name) for f in dataclasses.fields(message)}
+    return {name: v for name, v in values.items() if v is not None and v != ()}
+
+
+@pytest.mark.asyncio
+class TestItems:
+    async def test_text_channel(self) -> None:
+        fake = _fake_with_channels()
+        fake.post(
+            _CHANNEL,
+            _raw_message("1037"),
+            _raw_message("1038", content="Release planning?", flags=1 << 5),
+            _raw_message("1039"),
+        )
+        # Started from 1038.
+        fake.add_thread(_raw_thread("1038"))
+        fake.add_thread(_archived_thread("1040", "2026-01-15T12:30:00.250000+00:00"))
+        fake.add_thread(
+            _raw_thread("1041", type=12, metadata={"invitable": True}), joined=True
+        )
+        fake.add_thread(
+            _archived_thread("1042", "2026-01-15T12:40:00.500000+00:00", type=12),
+            joined=True,
+        )
+        fake.add_thread(_raw_thread("908", _OTHER_CHANNEL))
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        # Messages as Discord lists them, newest first, then threads, newest
+        # first; the starter isn't a message item of its own.
+        assert [(key, type(item)) for key, item in items] == [
+            ("1039", discord.DiscordMessage),
+            ("1037", discord.DiscordMessage),
+            ("1042", discord.DiscordThread),
+            ("1041", discord.DiscordThread),
+            ("1040", discord.DiscordThread),
+            ("1038", discord.DiscordThread),
+        ]
+        assert all(key == item.id for key, item in items)
+        threads = _threads(items)
+        assert threads["1038"].starter == _parse_message(
+            fake.messages[_CHANNEL][1], _GUILD, None
+        )
+        assert [threads[key].starter for key in ("1040", "1041", "1042")] == [None] * 3
+        assert {thread.guild_id for thread in threads.values()} == {_GUILD}
+        assert _requests(fake) == [
+            ("/applications/@me", {}),
+            (f"/channels/{_CHANNEL}", {}),
+            (_ACTIVE_PATH, {}),
+            (_PUBLIC_PATH, _PAGE),
+            (_PRIVATE_PATH, _PAGE),
+            (_ACTIVE_PATH, {}),
+            (_MESSAGES_PATH, _PAGE),
+            (_MESSAGES_PATH, {**_PAGE, "before": "1037"}),
+        ]
+
+    async def test_forum_channel(self) -> None:
+        fake = _FakeDiscord()
+        fake.add_channel(_raw_channel(_FORUM_ID, 15, available_tags=_AVAILABLE_TAGS))
+        fake.add_thread(_raw_thread(_POST_ID, _FORUM_ID, applied_tags=["1022", "1021"]))
+        fake.add_thread(
+            _archived_thread(
+                "1043",
+                "2026-01-15T12:30:00.250000+00:00",
+                _FORUM_ID,
+                applied_tags=["1021"],
+            )
+        )
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app, _FORUM_ID))
+        threads = _threads(items)
+        assert len(threads) == len(items)
+        assert [
+            (key, thread.parent_id, thread.tags, thread.starter)
+            for key, thread in threads.items()
+        ] == [
+            ("1043", _FORUM_ID, ("question",), None),
+            (_POST_ID, _FORUM_ID, ("solved", "question"), None),
+        ]
+        # A forum has no main stream and no private threads.
+        assert _requests(fake) == [
+            ("/applications/@me", {}),
+            (f"/channels/{_FORUM_ID}", {}),
+            (_ACTIVE_PATH, {}),
+            (f"/channels/{_FORUM_ID}/threads/archived/public", _PAGE),
+            (_ACTIVE_PATH, {}),
+        ]
+
+    async def test_announcement_channel(self) -> None:
+        fake = _FakeDiscord()
+        fake.add_channel(_raw_channel("1044", 5))
+        fake.add_thread(_raw_thread("1045", "1044", type=10))
+        fake.post("1044", _raw_message("1045", flags=1 << 5), _raw_message("1046"))
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app, "1044"))
+        assert [(key, type(item)) for key, item in items] == [
+            ("1046", discord.DiscordMessage),
+            ("1045", discord.DiscordThread),
+        ]
+        thread = _threads(items)["1045"]
+        assert thread.type == 10
+        assert thread.starter is not None
+        # No private threads in an announcement channel.
+        assert _requests(fake) == [
+            ("/applications/@me", {}),
+            ("/channels/1044", {}),
+            (_ACTIVE_PATH, {}),
+            ("/channels/1044/threads/archived/public", _PAGE),
+            (_ACTIVE_PATH, {}),
+            ("/channels/1044/messages", _PAGE),
+            ("/channels/1044/messages", {**_PAGE, "before": "1045"}),
+        ]
+
+    @pytest.mark.parametrize(
+        "channel_type",
+        [
+            pytest.param(2, id="voice"),
+            pytest.param(13, id="stage"),
+            pytest.param(16, id="media"),
+            pytest.param(4, id="category"),
+            pytest.param(11, id="thread"),
+        ],
+    )
+    async def test_unsupported_type(self, channel_type: int) -> None:
+        fake = _fake_with_channels()
+        if channel_type == 11:
+            # A thread is a channel too, but is listed through its parent.
+            channel_id = _THREAD_ID
+            fake.add_thread(_raw_thread(_THREAD_ID))
+        else:
+            channel_id = "1047"
+            fake.add_channel(_raw_channel(channel_id, channel_type))
+        app, _ = await _setup(fake)
+        async with app:
+            with pytest.raises(
+                ValueError,
+                match=rf"^Discord channel {channel_id} has type {channel_type}; ",
+            ):
+                await _items(_channel(app, channel_id))
+        assert _requests(fake) == [
+            ("/applications/@me", {}),
+            (f"/channels/{channel_id}", {}),
+        ]
+
+    async def test_main_stream_paging(self) -> None:
+        # IDs from 4 digits to 5, so that taking the smallest as text would
+        # show.
+        ids = [str(n) for n in range(9901, 10151)]
+        fake = _fake_with_channels()
+        fake.page_cap = 70
+        fake.post(_CHANNEL, *(_raw_message(i) for i in ids))
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        newest_first = ids[::-1]
+        assert _keys(items) == newest_first
+        # Three pages of 70, short of the 100 asked for; one of 40; then an
+        # empty one. Each asks for the messages before the smallest ID on the
+        # page before.
+        assert _params(fake, _MESSAGES_PATH) == [
+            _PAGE,
+            *({**_PAGE, "before": newest_first[i]} for i in (69, 139, 209, 249)),
+        ]
+
+    async def test_archived_public_paging_with_tied_timestamps(self) -> None:
+        fake = _fake_with_channels()
+        fake.page_cap = 3
+        # 1050 and 1051 were archived in the same millisecond, and the first
+        # page ends between them.
+        for thread_id, archived_at in [
+            ("1048", "2026-01-15T12:40:00.500000+00:00"),
+            ("1049", "2026-01-15T12:30:00.250000+00:00"),
+            ("1050", "2026-01-15T12:20:00.750000+00:00"),
+            ("1051", "2026-01-15T12:20:00.750000+00:00"),
+            ("1052", "2026-01-15T12:10:00+00:00"),
+        ]:
+            fake.add_thread(_archived_thread(thread_id, archived_at))
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        assert _keys(items) == ["1052", "1051", "1050", "1049", "1048"]
+        # ``before`` is strict, so the next page starts 1 ms after the oldest
+        # thread on this one: the tie is asked for again, and the thread
+        # already listed is skipped.
+        assert _params(fake, _PUBLIC_PATH) == [
+            _PAGE,
+            {**_PAGE, "before": "2026-01-15T12:20:00.751000+00:00"},
+        ]
+
+    async def test_archived_public_without_progress(self) -> None:
+        # Ties filling a whole page: starting 1 ms after them asks for the
+        # same page again, so ``before`` can't get past them.
+        fake = _fake_with_channels()
+        fake.page_cap = 2
+        for thread_id, archived_at in [
+            ("1053", "2026-01-15T12:40:00.500000+00:00"),
+            ("1054", "2026-01-15T12:30:00.250000+00:00"),
+            ("1055", "2026-01-15T12:30:00.250000+00:00"),
+            ("1056", "2026-01-15T12:20:00.750000+00:00"),
+        ]:
+            fake.add_thread(_archived_thread(thread_id, archived_at))
+        app, _ = await _setup(fake)
+        async with app:
+            with pytest.raises(
+                _DiscordError,
+                match=(
+                    rf"^Discord GET {_PUBLIC_PATH} listed no new thread.*: more "
+                    r"threads were archived in the same millisecond than fit on a "
+                    r"page, .* until some are unarchived or deleted\. "
+                ),
+            ):
+                await _items(_channel(app))
+        # The second page added 1055; the third was the second again.
+        assert fake.count(_PUBLIC_PATH) == 3
+
+    @pytest.mark.parametrize(
+        ("path", "pages"),
+        [
+            pytest.param(_PUBLIC_PATH, [[]], id="public-empty"),
+            pytest.param(_PRIVATE_PATH, [[]], id="private-empty"),
+            # This listing pages by ID, so a page answered twice isn't ties.
+            pytest.param(_PRIVATE_PATH, [["1076"], ["1076"]], id="private-repeated"),
+        ],
+    )
+    async def test_archived_stall_without_ties(
+        self, path: str, pages: list[list[str]]
+    ) -> None:
+        fake = _fake_with_channels()
+        fake.script[path] = [
+            httpx.Response(
+                200,
+                json={
+                    "threads": [
+                        _archived_thread(
+                            thread_id, "2026-01-15T12:30:00.250000+00:00", type=12
+                        )
+                        for thread_id in page
+                    ],
+                    "members": [],
+                    "has_more": True,
+                },
+            )
+            for page in pages
+        ]
+        app, _ = await _setup(fake)
+        async with app:
+            with pytest.raises(
+                _DiscordError, match=rf"^Discord GET {path} listed no new thread"
+            ) as exc_info:
+                await _items(_channel(app))
+        assert "same millisecond" not in str(exc_info.value)
+
+    async def test_archived_private_paging_by_id(self) -> None:
+        # IDs from 4 digits to 5, so that comparing them as text would show.
+        ids = ["9998", "9999", "10000", "10001", "10002"]
+        fake = _fake_with_channels()
+        fake.page_cap = 2
+        for thread_id in ids:
+            fake.add_thread(
+                _archived_thread(
+                    thread_id, "2026-01-15T12:30:00.250000+00:00", type=12
+                ),
+                joined=True,
+            )
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        assert _keys(items) == ids[::-1]
+        assert _params(fake, _PRIVATE_PATH) == [
+            _PAGE,
+            {**_PAGE, "before": "10001"},
+            {**_PAGE, "before": "9999"},
+        ]
+
+    async def test_active_threads_filtered(self) -> None:
+        fake = _fake_with_channels()
+        fake.add_thread(_raw_thread("1057"))
+        fake.add_thread(_raw_thread("909", _OTHER_CHANNEL))
+        fake.add_thread(_raw_thread("1058", type=12), joined=True)
+        # Listed, since the bot has Manage Threads, but nobody added the bot.
+        fake.add_thread(_raw_thread("1059", type=12))
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        assert _keys(items) == ["1058", "1057"]
+
+    @pytest.mark.parametrize(
+        "listing", [pytest.param(0, id="first"), pytest.param(1, id="second")]
+    )
+    async def test_active_has_more(self, listing: int) -> None:
+        def answer(has_more: bool) -> httpx.Response:
+            return httpx.Response(
+                200, json={"threads": [], "members": [], "has_more": has_more}
+            )
+
+        fake = _fake_with_channels()
+        fake.script[_ACTIVE_PATH] = [
+            *(answer(False) for _ in range(listing)),
+            answer(True),
+        ]
+        app, _ = await _setup(fake)
+        async with app:
+            with pytest.raises(
+                _DiscordError, match=rf"^Discord GET {_ACTIVE_PATH} said more threads"
+            ):
+                await _items(_channel(app))
+        assert fake.count(_ACTIVE_PATH) == listing + 1
+
+    async def test_thread_unarchived_during_the_listing(self) -> None:
+        # Unarchived after the first active listing, before the archived one,
+        # so only the second active listing has it.
+        fake = _fake_with_channels()
+        raw = _archived_thread("1060", "2026-01-15T12:30:00.250000+00:00")
+        fake.add_thread(raw)
+
+        def unarchive() -> None:
+            raw["thread_metadata"].update(
+                archived=False, archive_timestamp="2026-01-15T12:50:00.750000+00:00"
+            )
+
+        fake.before_request[_PUBLIC_PATH] = unarchive
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        assert _keys(items) == ["1060"]
+        thread = _threads(items)["1060"]
+        assert (thread.archived, thread.archive_timestamp) == (
+            False,
+            datetime(2026, 1, 15, 12, 50, 0, 750000, tzinfo=UTC),
+        )
+
+    async def test_threads_archived_during_the_listing(self) -> None:
+        # Archived after the first active listing listed them. The archived
+        # listing's newer state wins, and its first page, holding only these,
+        # counts as progress though the active listing had them.
+        fake = _fake_with_channels()
+        fake.page_cap = 2
+        open_threads = [_raw_thread("1061"), _raw_thread("1062")]
+        for raw in open_threads:
+            fake.add_thread(raw)
+        fake.add_thread(_archived_thread("1063", "2026-01-15T12:30:00.250000+00:00"))
+
+        def archive() -> None:
+            for raw, archived_at in zip(
+                open_threads,
+                [
+                    "2026-01-15T12:50:00.750000+00:00",
+                    "2026-01-15T12:40:00.500000+00:00",
+                ],
+                strict=True,
+            ):
+                raw["thread_metadata"].update(
+                    archived=True, archive_timestamp=archived_at
+                )
+
+        fake.before_request[_PUBLIC_PATH] = archive
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        threads = _threads(items)
+        assert list(threads) == ["1063", "1062", "1061"]
+        assert [thread.archived for thread in threads.values()] == [True] * 3
+        assert threads["1061"].archive_timestamp == datetime(
+            2026, 1, 15, 12, 50, 0, 750000, tzinfo=UTC
+        )
+        assert _params(fake, _PUBLIC_PATH) == [
+            _PAGE,
+            {**_PAGE, "before": "2026-01-15T12:40:00.501000+00:00"},
+        ]
+
+    async def test_starters(self) -> None:
+        fake = _fake_with_channels()
+        fake.add_thread(_raw_thread("1064"))
+        # Its starter was deleted.
+        fake.add_thread(_raw_thread("1065"))
+        # Started without a message.
+        fake.add_thread(_raw_thread("1066", name="Release notes"))
+        fake.post(
+            _CHANNEL,
+            _raw_message("1064", content="Release planning?", flags=1 << 5),
+            # The notice a thread started without a message leaves: its
+            # content is the thread's name.
+            _raw_message(
+                "1067",
+                type=18,
+                content="Release notes",
+                message_reference=_raw_reference("1066", channel_id="1066"),
+            ),
+            # Flagged as starting a thread, but the thread was started after
+            # the thread listings ran: a message item this time.
+            _raw_message("1068", flags=1 << 5),
+        )
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        assert _keys(items) == ["1068", "1067", "1066", "1065", "1064"]
+        notice = items[1][1]
+        assert isinstance(notice, discord.DiscordMessage)
+        assert (notice.type, notice.content) == (18, "Release notes")
+        threads = _threads(items)
+        assert threads["1064"].starter == _parse_message(
+            fake.messages[_CHANNEL][0], _GUILD, None
+        )
+        assert threads["1065"].starter is None
+        assert threads["1066"].starter is None
+
+    async def test_selection(self) -> None:
+        # message_fields applies to message items and starters alike, and
+        # thread_fields to the threads; id is set whatever the selection.
+        fake = _fake_with_channels()
+        fake.add_thread(_raw_thread("1069", name="Release planning"))
+        fake.post(
+            _CHANNEL,
+            _raw_message("1069", content="Release planning?", flags=1 << 5),
+            _raw_message("1070", content="Shipped"),
+        )
+        app, _ = await _setup(fake)
+        async with app:
+            channel = _channel(app, message_fields=["content"], thread_fields=["name"])
+            items = await _items(channel)
+        assert _keys(items) == ["1070", "1069"]
+        (_, message), (_, thread) = items
+        assert isinstance(message, discord.DiscordMessage)
+        assert isinstance(thread, discord.DiscordThread)
+        assert thread.starter is not None
+        assert _set_fields(message) == {"id": "1070", "content": "Shipped"}
+        assert _set_fields(thread.starter) == {
+            "id": "1069",
+            "content": "Release planning?",
+        }
+        assert _properties(thread) == {
+            **dict.fromkeys(_THREAD_FIELD_NAMES),
+            "id": "1069",
+            "name": "Release planning",
+            "tags": (),
+        }
+
+
+@pytest.mark.asyncio
+class TestGuards:
+    """A misconfiguration or lost access raises, so the channel's outputs
+    are kept, rather than listing fewer items, whose outputs would be
+    deleted."""
+
+    async def test_intent_off(self) -> None:
+        fake = _fake_with_channels()
+        fake.flags = 0
+        app, _ = await _setup(fake)
+        async with app:
+            with pytest.raises(
+                _DiscordError, match=r"^The Message Content intent is off"
+            ):
+                await _items(_channel(app))
+        assert _requests(fake) == [("/applications/@me", {})]
+
+    async def test_no_read_message_history(self) -> None:
+        # Without it the message listing answers 200 and nothing, as for an
+        # empty channel; the archived listing needs it too, and comes first.
+        fake = _fake_with_channels()
+        fake.fail[_PUBLIC_PATH] = (403, 50001)
+        app, _ = await _setup(fake)
+        seen: list[str] = []
+        async with app:
+            with pytest.raises(
+                _DiscordError,
+                match=r"HTTP 403, code 50001 \(Missing Access\)\. The bot can't read",
+            ):
+                async for key, _ in _channel(app).items():
+                    seen.append(key)
+        assert seen == []
+        assert _MESSAGES_PATH not in (path for path, _ in _requests(fake))
+
+    async def test_no_view_channel(self) -> None:
+        fake = _fake_with_channels()
+        fake.fail[f"/channels/{_CHANNEL}"] = (403, 50001)
+        app, _ = await _setup(fake)
+        async with app:
+            with pytest.raises(_DiscordError, match=r"HTTP 403, code 50001"):
+                await _items(_channel(app))
+        assert _requests(fake) == [
+            ("/applications/@me", {}),
+            (f"/channels/{_CHANNEL}", {}),
+        ]
+
+    async def test_error_mid_listing_raises(self) -> None:
+        fake = _fake_with_channels()
+        fake.post(_CHANNEL, *(_raw_message(i) for i in ("1071", "1072", "1073")))
+        fake.page_cap = 2
+        # The first page as the fake lists it, then the second fails.
+        fake.script[_MESSAGES_PATH] = [
+            fake._answer(_MESSAGES_PATH, _PAGE),
+            _discord_error(403, 50001),
+        ]
+        app, _ = await _setup(fake)
+        seen: list[str] = []
+        async with app:
+            with pytest.raises(_DiscordError, match=r"HTTP 403, code 50001"):
+                async for key, _ in _channel(app).items():
+                    seen.append(key)
+        assert seen == ["1073", "1072"]
+        assert _params(fake, _MESSAGES_PATH) == [_PAGE, {**_PAGE, "before": "1072"}]
+
+    async def test_private_thread_the_bot_left(self) -> None:
+        # Item-level loss: the thread drops out, and the listing goes on.
+        fake = _fake_with_channels()
+        fake.add_thread(_raw_thread("1074", type=12))
+        fake.add_thread(_raw_thread("1075"))
+        app, _ = await _setup(fake)
+        async with app:
+            items = await _items(_channel(app))
+        assert _keys(items) == ["1075"]

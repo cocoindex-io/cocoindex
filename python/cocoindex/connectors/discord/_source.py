@@ -14,6 +14,8 @@ posts included) and the main-stream messages that don't start one.
 * **Message Content intent.** Without it, Discord answers with messages whose
   text is empty rather than an error, so the application's flags are checked
   before a channel is listed.
+* **A listing raises rather than ending early,** since an item missing from
+  it would look deleted, and its outputs would be removed.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import logging
 import re
 import ssl
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple, Self, TypeVar
@@ -67,10 +69,23 @@ _BASE_URL = "https://discord.com/api/v10"
 # limits by.
 _ROUTE_APPLICATION = "/applications/@me"
 _ROUTE_GUILD_CHANNELS = "/guilds/{id}/channels"
+_ROUTE_ACTIVE_THREADS = "/guilds/{id}/threads/active"
+_ROUTE_CHANNEL = "/channels/{id}"
 _ROUTE_CHANNEL_MESSAGES = "/channels/{id}/messages"
+_ROUTE_ARCHIVED_PUBLIC_THREADS = "/channels/{id}/threads/archived/public"
+_ROUTE_JOINED_PRIVATE_THREADS = "/channels/{id}/users/@me/threads/archived/private"
 
-# Discord's largest page of messages.
+# Discord's largest page, of messages and of archived threads alike.
 _PAGE_SIZE = 100
+
+# The channel types read: text and announcement channels have a main stream
+# and threads, a forum only threads (its posts).
+_TEXT_CHANNEL_TYPE = 0
+_ANNOUNCEMENT_CHANNEL_TYPE = 5
+_FORUM_CHANNEL_TYPE = 15
+
+# Only a text channel holds private threads.
+_PRIVATE_THREAD_TYPE = 12
 
 # Discord's documented 429s ask for waits of 65 s and longer, and a request
 # that gives up fails the listing of the whole channel.
@@ -161,8 +176,9 @@ _ERROR_HINTS = {
 
 class _DiscordError(Exception):
     """Discord answered with an error, or the connector won't go on: Discord
-    rejected the token earlier, or the Message Content intent is off. The
-    message names the request, Discord's error code and the likely fix."""
+    rejected the token earlier, the Message Content intent is off, or a
+    listing can't be read in full. The message names the request, Discord's
+    error code and the likely fix."""
 
 
 def _error_hint(status: int, code: int | None) -> str | None:
@@ -1146,6 +1162,27 @@ def _normalize_fields(
     return tuple(sorted({*names, "id"}))
 
 
+def _archived_before(threads: list[dict[str, Any]]) -> str:
+    """The archived public listing's next ``before``: 1 ms after the oldest
+    archive time on the page. Archive times have millisecond precision, so
+    threads can share one, and ``before`` is strict, so this asks for a tie
+    again rather than skipping it; the threads already listed are dropped.
+    Ties that fill a whole page can't be got past this way. Written as
+    Discord writes its timestamps."""
+    oldest = min(
+        datetime.fromisoformat(raw["thread_metadata"]["archive_timestamp"])
+        for raw in threads
+    )
+    return (oldest + timedelta(milliseconds=1)).isoformat(timespec="microseconds")
+
+
+def _id_before(threads: list[dict[str, Any]]) -> str:
+    """A listing by ID's next ``before``: the smallest ID on the page."""
+    # IDs vary in length, so they're compared as numbers.
+    smallest: str = min((raw["id"] for raw in threads), key=int)
+    return smallest
+
+
 class DiscordChannel:
     """Handle for a text, announcement or forum channel accessed via a
     :class:`DiscordApp`.
@@ -1197,3 +1234,149 @@ class DiscordChannel:
             self._message_fields,
             self._thread_fields,
         )
+
+    async def items(self) -> AsyncIterator[tuple[str, DiscordMessage | DiscordThread]]:
+        """Async iterate over (key, item) pairs for use with ``mount_each()``.
+
+        The items are the channel's main-stream messages, newest first, then
+        its threads, forum posts included, newest first. The key is the
+        message's or the thread's ID. A message that starts a thread isn't an
+        item of its own: it's the thread's :attr:`~DiscordThread.starter`,
+        under the same ID, so a message that gains a thread turns into one. A
+        private thread is listed once someone adds the bot to it.
+
+        Any error raises rather than ending the listing early, since the
+        items missing from a cut-short listing would look deleted, and their
+        outputs would be removed. That includes a channel the bot can't read,
+        the Message Content intent turned off, and a listing Discord can't
+        page through in full.
+        """
+        ctx = await self._app._get_context()
+        await ctx.check_message_content_intent()
+        channel = await ctx.get(_ROUTE_CHANNEL, self._channel_id)
+        channel_type = channel["type"]
+        if channel_type not in (
+            _TEXT_CHANNEL_TYPE,
+            _ANNOUNCEMENT_CHANNEL_TYPE,
+            _FORUM_CHANNEL_TYPE,
+        ):
+            # Listing nothing would delete the channel's outputs.
+            raise ValueError(
+                f"Discord channel {self._channel_id} has type {channel_type}; "
+                "DiscordChannel reads text (0), announcement (5) and forum (15) "
+                "channels, and their threads through them."
+            )
+        guild_id: str = channel["guild_id"]
+        tag_names = {
+            tag["id"]: tag["name"] for tag in channel.get("available_tags", [])
+        }
+        threads = await self._list_threads(ctx, guild_id, channel_type)
+        starters: dict[str, DiscordMessage] = {}
+        # A forum's messages are all in its posts.
+        if channel_type != _FORUM_CHANNEL_TYPE:
+            async for raw in ctx.iter_messages(self._channel_id):
+                message = _parse_message(raw, guild_id, self._message_fields)
+                # The thread listings say which messages start a thread, not
+                # the message's flags: a thread started since they ran is
+                # listed next time.
+                if raw["id"] in threads:
+                    starters[raw["id"]] = message
+                else:
+                    yield raw["id"], message
+        for thread_id in sorted(threads, key=int, reverse=True):
+            yield (
+                thread_id,
+                DiscordThread(
+                    ctx,
+                    threads[thread_id],
+                    guild_id,
+                    tag_names,
+                    starters.get(thread_id),
+                    self._message_fields,
+                    self._thread_fields,
+                ),
+            )
+
+    async def _list_threads(
+        self, ctx: _ApiContext, guild_id: str, channel_type: int
+    ) -> dict[str, dict[str, Any]]:
+        """The channel's threads, active and archived, as Discord's thread
+        objects by ID. A later listing's entry replaces an earlier one's, so
+        the newest state wins."""
+        threads: dict[str, dict[str, Any]] = {}
+        await self._add_active_threads(ctx, guild_id, threads)
+        await self._add_archived_threads(
+            ctx, _ROUTE_ARCHIVED_PUBLIC_THREADS, _archived_before, threads
+        )
+        if channel_type == _TEXT_CHANNEL_TYPE:
+            await self._add_archived_threads(
+                ctx, _ROUTE_JOINED_PRIVATE_THREADS, _id_before, threads
+            )
+        # A thread unarchived while the archived listings ran is in neither of
+        # them. One archived meanwhile was in the first active listing.
+        await self._add_active_threads(ctx, guild_id, threads)
+        return threads
+
+    async def _add_active_threads(
+        self, ctx: _ApiContext, guild_id: str, threads: dict[str, dict[str, Any]]
+    ) -> None:
+        """Add the channel's active threads, from the server's listing of
+        them. A private thread is kept only if the bot has joined it, as the
+        archived listing of private threads keeps only those."""
+        listing = await ctx.get(_ROUTE_ACTIVE_THREADS, guild_id)
+        # Undocumented, and false live; the listing has no way to page.
+        if listing.get("has_more", False):
+            raise _DiscordError(
+                f"Discord GET {_ROUTE_ACTIVE_THREADS.format(id=guild_id)} said more "
+                "threads were left, but the listing has no way to page through "
+                "them; listing the channel without them would delete their outputs."
+            )
+        joined = {member["id"] for member in listing["members"]}
+        for raw in listing["threads"]:
+            if raw["parent_id"] != self._channel_id:
+                continue
+            if raw["type"] == _PRIVATE_THREAD_TYPE and raw["id"] not in joined:
+                continue
+            threads[raw["id"]] = raw
+
+    async def _add_archived_threads(
+        self,
+        ctx: _ApiContext,
+        route: str,
+        next_before: Callable[[list[dict[str, Any]]], str],
+        threads: dict[str, dict[str, Any]],
+    ) -> None:
+        """Add every thread an archived listing lists, paging while Discord
+        says more are left; ``next_before`` gives a page's ``before`` from the
+        page before it."""
+        params: dict[str, str | int] = {"limit": _PAGE_SIZE}
+        listed: set[str] = set()
+        while True:
+            listing = await ctx.get(route, self._channel_id, params)
+            page: list[dict[str, Any]] = listing["threads"]
+            for raw in page:
+                threads[raw["id"]] = raw
+            # New to this listing, that is: a thread the active listing had may
+            # have been archived since.
+            new_ids = {raw["id"] for raw in page} - listed
+            listed |= new_ids
+            if not listing["has_more"]:
+                return
+            if not new_ids:
+                # Starting 1 ms after the page before's oldest thread, a page
+                # of threads already listed can only be ties.
+                ties = page and route == _ROUTE_ARCHIVED_PUBLIC_THREADS
+                cause = (
+                    ": more threads were archived in the same millisecond than "
+                    "fit on a page, and this listing pages by archive time, so it "
+                    "can't get past them until some are unarchived or deleted"
+                    if ties
+                    else ""
+                )
+                raise _DiscordError(
+                    f"Discord GET {route.format(id=self._channel_id)} listed no new "
+                    "thread, though it said more were left, so the rest can't be "
+                    f"reached{cause}. Listing the channel without them would delete "
+                    "their outputs."
+                )
+            params = {"limit": _PAGE_SIZE, "before": next_before(page)}
