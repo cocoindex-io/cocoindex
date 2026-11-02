@@ -23,7 +23,7 @@ import logging
 import re
 import ssl
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple, Self, TypeVar
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DiscordApp",
     "DiscordAttachment",
+    "DiscordChannel",
     "DiscordChannelInfo",
     "DiscordEmbed",
     "DiscordMessage",
@@ -1118,3 +1119,81 @@ class DiscordThread:
     def __coco_memo_key__(self) -> object:
         # Every field, then the starter. The API context isn't content.
         return (self._data, self._starter)
+
+
+# ============================================================================
+# Channels
+# ============================================================================
+
+
+_MESSAGE_FIELDS = tuple(f.name for f in fields(DiscordMessage))
+_THREAD_FIELDS = tuple(f.name for f in fields(_ThreadData))
+
+
+def _normalize_fields(
+    param: str, names: Sequence[str] | None, valid: tuple[str, ...], class_name: str
+) -> tuple[str, ...] | None:
+    """A field selection as the parsers take it: ``None`` for every field,
+    which ``None`` and an empty sequence both mean, else the names, sorted,
+    with ``id``, so that selections meaning the same give the same memo key.
+    An unknown name raises ``ValueError``, listing the valid ones."""
+    if not names:
+        return None
+    if unknown := [name for name in names if name not in valid]:
+        raise ValueError(
+            f"{param} {unknown} not found in {class_name} fields: {list(valid)}"
+        )
+    return tuple(sorted({*names, "id"}))
+
+
+class DiscordChannel:
+    """Handle for a text, announcement or forum channel accessed via a
+    :class:`DiscordApp`.
+
+    A channel is a lightweight handle owning no connections of its own: every
+    request goes through the App's. ``channel_id`` is the channel's ID, as
+    :meth:`DiscordApp.list_channels` lists it, or as Discord's app copies it
+    in Developer Mode.
+
+    ``message_fields`` and ``thread_fields`` choose the fields the items
+    expose, by their names on :class:`DiscordMessage` and
+    :class:`DiscordThread`. ``None`` or an empty sequence means all of them,
+    and ``id`` is always set. ``message_fields`` applies to thread starters
+    and the messages inside threads too. A field left out holds ``None``, or
+    ``()`` for a tuple field, so a change to it reruns nothing. Discord's
+    listings return whole objects, so leaving fields out saves no requests.
+    An unknown name raises ``ValueError``.
+    """
+
+    __slots__ = ("_app", "_channel_id", "_message_fields", "_thread_fields")
+
+    def __init__(
+        self,
+        *,
+        app: DiscordApp,
+        channel_id: str,
+        message_fields: Sequence[str] | None = None,
+        thread_fields: Sequence[str] | None = None,
+    ) -> None:
+        self._app = app
+        self._channel_id = channel_id
+        self._message_fields = _normalize_fields(
+            "message_fields", message_fields, _MESSAGE_FIELDS, "DiscordMessage"
+        )
+        self._thread_fields = _normalize_fields(
+            "thread_fields", thread_fields, _THREAD_FIELDS, "DiscordThread"
+        )
+
+    @property
+    def channel_id(self) -> str:
+        return self._channel_id
+
+    def __coco_memo_key__(self) -> object:
+        # The App is left out: it holds credentials and connections, not
+        # content.
+        return (
+            "discord_channel",
+            self._channel_id,
+            self._message_fields,
+            self._thread_fields,
+        )

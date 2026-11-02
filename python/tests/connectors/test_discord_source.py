@@ -2163,3 +2163,90 @@ class TestThreadReadText:
             message_fields=message_fields, thread_fields=thread_fields
         )
         assert text == "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# DiscordChannel
+# ---------------------------------------------------------------------------
+
+
+def _channel(
+    app: discord.DiscordApp, channel_id: str = _CHANNEL, **selection: Any
+) -> discord.DiscordChannel:
+    return discord.DiscordChannel(app=app, channel_id=channel_id, **selection)
+
+
+class TestDiscordChannel:
+    @pytest.mark.parametrize(
+        ("selection", "message"),
+        [
+            pytest.param(
+                {"message_fields": ["content", "contnet"]},
+                "message_fields ['contnet'] not found in DiscordMessage fields: "
+                f"{[f.name for f in dataclasses.fields(discord.DiscordMessage)]}",
+                id="message_fields",
+            ),
+            pytest.param(
+                {"thread_fields": ["nmae", "name"]},
+                "thread_fields ['nmae'] not found in DiscordThread fields: "
+                f"{list(_THREAD_FIELD_NAMES)}",
+                id="thread_fields",
+            ),
+            # The starter isn't a thread field: it's always attached.
+            pytest.param(
+                {"thread_fields": ["starter"]},
+                "thread_fields ['starter'] not found in DiscordThread fields: "
+                f"{list(_THREAD_FIELD_NAMES)}",
+                id="starter",
+            ),
+        ],
+    )
+    def test_unknown_field_names(self, selection: dict[str, Any], message: str) -> None:
+        app = discord.DiscordApp(token="t")
+        with pytest.raises(ValueError) as exc_info:
+            _channel(app, **selection)
+        assert str(exc_info.value) == message
+        # Checked before any request: the App's context isn't even opened.
+        assert app._state.context is None
+
+    def test_normalized_selection_and_memo_key(self) -> None:
+        app = discord.DiscordApp(token="t")
+        channel = _channel(app)
+        assert channel.channel_id == _CHANNEL
+        assert channel.__coco_memo_key__() == ("discord_channel", _CHANNEL, None, None)
+
+        def key(**selection: Any) -> object:
+            return _channel(app, **selection).__coco_memo_key__()
+
+        # Empty means every field, as None does.
+        assert key(message_fields=[], thread_fields=[]) == key()
+        # Sorted, without duplicates, with id: selections that mean the same
+        # give the same key.
+        assert key(message_fields=["content", "author", "content"]) == (
+            "discord_channel",
+            _CHANNEL,
+            ("author", "content", "id"),
+            None,
+        )
+        assert key(message_fields=["content", "author"]) == key(
+            message_fields=["author", "content", "id"]
+        )
+        assert key(thread_fields=("name",)) == (
+            "discord_channel",
+            _CHANNEL,
+            None,
+            ("id", "name"),
+        )
+        assert key(message_fields=["content"]) != key(
+            message_fields=["content", "author"]
+        )
+        assert key(message_fields=["type"]) != key(thread_fields=["type"])
+
+        # The App is left out: credentials and connections aren't content, and
+        # its lock can't be fingerprinted.
+        other_app = discord.DiscordApp(token="other")
+        assert _channel(other_app).__coco_memo_key__() == key()
+        assert memo_fingerprint(_channel(app)) == memo_fingerprint(_channel(other_app))
+        assert memo_fingerprint(_channel(app)) != memo_fingerprint(
+            _channel(app, _OTHER_CHANNEL)
+        )
