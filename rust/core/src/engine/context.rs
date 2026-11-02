@@ -796,8 +796,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         Self::from_parts(
             component,
             parent_context,
-            lender,
-            share,
+            Admission::new(share, lender),
             processing_stats,
             host_ctx,
             processing_action,
@@ -822,8 +821,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         Self::from_parts(
             component,
             None,
-            lender,
-            share,
+            Admission::new(share, lender),
             processing_stats,
             host_ctx,
             processing_action,
@@ -834,8 +832,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     fn from_parts(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
-        lender: Option<Lender>,
-        share: UpdateShare,
+        admission: Admission,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
@@ -845,7 +842,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
         };
-        let admission = Admission::new(share, lender);
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
