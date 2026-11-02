@@ -23,7 +23,7 @@ import logging
 import re
 import ssl
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple, Self, TypeVar
@@ -66,6 +66,7 @@ _BASE_URL = "https://discord.com/api/v10"
 # limits by.
 _ROUTE_APPLICATION = "/applications/@me"
 _ROUTE_GUILD_CHANNELS = "/guilds/{id}/channels"
+_ROUTE_CHANNEL_MESSAGES = "/channels/{id}/messages"
 
 # Discord's largest page of messages.
 _PAGE_SIZE = 100
@@ -94,6 +95,11 @@ _CONVERSATION_MESSAGE_TYPES = frozenset({0, 19, 20, 23})
 # reply: crossposts, pin and thread notices and thread starters' stubs carry a
 # reference too.
 _REPLY_MESSAGE_TYPE = 19
+
+# The first message in a thread started from a message: a stub standing for
+# the starter, which is in the channel's main stream. It has no content, and
+# a thread's ``message_count`` doesn't count it.
+_STARTER_STUB_MESSAGE_TYPE = 21
 
 # A forward's ``message_reference.type``; 0, the default, is any other
 # reference.
@@ -520,6 +526,24 @@ class _ApiContext:
                 raise _DiscordError(_INTENT_HINT)
             self._intent_ok = True
 
+    async def iter_messages(self, channel_id: str) -> AsyncIterator[dict[str, Any]]:
+        """Every message in the channel ``channel_id``, a thread's too, newest
+        first. Each page asks for the messages before the smallest ID on the
+        page before, until one comes back empty: Discord doesn't promise that
+        a short page is the last."""
+        params: dict[str, str | int] = {"limit": _PAGE_SIZE}
+        while True:
+            page = await self.get(_ROUTE_CHANNEL_MESSAGES, channel_id, params)
+            if not page:
+                return
+            for raw in page:
+                yield raw
+            # IDs vary in length, so they're compared as numbers.
+            params = {
+                "limit": _PAGE_SIZE,
+                "before": min((raw["id"] for raw in page), key=int),
+            }
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -905,7 +929,15 @@ class DiscordThread:
     ``()`` for ``tags``; ``id`` is always set.
     """
 
-    __slots__ = ("_ctx", "_data", "_guild_id", "_message_fields", "_starter")
+    __slots__ = (
+        "_cached_messages",
+        "_ctx",
+        "_data",
+        "_guild_id",
+        "_message_fields",
+        "_raw_message_count",
+        "_starter",
+    )
 
     def __init__(
         self,
@@ -924,6 +956,10 @@ class DiscordThread:
         # leaves out.
         self._guild_id = guild_id
         self._message_fields = message_fields
+        # Read whatever thread_fields leaves out; ``None`` if Discord left it
+        # out, and then messages() asks.
+        self._raw_message_count: int | None = raw_thread.get("message_count")
+        self._cached_messages: list[DiscordMessage] | None = None
 
     @property
     def id(self) -> str:
@@ -1030,6 +1066,52 @@ class DiscordThread:
         it, and for a private thread, a thread started without a message,
         and one whose starter was deleted."""
         return self._starter
+
+    async def messages(self) -> list[DiscordMessage]:
+        """The messages in the thread, oldest first, :attr:`starter` first
+        when set. Fetched on first use and kept; a thread holding nothing but
+        its starter makes no request. An error raises, which fails only the
+        processing of this thread, so its outputs are kept."""
+        if self._cached_messages is not None:
+            return self._cached_messages
+        # Started from a message, with nothing posted since: inside is only
+        # the stub, which message_count doesn't count.
+        if self._starter is not None and self._raw_message_count == 0:
+            messages = [self._starter]
+        else:
+            listed = [
+                _parse_message(raw, self._guild_id, self._message_fields)
+                async for raw in self._ctx.iter_messages(self._data.id)
+                if raw["type"] != _STARTER_STUB_MESSAGE_TYPE
+            ]
+            # Pages run newest first, and IDs vary in length.
+            listed.sort(key=lambda message: int(message.id))
+            messages = listed if self._starter is None else [self._starter, *listed]
+        self._cached_messages = messages
+        return messages
+
+    async def read_text(self) -> str:
+        """The thread as plain text: its name, then ``Tags: a, b``, then each
+        message's text (see :meth:`DiscordMessage.read_text`), oldest first,
+        each starting on a new line.
+
+        Only conversation is kept: notices, such as a member added or a
+        rename, and messages without text are left out. Only the fields the
+        channel exposes are read: without messages' ``type``, every message
+        with text is kept.
+        """
+        lines = [self._data.name] if self._data.name else []
+        if self._data.tags:
+            lines.append(f"Tags: {', '.join(self._data.tags)}")
+        for message in await self.messages():
+            if (
+                message.type is not None
+                and message.type not in _CONVERSATION_MESSAGE_TYPES
+            ):
+                continue
+            if text := await message.read_text():
+                lines.append(text)
+        return "\n".join(lines)
 
     def __coco_memo_key__(self) -> object:
         # Every field, then the starter. The API context isn't content.

@@ -168,8 +168,9 @@ class _FakeDiscord:
     Knobs: ``fail[path]`` answers ``(status, code)``; ``script[path]`` answers
     the next requests to ``path`` in order (an exception is raised, as a
     network error), then normal handling resumes; ``rate_limit_headers[path]``
-    are added to every answer for ``path`` but scripted ones. ``requests``
-    logs every request as ``(method, path, params)``.
+    are added to every answer for ``path`` but scripted ones; ``page_cap``
+    answers fewer messages per page than asked for, as Discord may.
+    ``requests`` logs every request as ``(method, path, params)``.
     """
 
     def __init__(self) -> None:
@@ -177,14 +178,23 @@ class _FakeDiscord:
         self.flags = _INTENT_ON
         self.guild_ids = {_GUILD}
         self.channels: dict[str, dict[str, Any]] = {}
+        # Each channel's messages, a thread's included.
+        self.messages: dict[str, list[dict[str, Any]]] = {}
         self.fail: dict[str, tuple[int, int]] = {}
         self.script: dict[str, list[httpx.Response | httpx.HTTPError]] = {}
         self.rate_limit_headers: dict[str, dict[str, str]] = {}
+        self.page_cap: int | None = None
         self.requests: list[tuple[str, str, dict[str, str]]] = []
 
     def add_channel(self, raw_channel: dict[str, Any]) -> None:
         self.channels[raw_channel["id"]] = raw_channel
         self.guild_ids.add(raw_channel["guild_id"])
+
+    def post(self, channel_id: str, *messages: dict[str, Any]) -> None:
+        """Add ``messages`` to the channel or thread ``channel_id``."""
+        self.messages.setdefault(channel_id, []).extend(
+            {**message, "channel_id": channel_id} for message in messages
+        )
 
     def count(self, path: str) -> int:
         return sum(1 for _, logged, _ in self.requests if logged == path)
@@ -193,7 +203,8 @@ class _FakeDiscord:
         # Yield, as a real request would, so concurrent callers interleave.
         await _real_sleep(0)
         path = request.url.path.removeprefix("/api/v10")
-        self.requests.append((request.method, path, dict(request.url.params)))
+        params = dict(request.url.params)
+        self.requests.append((request.method, path, params))
         if queue := self.script.get(path):
             answer = queue.pop(0)
             if isinstance(answer, httpx.HTTPError):
@@ -202,11 +213,26 @@ class _FakeDiscord:
         if (failure := self.fail.get(path)) is not None:
             resp = _discord_error(*failure)
         else:
-            resp = self._answer(path)
+            resp = self._answer(path, params)
         resp.headers.update(self.rate_limit_headers.get(path, {}))
         return resp
 
-    def _answer(self, path: str) -> httpx.Response:
+    def _message_page(
+        self, channel_id: str, params: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        """Newest first, before the ``before`` ID (strictly, compared as
+        numbers), and at most ``limit`` (Discord's default is 50)."""
+        page = sorted(
+            self.messages.get(channel_id, []), key=lambda m: int(m["id"]), reverse=True
+        )
+        if (before := params.get("before")) is not None:
+            page = [m for m in page if int(m["id"]) < int(before)]
+        limit = int(params.get("limit", 50))
+        if self.page_cap is not None:
+            limit = min(limit, self.page_cap)
+        return page[:limit]
+
+    def _answer(self, path: str, params: dict[str, str]) -> httpx.Response:
         if path == "/applications/@me":
             return httpx.Response(200, json={"id": _BOT_ID, "flags": self.flags})
         if m := re.fullmatch(r"/guilds/(\d+)/channels", path):
@@ -220,6 +246,10 @@ class _FakeDiscord:
             if raw is None:
                 return _discord_error(404, 10003)
             return httpx.Response(200, json=raw)
+        if m := re.fullmatch(r"/channels/(\d+)/messages", path):
+            if m[1] not in self.channels and m[1] not in self.messages:
+                return _discord_error(404, 10003)
+            return httpx.Response(200, json=self._message_page(m[1], params))
         return _discord_error(404, 0)
 
 
@@ -1855,3 +1885,281 @@ class TestThreadMemoKey:
                     )
                 )
         assert fingerprints[0] == fingerprints[1]
+
+
+# ---------------------------------------------------------------------------
+# Thread messages and text
+# ---------------------------------------------------------------------------
+
+
+def _stub() -> dict[str, Any]:
+    """The first message in ``_THREAD_ID``: a stub standing for the starter,
+    which is in the main stream. It has an ID of its own and no content."""
+    return _raw_message(
+        "1024", type=21, content="", message_reference=_raw_reference(_THREAD_ID)
+    )
+
+
+@pytest.mark.asyncio
+class TestThreadMessages:
+    async def test_starter_only_needs_no_request(self) -> None:
+        fake = _FakeDiscord()
+        fake.post(_THREAD_ID, _stub())
+        starter = _starter()
+        app, ctx = await _setup(fake)
+        async with app:
+            thread = _thread(_raw_thread(_THREAD_ID), ctx=ctx, starter=starter)
+            assert await thread.messages() == [starter]
+        assert fake.requests == []
+
+    async def test_missing_message_count_fetches(self) -> None:
+        # Only the listing can tell whether more than the stub is inside.
+        fake = _FakeDiscord()
+        fake.post(_THREAD_ID, _stub(), _raw_message("1025"))
+        raw = _raw_thread(_THREAD_ID)
+        del raw["message_count"]
+        app, ctx = await _setup(fake)
+        async with app:
+            thread = _thread(raw, ctx=ctx, starter=_starter())
+            assert [m.id for m in await thread.messages()] == [_THREAD_ID, "1025"]
+
+    async def test_pages_sorts_and_drops_the_stub(self) -> None:
+        # IDs from 4 digits to 5, so that sorting them as text would show.
+        ids = [str(n) for n in range(9901, 10151)]
+        fake = _FakeDiscord()
+        fake.page_cap = 70
+        fake.post(_THREAD_ID, _stub(), *(_raw_message(i) for i in ids))
+        starter = _starter()
+        app, ctx = await _setup(fake)
+        async with app:
+            thread = _thread(
+                _raw_thread(_THREAD_ID, message_count=250, total_message_sent=250),
+                ctx=ctx,
+                starter=starter,
+            )
+            messages = await thread.messages()
+        assert [m.id for m in messages] == [_THREAD_ID, *ids]
+        assert messages[0] is starter
+        # Three pages of 70, short of the 100 asked for; one of 41, the stub
+        # among them; then an empty one. Each asks for the messages before
+        # the smallest ID on the page before.
+        newest_first = [*reversed(ids), "1024"]
+        assert [
+            params
+            for _, path, params in fake.requests
+            if path == f"/channels/{_THREAD_ID}/messages"
+        ] == [
+            {"limit": "100"},
+            *({"limit": "100", "before": newest_first[i]} for i in (69, 139, 209, 250)),
+        ]
+
+    async def test_forum_post(self) -> None:
+        # The opening message is inside the post, with the post's ID.
+        fake = _FakeDiscord()
+        fake.post(
+            _POST_ID,
+            _raw_message(_POST_ID, content="Which day works?"),
+            _raw_message("1026"),
+            _raw_message("1027"),
+        )
+        app, ctx = await _setup(fake)
+        async with app:
+            thread = _thread(_raw_thread(_POST_ID, _FORUM_ID, message_count=2), ctx=ctx)
+            messages = await thread.messages()
+        assert thread.starter is None
+        assert [m.id for m in messages] == [_POST_ID, "1026", "1027"]
+        assert messages[0].content == "Which day works?"
+
+    async def test_cached_and_errors(self) -> None:
+        fake = _FakeDiscord()
+        fake.post(_POST_ID, _raw_message(_POST_ID))
+        path = f"/channels/{_POST_ID}/messages"
+        app, ctx = await _setup(fake)
+        async with app:
+            thread = _thread(_raw_thread(_POST_ID, _FORUM_ID), ctx=ctx)
+            messages = await thread.messages()
+            assert await thread.messages() is messages
+            # One page, then an empty one.
+            assert fake.count(path) == 2
+
+            # Such as a private thread the bot was removed from.
+            fake.fail[path] = (403, 50001)
+            failing = _thread(_raw_thread(_POST_ID, _FORUM_ID), ctx=ctx)
+            with pytest.raises(
+                _DiscordError,
+                match=r"HTTP 403, code 50001 \(Missing Access\)\. The bot can't read",
+            ):
+                await failing.messages()
+            # A failure isn't kept: the next call asks again.
+            del fake.fail[path]
+            assert [m.id for m in await failing.messages()] == [_POST_ID]
+
+    async def test_logic_reads_the_raw_object(self) -> None:
+        fake = _FakeDiscord()
+        fake.post(_THREAD_ID, _stub(), _raw_message("1028"))
+        app, ctx = await _setup(fake)
+        async with app:
+            # The shortcut reads message_count, though it's left out.
+            starter_only = _thread(
+                _raw_thread(_THREAD_ID),
+                ctx=ctx,
+                starter=_starter(),
+                thread_fields=("id", "name"),
+            )
+            assert [m.id for m in await starter_only.messages()] == [_THREAD_ID]
+            assert fake.requests == []
+
+            # The stub is dropped by its type, and the messages carry the
+            # server's ID, though both are left out.
+            thread = _thread(
+                _raw_thread(_THREAD_ID, message_count=1),
+                ctx=ctx,
+                starter=_starter(),
+                message_fields=("content", "guild_id", "id"),
+                thread_fields=("id", "name"),
+            )
+            messages = await thread.messages()
+        assert [m.id for m in messages] == [_THREAD_ID, "1028"]
+        assert (messages[1].type, messages[1].guild_id) == (None, _GUILD)
+
+
+# A forum post's messages, oldest first: conversation, with notices and a
+# file without a caption in between.
+_POST_MESSAGES = [
+    _raw_message(_POST_ID, content="Which day works?"),
+    # A member added.
+    _raw_message(
+        "1029", type=1, content="", mentions=[_raw_user(_OTHER_PERSON_ID, "bo")]
+    ),
+    _raw_message(
+        "1030",
+        type=19,
+        author=_raw_user(_OTHER_PERSON_ID, "bo"),
+        content="Thursday",
+        message_reference=_raw_reference(_POST_ID, channel_id=_POST_ID),
+    ),
+    # A slash command's reply, with an embed.
+    _raw_message(
+        "1031",
+        type=20,
+        author=_BOT_USER,
+        content="Scheduled for Thursday",
+        embeds=[{"type": "rich", "title": "Release 1.3"}],
+    ),
+    # A rename: its content is the new name.
+    _raw_message("1032", type=4, content="Release planning"),
+    # A pin.
+    _raw_message(
+        "1033",
+        type=6,
+        content="",
+        message_reference=_raw_reference("1030", channel_id=_POST_ID),
+    ),
+    _raw_message("1034", content="", attachments=[_raw_attachment()]),
+    # A context-menu command's reply.
+    _raw_message(
+        "1035", type=23, author=_BOT_USER, content="Translated: Thursday works"
+    ),
+    # A member removed.
+    _raw_message(
+        "1036", type=2, content="", mentions=[_raw_user(_OTHER_PERSON_ID, "bo")]
+    ),
+]
+
+
+@pytest.mark.asyncio
+class TestThreadReadText:
+    async def _post_text(
+        self,
+        *,
+        message_fields: tuple[str, ...] | None = None,
+        thread_fields: tuple[str, ...] | None = None,
+    ) -> str:
+        fake = _FakeDiscord()
+        fake.post(_POST_ID, *_POST_MESSAGES)
+        raw = _raw_thread(
+            _POST_ID,
+            _FORUM_ID,
+            name="Release planning",
+            applied_tags=["1022", "1021"],
+            message_count=8,
+        )
+        app, ctx = await _setup(fake)
+        async with app:
+            thread = _thread(
+                raw,
+                ctx=ctx,
+                message_fields=message_fields,
+                thread_fields=thread_fields,
+            )
+            return await thread.read_text()
+
+    async def test_name_tags_and_conversation(self) -> None:
+        # A message with an embed spans two lines.
+        assert await self._post_text() == (
+            "Release planning\n"
+            "Tags: solved, question\n"
+            "Ada: Which day works?\n"
+            "bo: Thursday\n"
+            "example-bot: Scheduled for Thursday\n"
+            "Release 1.3\n"
+            "example-bot: Translated: Thursday works"
+        )
+
+    @pytest.mark.parametrize(
+        ("message_fields", "thread_fields", "lines"),
+        [
+            pytest.param(
+                None,
+                ("id", "tags"),
+                [
+                    "Tags: solved, question",
+                    "Ada: Which day works?",
+                    "bo: Thursday",
+                    "example-bot: Scheduled for Thursday",
+                    "Release 1.3",
+                    "example-bot: Translated: Thursday works",
+                ],
+                id="name",
+            ),
+            pytest.param(
+                None,
+                ("id", "name"),
+                [
+                    "Release planning",
+                    "Ada: Which day works?",
+                    "bo: Thursday",
+                    "example-bot: Scheduled for Thursday",
+                    "Release 1.3",
+                    "example-bot: Translated: Thursday works",
+                ],
+                id="tags",
+            ),
+            # Every message with text is kept, the rename notice too.
+            pytest.param(
+                ("author", "content", "embeds", "id"),
+                None,
+                [
+                    "Release planning",
+                    "Tags: solved, question",
+                    "Ada: Which day works?",
+                    "bo: Thursday",
+                    "example-bot: Scheduled for Thursday",
+                    "Release 1.3",
+                    "Ada: Release planning",
+                    "example-bot: Translated: Thursday works",
+                ],
+                id="type",
+            ),
+        ],
+    )
+    async def test_left_out_fields(
+        self,
+        message_fields: tuple[str, ...] | None,
+        thread_fields: tuple[str, ...] | None,
+        lines: list[str],
+    ) -> None:
+        text = await self._post_text(
+            message_fields=message_fields, thread_fields=thread_fields
+        )
+        assert text == "\n".join(lines)
