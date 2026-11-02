@@ -26,7 +26,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, NamedTuple, Self
+from typing import TYPE_CHECKING, Any, NamedTuple, Self, TypeVar
 
 from cocoindex._internal.extras import install_hint
 
@@ -40,6 +40,9 @@ except ImportError as e:  # pragma: no cover - import-time guard
 from cocoindex._version import __version__
 from cocoindex.resources.rate_limit import RateLimiter
 
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
 __all__ = [
     "DiscordApp",
     "DiscordAttachment",
@@ -48,10 +51,13 @@ __all__ = [
     "DiscordMessage",
     "DiscordMessageRef",
     "DiscordReaction",
+    "DiscordThread",
     "DiscordUser",
 ]
 
 _log = logging.getLogger(__name__)
+
+_D = TypeVar("_D", bound="DataclassInstance")
 
 # Unversioned URLs get API v6.
 _BASE_URL = "https://discord.com/api/v10"
@@ -92,6 +98,9 @@ _REPLY_MESSAGE_TYPE = 19
 # A forward's ``message_reference.type``; 0, the default, is any other
 # reference.
 _FORWARD_REFERENCE_TYPE = 1
+
+# A thread's flag for a forum post pinned to the top of its forum.
+_PINNED_THREAD_FLAG = 1 << 1
 
 # The Discord tokens that a message's ``read_text()`` rewrites: a user
 # mention, a custom emoji, a timestamp and a slash command. Channel, role,
@@ -655,6 +664,25 @@ class DiscordMessage:
         return f"{_display_name(self.author)}: {text}"
 
 
+def _select_fields(obj: _D, selected: tuple[str, ...] | None) -> _D:
+    """``obj`` with every field ``selected`` leaves out set to ``None``, or
+    ``()`` for a tuple field. ``selected`` is a channel's normalized
+    selection: ``None`` for every field, else the names to keep."""
+    if selected is None:
+        return obj
+    # A field left out holds a constant, so it never reruns anything.
+    left_out: dict[str, Any] = {
+        f.name: () if isinstance(getattr(obj, f.name), tuple) else None
+        for f in fields(obj)
+        if f.name not in selected
+    }
+    return replace(obj, **left_out)
+
+
+def _optional_datetime(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value is not None else None
+
+
 def _parse_user(raw: dict[str, Any]) -> DiscordUser:
     return DiscordUser(
         id=raw["id"],
@@ -707,7 +735,6 @@ def _parse_message(
         if forwarded
         else None
     )
-    edited_timestamp = raw.get("edited_timestamp")
     message = DiscordMessage(
         id=raw["id"],
         guild_id=guild_id,
@@ -741,25 +768,13 @@ def _parse_message(
         ),
         pinned=raw.get("pinned", False),
         timestamp=datetime.fromisoformat(raw["timestamp"]),
-        edited_timestamp=(
-            datetime.fromisoformat(edited_timestamp)
-            if edited_timestamp is not None
-            else None
-        ),
+        edited_timestamp=_optional_datetime(raw.get("edited_timestamp")),
         reply_to=(
             reference.get("message_id") if raw["type"] == _REPLY_MESSAGE_TYPE else None
         ),
         forwarded_from=forwarded_from,
     )
-    if message_fields is None:
-        return message
-    # A field left out holds a constant, so it never reruns anything.
-    left_out: dict[str, Any] = {
-        f.name: () if isinstance(getattr(message, f.name), tuple) else None
-        for f in fields(message)
-        if f.name not in message_fields
-    }
-    return replace(message, **left_out)
+    return _select_fields(message, message_fields)
 
 
 def _display_name(user: DiscordUser) -> str:
@@ -792,3 +807,230 @@ def _render_tokens(text: str, mentions: tuple[DiscordUser, ...]) -> str:
         return f"{_UNIX_EPOCH + timedelta(seconds=secs):%Y-%m-%dT%H:%M:%SZ}"
 
     return _TOKEN.sub(render, text)
+
+
+# ============================================================================
+# Threads
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class _ThreadData:
+    """A thread's fields, which :class:`DiscordThread`'s properties expose,
+    in their order."""
+
+    id: str
+    guild_id: str | None
+    parent_id: str | None
+    type: int | None
+    name: str | None
+    tags: tuple[str, ...]
+    archived: bool | None
+    archive_timestamp: datetime | None
+    locked: bool | None
+    pinned: bool | None
+    message_count: int | None
+    total_message_sent: int | None
+    last_message_id: str | None
+    member_count: int | None
+    owner_id: str | None
+    create_timestamp: datetime | None
+    auto_archive_duration: int | None
+    rate_limit_per_user: int | None
+    invitable: bool | None
+    last_pin_timestamp: datetime | None
+
+
+def _parse_thread(
+    raw: dict[str, Any],
+    guild_id: str,
+    tag_names: Mapping[str, str],
+    thread_fields: tuple[str, ...] | None,
+) -> _ThreadData:
+    """A thread object from Discord as a thread's fields.
+
+    ``guild_id`` is the channel's. ``tag_names`` maps the IDs of a forum's
+    tags to their names; a tag the forum no longer lists is skipped.
+    ``thread_fields`` is the channel's normalized selection, as for
+    :func:`_parse_message`. What every thread has is read strictly, so a
+    missing key raises rather than inventing a value; the rest defaults.
+    """
+    metadata = raw["thread_metadata"]
+    return _select_fields(
+        _ThreadData(
+            id=raw["id"],
+            guild_id=guild_id,
+            parent_id=raw["parent_id"],
+            type=raw["type"],
+            name=raw["name"],
+            tags=tuple(
+                tag_names[tag_id]
+                for tag_id in raw.get("applied_tags", [])
+                if tag_id in tag_names
+            ),
+            archived=metadata["archived"],
+            archive_timestamp=datetime.fromisoformat(metadata["archive_timestamp"]),
+            locked=metadata["locked"],
+            pinned=bool(raw.get("flags", 0) & _PINNED_THREAD_FLAG),
+            message_count=raw.get("message_count", 0),
+            total_message_sent=raw.get("total_message_sent", 0),
+            last_message_id=raw.get("last_message_id"),
+            member_count=raw.get("member_count", 0),
+            owner_id=raw["owner_id"],
+            create_timestamp=_optional_datetime(metadata.get("create_timestamp")),
+            auto_archive_duration=metadata["auto_archive_duration"],
+            rate_limit_per_user=raw.get("rate_limit_per_user", 0),
+            invitable=metadata.get("invitable"),
+            last_pin_timestamp=_optional_datetime(raw.get("last_pin_timestamp")),
+        ),
+        thread_fields,
+    )
+
+
+class DiscordThread:
+    """One thread in a channel, forum posts included.
+
+    Its fields come from Discord's thread listing, and :attr:`starter` from
+    the channel's main stream, so neither costs a request. :meth:`messages`
+    fetches the messages inside it on first use.
+
+    A memoized function that takes the thread reruns when any of its fields
+    or its starter changes: a message posted or deleted (the counters), a
+    rename, new tags, an archive or unarchive, a lock or a pin. The messages
+    inside aren't part of that, so an edit or a reaction inside the thread
+    waits for the thread's next change, such as when it archives after a
+    while without messages.
+
+    A field the channel's ``thread_fields`` leaves out holds ``None``, or
+    ``()`` for ``tags``; ``id`` is always set.
+    """
+
+    __slots__ = ("_ctx", "_data", "_guild_id", "_message_fields", "_starter")
+
+    def __init__(
+        self,
+        ctx: _ApiContext,
+        raw_thread: dict[str, Any],
+        guild_id: str,
+        tag_names: Mapping[str, str],
+        starter: DiscordMessage | None,
+        message_fields: tuple[str, ...] | None,
+        thread_fields: tuple[str, ...] | None,
+    ) -> None:
+        self._ctx = ctx
+        self._data = _parse_thread(raw_thread, guild_id, tag_names, thread_fields)
+        self._starter = starter
+        # For the messages that messages() parses, whatever thread_fields
+        # leaves out.
+        self._guild_id = guild_id
+        self._message_fields = message_fields
+
+    @property
+    def id(self) -> str:
+        return self._data.id
+
+    @property
+    def guild_id(self) -> str | None:
+        return self._data.guild_id
+
+    @property
+    def parent_id(self) -> str | None:
+        """The channel the thread is in."""
+        return self._data.parent_id
+
+    @property
+    def type(self) -> int | None:
+        """10 an announcement thread, 11 public, 12 private."""
+        return self._data.type
+
+    @property
+    def name(self) -> str | None:
+        """The thread's name; a forum post's title."""
+        return self._data.name
+
+    @property
+    def tags(self) -> tuple[str, ...]:
+        """A forum post's tags, by name, in Discord's order."""
+        return self._data.tags
+
+    @property
+    def archived(self) -> bool | None:
+        return self._data.archived
+
+    @property
+    def archive_timestamp(self) -> datetime | None:
+        """When the thread was last archived or unarchived."""
+        return self._data.archive_timestamp
+
+    @property
+    def locked(self) -> bool | None:
+        """Whether only moderators can unarchive it."""
+        return self._data.locked
+
+    @property
+    def pinned(self) -> bool | None:
+        """Whether it's a forum post pinned to the top of its forum."""
+        return self._data.pinned
+
+    @property
+    def message_count(self) -> int | None:
+        """Messages after the first, deleted ones not counted."""
+        return self._data.message_count
+
+    @property
+    def total_message_sent(self) -> int | None:
+        """Messages ever sent after the first; it never goes down."""
+        return self._data.total_message_sent
+
+    @property
+    def last_message_id(self) -> str | None:
+        """The newest message's ID; that message may have been deleted."""
+        return self._data.last_message_id
+
+    @property
+    def member_count(self) -> int | None:
+        """Approximate; it stops counting at 50."""
+        return self._data.member_count
+
+    @property
+    def owner_id(self) -> str | None:
+        """Who started the thread."""
+        return self._data.owner_id
+
+    @property
+    def create_timestamp(self) -> datetime | None:
+        """``None`` for threads created before 2022-01-09."""
+        return self._data.create_timestamp
+
+    @property
+    def auto_archive_duration(self) -> int | None:
+        """How long without messages before it archives, in minutes: 60,
+        1440, 4320 or 10080."""
+        return self._data.auto_archive_duration
+
+    @property
+    def rate_limit_per_user(self) -> int | None:
+        """Slow mode, in seconds."""
+        return self._data.rate_limit_per_user
+
+    @property
+    def invitable(self) -> bool | None:
+        """For a private thread, whether non-moderators can add people."""
+        return self._data.invitable
+
+    @property
+    def last_pin_timestamp(self) -> datetime | None:
+        """When a message in it was last pinned; ``None`` while none is."""
+        return self._data.last_pin_timestamp
+
+    @property
+    def starter(self) -> DiscordMessage | None:
+        """The message the thread was started from, in the channel's main
+        stream. ``None`` for a forum post, whose opening message is inside
+        it, and for a private thread, a thread started without a message,
+        and one whose starter was deleted."""
+        return self._starter
+
+    def __coco_memo_key__(self) -> object:
+        # Every field, then the starter. The API context isn't content.
+        return (self._data, self._starter)

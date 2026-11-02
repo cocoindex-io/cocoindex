@@ -20,6 +20,7 @@ import asyncio
 import dataclasses
 import re
 import ssl
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -1467,3 +1468,390 @@ class TestMessageReadText:
             mention_everyone=True,
         )
         assert await _message_text(raw) == "Ada: hi all"
+
+
+# ---------------------------------------------------------------------------
+# Threads
+# ---------------------------------------------------------------------------
+
+# A thread started from the main-stream message with the same ID.
+_THREAD_ID = "1018"
+_FORUM_ID = "1019"
+# A post in _FORUM_ID.
+_POST_ID = "1020"
+_TAG_NAMES = {"1021": "question", "1022": "solved"}
+
+# DiscordThread's fields, in their order; the starter aside.
+_THREAD_FIELD_NAMES = (
+    "id",
+    "guild_id",
+    "parent_id",
+    "type",
+    "name",
+    "tags",
+    "archived",
+    "archive_timestamp",
+    "locked",
+    "pinned",
+    "message_count",
+    "total_message_sent",
+    "last_message_id",
+    "member_count",
+    "owner_id",
+    "create_timestamp",
+    "auto_archive_duration",
+    "rate_limit_per_user",
+    "invitable",
+    "last_pin_timestamp",
+)
+
+# For threads whose messages() a test doesn't call: parsing and the memo key
+# never use the context.
+_UNUSED_CONTEXT = cast(_source._ApiContext, None)
+
+
+def _raw_thread(
+    thread_id: str,
+    parent_id: str = _CHANNEL,
+    *,
+    metadata: dict[str, Any] | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """A thread object as Discord lists it: an open public thread in
+    ``parent_id`` with nothing posted since it started, untagged, and with
+    the voice settings Discord attaches to every thread. ``metadata``
+    overrides keys of its ``thread_metadata``; ``fields`` override or add
+    other keys."""
+    return {
+        "id": thread_id,
+        "type": 11,
+        "guild_id": _GUILD,
+        "parent_id": parent_id,
+        "name": f"thread-{thread_id[-4:]}",
+        "owner_id": _PERSON_ID,
+        "last_message_id": thread_id,
+        "message_count": 0,
+        "total_message_sent": 0,
+        "member_count": 1,
+        "rate_limit_per_user": 0,
+        "flags": 0,
+        "bitrate": 64000,
+        "rtc_region": None,
+        "user_limit": 0,
+        "thread_metadata": {
+            "archived": False,
+            "archive_timestamp": "2026-01-15T12:05:00.500000+00:00",
+            "auto_archive_duration": 4320,
+            "locked": False,
+            "create_timestamp": "2026-01-15T12:05:00.500000+00:00",
+            **(metadata or {}),
+        },
+        **fields,
+    }
+
+
+def _starter(**fields: Any) -> discord.DiscordMessage:
+    """The message ``_THREAD_ID`` was started from, as the main stream lists
+    it."""
+    raw = _raw_message(
+        _THREAD_ID,
+        **{
+            "content": "Release planning?",
+            # HAS_THREAD
+            "flags": 1 << 5,
+            "thread": _raw_thread(_THREAD_ID),
+            **fields,
+        },
+    )
+    return _parse_message(raw, _GUILD, None)
+
+
+def _thread(
+    raw_thread: dict[str, Any],
+    *,
+    ctx: _source._ApiContext = _UNUSED_CONTEXT,
+    guild_id: str = _GUILD,
+    tag_names: Mapping[str, str] = _TAG_NAMES,
+    starter: discord.DiscordMessage | None = None,
+    message_fields: tuple[str, ...] | None = None,
+    thread_fields: tuple[str, ...] | None = None,
+) -> discord.DiscordThread:
+    return discord.DiscordThread(
+        ctx, raw_thread, guild_id, tag_names, starter, message_fields, thread_fields
+    )
+
+
+def _properties(thread: discord.DiscordThread) -> dict[str, object]:
+    return {name: getattr(thread, name) for name in _THREAD_FIELD_NAMES}
+
+
+class TestThread:
+    def test_fields(self) -> None:
+        starter = _starter()
+        raw = _raw_thread(
+            _THREAD_ID,
+            name="Release planning",
+            owner_id=_OTHER_PERSON_ID,
+            last_message_id="1023",
+            message_count=3,
+            # One message was deleted.
+            total_message_sent=4,
+            member_count=2,
+            rate_limit_per_user=30,
+            last_pin_timestamp="2026-01-15T12:20:00+00:00",
+            metadata={
+                "archived": True,
+                "archive_timestamp": "2026-01-15T13:00:00.750000+00:00",
+                "auto_archive_duration": 60,
+                "locked": True,
+            },
+        )
+        thread = _thread(raw, starter=starter)
+        assert _properties(thread) == {
+            "id": _THREAD_ID,
+            "guild_id": _GUILD,
+            "parent_id": _CHANNEL,
+            "type": 11,
+            "name": "Release planning",
+            "tags": (),
+            "archived": True,
+            "archive_timestamp": datetime(2026, 1, 15, 13, 0, 0, 750000, tzinfo=UTC),
+            "locked": True,
+            "pinned": False,
+            "message_count": 3,
+            "total_message_sent": 4,
+            "last_message_id": "1023",
+            "member_count": 2,
+            "owner_id": _OTHER_PERSON_ID,
+            "create_timestamp": datetime(2026, 1, 15, 12, 5, 0, 500000, tzinfo=UTC),
+            "auto_archive_duration": 60,
+            "rate_limit_per_user": 30,
+            "invitable": None,
+            "last_pin_timestamp": datetime(2026, 1, 15, 12, 20, tzinfo=UTC),
+        }
+        assert thread.starter == starter
+
+    @pytest.mark.parametrize(
+        ("thread_type", "metadata", "invitable"),
+        [
+            pytest.param(10, {}, None, id="announcement"),
+            pytest.param(11, {}, None, id="public"),
+            pytest.param(12, {"invitable": False}, False, id="private"),
+        ],
+    )
+    def test_kinds(
+        self, thread_type: int, metadata: dict[str, Any], invitable: bool | None
+    ) -> None:
+        thread = _thread(_raw_thread(_THREAD_ID, type=thread_type, metadata=metadata))
+        assert (thread.type, thread.invitable) == (thread_type, invitable)
+
+    def test_forum_post_tags_and_pinned(self) -> None:
+        raw = _raw_thread(
+            _POST_ID, _FORUM_ID, flags=1 << 1, applied_tags=["1022", "907", "1021"]
+        )
+        thread = _thread(raw)
+        # In Discord's order, without the tag the forum no longer lists.
+        assert thread.tags == ("solved", "question")
+        assert thread.pinned is True
+        assert thread.parent_id == _FORUM_ID
+        # Only bit 1 is the pin; Discord documents other channel flags.
+        assert _thread(_raw_thread(_POST_ID, _FORUM_ID, flags=1 << 15)).pinned is False
+
+    def test_missing_keys(self) -> None:
+        raw = _raw_thread(_THREAD_ID)
+        for key in (
+            "message_count",
+            "total_message_sent",
+            "member_count",
+            "rate_limit_per_user",
+            "last_message_id",
+            "flags",
+        ):
+            del raw[key]
+        del raw["thread_metadata"]["create_timestamp"]
+        assert "last_pin_timestamp" not in raw
+        assert "applied_tags" not in raw
+        assert "invitable" not in raw["thread_metadata"]
+        thread = _thread(raw)
+        assert thread.message_count == 0
+        assert thread.total_message_sent == 0
+        assert thread.member_count == 0
+        assert thread.rate_limit_per_user == 0
+        assert thread.last_message_id is None
+        assert thread.create_timestamp is None
+        assert thread.last_pin_timestamp is None
+        assert thread.invitable is None
+        assert thread.pinned is False
+        assert thread.tags == ()
+
+    # Every thread has these. A missing one fails the channel, which keeps
+    # its outputs, rather than inventing a value.
+    @pytest.mark.parametrize("key", ["id", "type", "parent_id", "name", "owner_id"])
+    def test_required_keys(self, key: str) -> None:
+        raw = _raw_thread(_THREAD_ID)
+        del raw[key]
+        with pytest.raises(KeyError):
+            _thread(raw)
+
+    @pytest.mark.parametrize(
+        "key", ["archived", "archive_timestamp", "locked", "auto_archive_duration"]
+    )
+    def test_required_metadata_keys(self, key: str) -> None:
+        raw = _raw_thread(_THREAD_ID)
+        del raw["thread_metadata"][key]
+        with pytest.raises(KeyError):
+            _thread(raw)
+
+    def test_properties_are_the_thread_fields(self) -> None:
+        properties = {
+            name
+            for name, value in vars(discord.DiscordThread).items()
+            if isinstance(value, property)
+        }
+        assert properties == {*_THREAD_FIELD_NAMES, "starter"}
+        # The memo key holds the fields in this order.
+        assert (
+            tuple(f.name for f in dataclasses.fields(_source._ThreadData))
+            == _THREAD_FIELD_NAMES
+        )
+
+
+class TestThreadFields:
+    """``thread_fields``, written as ``DiscordChannel`` normalizes it."""
+
+    def test_left_out_fields(self) -> None:
+        starter = _starter()
+        # Tags and a pin, as a forum post has, so that every field has a value
+        # to leave out.
+        raw = _raw_thread(
+            _THREAD_ID,
+            type=12,
+            name="Release planning",
+            applied_tags=["1021"],
+            flags=1 << 1,
+            message_count=3,
+            total_message_sent=4,
+            member_count=2,
+            rate_limit_per_user=30,
+            last_pin_timestamp="2026-01-15T12:20:00+00:00",
+            metadata={"locked": True, "invitable": False},
+        )
+        thread = _thread(raw, starter=starter, thread_fields=("id", "name"))
+        assert _properties(thread) == {
+            **dict.fromkeys(_THREAD_FIELD_NAMES),
+            "id": _THREAD_ID,
+            "name": "Release planning",
+            "tags": (),
+        }
+        # The starter isn't a thread field.
+        assert thread.starter == starter
+
+
+def _thread_fingerprint(raw_thread: dict[str, Any], **thread_kwargs: Any) -> object:
+    return memo_fingerprint(_thread(raw_thread, **thread_kwargs))
+
+
+class TestThreadMemoKey:
+    @pytest.mark.parametrize(
+        ("name", "change"),
+        [
+            pytest.param(name, change, id=name)
+            for name, change in [
+                ("parent_id", {"parent_id": _OTHER_CHANNEL}),
+                ("type", {"type": 12}),
+                ("name", {"name": "Release planning, moved"}),
+                ("tags", {"applied_tags": ["1021"]}),
+                ("archived", {"metadata": {"archived": True}}),
+                (
+                    "archive_timestamp",
+                    {
+                        "metadata": {
+                            "archive_timestamp": "2026-01-15T13:00:00.750000+00:00"
+                        }
+                    },
+                ),
+                ("locked", {"metadata": {"locked": True}}),
+                ("pinned", {"flags": 1 << 1}),
+                ("message_count", {"message_count": 2}),
+                ("total_message_sent", {"total_message_sent": 3}),
+                ("last_message_id", {"last_message_id": "1023"}),
+                ("member_count", {"member_count": 3}),
+                ("owner_id", {"owner_id": _OTHER_PERSON_ID}),
+                (
+                    "create_timestamp",
+                    {
+                        "metadata": {
+                            "create_timestamp": "2026-01-15T12:06:00.000000+00:00"
+                        }
+                    },
+                ),
+                ("auto_archive_duration", {"metadata": {"auto_archive_duration": 60}}),
+                ("rate_limit_per_user", {"rate_limit_per_user": 10}),
+                ("invitable", {"metadata": {"invitable": True}}),
+                (
+                    "last_pin_timestamp",
+                    {"last_pin_timestamp": "2026-01-15T12:20:00+00:00"},
+                ),
+            ]
+        ],
+    )
+    def test_every_exposed_property_counts(
+        self, name: str, change: dict[str, Any]
+    ) -> None:
+        starter = _starter()
+        before, after = _raw_thread(_THREAD_ID), _raw_thread(_THREAD_ID, **change)
+        assert _thread_fingerprint(before, starter=starter) == _thread_fingerprint(
+            before, starter=starter
+        )
+        assert _thread_fingerprint(before, starter=starter) != _thread_fingerprint(
+            after, starter=starter
+        )
+
+        others = tuple(sorted(set(_THREAD_FIELD_NAMES) - {name}))
+        assert _thread_fingerprint(
+            before, starter=starter, thread_fields=others
+        ) == _thread_fingerprint(after, starter=starter, thread_fields=others)
+
+    def test_guild_id_counts(self) -> None:
+        raw = _raw_thread(_THREAD_ID)
+        assert _thread_fingerprint(raw) != _thread_fingerprint(
+            raw, guild_id=_OTHER_GUILD
+        )
+        others = tuple(sorted(set(_THREAD_FIELD_NAMES) - {"guild_id"}))
+        assert _thread_fingerprint(raw, thread_fields=others) == _thread_fingerprint(
+            raw, guild_id=_OTHER_GUILD, thread_fields=others
+        )
+
+    # Editing or deleting the starter changes nothing on the thread object.
+    @pytest.mark.parametrize(
+        "starter",
+        [
+            pytest.param(
+                _starter(
+                    content="Release planning, edited",
+                    edited_timestamp="2026-01-15T12:10:00.000000+00:00",
+                ),
+                id="edited",
+            ),
+            pytest.param(None, id="deleted"),
+        ],
+    )
+    def test_starter_counts(self, starter: discord.DiscordMessage | None) -> None:
+        raw = _raw_thread(_THREAD_ID)
+        assert _thread_fingerprint(raw, starter=_starter()) != _thread_fingerprint(
+            raw, starter=starter
+        )
+
+    @pytest.mark.asyncio
+    async def test_context_not_in_key(self) -> None:
+        # Two Apps' contexts differ, and fingerprinting one would raise.
+        fingerprints = []
+        for _ in range(2):
+            app, ctx = await _setup(_FakeDiscord())
+            async with app:
+                fingerprints.append(
+                    _thread_fingerprint(
+                        _raw_thread(_THREAD_ID), ctx=ctx, starter=_starter()
+                    )
+                )
+        assert fingerprints[0] == fingerprints[1]
