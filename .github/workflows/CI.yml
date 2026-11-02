@@ -100,6 +100,8 @@ jobs:
               - 'benchmarks/*/rust/**'
               - '.github/workflows/CI.yml'
               - '.github/workflows/_rust_sdk.yml'
+              - 'dev/setup_onnxruntime.sh'
+              - 'dev/tests/test_setup_onnxruntime.py'
               - '.github/actions/**'
 
   build-test:

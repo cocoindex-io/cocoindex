@@ -14,7 +14,7 @@ jobs:
   # external server, its clippy, and the `cargo check` of the external example
   # and benchmark workspaces that build on it. CI.yml runs them for a change
   # to the SDK or to those workspaces, and rust_sdk_daily.yml on main every
-  # day. The SDK doesn't depend on pyo3, so no leg needs Python.
+  # day. The SDK doesn't depend on pyo3, so no leg builds the Python extension.
   #
   # Clippy and the external-workspace check run on Linux x86_64 only. The
   # lints are the same on every platform bar a few `cfg(not(unix))` lines,
@@ -68,6 +68,17 @@ jobs:
           # cache.
           min-free-disk-gib: 30
           clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy-sdk') }}
+
+      - name: Test ONNX Runtime setup
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: python3 -m unittest discover -s dev/tests -p test_setup_onnxruntime.py -v
+
+      # ort-sys rc.9's default download uses parcel.pyke.io, which timed out
+      # on both Linux and Windows in #2625. Supply the same runtime from its
+      # upstream release instead; keep every SDK feature/check enabled.
+      - name: Install ONNX Runtime
+        shell: bash
+        run: bash dev/setup_onnxruntime.sh
 
       - name: Run Rust SDK hooks
         uses: ./.github/actions/run-prek
