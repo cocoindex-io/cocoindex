@@ -164,11 +164,21 @@ def _sanitize_nul(value: Any) -> Any:
 
     ``tuple`` inputs are returned as ``tuple`` (asyncpg relies on ``tuple``
     for Postgres composite types); ``list`` inputs remain ``list``.
+    Keys that become equal after sanitization are rejected rather than
+    silently discarding one of the dictionary's values.
     """
     if isinstance(value, str):
         return _strip_nul(value)
     if isinstance(value, dict):
-        return {_sanitize_nul(k): _sanitize_nul(v) for k, v in value.items()}
+        sanitized: dict[Any, Any] = {}
+        for key, item in value.items():
+            sanitized_key = _sanitize_nul(key)
+            if sanitized_key in sanitized:
+                raise ValueError(
+                    "Postgres NUL sanitization produced duplicate dict keys"
+                )
+            sanitized[sanitized_key] = _sanitize_nul(item)
+        return sanitized
     if isinstance(value, tuple):
         return tuple(_sanitize_nul(v) for v in value)
     if isinstance(value, list):
