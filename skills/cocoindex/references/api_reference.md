@@ -28,13 +28,19 @@ async def expensive_fn(data: str) -> Result: ...
 def batch_embed(texts: list[str]) -> list[NDArray]: ...
 ```
 
-**Parameters:**
+**Parameters shared by `@coco.fn` and `@coco.fn.as_async`:**
 - `memo: bool = False` -- Enable memoization (skip if inputs/code unchanged)
 - `version: int | None = None` -- Explicit version bump to force re-execution
 - `logic_tracking: "full" | "self" | None = "full"` -- How code changes are tracked
-- `batching: bool = False` -- Auto-batch concurrent calls (async only)
-- `max_batch_size: int | None = None` -- Max batch size
-- `runner: Runner | None = None` -- e.g. `coco.GPU` for serialized GPU execution
+
+**Options for `@coco.fn.as_async` only:**
+- `batching: bool = False` -- Auto-batch concurrent calls
+- `max_batch_size: int | None = None` -- Max batch size (with batching)
+- `runner: Runner | None = None` -- e.g. `coco.GPU` for GPU-bound execution
+
+These options require `@coco.fn.as_async` even on an `async def` body.
+Plain `@coco.fn` rejects them with `ValueError`. With batching, the body accepts
+and returns lists, but each caller passes one item and awaits one result.
 
 ---
 
