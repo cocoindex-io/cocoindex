@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import ssl
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple, Self
 
 from cocoindex._internal.extras import install_hint
@@ -91,6 +92,25 @@ _REPLY_MESSAGE_TYPE = 19
 # A forward's ``message_reference.type``; 0, the default, is any other
 # reference.
 _FORWARD_REFERENCE_TYPE = 1
+
+# The Discord tokens that a message's ``read_text()`` rewrites: a user
+# mention, a custom emoji, a timestamp and a slash command. Channel, role,
+# game-profile and server-navigation tokens stay as typed, since naming them
+# would take requests. A name is any run of characters but whitespace, ``:``, ``<`` and
+# ``>``, and a timestamp's style any letter, so a style Discord adds later
+# still renders.
+_TOKEN = re.compile(
+    r"<(?:@!?(?P<user>\d+)"
+    r"|a?:(?P<emoji>[^\s:<>]+):\d+"
+    r"|t:(?P<unix>\d+)(?::[A-Za-z])?"
+    r"|/(?P<command>[^\s:<>]+(?: [^\s:<>]+){0,2}):\d+)>"
+)
+
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+# The latest time a datetime holds, 9999-12-31T23:59:59Z, in Unix seconds.
+_MAX_UNIX_SECS = (datetime.max.replace(tzinfo=UTC) - _UNIX_EPOCH) // timedelta(
+    seconds=1
+)
 
 # Application flags granting the Message Content intent: bit 19 is set by the
 # toggle on the Developer Portal's Bot page, bit 18 after Discord's review.
@@ -612,6 +632,28 @@ class DiscordMessage:
     reply_to: str | None
     forwarded_from: DiscordMessageRef | None
 
+    async def read_text(self) -> str:
+        """The message as plain text, ``"<author>: <text>"``.
+
+        The text is ``content``, then each embed's author, title,
+        description, fields (``name: value``) and footer, a line each. User
+        mentions show the user's display name, custom emoji ``:name:``,
+        timestamps ISO 8601 in UTC, and slash commands ``/name``; other
+        tokens and Discord's Markdown stay as typed. ``""`` when there's no
+        text, such as a member's join notice or a file without a caption.
+        Only the fields the channel exposes are read: without ``author``,
+        there's no ``<author>:``.
+        """
+        parts = [self.content]
+        for embed in self.embeds:
+            parts += [embed.author, embed.title, embed.description]
+            parts += [f"{name}: {value}" for name, value in embed.fields]
+            parts.append(embed.footer)
+        text = _render_tokens("\n".join(p for p in parts if p), self.mentions)
+        if not text or self.author is None:
+            return text
+        return f"{_display_name(self.author)}: {text}"
+
 
 def _parse_user(raw: dict[str, Any]) -> DiscordUser:
     return DiscordUser(
@@ -718,3 +760,35 @@ def _parse_message(
         if f.name not in message_fields
     }
     return replace(message, **left_out)
+
+
+def _display_name(user: DiscordUser) -> str:
+    """The name Discord's app shows: the user's display name, else the
+    username."""
+    return user.global_name or user.username
+
+
+def _render_tokens(text: str, mentions: tuple[DiscordUser, ...]) -> str:
+    """``text`` with Discord's tokens for users, custom emoji, timestamps and
+    slash commands rewritten as plain text. A user missing from ``mentions``
+    shows as ``@<id>``. A token inside a code span is rewritten too, though
+    Discord's app shows it as typed."""
+    names = {user.id: _display_name(user) for user in mentions}
+
+    def render(match: re.Match[str]) -> str:
+        if (user_id := match["user"]) is not None:
+            return f"@{names.get(user_id, user_id)}"
+        if (emoji := match["emoji"]) is not None:
+            return f":{emoji}:"
+        if (command := match["command"]) is not None:
+            return f"/{command}"
+        secs = int(match["unix"])
+        # Anyone can type a time past the year 9999, and raising would fail
+        # the item on every run.
+        if secs > _MAX_UNIX_SECS:
+            return match[0]
+        # Not ``datetime.fromtimestamp``, which fails past the year 3000 on
+        # Windows.
+        return f"{_UNIX_EPOCH + timedelta(seconds=secs):%Y-%m-%dT%H:%M:%SZ}"
+
+    return _TOKEN.sub(render, text)

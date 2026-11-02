@@ -35,6 +35,7 @@ from cocoindex.connectors.discord._source import (
     _DiscordError,
     _error_hint,
     _parse_message,
+    _render_tokens,
 )
 from cocoindex.resources.rate_limit import RateLimiter
 
@@ -1236,3 +1237,233 @@ class TestMessageFingerprint:
         assert _message_fingerprint(before, others) == _message_fingerprint(
             after, others
         )
+
+
+# ---------------------------------------------------------------------------
+# Message text
+# ---------------------------------------------------------------------------
+
+_MENTIONS = (
+    _ADA,
+    discord.DiscordUser(
+        id=_OTHER_PERSON_ID, username="bo", global_name=None, bot=False
+    ),
+)
+
+
+async def _message_text(
+    raw: dict[str, Any], message_fields: tuple[str, ...] | None = None
+) -> str:
+    return await _parse_message(raw, _GUILD, message_fields).read_text()
+
+
+class TestRenderTokens:
+    @pytest.mark.parametrize(
+        ("token", "rendered"),
+        [
+            pytest.param(f"<@{_PERSON_ID}>", "@Ada", id="user"),
+            pytest.param(f"<@!{_PERSON_ID}>", "@Ada", id="user-old-form"),
+            pytest.param(
+                f"<@{_OTHER_PERSON_ID}>", "@bo", id="user-without-display-name"
+            ),
+            pytest.param("<@906>", "@906", id="user-not-in-mentions"),
+            pytest.param("<:example_emoji:1014>", ":example_emoji:", id="emoji"),
+            pytest.param(
+                "<a:example_wave:1015>", ":example_wave:", id="animated-emoji"
+            ),
+            pytest.param("<t:1768478400>", "2026-01-15T12:00:00Z", id="timestamp"),
+            pytest.param(
+                "<t:1768478400:R>", "2026-01-15T12:00:00Z", id="timestamp-style"
+            ),
+            pytest.param(
+                "<t:1768478400:X>", "2026-01-15T12:00:00Z", id="timestamp-unknown-style"
+            ),
+            pytest.param(
+                "<t:253402300799>", "9999-12-31T23:59:59Z", id="latest-timestamp"
+            ),
+            pytest.param("</remind:1016>", "/remind", id="command"),
+            pytest.param("</remind list:1016>", "/remind list", id="subcommand"),
+            pytest.param(
+                "</remind admin clear:1016>",
+                "/remind admin clear",
+                id="subcommand-in-group",
+            ),
+        ],
+    )
+    def test_rewritten(self, token: str, rendered: str) -> None:
+        assert _render_tokens(f"see {token} now", _MENTIONS) == f"see {rendered} now"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Naming a channel or a role would take a request.
+            pytest.param(f"<#{_CHANNEL}>", id="channel"),
+            pytest.param(f"<@&{_ROLE_ID}>", id="role"),
+            pytest.param("<id:customize>", id="server-navigation"),
+            pytest.param("<@$1017>", id="game-profile"),
+            # Past what a datetime holds. Anyone can type one, and raising
+            # would fail the item on every run.
+            pytest.param("<t:99999999999999>", id="timestamp-past-9999"),
+            pytest.param("<t:253402300800>", id="timestamp-just-past-9999"),
+            # Discord escapes nothing, so nothing is unescaped.
+            pytest.param(
+                "**bold** [the guide](https://example.com/guide) `code`", id="markdown"
+            ),
+            pytest.param("&lt; &amp;", id="entities"),
+        ],
+    )
+    def test_left_as_typed(self, text: str) -> None:
+        assert _render_tokens(f"see {text} now", _MENTIONS) == f"see {text} now"
+
+    def test_message_as_typed(self) -> None:
+        # Made up, after a message a person typed in Discord's app, as the
+        # listing returned it: tokens picked from the composer, and Markdown,
+        # `&`, `<` and `>` left raw.
+        content = (
+            f"<@{_PERSON_ID}> the notes are in <#{_CHANNEL}>, <@&{_ROLE_ID}> "
+            "<:example_emoji:1014> https://example.com/notes?week=2&lang=en\n"
+            "[agenda](https://example.com/agenda) & 1 < 2 > 0 &amp; `a <i>` "
+            "<t:1768478400:R>"
+        )
+        assert _render_tokens(content, (_ADA,)) == (
+            f"@Ada the notes are in <#{_CHANNEL}>, <@&{_ROLE_ID}> "
+            ":example_emoji: https://example.com/notes?week=2&lang=en\n"
+            "[agenda](https://example.com/agenda) & 1 < 2 > 0 &amp; `a <i>` "
+            "2026-01-15T12:00:00Z"
+        )
+
+
+@pytest.mark.asyncio
+class TestMessageReadText:
+    async def test_content_and_embeds(self) -> None:
+        raw = _raw_message(
+            _MESSAGE_ID,
+            author=_BOT_USER,
+            content="release notes",
+            embeds=[_raw_embed(), {"type": "rich", "title": "Changelog"}],
+        )
+        # The embed's url isn't text.
+        assert await _message_text(raw) == (
+            "example-bot: release notes\n"
+            "release-bot\n"
+            "Release 1.2\n"
+            "Listings are faster.\n"
+            "Breaking: none\n"
+            "Docs: updated\n"
+            "cocoindex\n"
+            "Changelog"
+        )
+
+    @pytest.mark.parametrize(
+        ("fields", "name"),
+        [
+            pytest.param({}, "Ada", id="display-name"),
+            pytest.param({"author": _BOT_USER}, "example-bot", id="username"),
+            pytest.param(
+                {"author": _WEBHOOK_USER, "webhook_id": _WEBHOOK_ID},
+                "example-hook",
+                id="webhook",
+            ),
+        ],
+    )
+    async def test_author_display_name(self, fields: dict[str, Any], name: str) -> None:
+        raw = _raw_message(_MESSAGE_ID, content="hi all", **fields)
+        assert await _message_text(raw) == f"{name}: hi all"
+
+    async def test_tokens_in_embeds_rendered(self) -> None:
+        raw = _raw_message(
+            _MESSAGE_ID,
+            author=_BOT_USER,
+            content="",
+            embeds=[{"type": "rich", "description": "Starts <t:1768478400:F>"}],
+        )
+        assert await _message_text(raw) == "example-bot: Starts 2026-01-15T12:00:00Z"
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            pytest.param({"type": 7, "content": ""}, id="member-joined"),
+            pytest.param(
+                {"content": "", "attachments": [_raw_attachment()]},
+                id="file-without-caption",
+            ),
+            # Its text is in its components, which aren't exposed.
+            pytest.param(
+                {
+                    "author": _BOT_USER,
+                    "content": "",
+                    "flags": 1 << 15,
+                    "components": [{"type": 10, "id": 1, "content": "Build passed"}],
+                },
+                id="components-v2",
+            ),
+            # Its question and answers aren't exposed.
+            pytest.param(
+                {
+                    "content": "",
+                    "poll": {
+                        "question": {"text": "Lunch at noon?"},
+                        "answers": [
+                            {"answer_id": 1, "poll_media": {"text": "yes"}},
+                            {"answer_id": 2, "poll_media": {"text": "no"}},
+                        ],
+                        "expiry": "2026-01-15T20:00:00.000000+00:00",
+                        "allow_multiselect": False,
+                        "layout_type": 1,
+                        "results": {"answer_counts": [], "is_finalized": False},
+                    },
+                },
+                id="poll",
+            ),
+        ],
+    )
+    async def test_empty_text(self, fields: dict[str, Any]) -> None:
+        assert await _message_text(_raw_message(_MESSAGE_ID, **fields)) == ""
+
+    @pytest.mark.parametrize(
+        ("message_fields", "text"),
+        [
+            pytest.param(
+                ("content", "embeds", "id", "mentions"),
+                "@bo release notes\nRelease 1.2",
+                id="author",
+            ),
+            pytest.param(
+                ("author", "content", "embeds", "id"),
+                f"example-bot: @{_OTHER_PERSON_ID} release notes\nRelease 1.2",
+                id="mentions",
+            ),
+            pytest.param(
+                ("author", "content", "id", "mentions"),
+                "example-bot: @bo release notes",
+                id="embeds",
+            ),
+            pytest.param(
+                ("author", "embeds", "id", "mentions"),
+                "example-bot: Release 1.2",
+                id="content",
+            ),
+        ],
+    )
+    async def test_left_out_fields(
+        self, message_fields: tuple[str, ...], text: str
+    ) -> None:
+        raw = _raw_message(
+            _MESSAGE_ID,
+            author=_BOT_USER,
+            content=f"<@{_OTHER_PERSON_ID}> release notes",
+            mentions=[_raw_user(_OTHER_PERSON_ID, "bo")],
+            embeds=[{"type": "rich", "title": "Release 1.2"}],
+        )
+        assert await _message_text(raw, message_fields) == text
+
+    async def test_not_rendered(self) -> None:
+        raw = _raw_message(
+            _MESSAGE_ID,
+            content="hi all",
+            attachments=[_raw_attachment()],
+            reactions=[_raw_reaction("👍", 2)],
+            pinned=True,
+            mention_everyone=True,
+        )
+        assert await _message_text(raw) == "Ada: hi all"
