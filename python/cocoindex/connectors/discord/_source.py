@@ -922,8 +922,8 @@ class DiscordThread:
     or its starter changes: a message posted or deleted (the counters), a
     rename, new tags, an archive or unarchive, a lock or a pin. The messages
     inside aren't part of that, so an edit or a reaction inside the thread
-    waits for the thread's next change, such as when it archives after a
-    while without messages.
+    waits for the thread's next change, such as Discord archiving it, which
+    on a quiet server can take days.
 
     A field the channel's ``thread_fields`` leaves out holds ``None``, or
     ``()`` for ``tags``; ``id`` is always set.
@@ -1040,8 +1040,10 @@ class DiscordThread:
 
     @property
     def auto_archive_duration(self) -> int | None:
-        """How long without messages before it archives, in minutes: 60,
-        1440, 4320 or 10080."""
+        """How long the thread stays in the channel list after its last
+        activity, in minutes: 60, 1440, 4320 or 10080 (*Hide After
+        Inactivity* in Discord's app). Discord archives threads on its own
+        schedule."""
         return self._data.auto_archive_duration
 
     @property
