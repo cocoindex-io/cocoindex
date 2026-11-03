@@ -12,7 +12,7 @@
    - No gradients, glows, dot grids, icon tiles, or invented numbers. */
 
 .sc {
-  --sc-ink: #EDEDED; --sc-muted: #A1A1A1; --sc-dim: #8A8A8A;
+  --sc-ink: #EDEDED; --sc-muted: #A1A1A1; --sc-dim: #A1A1A1;
   --sc-line: rgba(255, 255, 255, 0.09); --sc-line-2: rgba(255, 255, 255, 0.16);
   --sc-panel: #111111; --sc-chip: #161616;
   --sc-delta: #8E96FF; --sc-delta-text: #A3AAFF; --sc-delta-bg: rgba(142, 150, 255, 0.10); --sc-delta-line: rgba(142, 150, 255, 0.40);
