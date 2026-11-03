@@ -16,7 +16,7 @@ const { headings, lastReviewed } = Astro.props;
 const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
 ---
 
-<aside class="toc">
+<aside class="toc" aria-label="On this page">
   <p class="toc-h">On this page</p>
   <ul>
     {rows.map((h) => (
