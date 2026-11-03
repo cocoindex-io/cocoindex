@@ -1,0 +1,153 @@
+---
+// Slides to speech: the three slides of slides/quarterly_review.pdf (rendered
+// from the shipped PDF), one process_slide per page that writes speaker notes
+// with a vision LLM via DSPy (LLM_MODEL from .env.example), voices them with
+// Pocket TTS on the CPU and embeds them with all-MiniLM-L6-v2, into one
+// LanceDB row per slide in slides_to_speech. The README's query ranks the
+// Engineering Priorities slide first. Slide 3 is the edited slide (Δ): only its
+// row recomputes. The notes text is not shown because the LLM writes it at run
+// time; the scene names the field instead of inventing a sentence.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+const B = '/docs/img/examples/scenes/slides-to-speech';
+const slides = [
+  { n: 1, t: 'Q3 Product Roadmap' },
+  { n: 2, t: 'Engineering Priorities' },
+  { n: 3, t: 'Go-To-Market', d: true },
+];
+---
+{size === 'hero' ? (
+  <div class="ss">
+    <div class="ss-deck">
+      <span class="sc-cap">slides/quarterly_review.pdf, rendered page by page with pymupdf</span>
+      <div class="sc-row sc-keep ss-strip">
+        {slides.map((s) => (
+          <figure class={`ss-slide${s.d ? ' sc-delta' : ''}`}>
+            <img src={`${B}/slide-${s.n}.webp`} width="480" height="360" alt="" loading="lazy" decoding="async" />
+            <figcaption><span class="sc-dim">{s.n}</span><span>{s.t}</span>{s.d && <span class="sc-dmark">Δ</span>}</figcaption>
+          </figure>
+        ))}
+      </div>
+    </div>
+
+    <div class="sc-row ss-mid">
+      <div class="sc-col ss-steps">
+        <span class="sc-cap">Each slide, its own component</span>
+        <div class="sc-panel"><div class="sc-panel-b ss-ops">
+          <div class="ss-op">
+            <span class="sc-li"><span class="sc-ico i-model"></span><span>gemini/gemini-3.5-flash</span></span>
+            <span class="ss-sub">vision LLM via DSPy writes speaker_notes</span>
+          </div>
+          <div class="ss-op">
+            <span class="sc-li"><span class="sc-ico i-audio"></span><span>Pocket TTS</span></span>
+            <span class="ss-sub">voices the notes to MP3 on the CPU</span>
+          </div>
+          <div class="ss-op">
+            <span class="sc-li"><span class="sc-ico i-model"></span><span>all-MiniLM-L6-v2</span></span>
+            <span class="ss-sub">embeds the notes, alongside TTS</span>
+          </div>
+        </div></div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col ss-tgt">
+        <span class="sc-cap">LanceDB, one SlideRecord per slide</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>slides_to_speech</div>
+          <table class="sc-table">
+            <thead><tr><th>id</th><th class="ss-v">voice</th></tr></thead>
+            <tbody>
+              <tr><td>slides/quarterly_review.pdf#1</td><td class="sc-dim ss-v">mp3</td></tr>
+              <tr><td>slides/quarterly_review.pdf#2</td><td class="sc-dim ss-v">mp3</td></tr>
+              <tr class="sc-delta"><td><span class="sc-dtext">slides/quarterly_review.pdf#3</span></td><td class="ss-v"><span class="sc-dtext">mp3</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <span class="sc-cap ss-fine">Each row also holds filename, page, speaker_notes and embedding. Edit slide 3 and only its row reruns.</span>
+      </div>
+    </div>
+
+    <div class="ss-search">
+      <span class="sc-cap">Search the deck, play the answer</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "reducing latency and reliability"</span></div>
+      <div class="sc-row ss-hit">
+        <img class="ss-hit-img" src={`${B}/slide-2.webp`} width="480" height="360" alt="" loading="lazy" decoding="async" />
+        <div class="sc-col ss-hit-b">
+          <span class="sc-mono">slides/quarterly_review.pdf slide 2</span>
+          <div class="ss-notes"><span class="sc-mono sc-dim">speaker_notes</span><span>spoken narration the LLM wrote for this slide</span></div>
+          <p class="sc-quote"><b>Engineering Priorities</b> ranks first, above the roadmap and go-to-market slides: the match is on the spoken notes, by meaning.</p>
+          <div class="ss-player">
+            <span class="ss-play"></span>
+            <span class="ss-track"></span>
+            <span class="sc-mono sc-dim">voice, MP3 in the row</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="ss-card">
+    <div class="sc-row sc-keep">
+      <img class="ss-cslide" src={`${B}/slide-2.webp`} width="480" height="360" alt="" loading="lazy" decoding="async" />
+      <span class="sc-to"></span>
+      <div class="sc-col ss-cout">
+        <span class="sc-li"><span class="sc-ico i-model"></span><span>speaker_notes</span></span>
+        <span class="sc-li"><span class="sc-ico i-audio"></span><span>Pocket TTS, MP3</span></span>
+        <div class="ss-player">
+          <span class="ss-play"></span>
+          <span class="ss-track"></span>
+        </div>
+        <span class="sc-li"><span class="sc-ico i-table"></span><span>LanceDB row</span></span>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .ss { display: flex; flex-direction: column; gap: 18px; }
+  .ss-deck { display: flex; flex-direction: column; gap: 8px; }
+  .ss-strip { gap: 8px; }
+  .ss-slide { flex: 1 1 0; min-width: 0; margin: 0; border: 1px solid var(--sc-line); border-radius: 7px; overflow: hidden; background: var(--sc-panel); }
+  .ss-slide.sc-delta { border-color: var(--sc-delta) !important; }
+  .ss-slide img { display: block; width: 100%; height: auto; aspect-ratio: 2 / 1; object-fit: cover; object-position: top; }
+  .ss-slide figcaption { display: flex; align-items: center; gap: 7px; padding: 5px 8px; font-size: 12px; color: var(--sc-ink); min-width: 0; }
+  .ss-slide figcaption > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ss-slide figcaption .sc-dim { font-family: var(--mono); }
+  .ss-slide figcaption .sc-dmark { margin-left: auto; }
+  .sc-delta figcaption > span:nth-child(2) { color: var(--sc-delta-text); }
+  .ss-mid { gap: 10px; }
+  .ss-steps { flex: 1 1 0; }
+  .ss-tgt { flex: 1.1 1 0; }
+  .ss-ops { gap: 8px; }
+  .ss-op { display: flex; flex-direction: column; gap: 1px; }
+  .ss-op .sc-li { font-size: 12px; }
+  .ss-sub { font-size: 12px; color: var(--sc-dim); padding-left: 22px; }
+  .ss-notes { display: flex; flex-direction: column; gap: 2px; padding: 6px 9px; border-left: 2px solid var(--sc-line-2); font-size: 12.5px; color: var(--sc-muted); }
+  .ss-notes .sc-mono { font-size: 11.5px; }
+  .ss-v { width: 64px; }
+  .ss-fine { font-weight: 400; }
+  .ss-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .ss-hit { gap: 14px; align-items: center; }
+  .ss-hit-img { flex: 0 0 200px; width: 200px; height: auto; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; border-radius: 7px; border: 1px solid var(--sc-line-2); }
+  .ss-hit-b { gap: 8px; }
+  .ss-hit-b .sc-mono { color: var(--sc-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ss-hit-b .sc-quote { margin: 0; }
+  .ss-player { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 6px; background: #0A0A0A; border: 1px solid var(--sc-line-2); border-radius: 999px; min-width: 0; }
+  .ss-player .sc-mono { flex: none; font-size: 11.5px; }
+  .ss-play { flex: none; position: relative; width: 24px; height: 24px; border-radius: 50%; background: var(--sc-ink); }
+  .ss-play::after { content: ""; position: absolute; left: 9px; top: 7px; border-style: solid; border-width: 5px 0 5px 8px; border-color: transparent transparent transparent #0A0A0A; }
+  .ss-track { flex: 1 1 auto; min-width: 24px; height: 2px; border-radius: 1px; background: var(--sc-line-2); }
+  @container (max-width: 560px) {
+    .ss-hit-img { flex: none; width: 100%; aspect-ratio: 2 / 1; }
+    .ss-slide figcaption { padding: 4px 6px; }
+    .ss-slide figcaption > span:nth-child(2) { display: none; }
+    .ss-player .sc-mono { display: none; }
+  }
+
+  .ss-card { height: 100%; display: flex; align-items: center; }
+  .ss-card > .sc-row { width: 100%; align-items: center; }
+  .ss-cslide { flex: 0 0 168px; width: 168px; height: auto; aspect-ratio: 4 / 3; object-fit: cover; object-position: top; border-radius: 6px; border: 1px solid var(--sc-line-2); }
+  .ss-cout { gap: 5px; }
+  .ss-card .ss-player { padding: 4px 8px 4px 4px; }
+  .ss-card .ss-play { width: 20px; height: 20px; }
+  .ss-card .ss-play::after { left: 7px; top: 5px; }
+</style>

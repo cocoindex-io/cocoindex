@@ -1,0 +1,10 @@
+{
+  "alt": "Four photos in img/ are embedded by vidore/colpali-v1.2 into bags of 128-d patch vectors and stored in the ImageSearchColpali multivector collection in Qdrant with the max_sim comparator; a newly added cat1.jpeg is indexed live, and the query \"long neck\" is matched token against patch to return img/giraffe.jpg.",
+  "needs": ["Docker (for Qdrant)", "Python 3.11+", "Node.js (for the React frontend)"],
+  "run": [
+    { "note": "Start Qdrant", "cmd": "docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Start the API; it indexes img/ live before it serves", "cmd": "python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000" },
+    { "note": "In a second terminal, open the search UI at http://localhost:5173", "cmd": "cd frontend && npm install && npm run dev" }
+  ]
+}

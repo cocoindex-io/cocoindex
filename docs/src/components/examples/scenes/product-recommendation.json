@@ -1,0 +1,10 @@
+{
+  "alt": "A product listing, products/p1.json for Pilot G2 gel pens, goes through an instructor + LiteLLM extraction that returns what it is (gel pen) and what pairs with it (ink refill, notebook); Neo4j stores Product and Taxonomy nodes joined by PRODUCT_TAXONOMY and PRODUCT_COMPLEMENTARY_TAXONOMY edges, editing p4.json re-derives only the notepad's node and edge, and a Cypher query that recommends for a gel pen returns the spiral notepad and the multi-purpose paper.",
+  "needs": ["Docker (for Neo4j)", "Python 3.11+", "OPENAI_API_KEY (or a local Ollama model)"],
+  "run": [
+    { "note": "Start Neo4j", "cmd": "docker run -d -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/cocoindex --name cocoindex-neo4j neo4j:5.26-community" },
+    { "note": "Configure (set OPENAI_API_KEY) and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Build the graph from products/", "cmd": "cocoindex update main" },
+    { "note": "Explore it in Neo4j Browser (neo4j / cocoindex)", "cmd": "open http://localhost:7474" }
+  ]
+}

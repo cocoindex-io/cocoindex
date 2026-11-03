@@ -1,0 +1,151 @@
+---
+// The form is read as pictures. Each page of
+// data/patient_forms/Patient_Intake_Form_Emily_Artificial.pdf (3 pages; the
+// lines drawn are that page's real text) is rendered with
+// pymupdf.Matrix(2, 2) to a PNG dspy.Image; PatientExtractor runs
+// dspy.ChainOfThought(PatientExtractionSignature) on gemini/gemini-2.5-flash,
+// so the model reasons before it fills the typed OutputField `patient: Patient`
+// (models.py). Values are the ones printed on the form; dob is datetime.date in
+// the Pydantic model, so 07/22/1992 serializes as 1992-07-22. Emily's form is
+// the edited one (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="pd">
+    <div class="sc-row pd-top">
+      <div class="sc-col pd-src">
+        <span class="sc-cap">Each page rendered at Matrix(2, 2)</span>
+        <div class="sc-panel sc-delta">
+          <div class="sc-panel-h"><span class="sc-ico i-pdf"></span><span class="pd-path">Patient_Intake_Form_Emily_Artificial.pdf</span><span class="sc-dmark">Δ</span></div>
+          <div class="pd-pages">
+            <div class="pd-page">
+              <span class="pd-ph">Patient Intake Form</span>
+              <span class="pd-pl">Name: Emily Carter</span>
+              <span class="pd-pl">DOB (MM/DD/YYYY): 07/22/1992</span>
+              <span class="pd-pl">Address: 456 Oak Avenue</span>
+              <span class="pd-pl">City: Denver</span>
+                            <span class="pd-pn">page 1 · png</span>
+            </div>
+            <div class="pd-page">
+              <span class="pd-ph">Medical History Summary</span>
+              <span class="pd-pl">Asthma</span>
+              <span class="pd-pl">Albuterol inhaler</span>
+              <span class="pd-pl">Penicillin</span>
+              <span class="pd-pl">Tonsillectomy (2000)</span>
+                            <span class="pd-pn">page 2 · png</span>
+            </div>
+            <div class="pd-page">
+              <span class="pd-ph">Consent &amp; Signature</span>
+              <span class="pd-pl">Signature: Emily Carter</span>
+              <span class="pd-pl">Date: 03/25/2025</span>
+              <span class="pd-pn">page 3 · png</span>
+            </div>
+          </div>
+        </div>
+        <span class="sc-cap pd-fine">list[dspy.Image], no OCR, no Markdown step</span>
+      </div>
+    </div>
+
+    <div class="sc-row pd-mod">
+      <div class="sc-col pd-flow">
+        <span class="sc-cap">dspy.ChainOfThought(PatientExtractionSignature)</span>
+        <div class="sc-row pd-chain">
+          <div class="sc-panel pd-step">
+            <div class="sc-panel-h">InputField</div>
+            <div class="sc-panel-b"><span class="sc-mono">form_images:</span><span class="sc-mono sc-muted">list[dspy.Image]</span></div>
+          </div>
+          <span class="sc-to"></span>
+          <div class="sc-panel pd-step pd-think">
+            <div class="sc-panel-h"><span class="sc-ico i-model"></span>gemini/gemini-2.5-flash</div>
+            <div class="sc-panel-b"><span class="sc-mono">reasoning</span><span class="sc-quote pd-fine">thinks over the dense, checkbox-heavy pages first</span></div>
+          </div>
+          <span class="sc-to"></span>
+          <div class="sc-panel pd-step">
+            <div class="sc-panel-h">OutputField</div>
+            <div class="sc-panel-b"><span class="sc-mono">patient:</span><span class="sc-mono sc-muted">Patient</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pd-out">
+      <span class="sc-cap">A validated Patient, one JSON file per form</span>
+      <div class="sc-panel sc-delta">
+        <div class="sc-panel-h"><span class="sc-ico i-json"></span><span class="pd-path">output_patients/Patient_Intake_Form_Emily_Artificial.json</span></div>
+        <table class="sc-table pd-table">
+          <thead><tr><th class="pd-f">field</th><th class="pd-t">type</th><th>value</th></tr></thead>
+          <tbody>
+            <tr><td class="pd-f">name</td><td class="sc-dim pd-t">str</td><td>"Emily Carter"</td></tr>
+            <tr><td class="pd-f">dob</td><td class="sc-dim pd-t">datetime.date</td><td>"1992-07-22"</td></tr>
+            <tr><td class="pd-f">address.city</td><td class="sc-dim pd-t">str</td><td>"Denver"</td></tr>
+            <tr><td class="pd-f">allergies</td><td class="sc-dim pd-t">list[Allergy]</td><td>[&#123;"name": "Penicillin"&#125;]</td></tr>
+            <tr><td class="pd-f">surgeries</td><td class="sc-dim pd-t">list[Surgery]</td><td>[&#123;"name": "Tonsillectomy", "date": "2000"&#125;]</td></tr>
+            <tr><td class="pd-f">occupation</td><td class="sc-dim pd-t">str | None</td><td>"Graphic Designer"</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sc-quote pd-note">The date on the form comes back as a real date. Edit a form and only its JSON is re-extracted.</p>
+    </div>
+  </div>
+) : (
+  <div class="pd-card">
+    <div class="sc-row sc-keep">
+      <div class="pd-pages is-card">
+        <div class="pd-page"><span class="pd-ph">page 1</span><span class="pd-pl">Emily Carter</span><span class="pd-pl">07/22/1992</span></div>
+        <div class="pd-page"><span class="pd-ph">page 2</span><span class="pd-pl">Asthma</span><span class="pd-pl">Penicillin</span></div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col pd-card-out">
+        <span class="sc-chip is-strong pd-card-chip">ChainOfThought</span>
+        <div class="sc-panel"><div class="sc-panel-b">
+          <span class="sc-li"><span class="sc-dim">name</span><span>Emily Carter</span></span>
+          <span class="sc-li"><span class="sc-dim">dob</span><span>1992-07-22</span></span>
+          <span class="sc-li"><span class="sc-dim">allergies</span><span>Penicillin</span></span>
+        </div></div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .pd { display: flex; flex-direction: column; gap: 18px; }
+  .pd-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .pd-src .sc-dmark { margin-left: auto; }
+  .pd-fine { font-weight: 400; }
+  .pd-pages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 12px; }
+  .pd-page { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 150px; padding: 10px 10px 24px; background: #161616; border: 1px solid var(--sc-line-2); border-radius: 3px; }
+  .pd-ph { font-size: 12px; font-weight: 600; color: var(--sc-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pd-pl { font-size: 11.5px; color: var(--sc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pd-pn { position: absolute; left: 10px; bottom: 7px; font-family: var(--mono); font-size: 11px; color: var(--sc-dim); }
+  .pd-mod { padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pd-chain { gap: 10px; }
+  .pd-step { flex: 1 1 0; }
+  .pd-think { flex: 1.3 1 0; border-color: var(--sc-line-2); }
+  .pd-step .sc-panel-b .sc-mono { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pd-step .sc-panel-h { font-family: var(--sans); }
+  .pd-think .sc-panel-h { font-family: var(--mono); }
+  .pd-out { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pd-f { width: 116px; }
+  .pd-t { width: 120px; }
+  .pd-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+  @container (max-width: 560px) {
+    .pd-pages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pd-pages > .pd-page:last-child { display: none; }
+    .pd-t { display: none; }
+    .pd-step, .pd-think { flex: none; }
+    .pd-flow > .sc-cap { overflow-wrap: anywhere; }
+  }
+  @container (max-width: 420px) {
+    .pd-pages { grid-template-columns: minmax(0, 1fr); }
+    .pd-page { min-height: 0; }
+  }
+  .pd-card { height: 100%; display: flex; align-items: center; }
+  .pd-card > .sc-row { width: 100%; align-items: center; }
+  .pd-pages.is-card { flex: 1 1 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 0; }
+  .pd-pages.is-card .pd-page { min-height: 112px; padding: 7px 7px; gap: 3px; }
+  .pd-pages.is-card .pd-ph, .pd-pages.is-card .pd-pl { font-size: 11px; }
+  .pd-pages.is-card .pd-ph { font-family: var(--mono); font-weight: 400; color: var(--sc-dim); }
+  .pd-card-out { flex: 1 1 0; gap: 6px; align-items: flex-start; }
+  .pd-card-out .sc-panel { align-self: stretch; }
+</style>

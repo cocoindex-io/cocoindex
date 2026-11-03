@@ -1,0 +1,150 @@
+---
+// HackerNews threads in, ranked topics out. The source is two plain async
+// functions over the Algolia HN API (latest MAX_THREADS = 10 stories and their
+// comment trees); extract_topics runs litellm with the TopicsResponse schema
+// (models.py), whose prompt examples are the normalizations shown; rows go to
+// coco_examples.hn_topics keyed on (topic, message_id); `python main.py` prints
+// "Top 20 Trending Topics:" ordered by a SQL score where a thread mention
+// weighs more than a comment mention. The example ships no sample thread and
+// no recorded output, so the ranking shows order only, with topic names taken
+// from the prompt's examples. A new story in the feed is the change (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="hn">
+    <div class="sc-row hn-top">
+      <div class="sc-col hn-src">
+        <span class="sc-cap">Algolia HN API</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>latest stories</div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-stream"></span><span>story</span></div>
+            <div class="sc-li hn-in"><span>comment</span></div>
+            <div class="sc-li hn-in"><span>comment</span></div>
+            <div class="sc-li"><span class="sc-ico i-stream"></span><span>story</span></div>
+            <div class="sc-li hn-in"><span>comment</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-stream"></span><span>new story</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <span class="sc-cap hn-fine">MAX_THREADS = 10, comment trees flattened</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col hn-mid">
+        <span class="sc-cap">extract_topics, per message</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-model"></span>litellm · TopicsResponse</div>
+          <div class="sc-panel-b hn-rules">
+            <div class="hn-rule">
+              <span class="hn-from">“local Large Language Model”</span>
+              <span class="hn-tops"><span class="sc-chip">local Large Language Model</span><span class="sc-chip">Large Language Model</span></span>
+            </div>
+            <div class="hn-rule">
+              <span class="hn-from">“books for autistic kids”</span>
+              <span class="hn-tops"><span class="sc-chip">book</span><span class="sc-chip">autistic</span><span class="sc-chip">autistic kids</span></span>
+            </div>
+            <div class="hn-rule">
+              <span class="hn-from">one person, two names</span>
+              <span class="hn-tops"><span class="sc-chip">John Kennedy</span><span class="sc-chip">JFK</span></span>
+            </div>
+          </div>
+        </div>
+        <span class="sc-cap hn-fine">Normalization rules from the schema’s prompt</span>
+      </div>
+    </div>
+
+    <div class="sc-row hn-bottom">
+      <div class="sc-col hn-tables">
+        <span class="sc-cap">Postgres</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>coco_examples.hn_topics</div>
+          <div class="sc-panel-b hn-cols">
+            <span class="sc-mono"><b>topic</b>, <b>message_id</b> <span class="sc-dim">key</span></span>
+            <span class="sc-mono sc-muted">thread_id, content_type, created_at</span>
+            <div class="sc-li sc-delta hn-new"><span class="sc-quote">topic rows for the new story</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>coco_examples.hn_messages</div>
+          <div class="sc-panel-b hn-cols">
+            <span class="sc-mono sc-muted">id, thread_id, content_type, author, text, url, created_at</span>
+          </div>
+        </div>
+        <p class="sc-quote hn-note">A new story adds its own rows. Messages already extracted are not sent to the LLM again.</p>
+      </div>
+      <div class="sc-col hn-rank">
+        <span class="sc-cap">What’s trending</span>
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py</span></div>
+        <div class="sc-panel">
+          <div class="sc-panel-h">Top 20 Trending Topics:</div>
+          <div class="sc-panel-b hn-list">
+            <div class="sc-hit"><span class="r">1.</span><span class="sc-mono">Claude</span></div>
+            <div class="sc-hit"><span class="r">2.</span><span class="sc-mono">PostgreSQL</span></div>
+            <div class="sc-hit"><span class="r">3.</span><span class="sc-mono">Large Language Model</span></div>
+            <div class="sc-hit"><span class="r">4.</span><span class="sc-mono">React</span></div>
+            <div class="sc-hit hn-more"><span class="r"></span><span class="sc-dim">…</span></div>
+          </div>
+        </div>
+        <span class="sc-cap hn-fine">A thread mention scores higher than a comment mention.</span>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="hn-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel hn-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>HN stories</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-stream"></span><span>story</span></div>
+          <div class="sc-li hn-in"><span>comment</span></div>
+          <div class="sc-li hn-in"><span>comment</span></div>
+          <div class="sc-li sc-delta"><span class="sc-ico i-stream"></span><span>new story</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel hn-card-out">
+        <div class="sc-panel-h">Top 20 Trending Topics:</div>
+        <div class="sc-panel-b">
+          <span class="sc-li"><span class="sc-dim">1.</span><span>Claude</span></span>
+          <span class="sc-li"><span class="sc-dim">2.</span><span>PostgreSQL</span></span>
+          <span class="sc-li"><span class="sc-dim">3.</span><span>Large Language Model</span></span>
+          <span class="sc-li"><span class="sc-dim">4.</span><span>React</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .hn { display: flex; flex-direction: column; gap: 18px; }
+  .hn-top, .hn-bottom { gap: 10px; }
+  .hn-src { flex: 0.8 1 0; }
+  .hn-mid { flex: 1.3 1 0; }
+  .hn .sc-li { font-size: 12px; }
+  .hn-in { padding-left: 28px; color: var(--sc-muted); }
+  .hn-fine { font-weight: 400; }
+  .hn-rules { gap: 0; padding: 4px 10px; }
+  .hn-rule { display: flex; flex-direction: column; gap: 5px; padding: 7px 0; border-top: 1px solid var(--sc-line); min-width: 0; }
+  .hn-rule:first-child { border-top: 0; }
+  .hn-from { font-size: 12.5px; color: var(--sc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hn-tops { display: flex; flex-wrap: wrap; gap: 5px; }
+  .hn-tops .sc-chip { color: var(--sc-ink); max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .hn-bottom { padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .hn-tables { flex: 1.1 1 0; }
+  .hn-rank { flex: 1 1 0; }
+  .hn-cols { gap: 3px; }
+  .hn-cols .sc-mono { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hn-cols b { font-weight: 500; color: var(--sc-ink); }
+  .hn-new { margin-top: 4px; }
+  .hn-new .sc-quote { font-size: 12px; color: var(--sc-delta-text); }
+  .hn-note { margin: 2px 0 0; font-size: 12px; color: var(--sc-dim); }
+  .hn-list { gap: 0; padding-top: 2px; padding-bottom: 2px; }
+  .hn-list .sc-hit { padding: 5px 0; }
+  .hn-list .sc-mono { font-size: 12.5px; }
+  .hn-more { padding: 2px 0 !important; }
+  .hn-card { height: 100%; display: flex; align-items: center; }
+  .hn-card > .sc-row { width: 100%; align-items: center; }
+  .hn-card-src { flex: 0.9 1 0; }
+  .hn-card-out { flex: 1.1 1 0; }
+  .hn-card .hn-in { padding-left: 23px; }
+</style>
