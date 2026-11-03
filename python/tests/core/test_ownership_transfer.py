@@ -729,10 +729,10 @@ def test_bulk_ownership_transfer_keeps_the_old_owners_other_items() -> None:
     }
     assert common.list_target_state_owners_sync(app) == {
         **{
-            f'/@test_target_state/global_dict/"{key}"': coco.ROOT_PATH / "B"
+            f'/@"test_target_state/global_dict"/"{key}"': coco.ROOT_PATH / "B"
             for key in moved
         },
-        '/@test_target_state/global_dict/"keep"': coco.ROOT_PATH / "A",
+        '/@"test_target_state/global_dict"/"keep"': coco.ROOT_PATH / "A",
     }
 
     # Run 3: unmount both. A must still track "keep" to delete it.
