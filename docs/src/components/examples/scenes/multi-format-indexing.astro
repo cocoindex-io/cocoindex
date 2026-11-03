@@ -1,0 +1,155 @@
+---
+// Multi-format visual search: source_files/ mixes a PDF (the BERT paper, 16
+// pages per the README) with three report-page images. file_to_pages renders
+// each PDF page with pdf2image and keeps an image as one page (page = None);
+// every page is embedded with vidore/colpali-v1.2 into the Qdrant collection
+// MultiFormatIndexing (max_sim). The README's query "revenue growth" ranks the
+// Sweetgreen then Restaurant Brands pages first, above the healthcare page.
+// restaurant_brands_international_2023.jpg is the added file (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+const B = '/docs/img/examples/scenes/multi-format-indexing';
+---
+{size === 'hero' ? (
+  <div class="mf">
+    <div class="sc-row mf-top">
+      <div class="sc-col mf-src">
+        <span class="sc-cap">source_files/, split into pages by file_to_pages</span>
+        <div class="mf-tiles">
+          <div class="mf-tile">
+            <div class="mf-fan">
+              <img src={`${B}/bert-p1.webp`} width="200" height="282" alt="" loading="lazy" decoding="async" />
+              <img src={`${B}/bert-p2.webp`} width="200" height="282" alt="" loading="lazy" decoding="async" />
+              <img src={`${B}/bert-p3.webp`} width="200" height="282" alt="" loading="lazy" decoding="async" />
+            </div>
+            <span class="mf-name"><span class="sc-ico i-pdf"></span><span>1810.04805v2.pdf</span></span>
+            <span class="mf-sub">16 pages, each rendered at 200 dpi</span>
+          </div>
+          <div class="mf-tile">
+            <img class="mf-shot" src={`${B}/healthcare_industry_test_p9.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
+            <span class="mf-name"><span class="sc-ico i-image"></span><span>healthcare_industry_test_p9.jpg</span></span>
+            <span class="mf-sub">one page</span>
+          </div>
+          <div class="mf-tile sc-delta">
+            <img class="mf-shot" src={`${B}/restaurant_brands_international_2023.webp`} width="360" height="231" alt="" loading="lazy" decoding="async" />
+            <span class="mf-name"><span class="sc-ico i-image"></span><span class="sc-dtext">restaurant_brands_international_2023.jpg</span></span>
+            <span class="sc-dmark mf-mark">Δ</span>
+          </div>
+          <div class="mf-tile">
+            <img class="mf-shot" src={`${B}/sweetgreen_2023.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
+            <span class="mf-name"><span class="sc-ico i-image"></span><span>sweetgreen_2023.jpg</span></span>
+            <span class="mf-sub">one page</span>
+          </div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col mf-tgt">
+        <span class="sc-cap">Embed every page, store a point</span>
+        <span class="sc-chip is-strong mf-model"><span class="sc-ico i-model"></span>vidore/colpali-v1.2</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-db"></span>MultiFormatIndexing</div>
+          <table class="sc-table">
+            <thead><tr><th>filename</th><th class="mf-n">page</th></tr></thead>
+            <tbody>
+              <tr><td>1810.04805v2.pdf</td><td class="sc-dim mf-n">1</td></tr>
+              <tr><td>1810.04805v2.pdf</td><td class="sc-dim mf-n">2</td></tr>
+              <tr><td class="sc-dim">⋮</td><td class="sc-dim mf-n">16</td></tr>
+              <tr><td>healthcare_industry_test_p9.jpg</td><td class="sc-dim mf-n">None</td></tr>
+              <tr class="sc-delta"><td><span class="sc-dtext">restaurant_brands_international_2023.jpg</span></td><td class="mf-n"><span class="sc-dtext">None</span></td></tr>
+              <tr><td>sweetgreen_2023.jpg</td><td class="sc-dim mf-n">None</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <span class="sc-cap mf-fine">Multi-vector points, scored with max_sim. Pages from PDFs and images share one collection.</span>
+      </div>
+    </div>
+
+    <div class="mf-search">
+      <span class="sc-cap">Search across formats, no OCR</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "revenue growth"</span></div>
+      <div class="sc-row mf-hits">
+        <figure class="mf-hit">
+          <img src={`${B}/sweetgreen_2023.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
+          <figcaption><span class="r">1</span><span>sweetgreen_2023.jpg</span></figcaption>
+        </figure>
+        <figure class="mf-hit">
+          <img src={`${B}/restaurant_brands_international_2023.webp`} width="360" height="231" alt="" loading="lazy" decoding="async" />
+          <figcaption><span class="r">2</span><span>restaurant_brands_international_2023.jpg</span></figcaption>
+        </figure>
+        <figure class="mf-hit is-low">
+          <img src={`${B}/healthcare_industry_test_p9.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
+          <figcaption><span>healthcare_industry_test_p9.jpg</span></figcaption>
+        </figure>
+      </div>
+      <p class="sc-quote mf-note">The two financial-report pages rank first, <b>above the unrelated healthcare page</b>, matched against each page's best patches with zero text extraction.</p>
+    </div>
+  </div>
+) : (
+  <div class="mf-card">
+    <div class="sc-row sc-keep">
+      <div class="mf-cin">
+        <div class="mf-cfan">
+          <img src={`${B}/bert-p1.webp`} width="200" height="282" alt="" loading="lazy" decoding="async" />
+          <img src={`${B}/bert-p2.webp`} width="200" height="282" alt="" loading="lazy" decoding="async" />
+        </div>
+        <img class="mf-cimg" src={`${B}/healthcare_industry_test_p9.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col mf-cout">
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>"revenue growth"</span></div>
+        <div class="mf-chit">
+          <img src={`${B}/sweetgreen_2023.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
+          <span class="sc-mono">1 · sweetgreen_2023.jpg</span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .mf { display: flex; flex-direction: column; gap: 18px; }
+  .mf-top { gap: 10px; }
+  .mf-src { flex: 1.2 1 0; }
+  .mf-tgt { flex: 1 1 0; }
+  .mf .sc-li { font-size: 12px; }
+  .mf-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .mf-tile { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 6px; min-width: 0; background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: 7px; }
+  .mf-tile.sc-delta { border-color: var(--sc-delta) !important; }
+  .mf-fan { display: flex; gap: 3px; height: 66px; overflow: hidden; }
+  .mf-fan img { display: block; height: 66px; width: auto; aspect-ratio: 200 / 282; border-radius: 2px; }
+  .mf-shot { display: block; width: 100%; height: 66px; object-fit: cover; object-position: left top; border-radius: 3px; }
+  .mf-name { display: flex; align-items: flex-start; gap: 6px; font-family: var(--mono); font-size: 11.5px; line-height: 1.35; color: var(--sc-ink); min-width: 0; }
+  .mf-name > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+  .mf-name .sc-ico { margin-top: 1px; }
+  .mf-mark { position: absolute; top: 10px; right: 10px; }
+  .mf-sub { font-size: 11.5px; color: var(--sc-dim); }
+  .mf-model { align-self: flex-start; color: var(--sc-ink); }
+  .mf-n { width: 52px; text-align: right; }
+  .mf-fine { font-weight: 400; }
+  .mf-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .mf-hits { gap: 8px; }
+  .mf-hit { flex: 1 1 0; min-width: 0; margin: 0; border: 1px solid var(--sc-line-2); border-radius: 8px; overflow: hidden; background: var(--sc-panel); }
+  .mf-hit img { display: block; width: 100%; height: 96px; object-fit: cover; object-position: left top; }
+  .mf-hit figcaption { display: flex; gap: 8px; padding: 6px 9px; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); min-width: 0; }
+  .mf-hit figcaption > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mf-hit .r { color: var(--sc-dim); }
+  .mf-note { margin: 0; }
+  @container (max-width: 560px) {
+    .mf-hit { flex: none; }
+    .mf-hit img { height: 72px; }
+  }
+  .mf-hit.is-low { border-color: var(--sc-line); }
+  .mf-hit.is-low img { opacity: 0.5; }
+  .mf-hit.is-low figcaption { color: var(--sc-dim); }
+
+  .mf-card { height: 100%; display: flex; align-items: center; }
+  .mf-card > .sc-row { width: 100%; align-items: center; }
+  .mf-cin { flex: 0 0 128px; display: flex; flex-direction: column; gap: 5px; }
+  .mf-cfan { display: flex; gap: 4px; }
+  .mf-cfan img { display: block; width: 50%; min-width: 0; height: auto; aspect-ratio: 200 / 282; border-radius: 3px; border: 1px solid var(--sc-line); }
+  .mf-cimg { display: block; width: 100%; height: 40px; object-fit: cover; object-position: left top; border-radius: 4px; border: 1px solid var(--sc-line); }
+  .mf-cout { gap: 6px; }
+  .mf-chit { border: 1px solid var(--sc-line-2); border-radius: 6px; overflow: hidden; background: var(--sc-panel); }
+  .mf-chit img { display: block; width: 100%; height: 66px; object-fit: cover; object-position: left top; }
+  .mf-chit .sc-mono { display: block; padding: 3px 7px; color: var(--sc-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>

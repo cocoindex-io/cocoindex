@@ -10,7 +10,7 @@ import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/redirects.ts';
 // One shared Shiki theme (the readability-tuned --code-* palette) so docs and
 // blog highlight code identically — single source of truth (GUIDELINE §5.5).
-import { cocoindexCodeTheme } from '@cocoindex/brand/code-theme';
+import { docsCodeTheme } from './scripts/code-theme.mjs';
 
 // V1 docs are served from https://cocoindex.io/docs/, matching the
 // Docusaurus URLs on the v1 branch (`baseUrl: '/docs/'` in
@@ -56,7 +56,7 @@ export default defineConfig({
   ],
   markdown: {
     remarkPlugins,
-    shikiConfig: { theme: cocoindexCodeTheme, wrap: false },
+    shikiConfig: { theme: docsCodeTheme, wrap: false },
   },
   redirects,
   // Vite's default envPrefix is `VITE_`; Astro adds `PUBLIC_`. We also

@@ -1,0 +1,146 @@
+---
+// Kafka to LanceDB: JSON messages on cocoindex-csv-rows (the rows that
+// csv_to_kafka produces from products.csv and employees.csv) dispatched by
+// shape: "sku" in row -> the products table, "emp_id" in row -> employees.
+// A new SKU003 message updates its row in place (Δ, keyed by sku); live mode
+// keeps consuming. The payoff is the README's read-back, with price now a float.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+const msgs = [
+  { key: 'SKU001', val: '{"sku": "SKU001", "name": "Wireless Mouse", …}' },
+  { key: 'E101', val: '{"emp_id": "E101", "first_name": "Alice", …}' },
+  { key: 'SKU002', val: '{"sku": "SKU002", "name": "Mechanical Keyboard", …}' },
+  { key: 'E102', val: '{"emp_id": "E102", "first_name": "Bob", …}' },
+  { key: 'SKU004', val: '{"sku": "SKU004", "name": "Monitor Stand", …}' },
+  { key: 'E103', val: '{"emp_id": "E103", "first_name": "Carol", …}' },
+  { key: 'SKU003', val: '{"sku": "SKU003", "name": "USB-C Hub", …}', delta: true },
+];
+---
+{size === 'hero' ? (
+  <div class="kl">
+    <div class="kl-head">
+      <span class="sc-live"><span>cocoindex update -L main.py, consuming as group kafka-to-lancedb</span></span>
+    </div>
+
+    <div class="sc-row kl-main">
+      <div class="sc-col kl-topic">
+        <span class="sc-cap">Kafka topic</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-stream"></span><span class="sc-t">cocoindex-csv-rows</span></div>
+          <div class="sc-panel-b kl-msgs">
+            {msgs.map((m) => (
+              <div class={m.delta ? 'kl-msg sc-delta' : 'kl-msg'}>
+                <span class={m.delta ? 'kl-key sc-dtext' : 'kl-key'}>{m.key}</span>
+                <span class="kl-val">{m.val}</span>
+                {m.delta && <span class="sc-dmark">Δ</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+        <span class="sc-cap kl-fine">Produced by the csv-to-kafka example</span>
+      </div>
+
+      <span class="sc-to"></span>
+
+      <div class="sc-col kl-out">
+        <span class="sc-cap kl-route"><span class="sc-chip">"sku" in row</span><span class="sc-to kl-mini"></span>LanceDB table</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">products</span></div>
+          <table class="sc-table">
+            <thead><tr><th class="kl-id">sku</th><th>name</th><th class="kl-p">price</th></tr></thead>
+            <tbody>
+              <tr><td class="kl-id">SKU001</td><td>Wireless Mouse</td><td class="kl-p">29.99</td></tr>
+              <tr><td class="kl-id">SKU002</td><td>Mechanical Keyboard</td><td class="kl-p">89.99</td></tr>
+              <tr class="sc-delta"><td class="kl-id"><span class="sc-dtext">SKU003</span></td><td>USB-C Hub</td><td class="kl-p">45.0</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <span class="sc-cap kl-route"><span class="sc-chip">"emp_id" in row</span><span class="sc-to kl-mini"></span>LanceDB table</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">employees</span></div>
+          <table class="sc-table">
+            <thead><tr><th class="kl-id">emp_id</th><th>first_name</th><th>department</th></tr></thead>
+            <tbody>
+              <tr><td class="kl-id">E101</td><td>Alice</td><td>Engineering</td></tr>
+              <tr><td class="kl-id">E102</td><td>Bob</td><td>Marketing</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="kl-read">
+      <span class="sc-cap">Read the tables back from ./lancedb_data</span>
+<pre class="sc-code kl-code">db = lancedb.<span class="f">connect</span>(<span class="s">"./lancedb_data"</span>)
+db.<span class="f">open_table</span>(<span class="s">"products"</span>).<span class="f">to_arrow</span>().<span class="f">to_pylist</span>()
+<span class="c">{"# {'sku': 'SKU001', 'name': 'Wireless Mouse', 'category': 'Electronics', 'price': 29.99}"}</span></pre>
+      <p class="sc-quote kl-note">Re-consuming a key updates its row in place instead of adding a duplicate.</p>
+    </div>
+  </div>
+) : (
+  <div class="kl-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel kl-card-topic">
+        <div class="sc-panel-h"><span class="sc-ico i-stream"></span><span class="sc-t">cocoindex-csv-rows</span></div>
+        <div class="sc-panel-b">
+          <span class="sc-li"><span>{'{"sku": "SKU001", …}'}</span></span>
+          <span class="sc-li"><span>{'{"emp_id": "E101", …}'}</span></span>
+          <span class="sc-li sc-delta"><span>{'{"sku": "SKU003", …}'}</span></span>
+          <span class="sc-live kl-card-live">live</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col kl-card-out">
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">products</span></div>
+          <div class="sc-panel-b">
+            <span class="sc-li"><span>SKU001</span><span class="sc-meta">Wireless Mouse</span></span>
+            <span class="sc-li sc-delta"><span>SKU003</span><span class="sc-meta">USB-C Hub</span></span>
+          </div>
+        </div>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">employees</span></div>
+          <div class="sc-panel-b">
+            <span class="sc-li"><span>E101</span><span class="sc-meta">Alice</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .sc-panel-h > .sc-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kl { display: flex; flex-direction: column; gap: 14px; }
+  .kl-head { display: flex; min-width: 0; }
+  .kl-head .sc-live { font-family: var(--mono); font-size: 12px; min-width: 0; max-width: 100%; }
+  .kl-head .sc-live::before { flex: none; }
+  .kl-head .sc-live > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kl-main { gap: 10px; }
+  .kl-topic { flex: 1 1 0; }
+  .kl-out { flex: 1.1 1 0; }
+  .kl-fine { font-weight: 400; }
+
+  .kl-msgs { gap: 2px; }
+  .kl-msg { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 6px; margin: 0 -6px; border: 1px solid transparent; border-radius: 6px; font-family: var(--mono); font-size: 12px; }
+  .kl-key { flex: none; width: 52px; color: var(--sc-ink); }
+  .kl-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sc-dim); }
+  .kl-msg .sc-dmark { margin-left: auto; }
+
+  .kl-route { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .kl-route + .sc-panel + .kl-route { margin-top: 4px; }
+  .kl-mini { width: 14px; height: 14px; }
+  .kl-id { width: 72px; }
+  .kl-p { width: 62px; text-align: right; }
+
+  .kl-read { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .kl-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .kl-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+
+  .kl-card { height: 100%; display: flex; align-items: center; }
+  .kl-card > .sc-row { width: 100%; align-items: center; }
+  .kl-card-topic { flex: 1 1 0; }
+  .kl-card-out { flex: 0.9 1 0; gap: 6px; }
+  .kl-card-live { font-size: 11px; margin-top: 2px; }
+</style>

@@ -17,7 +17,7 @@ const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
 ---
 
 <aside class="toc">
-  <h6>On this page</h6>
+  <p class="toc-h">On this page</p>
   <ul>
     {rows.map((h) => (
       <li class={h.depth === 3 ? 'sub' : h.depth === 4 ? 'sub-sub' : ''} data-toc-item>

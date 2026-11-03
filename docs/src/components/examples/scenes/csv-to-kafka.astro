@@ -1,0 +1,136 @@
+---
+// CSV to Kafka: the example's own data/products.csv rows beside the JSON
+// messages process_csv produces to the cocoindex-csv-rows topic. Key = the
+// first column (sku), value = json.dumps(row), so every value is a string.
+// Editing the SKU003 row produces only that key again (Δ); live mode (-L)
+// keeps watching ./data. The payoff is the README's rpk consume command.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+const rows = [
+  ['SKU001', 'Wireless Mouse', 'Electronics', '29.99'],
+  ['SKU002', 'Mechanical Keyboard', 'Electronics', '89.99'],
+  ['SKU003', 'USB-C Hub', 'Accessories', '45.00'],
+  ['SKU004', 'Monitor Stand', 'Furniture', '65.50'],
+  ['SKU005', 'Desk Lamp', 'Furniture', '34.99'],
+];
+const DELTA = 'SKU003';
+const json = (r: string[]) => `{"sku": "${r[0]}", "name": "${r[1]}", "category": "${r[2]}", "price": "${r[3]}"}`;
+const edited = rows.find((r) => r[0] === DELTA)!;
+---
+{size === 'hero' ? (
+  <div class="ck">
+    <div class="ck-head">
+      <span class="sc-live"><span>cocoindex update -L main.py, watching ./data</span></span>
+    </div>
+    <div class="sc-row ck-main">
+      <div class="sc-col ck-src">
+        <span class="sc-cap">CSV rows</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">data/products.csv</span></div>
+          <table class="sc-table ck-csv">
+            <thead><tr><th class="ck-k">sku</th><th>name</th><th class="ck-p">price</th></tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr class={r[0] === DELTA ? 'sc-delta' : undefined}>
+                  <td class="ck-k">{r[0] === DELTA ? <span class="sc-dtext">{r[0]}</span> : r[0]}</td>
+                  <td>{r[1]}</td>
+                  <td class="ck-p">{r[3]}{r[0] === DELTA && <span class="sc-dmark ck-mark">Δ</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div class="sc-li ck-other"><span class="sc-ico i-table"></span><span>data/employees.csv</span><span class="sc-meta">E101 to E104</span></div>
+      </div>
+
+      <span class="sc-to"></span>
+
+      <div class="sc-col ck-topic">
+        <span class="sc-cap">Kafka topic</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-stream"></span><span class="sc-t">cocoindex-csv-rows</span></div>
+          <div class="sc-panel-b ck-msgs">
+            {rows.map((r) => (
+              <div class="ck-msg">
+                <span class="ck-key">{r[0]}</span>
+                <span class="ck-val">{json(r)}</span>
+              </div>
+            ))}
+            <div class="ck-msg sc-delta">
+              <span class="ck-key sc-dtext">{DELTA}</span>
+              <span class="ck-val">{json(edited)}</span>
+              <span class="sc-dmark">Δ</span>
+            </div>
+          </div>
+        </div>
+        <span class="sc-cap ck-fine">key: first column · value: json.dumps(row)</span>
+      </div>
+    </div>
+
+    <div class="ck-read">
+      <span class="sc-cap">Edit a cell in products.csv and only that row is produced again, same key</span>
+      <div class="sc-query"><span class="sc-ico i-stream"></span><span>docker exec redpanda rpk topic consume cocoindex-csv-rows --num 10</span></div>
+<pre class="sc-code ck-out">{'{'}
+  <span class="f">"topic"</span>: <span class="s">"cocoindex-csv-rows"</span>,
+  <span class="f">"key"</span>: <span class="s">"SKU001"</span>,
+  <span class="f">"value"</span>: <span class="s">"{'{'}\"sku\": \"SKU001\", \"name\": \"Wireless Mouse\", \"category\": \"Electronics\", \"price\": \"29.99\"{'}'}"</span>
+{'}'}</pre>
+    </div>
+  </div>
+) : (
+  <div class="ck-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel ck-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">products.csv</span></div>
+        <div class="sc-panel-b">
+          <span class="sc-li"><span>SKU002,Mechanical Keyboard</span></span>
+          <span class="sc-li sc-delta"><span>SKU003,USB-C Hub</span></span>
+          <span class="sc-li"><span>SKU004,Monitor Stand</span></span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel ck-card-topic">
+        <div class="sc-panel-h"><span class="sc-ico i-stream"></span><span class="sc-t">cocoindex-csv-rows</span></div>
+        <div class="sc-panel-b">
+          <span class="sc-li"><span class="ck-key">SKU002</span><span class="sc-dim">{'{"sku": "SKU002", …}'}</span></span>
+          <span class="sc-li sc-delta"><span class="ck-key sc-dtext">SKU003</span><span class="sc-dim">{'{"sku": "SKU003", …}'}</span></span>
+          <span class="sc-live ck-card-live">-L live</span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .sc-panel-h > .sc-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ck { display: flex; flex-direction: column; gap: 14px; }
+  .ck-head { display: flex; align-items: center; min-width: 0; }
+  .ck-head .sc-live { font-family: var(--mono); font-size: 12px; min-width: 0; max-width: 100%; }
+  .ck-head .sc-live::before { flex: none; }
+  .ck-head .sc-live > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ck-main { gap: 10px; }
+  .ck-src { flex: 1 1 0; }
+  .ck-topic { flex: 1.2 1 0; }
+  .ck-csv .ck-k { width: 70px; }
+  .ck-csv .ck-p { width: 82px; text-align: right; }
+  .ck-csv td.ck-p { overflow: visible; }
+  .ck-mark { margin-left: 6px; height: 16px; min-width: 16px; vertical-align: -2px; }
+  .ck-other { margin: 0; color: var(--sc-muted); }
+  .ck-fine { font-weight: 400; }
+
+  .ck-msgs { gap: 2px; }
+  .ck-msg { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 6px; margin: 0 -6px; border: 1px solid transparent; border-radius: 6px; font-family: var(--mono); font-size: 12px; }
+  .ck-key { flex: none; color: var(--sc-ink); }
+  .ck-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sc-dim); }
+  .ck-msg .sc-dmark { margin-left: auto; }
+
+  .ck-read { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .ck-out { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  .ck-card { height: 100%; display: flex; align-items: center; }
+  .ck-card > .sc-row { width: 100%; align-items: center; }
+  .ck-card-src { flex: 0.95 1 0; }
+  .ck-card-topic { flex: 1.05 1 0; }
+  .ck-card .sc-li > span.sc-dim { flex: 1 1 auto; }
+  .ck-card-live { font-size: 11px; margin-top: 2px; }
+</style>

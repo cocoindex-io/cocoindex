@@ -1,0 +1,10 @@
+{
+  "alt": "A folder mixing the BERT paper PDF with three report-page images (one newly added) is split into pages, each PDF page rendered to an image and each image kept as one page, embedded with vidore/colpali-v1.2 and stored as one point per page in the MultiFormatIndexing collection in Qdrant; the query \"revenue growth\" ranks the Sweetgreen and Restaurant Brands pages first, above the healthcare page.",
+  "needs": ["Docker (for Qdrant)", "Python 3.11+", "poppler (for PDF rendering)"],
+  "run": [
+    { "note": "Start Qdrant", "cmd": "docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Render, embed and index every page in source_files/", "cmd": "cocoindex update main" },
+    { "note": "Search across formats", "cmd": "python main.py \"revenue growth\"" }
+  ]
+}

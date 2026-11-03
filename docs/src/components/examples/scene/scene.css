@@ -1,0 +1,162 @@
+/* Scene kit — the visual for each example, drawn in HTML from the example's
+   real inputs and outputs (file names, fields, rows, a query and its hits).
+   Every scene shares these primitives so 32 pictures read as one system.
+
+   Rules (Category Standard):
+   - Ground #0C0C0C inside a hairline frame; panels #111 with a 1px top light.
+   - Text: Geist Sans for captions, Geist Mono for data (file names, fields,
+     values, code). Hero text ≥ 12px, card text ≥ 11px. Sentence case.
+   - Colour: periwinkle (.sc-delta) only marks what changed (the one edited
+     input and the rows it re-derives); green (.sc-live) only marks live mode.
+     Everything else is gray.
+   - No gradients, glows, dot grids, icon tiles, or invented numbers. */
+
+.sc {
+  --sc-ink: #EDEDED; --sc-muted: #A1A1A1; --sc-dim: #8A8A8A;
+  --sc-line: rgba(255, 255, 255, 0.09); --sc-line-2: rgba(255, 255, 255, 0.16);
+  --sc-panel: #111111; --sc-chip: #161616;
+  --sc-delta: #8E96FF; --sc-delta-text: #A3AAFF; --sc-delta-bg: rgba(142, 150, 255, 0.10); --sc-delta-line: rgba(142, 150, 255, 0.40);
+  --sc-live: #3ECF8E;
+  position: relative; margin: 0; overflow: hidden;
+  background: #0C0C0C; border: 1px solid var(--sc-line); border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--sc-ink); font-family: var(--sans); font-size: 13px; line-height: 1.4; letter-spacing: -0.006em;
+  font-variant-numeric: tabular-nums;
+}
+.sc * { box-sizing: border-box; }
+.sc-hero { padding: 22px; }
+.sc-card { height: 176px; padding: 14px; font-size: 12px; border: 0; border-radius: 0; box-shadow: none; border-bottom: 1px solid var(--sc-line); }
+
+/* layout */
+.sc-row { display: flex; align-items: stretch; gap: 12px; min-width: 0; }
+.sc-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1 1 0; }
+.sc-center { align-items: center; justify-content: center; }
+.sc-grow { flex: 1 1 auto; min-width: 0; }
+.sc-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* captions: what a column is (sentence case, sans, tertiary) */
+.sc-cap { font-family: var(--sans); font-size: 12px; font-weight: 500; color: var(--sc-dim); letter-spacing: 0; }
+.sc-card .sc-cap { font-size: 11px; }
+
+/* panels: a framed surface with an optional header (a path, a table name) */
+.sc-panel { background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: 8px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); min-width: 0; overflow: hidden; }
+.sc-panel-h { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--sc-line); font-family: var(--mono); font-size: 12px; color: var(--sc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-panel-b { padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sc-card .sc-panel-h { font-size: 11px; padding: 5px 8px; }
+.sc-card .sc-panel-b { padding: 6px 8px; gap: 3px; }
+
+/* list rows: a file, an object, a message */
+.sc-li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 6px; margin: 0 -6px; border: 1px solid transparent; border-radius: 6px; font-family: var(--mono); font-size: 12.5px; color: var(--sc-ink); }
+.sc-li > span:not(.sc-ico):not(.sc-dmark):not(.sc-meta) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-li .sc-meta { margin-left: auto; padding-left: 8px; font-size: 11.5px; color: var(--sc-dim); white-space: nowrap; }
+.sc-card .sc-li { font-size: 11px; padding: 2px 5px; margin: 0 -5px; gap: 6px; }
+
+/* mono text helpers */
+.sc-mono { font-family: var(--mono); font-size: 12.5px; }
+.sc-card .sc-mono { font-size: 11px; }
+.sc-muted { color: var(--sc-muted); }
+.sc-dim { color: var(--sc-dim); }
+.sc-quote { font-family: var(--sans); font-size: 12.5px; line-height: 1.45; color: var(--sc-muted); }
+.sc-quote b { color: var(--sc-ink); font-weight: 500; }
+.sc-clip2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sc-clip3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* chips: an operation, a model, a field */
+.sc-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 8px; font-family: var(--mono); font-size: 12px; line-height: 1.2; color: var(--sc-muted); background: var(--sc-chip); border: 1px solid var(--sc-line); border-radius: 6px; white-space: nowrap; }
+.sc-chip.is-strong { color: var(--sc-ink); border-color: var(--sc-line-2); }
+.sc-card .sc-chip { font-size: 11px; padding: 3px 6px; }
+
+/* vectors: the first few dimensions, then the size */
+.sc-vec { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-vec b { color: var(--sc-dim); font-weight: 400; }
+
+/* code: a line or two of the example's own Python */
+.sc-code { margin: 0; padding: 8px 10px; font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--sc-ink); background: #0A0A0A; border: 1px solid var(--sc-line); border-radius: 6px; white-space: pre; overflow: hidden; }
+.sc-code .k { color: #8E96FF; } .sc-code .f { color: #79C0FF; } .sc-code .s { color: #9ED9B3; } .sc-code .n { color: #F9C78B; } .sc-code .c { color: #8A8A8A; }
+.sc-card .sc-code { font-size: 11px; padding: 6px 8px; }
+
+/* tables: target rows */
+.sc-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: var(--mono); font-size: 12px; }
+.sc-table th { text-align: left; font-family: var(--sans); font-weight: 500; font-size: 11.5px; color: var(--sc-dim); padding: 6px 8px; border-bottom: 1px solid var(--sc-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-table td { padding: 5px 8px; color: var(--sc-ink); border-bottom: 1px solid var(--sc-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-table tr:last-child td { border-bottom: 0; }
+.sc-table td.sc-dim { color: var(--sc-dim); }
+.sc-card .sc-table { font-size: 11px; }
+.sc-card .sc-table th { font-size: 11px; padding: 4px 6px; }
+.sc-card .sc-table td { padding: 3px 6px; }
+
+/* graph: nodes and labelled edges, laid out by the scene */
+.sc-node { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); background: var(--sc-panel); border: 1px solid var(--sc-line-2); border-radius: 999px; white-space: nowrap; }
+.sc-node.is-doc { border-radius: 6px; }
+.sc-node .sc-kind { font-family: var(--sans); font-size: 11px; color: var(--sc-dim); }
+.sc-edge { font-family: var(--mono); font-size: 11px; color: var(--sc-dim); }
+.sc-card .sc-node { font-size: 11px; padding: 3px 8px; }
+.sc-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.sc-wires path, .sc-wires line { stroke: rgba(255, 255, 255, 0.22); stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.sc-wires .is-delta { stroke: var(--sc-delta); }
+
+/* connectors between columns */
+.sc-to { flex: none; align-self: center; width: 18px; height: 18px; background: var(--sc-dim);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Cpath d='M2 9h13M10.5 4.5 15 9l-4.5 4.5' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Cpath d='M2 9h13M10.5 4.5 15 9l-4.5 4.5' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; }
+.sc-to.is-down { transform: rotate(90deg); }
+.sc-card .sc-to { width: 14px; height: 14px; }
+
+/* query and hits */
+.sc-query { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #0A0A0A; border: 1px solid var(--sc-line-2); border-radius: 8px; font-family: var(--mono); font-size: 12.5px; color: var(--sc-ink); min-width: 0; }
+.sc-query > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-hit { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--sc-line); }
+.sc-hit:first-child { border-top: 0; }
+.sc-hit .r { font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); }
+.sc-hit .src { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); margin-bottom: 2px; }
+.sc-card .sc-query { font-size: 11px; padding: 5px 8px; }
+
+/* change and live marks */
+.sc-delta { background: var(--sc-delta-bg) !important; border-color: var(--sc-delta-line) !important; }
+.sc-delta td { background: var(--sc-delta-bg); }
+.sc-dmark { flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 5px; font-family: var(--mono); font-size: 11px; line-height: 1; color: #0A0A0A; background: var(--sc-delta); }
+.sc-dtext { color: var(--sc-delta-text); }
+.sc-live { display: inline-flex; align-items: center; gap: 6px; font-family: var(--sans); font-size: 12px; color: var(--sc-muted); }
+.sc-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--sc-live); }
+
+/* icons: one stroke family, drawn as masks so they take the text colour */
+.sc-ico { flex: none; width: 14px; height: 14px; background: currentColor; color: var(--sc-dim); -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.sc-card .sc-ico { width: 12px; height: 12px; }
+.i-file { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Cpath d='M4 1.5h5l3 3v10H4z'/%3E%3Cpath d='M9 1.5v3h3'/%3E%3C/svg%3E"); }
+.i-folder { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Cpath d='M1.5 3.5h4.5l1.5 1.5h7v8h-13z'/%3E%3C/svg%3E"); }
+.i-db { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Cellipse cx='8' cy='3.5' rx='5.5' ry='2'/%3E%3Cpath d='M2.5 3.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2'/%3E%3C/svg%3E"); }
+.i-image { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Crect x='1.5' y='2.5' width='13' height='11' rx='1.5'/%3E%3Cpath d='M1.5 11l4-4 3 3 2-2 4 4'/%3E%3Ccircle cx='11' cy='5.5' r='1'/%3E%3C/svg%3E"); }
+.i-audio { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round'%3E%3Cpath d='M2 7v2M5 4.5v7M8 2v12M11 5v6M14 7v2'/%3E%3C/svg%3E"); }
+.i-pdf { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Cpath d='M4 1.5h5l3 3v10H4z'/%3E%3Cpath d='M6 8.5h4M6 11h4M6 6h2'/%3E%3C/svg%3E"); }
+.i-code { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5.5 4.5 2 8l3.5 3.5M10.5 4.5 14 8l-3.5 3.5'/%3E%3C/svg%3E"); }
+.i-stream { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round'%3E%3Cpath d='M2 4.5h12M2 8h12M2 11.5h8'/%3E%3C/svg%3E"); }
+.i-search { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5 14 14'/%3E%3C/svg%3E"); }
+.i-model { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Crect x='3.5' y='3.5' width='9' height='9' rx='1.5'/%3E%3Cpath d='M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2'/%3E%3C/svg%3E"); }
+.i-table { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Crect x='1.5' y='2.5' width='13' height='11' rx='1.5'/%3E%3Cpath d='M1.5 6.5h13M1.5 10h13M6 6.5v7'/%3E%3C/svg%3E"); }
+.i-cloud { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Cpath d='M4.5 12.5a3 3 0 0 1-.4-6 4 4 0 0 1 7.7-.8 3.4 3.4 0 0 1-.3 6.8z'/%3E%3C/svg%3E"); }
+.i-graph { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Ccircle cx='3.5' cy='8' r='2'/%3E%3Ccircle cx='12.5' cy='3.5' r='2'/%3E%3Ccircle cx='12.5' cy='12.5' r='2'/%3E%3Cpath d='M5.3 7.1l5.4-2.7M5.3 8.9l5.4 2.7'/%3E%3C/svg%3E"); }
+.i-json { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5.5 2.5c-1.5 0-2 .7-2 2v1.5c0 1-.7 2-1.5 2 .8 0 1.5 1 1.5 2V11.5c0 1.3.5 2 2 2M10.5 2.5c1.5 0 2 .7 2 2v1.5c0 1 .7 2 1.5 2-.8 0-1.5 1-1.5 2v1.5c0 1.3-.5 2-2 2'/%3E%3C/svg%3E"); }
+.i-video { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Crect x='1.5' y='3' width='13' height='10' rx='1.5'/%3E%3Cpath d='M6.5 6v4l3.5-2z'/%3E%3C/svg%3E"); }
+.i-person { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Ccircle cx='8' cy='5' r='2.8'/%3E%3Cpath d='M2.5 14.5c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5'/%3E%3C/svg%3E"); }
+
+/* the hero is a picture: on narrow screens it may scroll sideways inside its
+   frame rather than squeeze; scenes opt in with .sc-scroll on their root row. */
+.sc-scroll { overflow-x: auto; scrollbar-width: thin; }
+.sc-scroll > * { min-width: 620px; }
+
+/* Narrow hero: rows stack and connectors turn downward. Scenes get this for
+   free by building with .sc-row / .sc-to; mark a row .sc-keep to keep it
+   horizontal (e.g. a short chip line). */
+.sc-hero { container-type: inline-size; }
+@container (max-width: 560px) {
+  .sc-row:not(.sc-keep) { flex-direction: column; }
+  .sc-row:not(.sc-keep) > .sc-to { transform: rotate(90deg); }
+  .sc-hide-narrow { display: none !important; }
+}
+
+/* Kit fixes from the scene authors. */
+.sc code { font: inherit; color: inherit; background: none; border: 0; padding: 0; border-radius: 0; }
+.sc-panel-h > span:not(.sc-ico) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-live::before { flex: none; }
+/* Captions and notes keep a readable measure even in a wide hero. */
+.sc-hero p.sc-quote { max-width: 64ch; }

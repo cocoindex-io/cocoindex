@@ -1,0 +1,124 @@
+---
+// Embed Markdown from Amazon S3: the hero is the bucket. Bucket and prefix
+// come from .env.example (S3_BUCKET=cocoindex-example-data,
+// S3_PREFIX=markdown_files/); the object names are the sample files the
+// other examples ship under markdown_files/. The row filename is the key with
+// the prefix stripped (S3FilePath). Change detection is FileLike's memo
+// state: LastModified first, then the ETag as the content fingerprint. No
+// live mode for amazon_s3, so no green mark: you re-run the catch-up.
+// Target: coco_examples.amazon_s3_doc_embeddings in Postgres + pgvector.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="s3">
+    <div class="s3-bucket">
+      <span class="sc-cap">Amazon S3 bucket</span>
+      <div class="sc-panel">
+        <div class="sc-panel-h s3-crumb"><span class="sc-ico i-cloud"></span><span>cocoindex-example-data</span><span class="s3-sep">/</span><span class="s3-pre">markdown_files/</span></div>
+        <div class="s3-grid s3-th"><span>Key</span><span>On re-run</span></div>
+        <div class="s3-grid"><span class="s3-key"><span class="sc-ico i-file"></span><span><span class="s3-dimkey">markdown_files/</span>1706.03762v7.md</span></span><span class="s3-chk">LastModified same, skipped</span></div>
+        <div class="s3-grid"><span class="s3-key"><span class="sc-ico i-file"></span><span><span class="s3-dimkey">markdown_files/</span>1810.04805v2.md</span></span><span class="s3-chk">LastModified same, skipped</span></div>
+        <div class="s3-grid sc-delta s3-on"><span class="s3-key"><span class="sc-ico i-file"></span><span><span class="s3-dimkey">markdown_files/</span>rfc8259.md</span><span class="sc-dmark">Δ</span></span><span class="s3-chk sc-dtext">new ETag, re-embedded</span></div>
+      </div>
+      <div class="sc-row sc-keep s3-filters">
+        <span class="sc-chip">prefix="markdown_files/"<span class="s3-note">server-side</span></span>
+        <span class="sc-chip">**/*.md<span class="s3-note">glob</span></span>
+      </div>
+    </div>
+
+    <div class="sc-row s3-flow">
+      <div class="sc-col s3-ops">
+        <span class="sc-cap">Same flow as Semantic search 101</span>
+        <div class="sc-stack">
+          <span class="sc-chip"><span class="sc-ico i-code"></span>amazon_s3.list_objects</span>
+          <span class="sc-chip"><span class="sc-ico i-code"></span>RecursiveSplitter</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>all-MiniLM-L6-v2</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col s3-wide">
+        <span class="sc-cap">Postgres + pgvector</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>coco_examples.amazon_s3_doc_embeddings</div>
+          <table class="sc-table">
+            <thead><tr><th>filename</th><th class="s3-n">chunk_start</th></tr></thead>
+            <tbody>
+              <tr><td>1706.03762v7.md</td><td class="sc-dim s3-n">0</td></tr>
+              <tr><td>1810.04805v2.md</td><td class="sc-dim s3-n">0</td></tr>
+              <tr class="sc-delta"><td>rfc8259.md</td><td class="s3-n"><span class="sc-dtext">0</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="s3-search">
+      <span class="sc-cap">Search by meaning</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "what is self-attention?"</span></div>
+      <div class="sc-panel"><div class="sc-panel-b">
+        <div class="sc-hit"><span class="r">1</span><span><span class="src">1706.03762v7.md</span><span class="sc-quote sc-clip2">Figure 3: An example of the attention mechanism following long-distance dependencies in the encoder self-attention in layer 5 of 6.</span></span></div>
+      </div></div>
+      <p class="s3-foot">No live mode for S3: re-run <code>cocoindex update main</code> and only changed objects are read again.</p>
+    </div>
+  </div>
+) : (
+  <div class="s3-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel s3-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>cocoindex-example-data/markdown_files/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>1810.04805v2.md</span></div>
+          <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span><span class="sc-meta">new ETag</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel s3-card-dst">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span>pgvector</div>
+        <div class="sc-panel-b">
+          <span class="sc-mono">amazon_s3_doc_embeddings</span>
+          <span class="sc-cap">one row per chunk</span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .s3 { display: flex; flex-direction: column; gap: 16px; }
+  .s3-bucket { display: flex; flex-direction: column; gap: 8px; }
+  .s3-crumb { gap: 6px; color: var(--sc-ink); }
+  .s3-crumb > span:not(.sc-ico) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .s3-sep { color: var(--sc-dim); }
+  .s3-pre { color: var(--sc-muted); }
+  .s3-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; align-items: center; margin: 0 6px; padding: 5px 6px; border: 1px solid transparent; border-top-color: var(--sc-line); font-family: var(--mono); font-size: 12px; }
+  .s3-grid:last-child { margin-bottom: 6px; }
+  .s3-grid.s3-on { border-radius: 6px; }
+  .s3-th { border-top-color: transparent; font-family: var(--sans); font-size: 11.5px; font-weight: 500; color: var(--sc-dim); }
+  .s3-key { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--sc-ink); }
+  .s3-key > span:not(.sc-ico):not(.sc-dmark) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .s3-dimkey { color: var(--sc-dim); }
+  .s3-chk { font-family: var(--sans); font-size: 12px; color: var(--sc-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .s3-chk.sc-dtext { color: var(--sc-delta-text); }
+  .s3-filters { gap: 8px; flex-wrap: wrap; }
+  .s3-note { font-family: var(--sans); font-size: 11.5px; color: var(--sc-dim); }
+  .s3-flow { gap: 10px; }
+  .s3-ops .sc-stack { align-items: flex-start; }
+  .s3-wide { flex: 1.5 1 0; }
+  .s3-n { width: 100px; text-align: right; }
+  .s3-search { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; border-top: 1px solid var(--sc-line); }
+  .s3-foot { margin: 0; font-size: 12px; line-height: 1.45; color: var(--sc-dim); }
+  .s3-foot code { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); }
+
+  .s3-card { height: 100%; display: flex; align-items: center; }
+  .s3-card { min-width: 0; contain: inline-size; }
+  .s3-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
+  .s3-card-src { flex: 1.35 1 0; }
+  .s3-card-dst { flex: 1 1 0; }
+  .s3-card-dst .sc-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @container (max-width: 560px) {
+    .s3-grid { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .s3-th > span:last-child { display: none; }
+  }
+</style>

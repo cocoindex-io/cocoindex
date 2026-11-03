@@ -1,0 +1,115 @@
+---
+// Semantic search with Qdrant: the hero is the collection. The example ships
+// one sample file (markdown_files/rfc8259.md); each chunk becomes a Qdrant
+// point whose payload holds filename, chunk_start, chunk_end and text, with
+// the vector sized by the embedder (QdrantVectorDef(schema=EMBEDDER)).
+// Offsets are the RecursiveSplitter's real output for rfc8259.md
+// (chunk_size=2000, chunk_overlap=500). The query and its top hit were run
+// against that file with all-MiniLM-L6-v2. The edited point (Δ) is the
+// "7. Strings" chunk: only that point re-embeds.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="qd">
+    <div class="sc-row">
+      <div class="sc-col qd-src">
+        <span class="sc-cap">Source</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <div class="sc-stack qd-ops">
+          <span class="sc-chip"><span class="sc-ico i-code"></span>RecursiveSplitter</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>all-MiniLM-L6-v2</span>
+        </div>
+        <p class="qd-note">Edit one section and only its point is upserted again.</p>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col qd-wide">
+        <span class="sc-cap">Qdrant collection, over gRPC on :6334</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-db"></span>TextEmbedding<span class="qd-h-meta">points</span></div>
+          <div class="qd-point">
+            <div class="qd-vec"><span class="qd-k">vector</span><span class="sc-vec">all-MiniLM-L6-v2 <b>· size from the embedder</b></span></div>
+            <div class="qd-payload">
+              <span class="qd-k">payload</span>
+              <dl class="qd-kv">
+                <dt>filename</dt><dd>"rfc8259.md"</dd>
+                <dt>chunk_start</dt><dd class="qd-num">7788</dd>
+                <dt>chunk_end</dt><dd class="qd-num">9680</dd>
+                <dt>text</dt><dd class="qd-text">"## 4. Objects  An object structure is represented as a pair of curly brackets…"</dd>
+              </dl>
+            </div>
+          </div>
+          <div class="sc-panel-b qd-more">
+            <div class="sc-li"><span class="sc-ico i-json"></span><span>rfc8259.md</span><span class="sc-meta">0 → 1064</span></div>
+            <div class="sc-li"><span class="sc-ico i-json"></span><span>rfc8259.md</span><span class="sc-meta">2636 → 4134</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-json"></span><span class="sc-dtext">rfc8259.md</span><span class="sc-meta sc-dtext">11262 → 13058</span></div>
+          </div>
+        </div>
+        <span class="sc-cap qd-fine">mount_collection_target creates the collection; declare_point keeps each point in sync</span>
+      </div>
+    </div>
+
+    <div class="qd-search">
+      <span class="sc-cap">Search by meaning</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "how is a JSON object written?"</span></div>
+      <div class="sc-panel"><div class="sc-panel-b">
+        <div class="sc-hit"><span class="r">1</span><span><span class="src">rfc8259.md · payload.chunk_start 7788</span><span class="sc-quote sc-clip2">An object structure is represented as a pair of curly brackets surrounding zero or more name/value pairs (or members).</span></span></div>
+      </div></div>
+      <span class="sc-cap qd-fine">Browse the same points at localhost:6333/dashboard</span>
+    </div>
+  </div>
+) : (
+  <div class="qd-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel qd-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel qd-card-dst">
+        <div class="sc-panel-h"><span class="sc-ico i-db"></span>TextEmbedding</div>
+        <dl class="qd-kv qd-kv-card">
+          <dt>filename</dt><dd>"rfc8259.md"</dd>
+          <dt>chunk_start</dt><dd>7788</dd>
+          <dt>text</dt><dd>"## 4. Objects…"</dd>
+          <dt>vector</dt><dd class="qd-dim">all-MiniLM-L6-v2</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .qd { display: flex; flex-direction: column; gap: 18px; }
+  .qd > .sc-row { gap: 10px; }
+  .qd-src { flex: 0.85 1 0; }
+  .qd-wide { flex: 1.6 1 0; }
+  .qd-ops { align-items: flex-start; }
+  .qd-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--sc-dim); }
+  .qd-fine { font-weight: 400; }
+  .qd-h-meta { margin-left: auto; font-family: var(--sans); font-size: 11.5px; color: var(--sc-dim); }
+  .qd-point { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-bottom: 1px solid var(--sc-line); background: #0E0E0E; }
+  .qd-k { display: block; font-family: var(--sans); font-size: 11.5px; font-weight: 500; color: var(--sc-dim); margin-bottom: 3px; }
+  .qd-vec { min-width: 0; }
+  .qd-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; row-gap: 3px; margin: 0; padding: 6px 8px; font-family: var(--mono); font-size: 12px; border: 1px solid var(--sc-line); border-radius: 6px; background: var(--sc-panel); }
+  .qd-kv dt { color: var(--sc-muted); }
+  .qd-kv dd { margin: 0; min-width: 0; color: var(--sc-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qd-more { gap: 2px; }
+  .qd .sc-li { font-size: 12px; }
+  .qd-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+
+  .qd-card { height: 100%; display: flex; align-items: center; }
+  .qd-card { min-width: 0; contain: inline-size; }
+  .qd-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
+  .qd-card-src { flex: 0.8 1 0; }
+  .qd-card-dst { flex: 1.25 1 0; }
+  .qd-kv-card { border: 0; border-radius: 0; padding: 6px 8px; font-size: 11px; column-gap: 8px; row-gap: 2px; }
+  .qd-kv-card .qd-dim { color: var(--sc-dim); }
+</style>
