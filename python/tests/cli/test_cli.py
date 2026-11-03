@@ -789,7 +789,14 @@ class TestShowStablePath:
 
         result = run_cli("show", "./symbol_path_app.py", "/process_files", check=False)
         assert result.returncode != 0
-        assert "invalid stable path" in result.stderr.lower()
+        assert "cannot interpret" in result.stderr.lower()
+        # The hint names both spellings, each one valid input.
+        assert '"process_files"' in result.stderr
+        assert "@process_files" in result.stderr
+        # The path is parsed before the app module is loaded.
+        result = run_cli("show", "./does_not_exist.py", "/process_files", check=False)
+        assert result.returncode != 0
+        assert "cannot interpret" in result.stderr.lower()
 
 
 class TestShowTree:

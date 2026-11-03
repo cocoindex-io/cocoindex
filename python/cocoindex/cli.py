@@ -691,6 +691,9 @@ def show(
         raise click.ClickException(
             "--target-states cannot be combined with stable_path, -l, -r or -p."
         )
+    # Parse up front so a malformed path is reported before the app module is
+    # imported or the database is opened.
+    path_obj = _parse_stable_path(stable_path) if stable_path is not None else None
 
     if app_target:
         if db or app_name:
@@ -710,7 +713,7 @@ def show(
                 _load_app(app_target),
                 tree=tree,
                 long_format=long_format,
-                stable_path=stable_path,
+                stable_path=path_obj,
                 recursive=recursive,
                 parents=parents,
                 fingerprints=fingerprints,
@@ -730,7 +733,7 @@ def show(
                 app_name,
                 tree=tree,
                 long_format=long_format,
-                stable_path=stable_path,
+                stable_path=path_obj,
                 recursive=recursive,
                 parents=parents,
                 fingerprints=fingerprints,
@@ -758,14 +761,15 @@ def _parse_stable_path(path_str: str) -> StablePath:
     try:
         return StablePath.parse(path_str)
     except ValueError as e:
-        raise click.ClickException(f"Invalid stable path: {e}") from e
+        # The core message already names the path and carries its own prefix.
+        raise click.ClickException(str(e)) from e
 
 
 async def _show_from_app(
     app: App[Any, Any],
     tree: bool = False,
     long_format: bool = False,
-    stable_path: str | None = None,
+    stable_path: StablePath | None = None,
     recursive: bool = False,
     parents: bool = False,
     fingerprints: bool = False,
@@ -773,15 +777,14 @@ async def _show_from_app(
     try:
         if stable_path is not None:
             # Targeted query — no scan needed
-            path_obj = _parse_stable_path(stable_path)
             details = await query_stable_path_details(
                 app,
-                path_obj,
+                stable_path,
                 include_children=recursive,
                 recursive=recursive,
                 include_parents=parents,
             )
-            _print_details(details, path_obj, fingerprints)
+            _print_details(details, stable_path, fingerprints)
         elif long_format:
             # Stream details in one read txn with one shared resolver
             # (no buffering, no per-path txn/resolver).
@@ -833,7 +836,7 @@ async def _show_from_database(
     app_name: str,
     tree: bool = False,
     long_format: bool = False,
-    stable_path: str | None = None,
+    stable_path: StablePath | None = None,
     recursive: bool = False,
     parents: bool = False,
     fingerprints: bool = False,
@@ -841,16 +844,15 @@ async def _show_from_database(
     env = _open_db_env(db_path, app_name)
 
     if stable_path is not None:
-        path_obj = _parse_stable_path(stable_path)
         details = await query_stable_path_details_by_name(
             env,
             app_name,
-            path_obj,
+            stable_path,
             include_children=recursive,
             recursive=recursive,
             include_parents=parents,
         )
-        _print_details(details, path_obj, fingerprints)
+        _print_details(details, stable_path, fingerprints)
     elif long_format:
         click.echo("Stable paths:")
         count = 0
