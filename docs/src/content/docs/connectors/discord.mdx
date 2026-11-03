@@ -1,0 +1,458 @@
+---
+title: "*Discord* connector"
+toc_max_heading_level: 4
+description: >
+  Index the messages and threads of Discord text, announcement and forum
+  channels with your own bot's token. Each run lists every channel, and only
+  the messages and threads that changed are reprocessed.
+---
+The `discord` connector reads the messages and threads of Discord channels through Discord's HTTP API, using the token of a bot you create and invite to your server.
+
+```python
+from cocoindex.connectors import discord
+```
+
+:::note[Dependencies]
+This connector requires additional dependencies. Install with:
+
+```bash
+pip install cocoindex[discord]
+```
+
+:::
+
+## Setup
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application** and name it.
+2. On the **Bot** page, click **Reset Token** and copy the bot token. Store it like a password, in an environment variable or a secret manager.
+3. On the same page, under **Privileged Gateway Intents**, turn on **Message Content Intent**. Without it, Discord sends messages without their text, so the connector checks for it and raises before listing a channel.
+4. On the **OAuth2** page, in the **OAuth2 URL Generator**, tick the `bot` scope, then the **View Channels** and **Read Message History** permissions. Open the generated URL and add the bot to your server.
+5. Find the IDs of the channels to index: list them with [`list_channels()`](#list_channels), or turn on **Developer Mode** in Discord (User Settings → Advanced), then right-click a channel and choose **Copy Channel ID**.
+6. Add the bot to each private thread you want indexed. The connector reads a private thread only once the bot is a member.
+
+If a run fails with a Discord error, such as a 403 `Missing Access`, the error message names the likely fix.
+
+## As source
+
+### Quick start
+
+Export each message and thread as a Markdown file, kept in sync with Discord:
+
+```python
+import os
+import pathlib
+from collections.abc import AsyncIterator
+
+import cocoindex as coco
+from cocoindex.connectors import discord, localfs
+
+CHANNEL_IDS = ["1100000000000000001", "1100000000000000002"]
+DISCORD = coco.ContextKey[discord.DiscordApp]("discord")
+
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    async with discord.DiscordApp(token=os.environ["DISCORD_BOT_TOKEN"]) as app:
+        builder.provide(DISCORD, app)
+        yield
+
+
+@coco.fn(memo=True)
+async def export_item(
+    item: discord.DiscordMessage | discord.DiscordThread,
+    channel_id: str,
+    target: localfs.DirTarget,
+) -> None:
+    if text := await item.read_text():
+        target.declare_file(filename=f"{channel_id}__{item.id}.md", content=text)
+
+
+@coco.fn
+async def sync_channel(
+    channel: discord.DiscordChannel, target: localfs.DirTarget
+) -> None:
+    await coco.mount_each(export_item, channel.items(), channel.channel_id, target)
+
+
+@coco.fn
+async def app_main(outdir: pathlib.Path) -> None:
+    target = await coco.use_mount(localfs.declare_dir_target, outdir)
+    app = coco.use_context(DISCORD)
+    channels = [
+        (cid, discord.DiscordChannel(app=app, channel_id=cid)) for cid in CHANNEL_IDS
+    ]
+    await coco.mount_each(sync_channel, channels, target)
+
+
+app = coco.App("DiscordToMarkdown", app_main, outdir=pathlib.Path("./discord_export"))
+```
+
+Each channel becomes a component keyed by its ID, and each message and thread a component under it, keyed by its own ID. Delete a message in Discord and run again: its file disappears. Remove a channel from `CHANNEL_IDS`: all its files disappear.
+
+### DiscordApp
+
+The bot's token, plus the authenticated HTTP connection it opens.
+
+```python
+@dataclass(frozen=True)
+class DiscordApp:
+    token: str
+    rate_limiter: RateLimiter | None = None
+    ca_bundle_path: str | None = None
+
+    async def list_channels(self, guild_id: str) -> list[DiscordChannelInfo]: ...
+    async def aclose(self) -> None: ...
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *exc_info) -> None: ...
+```
+
+**Parameters:**
+
+- `token` — the bot token. It's left out of the App's `repr`, so a printed or logged App doesn't show it.
+- `rate_limiter` — optional [`RateLimiter`](../common_resources/rate_limiting) adding a budget on top of the connector's own pacing. See [Rate limiting](#rate-limiting).
+- `ca_bundle_path` — path to a PEM CA bundle used to verify Discord's TLS certificate, for networks behind a corporate CA. `None` uses the system trust store.
+
+**Lifecycle.** The App owns the underlying `httpx` client. Use it as an async context manager, or call `aclose()`, so connections are released. A request after `aclose()` opens a new client.
+
+The HTTP client, the rate-limit state and the record of a rejected token are shared by **object identity**. Use one `DiscordApp` per bot token, for every `DiscordChannel`: two Apps with the same token pace their requests separately, so together they can exceed Discord's limits.
+
+#### `list_channels`
+
+`list_channels(guild_id)` returns every channel in a server, threads aside, in Discord's order, so you can pick channels without copying IDs by hand. `guild_id` is the server's ID (with Developer Mode on, right-click the server's icon and choose **Copy Server ID**).
+
+```python
+@dataclass(frozen=True)
+class DiscordChannelInfo:
+    id: str
+    name: str
+    type: int                  # 0 text, 2 voice, 4 category, 5 announcement, 15 forum, ...
+    category_id: str | None    # the category the channel sits under, if any
+```
+
+Every channel type is listed; filter by `type` for the ones `DiscordChannel` reads:
+
+```python
+infos = await app.list_channels("1100000000000000000")
+channel_ids = [c.id for c in infos if c.type in (0, 5, 15)]
+```
+
+It makes one request, and Discord allows about 10 a minute per server, so call it once per run.
+
+:::caution[Mounting channels from this list]
+A pipeline that mounts one component per listed channel deletes a channel's outputs once it drops out of the list. That's right when the channel is deleted. But starting 2026-11-16, Discord also leaves out channels the bot can't view, so losing the **View Channels** permission will delete the channel's outputs too. To keep a channel's outputs when the bot loses access, name the channel's ID yourself: a channel named by ID that the bot can't read fails its run and keeps its outputs (see [What deletes outputs](#what-deletes-outputs)).
+:::
+
+### Rate limiting
+
+Discord sends its rate limits with each response, rather than publishing fixed ones. The connector paces on them with no configuration:
+
+- each route is paced on the limits Discord last reported for it, per channel or server, as Discord counts them, under Discord's global limit of 50 requests a second per bot;
+- a 429 response is waited out for as long as Discord asks, and a 5xx or network error is retried with backoff;
+- a request gives up once its waits would pass 300 seconds in total, failing that channel's run (its outputs are kept);
+- after a rejected token (401), the App sends no more requests, since Discord bans the IP of a client that sends too many failing ones. Fix the token and start again.
+
+A wait over 60 seconds is logged as a warning, so a long one doesn't look like a hang.
+
+**Passing a [`rate_limiter`](../common_resources/rate_limiting)** adds a budget on top of that pacing, for a bot whose limits other tools share: one token per request, retries included.
+
+```python
+from cocoindex.resources.rate_limit import RateLimiter
+
+app = discord.DiscordApp(
+    token=os.environ["DISCORD_BOT_TOKEN"],
+    rate_limiter=RateLimiter(max_rows_per_second=10),
+)
+```
+
+### DiscordChannel
+
+A lightweight handle for one text, announcement or forum channel. It owns no connections of its own: all I/O goes through the `DiscordApp`.
+
+```python
+class DiscordChannel:
+    def __init__(
+        self,
+        *,
+        app: DiscordApp,
+        channel_id: str,
+        message_fields: Sequence[str] | None = None,
+        thread_fields: Sequence[str] | None = None,
+    ) -> None: ...
+
+    @property
+    def channel_id(self) -> str: ...
+
+    async def items(self) -> AsyncIterator[tuple[str, DiscordMessage | DiscordThread]]: ...
+```
+
+**Parameters:**
+
+- `app` — the `DiscordApp` to read with.
+- `channel_id` — the channel's ID. Text (type 0), announcement (5) and forum (15) channels are read; listing any other type raises `ValueError`, naming the type. A thread's ID raises too: name its channel instead.
+- `message_fields`, `thread_fields` — the fields the items expose. `None`, the default, means all of them. See [Choosing fields](#choosing-fields).
+
+#### `items`
+
+`items()` yields `(key, item)` pairs for [`coco.mount_each`](../programming_guide/processing_component#mount_each):
+
+- a [`DiscordMessage`](#discordmessage) for each message in the channel's main stream, newest first, except a message that starts a thread;
+- then a [`DiscordThread`](#discordthread) for each thread in the channel, newest first: active and archived, forum posts included, and private threads the bot is a member of.
+
+The key is the message's or the thread's ID. A thread started from a message has that message's ID, and the message is the thread's `starter` rather than an item of its own. So when someone starts a thread on a message, the item under that key turns from a message into a thread, and its outputs are replaced in one step.
+
+A forum channel has no main stream: its items are its posts, which are threads. Use `isinstance` to tell the two kinds apart:
+
+```python
+@coco.fn(memo=True)
+async def process_item(item: discord.DiscordMessage | discord.DiscordThread) -> None:
+    if isinstance(item, discord.DiscordThread):
+        messages = await item.messages()
+        ...
+```
+
+Each run lists the whole channel. The listings carry every field the items expose, so listing costs a few requests per channel plus one per 100 messages, and nothing per unchanged thread: a thread's messages are fetched only when it reruns.
+
+### DiscordMessage
+
+One message: an item of the main stream, a thread's starter, or a message inside a thread.
+
+```python
+@dataclass(frozen=True)
+class DiscordMessage:
+    id: str
+    guild_id: str                 # the server's ID
+    channel_id: str               # where it was posted: the channel, or the thread
+    type: int                     # Discord's message type: 0 default, 19 reply, ...
+    author: DiscordUser
+    webhook_id: str | None        # set on a webhook's post
+    content: str                  # Discord's Markdown, as stored
+    mentions: tuple[DiscordUser, ...]
+    mention_roles: tuple[str, ...]          # IDs of the roles it mentions
+    mention_everyone: bool
+    attachments: tuple[DiscordAttachment, ...]
+    embeds: tuple[DiscordEmbed, ...]        # rich embeds on bots' and webhooks' posts
+    reactions: tuple[DiscordReaction, ...]  # in Discord's order
+    pinned: bool
+    timestamp: datetime
+    edited_timestamp: datetime | None
+    reply_to: str | None          # a reply's parent message ID
+    forwarded_from: DiscordMessageRef | None
+
+    async def read_text(self) -> str: ...
+```
+
+Every field but `id` is typed `X | None` in the code, since a field [left out](#choosing-fields) holds `None` (or `()` for a tuple field); with the default fields, only the ones marked above are ever `None`.
+
+- **Replies** carry their parent's ID in `reply_to`, not the parent's text. The ID stays after the parent is deleted, so it may point at nothing.
+- **Forwards** hold the forwarded message's `content`, mentions, attachments and embeds; their other fields are the forward's own. `forwarded_from` names the original.
+- **Embeds** are kept only on posts by bots and webhooks. On people's posts, embeds are link previews that Discord makes from the linked page, so they're left out.
+
+The nested types:
+
+```python
+@dataclass(frozen=True)
+class DiscordUser:
+    id: str
+    username: str
+    global_name: str | None       # the display name the user chose; None if unset
+    bot: bool                     # also True for a webhook's post
+
+@dataclass(frozen=True)
+class DiscordAttachment:
+    id: str
+    filename: str
+    size: int
+    content_type: str | None
+    description: str | None       # the alt text
+    url: str                      # signed; Discord re-signs it after it expires
+
+@dataclass(frozen=True)
+class DiscordEmbed:
+    title: str | None
+    description: str | None
+    url: str | None
+    author: str | None            # the embed author's name
+    footer: str | None            # the footer's text
+    fields: tuple[tuple[str, str], ...]   # (name, value) pairs
+
+@dataclass(frozen=True)
+class DiscordReaction:
+    emoji_id: str | None          # a custom emoji's ID; None for a Unicode emoji
+    emoji_name: str | None        # the Unicode emoji, or a custom emoji's name
+    count: int
+
+@dataclass(frozen=True)
+class DiscordMessageRef:
+    guild_id: str | None
+    channel_id: str
+    message_id: str
+```
+
+Attachments aren't downloaded; read a file from its `url` if you need it.
+
+#### `read_text`
+
+Renders the message as plain text for embedding: `"<author>: <text>"`, where the author is the user's display name (`global_name`, else `username`; for a webhook's post, the name it posted under). The text is `content`, then each embed's author, title, description, fields (`name: value`) and footer, a line each. Two messages, a person's and a bot's post holding only an embed:
+
+```
+ada: Release notes are out, see <#1100000000000000003>
+example-bot: v2.3 released
+Changes: Faster sync
+Released by the CI
+```
+
+- User mentions show the user's display name (`@ada`), custom emoji show as `:name:`, timestamps (`<t:1768478400:F>`) as ISO 8601 in UTC (`2026-01-15T12:00:00Z`), and slash commands as `/name`.
+- Channel and role mentions (`<#…>`, `<@&…>`) stay as typed, since naming them would take extra requests. Discord's Markdown stays as typed too.
+- Reactions, attachments, pins and `mention_everyone` aren't rendered; read them from the fields.
+- It's `""` when there's no text: a member's join notice, or a file without a caption (see [Messages with empty text](#messages-with-empty-text)).
+
+### DiscordThread
+
+One thread, or one forum post. Its fields come from Discord's thread listing and its `starter` from the channel's main stream, so neither costs a request.
+
+```python
+class DiscordThread:
+    id: str
+    guild_id: str
+    parent_id: str                # the channel the thread is in
+    type: int                     # 10 announcement thread, 11 public, 12 private
+    name: str                     # a forum post's title
+    tags: tuple[str, ...]         # a forum post's tags, by name
+    archived: bool
+    archive_timestamp: datetime   # when it was last archived or unarchived
+    locked: bool
+    pinned: bool                  # a forum post pinned to the top of its forum
+    message_count: int            # messages after the first; deleted ones not counted
+    total_message_sent: int       # never goes down
+    last_message_id: str | None   # may point at a deleted message
+    member_count: int             # approximate; stops counting at 50
+    owner_id: str                 # who started the thread
+    create_timestamp: datetime | None    # None for threads created before 2022-01-09
+    auto_archive_duration: int    # Hide After Inactivity, in minutes
+    rate_limit_per_user: int      # slow mode, in seconds
+    invitable: bool | None        # private threads only: whether non-moderators can add people
+    last_pin_timestamp: datetime | None  # when a message in it was last pinned
+    starter: DiscordMessage | None
+
+    async def messages(self) -> list[DiscordMessage]: ...
+    async def read_text(self) -> str: ...
+```
+
+These are read-only properties. As on `DiscordMessage`, a field [left out](#choosing-fields) holds `None`, or `()` for `tags`.
+
+`starter` is the message the thread was started from. It's `None` for a forum post, whose opening message is inside the thread, and for a private thread, a thread started without a message, and one whose starter was deleted.
+
+#### `messages`
+
+Returns the messages in the thread, oldest first, `starter` first when it's set. They're fetched on first use and cached on the thread; a thread holding only its starter makes no request. An error, such as the bot having been removed from a private thread, raises and fails only that thread's component, which keeps its outputs.
+
+#### `read_text`
+
+Renders the thread as plain text: its name, then `Tags: a, b` for a tagged forum post, then each message's [`read_text()`](#read_text), oldest first:
+
+```
+Sync fails on large channels
+Tags: bug, sync
+ada: Sync fails on channels with more than 10,000 messages
+bo: Same here, since v2.2
+```
+
+Only conversation is kept (message types 0, 19, 20 and 23): notices such as a member added to the thread or a rename are left out, as are messages without text.
+
+### Choosing fields
+
+`message_fields` and `thread_fields` choose the fields the items expose, as the Postgres source's `columns` does. `None`, the default, means every field. Pass the field names of `DiscordMessage` or `DiscordThread`:
+
+```python
+channel = discord.DiscordChannel(
+    app=app,
+    channel_id="1100000000000000001",
+    message_fields=["author", "content", "embeds", "mentions", "timestamp", "type"],
+    thread_fields=["name", "tags", "archived", "archive_timestamp", "locked",
+                   "message_count", "total_message_sent", "last_message_id"],
+)
+```
+
+- `id` is always set, listed or not. An empty list means every field, as `None` does.
+- `message_fields` applies to every message the channel gives: main-stream items, thread starters and the messages `messages()` returns. `thread_fields` applies to the thread's own fields; `starter` is always attached.
+- A field left out holds `None`, or `()` for a tuple field, on every item and every run, so a change to it in Discord reruns nothing. It's left out of `read_text()` too: without `author`, lines have no `<author>:` prefix; without `mentions`, a mention shows as `@` and the user's ID.
+- An unknown name raises `ValueError` when the channel is created, listing the valid names.
+- Changing the selection reruns, once, each message whose exposed values change, and every thread when `message_fields` changes, since a thread's text holds its messages.
+- Choosing fields doesn't reduce requests: Discord's listings always return whole messages and threads, so a selection changes what the connector parses and what reruns your functions, not how many requests it makes.
+- With the default fields, a reaction added or removed reruns its message, and people joining a thread rerun the thread. Leave out `reactions` or `member_count` to avoid that.
+
+:::caution[Thread fields that signal changes]
+A thread reruns only when one of its exposed fields, or its starter, changes; that's also when an edit inside it is picked up (see the [gap inside threads](#the-gap-inside-threads)).
+
+- Without `message_count`, a deleted message in a thread is no longer seen: it's the only counter that goes down. Without all three of `message_count`, `total_message_sent` and `last_message_id`, new messages aren't seen either.
+- Without `archived` and `archive_timestamp`, archiving or unarchiving a thread no longer reruns it; without `locked`, locking doesn't.
+:::
+
+### Messages with empty text
+
+The connector doesn't expose the text in a message's components or polls. So a bot's post built only from components (Discord's Components V2 layouts) and a poll posted without a message are items whose `read_text()` is `""`, as are notices such as a member joining.
+
+### System message types and filtering
+
+Every message in the main stream is an item, whatever its type, because Discord's listing can't filter by type. Each message exposes Discord's [message type](https://discord.com/developers/docs/resources/message#message-object-message-types) as `type`, so filter in your function:
+
+| `type` | Message |
+|---|---|
+| 0 | An ordinary message |
+| 19 | A reply |
+| 20, 23 | A bot's reply to a slash command or a context-menu command |
+| 6 | A notice that a message was pinned |
+| 7 | A member joined the server |
+| 18 | A thread was started without a message; its `content` is the thread's name |
+
+```python
+@coco.fn(memo=True)
+async def process_item(item: discord.DiscordMessage | discord.DiscordThread) -> None:
+    if isinstance(item, discord.DiscordMessage) and item.type not in (0, 19, 20, 23):
+        return  # skip notices
+    text = await item.read_text()
+    ...
+```
+
+A thread's `read_text()` already keeps only those four types.
+
+## Memoization and change detection
+
+Discord has no content hash, so an item is fingerprinted by every field it exposes. All of them come from the channel listing, so checking for changes costs no extra request.
+
+| object | memo key | changes detected by |
+|---|---|---|
+| `DiscordMessage` | every field | an edit, a new embed, a rename of the author or a mentioned user; with the default fields, a reaction, a pin or an unpin |
+| `DiscordThread` | every field, its starter, and the message fields its messages expose | a message posted or deleted (the counters), a rename, new tags, an archive or unarchive, a lock, a pin, an edit to its starter; with the default fields, people joining |
+| `DiscordAttachment` | every field but `url` | the ID stands for the file's content, so a newly signed URL reruns nothing |
+| `DiscordChannel` | its ID and field selections | not memoized itself: it's listed again on every run |
+
+With `@coco.fn(memo=True)` on your per-item function, a run:
+
+- skips unchanged messages and threads, without fetching a thread's messages;
+- reruns a new, edited or reacted-to message, and a thread that changed as above;
+- removes the outputs of a message or thread that's no longer listed: deleted, or a message that now starts a thread, whose key the thread takes over.
+
+Deleting a reply's parent doesn't rerun the reply: `reply_to` keeps the parent's ID.
+
+### The gap inside threads
+
+A thread item holds the thread and its starter; the messages inside it are fetched only when the thread reruns, so they aren't part of its fingerprint. Discord reports nothing on the thread when a message inside it is edited or reacted to.
+
+:::caution[Edits inside a thread wait for the thread's next change]
+An edit or a reaction on a message inside a thread, including a forum post's opening message, is picked up the next time the thread changes in one of the ways above, such as a new message, or Discord archiving it. Discord archives threads on its own schedule, and on a quiet server it may never do so; a pinned forum post never archives on its own. So on a quiet server, an edit inside a thread may never be picked up.
+
+To remove a message from the index quickly, **delete it rather than edit it**: a deletion lowers the thread's message count, so the thread reruns on the next run.
+:::
+
+There is no live mode: each run lists every channel in full. For continuous re-polling, wrap the channel mounts in [`coco.auto_refresh`](../programming_guide/live_mode#periodic-refresh-with-cocoauto_refresh), and choose the interval with the [rate limits](#rate-limiting) in mind.
+
+### What deletes outputs
+
+- **Removing a channel from your pipeline** deletes all its outputs.
+- **A deleted message or thread** has its outputs deleted on the next run.
+- **Lost access only stops updates.** If the bot is removed from the server, loses View Channels or Read Message History, or its token is rejected, or the Message Content intent is turned off, the channel's run fails with an error naming the fix, and its outputs are kept. A channel never reads as empty because the bot can't see it.
+- **A private thread the bot is removed from** drops out of the listing, and its outputs are deleted.
+- **Channels mounted from `list_channels()`** lose their outputs when they drop out of that list, which from 2026-11-16 includes the bot losing View Channels (see [`list_channels`](#list_channels)).
+
+The index carries no Discord permissions: anyone who can query your target can read what's in it, including private threads. Keep channels with different audiences in separate indexes, or restrict who can query them.
