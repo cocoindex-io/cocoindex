@@ -1,0 +1,10 @@
+{
+  "alt": "The CocoIndex repo tree (main.py, text.py, recursive.rs, README.md) is split along its syntax tree with Tree-sitter, so examples/code_embedding/main.py becomes chunks such as lines 61–88 and 91–106; each chunk is embedded with all-MiniLM-L6-v2 into a row of the code_embeddings table in Postgres; editing process_file re-embeds only its chunk, and the query \"where do we embed chunks?\" returns main.py lines 61–88, where process_chunk calls embed(chunk.text).",
+  "needs": ["Docker (for Postgres with pgvector)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Index the repo (add -L to keep watching for edits)", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"where do we embed chunks?\"" }
+  ]
+}

@@ -9,12 +9,12 @@
 
 export type Category = 'search' | 'ingest' | 'llm' | 'agents' | 'image';
 
-export const CATEGORY_META: Record<Category, { label: string; em?: string; lead: string; thumbClass: string }> = {
-  search: { label: 'Semantic ', em: 'Search', lead: 'Embed your documents, store the vectors, and answer by meaning.', thumbClass: 'search' },
-  ingest: { label: 'Ingest ', em: '& Transform', lead: 'Bring your own source, target, or parser — move and reshape data with the same declarative flow.', thumbClass: 'ingest' },
-  llm: { label: 'Structured ', em: 'Extraction', lead: 'LLM-extract typed, structured data from code and documents — with instructor, BAML, or DSPy.', thumbClass: 'llm' },
-  agents: { label: 'Knowledge ', em: 'Graphs', lead: 'Give agents a persistent, graph-shaped memory from conversations, meetings, products.', thumbClass: 'agents' },
-  image: { label: 'Multimodal ', em: 'Search', lead: 'Search images, PDFs, slides, and faces by meaning — the same vector index, a different encoder.', thumbClass: 'pink' },
+export const CATEGORY_META: Record<Category, { label: string; lead: string; thumbClass: string }> = {
+  search: { label: 'Semantic search', lead: 'Embed your documents, store the vectors, and answer by meaning.', thumbClass: 'search' },
+  ingest: { label: 'Ingest and transform', lead: 'Move and reshape data with the same declarative flow: your own source, target, or parser.', thumbClass: 'ingest' },
+  llm: { label: 'Structured extraction', lead: 'Extract typed, structured data from code and documents with an LLM, through instructor, BAML, or DSPy.', thumbClass: 'llm' },
+  agents: { label: 'Knowledge graphs', lead: 'Give agents a persistent, graph-shaped memory built from conversations, meetings, and products.', thumbClass: 'agents' },
+  image: { label: 'Multimodal search', lead: 'Search images, PDFs, slides, and faces by meaning: the same vector index with a different encoder.', thumbClass: 'pink' },
 };
 
 export type ExampleCard = {
@@ -35,23 +35,23 @@ export type ExampleCard = {
 export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
-    title: 'Semantic Search *101*',
+    title: 'Semantic search 101',
     index: '01 / 32',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
-    description: 'Chunk Markdown files, embed each chunk, store the vectors in Postgres, and search them in plain English. The simplest end-to-end vector index — the best place to start.',
+    description: 'Chunk Markdown files, embed each chunk, store the vectors in Postgres, and search them in plain English. The simplest end-to-end vector index, and the one the other search examples build on.',
     tags: [
       { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: 'Postgres' },
       { kind: 'ops', label: 'Embeddings' },
       { kind: 'lvl', label: 'Starter' },
     ],
-    footMeta: '~6 min · starter',
+    footMeta: '~6 min',
     sourceSlug: 'text_embedding',
   },
   {
     slug: 'index-codebase',
-    title: 'Index Your *Codebase*',
+    title: 'Index your codebase',
     index: '02 / 32',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
@@ -62,16 +62,16 @@ export const examples: ExampleCard[] = [
       { kind: 'ops', label: 'Tree-sitter' },
       { kind: 'lvl', label: 'Starter' },
     ],
-    footMeta: '~10 min · starter',
+    footMeta: '~10 min',
     sourceSlug: 'code_embedding',
   },
   {
     slug: 'multi-codebase-summarization',
-    title: 'Multi-codebase *Summarization*',
+    title: 'Multi-codebase summarization',
     index: '03 / 32',
     category: 'llm',
     thumbLabel: 'Code · structured output',
-    description: 'Walk many Python repos, LLM-extract a typed summary per file — classes, functions, Mermaid call graphs — and aggregate into an always-fresh wiki page per project. The flagship v1 walkthrough.',
+    description: 'Walk many Python repos, LLM-extract a typed summary per file — classes, functions, Mermaid call graphs — and aggregate into an always-fresh wiki page per project.',
     tags: [
       { kind: 'src', label: 'Multi-repo' },
       { kind: 'tgt', label: 'Local FS' },
@@ -79,17 +79,17 @@ export const examples: ExampleCard[] = [
       { kind: 'ops', label: 'Structured output' },
       { kind: 'lvl', label: 'Advanced' },
     ],
-    footMeta: '~35 min · featured',
+    footMeta: '~35 min',
     sourceSlug: 'multi_codebase_summarization',
     featured: true,
   },
   {
     slug: 'pdf-to-markdown',
-    title: 'PDF → *Markdown*',
+    title: 'PDF to Markdown',
     index: '04 / 32',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
-    description: 'Incremental PDF → Markdown conversion pipeline. Custom building blocks over a folder of PDFs.',
+    description: 'Convert a folder of PDFs to Markdown incrementally, with custom building blocks: only new or changed PDFs are converted again.',
     tags: [
       { kind: 'src', label: 'PDF' },
       { kind: 'tgt', label: 'Local FS' },
@@ -100,7 +100,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'podcast-to-knowledge-graph',
-    title: 'Podcasts → *Knowledge Graph*',
+    title: 'Podcasts to a knowledge graph',
     index: '05 / 32',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
@@ -112,12 +112,12 @@ export const examples: ExampleCard[] = [
       { kind: 'tgt', label: 'SurrealDB' },
       { kind: 'lvl', label: 'Advanced' },
     ],
-    footMeta: '~40 min · advanced',
+    footMeta: '~40 min',
     sourceSlug: 'conversation_to_knowledge',
   },
   {
     slug: 'docs-to-knowledge-graph',
-    title: 'Docs → *Knowledge Graph*',
+    title: 'Docs to a knowledge graph',
     index: '06 / 32',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
@@ -133,7 +133,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'meeting-notes-to-knowledge-graph',
-    title: 'Meeting Notes → *Knowledge Graph*',
+    title: 'Meeting notes to a knowledge graph',
     index: '07 / 32',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
@@ -150,7 +150,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'csv-to-kafka',
-    title: 'CSV → *Kafka*',
+    title: 'CSV to Kafka',
     index: '08 / 32',
     category: 'ingest',
     thumbLabel: 'CSV · live Kafka target',
@@ -166,7 +166,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'pdf-embedding',
-    title: 'Semantic Search over *PDFs*',
+    title: 'Semantic search over PDFs',
     index: '09 / 32',
     category: 'search',
     thumbLabel: 'PDF · docling + embeddings',
@@ -174,7 +174,7 @@ export const examples: ExampleCard[] = [
     tags: [
       { kind: 'src', label: 'PDF' },
       { kind: 'tgt', label: 'Postgres' },
-      { kind: 'ops', label: 'docling + embeddings' },
+      { kind: 'ops', label: 'docling + embed' },
       { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: '~12 min',
@@ -182,7 +182,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'image-search',
-    title: 'Search Images by *Text*',
+    title: 'Search images by text',
     index: '10 / 32',
     category: 'image',
     thumbLabel: 'Images · CLIP + Qdrant',
@@ -198,7 +198,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'audio-to-text',
-    title: "Audio to *Text*",
+    title: 'Audio to text',
     index: '11 / 32',
     category: 'ingest',
     thumbLabel: "Audio \u00b7 LiteLLM",
@@ -208,14 +208,14 @@ export const examples: ExampleCard[] = [
       { kind: 'tgt', label: "Postgres" },
       { kind: 'llm', label: "LiteLLM" },
       { kind: 'ops', label: "Transcription" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~12 min",
     sourceSlug: 'audio_to_text',
   },
   {
     slug: 'hackernews-trending-topics',
-    title: "Trending Topics from *HackerNews*",
+    title: 'Trending topics from HackerNews',
     index: '12 / 32',
     category: 'llm',
     thumbLabel: "HN API \u00b7 LLM topics",
@@ -225,31 +225,31 @@ export const examples: ExampleCard[] = [
       { kind: 'tgt', label: "Postgres" },
       { kind: 'llm', label: "LiteLLM" },
       { kind: 'ops', label: "Custom source" },
-      { kind: 'lvl', label: "Intermediate" },
+      { kind: 'lvl', label: 'Intermediate' },
     ],
     footMeta: "~10 min",
     sourceSlug: 'hn_trending_topics',
   },
   {
     slug: 'paper-metadata',
-    title: "Index *Academic Papers*",
+    title: 'Index academic papers',
     index: '13 / 32',
     category: 'llm',
     thumbLabel: "PDF \u00b7 LLM extract",
     description: "LLM-extract title, authors, and abstract from academic PDFs into typed rows, embed them, and store it all in Postgres with pgvector.",
     tags: [
       { kind: 'src', label: "PDF" },
-      { kind: 'llm', label: "gpt-4o" },
+      { kind: 'llm', label: 'OpenAI' },
       { kind: 'tgt', label: "Postgres" },
       { kind: 'ops', label: "pgvector" },
-      { kind: 'lvl', label: "Intermediate" },
+      { kind: 'lvl', label: 'Intermediate' },
     ],
     footMeta: "~12 min",
     sourceSlug: 'paper_metadata',
   },
   {
     slug: 'patient-intake-baml',
-    title: "Patient Intake Forms to Typed JSON with *BAML*",
+    title: 'Patient intake forms to typed JSON with BAML',
     index: '14 / 32',
     category: 'llm',
     thumbLabel: "PDF \u00b7 BAML",
@@ -259,66 +259,66 @@ export const examples: ExampleCard[] = [
       { kind: 'tgt', label: "JSON files" },
       { kind: 'llm', label: "Gemini" },
       { kind: 'ops', label: "BAML" },
-      { kind: 'lvl', label: "Intermediate" },
+      { kind: 'lvl', label: 'Intermediate' },
     ],
     footMeta: "~10 min",
     sourceSlug: 'patient_intake_extraction_baml',
   },
   {
     slug: 'patient-intake-dspy',
-    title: "Patient Intake Forms to Typed JSON with *DSPy*",
+    title: 'Patient intake forms to typed JSON with DSPy',
     index: '15 / 32',
     category: 'llm',
     thumbLabel: "PDF \u00b7 DSPy",
     description: "Render patient intake PDFs to images and extract a typed Patient with a DSPy ChainOfThought vision module on Gemini, writing one validated JSON file per form.",
     tags: [
       { kind: 'src', label: "PDF" },
-      { kind: 'tgt', label: "JSON" },
+      { kind: 'tgt', label: 'JSON files' },
       { kind: 'llm', label: "DSPy" },
       { kind: 'llm', label: "Gemini" },
-      { kind: 'ops', label: "structured extraction" },
-      { kind: 'lvl', label: "intermediate" },
+      { kind: 'ops', label: 'Structured extraction' },
+      { kind: 'lvl', label: 'Intermediate' },
     ],
     footMeta: "~10 min",
     sourceSlug: 'patient_intake_extraction_dspy',
   },
   {
     slug: 'postgres-source',
-    title: "Postgres as a *Source*",
+    title: 'Postgres as a source',
     index: '16 / 32',
     category: 'ingest',
     thumbLabel: "Postgres \u00b7 pgvector",
     description: "Read rows from an existing Postgres table, derive fields, embed each row, and write the vectors back to Postgres with pgvector.",
     tags: [
       { kind: 'src', label: "Postgres" },
-      { kind: 'tgt', label: "pgvector" },
-      { kind: 'llm', label: "SentenceTransformers" },
+      { kind: 'tgt', label: 'Postgres' },
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'ops', label: "Embeddings" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~8 min",
     sourceSlug: 'postgres_source',
   },
   {
     slug: 'files-transform',
-    title: "Transform a *Folder of Files*",
+    title: 'Transform a folder of files',
     index: '17 / 32',
     category: 'ingest',
     thumbLabel: "Markdown \u00b7 markdown-it",
     description: "The smallest end-to-end CocoIndex pipeline \u2014 watch a folder of Markdown, render each file to HTML, and write the outputs to a local folder incrementally.",
     tags: [
-      { kind: 'src', label: "Local files" },
-      { kind: 'tgt', label: "Local files" },
+      { kind: 'src', label: 'Local FS' },
+      { kind: 'tgt', label: 'Local FS' },
       { kind: 'ops', label: "markdown-it-py" },
       { kind: 'ops', label: "Custom transform" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~6 min",
     sourceSlug: 'files_transform',
   },
   {
     slug: 'kafka-to-lancedb',
-    title: "Consume Kafka into *LanceDB*",
+    title: 'Consume Kafka into LanceDB',
     index: '18 / 32',
     category: 'ingest',
     thumbLabel: "Kafka \u00b7 dispatch",
@@ -326,32 +326,32 @@ export const examples: ExampleCard[] = [
     tags: [
       { kind: 'src', label: "Kafka" },
       { kind: 'tgt', label: "LanceDB" },
-      { kind: 'ops', label: "live mode" },
-      { kind: 'lvl', label: "intermediate" },
+      { kind: 'ops', label: 'Live mode' },
+      { kind: 'lvl', label: 'Intermediate' },
     ],
     footMeta: "~10 min",
     sourceSlug: 'kafka_to_lancedb',
   },
   {
     slug: 'entire-session-search',
-    title: "Search Your *AI Coding Sessions*",
+    title: 'Search your AI coding sessions',
     index: '19 / 32',
     category: 'search',
     thumbLabel: "Entire \u00b7 Embeddings",
     description: "Index AI coding sessions captured by Entire \u2014 transcripts, prompts, and context summaries \u2014 into Postgres for natural-language semantic search.",
     tags: [
       { kind: 'src', label: "Entire sessions" },
-      { kind: 'tgt', label: "Postgres + pgvector" },
+      { kind: 'tgt', label: 'Postgres' },
       { kind: 'ops', label: "sentence-transformers" },
-      { kind: 'ops', label: "incremental" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'ops', label: 'Incremental' },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~10 min",
     sourceSlug: 'entire_session_search',
   },
   {
     slug: 'image-search-colpali',
-    title: "Image Search with *ColPali*",
+    title: 'Image search with ColPali',
     index: '20 / 32',
     category: 'image',
     thumbLabel: "Images \u00b7 ColPali",
@@ -359,115 +359,115 @@ export const examples: ExampleCard[] = [
     tags: [
       { kind: 'src', label: "Images" },
       { kind: 'llm', label: "ColPali" },
-      { kind: 'tgt', label: "Qdrant MaxSim" },
+      { kind: 'tgt', label: 'Qdrant' },
       { kind: 'ops', label: "FastAPI" },
-      { kind: 'lvl', label: "Intermediate" },
+      { kind: 'lvl', label: 'Intermediate' },
     ],
     footMeta: "~12 min",
     sourceSlug: 'image_search_colpali',
   },
   {
     slug: 'text-embedding-qdrant',
-    title: "Semantic Search with *Qdrant*",
+    title: 'Semantic search with Qdrant',
     index: '21 / 32',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Qdrant",
-    description: "The Semantic Search 101 pipeline pointed at Qdrant \u2014 chunk Markdown, embed locally, and upsert the vectors into a managed Qdrant collection.",
+    description: "Upsert Markdown chunk vectors into a Qdrant collection. Chunking and embedding run locally; only the target changes from Semantic search 101.",
     tags: [
-      { kind: 'src', label: "Markdown" },
+      { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: "Qdrant" },
-      { kind: 'ops', label: "Embedding" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'ops', label: 'Embeddings' },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~5 min",
     sourceSlug: 'text_embedding_qdrant',
   },
   {
     slug: 'text-embedding-lancedb',
-    title: "Semantic Search with *LanceDB*",
+    title: 'Semantic search with LanceDB',
     index: '22 / 32',
     category: 'search',
     thumbLabel: "Markdown \u00b7 LanceDB",
-    description: "The Semantic Search 101 pipeline with LanceDB as the target \u2014 chunk Markdown, embed each chunk, and store the vectors in an embedded, file-based store with no server to run.",
+    description: "Store Markdown chunk vectors in LanceDB, an embedded, file-based store with no server to run. Only the target changes from Semantic search 101.",
     tags: [
-      { kind: 'src', label: "Markdown" },
+      { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: "LanceDB" },
       { kind: 'llm', label: "sentence-transformers" },
-      { kind: 'ops', label: "vector index" },
-      { kind: 'lvl', label: "beginner" },
+      { kind: 'ops', label: 'Vector index' },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~5 min",
     sourceSlug: 'text_embedding_lancedb',
   },
   {
     slug: 'text-embedding-turbopuffer',
-    title: "Semantic Search with *Turbopuffer*",
+    title: 'Semantic search with Turbopuffer',
     index: '23 / 32',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Turbopuffer",
-    description: "Chunk Markdown, embed each chunk, and upsert the vectors into a managed Turbopuffer namespace \u2014 the Semantic Search 101 pipeline pointed at a serverless vector store.",
+    description: "Upsert Markdown chunk vectors into a Turbopuffer namespace, a serverless vector store. Only the target changes from Semantic search 101.",
     tags: [
-      { kind: 'src', label: "Markdown" },
+      { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: "Turbopuffer" },
       { kind: 'ops', label: "sentence-transformers" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~7 min",
     sourceSlug: 'text_embedding_turbopuffer',
   },
   {
     slug: 'amazon-s3-embedding',
-    title: "Embed Markdown from *Amazon S3*",
+    title: 'Embed Markdown from Amazon S3',
     index: '24 / 32',
     category: 'search',
     thumbLabel: "S3 \u00b7 pgvector",
-    description: "The Semantic Search 101 pipeline with an Amazon S3 bucket as the source instead of a local folder.",
+    description: "Read Markdown from an Amazon S3 bucket instead of a local folder, then chunk, embed, and store the vectors in Postgres.",
     tags: [
       { kind: 'src', label: "Amazon S3" },
-      { kind: 'tgt', label: "Postgres + pgvector" },
+      { kind: 'tgt', label: 'Postgres' },
       { kind: 'llm', label: "sentence-transformers" },
-      { kind: 'ops', label: "chunk + embed" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'ops', label: 'Chunk + embed' },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~6 min",
     sourceSlug: 'amazon_s3_embedding',
   },
   {
     slug: 'google-drive-embedding',
-    title: "Semantic Search over *Google Drive*",
+    title: 'Semantic search over Google Drive',
     index: '25 / 32',
     category: 'search',
     thumbLabel: "Google Drive \u00b7 Embed",
-    description: "The Semantic Search 101 pipeline with Google Drive as the source \u2014 chunk and embed every document and store the vectors in Postgres with pgvector.",
+    description: "Read documents from Google Drive, then chunk, embed, and store the vectors in Postgres with pgvector. Only the source changes from Semantic search 101.",
     tags: [
       { kind: 'src', label: "Google Drive" },
-      { kind: 'tgt', label: "Postgres / pgvector" },
+      { kind: 'tgt', label: 'Postgres' },
       { kind: 'ops', label: "Embeddings" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~6 min",
     sourceSlug: 'gdrive_text_embedding',
   },
   {
     slug: 'oci-object-storage-embedding',
-    title: "Embed *OCI Object Storage*",
+    title: 'Embed OCI Object Storage',
     index: '26 / 32',
     category: 'search',
     thumbLabel: "OCI \u00b7 pgvector",
     description: "Chunk and embed Markdown objects from an Oracle Cloud (OCI) Object Storage bucket into Postgres/pgvector, with optional live updates via OCI Streaming.",
     tags: [
       { kind: 'src', label: "OCI Object Storage" },
-      { kind: 'tgt', label: "Postgres / pgvector" },
+      { kind: 'tgt', label: 'Postgres' },
       { kind: 'llm', label: "sentence-transformers" },
       { kind: 'ops', label: "OCI Streaming (live)" },
-      { kind: 'lvl', label: "Beginner" },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~7 min",
     sourceSlug: 'oci_object_storage_embedding',
   },
   {
     slug: 'face-recognition',
-    title: 'Build Your Own *Face Search*',
+    title: 'Build your own face search',
     index: '27 / 32',
     category: 'image',
     thumbLabel: 'Photos · face embeddings',
@@ -483,7 +483,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'product-recommendation',
-    title: 'Product *Recommendation* Graph',
+    title: 'Product recommendation graph',
     index: '28 / 32',
     category: 'agents',
     thumbLabel: 'Products · taxonomy graph',
@@ -499,7 +499,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'manuals-llm-extraction',
-    title: 'Manuals to *Structured Data*',
+    title: 'Manuals to structured data',
     index: '29 / 32',
     category: 'llm',
     thumbLabel: 'PDF manuals · typed records',
@@ -515,7 +515,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'multi-format-indexing',
-    title: 'Multi-format *Visual Search*',
+    title: 'Multi-format visual search',
     index: '30 / 32',
     category: 'image',
     thumbLabel: 'PDFs + images · ColPali',
@@ -531,7 +531,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'slides-to-speech',
-    title: 'Slides to *Narrated Search*',
+    title: 'Slides to narrated search',
     index: '31 / 32',
     category: 'image',
     thumbLabel: 'Slides · vision + TTS',
@@ -547,7 +547,7 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'sec-edgar-analytics',
-    title: 'SEC Filing *Hybrid Search*',
+    title: 'SEC filing hybrid search',
     index: '32 / 32',
     category: 'search',
     thumbLabel: 'Filings · vector + full-text',
@@ -578,37 +578,60 @@ export const findExample = (slug: string): ExampleCard | undefined =>
 
 // Sidebar facets shown on the listing — every entry is demonstrated by a
 // runnable example in EXAMPLE_CATALOG below (keep the two in sync).
-export const SIDEBAR_TARGETS = ['Postgres', 'Qdrant', 'LanceDB', 'Turbopuffer', 'Neo4j', 'FalkorDB', 'SurrealDB', 'Kafka', 'Local FS'];
-export const SIDEBAR_SOURCES = ['Local FS', 'Amazon S3', 'Azure Blob', 'Google Drive', 'OCI Storage', 'Postgres', 'Kafka', 'YouTube', 'HackerNews'];
-export const SIDEBAR_LLMS = ['OpenAI', 'Gemini', 'Any via LiteLLM'];
-export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
-  { slug: 'text-embedding', label: 'Semantic Search 101', count: '★' },
-  { slug: 'index-codebase', label: 'Index Your Codebase', count: '★' },
-  { slug: 'multi-codebase-summarization', label: 'Multi-codebase Summarization', count: '★' },
-  { slug: 'pdf-to-markdown', label: 'PDF → Markdown', count: '★' },
-  { slug: 'podcast-to-knowledge-graph', label: 'Podcasts → Knowledge Graph', count: '★' },
-  { slug: 'docs-to-knowledge-graph', label: 'Docs → Knowledge Graph', count: '★' },
-  { slug: 'meeting-notes-to-knowledge-graph', label: 'Meeting Notes → Knowledge Graph', count: '★' },
-  { slug: 'csv-to-kafka', label: 'CSV → Kafka', count: '★' },
-  { slug: 'pdf-embedding', label: 'Semantic Search over PDFs', count: '★' },
-  { slug: 'image-search', label: 'Search Images by Text', count: '★' },
-  { slug: 'face-recognition', label: 'Build Your Own Face Search', count: '★' },
-  { slug: 'audio-to-text', label: "Audio to Text", count: '★' },
-  { slug: 'hackernews-trending-topics', label: "Trending Topics from HackerNews", count: '★' },
-  { slug: 'paper-metadata', label: "Index Academic Papers", count: '★' },
-  { slug: 'patient-intake-baml', label: "Patient Intake Forms to Typed JSON with BAML", count: '★' },
-  { slug: 'patient-intake-dspy', label: "Patient Intake Forms to Typed JSON with DSPy", count: '★' },
-  { slug: 'postgres-source', label: "Postgres as a Source", count: '★' },
-  { slug: 'files-transform', label: "Transform a Folder of Files", count: '★' },
-  { slug: 'kafka-to-lancedb', label: "Consume Kafka into LanceDB", count: '★' },
-  { slug: 'entire-session-search', label: "Search Your AI Coding Sessions", count: '★' },
-  { slug: 'image-search-colpali', label: "Image Search with ColPali", count: '★' },
-  { slug: 'product-recommendation', label: "Product Recommendation Graph", count: '★' },
-  { slug: 'manuals-llm-extraction', label: "Manuals to Structured Data", count: '★' },
-  { slug: 'multi-format-indexing', label: "Multi-format Visual Search", count: '★' },
-  { slug: 'slides-to-speech', label: "Slides to Narrated Search", count: '★' },
-  { slug: 'sec-edgar-analytics', label: "SEC Filing Hybrid Search", count: '★' },
+/** Tag kinds exposed as filters on the listing, in display order. */
+export type FacetKind = 'src' | 'tgt' | 'llm' | 'lvl';
+export const FACETS: Array<{ kind: FacetKind; label: string; any: string }> = [
+  { kind: 'src', label: 'Source', any: 'Any source' },
+  { kind: 'tgt', label: 'Target', any: 'Any target' },
+  { kind: 'llm', label: 'Model',  any: 'Any model' },
+  { kind: 'lvl', label: 'Level',  any: 'Any level' },
 ];
+
+const LEVEL_ORDER = ['Starter', 'Intermediate', 'Advanced'];
+
+/** Distinct values for one facet, with how many examples carry each, derived
+ *  from the tag data so a filter can never point at zero examples. Levels keep
+ *  their difficulty order; everything else sorts by count, then name. */
+export const facetValues = (kind: FacetKind): Array<{ label: string; count: number }> => {
+  const counts = new Map<string, number>();
+  for (const ex of examples) {
+    for (const label of new Set(ex.tags.filter((t) => t.kind === kind).map((t) => t.label))) {
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+  }
+  const rows = Array.from(counts, ([label, count]) => ({ label, count }));
+  if (kind === 'lvl') return rows.sort((a, b) => LEVEL_ORDER.indexOf(a.label) - LEVEL_ORDER.indexOf(b.label));
+  return rows.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+};
+
+/** Values of one facet on one example, for the card's data-* filter hooks. */
+export const facetOf = (ex: ExampleCard, kind: FacetKind): string[] =>
+  Array.from(new Set(ex.tags.filter((t) => t.kind === kind).map((t) => t.label)));
+
+/** The example's pipeline, source → transform → model → target, drawn from its
+ *  tags. Ops tags that describe a mode or a serving layer rather than a step
+ *  (live mode, incremental, an API) are left out. `compact` keeps three nodes
+ *  for cards: source → the transform (or the model) → target. */
+export type PipelineStage = { role: 'src' | 'ops' | 'llm' | 'tgt'; caption: string; label: string };
+const NOT_A_STEP = new Set(['Live mode', 'Incremental', 'Vector index', 'pgvector', 'FastAPI', 'Custom source', 'OCI Streaming (live)']);
+export const pipelineStages = (ex: ExampleCard, compact = false): PipelineStage[] => {
+  const first = (kind: PipelineStage['role']) =>
+    ex.tags.find((t) => t.kind === kind && !(kind === 'ops' && NOT_A_STEP.has(t.label)))?.label;
+  const ops = first('ops');
+  const roles: Array<[PipelineStage['role'], string]> = compact
+    ? [['src', 'Source'], ops ? ['ops', 'Transform'] : ['llm', 'Model'], ['tgt', 'Target']]
+    : [['src', 'Source'], ['ops', 'Transform'], ['llm', 'Model'], ['tgt', 'Target']];
+  const out: PipelineStage[] = [];
+  for (const [role, caption] of roles) {
+    const label = first(role);
+    if (label && !out.some((s) => s.label === label)) out.push({ role, caption, label });
+  }
+  return out;
+};
+
+/** Time estimate from footMeta ("~6 min"). */
+export const timeOf = (ex: ExampleCard): string => ex.footMeta.split('·')[0].trim();
+export const levelOf = (ex: ExampleCard): string | null => ex.tags.find((t) => t.kind === 'lvl')?.label ?? null;
 
 // Full catalog of runnable examples in the cocoindex monorepo, used to build the
 // machine-readable index at /docs/llms.txt so agents can see the whole set in one

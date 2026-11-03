@@ -1,0 +1,45 @@
+---
+// "Run it": the shortest real path from clone to result, as one copyable
+// shell block. Steps come from scenes/<slug>.json; the clone line is shared.
+import { sceneMeta } from './scenes/meta';
+import { findExample } from '../../data/examples';
+import { GITHUB_REPO } from '../../consts';
+
+interface Props { slug: string }
+const { slug } = Astro.props;
+const meta = sceneMeta(slug);
+const ex = findExample(slug);
+const dir = ex?.sourceSlug ?? slug;
+const steps = meta?.run ?? [];
+const lines = [
+  { note: 'Get the example', cmd: `git clone --depth 1 ${GITHUB_REPO}.git` },
+  { cmd: `cd cocoindex/examples/${dir}` },
+  ...steps,
+];
+const plain = lines.map((l) => l.cmd).join('\n');
+---
+{steps.length > 0 && (
+  <section class="ex-run" id="run" aria-labelledby="ex-run-h">
+    <div class="ex-run-h">
+      <h2 id="ex-run-h">Run it</h2>
+      {meta?.needs && meta.needs.length > 0 && (
+        <p class="ex-run-needs">Needs {meta.needs.join(', ')}</p>
+      )}
+      <button type="button" class="ex-run-copy" data-copy={plain}>Copy</button>
+    </div>
+    <pre class="ex-run-code"><code>{lines.map((l) => (
+      <>{l.note && <span class="c"># {l.note}{'\n'}</span>}<span class="p" aria-hidden="true">$ </span>{l.cmd}{'\n'}</>
+    ))}</code></pre>
+  </section>
+)}
+<script>
+  document.querySelectorAll<HTMLButtonElement>('.ex-run-copy').forEach((b) => {
+    b.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(b.dataset.copy ?? '');
+        b.textContent = 'Copied';
+        setTimeout(() => { b.textContent = 'Copy'; }, 1600);
+      } catch { b.textContent = 'Select and copy'; }
+    });
+  });
+</script>

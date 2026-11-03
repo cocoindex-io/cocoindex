@@ -1,0 +1,159 @@
+---
+// Search your AI coding sessions: an Entire checkpoints worktree laid out as
+// <checkpoint_id[:2]>/<checkpoint_id[2:]>/<session_idx>/ with the four files
+// process_file routes on (full.jsonl, prompt.txt, context.md, metadata.json),
+// the two tables it fills (entire.session_embeddings, entire.session_metadata)
+// and the README's query. The example ships no sample checkpoints, so the
+// checkpoint id and the conversation text are illustrative; file names,
+// routing, content types, roles, columns and the result line format are the
+// source's. Session 1/ is the new session picked up live (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="es">
+    <div class="sc-row es-top">
+      <div class="sc-col es-src">
+        <span class="sc-cap">Entire checkpoints</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>entire_checkpoints/</div>
+          <div class="sc-panel-b es-tree">
+            <div class="sc-li es-d"><span class="sc-ico i-folder"></span><span>a3/f19c0e7d2b/</span></div>
+            <div class="sc-li es-d es-i1"><span class="sc-ico i-folder"></span><span>0/</span></div>
+            <div class="sc-li es-d es-i1 sc-delta"><span class="sc-ico i-folder"></span><span>1/</span><span class="sc-dmark">Δ</span></div>
+            <div class="sc-li es-i2"><span class="sc-ico i-stream"></span><span>full.jsonl</span></div>
+            <div class="sc-li es-i2"><span class="sc-ico i-file"></span><span>prompt.txt</span></div>
+            <div class="sc-li es-i2"><span class="sc-ico i-file"></span><span>context.md</span></div>
+            <div class="sc-li es-i2"><span class="sc-ico i-json"></span><span>metadata.json</span></div>
+          </div>
+        </div>
+        <span class="sc-live">cocoindex update -L main</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col es-route">
+        <span class="sc-cap">process_file routes on the file name</span>
+        <div class="sc-panel"><div class="es-rt">
+          <span class="sc-chip is-strong">full.jsonl</span><span class="es-to"></span><span class="es-out"><span class="es-ct2">transcript <span class="sc-dim">user · assistant</span></span><span class="es-op">parse_transcript</span></span>
+          <span class="sc-chip is-strong">prompt.txt</span><span class="es-to"></span><span class="es-out"><span class="es-ct2">prompt <span class="sc-dim">user</span></span><span class="es-op">embedded whole</span></span>
+          <span class="sc-chip is-strong">context.md</span><span class="es-to"></span><span class="es-out"><span class="es-ct2">context</span><span class="es-op">RecursiveSplitter</span></span>
+          <span class="sc-chip is-strong">metadata.json</span><span class="es-to"></span><span class="es-out"><span class="es-ct2"><span class="es-meta">session_metadata row</span></span><span class="es-op">json.loads</span></span>
+        </div></div>
+        <div class="es-turn">
+          <span class="sc-cap es-fine">One line of full.jsonl, one transcript row</span>
+          <pre class="sc-code">{'{'}<span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"login returns 401 after the token refresh, fix the auth bug"</span>{'}'}</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="sc-row es-tables">
+      <div class="sc-col es-emb">
+        <span class="sc-cap">Postgres + pgvector</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>entire.session_embeddings<span class="es-model">all-MiniLM-L6-v2</span></div>
+          <table class="sc-table">
+            <thead><tr><th class="es-s">session_index</th><th class="es-ct">content_type</th><th class="es-r">role</th><th class="es-tx">text</th></tr></thead>
+            <tbody>
+              <tr><td class="sc-dim es-s">0</td><td class="es-ct">prompt</td><td class="sc-dim es-r">user</td><td class="sc-dim es-tx">add rate limiting to …</td></tr>
+              <tr><td class="sc-dim es-s">0</td><td class="es-ct">context</td><td class="sc-dim es-r"></td><td class="sc-dim es-tx"># Session summary …</td></tr>
+              <tr class="sc-delta"><td class="es-s"><span class="sc-dtext">1</span></td><td class="es-ct">transcript</td><td class="es-r">user</td><td class="es-tx"><span class="sc-dtext">login returns 401 after …</span></td></tr>
+              <tr class="sc-delta"><td class="es-s"><span class="sc-dtext">1</span></td><td class="es-ct">transcript</td><td class="es-r">assistant</td><td class="es-tx"><span class="sc-dtext">The refresh handler …</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="sc-col es-mt">
+        <span class="sc-cap">&nbsp;</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>entire.session_metadata</div>
+          <div class="sc-panel-b es-cols">
+            <span>checkpoint_id</span><span>session_index</span><span>prompt_summary</span><span>total_tokens</span><span>files_touched</span><span>agent_percentage</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="es-search">
+      <span class="sc-cap">Find it again</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "how did I fix the auth bug"</span></div>
+      <div class="sc-panel"><div class="sc-panel-b es-hits">
+        <div class="sc-hit"><span class="r">1</span><span><span class="src">a3f19c0e7d2b/1 (transcript/assistant)</span><span class="sc-quote sc-clip2">The refresh handler saved the new token after the retry, so the retry still sent the old one. Moved the save before the retry.</span></span></div>
+        <div class="sc-hit"><span class="r">2</span><span><span class="src">a3f19c0e7d2b/1 (transcript/user)</span><span class="sc-quote sc-clip2">login returns 401 after the token refresh, fix the auth bug</span></span></div>
+      </div></div>
+    </div>
+  </div>
+) : (
+  <div class="es-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel es-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>a3/f19c0e7d2b/1/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-stream"></span><span>full.jsonl</span></div>
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>prompt.txt</span></div>
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>context.md</span></div>
+          <div class="sc-li"><span class="sc-ico i-json"></span><span>metadata.json</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col es-card-q">
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>"how did I fix the auth bug"</span></div>
+        <div class="sc-panel"><div class="sc-panel-b">
+          <span class="sc-li"><span>transcript/assistant</span></span>
+          <span class="sc-quote sc-clip2">The refresh handler saved the new token after the retry…</span>
+        </div></div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .es { display: flex; flex-direction: column; gap: 18px; }
+  .es-top { gap: 10px; }
+  .es-src { flex: 0.72 1 0; }
+  .es-route { flex: 1.28 1 0; }
+  .es .sc-li { font-size: 12px; }
+  .es-tree { gap: 1px; }
+  .es-d { color: var(--sc-muted); }
+  .es-i1 { margin-left: 10px; }
+  .es-i2 { margin-left: 26px; }
+  .es-fine { font-weight: 400; }
+
+  /* the router: file → what it becomes, with the operation under it */
+  .es-rt { display: grid; grid-template-columns: auto 14px minmax(0, 1fr); align-items: center; gap: 8px 10px; padding: 10px; }
+  .es-to { width: 14px; height: 14px; background: #5E5E5E; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Cpath d='M2 9h13M10.5 4.5 15 9l-4.5 4.5' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Cpath d='M2 9h13M10.5 4.5 15 9l-4.5 4.5' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; }
+  .es-out { display: flex; flex-direction: column; min-width: 0; font-family: var(--mono); line-height: 1.35; }
+  .es-ct2 { font-size: 12px; color: var(--sc-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .es-op { font-size: 11.5px; color: var(--sc-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .es-turn { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .es-turn .sc-code { text-overflow: ellipsis; contain: inline-size; }
+
+  .es-tables { gap: 10px; }
+  .es-emb { flex: 1.6 1 0; }
+  .es-mt { flex: 0.8 1 0; }
+  .es-model { margin-left: auto; padding-left: 8px; font-family: var(--sans); font-size: 11.5px; color: var(--sc-dim); }
+  .es-s { width: 100px; }
+  .es-ct { width: 92px; }
+  .es-r { width: 76px; }
+  .es-cols { gap: 3px; font-family: var(--mono); font-size: 12px; color: var(--sc-muted); }
+  .es-cols span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .es-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .es-hits { gap: 0; }
+
+  .es-card { height: 100%; display: flex; align-items: center; }
+  .es-card > .sc-row { width: 100%; }
+  .es-card-src { flex: 0.72 1 0; }
+  .es-card-q { flex: 1.28 1 0; }
+  .es-card .sc-query, .es-card .sc-panel { contain: inline-size; }
+  .es-card .sc-quote { font-size: 11px; }
+
+  @container (max-width: 560px) {
+    .es-mt .sc-cap { display: none; }
+    .es-rt { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .es-rt .es-to { display: none; }
+    .es-rt .sc-chip { justify-self: start; }
+    .es-out { margin: 0 0 6px 10px; }
+    .es-r, .es-tx { display: none; }
+    .es-s { width: 50%; }
+    .es-model { display: none; }
+  }
+</style>

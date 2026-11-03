@@ -1,0 +1,11 @@
+{
+  "alt": "Rows of the Postgres table source_products (category, name, description, price, amount) are read one by one; process_product composes full_description from category, name and description, computes total_value as price times amount, embeds the description with all-MiniLM-L6-v2 and writes each row to coco_examples_v1.output with pgvector; after an UPDATE to the Wireless Headphones description only that row is re-embedded, and the query \"wireless headphones\" returns Electronics | Wireless Headphones | 50 | 9999.5.",
+  "needs": ["Docker (for Postgres with pgvector)", "psql", "Python 3.11+"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Create source_products with the sample rows", "cmd": "psql \"postgres://cocoindex:cocoindex@localhost/cocoindex\" -f ./prepare_source_data.sql" },
+    { "note": "Build the target table (re-run after the source changes)", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"wireless headphones\"" }
+  ]
+}

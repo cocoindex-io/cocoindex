@@ -1,0 +1,136 @@
+---
+// Embed OCI Object Storage: the hero is the bucket plus the live path.
+// Bucket, prefix and topic names come from .env.example (OCI_BUCKET=
+// cocoindex-example-data, OCI_PREFIX=markdown_files/, OCI_STREAMING_TOPIC=
+// cocoindex-example-data-events); object names are the sample files the
+// other examples ship under markdown_files/. Live mode is real here: with the
+// four OCI_STREAMING_* vars set, `cocoindex update -L main` consumes the
+// Kafka-compatible stream, and for each event the connector re-reads the
+// object (head_object) and applies an update (present) or a delete (404).
+// Target: coco_examples.oci_object_storage_doc_embeddings (Postgres +
+// pgvector, no vector index). rfc8259.md is the changed object (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="oc">
+    <div class="sc-row">
+      <div class="sc-col oc-src">
+        <span class="sc-cap">OCI Object Storage</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>cocoindex-example-data</div>
+          <div class="sc-panel-b">
+            <span class="oc-pre">markdown_files/</span>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>1810.04805v2.md</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <span class="sc-cap oc-fine">namespace: OCI_NAMESPACE · auth: ~/.oci/config</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col oc-wide">
+        <span class="sc-cap">Chunk, embed, store in Postgres + pgvector</span>
+        <div class="oc-ops">
+          <span class="sc-chip"><span class="sc-ico i-code"></span>list_objects</span>
+          <span class="sc-chip"><span class="sc-ico i-code"></span>RecursiveSplitter</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>all-MiniLM-L6-v2</span>
+        </div>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>oci_object_storage_doc_embeddings</div>
+          <table class="sc-table">
+            <thead><tr><th>filename</th><th class="oc-n">chunk_start</th></tr></thead>
+            <tbody>
+              <tr><td>1706.03762v7.md</td><td class="sc-dim oc-n">0</td></tr>
+              <tr><td>1810.04805v2.md</td><td class="sc-dim oc-n">0</td></tr>
+              <tr class="sc-delta"><td>rfc8259.md</td><td class="oc-n"><span class="sc-dtext">0</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="oc-live">
+      <div class="oc-live-h">
+        <span class="sc-live">Live with OCI Streaming</span>
+        <code class="oc-cmd">cocoindex update -L main</code>
+      </div>
+      <div class="sc-row oc-lane">
+        <div class="sc-panel oc-step">
+          <div class="sc-panel-h"><span class="sc-ico i-stream"></span>OCI Streaming topic</div>
+          <div class="sc-panel-b"><span class="oc-topic">cocoindex-example-data-events</span><div class="sc-li sc-delta"><span class="sc-dtext">event: rfc8259.md</span></div></div>
+        </div>
+        <span class="sc-to"></span>
+        <div class="sc-panel oc-step">
+          <div class="sc-panel-h"><span class="sc-ico i-search"></span>head_object</div>
+          <div class="sc-panel-b"><span class="oc-say">Re-read the object; the event type is never trusted</span></div>
+        </div>
+        <span class="sc-to"></span>
+        <div class="sc-panel oc-step">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>apply</div>
+          <div class="sc-panel-b oc-out">
+            <span class="sc-li sc-delta"><span class="sc-dtext">present → update rows</span></span>
+            <span class="sc-li"><span>404 → delete rows</span></span>
+          </div>
+        </div>
+      </div>
+      <p class="oc-foot">Without the OCI_STREAMING_* settings, <code>cocoindex update main</code> scans the bucket once and exits. Then search: <code>python main.py "what is self-attention?"</code></p>
+    </div>
+  </div>
+) : (
+  <div class="oc-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel oc-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>cocoindex-example-data</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+          <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span></div>
+          <span class="sc-live">OCI Streaming</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel oc-card-dst">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span>pgvector</div>
+        <div class="sc-panel-b">
+          <span class="sc-mono">oci_object_storage_doc_embeddings</span>
+          <span class="sc-cap">rows follow each object event</span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .oc { display: flex; flex-direction: column; gap: 18px; }
+  .oc > .sc-row { gap: 10px; }
+  .oc-src { flex: 1 1 0; }
+  .oc-wide { flex: 1.5 1 0; }
+  .oc .sc-li { font-size: 12px; }
+  .oc-pre { font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); padding: 0 0 2px; }
+  .oc-fine { font-weight: 400; }
+  .oc-ops { display: flex; flex-wrap: wrap; gap: 6px; }
+  .oc-n { width: 92px; text-align: right; }
+  .oc-live { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .oc-live-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .oc-cmd { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); }
+  .oc-lane { gap: 10px; }
+  .oc-step { flex: 1 1 0; }
+  .oc-step:first-child { flex: 1.3 1 0; }
+  .oc-topic { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); overflow-wrap: anywhere; }
+  .oc-say { font-size: 12px; line-height: 1.45; color: var(--sc-muted); }
+  .oc-out { gap: 2px; }
+  .oc-foot { margin: 0; font-size: 12px; line-height: 1.5; color: var(--sc-dim); }
+  .oc-foot code { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); overflow-wrap: anywhere; }
+
+  @container (max-width: 560px) {
+    .oc-step, .oc-step:first-child { flex: none; }
+  }
+
+  .oc-card { height: 100%; display: flex; align-items: center; }
+  .oc-card { min-width: 0; contain: inline-size; }
+  .oc-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
+  .oc-card-src { flex: 1 1 0; }
+  .oc-card-dst { flex: 1.1 1 0; }
+  .oc-card .sc-live { font-size: 11px; }
+  .oc-card .sc-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>

@@ -1,0 +1,226 @@
+---
+// Product recommendation graph: a product JSON in, an instructor + LiteLLM
+// extraction of what it is and what pairs with it, then the Neo4j graph of
+// Product and Taxonomy nodes and the README's Cypher recommendation query.
+// Content is the example's own: products/p1.json (Pilot G2 gel pens),
+// p4.json (spiral notepad), p2.json (multi-purpose paper), openai/gpt-4.1,
+// the two relationship types, and the README's query and answer.
+// p4.json is the edited file (Δ): only its node and its edge re-derive.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+
+type N = { id: string; x: number; y: number; kind: string; label: string; place?: 'c' | 'l' | 'r'; at?: number; max?: number; delta?: boolean };
+type E = { from: string; to: string; rel: string; t?: number; delta?: boolean; dash?: boolean };
+const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
+  const at = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const pc = (v: number, total: number) => `${((v / total) * 100).toFixed(3)}%`;
+  return {
+    W, H,
+    nodes: nodes.map((n) => {
+      const place = n.place ?? 'c';
+      const pos = place === 'c' ? `left:${pc(n.x, W)};transform:translate(-50%,-50%)`
+        : place === 'l' ? `left:${pc(n.at ?? 0, W)};transform:translateY(-50%)`
+        : `right:${pc(W - (n.at ?? W), W)};transform:translateY(-50%)`;
+      return { ...n, style: `top:${pc(n.y, H)};${pos}`, lstyle: n.max ? `max-width:${n.max}px` : '' };
+    }),
+    edges: edges.map((e) => {
+      const a = at[e.from], b = at[e.to];
+      const t = e.t ?? 0.5;
+      const m = t <= 0.6 ? t + 0.2 : t - 0.24;
+      const p = (k: number) => [a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k];
+      const [mx, my] = p(m), [lx, ly] = p(t);
+      return { ...e, d: `M${a.x} ${a.y} L${mx.toFixed(1)} ${my.toFixed(1)} L${b.x} ${b.y}`, lstyle: `left:${pc(lx, W)};top:${pc(ly, H)}`, fromN: a, toN: b };
+    }),
+  };
+};
+
+const hero = layout(632, 236, [
+  { id: 'p1', x: 120, y: 82, kind: 'Product', label: 'Pilot G2 Premium Gel Roller Pens', place: 'l', at: 0, max: 150 },
+  { id: 'p4', x: 120, y: 196, kind: 'Product', label: 'Premium Spiral Notepad, A5 Size', place: 'l', at: 0, max: 150, delta: true },
+  { id: 'gel', x: 560, y: 30, kind: 'Taxonomy', label: 'gel pen', place: 'r', at: 632 },
+  { id: 'ink', x: 560, y: 106, kind: 'Taxonomy', label: 'ink refill', place: 'r', at: 632 },
+  { id: 'nb', x: 560, y: 196, kind: 'Taxonomy', label: 'notebook', place: 'r', at: 632 },
+], [
+  { from: 'p1', to: 'gel', rel: 'PRODUCT_TAXONOMY', t: 0.56 },
+  { from: 'p1', to: 'ink', rel: 'PRODUCT_COMPLEMENTARY_TAXONOMY', t: 0.56, dash: true },
+  { from: 'p1', to: 'nb', rel: 'PRODUCT_COMPLEMENTARY_TAXONOMY', t: 0.6, dash: true },
+  { from: 'p4', to: 'nb', rel: 'PRODUCT_TAXONOMY', t: 0.36, delta: true },
+]);
+
+const card = layout(250, 136, [
+  { id: 'p1', x: 70, y: 30, kind: '', label: 'Pilot G2 Premium Gel Roller Pens', place: 'l', at: 0, max: 122 },
+  { id: 'p4', x: 70, y: 106, kind: '', label: 'Premium Spiral Notepad', place: 'l', at: 0, max: 122 },
+  { id: 'ink', x: 205, y: 30, kind: '', label: 'ink refill', place: 'r', at: 250 },
+  { id: 'nb', x: 205, y: 106, kind: '', label: 'notebook', place: 'r', at: 250 },
+], [
+  { from: 'p1', to: 'ink', rel: '', dash: true },
+  { from: 'p1', to: 'nb', rel: '', dash: true },
+  { from: 'p4', to: 'nb', rel: '' },
+]);
+const g = size === 'hero' ? hero : card;
+const mk = `pr-${size}`;
+const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.edges.find((e) => e.from === id)!.fromN, edges: g.edges.filter((e) => e.from === id) }));
+---
+{size === 'hero' ? (
+  <div class="pr">
+    <div class="sc-row">
+      <div class="sc-col">
+        <span class="sc-cap">Source</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-json"></span>products/p1.json</div>
+<pre class="sc-code pr-json">{'{'}
+  <span class="s">"title"</span>: <span class="s">"Pilot G2 Premium Gel Roller Pens, Fine Point, 0.7mm…"</span>,
+  <span class="s">"price"</span>: <span class="s">"$4.99"</span>,
+  <span class="s">"highlights"</span>: [<span class="s">"Refillable design reduces waste…"</span>]
+{'}'}</pre>
+        </div>
+        <div class="sc-row sc-keep pr-files">
+          <span class="sc-chip">p1.json</span>
+          <span class="sc-chip">p2.json</span>
+          <span class="sc-chip sc-delta"><span class="sc-dtext">p4.json</span><span class="sc-dmark">Δ</span></span>
+          <span class="sc-cap pr-fine">9 sample products</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col">
+        <span class="sc-cap">LLM extraction</span>
+        <div class="sc-panel">
+          <div class="sc-panel-b">
+            <span class="sc-li"><span class="sc-ico i-model"></span><span>extract_taxonomy</span><span class="sc-meta">openai/gpt-4.1</span></span>
+            <span class="sc-cap pr-fine">instructor + LiteLLM → ProductTaxonomyInfo</span>
+          </div>
+<pre class="sc-code pr-out"><span class="s">"taxonomies"</span>: [<span class="s">"gel pen"</span>],
+<span class="s">"complementary_taxonomies"</span>: [
+  <span class="s">"ink refill"</span>, <span class="s">"notebook"</span>]</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="pr-graphwrap">
+      <div class="pr-graph-h">
+        <span class="sc-cap">Neo4j graph</span>
+        <span class="pr-legend"><i class="pr-shape"></i>Product <i class="pr-shape is-pill"></i>Taxonomy <i class="pr-sw"></i>PRODUCT_TAXONOMY <i class="pr-sw is-dash"></i>PRODUCT_COMPLEMENTARY_TAXONOMY</span>
+      </div>
+      <div class="pr-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+        <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+          <defs>
+            <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pr-tip" /></marker>
+            <marker id={`${mk}-d`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pr-tip is-delta" /></marker>
+          </defs>
+          {g.edges.map((e) => (
+            <path d={e.d} class:list={[{ 'is-delta': e.delta, 'pr-dash': e.dash }]} marker-mid={`url(#${mk}-${e.delta ? 'd' : 'a'})`} />
+          ))}
+        </svg>
+        {g.nodes.map((n) => (
+          <span class:list={['sc-node pr-node', { 'sc-delta': n.delta, 'is-doc': n.kind === 'Product' }]} style={n.style}>
+            <span class="pr-nl" style={n.lstyle}>{n.label}</span>
+          </span>
+        ))}
+      </div>
+      <ul class="pr-list">
+        {groups.map((gr) => (
+          <li>
+            <span class:list={['sc-node pr-node is-doc', { 'sc-delta': gr.node.delta }]}><span class="pr-nl">{gr.node.label}</span></span>
+            {gr.edges.map((e) => (
+              <span class="pr-sub">
+                <span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>{e.rel}</span>
+                <span class="pr-to"><span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>→</span><span class="sc-node pr-node"><span class="pr-nl">{e.toN.label}</span></span></span>
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+
+    <div class="pr-ask">
+      <span class="sc-cap">Recommend for a gel pen</span>
+<pre class="sc-code"><span class="k">MATCH</span> (:<span class="f">Taxonomy</span> {'{'}value: <span class="s">"gel pen"</span>{'}'})&lt;-[:<span class="n">PRODUCT_TAXONOMY</span>]-(:<span class="f">Product</span>)
+      -[:<span class="n">PRODUCT_COMPLEMENTARY_TAXONOMY</span>]-&gt;(need:<span class="f">Taxonomy</span>)
+<span class="k">MATCH</span> (rec:<span class="f">Product</span>)-[:<span class="n">PRODUCT_TAXONOMY</span>]-&gt;(need)
+<span class="k">RETURN DISTINCT</span> rec.title</pre>
+      <div class="sc-panel">
+        <table class="sc-table">
+          <thead><tr><th>rec.title</th></tr></thead>
+          <tbody>
+            <tr><td>Premium Spiral Notepad, A5 Size, 100 Pages, College Ruled, Hard Cover</td></tr>
+            <tr><td>Multi-Purpose Paper, 8.5" x 11", 20 lbs., 92 Bright, 500 Sheets/Ream, White (SPLMPP500)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="pr-card">
+    <div class="sc-panel pr-card-src">
+      <div class="sc-panel-h"><span class="sc-ico i-json"></span>products/</div>
+      <div class="sc-panel-b">
+        <span class="sc-li"><span>p1.json</span></span>
+        <span class="sc-li"><span>p2.json</span></span>
+        <span class="sc-li"><span>p4.json</span></span>
+      </div>
+    </div>
+    <span class="sc-to"></span>
+    <div class="pr-graph pr-card-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+      <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+        <defs>
+          <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pr-tip" /></marker>
+        </defs>
+        {g.edges.map((e) => <path d={e.d} class:list={[{ 'pr-dash': e.dash }]} marker-mid={`url(#${mk}-a)`} />)}
+      </svg>
+      {g.nodes.map((n) => (
+        <span class:list={['sc-node pr-node', { 'is-doc': n.place === 'l' }]} style={n.style}><span class="pr-nl" style={n.lstyle}>{n.label}</span></span>
+      ))}
+      <span class="sc-edge pr-card-cap">complementary</span>
+    </div>
+  </div>
+)}
+
+<style>
+  .pr { display: flex; flex-direction: column; gap: 18px; }
+  .pr > .sc-row { gap: 10px; }
+  .pr-fine { font-weight: 400; }
+  .pr-json, .pr-out { border: 0; border-radius: 0; background: transparent; }
+  .pr-out { border-top: 1px solid var(--sc-line); }
+  .pr-files { flex-wrap: wrap; align-items: center; gap: 6px; }
+  .pr-files .sc-chip { padding: 3px 7px; }
+  .pr-files .sc-cap { margin-left: 2px; }
+
+  .pr-graphwrap { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pr-graph-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .pr-legend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sc-dim); }
+  .pr-sw { display: inline-block; width: 18px; border-top: 1px solid rgba(255, 255, 255, 0.45); margin-left: 6px; }
+  .pr-sw.is-dash { border-top-style: dashed; }
+  .pr-shape { display: inline-block; width: 12px; height: 9px; margin-left: 6px; border: 1px solid var(--sc-line-2); border-radius: 2px; }
+  .pr-shape.is-pill { border-radius: 999px; }
+  .pr-legend { flex-wrap: wrap; justify-content: flex-end; }
+  .pr-graph { position: relative; width: 100%; }
+  .pr-graph .sc-wires path.pr-dash { stroke-dasharray: 4 3; }
+  .pr-tip { fill: rgba(255, 255, 255, 0.4); stroke: none !important; }
+  .pr-tip.is-delta { fill: var(--sc-delta); }
+  .pr-node { position: absolute; max-width: 48%; }
+  /* opaque Δ fill (10% periwinkle over the panel) so wires stay under the node */
+  .pr-node.sc-delta { background: #1E1E29 !important; }
+  .pr-nl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-elabel { position: absolute; transform: translate(-50%, -50%); padding: 1px 5px; background: #0C0C0C; border-radius: 4px; white-space: nowrap; }
+  .pr-list { display: none; margin: 0; padding: 0; list-style: none; flex-direction: column; gap: 8px; }
+  .pr-list li { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+  .pr-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; max-width: calc(100% - 12px); margin-left: 12px; padding-left: 10px; border-left: 1px solid var(--sc-line-2); }
+  .pr-list .pr-node { position: static; max-width: 100%; }
+  .pr-to { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+  .pr-to > .sc-node { min-width: 0; }
+
+  .pr-ask { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+
+  @container (max-width: 560px) {
+    .pr-graph, .pr-legend { display: none; }
+    .pr-list { display: flex; }
+    .pr .sc-table td { white-space: normal; overflow-wrap: anywhere; }
+    .pr-list .pr-nl { white-space: normal; overflow-wrap: anywhere; }
+  }
+
+  .pr-card { height: 100%; display: flex; align-items: center; gap: 10px; }
+  .pr-card-src { flex: 0 0 92px; }
+  .pr-card-graph { flex: 1 1 auto; min-width: 0; }
+  .pr-card .pr-node { max-width: none; }
+  .pr-card-cap { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 1px 5px; background: #0C0C0C; }
+</style>

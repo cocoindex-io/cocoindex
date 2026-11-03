@@ -1,0 +1,83 @@
+---
+// Hydrates the `.mermaid-figure` markup emitted by @cocoindex/brand/remark-mermaid.
+// A local copy of the brand renderer with the docs' own theme: gray edges and
+// hairline nodes on the panel ground. Edges are structure, not change, so
+// nothing here uses the Δ accent. Fine-tuning lives in site.css §7.
+---
+<script>
+  const renderMermaidDiagrams = async () => {
+    const nodes = Array.from(document.querySelectorAll<HTMLElement>('.mermaid:not([data-processed="true"])'));
+    if (nodes.length === 0) return;
+
+    const { default: mermaid } = await import('mermaid');
+    const sans = getComputedStyle(document.documentElement).getPropertyValue('--sans').trim() || 'sans-serif';
+
+    const ground = '#0a0a0a';
+    const panel = '#0f0f0f';
+    const node = '#141414';
+    const raised = '#1a1a1a';
+    const edge = '#2e2e2e';
+    const line = '#8a8a8a';
+    const ink = '#ededed';
+    const muted = '#a1a1a1';
+
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'base',
+      themeVariables: {
+        fontFamily: sans,
+        fontSize: '14px',
+        background: panel,
+        primaryColor: node,
+        mainBkg: node,
+        primaryTextColor: ink,
+        nodeTextColor: ink,
+        primaryBorderColor: edge,
+        nodeBorder: edge,
+        lineColor: line,
+        defaultLinkColor: line,
+        secondaryColor: raised,
+        secondaryBorderColor: edge,
+        secondaryTextColor: ink,
+        tertiaryColor: ground,
+        tertiaryBorderColor: edge,
+        tertiaryTextColor: muted,
+        clusterBkg: ground,
+        clusterBorder: edge,
+        titleColor: ink,
+        edgeLabelBackground: panel,
+        noteBkgColor: node,
+        noteTextColor: muted,
+        noteBorderColor: edge,
+        // sequence diagrams
+        actorBkg: node,
+        actorBorder: edge,
+        actorTextColor: ink,
+        actorLineColor: edge,
+        signalColor: line,
+        signalTextColor: ink,
+        labelBoxBkgColor: raised,
+        labelBoxBorderColor: edge,
+        labelTextColor: ink,
+        loopTextColor: muted,
+        activationBkgColor: raised,
+        activationBorderColor: edge,
+        sequenceNumberColor: ground,
+      },
+    });
+
+    try {
+      await mermaid.run({ nodes });
+    } catch (error) {
+      console.error('Failed to render Mermaid diagram', error);
+      nodes.forEach((n) => n.closest('.mermaid-figure')?.classList.add('mermaid-figure-error'));
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', renderMermaidDiagrams, { once: true });
+  } else {
+    renderMermaidDiagrams();
+  }
+</script>

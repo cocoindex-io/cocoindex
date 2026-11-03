@@ -1,0 +1,208 @@
+---
+// Docs to a knowledge graph: three Markdown docs become Document nodes, the
+// concepts they name become shared Entity nodes, and LLM-extracted triples
+// become RELATIONSHIP edges with the predicate on the edge. Content is the
+// example's own: markdown_files/ (all three name CocoIndex, so one shared
+// Entity), the triples quoted in the walkthrough and the field examples in
+// main.py ("CocoIndex" supports "Incremental Processing"), openai/gpt-5-mini,
+// and the README's "How concepts relate" query. incremental_processing.md is
+// the edited file (Δ): its Document node and MENTION edge re-derive.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+
+type N = { id: string; x: number; y: number; kind: string; label: string; place?: 'c' | 'l' | 'r'; at?: number; max?: number; delta?: boolean; doc?: boolean };
+type E = { from: string; to: string; rel: string; t?: number; delta?: boolean; dash?: boolean };
+const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
+  const at = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const pc = (v: number, total: number) => `${((v / total) * 100).toFixed(3)}%`;
+  return {
+    W, H,
+    nodes: nodes.map((n) => {
+      const place = n.place ?? 'c';
+      const pos = place === 'c' ? `left:${pc(n.x, W)};transform:translate(-50%,-50%)`
+        : place === 'l' ? `left:${pc(n.at ?? 0, W)};transform:translateY(-50%)`
+        : `right:${pc(W - (n.at ?? W), W)};transform:translateY(-50%)`;
+      return { ...n, style: `top:${pc(n.y, H)};${pos}`, lstyle: n.max ? `max-width:${n.max}px` : '' };
+    }),
+    edges: edges.map((e) => {
+      const a = at[e.from], b = at[e.to];
+      const t = e.t ?? 0.5;
+      const m = t <= 0.6 ? t + 0.2 : t - 0.24;
+      const p = (k: number) => [a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k];
+      const [mx, my] = p(m), [lx, ly] = p(t);
+      return { ...e, d: `M${a.x} ${a.y} L${mx.toFixed(1)} ${my.toFixed(1)} L${b.x} ${b.y}`, lstyle: `left:${pc(lx, W)};top:${pc(ly, H)}`, fromN: a, toN: b };
+    }),
+  };
+};
+
+const hero = layout(632, 270, [
+  { id: 'inc', x: 120, y: 40, kind: 'Document', label: 'incremental_processing.md', place: 'l', at: 0, doc: true, delta: true },
+  { id: 'st', x: 120, y: 135, kind: 'Document', label: 'sources_and_targets.md', place: 'l', at: 0, doc: true },
+  { id: 'kg', x: 120, y: 230, kind: 'Document', label: 'knowledge_graph.md', place: 'l', at: 0, doc: true },
+  { id: 'coco', x: 318, y: 100, kind: 'Entity', label: 'CocoIndex' },
+  { id: 'ip', x: 482, y: 40, kind: 'Entity', label: 'Incremental Processing' },
+  { id: 'cd', x: 518, y: 150, kind: 'Entity', label: 'change detection' },
+  { id: 'tr', x: 338, y: 230, kind: 'Entity', label: 'triple' },
+  { id: 'rel', x: 536, y: 230, kind: 'Entity', label: 'relationship' },
+], [
+  { from: 'inc', to: 'coco', rel: 'MENTION', t: 0.56, dash: true, delta: true },
+  { from: 'st', to: 'coco', rel: 'MENTION', t: 0.56, dash: true },
+  { from: 'kg', to: 'coco', rel: 'MENTION', t: 0.56, dash: true },
+  { from: 'kg', to: 'tr', rel: 'MENTION', t: 0.5, dash: true },
+  { from: 'coco', to: 'ip', rel: 'supports', t: 0.46 },
+  { from: 'ip', to: 'cd', rel: 'relies on', t: 0.5 },
+  { from: 'tr', to: 'rel', rel: 'becomes', t: 0.46 },
+]);
+
+const card = layout(300, 140, [
+  { id: 'inc', x: 60, y: 22, kind: '', label: 'incremental_processing.md', place: 'l', at: 0, max: 128, doc: true },
+  { id: 'st', x: 60, y: 70, kind: '', label: 'sources_and_targets.md', place: 'l', at: 0, max: 128, doc: true },
+  { id: 'kg', x: 60, y: 118, kind: '', label: 'knowledge_graph.md', place: 'l', at: 0, max: 128, doc: true },
+  { id: 'coco', x: 196, y: 70, kind: '', label: 'CocoIndex' },
+  { id: 'ip', x: 300, y: 22, kind: '', label: 'Incremental Processing', place: 'r', at: 300 },
+  { id: 'cd', x: 300, y: 118, kind: '', label: 'change detection', place: 'r', at: 300 },
+], [
+  { from: 'inc', to: 'coco', rel: '', dash: true },
+  { from: 'st', to: 'coco', rel: '', dash: true },
+  { from: 'kg', to: 'coco', rel: '', dash: true },
+  { from: 'coco', to: 'ip', rel: 'supports' },
+  { from: 'coco', to: 'cd', rel: '' },
+]);
+const g = size === 'hero' ? hero : card;
+const mk = `dk-${size}`;
+const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.edges.find((e) => e.from === id)!.fromN, edges: g.edges.filter((e) => e.from === id) }));
+---
+{size === 'hero' ? (
+  <div class="dk">
+    <div class="dk-graphwrap">
+      <div class="dk-graph-h">
+        <span class="sc-cap">Neo4j concept graph</span>
+        <span class="dk-legend"><i class="dk-sw"></i>RELATIONSHIP, predicate on the edge <i class="dk-sw is-dash"></i>MENTION</span>
+      </div>
+      <div class="dk-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+        <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+          <defs>
+            <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="dk-tip" /></marker>
+            <marker id={`${mk}-d`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="dk-tip is-delta" /></marker>
+          </defs>
+          {g.edges.map((e) => (
+            <path d={e.d} class:list={[{ 'is-delta': e.delta, 'dk-dash': e.dash }]} marker-mid={`url(#${mk}-${e.delta ? 'd' : 'a'})`} />
+          ))}
+        </svg>
+        {g.edges.map((e) => <span class:list={['sc-edge dk-elabel', { 'sc-dtext': e.delta, 'is-pred': !e.dash }]} style={e.lstyle}>{e.rel}</span>)}
+        {g.nodes.map((n) => (
+          <span class:list={['sc-node dk-node', { 'sc-delta': n.delta, 'is-doc': n.doc }]} style={n.style}>
+            <span class="sc-kind">{n.kind}</span><span class="dk-nl" style={n.lstyle}>{n.label}</span>
+          </span>
+        ))}
+      </div>
+      <ul class="dk-list">
+        {groups.map((gr) => (
+          <li>
+            <span class:list={['sc-node dk-node', { 'sc-delta': gr.node.delta, 'is-doc': gr.node.doc }]}><span class="sc-kind">{gr.node.kind}</span><span class="dk-nl">{gr.node.label}</span></span>
+            {gr.edges.map((e) => (
+              <span class="dk-sub">
+                <span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>{e.rel}</span>
+                <span class="dk-to"><span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>→</span><span class="sc-node dk-node"><span class="dk-nl">{e.toN.label}</span></span></span>
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+
+    <div class="sc-row dk-foot">
+      <div class="sc-col">
+        <span class="sc-cap">Source and LLM extraction</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>incremental_processing.md</span><span class="sc-dmark">Δ</span></div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>knowledge_graph.md</span></div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>sources_and_targets.md</span></div>
+          </div>
+          <div class="sc-panel-b dk-llm">
+            <span class="sc-li"><span class="sc-ico i-model"></span><span>extract_relationships</span></span>
+            <span class="sc-cap dk-fine">instructor + LiteLLM, openai/gpt-5-mini → (subject, predicate, object)</span>
+          </div>
+        </div>
+        <p class="sc-quote dk-note">Edit one doc and only it goes back to the LLM; the graph pass diffs the rest.</p>
+      </div>
+      <div class="sc-col dk-wide">
+        <span class="sc-cap">How concepts relate</span>
+<pre class="sc-code"><span class="k">MATCH</span> (a:<span class="f">Entity</span>)-[r:<span class="n">RELATIONSHIP</span>]-&gt;(b:<span class="f">Entity</span>)
+<span class="k">RETURN</span> a.value, r.predicate, b.value</pre>
+        <div class="sc-panel">
+          <table class="sc-table">
+            <thead><tr><th>a.value</th><th class="dk-p">r.predicate</th><th>b.value</th></tr></thead>
+            <tbody>
+              <tr><td>CocoIndex</td><td class="sc-dim dk-p">supports</td><td>Incremental Processing</td></tr>
+              <tr><td>Incremental Processing</td><td class="sc-dim dk-p">relies on</td><td>change detection</td></tr>
+              <tr><td>triple</td><td class="sc-dim dk-p">becomes</td><td>relationship</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="dk-card">
+    <div class="dk-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+      <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+        <defs>
+          <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="dk-tip" /></marker>
+        </defs>
+        {g.edges.map((e) => <path d={e.d} class:list={[{ 'dk-dash': e.dash }]} marker-mid={`url(#${mk}-a)`} />)}
+      </svg>
+      {g.edges.filter((e) => e.rel).map((e) => <span class="sc-edge dk-elabel is-pred" style={e.lstyle}>{e.rel}</span>)}
+      {g.nodes.map((n) => (
+        <span class:list={['sc-node dk-node', { 'is-doc': n.doc }]} style={n.style}><span class="dk-nl" style={n.lstyle}>{n.label}</span></span>
+      ))}
+    </div>
+  </div>
+)}
+
+<style>
+  .dk { display: flex; flex-direction: column; gap: 18px; }
+  .dk-graphwrap { display: flex; flex-direction: column; gap: 12px; }
+  .dk-graph-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .dk-legend { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); }
+  .dk-sw { display: inline-block; width: 18px; border-top: 1px solid rgba(255, 255, 255, 0.45); margin-left: 6px; }
+  .dk-sw.is-dash { border-top-style: dashed; }
+  .dk-graph { position: relative; width: 100%; }
+  .dk-graph .sc-wires path.dk-dash { stroke-dasharray: 3 3; stroke: rgba(255, 255, 255, 0.16); }
+  .dk-graph .sc-wires path.dk-dash.is-delta { stroke: var(--sc-delta); }
+  .dk-tip { fill: rgba(255, 255, 255, 0.4); stroke: none !important; }
+  .dk-tip.is-delta { fill: var(--sc-delta); }
+  .dk-node { position: absolute; }
+  .dk-node.sc-delta { background: #1E1E29 !important; }
+  .dk-graph .dk-node.is-doc { flex-direction: column; align-items: flex-start; gap: 1px; padding: 5px 10px 6px; }
+  .dk-nl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dk-elabel { position: absolute; transform: translate(-50%, -50%); padding: 1px 5px; background: #0C0C0C; border-radius: 4px; white-space: nowrap; }
+  .dk-elabel.is-pred { color: var(--sc-muted); font-size: 12px; }
+
+  .dk-list { display: none; margin: 0; padding: 0; list-style: none; flex-direction: column; gap: 10px; }
+  .dk-list li { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+  .dk-list .dk-node { position: static; max-width: 100%; }
+  .dk-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; max-width: calc(100% - 12px); margin-left: 12px; padding-left: 10px; border-left: 1px solid var(--sc-line-2); }
+  .dk-to { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+  .dk-to > .sc-node { min-width: 0; }
+
+  .dk-foot { gap: 14px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .dk-foot > .sc-col:first-child { flex: 0.72 1 0; }
+  .dk-wide { flex: 1.5 1 0; }
+  .dk-wide .sc-table td { font-size: 11.5px; }
+  .dk-llm { border-top: 1px solid var(--sc-line); }
+  .dk-fine { font-weight: 400; }
+  .dk-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+  .dk-p { width: 19%; }
+
+  @container (max-width: 560px) {
+    .dk-graph, .dk-legend { display: none; }
+    .dk-list { display: flex; }
+    .dk .sc-table td { white-space: normal; overflow-wrap: anywhere; }
+  }
+
+  .dk-card { height: 100%; display: flex; align-items: center; }
+  .dk-card .dk-graph { flex: 1 1 auto; }
+</style>

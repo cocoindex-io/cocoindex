@@ -1,0 +1,130 @@
+---
+// Audio to text: an audio file beside the transcript row it becomes in
+// Postgres. Real pieces: LiteLLMTranscriber("whisper-1"), the
+// AudioTranscription(filename, text) row, the coco_examples.audio_transcriptions
+// table keyed by filename, and the README's psql check. The file names are the
+// sample recordings shipped with the Rust twin (examples/rust/audio_to_text);
+// the Python example ships an empty audio_files/. Transcript words are drawn as
+// text lines, not quoted, because the repo has no reference transcript.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+// a fixed, decorative waveform (bar heights in px), not data
+const wave = [6, 10, 16, 9, 22, 28, 18, 12, 24, 30, 20, 14, 8, 12, 20, 26, 16, 10, 18, 24, 14, 8, 12, 18, 10, 6, 14, 22, 16, 9, 6, 4];
+---
+{size === 'hero' ? (
+  <div class="at">
+    <div class="sc-row at-main">
+      <div class="sc-col at-src">
+        <span class="sc-cap">Audio file in audio_files/</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-audio"></span><span class="sc-t">greeting.wav</span></div>
+          <div class="at-wave" aria-hidden="true">
+            {wave.map((h) => <i style={`height:${h}px`}></i>)}
+          </div>
+        </div>
+        <span class="sc-cap at-fine">.wav .mp3 .m4a .flac .ogg and more</span>
+      </div>
+
+      <span class="sc-to"></span>
+
+      <div class="sc-col at-op">
+        <span class="sc-cap">Transcribe</span>
+        <span class="sc-chip">LiteLLMTranscriber</span>
+        <span class="sc-chip is-strong">"whisper-1"</span>
+        <span class="sc-chip">.transcribe(file)</span>
+        <span class="sc-cap at-fine">Swap the model with one string</span>
+      </div>
+
+      <span class="sc-to"></span>
+
+      <div class="sc-col at-row">
+        <span class="sc-cap">One row per file</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-code"></span><span class="sc-t">AudioTranscription</span></div>
+          <div class="sc-panel-b at-rec">
+            <div class="at-field"><span class="at-k">filename</span><span class="at-v">greeting.wav</span></div>
+            <div class="at-field is-text"><span class="at-k">text</span>
+              <span class="at-ph">the words spoken in greeting.wav, as whisper-1 returns them</span>
+            </div>
+          </div>
+        </div>
+        <span class="sc-cap at-fine">primary key: filename</span>
+      </div>
+    </div>
+
+    <div class="at-sql">
+      <span class="sc-cap">Query the transcripts with plain SQL</span>
+      <div class="sc-query"><span class="sc-ico i-db"></span><span>SELECT filename, left(text, 200) AS preview FROM coco_examples.audio_transcriptions ORDER BY filename;</span></div>
+      <div class="sc-panel">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">coco_examples.audio_transcriptions</span></div>
+        <table class="sc-table">
+          <thead><tr><th class="at-fn">filename</th><th>preview</th></tr></thead>
+          <tbody>
+            <tr><td class="at-fn">greeting.wav</td><td><span class="at-ph">transcript</span></td></tr>
+            <tr class="sc-delta"><td class="at-fn"><span class="at-fnwrap"><span class="sc-dtext">pipeline_note.wav</span><span class="sc-dmark">Δ</span></span></td><td><span class="at-ph sc-dtext">new transcript</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sc-quote at-note">Replace a recording and only it is sent to whisper-1 again; unchanged files keep their cached transcript, removed files lose their row.</p>
+    </div>
+  </div>
+) : (
+  <div class="at-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel at-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-audio"></span><span class="sc-t">greeting.wav</span></div>
+        <div class="at-wave is-card" aria-hidden="true">
+          {wave.slice(4, 26).map((h) => <i style={`height:${Math.round(h * 0.7)}px`}></i>)}
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col">
+        <span class="sc-chip is-strong at-card-chip">whisper-1</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">audio_transcriptions</span></div>
+          <div class="sc-panel-b">
+            <div class="at-field"><span class="at-k">filename</span><span class="at-v">greeting.wav</span></div>
+            <div class="at-field"><span class="at-k">text</span><span class="at-ph">transcript of the file</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .sc-panel-h > .sc-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .at { display: flex; flex-direction: column; gap: 18px; }
+  .at-main { gap: 10px; }
+  .at-src { flex: 1 1 0; }
+  .at-op { flex: none; width: 168px; }
+  .at-op .sc-chip { justify-content: center; overflow: hidden; text-overflow: ellipsis; }
+  .at-row { flex: 1.15 1 0; }
+  .at-fine { font-weight: 400; }
+  .at-src .at-fine { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .at-wave { display: flex; align-items: center; justify-content: center; gap: 2px; height: 76px; padding: 0 10px; }
+  .at-wave i { display: block; flex: 0 0 3px; border-radius: 2px; background: var(--sc-muted); }
+  .at-wave.is-card { height: 52px; gap: 2px; }
+
+  .at-rec { gap: 8px; }
+  .at-field { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; align-items: baseline; font-family: var(--mono); font-size: 12px; min-width: 0; }
+  .at-field.is-text { align-items: start; }
+  .at-k { color: var(--sc-dim); }
+  .at-v { color: var(--sc-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .at-sql { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .at-fn { width: 46%; }
+  .at-fnwrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .at-fnwrap > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .at-fnwrap .sc-dmark { height: 16px; min-width: 16px; }
+  .at-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+
+  .at-card { height: 100%; display: flex; align-items: center; }
+  .at-card > .sc-row { width: 100%; align-items: center; }
+  .at-card-src { flex: 0.9 1 0; }
+  .at-card-chip { align-self: flex-start; }
+  .at-card .at-field { font-size: 11px; grid-template-columns: 56px minmax(0, 1fr); }
+  .at-ph { font-family: var(--sans); font-size: 12px; font-style: italic; color: var(--sc-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .at-ph.sc-dtext { color: var(--sc-delta-text); }
+</style>
