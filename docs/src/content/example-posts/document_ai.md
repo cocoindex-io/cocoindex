@@ -89,7 +89,7 @@ doc_embeddings = data_scope.add_collector()
 
 [→ Source](https://cocoindex.io/docs-v0/sources)
 
-[→ Collector](https://cocoindex.io/docs-v0/ops/collectors)
+[→ Collector](https://cocoindex.io/docs-v0/core/flow_def/#data-collector)
 
 ### Process each document
 

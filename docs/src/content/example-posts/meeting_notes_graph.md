@@ -195,7 +195,7 @@ with document["meetings"].row() as meeting:
 
 Importantly, this step also benefits from incremental processing. Since `ExtractByLlm` is a heavy step, we keep the output in cache, and as long as inputs (input data text, model, output type definition) have no change, we reuse the cached output without re-running the LLM.
 
-[→ ExtractByLlm](https://cocoindex.io/docs-v0/functions/extract_by_llm)
+[→ ExtractByLlm](https://cocoindex.io/docs-v0/ops/functions/#extractbyllm)
 
 ![Extract metadata](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/metadata.png)
 

@@ -125,13 +125,13 @@ export const sidebar: SidebarItem[] = [
 // Legacy Docusaurus URLs → new slugs. Fed into astro.config.mjs `redirects`.
 // Astro expects entries keyed by full path (`base` is auto-applied).
 export const redirects: Record<string, string> = {
-  '/core/initialization': '/core/settings',
-  '/core/custom_function': '/custom_ops/custom_functions',
-  '/ops/storages': '/targets',
-  '/about/contributing': '/contributing/guide',
-  '/ops/targets': '/targets',
-  '/ops/sources': '/sources',
-  '/http_server': '/cocoinsight_access',
+  '/core/initialization': '/docs-v0/core/settings/',
+  '/core/custom_function': '/docs-v0/custom_ops/custom_functions/',
+  '/ops/storages': '/docs-v0/targets/',
+  '/about/contributing': '/docs-v0/contributing/guide/',
+  '/ops/targets': '/docs-v0/targets/',
+  '/ops/sources': '/docs-v0/sources/',
+  '/http_server': '/docs-v0/cocoinsight_access/',
 };
 
 // Flatten the tree for prev/next pager computation.
