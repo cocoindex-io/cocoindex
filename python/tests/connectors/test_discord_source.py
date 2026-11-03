@@ -2003,6 +2003,22 @@ class TestThreadMemoKey:
             raw, starter=starter
         )
 
+    def test_message_fields_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A forum post has no starter, so only the message fields its
+        # messages are parsed with can tell the two apart.
+        raw = _raw_thread(_POST_ID, _FORUM_ID)
+        content_only = ("content", "id")
+        default = _thread_fingerprint(raw)
+        assert _thread_fingerprint(raw, message_fields=content_only) != default
+        assert _thread_fingerprint(
+            raw, message_fields=content_only
+        ) == _thread_fingerprint(raw, message_fields=content_only)
+        # A later version that adds a message field changes the default too.
+        monkeypatch.setattr(
+            _source, "_MESSAGE_FIELDS", (*_source._MESSAGE_FIELDS, "poll")
+        )
+        assert _thread_fingerprint(raw) != default
+
     @pytest.mark.asyncio
     async def test_context_not_in_key(self) -> None:
         # Two Apps' contexts differ, and fingerprinting one would raise.

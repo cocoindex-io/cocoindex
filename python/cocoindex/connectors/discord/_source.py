@@ -1133,8 +1133,14 @@ class DiscordThread:
         return "\n".join(lines)
 
     def __coco_memo_key__(self) -> object:
-        # Every field, then the starter. The API context isn't content.
-        return (self._data, self._starter)
+        # Every field, then the starter, then the names of the fields its
+        # messages expose: messages() and the text depend on them too, so a
+        # change to the channel's message_fields, or a version that adds a
+        # message field, reruns the thread. The API context isn't content.
+        message_fields = (
+            _MESSAGE_FIELDS if self._message_fields is None else self._message_fields
+        )
+        return (self._data, self._starter, message_fields)
 
 
 # ============================================================================
