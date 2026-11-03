@@ -940,7 +940,7 @@ class DiscordThread:
     rename, new tags, an archive or unarchive, a lock or a pin. The messages
     inside aren't part of that, so an edit or a reaction inside the thread
     waits for the thread's next change, such as Discord archiving it, which
-    on a quiet server can take days.
+    Discord does on its own schedule and, on a quiet server, may never do.
 
     A field the channel's ``thread_fields`` leaves out holds ``None``, or
     ``()`` for ``tags``; ``id`` is always set.
