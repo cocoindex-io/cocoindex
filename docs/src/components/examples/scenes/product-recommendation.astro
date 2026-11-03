@@ -35,8 +35,8 @@ const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
 };
 
 const hero = layout(632, 236, [
-  { id: 'p1', x: 120, y: 82, kind: 'Product', label: 'Pilot G2 Premium Gel Roller Pens', place: 'l', at: 0, max: 150 },
-  { id: 'p4', x: 120, y: 196, kind: 'Product', label: 'Premium Spiral Notepad, A5 Size', place: 'l', at: 0, max: 150, delta: true },
+  { id: 'p1', x: 120, y: 82, kind: 'Product', label: 'Pilot G2 gel pens', place: 'l', at: 0, max: 150 },
+  { id: 'p4', x: 120, y: 196, kind: 'Product', label: 'Spiral notepad', place: 'l', at: 0, max: 150, delta: true },
   { id: 'gel', x: 560, y: 30, kind: 'Taxonomy', label: 'gel pen', place: 'r', at: 632 },
   { id: 'ink', x: 560, y: 106, kind: 'Taxonomy', label: 'ink refill', place: 'r', at: 632 },
   { id: 'nb', x: 560, y: 196, kind: 'Taxonomy', label: 'notebook', place: 'r', at: 632 },
@@ -48,8 +48,8 @@ const hero = layout(632, 236, [
 ]);
 
 const card = layout(250, 136, [
-  { id: 'p1', x: 70, y: 30, kind: '', label: 'Pilot G2 Premium Gel Roller Pens', place: 'l', at: 0, max: 122 },
-  { id: 'p4', x: 70, y: 106, kind: '', label: 'Premium Spiral Notepad', place: 'l', at: 0, max: 122 },
+  { id: 'p1', x: 70, y: 30, kind: '', label: 'Pilot G2 gel pens', place: 'l', at: 0, max: 122 },
+  { id: 'p4', x: 70, y: 106, kind: '', label: 'Spiral notepad', place: 'l', at: 0, max: 122 },
   { id: 'ink', x: 205, y: 30, kind: '', label: 'ink refill', place: 'r', at: 250 },
   { id: 'nb', x: 205, y: 106, kind: '', label: 'notebook', place: 'r', at: 250 },
 ], [
@@ -69,9 +69,9 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
         <div class="sc-panel">
           <div class="sc-panel-h"><span class="sc-ico i-json"></span>products/p1.json</div>
 <pre class="sc-code pr-json">{'{'}
-  <span class="s">"title"</span>: <span class="s">"Pilot G2 Premium Gel Roller Pens, Fine Point, 0.7mm…"</span>,
+  <span class="s">"title"</span>: <span class="s">"Pilot G2 Premium Gel…"</span>,
   <span class="s">"price"</span>: <span class="s">"$4.99"</span>,
-  <span class="s">"highlights"</span>: [<span class="s">"Refillable design reduces waste…"</span>]
+  <span class="s">"highlights"</span>: [<span class="s">"Refillable…"</span>]
 {'}'}</pre>
         </div>
         <div class="sc-row sc-keep pr-files">
@@ -180,6 +180,7 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
   .pr > .sc-row { gap: 10px; }
   .pr-fine { font-weight: 400; }
   .pr-json, .pr-out { border: 0; border-radius: 0; background: transparent; }
+  .pr-json { white-space: pre-wrap; overflow-wrap: anywhere; }
   .pr-out { border-top: 1px solid var(--sc-line); }
   .pr-files { flex-wrap: wrap; align-items: center; gap: 6px; }
   .pr-files .sc-chip { padding: 3px 7px; }

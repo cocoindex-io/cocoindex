@@ -25,7 +25,7 @@ const { size = 'hero' } = Astro.props;
               <span class="pd-pl">DOB (MM/DD/YYYY): 07/22/1992</span>
               <span class="pd-pl">Address: 456 Oak Avenue</span>
               <span class="pd-pl">City: Denver</span>
-                            <span class="pd-pn">page 1 · png</span>
+              <span class="pd-pn">page 1 · png</span>
             </div>
             <div class="pd-page">
               <span class="pd-ph">Medical History Summary</span>
@@ -33,7 +33,7 @@ const { size = 'hero' } = Astro.props;
               <span class="pd-pl">Albuterol inhaler</span>
               <span class="pd-pl">Penicillin</span>
               <span class="pd-pl">Tonsillectomy (2000)</span>
-                            <span class="pd-pn">page 2 · png</span>
+              <span class="pd-pn">page 2 · png</span>
             </div>
             <div class="pd-page">
               <span class="pd-ph">Consent &amp; Signature</span>
@@ -92,8 +92,8 @@ const { size = 'hero' } = Astro.props;
   <div class="pd-card">
     <div class="sc-row sc-keep">
       <div class="pd-pages is-card">
-        <div class="pd-page"><span class="pd-ph">page 1</span><span class="pd-pl">Emily Carter</span><span class="pd-pl">07/22/1992</span></div>
-        <div class="pd-page"><span class="pd-ph">page 2</span><span class="pd-pl">Asthma</span><span class="pd-pl">Penicillin</span></div>
+        <div class="pd-page"><span class="pd-ph">page 1</span><span class="pd-pl">Emily Carter</span><span class="pd-pl">07/22/1992</span><span class="pd-pl">Denver</span></div>
+        <div class="pd-page"><span class="pd-ph">page 2</span><span class="pd-pl">Asthma</span><span class="pd-pl">Albuterol inhaler</span><span class="pd-pl">Penicillin</span></div>
       </div>
       <span class="sc-to"></span>
       <div class="sc-col pd-card-out">
@@ -142,8 +142,8 @@ const { size = 'hero' } = Astro.props;
   }
   .pd-card { height: 100%; display: flex; align-items: center; }
   .pd-card > .sc-row { width: 100%; align-items: center; }
-  .pd-pages.is-card { flex: 1 1 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 0; }
-  .pd-pages.is-card .pd-page { min-height: 112px; padding: 7px 7px; gap: 3px; }
+  .pd-pages.is-card { flex: 1 1 0; align-self: center; align-items: start; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 0; }
+  .pd-pages.is-card .pd-page { min-height: 0; padding: 7px 8px 8px; gap: 3px; }
   .pd-pages.is-card .pd-ph, .pd-pages.is-card .pd-pl { font-size: 11px; }
   .pd-pages.is-card .pd-ph { font-family: var(--mono); font-weight: 400; color: var(--sc-dim); }
   .pd-card-out { flex: 1 1 0; gap: 6px; align-items: flex-start; }

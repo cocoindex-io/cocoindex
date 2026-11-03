@@ -28,7 +28,7 @@ const plain = lines.map((l) => l.cmd).join('\n');
       <button type="button" class="ex-run-copy" data-copy={plain}>Copy</button>
     </div>
     <pre class="ex-run-code"><code>{lines.map((l) => (
-      <>{l.note && <span class="c"># {l.note}{'\n'}</span>}<span class="p" aria-hidden="true">$ </span>{l.cmd}{'\n'}</>
+      <>{l.note && <span class="ln c"># {l.note}{'\n'}</span>}<span class="ln"><span class="p" aria-hidden="true">$ </span>{l.cmd}{'\n'}</span></>
     ))}</code></pre>
   </section>
 )}

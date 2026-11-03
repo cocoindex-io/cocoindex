@@ -72,7 +72,7 @@
 
 /* code: a line or two of the example's own Python */
 .sc-code { margin: 0; padding: 8px 10px; font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--sc-ink); background: #0A0A0A; border: 1px solid var(--sc-line); border-radius: 6px; white-space: pre; overflow: hidden; }
-.sc-code .k { color: #8E96FF; } .sc-code .f { color: #79C0FF; } .sc-code .s { color: #9ED9B3; } .sc-code .n { color: #F9C78B; } .sc-code .c { color: #8A8A8A; }
+.sc-code .k { color: #FFFFFF; font-weight: 500; } .sc-code .f { color: #79C0FF; } .sc-code .s { color: #9ED9B3; } .sc-code .n { color: #F9C78B; } .sc-code .c { color: #8A8A8A; }
 .sc-card .sc-code { font-size: 11px; padding: 6px 8px; }
 
 /* tables: target rows */

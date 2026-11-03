@@ -3,6 +3,7 @@
 // model that embeds both images and text (openai/clip-vit-large-patch14,
 // 768-d per the README), the Qdrant collection ImageSearch with its filename
 // payload, and the README's query "long neck" returning the giraffe first.
+// The payload filename is str(file.file_path.path), which includes img/.
 // Runs live inside api.py, so giraffe.jpg is the photo dropped in (Δ).
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
@@ -49,16 +50,16 @@ const photos = [
         <div class="sc-panel">
           <div class="sc-panel-h"><span class="sc-ico i-db"></span>ImageSearch</div>
           <table class="sc-table">
-            <thead><tr><th class="is-id">id</th><th>filename</th></tr></thead>
+            <thead><tr><th>payload filename</th></tr></thead>
             <tbody>
-              <tr><td class="sc-dim is-id">uuid5</td><td>img/cat1.jpeg</td></tr>
-              <tr><td class="sc-dim is-id">uuid5</td><td>img/dog1.jpeg</td></tr>
-              <tr><td class="sc-dim is-id">uuid5</td><td>img/elephant1.jpg</td></tr>
-              <tr class="sc-delta"><td class="sc-dim is-id">uuid5</td><td><span class="sc-dtext">img/giraffe.jpg</span></td></tr>
+              <tr><td>img/cat1.jpeg</td></tr>
+              <tr><td>img/dog1.jpeg</td></tr>
+              <tr><td>img/elephant1.jpg</td></tr>
+              <tr class="sc-delta"><td><span class="sc-dtext">img/giraffe.jpg</span></td></tr>
             </tbody>
           </table>
         </div>
-        <span class="sc-cap is-fine">One point per photo, cosine distance</span>
+        <span class="sc-cap is-fine">One point per photo, id = uuid5 of the path, cosine distance</span>
       </div>
     </div>
 
@@ -94,7 +95,7 @@ const photos = [
         <div class="sc-query"><span class="sc-ico i-search"></span><span>long neck</span></div>
         <div class="is-chit">
           <img src={`${B}/giraffe.webp`} width="320" height="180" alt="" loading="lazy" decoding="async" />
-          <span class="sc-mono">1 · giraffe.jpg</span>
+          <span class="sc-mono">1 · img/giraffe.jpg</span>
         </div>
       </div>
     </div>
@@ -104,15 +105,15 @@ const photos = [
 <style>
   .is { display: flex; flex-direction: column; gap: 18px; }
   .is-top { gap: 10px; }
-  .is-src { flex: 1.08 1 0; }
-  .is-mid { flex: 1.1 1 0; }
-  .is-tgt { flex: 1.05 1 0; }
+  .is-src { flex: 1.15 1 0; }
+  .is-mid { flex: 1.2 1 0; }
+  .is-tgt { flex: 0.9 1 0; }
   .is-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .is-tile { position: relative; margin: 0; border: 1px solid var(--sc-line); border-radius: 7px; overflow: hidden; background: var(--sc-panel); }
   .is-tile img { display: block; width: 100%; height: 72px; object-fit: cover; }
   .is-tile.sc-delta { border-color: var(--sc-delta) !important; }
-  .is-name { display: flex; align-items: center; gap: 6px; padding: 4px 6px; font-family: var(--mono); font-size: 11.5px; color: var(--sc-muted); min-width: 0; }
-  .is-name > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .is-name { display: flex; align-items: center; gap: 6px; padding: 4px 6px; font-family: var(--mono); font-size: 12px; color: var(--sc-muted); min-width: 0; }
+  .is-name > span:first-child { min-width: 0; overflow-wrap: anywhere; }
   .is-mark { position: absolute; top: 5px; right: 5px; }
   .is-model { white-space: normal; align-items: flex-start; line-height: 1.35; }
   .is-model .sc-ico { margin-top: 1px; }
@@ -120,7 +121,7 @@ const photos = [
   .is-sub { font-size: 12px; color: var(--sc-dim); padding-left: 22px; margin-top: -3px; }
   .is-mid .sc-li { font-size: 12px; }
   .is-fine { font-weight: 400; }
-  .is-id { width: 56px; }
+  .is-tgt .sc-table td { white-space: normal; overflow-wrap: anywhere; }
   .is-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
   .is-res { gap: 14px; align-items: center; }
   .is-hit { margin: 0; flex: 0 0 240px; border: 1px solid var(--sc-line-2); border-radius: 8px; overflow: hidden; background: var(--sc-panel); }

@@ -37,7 +37,7 @@ const { size = 'hero' } = Astro.props;
           <span class="sc-chip"><span class="sc-ico i-model"></span>all-MiniLM-L6-v2</span>
         </div>
         <div class="sc-panel">
-          <div class="sc-panel-h"><span class="sc-ico i-table"></span>oci_object_storage_doc_embeddings</div>
+          <div class="sc-panel-h oc-tbl"><span class="sc-ico i-table"></span><span>coco_examples.<wbr />oci_object_storage_doc_embeddings</span></div>
           <table class="sc-table">
             <thead><tr><th>filename</th><th class="oc-n">chunk_start</th></tr></thead>
             <tbody>
@@ -92,7 +92,7 @@ const { size = 'hero' } = Astro.props;
       <div class="sc-panel oc-card-dst">
         <div class="sc-panel-h"><span class="sc-ico i-table"></span>pgvector</div>
         <div class="sc-panel-b">
-          <span class="sc-mono">oci_object_storage_doc_embeddings</span>
+          <span class="sc-mono">oci_object_storage_<wbr />doc_embeddings</span>
           <span class="sc-cap">rows follow each object event</span>
         </div>
       </div>
@@ -109,6 +109,8 @@ const { size = 'hero' } = Astro.props;
   .oc-pre { font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); padding: 0 0 2px; }
   .oc-fine { font-weight: 400; }
   .oc-ops { display: flex; flex-wrap: wrap; gap: 6px; }
+  .oc-tbl { white-space: normal; }
+  .oc-tbl > span:not(.sc-ico) { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   .oc-n { width: 92px; text-align: right; }
   .oc-live { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
   .oc-live-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
@@ -132,5 +134,5 @@ const { size = 'hero' } = Astro.props;
   .oc-card-src { flex: 1 1 0; }
   .oc-card-dst { flex: 1.1 1 0; }
   .oc-card .sc-live { font-size: 11px; }
-  .oc-card .sc-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .oc-card .sc-mono { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 </style>

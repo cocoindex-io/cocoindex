@@ -55,10 +55,10 @@ const hero = layout(632, 270, [
 ]);
 
 const card = layout(300, 140, [
-  { id: 'inc', x: 60, y: 22, kind: '', label: 'incremental_processing.md', place: 'l', at: 0, max: 128, doc: true },
-  { id: 'st', x: 60, y: 70, kind: '', label: 'sources_and_targets.md', place: 'l', at: 0, max: 128, doc: true },
-  { id: 'kg', x: 60, y: 118, kind: '', label: 'knowledge_graph.md', place: 'l', at: 0, max: 128, doc: true },
-  { id: 'coco', x: 196, y: 70, kind: '', label: 'CocoIndex' },
+  { id: 'inc', x: 60, y: 22, kind: '', label: 'incremental_processing.md', place: 'l', at: 0, max: 184, doc: true },
+  { id: 'st', x: 60, y: 70, kind: '', label: 'sources_and_targets.md', place: 'l', at: 0, max: 184, doc: true },
+  { id: 'kg', x: 60, y: 118, kind: '', label: 'knowledge_graph.md', place: 'l', at: 0, max: 184, doc: true },
+  { id: 'coco', x: 222, y: 70, kind: '', label: 'CocoIndex' },
   { id: 'ip', x: 300, y: 22, kind: '', label: 'Incremental Processing', place: 'r', at: 300 },
   { id: 'cd', x: 300, y: 118, kind: '', label: 'change detection', place: 'r', at: 300 },
 ], [
@@ -142,6 +142,7 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
             </tbody>
           </table>
         </div>
+        <span class="sc-cap dk-fine">Illustrative rows from triples quoted in the walkthrough</span>
       </div>
     </div>
   </div>
@@ -189,13 +190,13 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
   .dk-to > .sc-node { min-width: 0; }
 
   .dk-foot { gap: 14px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
-  .dk-foot > .sc-col:first-child { flex: 0.72 1 0; }
-  .dk-wide { flex: 1.5 1 0; }
-  .dk-wide .sc-table td { font-size: 11.5px; }
+  .dk-foot > .sc-col:first-child { flex: 1 1 0; }
+  .dk-wide { flex: 1.45 1 0; }
+  .dk-wide .sc-table td { font-size: 11.5px; white-space: normal; overflow-wrap: anywhere; }
   .dk-llm { border-top: 1px solid var(--sc-line); }
   .dk-fine { font-weight: 400; }
   .dk-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
-  .dk-p { width: 19%; }
+  .dk-p { width: 22%; }
 
   @container (max-width: 560px) {
     .dk-graph, .dk-legend { display: none; }
