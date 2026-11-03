@@ -1,4 +1,5 @@
 ---
+import ScrollRegions from './ScrollRegions.astro';
 // Mirrors Nav.astro in cocoindex-io.github.io (class names, markup, links)
 // so both sites share the exact same header. The stars island is a plain
 // inline script rather than a React component so we don't need to ship
@@ -110,3 +111,5 @@ const ENTERPRISE = `${SITE_MAIN}/enterprise`;
       .catch(() => { /* offline / rate-limited — leave the em-dash. */ });
   })();
 </script>
+
+<ScrollRegions />

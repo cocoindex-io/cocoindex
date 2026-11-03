@@ -195,7 +195,7 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
         const map = new Map();
         tocItems.forEach((li) => {
           const sel = li.getAttribute('data-target');
-          const el = document.querySelector(sel);
+          const el = sel?.startsWith('#') ? document.getElementById(sel.slice(1)) : null;
           if (el) map.set(el, li);
         });
         const prog = document.getElementById('tocProg');
@@ -271,7 +271,7 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
         padding: 5px 8px; border-radius: 5px;
         transition: color .12s, background .12s;
       }
-      body.ex-detail .ex-side ol li a .n { font-family: var(--mono); font-size: 11px; color: var(--rule-strong); }
+      body.ex-detail .ex-side ol li a .n { font-family: var(--mono); font-size: 11px; color: var(--muted); }
       body.ex-detail .ex-side ol li a .ttl { color: inherit; }
       body.ex-detail .ex-side ol li a:hover { color: var(--coral); background: var(--cream); }
       body.ex-detail .ex-side ol li.on a { color: var(--maroon); background: var(--cream); font-weight: 500; }

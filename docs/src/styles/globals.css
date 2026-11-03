@@ -5,7 +5,7 @@
   --maroon: #532638;
   --maroon-deep: #401E2B;
   --maroon-ink: #2A121B;
-  --coral: #BE5133;
+  --coral: #A13F25;
   --peach: #E59A63;
   --cream: #FCF3D8;
   --cream-soft: #F6F4E9;
@@ -15,7 +15,7 @@
   --paper: #FBF6E8;
   --rule: rgba(42, 18, 27, 0.14);
   --rule-strong: rgba(42, 18, 27, 0.35);
-  --muted: rgba(42, 18, 27, 0.58);
+  --muted: #786667;
 
   --serif: "Source Serif 4", ui-serif, Georgia, serif;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -812,6 +812,9 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
 
 /* Tables — tech docs lean on these for reference material. */
 .prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   width: 100%;
   border-collapse: collapse;
   margin: 20px 0;
@@ -902,3 +905,11 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
   main.content { padding: 32px 24px 64px; }
   .nav-links { display: none; }
 }
+
+/* Long API names must not expand the reading column on phones. */
+.prose, .ex-prose { min-width: 0; overflow-wrap: anywhere; }
+.ex-prose table { display: block; max-width: 100%; overflow-x: auto; }
+
+.callout .body { min-width: 0; }
+
+.prose a, .ex-prose a { text-decoration: underline; text-underline-offset: 0.15em; }

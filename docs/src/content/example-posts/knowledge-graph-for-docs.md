@@ -56,7 +56,7 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                                     included_patterns=["*.md", "*.mdx"]))
 ```
 
-Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs-v0/core/data_types#KTable).
+Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs-v0/core/data_types/#ktable).
 `filename` is the key of the KTable.
 
 [→ Sources](https://cocoindex.io/docs-v0/sources)
@@ -148,7 +148,7 @@ doc["relationships"] = doc["content"].transform(
 )
 ```
 
-`doc["relationships"]` adds a new field `relationships` to each document. `output_type=list[Relationship]` specifies that the output of the transformation is a [LTable](https://cocoindex.io/docs-v0/core/data_types#LTable).
+`doc["relationships"]` adds a new field `relationships` to each document. `output_type=list[Relationship]` specifies that the output of the transformation is a [LTable](https://cocoindex.io/docs-v0/core/data_types/#ltable).
 
 ![Extract Relationships](https://cocoindex.io/blobs/docs/img/examples/docs_to_knowledge_graph/extract_relationship.png)
 

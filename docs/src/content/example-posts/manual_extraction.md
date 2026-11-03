@@ -159,7 +159,7 @@ with data_scope["documents"].row() as doc:
             instruction="Please extract Python module information from the manual."))
 ```
 
-[→ ExtractByLlm](https://cocoindex.io/docs-v0/core/functions#extractbyllm)
+[→ ExtractByLlm](https://cocoindex.io/docs-v0/ops/functions/#extractbyllm)
 
 ![ExtractByLlm](https://cocoindex.io/blobs/docs/img/examples/manual_extraction/extraction.png)
 

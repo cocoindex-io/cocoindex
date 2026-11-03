@@ -55,7 +55,7 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
         refresh_interval=datetime.timedelta(seconds=5))
 ```
 
-Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs-v0/core/data_types#KTable).
+Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs-v0/core/data_types/#ktable).
 `filename` is the key of the KTable.
 
 ## Add data collectors
