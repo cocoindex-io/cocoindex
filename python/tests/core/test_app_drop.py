@@ -1,5 +1,6 @@
 """Tests for App.drop() method."""
 
+import asyncio
 import pytest
 
 import cocoindex as coco
@@ -48,9 +49,9 @@ def test_drop_blocking() -> None:
         },
     }
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
-        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
-        '/@test_target_state/dicts/"D1"/"b"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@"test_target_state/dicts"/"D1"/"a"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D1"/"b"': coco.ROOT_PATH,
     }
 
     # Drop the app
@@ -160,8 +161,8 @@ async def test_drop_allows_rerun() -> None:
         "D2": {"b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True)},
     }
     assert await common.list_target_state_owners(app) == {
-        '/@test_target_state/dicts/"D2"': coco.ROOT_PATH / "dict" / "D2",
-        '/@test_target_state/dicts/"D2"/"b"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D2"': coco.ROOT_PATH / "dict" / "D2",
+        '/@"test_target_state/dicts"/"D2"/"b"': coco.ROOT_PATH,
     }
 
 
@@ -267,8 +268,8 @@ def test_drop_failure_preserves_tracking_for_retry() -> None:
         "tracking records should exist after the initial update"
     )
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
-        '/@test_target_state/dicts/"D1"/"a"': coco.ROOT_PATH,
+        '/@"test_target_state/dicts"/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@"test_target_state/dicts"/"D1"/"a"': coco.ROOT_PATH,
     }
 
     # First drop attempt with a failing sink. Whether or not it raises,
@@ -294,8 +295,16 @@ def test_drop_failure_preserves_tracking_for_retry() -> None:
     # parent store); the leaf entry's delete succeeded, so its owner row is
     # legitimately gone.
     assert common.list_target_state_owners_sync(app) == {
-        '/@test_target_state/dicts/"D1"': coco.ROOT_PATH / "dict" / "D1",
+        '/@"test_target_state/dicts"/"D1"': coco.ROOT_PATH / "dict" / "D1",
     }
+    # Every path the listing still shows must also resolve as a targeted
+    # query, so `cocoindex show <path>` can inspect a stuck delete. The
+    # unmounted component has lost its child-existence entry but keeps its
+    # own entries; it must not be reported as "not found" (#2297 follow-up).
+    for path in paths_after_failed_drop:
+        detail = asyncio.run(coco_inspect.get_stable_path_detail(app, path))
+        assert detail is not None, f"{path} is listed but reported as missing"
+        assert detail.path.to_string() == str(path)
 
     # Healthy retry cleans up properly.
     app.drop_blocking()

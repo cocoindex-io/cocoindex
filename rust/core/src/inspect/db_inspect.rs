@@ -351,43 +351,62 @@ pub struct StablePathDetail {
     pub target_state_items: Vec<TargetStateInfoItemSummary>,
 }
 
-/// Look up the node type for a path via its parent's ChildExistence entry.
+/// Look up a path's node type, or `None` if the path isn't tracked.
+///
+/// Every node — component and intermediate directory alike — is recorded as a
+/// child-existence entry under its parent, which is the authoritative source
+/// of its type. A missing entry does not by itself mean the path doesn't
+/// exist: an unmounted component loses its entry at commit time but keeps its
+/// own entries (tracking info, target-state ownership) until the delete of
+/// its target states succeeds, which may be a later run. Such a path is
+/// reported as a directory, matching the listing walk. Only a path with no
+/// entries of its own is missing. The root always exists.
 fn lookup_node_type(
     db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
     txn: &heed::RoTxn<'_, heed::WithoutTls>,
     path: &StablePath,
-) -> Result<db_schema::StablePathNodeType> {
-    if path.as_ref().is_empty() {
-        return Ok(db_schema::StablePathNodeType::Component);
-    }
+) -> Result<Option<db_schema::StablePathNodeType>> {
     let path_ref: StablePathRef<'_> = path.as_ref();
-    if let Some((parent_ref, key)) = path_ref.split_parent() {
-        let parent_owned: StablePath = parent_ref.into();
-        let cex_key = DbEntryKey::StablePath(
-            parent_owned,
-            StablePathEntryKey::ChildExistence(key.clone()),
-        )
-        .encode()?;
-        if let Some(bytes) = db.get(txn, cex_key.as_slice())? {
-            let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
-            Ok(info.node_type)
-        } else {
-            Ok(db_schema::StablePathNodeType::Directory)
-        }
-    } else {
-        Ok(db_schema::StablePathNodeType::Component)
-    }
+    let Some((parent_ref, key)) = path_ref.split_parent() else {
+        return Ok(Some(db_schema::StablePathNodeType::Component));
+    };
+    let parent_owned: StablePath = parent_ref.into();
+    let cex_key = DbEntryKey::StablePath(
+        parent_owned,
+        StablePathEntryKey::ChildExistence(key.clone()),
+    )
+    .encode()?;
+    let Some(bytes) = db.get(txn, cex_key.as_slice())? else {
+        // An unmounted component whose cleanup hasn't finished has lost its
+        // child-existence entry but keeps its own entries, and the listing
+        // walk still shows it as a directory. Only a path with no entries of
+        // its own is missing.
+        let own_prefix = DbEntryKey::StablePathPrefix(path.as_ref()).encode()?;
+        let has_entries = db
+            .prefix_iter(txn, &own_prefix)?
+            .next()
+            .transpose()?
+            .is_some();
+        return Ok(has_entries.then_some(db_schema::StablePathNodeType::Directory));
+    };
+    let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
+    Ok(Some(info.node_type))
 }
 
-/// Read the detail for a single path within an existing read transaction.
+/// Read the detail for a single path within an existing read transaction,
+/// or `None` if the path isn't tracked.
 fn read_detail_in_txn(
     db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
     txn: &heed::RoTxn<'_, heed::WithoutTls>,
     resolver: &mut TargetKeyResolver,
     path: &StablePath,
-) -> Result<StablePathDetail> {
-    let node_type = lookup_node_type(db, txn, path)?;
-    read_detail_in_txn_at(db, txn, resolver, path, node_type)
+) -> Result<Option<StablePathDetail>> {
+    let Some(node_type) = lookup_node_type(db, txn, path)? else {
+        return Ok(None);
+    };
+    Ok(Some(read_detail_in_txn_at(
+        db, txn, resolver, path, node_type,
+    )?))
 }
 
 /// Like [`read_detail_in_txn`], for callers that already know the node
@@ -445,7 +464,7 @@ pub async fn get_stable_path_detail_from_store(
     let db = store.db();
     let txn = store.read_txn().await?;
     let mut resolver = TargetKeyResolver::new(provider_keys);
-    Ok(Some(read_detail_in_txn(&db, &txn, &mut resolver, path)?))
+    read_detail_in_txn(&db, &txn, &mut resolver, path)
 }
 
 /// Get detailed information about a single stable path from LMDB
@@ -543,7 +562,15 @@ fn list_children_in_txn(
                 queue.push_back(child_path.clone());
             }
 
-            results.push(read_detail_in_txn(db, txn, resolver, &child_path)?);
+            // The child-existence entry already carries the node type, so
+            // read the detail directly instead of looking it up again.
+            results.push(read_detail_in_txn_at(
+                db,
+                txn,
+                resolver,
+                &child_path,
+                info.node_type,
+            )?);
         }
     }
     Ok(results)
@@ -560,7 +587,7 @@ fn list_parents_in_txn(
     let mut current: StablePathRef<'_> = path.as_ref();
     while let Some((parent_ref, _key)) = current.split_parent() {
         let parent_path: StablePath = parent_ref.into();
-        results.push(read_detail_in_txn(db, txn, resolver, &parent_path)?);
+        results.extend(read_detail_in_txn(db, txn, resolver, &parent_path)?);
         current = parent_ref;
     }
     // Reverse so parents appear root-first
@@ -581,13 +608,19 @@ async fn query_details_from_store(
     let txn = store.read_txn().await?;
     let mut resolver = TargetKeyResolver::new(provider_keys);
 
+    // Nothing to report — and no parents or children to walk — when the
+    // requested path isn't tracked.
+    let Some(detail) = read_detail_in_txn(&db, &txn, &mut resolver, path)? else {
+        return Ok(Vec::new());
+    };
+
     let mut results = Vec::new();
 
     if include_parents {
         results.extend(list_parents_in_txn(&db, &txn, &mut resolver, path)?);
     }
 
-    results.push(read_detail_in_txn(&db, &txn, &mut resolver, path)?);
+    results.push(detail);
 
     if include_children {
         results.extend(list_children_in_txn(
@@ -799,6 +832,21 @@ mod tests {
                 Box::pin(async move {
                     for (path, bytes) in &tracking {
                         store.write_tracking_info_raw(wtxn, path, bytes).await?;
+                        // Register the path in the tree the same way a real
+                        // commit does (the existence upsert at the start of
+                        // each build), so it's discoverable by the stable-path
+                        // walk and by existence lookups, and so an ancestor
+                        // that is itself a component is never demoted.
+                        if let Some((parent, key)) = path.as_ref().split_parent() {
+                            store
+                                .ensure_path_node_type(
+                                    wtxn,
+                                    parent,
+                                    key,
+                                    db_schema::StablePathNodeType::Component,
+                                )
+                                .await?;
+                        }
                     }
                     for (ts_path, owner) in &owners {
                         store
@@ -930,6 +978,44 @@ mod tests {
         assert_eq!(rendered, "/@my_root/\"file.md\"");
     }
 
+    /// A path that was never tracked reports "not found" instead of a
+    /// synthesized empty directory entry (issue #2297).
+    #[tokio::test]
+    async fn untracked_paths_are_reported_as_missing() {
+        let (store, _dir) = make_test_store().await;
+        let comp = comp_path("comp");
+        commit_writes(&store, vec![(comp.clone(), tracking_bytes(vec![]))], vec![]).await;
+
+        assert!(
+            get_stable_path_detail_from_store(&store, Default::default(), &comp)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let missing = comp_path("nope");
+        assert!(
+            get_stable_path_detail_from_store(&store, Default::default(), &missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Parents and children of a missing path aren't walked either.
+        assert!(
+            query_details_from_store(&store, Default::default(), &missing, true, true, true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // The root always exists, even in an otherwise empty subtree.
+        assert!(
+            get_stable_path_detail_from_store(&store, Default::default(), &StablePath::root())
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
     /// The streaming detail iterator (one txn, one shared resolver) yields
     /// the same details as the per-path query shape, for every stable path.
     #[tokio::test]
@@ -969,10 +1055,11 @@ mod tests {
                 .into_iter()
                 .collect::<Result<_>>()
                 .unwrap();
-        assert_eq!(streamed.len(), 2);
+        // The root carries its children's existence entries, so it shows up in
+        // the walk alongside the two components.
         assert_eq!(
             streamed.iter().map(|d| d.path.clone()).collect::<Vec<_>>(),
-            vec![comp_c, comp_d]
+            vec![StablePath::root(), comp_c, comp_d]
         );
 
         for detail in &streamed {
@@ -1170,7 +1257,9 @@ mod tests {
 
         // Detail summary renders readable paths (with provider_id suffix).
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let detail = read_detail_in_txn(&db, &txn, &mut resolver, &comp_d).unwrap();
+        let detail = read_detail_in_txn(&db, &txn, &mut resolver, &comp_d)
+            .unwrap()
+            .expect("comp_d exists");
         assert_eq!(detail.target_state_items.len(), 1);
         assert_eq!(
             detail.target_state_items[0].target_state_path,
