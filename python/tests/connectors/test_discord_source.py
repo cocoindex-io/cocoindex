@@ -3,12 +3,15 @@
 Covers the package's public names, ``DiscordApp`` and its internal API client
 (the retry loop, rate-limit pacing, errors and the Message Content intent
 check), parsing messages and threads and rendering their text, and
-``DiscordChannel``'s listing and guards. And end to end, a pipeline run by the
-engine over a fake server: a rerun redoes only the items that changed, and
-errors delete nothing.
+``DiscordChannel``'s listing and guards. And end to end, a pipeline of one
+component per channel and one per item, run by the engine over a fake server:
+a rerun redoes only the items that changed, a channel removed from the
+pipeline loses its entries, and errors delete nothing.
 
 HTTP is faked with ``httpx.MockTransport``; the connector's real request,
-paging and parsing code runs against it.
+paging and parsing code runs against it. The end-to-end pipeline creates its
+``DiscordApp`` in its main function, as a real one does, and ``_setup`` points
+it at the fake there.
 
 Live tests run against a real server and are skipped unless a bot token is
 set.
@@ -20,15 +23,15 @@ import asyncio
 import dataclasses
 import re
 import ssl
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import certifi
 import httpx
 import pytest
 
-import cocoindex
+import cocoindex as coco
 from cocoindex._internal.memo_fingerprint import memo_fingerprint
 from cocoindex.connectors import discord
 from cocoindex.connectors.discord import _source
@@ -40,6 +43,8 @@ from cocoindex.connectors.discord._source import (
     _render_tokens,
 )
 from cocoindex.resources.rate_limit import RateLimiter
+from tests import common
+from tests.common.target_states import GlobalDictTarget, Metrics
 
 # IDs of different lengths, so that comparing them as strings would show.
 _GUILD = "1001"
@@ -208,10 +213,25 @@ class _FakeDiscord:
             self.joined.add(raw_thread["id"])
 
     def post(self, channel_id: str, *messages: dict[str, Any]) -> None:
-        """Add ``messages`` to the channel or thread ``channel_id``."""
-        self.messages.setdefault(channel_id, []).extend(
-            {**message, "channel_id": channel_id} for message in messages
-        )
+        """Add ``messages`` to the channel or thread ``channel_id``. A thread
+        in ``threads`` counts them as Discord does: each but its first
+        message (the stub standing for its starter, or a forum post's opening
+        message, which has the post's ID) adds to its counters and becomes
+        its ``last_message_id``."""
+        posted = [{**message, "channel_id": channel_id} for message in messages]
+        self.messages.setdefault(channel_id, []).extend(posted)
+        if (thread := self.threads.get(channel_id)) is None:
+            return
+        for message in posted:
+            # 21: a starter's stub.
+            if message["type"] != 21 and message["id"] != channel_id:
+                thread["message_count"] += 1
+                thread["total_message_sent"] += 1
+                thread["last_message_id"] = message["id"]
+
+    def message(self, channel_id: str, message_id: str) -> dict[str, Any]:
+        """The message ``message_id`` in ``channel_id``, to change in place."""
+        return next(m for m in self.messages[channel_id] if m["id"] == message_id)
 
     def count(self, path: str) -> int:
         return sum(1 for _, logged, _ in self.requests if logged == path)
@@ -523,7 +543,7 @@ class TestHttpClient:
             "Authorization": "Bot secret",
             "User-Agent": (
                 "DiscordBot (https://github.com/cocoindex-io/cocoindex, "
-                f"{cocoindex.__version__})"
+                f"{coco.__version__})"
             ),
         }
         assert captured["timeout"] == httpx.Timeout(60.0, connect=30.0)
@@ -2039,11 +2059,12 @@ class TestThreadMemoKey:
 # ---------------------------------------------------------------------------
 
 
-def _stub() -> dict[str, Any]:
-    """The first message in ``_THREAD_ID``: a stub standing for the starter,
-    which is in the main stream. It has an ID of its own and no content."""
+def _stub(thread_id: str = _THREAD_ID, stub_id: str = "1024") -> dict[str, Any]:
+    """The first message in the thread ``thread_id``: a stub standing for the
+    starter, which is in the main stream. It has an ID of its own and no
+    content."""
     return _raw_message(
-        "1024", type=21, content="", message_reference=_raw_reference(_THREAD_ID)
+        stub_id, type=21, content="", message_reference=_raw_reference(thread_id)
     )
 
 
@@ -2975,3 +2996,372 @@ class TestGuards:
         async with app:
             items = await _items(_channel(app))
         assert _keys(items) == ["1075"]
+
+
+# ---------------------------------------------------------------------------
+# End to end, through the engine
+# ---------------------------------------------------------------------------
+
+# What the pipeline did; a new _Pipeline clears them.
+_metrics = Metrics()
+_failures: list[BaseException] = []
+
+
+def _record_failure(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+    # Returning carries on with the run, as the engine's default (logging the
+    # failure) does.
+    _failures.append(exc)
+
+
+# On the environment, since each component's context starts from its handler.
+coco_env = common.create_test_env(__file__, exception_handler=_record_failure)
+
+
+@coco.fn(memo=True)
+async def _export_item(item: _Item, channel_id: str) -> None:
+    entry = f"{channel_id}/{item.id}"
+    _metrics.increment(entry)
+    coco.declare_target_state(
+        GlobalDictTarget.target_state(entry, await item.read_text())
+    )
+
+
+@coco.fn
+async def _sync_channel(channel: discord.DiscordChannel) -> None:
+    # Entries are named by the channel's ID, not by the item's channel_id or
+    # parent_id, which a selection can leave out.
+    await coco.mount_each(_export_item, channel.items(), channel.channel_id)
+
+
+class _Run(NamedTuple):
+    """What one run of a ``_Pipeline`` did."""
+
+    # How often _export_item ran, by entry.
+    exported: dict[str, int]
+    # The failed components' errors, sorted, since components run
+    # concurrently.
+    failures: list[str]
+    # The threads whose messages were listed, by ID.
+    threads_listed: list[str]
+
+
+class _Pipeline:
+    """A pipeline run by the engine over ``fake``: one component per channel
+    in ``channel_ids``, each mounting one per item, which exports the item's
+    text to ``GlobalDictTarget`` as entry ``"<channel_id>/<item_id>"``.
+    Tests change ``fake``, ``channel_ids`` and ``message_fields`` between
+    runs."""
+
+    def __init__(
+        self, name: str, fake: _FakeDiscord, channel_ids: Sequence[str]
+    ) -> None:
+        GlobalDictTarget.store.clear()
+        _metrics.clear()
+        _failures.clear()
+        self.fake = fake
+        self.channel_ids = list(channel_ids)
+        self.message_fields: list[str] | None = None
+        self._app = coco.App(
+            coco.AppConfig(name=name, environment=coco_env), self._main
+        )
+
+    async def _main(self) -> None:
+        app, _ = await _setup(self.fake)
+        async with app:
+            channels = [
+                (
+                    channel_id,
+                    discord.DiscordChannel(
+                        app=app,
+                        channel_id=channel_id,
+                        message_fields=self.message_fields,
+                    ),
+                )
+                for channel_id in self.channel_ids
+            ]
+            handle = await coco.mount_each(_sync_channel, channels)
+            # mount_each returns once the channels are scheduled; the App has
+            # to stay open until they and their items are done.
+            await handle.ready()
+
+    def run(self) -> _Run:
+        self.fake.requests.clear()
+        self._app.update_blocking()
+        failures = sorted(str(e) for e in _failures)
+        _failures.clear()
+        threads_listed = {
+            m[1]
+            for _, path, _ in self.fake.requests
+            if (m := re.fullmatch(r"/channels/(\d+)/messages", path))
+            and m[1] in self.fake.threads
+        }
+        return _Run(_metrics.collect(), failures, sorted(threads_listed, key=int))
+
+
+def _entries() -> dict[str, str]:
+    return {key: entry.data for key, entry in GlobalDictTarget.store.data.items()}
+
+
+def _missing_access(path: str) -> str:
+    """The error that a 403 with code 50001 on ``path`` raises."""
+    return (
+        f"Discord GET {path} failed: HTTP 403, code 50001 (Missing Access). "
+        f"{_source._ERROR_HINTS[(403, 50001)]}"
+    )
+
+
+def _start_thread(fake: _FakeDiscord, message_id: str, stub_id: str) -> None:
+    """Start a thread on the message ``message_id`` in ``_CHANNEL``, as
+    Discord does: the thread has the message's ID and holds a stub standing
+    for it, and the message is flagged ``HAS_THREAD``."""
+    fake.add_thread(_raw_thread(message_id))
+    fake.message(_CHANNEL, message_id)["flags"] = 1 << 5
+    fake.post(message_id, _stub(message_id, stub_id))
+
+
+_SERVER_CHANNELS = (_CHANNEL, _OTHER_CHANNEL, _FORUM_ID)
+
+
+def _server() -> _FakeDiscord:
+    """The server the end-to-end tests start from, whose first run exports
+    ``_SERVER_ENTRIES``: in ``_CHANNEL``, messages (a reply, one with a
+    reaction, one with a file) and two threads started from messages; in
+    ``_OTHER_CHANNEL``, a message and an archived thread whose starter is
+    gone; in ``_FORUM_ID``, a post."""
+    bo = _raw_user(_OTHER_PERSON_ID, "bo")
+    fake = _fake_with_channels()
+    fake.add_channel(_raw_channel(_FORUM_ID, 15, available_tags=_AVAILABLE_TAGS))
+    fake.post(
+        _CHANNEL,
+        _raw_message("1077"),
+        _raw_message(
+            "1078",
+            type=19,
+            author=bo,
+            content="Thursday",
+            message_reference=_raw_reference("1077"),
+        ),
+        _raw_message("1079", reactions=[_raw_reaction("👍", 1)]),
+        _raw_message("1080", content="Release planning?"),
+        _raw_message("1083"),
+        _raw_message("1084", content="Notes attached", attachments=[_raw_attachment()]),
+        _raw_message("1085", content="Retro?"),
+    )
+    _start_thread(fake, "1080", "1081")
+    fake.post("1080", _raw_message("1082", author=bo, content="Thursday works"))
+    _start_thread(fake, "1085", "1086")
+    fake.post("1085", _raw_message("1087"))
+    fake.post(_OTHER_CHANNEL, _raw_message("1088"))
+    fake.add_thread(
+        _archived_thread("1089", "2026-01-15T12:30:00.250000+00:00", _OTHER_CHANNEL)
+    )
+    fake.post("1089", _raw_message("1090"))
+    fake.add_thread(
+        _raw_thread("1091", _FORUM_ID, name="Release planning", applied_tags=["1021"])
+    )
+    fake.post(
+        "1091",
+        _raw_message("1091", content="Which day works?"),
+        _raw_message("1092", author=bo, content="Thursday"),
+    )
+    return fake
+
+
+_SERVER_ENTRIES = {
+    "1002/1077": "Ada: message 1077",
+    "1002/1078": "bo: Thursday",
+    "1002/1079": "Ada: message 1079",
+    "1002/1080": "thread-1080\nAda: Release planning?\nbo: Thursday works",
+    "1002/1083": "Ada: message 1083",
+    "1002/1084": "Ada: Notes attached",
+    "1002/1085": "thread-1085\nAda: Retro?\nAda: message 1087",
+    "902/1088": "Ada: message 1088",
+    "902/1089": "thread-1089\nAda: message 1090",
+    "1019/1091": "Release planning\nTags: question\nAda: Which day works?\nbo: Thursday",
+}
+
+
+class TestEndToEnd:
+    """The connector in a pipeline run by the engine, over the server
+    ``_server`` builds, changed between runs. The engine doesn't raise a
+    component's failure out of the run, so the tests check the failures the
+    run recorded."""
+
+    def test_reruns_only_changed_items(self) -> None:
+        fake = _server()
+        pipeline = _Pipeline(
+            "test_discord_reruns_only_changed_items", fake, _SERVER_CHANNELS
+        )
+        run = pipeline.run()
+        assert run == _Run(
+            dict.fromkeys(_SERVER_ENTRIES, 1), [], ["1080", "1085", "1089", "1091"]
+        )
+        assert _entries() == _SERVER_ENTRIES
+
+        # In the main streams: an edit, a reaction, a new message, a deleted one.
+        fake.message(_CHANNEL, "1077").update(
+            content="message 1077, edited",
+            edited_timestamp="2026-01-15T13:00:00.250000+00:00",
+        )
+        fake.message(_CHANNEL, "1079")["reactions"] = [_raw_reaction("👍", 2)]
+        fake.post(_OTHER_CHANNEL, _raw_message("1093"))
+        fake.messages[_OTHER_CHANNEL].remove(fake.message(_OTHER_CHANNEL, "1088"))
+        # A thread started on 1083, a post in thread 1080, and forum post 1091
+        # archived.
+        _start_thread(fake, "1083", "1094")
+        fake.post("1080", _raw_message("1095"))
+        fake.threads["1091"]["thread_metadata"].update(
+            archived=True, archive_timestamp="2026-01-15T14:00:00.500000+00:00"
+        )
+        # Changes Discord reports nothing for: an edit inside open thread
+        # 1085, and 1084's attachment URL signed anew.
+        fake.message("1085", "1087").update(
+            content="message 1087, edited",
+            edited_timestamp="2026-01-15T13:00:00.250000+00:00",
+        )
+        fake.message(_CHANNEL, "1084")["attachments"] = [
+            _raw_attachment(
+                url=_ATTACHMENT.url.replace("ex=1&is=0&hm=a", "ex=2&is=1&hm=c")
+            )
+        ]
+        run = pipeline.run()
+        assert run.failures == []
+        # Not the reply 1078, though its parent was edited.
+        assert run.exported == {
+            "1002/1077": 1,
+            "1002/1079": 1,
+            "1002/1080": 1,
+            "1002/1083": 1,
+            "902/1093": 1,
+            "1019/1091": 1,
+        }
+        # The new thread holds only its starter, so it needs no request.
+        assert run.threads_listed == ["1080", "1091"]
+        entries = {
+            **_SERVER_ENTRIES,
+            "1002/1077": "Ada: message 1077, edited",
+            "1002/1080": (
+                "thread-1080\nAda: Release planning?\nbo: Thursday works\n"
+                "Ada: message 1095"
+            ),
+            # The message turned into the thread, under the same key.
+            "1002/1083": "thread-1083\nAda: message 1083",
+            "902/1093": "Ada: message 1093",
+        }
+        del entries["902/1088"]
+        # 1085 keeps the text from before the edit inside it, on purpose:
+        # nothing Discord reports for the thread changed.
+        assert _entries() == entries
+
+        # Nothing changed: every channel is listed again, but no item runs,
+        # and no thread's messages are listed.
+        run = pipeline.run()
+        assert run == _Run({}, [], [])
+        assert {f"/channels/{channel_id}" for channel_id in _SERVER_CHANNELS} <= {
+            path for _, path, _ in fake.requests
+        }
+        assert _entries() == entries
+
+    def test_changing_the_selection(self) -> None:
+        fake = _server()
+        pipeline = _Pipeline(
+            "test_discord_changing_the_selection", fake, _SERVER_CHANNELS
+        )
+        assert pipeline.run().failures == []
+
+        # Leaving reactions out reruns the one message that had any, and
+        # every thread, since a thread's messages are parsed with the
+        # selection. The other messages expose the same as before.
+        pipeline.message_fields = sorted(_MESSAGE_FIELD_NAMES - {"reactions"})
+        run = pipeline.run()
+        assert run.failures == []
+        assert run.exported == {
+            "1002/1079": 1,
+            "1002/1080": 1,
+            "1002/1085": 1,
+            "902/1089": 1,
+            "1019/1091": 1,
+        }
+        assert _entries() == _SERVER_ENTRIES
+
+        # Then a reaction reruns nothing, on a message or on a thread's
+        # starter.
+        fake.message(_CHANNEL, "1077")["reactions"] = [_raw_reaction("👍", 1)]
+        fake.message(_CHANNEL, "1080")["reactions"] = [_raw_reaction("👀", 1)]
+        assert pipeline.run() == _Run({}, [], [])
+
+    def test_removing_a_channel(self) -> None:
+        fake = _server()
+        pipeline = _Pipeline("test_discord_removing_a_channel", fake, _SERVER_CHANNELS)
+        assert pipeline.run().failures == []
+
+        pipeline.channel_ids.remove(_OTHER_CHANNEL)
+        assert pipeline.run() == _Run({}, [], [])
+        # Its message and its thread lose their entries; nothing of it is
+        # requested.
+        assert _entries() == {
+            entry: text
+            for entry, text in _SERVER_ENTRIES.items()
+            if not entry.startswith(f"{_OTHER_CHANNEL}/")
+        }
+        assert not any(
+            path.startswith(f"/channels/{_OTHER_CHANNEL}")
+            for _, path, _ in fake.requests
+        )
+
+    def test_errors_delete_nothing(self) -> None:
+        fake = _server()
+        pipeline = _Pipeline(
+            "test_discord_errors_delete_nothing", fake, _SERVER_CHANNELS
+        )
+        assert pipeline.run().failures == []
+
+        # _CHANNEL loses Read Message History: its message listing answers
+        # 200 and nothing, and its archived listing 403. _OTHER_CHANNEL, where
+        # a message is posted meanwhile, still syncs.
+        listed = fake.messages[_CHANNEL]
+        fake.messages[_CHANNEL] = []
+        fake.fail[_PUBLIC_PATH] = (403, 50001)
+        fake.post(_OTHER_CHANNEL, _raw_message("1096"))
+        run = pipeline.run()
+        assert run.failures == [_missing_access(_PUBLIC_PATH)]
+        assert run.exported == {"902/1096": 1}
+        entries = {**_SERVER_ENTRIES, "902/1096": "Ada: message 1096"}
+        assert _entries() == entries
+        fake.messages[_CHANNEL] = listed
+        del fake.fail[_PUBLIC_PATH]
+
+        # _CHANNEL's main stream fails on its second page: the messages and
+        # threads never reached keep their entries. A 403, which isn't
+        # retried: a 5xx's backoff would really wait here.
+        fake.page_cap = 2
+        fake.script[_MESSAGES_PATH] = [
+            fake._answer(_MESSAGES_PATH, _PAGE),
+            _discord_error(403, 50001),
+        ]
+        run = pipeline.run()
+        assert run.failures == [_missing_access(_MESSAGES_PATH)]
+        assert run.exported == {}
+        assert _entries() == entries
+        fake.page_cap = None
+
+        # Thread 1080 gets a message but its messages fail to list: only its
+        # component fails, and it keeps its entry, while 1098, posted
+        # meanwhile, is exported.
+        thread_path = "/channels/1080/messages"
+        fake.post("1080", _raw_message("1097"))
+        fake.post(_CHANNEL, _raw_message("1098"))
+        fake.fail[thread_path] = (403, 50001)
+        run = pipeline.run()
+        assert run.failures == [_missing_access(thread_path)]
+        assert run.exported == {"1002/1080": 1, "1002/1098": 1}
+        entries["1002/1098"] = "Ada: message 1098"
+        assert _entries() == entries
+
+        # Fixed: the thread runs again, since a failed component's memo isn't
+        # saved; nothing else does.
+        del fake.fail[thread_path]
+        run = pipeline.run()
+        assert run == _Run({"1002/1080": 1}, [], ["1080"])
+        entries["1002/1080"] += "\nAda: message 1097"
+        assert _entries() == entries
