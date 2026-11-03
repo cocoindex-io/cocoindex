@@ -905,8 +905,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// reads its own writes back and plans as an update would, and that is
     /// what makes a preview write nothing — its write paths need no check of
     /// their own. Component runs reach the store through here, not through
-    /// [`AppContext::app_store`].
-    pub fn app_store(&self) -> &AppStore {
+    /// [`AppContext::persisting_app_store`].
+    pub(crate) fn app_store(&self) -> &AppStore {
         &self.inner.app_store
     }
 

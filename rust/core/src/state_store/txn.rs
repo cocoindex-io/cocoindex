@@ -91,9 +91,12 @@ impl Overlay {
     }
 
     /// Waits for the run's turn to execute a body; the turn lasts as long as
-    /// the returned guard.
-    pub(crate) async fn body_turn(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.body_turn.clone().lock_owned().await
+    /// the returned [`BodyTurn`], which a discarding txn takes.
+    pub(crate) async fn body_turn(self: &Arc<Self>) -> BodyTurn {
+        BodyTurn {
+            _guard: self.body_turn.clone().lock_owned().await,
+            overlay: self.clone(),
+        }
     }
 
     /// The run's writes as of now.
@@ -253,17 +256,26 @@ impl ReadTxn {
     }
 }
 
+/// A run's turn to execute a body, and the overlay it is a turn of: the
+/// only way to build a discarding txn, so its commit always replaces the
+/// run's writes while no other body of the run is running.
+pub(crate) struct BodyTurn {
+    overlay: Arc<Overlay>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
 enum WriteTxnInner<'env> {
     /// A body of the single-writer batcher: writes commit with the txn.
     Applying(heed::RwTxn<'env>),
     /// A body of a run that persists nothing: it reads the LMDB `snapshot`
     /// under `view`, a copy of the run's writes, and writes to `view`, which
-    /// replaces the run's in `overlay` once the body succeeds — a failed
-    /// body's writes are dropped, as a batched body's are by the aborted txn.
+    /// replaces the run's in `turn`'s overlay once the body succeeds — a
+    /// failed body's writes are dropped, as a batched body's are by the
+    /// aborted txn.
     Discarding {
         snapshot: ReadTxn,
         view: View,
-        overlay: Arc<Overlay>,
+        turn: BodyTurn,
     },
 }
 
@@ -288,13 +300,15 @@ impl<'env> WriteTxn<'env> {
     }
 
     /// A txn reading `snapshot` (opened without an overlay) under the run's
-    /// writes in `overlay`, which takes this txn's writes on [`Self::commit`].
-    pub(crate) fn discarding(snapshot: ReadTxn, overlay: Arc<Overlay>) -> Self {
+    /// writes in `turn`'s overlay, which takes this txn's writes on
+    /// [`Self::commit`]. The txn holds the turn until it is committed or
+    /// dropped.
+    pub(crate) fn discarding(snapshot: ReadTxn, turn: BodyTurn) -> Self {
         Self {
             inner: WriteTxnInner::Discarding {
                 snapshot,
-                view: View::of(&overlay),
-                overlay,
+                view: View::of(&turn.overlay),
+                turn,
             },
         }
     }
@@ -309,8 +323,8 @@ impl<'env> WriteTxn<'env> {
     pub(crate) fn commit(self) -> Result<()> {
         match self.inner {
             WriteTxnInner::Applying(txn) => txn.commit()?,
-            WriteTxnInner::Discarding { view, overlay, .. } => {
-                *overlay.writes.lock() = view.writes;
+            WriteTxnInner::Discarding { view, turn, .. } => {
+                *turn.overlay.writes.lock() = view.writes;
             }
         }
         Ok(())

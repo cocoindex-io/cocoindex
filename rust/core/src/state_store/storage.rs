@@ -546,8 +546,7 @@ impl Storage {
         let runtime = tokio::runtime::Handle::current();
         let span = Span::current();
         tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            let mut wtxn = WriteTxn::discarding(snapshot, overlay);
+            let mut wtxn = WriteTxn::discarding(snapshot, turn);
             let output = runtime.block_on(body(&mut wtxn).instrument(span))?;
             wtxn.commit()?;
             Ok(output)
@@ -1226,7 +1225,8 @@ mod tests {
                 let app_store = store_in_txn.clone();
                 Box::pin(async move {
                     wtxn.put(app_store.db(), b"k/committed", b"")?;
-                    wtxn.put(app_store.db(), b"k/z", b"")
+                    wtxn.put(app_store.db(), b"k/z", b"")?;
+                    wtxn.put(app_store.db(), b"outside", b"")
                 })
             })
             .await
@@ -1306,6 +1306,29 @@ mod tests {
             write_then_list(app_store.discarding_writes(), false).await,
             ["k/committed", "k/z"]
         );
+        assert_eq!(
+            write_then_list(app_store.clone(), false).await,
+            ["k/committed", "k/z"]
+        );
+
+        // A prefix delete in a discarding run hides both the run's own writes
+        // and the stored keys under the prefix, and nothing outside it; a
+        // later body of the run sees the same; the store keeps everything.
+        let clearing = app_store.discarding_writes();
+        let clearing_in_txn = clearing.clone();
+        let outside_after_clear = clearing
+            .run_txn(move |wtxn| {
+                let store = clearing_in_txn.clone();
+                Box::pin(async move {
+                    wtxn.put(store.db(), b"k/own", b"")?;
+                    wtxn.delete_prefix(store.db(), b"k/")?;
+                    Ok(wtxn.get(store.db(), b"outside")?.is_some())
+                })
+            })
+            .await
+            .unwrap();
+        assert!(outside_after_clear, "a key outside the prefix survives");
+        assert!(write_then_list(clearing, false).await.is_empty());
         assert_eq!(
             write_then_list(app_store, false).await,
             ["k/committed", "k/z"]
