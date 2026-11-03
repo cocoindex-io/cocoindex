@@ -388,7 +388,8 @@ impl<'env> WriteTxn<'env> {
 
     /// Store `value` under `key` in `db` if this txn persists its writes;
     /// otherwise drop only the run's own write of `key`, so the run reads
-    /// whatever LMDB holds there. For large values a run can recompute when
+    /// whatever LMDB holds there — unless the run deleted `key` earlier, in
+    /// which case it stays deleted for the run. For large values a run can recompute when
     /// it misses them (function memos): a run that persists nothing holds
     /// none of them in memory, and still finds the stored ones, as an update
     /// would.
@@ -396,8 +397,11 @@ impl<'env> WriteTxn<'env> {
         match &mut self.inner {
             WriteTxnInner::Applying(txn) => db.raw.put(txn, key, value)?,
             WriteTxnInner::Discarding { view, .. } => {
-                view.writes_of(db)?;
-                view.writes.remove_mut(key);
+                // A deletion the run made earlier stays: the stored value was
+                // cleared, so the run recomputes rather than reading it back.
+                if !matches!(view.writes_of(db)?.get(key), Some(None)) {
+                    view.writes.remove_mut(key);
+                }
             }
         }
         Ok(())

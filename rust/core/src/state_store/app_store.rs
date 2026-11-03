@@ -1096,6 +1096,18 @@ mod tests {
                 .as_deref(),
             Some(&b"stored"[..])
         );
+        // But not once the preview has cleared it: a rewrite after a delete
+        // leaves it cleared, so a later run recomputes.
+        let preview = store.discarding_writes();
+        let (preview_in_txn, path_in_txn) = (preview.clone(), path.clone());
+        preview
+            .run_txn(move |wtxn| {
+                let (store, path) = (preview_in_txn.clone(), path_in_txn.clone());
+                Box::pin(async move { store.delete_all_fn_memos(wtxn, &path).await })
+            })
+            .await
+            .unwrap();
+        assert_eq!(write_then_read(preview, b"previewed").await, None);
         // The store still holds its own memo.
         let read = store.read_txn().await.unwrap();
         let key = key_fn_memo(&path, fp).unwrap();
