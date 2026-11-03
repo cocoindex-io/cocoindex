@@ -1,0 +1,9 @@
+{
+  "alt": "Three Markdown files are chunked with RecursiveSplitter and embedded with all-MiniLM-L6-v2 into the doc_embeddings table, which lives as doc_embeddings.lance/ inside a lancedb_data/ folder next to main.py with no server; editing rfc8259.md rewrites only its rows, and the query \"what is self-attention?\" returns chunks from the Transformer paper.",
+  "needs": ["Python 3.11+"],
+  "run": [
+    { "note": "Configure and install (no database to start)", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Build the index into ./lancedb_data", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"what is self-attention?\"" }
+  ]
+}

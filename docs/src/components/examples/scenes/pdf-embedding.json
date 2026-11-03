@@ -1,0 +1,10 @@
+{
+  "alt": "Three PDFs in pdf_files/ (the Transformer and BERT papers and RFC 8259) are converted by docling on a GPU runner from a laid-out page into Markdown with headings such as \"## 3.2 Attention\", split into 2000-character chunks, embedded with all-MiniLM-L6-v2 and stored as rows in the pdf_embeddings table in Postgres; replacing rfc8259.pdf re-parses only that file, and the query \"what is attention?\" returns the Transformer paper's passage \"An attention function can be described as mapping a query and a set of key-value pairs to an output\".",
+  "needs": ["Docker (for Postgres with pgvector)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install (docling pulls in the PDF parser)", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Build the index from pdf_files/", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"what is attention?\"" }
+  ]
+}

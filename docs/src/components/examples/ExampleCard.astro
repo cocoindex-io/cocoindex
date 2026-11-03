@@ -1,10 +1,13 @@
 ---
-// One card in the examples listing grid, styled like the homepage "Built with
-// CocoIndex" cards: a dark artwork thumb (tag pill + window dots + a pipeline
-// illustration) on top, with the title and description in the light body below.
-// The artwork SVG (hosted in the blobs repo) carries no title text itself.
+// One card in the examples catalog. The header is the example's pipeline
+// (Pipeline.astro, from its tags); the body is title, one-paragraph summary,
+// and a mono meta line (time · level) pinned to the bottom so rows align.
+// data-* attributes carry the facet values the listing's filter reads.
 import { titleText } from '../../consts';
-import { exampleCardImg, type ExampleCard } from '../../data/examples';
+import { facetOf, timeOf, levelOf, type ExampleCard } from '../../data/examples';
+import Pipeline from './Pipeline.astro';
+import Scene from './Scene.astro';
+import { hasScene } from './scenes/meta';
 
 interface Props {
   ex: ExampleCard;
@@ -12,17 +15,28 @@ interface Props {
 }
 const { ex, href } = Astro.props;
 const title = titleText(ex.title);
-// Facet values for the side-nav filters (By target / source / LLM).
-const facetVals = (kind: 'tgt' | 'src' | 'llm') =>
-  ex.tags.filter((t) => t.kind === kind).map((t) => t.label).join('|');
 ---
-<a class="ex-card" href={href} data-tgt={facetVals('tgt')} data-src={facetVals('src')} data-llm={facetVals('llm')}>
-  <div class="ex-art">
-    <img class="ex-art-img" src={exampleCardImg(ex.slug)} alt={`${title} pipeline`} width="480" height="300" loading="lazy" decoding="async" data-card={ex.slug} />
-    <span class="ex-open">Open example →</span>
-  </div>
-  <div class="ex-body">
-    <h3>{title}</h3>
-    <p>{ex.description}</p>
+<a
+  class="ex-card"
+  href={href}
+  aria-labelledby={`ex-t-${ex.slug}`}
+  aria-describedby={`ex-d-${ex.slug} ex-m-${ex.slug}`}
+  data-cat={ex.category}
+  data-src={facetOf(ex, 'src').join('|')}
+  data-tgt={facetOf(ex, 'tgt').join('|')}
+  data-llm={facetOf(ex, 'llm').join('|')}
+  data-lvl={facetOf(ex, 'lvl').join('|')}
+>
+  {hasScene(ex.slug) ? (
+    <div class="ex-card-art"><Scene slug={ex.slug} size="card" /><div class="ex-card-pipe is-under"><Pipeline ex={ex} size="sm" /></div></div>
+  ) : (
+    <div class="ex-card-pipe">
+      <Pipeline ex={ex} size="sm" />
+    </div>
+  )}
+  <div class="ex-card-body">
+    <h3 id={`ex-t-${ex.slug}`}>{title}</h3>
+    <p id={`ex-d-${ex.slug}`}>{ex.description}</p>
+    <p class="ex-card-meta" id={`ex-m-${ex.slug}`}><span class="t">{timeOf(ex)}</span>{levelOf(ex) && <><span class="sep" aria-hidden="true">·</span><span>{levelOf(ex)}</span></>}</p>
   </div>
 </a>

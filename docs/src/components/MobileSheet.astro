@@ -4,7 +4,7 @@
 // @cocoindex/brand/MobileSheet; this component fills its slot with the docs
 // content: a search box + two segmented tabs —
 //   - Pages        : the full sidebar tree (mirrors Sidebar.astro)
-//   - On this page : the current doc's H2/H3 headings (numbered like Toc)
+//   - On this page : the current doc's H2/H3 headings
 // and adds the tab-switch script (open/close, scrim, Esc, scroll-lock, and
 // close-on-link-tap all live in the shared controller). The tab/pane/group/
 // search styling stays in globals.css; the shell styling is brand nav.css.
@@ -45,14 +45,9 @@ const SITE_LINKS: Array<{ href: string; label: string }> = [
   { href: SITE_BLOG,                     label: 'Blog'           },
 ];
 
-// Same H2/H3 filter + numbering as Toc.astro so the phone "On this page"
-// list matches the desktop rail one-for-one.
-const tocItems = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
-let h2Count = 0;
-const tocRows = tocItems.map((h) => {
-  if (h.depth === 2) h2Count++;
-  return { ...h, n: h.depth === 2 ? h2Count : null };
-});
+// Same H2/H3 filter as Toc.astro so the phone "On this page" list matches
+// the desktop rail one-for-one. No numbering: the rail is a list, not an index.
+const tocRows = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
 
 function href(slug: string): string {
   // Trailing slash matches the canonical URL Astro emits under
@@ -86,7 +81,6 @@ function href(slug: string): string {
             data-mobile-toc-link={h.slug}
             class={h.depth === 3 ? 'sub' : ''}
           >
-            {h.n != null && <span class="num">{h.n}</span>}
             <span class="lbl">{h.text}</span>
           </a>
         ))}
@@ -96,7 +90,7 @@ function href(slug: string): string {
 
   <div class="mobile-pane" id="panePages" role="tabpanel" aria-labelledby="tabPages">
     <div class="mobile-group">
-      <h6><span>Site</span></h6>
+      <p class="mobile-h"><span>Site</span></p>
       <nav class="mobile-list" aria-label="Site">
         {SITE_LINKS.map((l) => (
           <a href={l.href}><span class="lbl">{l.label}</span></a>
@@ -122,13 +116,13 @@ function href(slug: string): string {
         </div>
       ) : (
         <div class="mobile-group">
-          <h6>
+          <p class="mobile-h">
             {item.slug ? (
               <a href={href(item.slug)}>{item.label}</a>
             ) : (
               <span>{item.label}</span>
             )}
-          </h6>
+          </p>
           <nav class="mobile-list" aria-label={item.label}>
             {item.items.map((child) => (
               child.type === 'doc' ? (

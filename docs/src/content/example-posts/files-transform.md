@@ -16,7 +16,7 @@ The transform is your own ordinary `async` function. The heavy lifting — [incr
 
 ## Flow overview
 
-![CocoIndex files transform flow: watch a directory of Markdown, render each file to HTML with markdown-it-py, and write the .html outputs to a local folder](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/flow-v1.svg)
+![CocoIndex files transform flow: watch a directory of Markdown, render each file to HTML with markdown-it-py, and write the .html outputs to a local folder](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -28,7 +28,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Process a file
 
-![One processing component per file: each Markdown file is rendered to HTML and written as a file target on the local filesystem](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/stage-file-process.svg)
+![One processing component per file: each Markdown file is rendered to HTML and written as a file target on the local filesystem](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/stage-file-process-dark.svg)
 
 `process_file` runs once per file. It reads the Markdown, renders it to HTML, derives an output name from the source path, and declares the output file as a target state.
 

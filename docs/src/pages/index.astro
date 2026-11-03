@@ -1,6 +1,8 @@
 ---
+// Docs home. Read mode: it says what the engine does, proves it with one
+// framed lineage figure, and routes the reader with ruled lists of real
+// pages drawn from the sidebar. Styles: src/styles/site.css §9.
 import '../styles/globals.css';
-import DocCard from '@cocoindex/brand/DocCard.astro';
 import Topbar from '../components/Topbar.astro';
 import Sidebar from '../components/Sidebar.astro';
 import MobileSheet from '../components/MobileSheet.astro';
@@ -9,8 +11,7 @@ import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
 import {
   SITE_URL, SITE_MAIN, SITE_EXAMPLES, GITHUB_REPO, DISCORD_URL,
-  titleMarkup, SCARF_PIXEL_ID,
-  THEME_COLOR,
+  SCARF_PIXEL_ID, THEME_COLOR,
 } from '../consts';
 import { sidebar } from '../data/docs-sidebar';
 
@@ -18,47 +19,48 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
 const doc = (slug: string) => `${base}/${slug}/`;
 const CODE = `${SITE_MAIN}/cocoindex-code`;
 
-const fullTitle = 'CocoIndex Docs — fresh data views for AI agents';
+const fullTitle = 'CocoIndex documentation';
 const description =
-  'CocoIndex is an ultra-performant framework for building data processing pipelines for AI, with built-in incremental processing. Declare what your target should look like as a function of your source — the Rust engine keeps it in sync, reprocessing only what changed.';
+  'CocoIndex is an open-source framework for data pipelines that feed AI. Declare the target as a function of the source in Python; the Rust engine keeps it in sync and reprocesses only what changed.';
 const canonical = new URL(`${base}/`, SITE_URL).toString();
 
-// "Start here" entry points — labels and slugs match the sidebar exactly.
-const startCards = [
+// Start here: labels and slugs match the sidebar exactly.
+const start = [
   { slug: 'getting_started/quickstart', label: 'Quickstart', meta: '5 min',
-    body: 'Build your first pipeline end to end — convert PDFs to Markdown and watch only changed files reprocess.', icon: 'rocket', accent: 'coral' },
+    body: 'Build one pipeline end to end: convert PDFs to Markdown, change a file, and watch only that file reprocess.' },
   { slug: 'getting_started/installation', label: 'Installation', meta: 'Setup',
-    body: 'Install the package and the Rust engine. Python 3.10+, pip / uv / poetry.', icon: 'download', accent: 'peach' },
-  { slug: 'programming_guide/core_concepts', label: 'Core Concepts', meta: 'Mental model',
-    body: 'App, processing components, target states, and how incremental syncing works.', icon: 'concept', accent: 'palm' },
+    body: 'Install the package and the Rust engine. Python 3.10 or later, with pip, uv or poetry.' },
+  { slug: 'programming_guide/core_concepts', label: 'Core concepts', meta: 'Mental model',
+    body: 'Apps, processing components, target states, and how an incremental update decides what to re-run.' },
   { slug: 'getting_started/ai_coding_agents', label: 'Use with AI coding agents', meta: 'Skill',
-    body: 'Drop in the CocoIndex skill so Claude Code or Cursor writes correct v1 flows.', icon: 'agent', accent: 'lavender' },
+    body: 'Install the CocoIndex skill so Claude Code or Cursor writes correct v1 pipelines.' },
 ] as const;
 
-// What you can build — each links to runnable examples or the product page.
-const buildCards = [
-  { href: doc('examples/index-codebase'), title: 'Semantic & vector search', icon: 'search', accent: 'coral',
-    body: 'Chunk, embed, and index documents or code into pgvector, Qdrant, LanceDB, or Turbopuffer.', meta: 'RAG · retrieval' },
-  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j', title: 'Knowledge graphs', icon: 'graph', accent: 'palm',
-    body: 'Extract entities and relationships into Neo4j, FalkorDB, or SurrealDB — structured context for agents.', meta: 'Entities · relations' },
-  { href: CODE, title: 'Live code index', icon: 'code', accent: 'peach',
-    body: 'AST-aware semantic chunks and call graphs kept fresh on every commit, served over MCP.', meta: 'CocoIndex Code' },
-  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy', title: 'Structured extraction', icon: 'extract', accent: 'lavender',
-    body: 'Turn PDFs, transcripts, and inboxes into typed rows with LLM extraction and entity resolution.', meta: 'Ingest · transform' },
+// What you can build: each row links to a runnable example or the product page.
+const build = [
+  { href: doc('examples/index-codebase'), title: 'Semantic and vector search', meta: 'Retrieval',
+    body: 'Chunk, embed and index documents or code into pgvector, Qdrant, LanceDB or Turbopuffer.' },
+  { href: doc('examples/meeting-notes-to-knowledge-graph'), title: 'Knowledge graphs', meta: 'Entities and relations',
+    body: 'Extract entities and relationships into Neo4j, FalkorDB or SurrealDB as structured context for agents.' },
+  { href: CODE, title: 'Live code index', meta: 'CocoIndex Code',
+    body: 'AST-aware chunks and call graphs kept current on every commit, served to agents over MCP.' },
+  { href: doc('examples/patient-intake-dspy'), title: 'Structured extraction', meta: 'Ingest and transform',
+    body: 'Turn PDFs, transcripts and inboxes into typed rows with LLM extraction and entity resolution.' },
 ] as const;
 
-// Building blocks — connectors and ops straight from the sidebar.
+// Building blocks: connectors and operations straight from the sidebar.
 const sources = [
   { slug: 'connectors/localfs', label: 'Local files' },
   { slug: 'connectors/postgres', label: 'Postgres' },
   { slug: 'connectors/google_drive', label: 'Google Drive' },
   { slug: 'connectors/amazon_s3', label: 'Amazon S3' },
-  { slug: 'connectors/oci_object_storage', label: 'OCI Storage' },
+  { slug: 'connectors/azure_blob', label: 'Azure Blob' },
+  { slug: 'connectors/oci_object_storage', label: 'OCI Object Storage' },
   { slug: 'connectors/kafka', label: 'Kafka' },
   { slug: 'connectors/iggy', label: 'Iggy' },
 ];
 const operations = [
-  { slug: 'ops/text', label: 'Split / chunk' },
+  { slug: 'ops/text', label: 'Split and chunk' },
   { slug: 'ops/sentence_transformers', label: 'Embed' },
   { slug: 'ops/litellm', label: 'LiteLLM' },
   { slug: 'ops/entity_resolution', label: 'Entity resolution' },
@@ -73,158 +75,17 @@ const targets = [
   { slug: 'connectors/falkordb', label: 'FalkorDB' },
   { slug: 'connectors/surrealdb', label: 'SurrealDB' },
   { slug: 'connectors/doris', label: 'Apache Doris' },
+  { slug: 'connectors/bigquery', label: 'BigQuery' },
+  { slug: 'connectors/snowflake', label: 'Snowflake' },
 ];
 
-const ICONS: Record<string, string> = {
-  // start here
-  rocket: '<path d="M4.5 16.5 12 4l7.5 12.5"/><path d="M12 4v16"/>',
-  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
-  concept: '<circle cx="12" cy="12" r="3"/><path d="M5 12H2m20 0h-3M12 5V2m0 20v-3M7 7 5 5m14 14-2-2M17 7l2-2M5 19l2-2"/>',
-  agent: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3M9 9l-2 2 2 2m6-4 2 2-2 2"/>',
-  // what you can build
-  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m21 21-5-5"/><circle cx="10.5" cy="10.5" r="1.6" fill="currentColor" stroke="none"/>',
-  graph: '<circle cx="5" cy="6" r="2.4"/><circle cx="19" cy="6" r="2.4"/><circle cx="12" cy="18" r="2.4"/><path d="M7.2 7 10.8 16M16.8 7 13.2 16M7.4 6h9.2"/>',
-  code: '<path d="m9 8-4 4 4 4"/><path d="m15 8 4 4-4 4"/><path d="M13 5 11 19" stroke-opacity="0.5"/>',
-  extract: '<path d="M13 3v4a1 1 0 0 0 1 1h4"/><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M9 13h6M9 17h6"/>',
-  // community
-  github: '<path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.3 2.6 5.3 2.9 5.3 2.9a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 3.8 9.3c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/>',
-  discord: '<path d="M18 5a18 18 0 0 0-4.5-1.4l-.3.6a14 14 0 0 1 4 2 16 16 0 0 0-12.4 0 14 14 0 0 1 4-2l-.3-.6A18 18 0 0 0 4 5C1.6 8.5 1 12 1.2 15.4A18 18 0 0 0 6.7 18l.7-1a12 12 0 0 1-1.9-.9l.5-.4a13 13 0 0 0 11 0l.5.4a12 12 0 0 1-1.9.9l.7 1a18 18 0 0 0 5.5-2.6C21.2 11.5 20.2 8 18 5z"/><circle cx="8.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.5" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
-  grid: '<rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/>',
-};
----
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content={THEME_COLOR} />
-    <title>{fullTitle}</title>
-    <meta name="description" content={description} />
-    <link rel="canonical" href={canonical} />
-    <link rel="icon" href={`${base}/img/favicon.ico`} />
-    <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2). -->
-  </head>
-  <body class="docs-home">
-    <Topbar mobileSheetId="mobileSheet" />
-    <MobileSheet sidebarItems={sidebar} />
+const community = [
+  { href: GITHUB_REPO, title: 'GitHub', meta: 'Apache-2.0', body: 'Read the source, star the repo, open an issue.' },
+  { href: DISCORD_URL, title: 'Discord', meta: 'Community', body: 'Release notes, showcases and help from the maintainers.' },
+  { href: SITE_EXAMPLES, title: 'Examples', meta: 'Runnable', body: 'Pipelines you can clone, run and adapt to your data.' },
+] as const;
 
-    <div class="layout dh-layout">
-      <Sidebar currentSlug="" />
-
-      <main class="content dh-main">
-        <!-- ═══════════ HERO ═══════════ -->
-        <section class="dh-hero">
-          <div class="hero-grid">
-            <div class="hero-copy">
-              <h1 class="hero-h" set:html={titleMarkup('Fresh data views for *agents.*')} />
-              <p class="hero-sub">
-                CocoIndex is an ultra-performant framework for building data pipelines for AI, with
-                built-in incremental processing. Declare <b>what</b> your target should look like as a
-                function of your source — the Rust engine keeps it in sync, reprocessing only the&nbsp;Δ.
-              </p>
-              <div class="hero-cta">
-                <a class="btn btn-coral btn-lg" href={doc('getting_started/quickstart')}>Quickstart →</a>
-                <a class="btn btn-outline btn-lg" href={doc('programming_guide/core_concepts')}>Core concepts</a>
-              </div>
-              <div class="install" data-copy="pip install -U cocoindex">
-                <code><span class="p">$</span> pip install -U cocoindex</code>
-                <button class="copy" type="button" aria-label="Copy install command">Copy</button>
-              </div>
-              <div class="hero-meta">
-                <span><b>Incremental</b> · only the delta</span>
-                <span><b>Rust engine</b> · parallel by default</span>
-                <span><b>Declarative</b> · Python, no DSL</span>
-              </div>
-            </div>
-
-            <!-- declarative mental-model card -->
-            <div class="hero-viz" aria-hidden="true">
-              <div class="viz-label">target_state = f(source_state)</div>
-              <div class="viz-flow">
-                <div class="node src">
-                  <span class="nt">Source</span>
-                  <span class="nv">Codebase · Docs · Slack · PDFs</span>
-                </div>
-                <div class="viz-arrow">↓</div>
-                <div class="node eng">
-                  <span class="nt">Incremental engine</span>
-                  <span class="nv">declare the state — it stays in sync</span>
-                </div>
-                <div class="viz-arrow">↓</div>
-                <div class="node tgt">
-                  <span class="nt">Target view</span>
-                  <span class="nv">Vector · Graph · Relational</span>
-                </div>
-                <div class="viz-delta"><span class="d"></span>only the Δ is reprocessed on change</div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- ═══════════ START HERE ═══════════ -->
-        <section class="dh-sec">
-          <div class="sec-head">
-            <span class="idx">Start here</span>
-            <h2 set:html={titleMarkup('Your first flow in *five minutes*')} />
-            <p>Install, declare a source and a target, and let the engine keep them in sync. Four ways in:</p>
-          </div>
-          <div class="card-grid four">
-            {startCards.map((c) => (
-              <DocCard href={doc(c.slug)} title={c.label} body={c.body} meta={c.meta} icon={ICONS[c.icon]} accent={c.accent} />
-            ))}
-          </div>
-        </section>
-
-        <!-- ═══════════ HOW IT WORKS ═══════════ -->
-        <section class="dh-sec">
-          <div class="sec-head">
-            <span class="idx">How it works</span>
-            <h2>Two steps. Then it maintains itself.</h2>
-            <p>A flow is a function from source to target. Run it once; re-run it forever — CocoIndex tracks fine-grained lineage and recomputes only what changed, in batch or live mode.</p>
-          </div>
-          <div class="steps">
-            <div class="step">
-              <span class="num">1</span>
-              <div>
-                <h4>Declare the target state</h4>
-                <p>Point at a source (<code>localfs</code>, <code>postgres</code>, Google&nbsp;Drive, S3, Kafka…), transform it — chunk, embed, extract, resolve entities — and declare the rows, vectors, or graph nodes you want to exist.</p>
-              </div>
-            </div>
-            <div class="step">
-              <span class="num">2</span>
-              <div>
-                <h4>Run — only the Δ recomputes</h4>
-                <p>The engine backfills on first run and keeps the target in sync on every re-run or in <code>live</code> mode. Change one file and only that file reprocesses. No DAGs, no orchestration to babysit.</p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- ═══════════ WHAT YOU CAN BUILD ═══════════ -->
-        <section class="dh-sec">
-          <div class="sec-head">
-            <span class="idx">What you can build</span>
-            <h2 set:html={titleMarkup('Different *views* of your data')} />
-            <p>CocoIndex pipelines aren’t built for analytics — they build the views an agent reasons over. High-fanout joins, multi-stage symbol resolution, and cross-entity relationships are first-class.</p>
-          </div>
-          <div class="card-grid four">
-            {buildCards.map((c) => (
-              <DocCard href={c.href} title={c.title} body={c.body} meta={c.meta} icon={ICONS[c.icon]} accent={c.accent} />
-            ))}
-          </div>
-        </section>
-
-        <!-- ═══════════ IN CODE ═══════════ -->
-        <section class="dh-sec">
-          <div class="split">
-            <div class="sec-head no-mb">
-              <span class="idx">In code</span>
-              <h2 set:html={titleMarkup('Declarative Python. *No DSL.*')} />
-              <p>Write batch-style code without worrying about deltas. Declare the target; CocoIndex runs it incrementally and keeps the output up to date — recomputing only the Δ.</p>
-              <a class="btn btn-coral" href={doc('getting_started/quickstart')} style="margin-top:22px;">Full quickstart →</a>
-            </div>
-            <div class="codeblk" data-copy={`@coco.fn(memo=True)
+const appPy = `@coco.fn(memo=True)
 async def process_file(file, target):
     html = render(await file.read_text())
     target.declare_file(filename=file.name, content=html)
@@ -237,10 +98,110 @@ async def app_main(sourcedir, outdir):
 
 app = coco.App(coco.AppConfig(name="docs"), app_main,
                sourcedir="./docs", outdir="./out")
-app.update_blocking()`}>
+app.update_blocking()`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content={THEME_COLOR} />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={`${base}/img/favicon.ico`} />
+    <!-- Fonts self-hosted via @fontsource in src/styles/site.css. -->
+  </head>
+  <body class="docs-home">
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet sidebarItems={sidebar} />
+
+    <div class="layout dh-layout">
+      <Sidebar currentSlug="" />
+
+      <main class="content dh-main">
+        <section class="dh-hero" aria-labelledby="dh-title">
+          <div>
+            <h1 class="dh-title" id="dh-title">CocoIndex documentation</h1>
+            <p class="dh-lede">
+              CocoIndex keeps a target in sync with its source. Declare the target as a
+              function of the source in plain Python. The Rust engine backfills it, tracks
+              lineage, and reprocesses only what changed.
+            </p>
+            <div class="dh-cta">
+              <a class="btn btn-primary btn-lg" href={doc('getting_started/quickstart')}>Quickstart</a>
+              <a class="btn btn-outline-muted btn-lg" href={doc('programming_guide/core_concepts')}>Core concepts</a>
+            </div>
+            <div class="dh-install" data-copy="pip install -U cocoindex">
+              <code><span class="p">$</span>pip install -U cocoindex</code>
+              <button class="dh-copy" type="button" aria-label="Copy install command">Copy</button>
+            </div>
+            <ul class="dh-facts">
+              <li><b>Python 3.10+</b></li>
+              <li><b>Rust engine</b>, parallel by default</li>
+              <li><b>Apache-2.0</b></li>
+            </ul>
+          </div>
+
+          <figure class="dh-fig" aria-label="An update after one source file changed: only that file is reprocessed">
+            <div class="dh-fig-head">
+              <span>./docs → ./out</span>
+              <span>update 2</span>
+            </div>
+            <div class="dh-fig-eq"><span class="c"># </span>target_state <span class="k">=</span> f(source_state)</div>
+            <table>
+              <thead>
+                <tr><th scope="col">Source</th><th scope="col">Target</th><th scope="col">Run</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>a.pdf</td><td>a.md</td><td>memo hit</td></tr>
+                <tr><td>b.pdf</td><td>b.md</td><td>memo hit</td></tr>
+                <tr class="delta"><td>c.pdf <span class="d">edited</span></td><td>c.md</td><td>reprocessed</td></tr>
+              </tbody>
+            </table>
+            <figcaption class="dh-fig-foot"><b>1 of 3</b> files re-ran. The other two targets came from the memo.</figcaption>
+          </figure>
+        </section>
+
+        <section class="dh-sec" aria-labelledby="dh-start">
+          <div class="dh-head">
+            <h2 id="dh-start">Start here</h2>
+            <p>Four pages cover the install, the first pipeline and the model behind it. Most readers finish them in an afternoon.</p>
+          </div>
+          <ul class="dh-list">
+            {start.map((c) => (
+              <li><a href={doc(c.slug)}><span class="t">{c.label}</span><span class="b">{c.body}</span><span class="m">{c.meta}</span></a></li>
+            ))}
+          </ul>
+        </section>
+
+        <section class="dh-sec" aria-labelledby="dh-model">
+          <div class="dh-head">
+            <h2 id="dh-model">Declare the target. Run the app.</h2>
+            <p>A pipeline is a function from source to target. You write it as batch code; CocoIndex runs it incrementally, in one pass or in live mode.</p>
+          </div>
+          <div class="dh-model">
+            <ol class="dh-steps">
+              <li>
+                <div>
+                  <h3>Declare the target state</h3>
+                  <p>Read a source such as <code>localfs</code>, <code>postgres</code>, Google Drive, S3 or Kafka. Transform it: chunk, embed, extract, resolve entities. Declare the rows, vectors or graph nodes that should exist.</p>
+                </div>
+              </li>
+              <li>
+                <div>
+                  <h3>Run it; only the Δ recomputes</h3>
+                  <p>The first run backfills the target. Every later run, or <code>live</code> mode, compares source and logic against the lineage and re-runs only the components that changed.</p>
+                  <a class="btn btn-outline-muted" href={doc('getting_started/quickstart')} style="margin-top:16px;">Follow the quickstart</a>
+                </div>
+              </li>
+            </ol>
+            <div class="dh-code" data-copy={appPy}>
               <div class="bar">
                 <span class="fname">app.py</span>
-                <button class="copy" type="button" aria-label="Copy code">Copy</button>
+                <button class="dh-copy" type="button" aria-label="Copy code">Copy</button>
               </div>
 <pre><code><span class="dec">@coco.fn</span>(memo=<span class="num">True</span>)
 <span class="kw">async def</span> <span class="fn">process_file</span>(file, target):
@@ -260,51 +221,62 @@ app.update_blocking()</code></pre>
           </div>
         </section>
 
-        <!-- ═══════════ BUILDING BLOCKS ═══════════ -->
-        <section class="dh-sec">
-          <div class="sec-head">
-            <span class="idx">Building blocks</span>
-            <h2>Sources in, transforms, targets out</h2>
-            <p>Mix and match connectors and operations through one open interface — no vendor lock-in. Many targets are projects in the CocoIndex ecosystem.</p>
+        <section class="dh-sec" aria-labelledby="dh-build">
+          <div class="dh-head">
+            <h2 id="dh-build">What people build with it</h2>
+            <p>CocoIndex builds the views an agent reads, not analytics tables. Fan-out joins, multi-stage symbol resolution and cross-entity relations are ordinary pipelines.</p>
           </div>
-          <div class="bb">
-            <div class="bb-col">
-              <h4>Sources</h4>
-              <div class="chips">{sources.map((s) => <a class="t-pill t-pill-lg" href={doc(s.slug)}>{s.label}</a>)}</div>
+          <ul class="dh-list two">
+            {build.map((c) => (
+              <li><a href={c.href}><span class="t">{c.title}</span><span class="b">{c.body}</span><span class="m">{c.meta}</span></a></li>
+            ))}
+          </ul>
+        </section>
+
+        <section class="dh-sec" aria-labelledby="dh-blocks">
+          <div class="dh-head">
+            <h2 id="dh-blocks">Sources, operations, targets</h2>
+            <p>
+              Connectors and operations share one interface, so any source can feed any target.
+              <a class="more" href={doc('connectors')}>All connectors →</a>
+            </p>
+          </div>
+          <div class="dh-blocks">
+            <div>
+              <h3>Sources</h3>
+              <div class="dh-chips">{sources.map((s) => <a class="dh-chip" href={doc(s.slug)}>{s.label}</a>)}</div>
             </div>
-            <div class="bb-col">
-              <h4>Operations</h4>
-              <div class="chips">{operations.map((s) => <a class="t-pill t-pill-lg" href={doc(s.slug)}>{s.label}</a>)}</div>
+            <div>
+              <h3>Operations</h3>
+              <div class="dh-chips">{operations.map((s) => <a class="dh-chip" href={doc(s.slug)}>{s.label}</a>)}</div>
             </div>
-            <div class="bb-col">
-              <h4>Targets</h4>
-              <div class="chips">{targets.map((s) => <a class="t-pill t-pill-lg" href={doc(s.slug)}>{s.label}</a>)}</div>
+            <div>
+              <h3>Targets</h3>
+              <div class="dh-chips">{targets.map((s) => <a class="dh-chip" href={doc(s.slug)}>{s.label}</a>)}</div>
             </div>
           </div>
         </section>
 
-        <!-- ═══════════ COMMUNITY ═══════════ -->
-        <section class="dh-sec last">
-          <div class="sec-head">
-            <span class="idx">Community</span>
-            <h2>Build in the open</h2>
-            <p>An incremental engine for agents — Apache-2.0, built fully in the open.</p>
+        <section class="dh-sec" aria-labelledby="dh-open">
+          <div class="dh-head">
+            <h2 id="dh-open">Built in the open</h2>
+            <p>The engine, the connectors and these docs are developed in public under the Apache-2.0 license.</p>
           </div>
-          <div class="card-grid four">
-            <DocCard href={GITHUB_REPO} title="GitHub" body="Star the repo, read the source, open an issue." icon={ICONS.github} accent="coral" />
-            <DocCard href={DISCORD_URL} title="Discord" body="Showcase, release notes, and help from maintainers." icon={ICONS.discord} accent="lavender" />
-            <DocCard href={SITE_EXAMPLES} title="Examples" body="Runnable recipes you can clone, run, and bend to your data." icon={ICONS.grid} accent="palm" />
-          </div>
+          <ul class="dh-list">
+            {community.map((c) => (
+              <li><a href={c.href}><span class="t">{c.title}</span><span class="b">{c.body}</span><span class="m">{c.meta}</span></a></li>
+            ))}
+          </ul>
         </section>
       </main>
     </div>
 
     <script is:inline>
       // Copy buttons for the install command and the code sample. Reads the
-      // verbatim text from the element's `data-copy` attribute.
+      // verbatim text from the wrapper's `data-copy` attribute.
       (function () {
         document.querySelectorAll('.docs-home [data-copy]').forEach((wrap) => {
-          const btn = wrap.querySelector('.copy');
+          const btn = wrap.querySelector('.dh-copy');
           if (!btn) return;
           btn.addEventListener('click', () => {
             const text = wrap.getAttribute('data-copy') || '';
@@ -316,12 +288,6 @@ app.update_blocking()</code></pre>
         });
       })();
     </script>
-
-    <style is:global>
-      /* Landing styles live in @cocoindex/brand/docs-home.css (body.docs-home
-         scope) so every surface shares the same system. */
-      @import '@cocoindex/brand/docs-home.css';
-    </style>
 
     <Foot />
     <Analytics />

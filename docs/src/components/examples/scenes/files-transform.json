@@ -1,0 +1,9 @@
+{
+  "alt": "The Markdown file data/chuck_norris.md is rendered by MarkdownIt(\"gfm-like\") into output_html/chuck_norris.md.html, its heading becoming <h1> and its numbered facts an <ol>; with live mode watching ./data, editing chuck_norris.md re-renders only its HTML while bizarre_animals.md.html is untouched.",
+  "needs": ["Python 3.11+"],
+  "run": [
+    { "note": "Install", "cmd": "pip install -e ." },
+    { "note": "Render data/ into output_html/, then keep watching", "cmd": "cocoindex update -L main" },
+    { "note": "In another terminal, see the HTML", "cmd": "ls output_html/ && head output_html/chuck_norris.md.html" }
+  ]
+}
