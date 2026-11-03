@@ -135,11 +135,15 @@ impl<'de> Deserialize<'de> for StableKey {
 /// Whether a symbol name can be rendered without quotes, i.e. it can't be
 /// confused with the path/array syntax around it (`/`, `,`, `]`) or with a
 /// quoted form. Anything else is rendered as `@"..."`.
+///
+/// Alphanumerics are Unicode-wide, not ASCII-only: symbols come from Python
+/// identifiers (`mount(fn)` uses `fn.__name__`), which may be non-ASCII, and
+/// none of the delimiters above is alphanumeric in any script.
 fn is_bare_symbol_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
 fn write_quoted_str(f: &mut std::fmt::Formatter<'_>, s: &str) -> std::fmt::Result {
@@ -536,12 +540,12 @@ impl<'a> StablePathParser<'a> {
                 } else {
                     client_bail!(
                         "Cannot interpret {:?} at position {} of stable path {:?} as a key; \
-                         write \"{}\" for a string key or @{} for a symbol key",
+                         write {} for a string key or {} for a symbol key",
                         token,
                         start,
                         self.input,
-                        token,
-                        token
+                        StableKey::Str(Arc::from(token)),
+                        StableKey::Symbol(Arc::from(token)),
                     )
                 }
             }
@@ -680,11 +684,8 @@ impl<'a> StablePathParser<'a> {
                 ),
             }
         }
-        Ok(
-            u8::from_str_radix(&self.input[start..self.pos], 16).map_err(|e| {
-                client_error!("Invalid \\x escape in stable path {:?}: {e}", self.input)
-            })?,
-        )
+        u8::from_str_radix(&self.input[start..self.pos], 16)
+            .map_err(|e| client_error!("Invalid \\x escape in stable path {:?}: {e}", self.input))
     }
 }
 
@@ -832,6 +833,8 @@ mod tests {
             // Symbols carrying '/' must stay one part — several internal
             // symbols (e.g. "cocoindex/mount_target") contain one.
             StableKey::Symbol(Arc::from("cocoindex/mount_target")),
+            // Python identifiers can be non-ASCII; such names stay bare.
+            StableKey::Symbol(Arc::from("处理")),
             StableKey::Symbol(Arc::from("")),
             StableKey::Array(Arc::from([])),
             StableKey::Array(Arc::from([
@@ -901,6 +904,12 @@ mod tests {
             StableKey::Symbol(Arc::from("cocoindex/mount_target")).to_string(),
             "@\"cocoindex/mount_target\""
         );
+        // Non-ASCII identifiers are still bare tokens.
+        assert_eq!(StableKey::Symbol(Arc::from("处理")).to_string(), "@处理");
+        assert_eq!(
+            StablePath::parse("/@处理").unwrap(),
+            StablePath(Arc::from(vec![StableKey::Symbol(Arc::from("处理"))]))
+        );
     }
 
     #[test]
@@ -909,6 +918,17 @@ mod tests {
         // which, instead of it silently becoming a string (issue #2297).
         let err = StablePath::parse("/process_files").unwrap_err().to_string();
         assert!(err.contains("process_files"), "unexpected error: {err}");
+        // The hint must itself be valid input, whatever the token holds.
+        let err = StablePath::parse("/my file.md").unwrap_err().to_string();
+        assert!(
+            err.contains("\"my file.md\"") && err.contains("@\"my file.md\""),
+            "hint should quote both spellings: {err}"
+        );
+        let err = StablePath::parse("/a\"b").unwrap_err().to_string();
+        assert!(
+            err.contains("\"a\\\"b\"") && err.contains("@\"a\\\"b\""),
+            "hint should escape the quote: {err}"
+        );
 
         for bad in [
             "/\"unterminated",
