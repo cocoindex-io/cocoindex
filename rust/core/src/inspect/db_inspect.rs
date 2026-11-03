@@ -354,8 +354,13 @@ pub struct StablePathDetail {
 /// Look up a path's node type, or `None` if the path isn't tracked.
 ///
 /// Every node — component and intermediate directory alike — is recorded as a
-/// child-existence entry under its parent, so a missing entry means the path
-/// doesn't exist. The root always exists.
+/// child-existence entry under its parent, which is the authoritative source
+/// of its type. A missing entry does not by itself mean the path doesn't
+/// exist: an unmounted component loses its entry at commit time but keeps its
+/// own entries (tracking info, target-state ownership) until the delete of
+/// its target states succeeds, which may be a later run. Such a path is
+/// reported as a directory, matching the listing walk. Only a path with no
+/// entries of its own is missing. The root always exists.
 fn lookup_node_type(
     db: &heed::Database<heed::types::Bytes, heed::types::Bytes>,
     txn: &heed::RoTxn<'_, heed::WithoutTls>,
@@ -372,7 +377,17 @@ fn lookup_node_type(
     )
     .encode()?;
     let Some(bytes) = db.get(txn, cex_key.as_slice())? else {
-        return Ok(None);
+        // An unmounted component whose cleanup hasn't finished has lost its
+        // child-existence entry but keeps its own entries, and the listing
+        // walk still shows it as a directory. Only a path with no entries of
+        // its own is missing.
+        let own_prefix = DbEntryKey::StablePathPrefix(path.as_ref()).encode()?;
+        let has_entries = db
+            .prefix_iter(txn, &own_prefix)?
+            .next()
+            .transpose()?
+            .is_some();
+        return Ok(has_entries.then_some(db_schema::StablePathNodeType::Directory));
     };
     let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
     Ok(Some(info.node_type))
@@ -818,25 +833,19 @@ mod tests {
                     for (path, bytes) in &tracking {
                         store.write_tracking_info_raw(wtxn, path, bytes).await?;
                         // Register the path in the tree the same way a real
-                        // commit does, so it's discoverable by the stable-path
-                        // walk and by existence lookups.
-                        let keys: &[StableKey] = path;
-                        let mut parent = StablePath::root();
-                        for (i, key) in keys.iter().enumerate() {
-                            let node_type = if i + 1 == keys.len() {
-                                db_schema::StablePathNodeType::Component
-                            } else {
-                                db_schema::StablePathNodeType::Directory
-                            };
+                        // commit does (the existence upsert at the start of
+                        // each build), so it's discoverable by the stable-path
+                        // walk and by existence lookups, and so an ancestor
+                        // that is itself a component is never demoted.
+                        if let Some((parent, key)) = path.as_ref().split_parent() {
                             store
-                                .write_child_existence(
+                                .ensure_path_node_type(
                                     wtxn,
-                                    &parent,
+                                    parent,
                                     key,
-                                    &ChildExistenceInfo { node_type },
+                                    db_schema::StablePathNodeType::Component,
                                 )
                                 .await?;
-                            parent = parent.concat_part(key.clone());
                         }
                     }
                     for (ts_path, owner) in &owners {
