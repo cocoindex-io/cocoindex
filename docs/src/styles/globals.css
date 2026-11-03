@@ -560,12 +560,13 @@ main.content {
 
 /* ─── sidebar ─── */
 .side-group { margin-bottom: 22px; }
-.side-group > h5 {
+.side-group > .side-h {
+  font-weight: 700;
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--muted); margin: 0 0 8px; padding: 0 10px;
   display: flex; justify-content: space-between; align-items: center;
 }
-.side-group > h5 .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--coral); }
+.side-group > .side-h .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--coral); }
 .side-group ul { list-style: none; margin: 0; padding: 0; }
 .side-group li a {
   display: flex; align-items: center; gap: 10px;
@@ -589,7 +590,8 @@ main.content {
 .side-group li a.on .num { color: rgba(252, 243, 216, 0.65); }
 
 /* ─── toc ─── */
-aside.toc h6 {
+aside.toc .toc-h {
+  font-weight: 700;
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--muted); margin: 0 0 12px; padding-bottom: 10px;
   border-bottom: 1px solid var(--rule);

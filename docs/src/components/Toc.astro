@@ -38,8 +38,8 @@ function relativeReview(ts: number): string | null {
 const reviewedAgo = relativeReview(editTs);
 ---
 
-<aside class="toc">
-  <h6>On this page</h6>
+<aside class="toc" aria-label="On this page">
+  <p class="toc-h">On this page</p>
   <ul>
     {rows.map((h) => (
       <li class={h.depth === 3 ? 'sub' : h.depth === 4 ? 'sub-sub' : ''} data-toc-item>

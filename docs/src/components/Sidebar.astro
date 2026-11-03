@@ -17,7 +17,7 @@ function href(slug: string): string {
 }
 ---
 
-<aside class="side">
+<aside class="side" aria-label="Documentation navigation">
   <Search />
   <div class="side-group">
     <ul>
@@ -41,13 +41,13 @@ function href(slug: string): string {
       </div>
     ) : (
       <div class="side-group">
-        <h5>
+        <p class="side-h">
           {item.slug ? (
             <a href={href(item.slug)} style="color:inherit; text-decoration:none;">{item.label}</a>
           ) : (
             <span>{item.label}</span>
           )}
-        </h5>
+        </p>
         <ul>
           {item.items.map((child) => (
             child.type === 'doc' ? (
