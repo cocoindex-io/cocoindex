@@ -4,8 +4,9 @@
 // AudioTranscription(filename, text) row, the coco_examples.audio_transcriptions
 // table keyed by filename, and the README's psql check. The file names are the
 // sample recordings shipped with the Rust twin (examples/rust/audio_to_text);
-// the Python example ships an empty audio_files/. Transcript words are drawn as
-// text lines, not quoted, because the repo has no reference transcript.
+// the Python example ships an empty audio_files/. No transcript words are shown
+// (the SQL preview shows the column expression, captioned) because the repo
+// has no reference transcript.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
 // a fixed, decorative waveform (bar heights in px), not data
@@ -60,11 +61,12 @@ const wave = [6, 10, 16, 9, 22, 28, 18, 12, 24, 30, 20, 14, 8, 12, 20, 26, 16, 1
         <table class="sc-table">
           <thead><tr><th class="at-fn">filename</th><th>preview</th></tr></thead>
           <tbody>
-            <tr><td class="at-fn">greeting.wav</td><td><span class="at-ph">transcript</span></td></tr>
-            <tr class="sc-delta"><td class="at-fn"><span class="at-fnwrap"><span class="sc-dtext">pipeline_note.wav</span><span class="sc-dmark">Δ</span></span></td><td><span class="at-ph sc-dtext">new transcript</span></td></tr>
+            <tr><td class="at-fn">greeting.wav</td><td><span class="at-shape">left(text, 200)</span></td></tr>
+            <tr class="sc-delta"><td class="at-fn"><span class="at-fnwrap"><span class="sc-dtext">pipeline_note.wav</span><span class="sc-dmark">Δ</span></span></td><td><span class="at-shape sc-dtext">left(text, 200)</span></td></tr>
           </tbody>
         </table>
       </div>
+      <span class="sc-cap at-fine">Column shape only: the repo ships no reference transcript, so no words are shown.</span>
       <p class="sc-quote at-note">Replace a recording and only it is sent to whisper-1 again; unchanged files keep their cached transcript, removed files lose their row.</p>
     </div>
   </div>
@@ -84,7 +86,7 @@ const wave = [6, 10, 16, 9, 22, 28, 18, 12, 24, 30, 20, 14, 8, 12, 20, 26, 16, 1
           <div class="sc-panel-h"><span class="sc-ico i-table"></span><span class="sc-t">audio_transcriptions</span></div>
           <div class="sc-panel-b">
             <div class="at-field"><span class="at-k">filename</span><span class="at-v">greeting.wav</span></div>
-            <div class="at-field"><span class="at-k">text</span><span class="at-ph">transcript of the file</span></div>
+            <div class="at-field"><span class="at-k">text</span><span class="at-shape">str</span></div>
           </div>
         </div>
       </div>
@@ -127,4 +129,6 @@ const wave = [6, 10, 16, 9, 22, 28, 18, 12, 24, 30, 20, 14, 8, 12, 20, 26, 16, 1
   .at-card .at-field { font-size: 11px; grid-template-columns: 56px minmax(0, 1fr); }
   .at-ph { font-family: var(--sans); font-size: 12px; font-style: italic; color: var(--sc-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .at-ph.sc-dtext { color: var(--sc-delta-text); }
+  .at-shape { font-family: var(--mono); color: var(--sc-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .at-shape.sc-dtext { color: var(--sc-delta-text); }
 </style>

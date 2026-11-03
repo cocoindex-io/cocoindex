@@ -27,3 +27,8 @@ counts, vector values). Periwinkle (`.sc-delta`) marks only the one edited
 input and the outputs it re-derives; green (`.sc-live`) only live mode.
 
 See `text-embedding.astro` / `.json` for the reference.
+
+Images: example photos and the dark walkthrough diagrams are hosted in the
+cocoindex-io/blobs repo, under `public/docs-v1/img/examples/<slug>/`
+(`scene/` for scene photos, `<name>-dark.svg` for diagrams). Add new images
+there, not in this repo.

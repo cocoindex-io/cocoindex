@@ -7,6 +7,7 @@
 // pipeline graph follows the Mermaid rules in models.py (thick ==> for mounts,
 // normal --> for calls): app_main mounts process_file with mount_each, which
 // maps process_chunk with coco.map. code_embedding/main.py is the edited file (Δ).
+// The LLM-written Overview section is left out: no sample text ships with it.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
 ---
@@ -52,7 +53,6 @@ const { size = 'hero' } = Astro.props;
         <div class="sc-row mc-doc">
           <div class="sc-col mc-comp">
             <span class="mc-h1"># code_embedding</span>
-            <span class="mc-h2">## Overview</span>
             <span class="mc-h2">## Components</span>
             <div class="mc-fn"><span class="mc-sig">async def app_main(sourcedir: pathlib.Path) -&gt; None</span><span class="mc-star">★</span></div>
             <div class="mc-fn"><span class="mc-sig">async def process_file(file: FileLike, table) -&gt; None</span><span class="mc-star">★</span></div>

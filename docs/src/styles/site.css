@@ -216,7 +216,7 @@ a { color: var(--maroon-ink); }
 
 /* reading column: 16/1.65 body on a 68ch measure; figures, tables and code run
    the full column (Vercel / Stripe docs) */
-:root .prose { font-size: 16px; line-height: 1.65; --measure: 60ch; }
+:root .prose { font-size: 16px; line-height: 1.65; --measure: 55ch; }
 :root .prose h1 { font-weight: 600; font-size: clamp(2rem, 3.2vw, 2.625rem); line-height: 1.1; letter-spacing: -0.035em; margin: 0 0 14px; text-wrap: balance; }
 :root .prose p.lede { font-size: 1.125rem; line-height: 1.55; letter-spacing: -0.01em; color: var(--muted); max-width: 62ch; margin: 0 0 20px; }
 :root .prose h2 { font-weight: 600; font-size: 1.5rem; line-height: 1.25; letter-spacing: -0.03em; margin: 56px 0 14px; max-width: none; }
@@ -407,6 +407,11 @@ a { color: var(--maroon-ink); }
 
 /* shared footer: the tag line meets AA on the dark ground */
 :root .foot-colo .foot-tag { color: var(--text-3); }
+/* footer labels: sentence case sans at the label size; the heart is still ink */
+:root :is(.foot-colo, .foot-col .foot-h) { font-family: var(--sans); font-size: 0.8125rem; letter-spacing: 0; text-transform: none; }
+:root .foot-col .foot-h { color: var(--maroon-ink); }
+:root .foot-col a:hover { color: #FFFFFF; }
+:root .foot-colo .foot-heart { color: var(--text-3); animation: none; }
 
 /* DocSearch modal */
 :root {

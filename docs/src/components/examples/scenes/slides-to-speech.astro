@@ -9,7 +9,7 @@
 // time; the scene names the field instead of inventing a sentence.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
-const B = '/docs/img/examples/scenes/slides-to-speech';
+const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/slides-to-speech/scene';
 const slides = [
   { n: 1, t: 'Q3 Product Roadmap' },
   { n: 2, t: 'Engineering Priorities' },
@@ -73,7 +73,7 @@ const slides = [
         <img class="ss-hit-img" src={`${B}/slide-2.webp`} width="480" height="360" alt="" loading="lazy" decoding="async" />
         <div class="sc-col ss-hit-b">
           <span class="sc-mono">slides/quarterly_review.pdf slide 2</span>
-          <div class="ss-notes"><span class="sc-mono sc-dim">speaker_notes</span><span>spoken narration the LLM wrote for this slide</span></div>
+          <div class="ss-notes"><span class="sc-mono sc-dim">speaker_notes</span><span>written by the LLM at run time, not shipped with the example</span></div>
           <p class="sc-quote"><b>Engineering Priorities</b> ranks first, above the roadmap and go-to-market slides: the match is on the spoken notes, by meaning.</p>
           <div class="ss-player">
             <span class="ss-play"></span>
@@ -121,8 +121,8 @@ const slides = [
   .ss-op { display: flex; flex-direction: column; gap: 1px; }
   .ss-op .sc-li { font-size: 12px; }
   .ss-sub { font-size: 12px; color: var(--sc-dim); padding-left: 22px; }
-  .ss-notes { display: flex; flex-direction: column; gap: 2px; padding: 6px 9px; border-left: 2px solid var(--sc-line-2); font-size: 12.5px; color: var(--sc-muted); }
-  .ss-notes .sc-mono { font-size: 11.5px; }
+  .ss-notes { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--sc-dim); }
+  .ss-notes .sc-mono { font-size: 12px; color: var(--sc-muted); }
   .ss-v { width: 64px; }
   .ss-fine { font-weight: 400; }
   .ss-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }

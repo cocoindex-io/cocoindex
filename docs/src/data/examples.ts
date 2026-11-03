@@ -41,6 +41,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: 'Markdown · embeddings',
     description: 'Chunk Markdown files, embed each chunk, store the vectors in Postgres, and search them in plain English. The simplest end-to-end vector index, and the one the other search examples build on.',
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: 'Postgres' },
       { kind: 'ops', label: 'Embeddings' },
@@ -57,6 +58,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: 'Code · Tree-sitter',
     description: 'Walk a repo, split by syntax with Tree-sitter, embed, and query your codebase in English. A live vector index for AI coding agents, in ~100 lines.',
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: 'Postgres' },
       { kind: 'ops', label: 'Tree-sitter' },
@@ -94,6 +96,7 @@ export const examples: ExampleCard[] = [
       { kind: 'src', label: 'PDF' },
       { kind: 'tgt', label: 'Local FS' },
       { kind: 'ops', label: 'Custom blocks' },
+      { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: '~18 min',
     sourceSlug: 'pdf_to_markdown',
@@ -106,6 +109,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: 'YouTube · LLM + graph',
     description: 'Turn YouTube podcasts into a queryable knowledge graph — diarized transcription, two-step LLM extraction, embedding-based entity resolution, and a SurrealDB graph.',
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'YouTube' },
       { kind: 'llm', label: 'OpenAI' },
       { kind: 'ops', label: 'Entity resolution' },
@@ -139,6 +143,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: 'Google Drive · LLM + Neo4j',
     description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph — LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution, kept in sync as notes change.',
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'Google Drive' },
       { kind: 'llm', label: 'Any LLM' },
       { kind: 'ops', label: 'Entity resolution' },
@@ -172,6 +177,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: 'PDF · docling + embeddings',
     description: 'Convert local PDFs to Markdown with docling on a GPU runner, chunk, embed, and store the vectors in Postgres — then query in natural language. A vector index over your documents.',
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'PDF' },
       { kind: 'tgt', label: 'Postgres' },
       { kind: 'ops', label: 'docling + embed' },
@@ -238,6 +244,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: "PDF \u00b7 LLM extract",
     description: "LLM-extract title, authors, and abstract from academic PDFs into typed rows, embed them, and store it all in Postgres with pgvector.",
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: "PDF" },
       { kind: 'llm', label: 'OpenAI' },
       { kind: 'tgt', label: "Postgres" },
@@ -340,9 +347,10 @@ export const examples: ExampleCard[] = [
     thumbLabel: "Entire \u00b7 Embeddings",
     description: "Index AI coding sessions captured by Entire \u2014 transcripts, prompts, and context summaries \u2014 into Postgres for natural-language semantic search.",
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: "Entire sessions" },
       { kind: 'tgt', label: 'Postgres' },
-      { kind: 'ops', label: "sentence-transformers" },
+      { kind: 'ops', label: 'Embeddings' },
       { kind: 'ops', label: 'Incremental' },
       { kind: 'lvl', label: 'Starter' },
     ],
@@ -374,6 +382,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: "Markdown \u00b7 Qdrant",
     description: "Upsert Markdown chunk vectors into a Qdrant collection. Chunking and embedding run locally; only the target changes from Semantic search 101.",
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: "Qdrant" },
       { kind: 'ops', label: 'Embeddings' },
@@ -393,7 +402,7 @@ export const examples: ExampleCard[] = [
       { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: "LanceDB" },
       { kind: 'llm', label: "sentence-transformers" },
-      { kind: 'ops', label: 'Vector index' },
+      { kind: 'ops', label: 'Embeddings' },
       { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~5 min",
@@ -407,9 +416,10 @@ export const examples: ExampleCard[] = [
     thumbLabel: "Markdown \u00b7 Turbopuffer",
     description: "Upsert Markdown chunk vectors into a Turbopuffer namespace, a serverless vector store. Only the target changes from Semantic search 101.",
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: "Turbopuffer" },
-      { kind: 'ops', label: "sentence-transformers" },
+      { kind: 'ops', label: 'Embeddings' },
       { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~7 min",
@@ -426,7 +436,7 @@ export const examples: ExampleCard[] = [
       { kind: 'src', label: "Amazon S3" },
       { kind: 'tgt', label: 'Postgres' },
       { kind: 'llm', label: "sentence-transformers" },
-      { kind: 'ops', label: 'Chunk + embed' },
+      { kind: 'ops', label: 'Embeddings' },
       { kind: 'lvl', label: 'Starter' },
     ],
     footMeta: "~6 min",
@@ -440,6 +450,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: "Google Drive \u00b7 Embed",
     description: "Read documents from Google Drive, then chunk, embed, and store the vectors in Postgres with pgvector. Only the source changes from Semantic search 101.",
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: "Google Drive" },
       { kind: 'tgt', label: 'Postgres' },
       { kind: 'ops', label: "Embeddings" },
@@ -456,6 +467,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: "OCI \u00b7 pgvector",
     description: "Chunk and embed Markdown objects from an Oracle Cloud (OCI) Object Storage bucket into Postgres/pgvector, with optional live updates via OCI Streaming.",
     tags: [
+      { kind: 'ops', label: 'Embeddings' },
       { kind: 'src', label: "OCI Object Storage" },
       { kind: 'tgt', label: 'Postgres' },
       { kind: 'llm', label: "sentence-transformers" },
@@ -537,6 +549,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: 'Slides · vision + TTS',
     description: 'Render each slide, write speaker notes with a vision LLM, narrate them with Pocket TTS locally on the CPU, and embed the notes into LanceDB — search a deck by meaning and play back the narration.',
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'Local FS' },
       { kind: 'ops', label: 'Vision LLM + TTS' },
       { kind: 'tgt', label: 'LanceDB' },
@@ -553,6 +566,7 @@ export const examples: ExampleCard[] = [
     thumbLabel: 'Filings · vector + full-text',
     description: 'Scrub, chunk, embed, and tag multi-format SEC filings into Apache Doris with both a vector and a full-text index — then retrieve with hybrid (semantic + keyword) RRF search.',
     tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
       { kind: 'src', label: 'Local FS' },
       { kind: 'ops', label: 'Embed + tag' },
       { kind: 'tgt', label: 'Apache Doris' },

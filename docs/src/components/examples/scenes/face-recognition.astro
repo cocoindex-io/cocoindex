@@ -6,10 +6,12 @@
 // face in the 1927 Solvay photo at a distance around 0.46. Counts (36 faces,
 // 29 from Solvay) and the distance are the README's. Carter_welcomes_Reagan.jpg
 // is the added photo (Δ); only its faces are detected and embedded.
+// Small tiles carry no name chip (too narrow); the added file is named
+// under the grid and in the Qdrant list.
 // The box on the Solvay photo is drawn by hand over Einstein's face.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
-const B = '/docs/img/examples/scenes/face-recognition';
+const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/scene';
 ---
 {size === 'hero' ? (
   <div class="fr">
@@ -19,22 +21,20 @@ const B = '/docs/img/examples/scenes/face-recognition';
         <div class="fr-grid">
           <div class="fr-tile fr-wide">
             <img src={`${B}/solvay-conference-1927.webp`} width="640" height="463" alt="" loading="lazy" decoding="async" />
-            <span class="fr-name"><span>Solvay_conference_1927.jpg</span></span>
+            <span class="fr-name"><span>Solvay_<wbr />conference_<wbr />1927.jpg</span></span>
           </div>
           <div class="fr-tile">
             <img src={`${B}/einplanck3.webp`} width="240" height="349" alt="" loading="lazy" decoding="async" />
-            <span class="fr-name"><span>einplanck3.jpg</span></span>
           </div>
           <div class="fr-tile">
             <img src={`${B}/jobs-gates.webp`} width="320" height="228" alt="" loading="lazy" decoding="async" />
-            <span class="fr-name"><span>Steve_Jobs_and_Bill_Gates_(522695099).jpg</span></span>
           </div>
           <div class="fr-tile sc-delta">
             <img src={`${B}/carter-reagan.webp`} width="320" height="214" alt="" loading="lazy" decoding="async" />
-            <span class="fr-name"><span>Carter_welcomes_Reagan.jpg</span></span>
             <span class="sc-dmark fr-mark">Δ</span>
           </div>
         </div>
+        <span class="fr-added"><span class="sc-dim">added</span> <span class="sc-mono sc-dtext">Carter_welcomes_Reagan.jpg</span></span>
       </div>
       <span class="sc-to"></span>
       <div class="sc-col fr-mid">
@@ -53,10 +53,10 @@ const B = '/docs/img/examples/scenes/face-recognition';
         <div class="sc-panel">
           <div class="sc-panel-h"><span class="sc-ico i-db"></span>face_embeddings</div>
           <div class="sc-panel-b">
-            <div class="sc-li"><span class="sc-ico i-person"></span><span>Solvay_conference_1927.jpg</span></div>
-            <div class="sc-li"><span class="sc-ico i-person"></span><span>einplanck3.jpg</span></div>
-            <div class="sc-li"><span class="sc-ico i-person"></span><span>Steve_Jobs_and_Bill_Gates_(522695099).jpg</span></div>
-            <div class="sc-li sc-delta"><span class="sc-ico i-person"></span><span class="sc-dtext">Carter_welcomes_Reagan.jpg</span></div>
+            <div class="sc-li"><span class="sc-ico i-person"></span><span class="fr-pt"><span class="sc-dim fr-dir">images/</span>Solvay_<wbr />conference_<wbr />1927.jpg</span></div>
+            <div class="sc-li"><span class="sc-ico i-person"></span><span class="fr-pt"><span class="sc-dim fr-dir">images/</span>einplanck3.jpg</span></div>
+            <div class="sc-li"><span class="sc-ico i-person"></span><span class="fr-pt"><span class="sc-dim fr-dir">images/</span>Steve_<wbr />Jobs_<wbr />and_<wbr />Bill_<wbr />Gates_<wbr />(522695099).jpg</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-person"></span><span class="sc-dtext fr-pt"><span class="fr-dir">images/</span>Carter_<wbr />welcomes_<wbr />Reagan.jpg</span></div>
           </div>
         </div>
         <span class="sc-cap fr-fine">36 faces on the sample set, 29 from Solvay alone. Each point carries filename and min_x, min_y, max_x, max_y.</span>
@@ -114,7 +114,8 @@ const B = '/docs/img/examples/scenes/face-recognition';
   .fr-src { flex: 1.05 1 0; }
   .fr-mid { flex: 0.95 1 0; }
   .fr-tgt { flex: 1.3 1 0; }
-  .fr-tgt .sc-li { font-size: 12px; }
+  .fr-tgt .sc-li { font-size: 12px; align-items: flex-start; }
+  .fr .fr-tgt .sc-li > span.fr-pt.fr-pt { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   .fr-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .fr-tile { position: relative; border: 1px solid var(--sc-line); border-radius: 7px; overflow: hidden; background: var(--sc-panel); min-width: 0; }
   .fr-tile.sc-delta { border-color: var(--sc-delta) !important; }
@@ -122,8 +123,11 @@ const B = '/docs/img/examples/scenes/face-recognition';
   .fr-wide { grid-column: 1 / -1; }
   .fr-wide img { height: 92px; object-position: center 62%; }
   .fr-name { display: flex; padding: 3px 6px; font-family: var(--mono); font-size: 11.5px; color: var(--sc-muted); min-width: 0; }
-  .fr-name span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fr-name span { min-width: 0; overflow-wrap: anywhere; }
   .sc-delta .fr-name { color: var(--sc-delta-text); }
+  .fr-added { font-size: 12px; overflow-wrap: anywhere; }
+  .fr-added .sc-mono { font-size: 12px; }
+  .fr-dir { display: block; }
   .fr-mark { position: absolute; top: 5px; right: 5px; }
   .fr-mid .sc-li { font-size: 12px; }
   .fr-sub { font-size: 12px; color: var(--sc-dim); padding-left: 22px; margin-top: -3px; }

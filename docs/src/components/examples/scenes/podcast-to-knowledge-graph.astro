@@ -5,14 +5,16 @@
 // tech and orgs they mention). Entity resolution collapses spellings, and
 // SurrealDB holds the graph. Content is the example's own: the sample video
 // ids, "(Speaker A)" labels, the statement / speaker / mention example and
-// the GPT-4 spellings from the walkthrough, the table and edge names from
+// the GPT-4 spellings from the walkthrough (the result row is captioned
+// illustrative), the table and edge names from
 // conv_knowledge/app.py, and a SurrealQL query from the walkthrough. The
-// added URL is the change (Δ): only that episode is processed.
+// added URL is the change (Δ): only that episode is processed, so its session
+// node (labelled with the video id, Session.youtube_id) and its edges re-derive.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
 
-type N = { id: string; x: number; y: number; kind: string; label: string; place?: 'c' | 'l' | 'r'; at?: number; max?: number; wrap?: boolean; sans?: boolean };
-type E = { from: string; to: string; rel: string; t?: number };
+type N = { id: string; x: number; y: number; kind: string; label: string; place?: 'c' | 'l' | 'r'; at?: number; max?: number; wrap?: boolean; sans?: boolean; delta?: boolean };
+type E = { from: string; to: string; rel: string; t?: number; delta?: boolean };
 const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
   const at = Object.fromEntries(nodes.map((n) => [n.id, n]));
   const pc = (v: number, total: number) => `${((v / total) * 100).toFixed(3)}%`;
@@ -39,13 +41,13 @@ const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
 const STMT = 'Scaling laws suggest that larger models will continue to improve.';
 const hero = layout(632, 268, [
   { id: 'lex', x: 92, y: 40, kind: 'person', label: 'Lex Fridman' },
-  { id: 'ses', x: 92, y: 226, kind: 'session', label: 'one episode', sans: true },
+  { id: 'ses', x: 92, y: 226, kind: 'session', label: 'hmtuvNfytjM', delta: true },
   { id: 'st', x: 300, y: 120, kind: 'statement', label: STMT, wrap: true },
   { id: 'ilya', x: 552, y: 40, kind: 'person', label: 'Ilya Sutskever' },
 ], [
-  { from: 'lex', to: 'ses', rel: 'person_session', t: 0.5 },
+  { from: 'lex', to: 'ses', rel: 'person_session', t: 0.5, delta: true },
   { from: 'lex', to: 'st', rel: 'person_statement', t: 0.44 },
-  { from: 'ses', to: 'st', rel: 'session_statement', t: 0.44 },
+  { from: 'ses', to: 'st', rel: 'session_statement', t: 0.44, delta: true },
   { from: 'st', to: 'ilya', rel: 'statement_mentions', t: 0.6 },
 ]);
 
@@ -108,12 +110,13 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
         <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
           <defs>
             <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pc-tip" /></marker>
+            <marker id={`${mk}-d`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pc-tip is-delta" /></marker>
           </defs>
-          {g.edges.map((e) => <path d={e.d} marker-mid={`url(#${mk}-a)`} />)}
+          {g.edges.map((e) => <path d={e.d} class:list={[{ 'is-delta': e.delta }]} marker-mid={`url(#${mk}-${e.delta ? 'd' : 'a'})`} />)}
         </svg>
-        {g.edges.map((e) => <span class="sc-edge pc-elabel" style={e.lstyle}>{e.rel}</span>)}
+        {g.edges.map((e) => <span class:list={['sc-edge pc-elabel', { 'sc-dtext': e.delta }]} style={e.lstyle}>{e.rel}</span>)}
         {g.nodes.map((n) => (
-          <span class:list={['sc-node pc-node', { 'is-doc': n.wrap, 'is-wrap': n.wrap }]} style={n.style}>
+          <span class:list={['sc-node pc-node', { 'is-doc': n.wrap, 'is-wrap': n.wrap, 'sc-delta': n.delta }]} style={n.style}>
             <span class="sc-kind">{n.kind}</span><span class:list={['pc-nl', { 'pc-sans': n.sans }]}>{n.label}</span>
           </span>
         ))}
@@ -121,11 +124,11 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
       <ul class="pc-list">
         {groups.map((gr) => (
           <li>
-            <span class="sc-node pc-node"><span class="sc-kind">{gr.node.kind}</span><span class:list={['pc-nl', { 'pc-sans': gr.node.sans }]}>{gr.node.label}</span></span>
+            <span class:list={['sc-node pc-node', { 'sc-delta': gr.node.delta }]}><span class="sc-kind">{gr.node.kind}</span><span class:list={['pc-nl', { 'pc-sans': gr.node.sans }]}>{gr.node.label}</span></span>
             {gr.edges.map((e) => (
               <span class="pc-sub">
-                <span class="sc-edge">{e.rel}</span>
-                <span class="pc-to"><span class="sc-edge">→</span><span class="sc-node pc-node"><span class="sc-kind">{e.toN.kind}</span><span class="pc-nl">{e.toN.label}</span></span></span>
+                <span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>{e.rel}</span>
+                <span class="pc-to"><span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>→</span><span class:list={['sc-node pc-node', { 'sc-delta': e.toN.delta }]}><span class="sc-kind">{e.toN.kind}</span><span class="pc-nl">{e.toN.label}</span></span></span>
               </span>
             ))}
           </li>
@@ -152,6 +155,7 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
           <tbody><tr><td class="pc-sp">["Lex Fridman"]</td><td>{STMT}</td></tr></tbody>
         </table>
       </div>
+      <span class="sc-cap pc-fine">Illustrative row from the walkthrough's example statement</span>
     </div>
   </div>
 ) : (
@@ -193,6 +197,9 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
   .pc-graphwrap { position: relative; display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
   .pc-graph { position: relative; width: 100%; }
   .pc-tip { fill: rgba(255, 255, 255, 0.4); stroke: none !important; }
+  .pc-tip.is-delta { fill: var(--sc-delta); }
+  /* opaque Δ fill (10% periwinkle over the panel) so wires stay under the node */
+  .pc-node.sc-delta { background: #1E1E29 !important; }
   .pc-node { position: absolute; }
   .pc-nl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pc-sans { font-family: var(--sans); color: var(--sc-muted); }

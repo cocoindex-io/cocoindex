@@ -66,8 +66,9 @@ const { size = 'hero' } = Astro.props;
   <div class="s3-card">
     <div class="sc-row sc-keep">
       <div class="sc-panel s3-card-src">
-        <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>cocoindex-example-data/markdown_files/</div>
+        <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>cocoindex-example-data</div>
         <div class="sc-panel-b">
+          <span class="s3-card-pre">markdown_files/</span>
           <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
           <div class="sc-li"><span class="sc-ico i-file"></span><span>1810.04805v2.md</span></div>
           <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span><span class="sc-meta">new ETag</span></div>
@@ -77,7 +78,7 @@ const { size = 'hero' } = Astro.props;
       <div class="sc-panel s3-card-dst">
         <div class="sc-panel-h"><span class="sc-ico i-table"></span>pgvector</div>
         <div class="sc-panel-b">
-          <span class="sc-mono">amazon_s3_doc_embeddings</span>
+          <span class="sc-mono">amazon_s3_<wbr />doc_embeddings</span>
           <span class="sc-cap">one row per chunk</span>
         </div>
       </div>
@@ -116,7 +117,8 @@ const { size = 'hero' } = Astro.props;
   .s3-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
   .s3-card-src { flex: 1.35 1 0; }
   .s3-card-dst { flex: 1 1 0; }
-  .s3-card-dst .sc-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .s3-card-dst .sc-mono { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .s3-card-pre { font-family: var(--mono); font-size: 11px; color: var(--sc-dim); padding: 0 0 2px; }
   @container (max-width: 560px) {
     .s3-grid { grid-template-columns: minmax(0, 1fr); gap: 2px; }
     .s3-th > span:last-child { display: none; }

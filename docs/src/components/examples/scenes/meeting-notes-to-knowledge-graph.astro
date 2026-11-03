@@ -3,9 +3,12 @@
 // meetings, an LLM extracts organizer, participants and tasks, entity
 // resolution collapses "Alice" / "Alice Chen" / "alice c." into one Person,
 // and Neo4j holds Person, Meeting and Task nodes with ATTENDED (is_organizer),
-// DECIDED and ASSIGNED_TO edges. The example ships no sample notes: names,
-// the TeamA.docx note file and the task come from the walkthrough and the
-// launch post's graph figure; models come from .env.example and main.py.
+// DECIDED and ASSIGNED_TO edges. The example ships no sample notes, so the note
+// is captioned illustrative: the Alice spellings and the task come from the
+// README and walkthrough, the TeamA note name from the launch post's graph
+// figure. The Drive connector exports a Google Doc as Markdown (no file
+// extension in its path), which is what main.py splits at ## headings; models
+// come from .env.example and main.py.
 // The task line is the edit (Δ): only its Task node and two edges re-derive.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
@@ -37,21 +40,19 @@ const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
 
 const TASK = 'create an example for the graph DB feature';
 const hero = layout(632, 236, [
-  { id: 'alice', x: 96, y: 46, kind: 'Person', label: 'Alice Chen' },
-  { id: 'alex', x: 96, y: 196, kind: 'Person', label: 'Alex' },
-  { id: 'm', x: 318, y: 132, kind: 'Meeting', label: 'TeamA.docx' },
+  { id: 'alice', x: 96, y: 52, kind: 'Person', label: 'Alice Chen' },
+  { id: 'm', x: 318, y: 190, kind: 'Meeting', label: 'TeamA' },
   { id: 't', x: 540, y: 52, kind: 'Task', label: TASK, place: 'r', at: 632, wrap: true, delta: true },
 ], [
   { from: 'alice', to: 'm', rel: 'ATTENDED', prop: 'is_organizer: true', t: 0.5 },
-  { from: 'alex', to: 'm', rel: 'ATTENDED', t: 0.46 },
   { from: 'alice', to: 't', rel: 'ASSIGNED_TO', t: 0.46, delta: true },
   { from: 'm', to: 't', rel: 'DECIDED', t: 0.42, delta: true },
 ]);
 
 const card = layout(230, 136, [
   { id: 'alice', x: 44, y: 68, kind: '', label: 'Alice Chen' },
-  { id: 'm', x: 186, y: 22, kind: '', label: 'TeamA.docx' },
-  { id: 't', x: 186, y: 114, kind: '', label: TASK, place: 'r', at: 230, max: 118 },
+  { id: 'm', x: 186, y: 22, kind: '', label: 'TeamA' },
+  { id: 't', x: 186, y: 114, kind: '', label: 'graph DB example', place: 'r', at: 230, max: 118 },
 ], [
   { from: 'alice', to: 'm', rel: 'ATTENDED', t: 0.5 },
   { from: 'alice', to: 't', rel: 'ASSIGNED_TO', t: 0.5 },
@@ -64,13 +65,13 @@ const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.e
   <div class="mn">
     <div class="sc-row">
       <div class="sc-col">
-        <span class="sc-cap">Google Drive note</span>
+        <span class="sc-cap">Google Doc, exported as Markdown <span class="mn-fine">· illustrative note</span></span>
         <div class="sc-panel">
-          <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>TeamA.docx</div>
+          <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>TeamA</div>
           <div class="sc-panel-b mn-note">
             <span class="mn-h">## Team A sync</span>
             <span><span class="sc-dim">Organizer:</span> Alice</span>
-            <span><span class="sc-dim">Attendees:</span> Alex, alice c.</span>
+            <span><span class="sc-dim">Attendees:</span> alice c.</span>
             <span class="sc-li sc-delta mn-task"><span>- {TASK} (Alice Chen)</span><span class="sc-dmark">Δ</span></span>
           </div>
         </div>
