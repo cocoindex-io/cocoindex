@@ -25,7 +25,7 @@ We're modeling meeting notes as a **property graph** — the data model behind [
 
 That second idea is the whole point: in a property graph, "who is on the hook for what" stops being prose buried in a document and becomes an edge you can traverse in a query. The schema here is small — three node types, three relationship types:
 
-![Property graph schema: Person, Meeting, and Task nodes joined by ATTENDED (carrying is_organizer), DECIDED, and ASSIGNED_TO edges, with sample node and edge properties labeled](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/schema.png)
+![Property graph schema: Person, Meeting, and Task nodes joined by ATTENDED (carrying is_organizer), DECIDED, and ASSIGNED_TO edges, with sample node and edge properties labeled](/docs/img/examples/flows/meeting-notes-to-knowledge-graph/schema.svg)
 
 - **`Meeting`** nodes — one per meeting section, keyed by a stable integer id derived from `(note_file, date)`.
 - **`Person`** nodes — canonical organizers, participants, and task assignees, deduplicated by an embedding + LLM entity-resolution pass (so "Alice", "Alice Chen", and "alice c." collapse to a single node).
@@ -94,7 +94,7 @@ class AttendedRel:
 
 These dataclasses are the bridge between plain Python and the property graph. Each record you declare into a node table becomes a **node**, with its fields as properties; each relation you declare becomes a typed, directed **edge** between two nodes, with its payload (like `is_organizer`) as edge properties:
 
-![A meeting record becoming a Meeting node, and an attendance record becoming an ATTENDED edge from a Person node to a Meeting node carrying is_organizer](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/records-to-graph.png)
+![A meeting record becoming a Meeting node, and an attendance record becoming an ATTENDED edge from a Person node to a Meeting node carrying is_organizer](/docs/img/examples/flows/meeting-notes-to-knowledge-graph/records-to-graph.svg)
 
 So a `Meeting(note_file=…, time=…, note=…)` becomes a `Meeting` node carrying those fields, and an `ATTENDED` relation from a person to that meeting becomes a `Person -[:ATTENDED {is_organizer: true}]-> Meeting` edge. You declare the records and relations in Python; the [Neo4j connector](/docs/connectors/neo4j/) creates, updates, and removes the matching nodes and edges to match.
 

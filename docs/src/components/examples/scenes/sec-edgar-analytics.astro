@@ -95,7 +95,7 @@ const { size = 'hero' } = Astro.props;
       <div class="sc-col se-card-q">
         <div class="sc-query"><span class="sc-ico i-search"></span><span>"cloud computing and AI risk"</span></div>
         <div class="se-card-lanes"><span class="sc-chip">vector</span><span class="se-plus">+</span><span class="sc-chip">full-text</span><span class="se-plus">→</span><span class="sc-chip is-strong">RRF</span></div>
-        <div class="sc-panel"><div class="sc-panel-b"><span class="sc-li"><span>0000789019_2025-10-15_10-K.txt</span><span class="sc-meta">filing</span></span></div></div>
+        <div class="sc-panel"><div class="sc-panel-b"><span class="sc-li"><span class="se-fn">0000789019_2025-10-15_10-K.txt</span><span class="sc-meta">filing</span></span></div></div>
       </div>
     </div>
   </div>
@@ -141,7 +141,7 @@ const { size = 'hero' } = Astro.props;
   .se-card-lanes { display: flex; align-items: center; gap: 5px; }
   .se-card .sc-query { align-items: flex-start; }
   .se-card .sc-query > span:last-child { white-space: normal; }
-  .se-card .sc-li > span:first-child { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .se-card .sc-panel .sc-li > span.se-fn { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   .se-plus { font-family: var(--mono); font-size: 11px; color: var(--sc-dim); }
   @container (max-width: 560px) {
     .se-st, .se-model { display: none; }

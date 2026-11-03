@@ -39,7 +39,7 @@ const { size = 'hero' } = Astro.props;
           <span class="sc-chip is-strong">metadata.json</span><span class="es-to"></span><span class="es-out"><span class="es-ct2"><span class="es-meta">session_metadata row</span></span><span class="es-op">json.loads</span></span>
         </div></div>
         <div class="es-turn">
-          <div class="es-caps"><span class="sc-cap es-fine">One line of full.jsonl, one transcript row</span><span class="sc-cap es-ill">Illustrative session</span></div>
+          <div class="es-caps"><span class="sc-cap es-fine">One line of full.jsonl, one transcript row</span><span class="sc-cap es-ill">Illustrative session data throughout</span></div>
           <pre class="sc-code">{'{'}<span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"login returns 401 after the token refresh, fix the auth bug"</span>{'}'}</pre>
         </div>
       </div>
@@ -47,7 +47,7 @@ const { size = 'hero' } = Astro.props;
 
     <div class="sc-row es-tables">
       <div class="sc-col es-emb">
-        <div class="es-caps"><span class="sc-cap">Postgres + pgvector</span><span class="sc-cap es-ill">Illustrative session</span></div>
+        <div class="es-caps"><span class="sc-cap">Postgres + pgvector</span></div>
         <div class="sc-panel">
           <div class="sc-panel-h"><span class="sc-ico i-table"></span>entire.session_embeddings<span class="es-model">all-MiniLM-L6-v2</span></div>
           <table class="sc-table">
@@ -73,7 +73,7 @@ const { size = 'hero' } = Astro.props;
     </div>
 
     <div class="es-search">
-      <div class="es-caps"><span class="sc-cap">Find it again</span><span class="sc-cap es-ill">Illustrative session</span></div>
+      <div class="es-caps"><span class="sc-cap">Find it again</span></div>
       <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "how did I fix the auth bug"</span></div>
       <div class="sc-panel"><div class="sc-panel-b es-hits">
         <div class="sc-hit"><span class="r">1</span><span><span class="src">a3f19c0e7d2b/1 (transcript/assistant)</span><span class="sc-quote sc-clip2">The refresh handler saved the new token after the retry, so the retry still sent the old one. Moved the save before the retry.</span></span></div>

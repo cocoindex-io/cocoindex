@@ -124,7 +124,7 @@ topic_target.declare_target_state(key=key, value=value)
 
 CocoIndex is [state-driven](/docs/programming_guide/core_concepts/): like a spreadsheet cell or a SQL materialized view, you describe what the target *should be* as a function of the source, and the engine figures out the transitions. You don't compute deltas, and you don't write separate insert / update / delete code paths.
 
-![Declared target states above the line and the Kafka messages they produce below: editing one CSV cell, adding a row, and removing a row yield exactly the upsert and delete messages needed — the unchanged row produces nothing](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/state-vs-messages.svg)
+![Declared target states above the line and the Kafka messages they produce below: editing one CSV cell, adding a row, and removing a row yield exactly the upsert and delete messages needed — the unchanged row produces nothing](/docs/img/examples/flows/csv-to-kafka/state-vs-messages.svg)
 
 Kafka makes this vivid because its wire model is the opposite of state: a topic is a *log of events*, not a snapshot. CocoIndex owns the gap. When you call `declare_target_state(key=k, value=v)`:
 

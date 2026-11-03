@@ -34,7 +34,7 @@ const photos = [
       <div class="sc-col is-mid">
         <span class="sc-cap">One model, two encoders</span>
         <div class="sc-panel">
-          <div class="sc-panel-h is-model"><span class="sc-ico i-model"></span><span><span class="sc-dim">openai/</span><br />clip-vit-large-patch14</span></div>
+          <div class="sc-panel-h is-model"><span class="sc-ico i-model"></span><span class="is-mname"><span class="sc-dim">openai/</span><br />clip-vit-<wbr />large-<wbr />patch14</span></div>
           <div class="sc-panel-b">
             <span class="sc-li"><span class="sc-ico i-image"></span><span>get_image_features</span></span>
             <span class="is-sub">each photo, at index time</span>
@@ -105,8 +105,8 @@ const photos = [
 <style>
   .is { display: flex; flex-direction: column; gap: 18px; }
   .is-top { gap: 10px; }
-  .is-src { flex: 1.15 1 0; }
-  .is-mid { flex: 1.2 1 0; }
+  .is-src { flex: 1.3 1 0; }
+  .is-mid { flex: 1.05 1 0; }
   .is-tgt { flex: 0.9 1 0; }
   .is-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .is-tile { position: relative; margin: 0; border: 1px solid var(--sc-line); border-radius: 7px; overflow: hidden; background: var(--sc-panel); }
@@ -116,6 +116,7 @@ const photos = [
   .is-name > span:first-child { min-width: 0; overflow-wrap: anywhere; }
   .is-mark { position: absolute; top: 5px; right: 5px; }
   .is-model { white-space: normal; align-items: flex-start; line-height: 1.35; }
+  .is-model > span.is-mname.is-mname { white-space: normal; overflow: visible; }
   .is-model .sc-ico { margin-top: 1px; }
   .sc-delta .is-name > span:first-child { color: var(--sc-delta-text); }
   .is-sub { font-size: 12px; color: var(--sc-dim); padding-left: 22px; margin-top: -3px; }

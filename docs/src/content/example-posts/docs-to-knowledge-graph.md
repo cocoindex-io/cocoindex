@@ -26,7 +26,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 The graph schema is small — two node types, two relationship types:
 
-![Graph schema: Document nodes connected to Entity nodes by MENTION edges, and Entity nodes connected to each other by RELATIONSHIP edges carrying the predicate](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/schema.png)
+![Graph schema: Document nodes connected to Entity nodes by MENTION edges, and Entity nodes connected to each other by RELATIONSHIP edges carrying the predicate](/docs/img/examples/flows/docs-to-knowledge-graph/schema.svg)
 
 - **`Document`** nodes — one per Markdown file, keyed by filename, with an LLM-generated `title` and `summary`.
 - **`Entity`** nodes — one per distinct concept named in any triple, keyed by the concept name.

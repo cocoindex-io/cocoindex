@@ -288,3 +288,5 @@ body.ex-detail .prose th { font-family: var(--sans); font-size: 0.8125rem; lette
 
 /* Rail: the scroller clips negative margins, so give rows room inside it. */
 body.ex-listing .ex-rail { padding-left: 10px; padding-right: 10px; margin-left: -10px; margin-right: -10px; }
+/* Rail group headings at the label size (the brand default is 10.24px). */
+:root body.ex-detail aside.side .side-group > h5 { font-family: var(--sans); font-size: 0.8125rem; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--maroon-ink); }

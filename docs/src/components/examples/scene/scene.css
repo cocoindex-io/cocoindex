@@ -48,7 +48,7 @@
 /* list rows: a file, an object, a message */
 .sc-li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 6px; margin: 0 -6px; border: 1px solid transparent; border-radius: 6px; font-family: var(--mono); font-size: 12.5px; color: var(--sc-ink); }
 .sc-li > span:not(.sc-ico):not(.sc-dmark):not(.sc-meta) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sc-li .sc-meta { margin-left: auto; padding-left: 8px; font-size: 11.5px; color: var(--sc-dim); white-space: nowrap; }
+.sc-li .sc-meta { margin-left: auto; padding-left: 8px; font-size: 12px; color: var(--sc-dim); white-space: nowrap; }
 .sc-card .sc-li { font-size: 11px; padding: 2px 5px; margin: 0 -5px; gap: 6px; }
 
 /* mono text helpers */
@@ -77,7 +77,7 @@
 
 /* tables: target rows */
 .sc-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: var(--mono); font-size: 12px; }
-.sc-table th { text-align: left; font-family: var(--sans); font-weight: 500; font-size: 11.5px; color: var(--sc-dim); padding: 6px 8px; border-bottom: 1px solid var(--sc-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-table th { text-align: left; font-family: var(--sans); font-weight: 500; font-size: 12px; color: var(--sc-dim); padding: 6px 8px; border-bottom: 1px solid var(--sc-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sc-table td { padding: 5px 8px; color: var(--sc-ink); border-bottom: 1px solid var(--sc-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sc-table tr:last-child td { border-bottom: 0; }
 .sc-table td.sc-dim { color: var(--sc-dim); }
@@ -107,8 +107,8 @@
 .sc-query > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-hit { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--sc-line); }
 .sc-hit:first-child { border-top: 0; }
-.sc-hit .r { font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); }
-.sc-hit .src { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); margin-bottom: 2px; }
+.sc-hit .r { font-family: var(--mono); font-size: 12px; color: var(--sc-dim); }
+.sc-hit .src { display: block; font-family: var(--mono); font-size: 12px; color: var(--sc-dim); margin-bottom: 2px; }
 .sc-card .sc-query { font-size: 11px; padding: 5px 8px; }
 
 /* change and live marks */
