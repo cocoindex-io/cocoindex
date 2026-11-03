@@ -4,10 +4,12 @@
 // Qdrant multivector collection ImageSearchColpali with max_sim, and the
 // query "long neck" is matched token against patch (late interaction).
 // The patch grid is a diagram of the idea, not the model's real patch count.
-// Runs live inside api.py; cat1.jpeg is the photo dropped in (Δ).
+// Runs live inside api.py; giraffe.jpg (a real file in img/, and the photo
+// pictured) is the one dropped in (Δ). The two highlighted patches are
+// placed by hand and captioned as illustrative.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
-const B = '/docs/img/examples/scenes/image-search-colpali';
+const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/scene';
 const COLS = 8, ROWS = 5;
 const cells = Array.from({ length: COLS * ROWS }, (_, i) => i);
 // two cells over the giraffe's neck, to illustrate "best patch per query token"
@@ -23,8 +25,8 @@ const files = ['cat1.jpeg', 'dog1.jpeg', 'elephant1.jpg', 'giraffe.jpg'];
           <div class="sc-panel-h"><span class="sc-ico i-folder"></span>img/</div>
           <div class="sc-panel-b">
             {files.map((f) => (
-              <div class={`sc-li${f === 'cat1.jpeg' ? ' sc-delta' : ''}`}>
-                <span class="sc-ico i-image"></span><span>{f}</span>{f === 'cat1.jpeg' && <span class="sc-dmark">Δ</span>}
+              <div class={`sc-li${f === 'giraffe.jpg' ? ' sc-delta' : ''}`}>
+                <span class="sc-ico i-image"></span><span>{f}</span>{f === 'giraffe.jpg' && <span class="sc-dmark">Δ</span>}
               </div>
             ))}
           </div>
@@ -34,7 +36,7 @@ const files = ['cat1.jpeg', 'dog1.jpeg', 'elephant1.jpg', 'giraffe.jpg'];
       <span class="sc-to"></span>
       <div class="sc-col cp-mid">
         <span class="sc-cap">vidore/colpali-v1.2</span>
-        <div class="cp-photo sc-hide-narrow">
+        <div class="cp-photo sc-delta sc-hide-narrow">
           <img src={`${B}/giraffe.webp`} width="320" height="180" alt="" loading="lazy" decoding="async" />
           <div class="cp-grid" style={`--cols:${COLS};--rows:${ROWS}`}>
             {cells.map(() => <span></span>)}
@@ -54,8 +56,8 @@ distance=<span class="s">"cosine"</span>
 multivector_comparator=
   <span class="s">"max_sim"</span></pre>
           <div class="sc-panel-b cp-points">
-            <div class="sc-li sc-delta"><span class="sc-ico i-stream"></span><span class="sc-dtext">img/cat1.jpeg</span></div>
-            <div class="sc-li"><span class="sc-ico i-stream"></span><span>img/giraffe.jpg</span></div>
+            <div class="sc-li"><span class="sc-ico i-stream"></span><span>img/cat1.jpeg</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-stream"></span><span class="sc-dtext">img/giraffe.jpg</span><span class="sc-dmark">Δ</span></div>
           </div>
         </div>
         <span class="sc-cap cp-fine">One point per photo, holding its bag of vectors</span>
@@ -81,7 +83,7 @@ multivector_comparator=
               {cells.map((i) => <span class={best.has(i) ? 'is-best' : ''}></span>)}
             </div>
           </div>
-          <div class="cp-cap"><span class="r">1</span><span>img/giraffe.jpg</span></div>
+          <div class="cp-cap"><span class="r">1</span><span>img/giraffe.jpg</span><span class="sc-cap cp-ill">Illustrative patches</span></div>
         </div>
       </div>
     </div>
@@ -96,13 +98,13 @@ multivector_comparator=
             {cells.map((i) => <span class={best.has(i) ? 'is-best' : ''}></span>)}
           </div>
         </div>
-        <span class="sc-cap">a vector per patch</span>
+        <span class="sc-cap">a vector per patch (illustrative)</span>
       </div>
       <span class="sc-to"></span>
       <div class="sc-col cp-cr">
         <div class="sc-query"><span class="sc-ico i-search"></span><span>long neck</span></div>
         <span class="sc-chip">max_sim</span>
-        <span class="sc-li"><span class="sc-ico i-image"></span><span>giraffe.jpg</span></span>
+        <span class="sc-li"><span class="sc-ico i-image"></span><span>img/giraffe.jpg</span></span>
       </div>
     </div>
   </div>
@@ -130,6 +132,8 @@ multivector_comparator=
   .cp-tokens .sc-quote { margin: 0; }
   .cp-hit { flex: 0 0 280px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .cp-cap { display: flex; gap: 8px; font-family: var(--mono); font-size: 12px; }
+  .cp-ill { margin-left: auto; font-family: var(--sans); font-weight: 400; }
+  .cp-photo.sc-delta { border-color: var(--sc-delta) !important; }
   .cp-cap .r { color: var(--sc-dim); }
   @container (max-width: 560px) {
     .cp-hit { flex: none; width: 100%; }

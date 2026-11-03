@@ -13,7 +13,7 @@ Your code is the source of truth. In this tutorial, we'll build a pipeline that 
 For example, for each [cocoindex example project](https://github.com/cocoindex-io/cocoindex/tree/main/examples), we can have an auto-one-pager like this:
 
 
-![markdown](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/markdown.png)
+![markdown](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/markdown-dark.svg)
 
 
 ## Overview
@@ -82,7 +82,7 @@ When your source data is updated, or your processing logic is changed (for examp
 Define a CocoIndex App — the top-level runnable unit in CocoIndex.
 
 
-![App Definition](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/app.svg)
+![App Definition](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/app-dark.svg)
 
 ```python title="main.py"
 from __future__ import annotations
@@ -118,7 +118,7 @@ app = coco.App(
 
 ## Define the main function
 
-![App Definition](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/main.svg)
+![App Definition](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/main-dark.svg)
 
 In the main function, we walk through each project in the subdirectories and process it.
 
@@ -180,7 +180,7 @@ For each project, we will
 2. aggregate all the extraction into a project-level summary
 3. output the extraction to a nice documentation with a Mermaid diagram.
 
-![Process Project](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/project.svg)
+![Process Project](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/project-dark.svg)
 
 ```python title="main.py"
 @coco.fn(memo=True)
@@ -212,12 +212,12 @@ async def process_project(
 Now let's take a look at the details for each transformation.
 For file extraction, we define a structure using Pydantic and use [Instructor](https://github.com/567-labs/instructor) to extract with LLMs.
 
-![Extract files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/extraction.svg)
+![Extract files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/extraction-dark.svg)
 
 ### Define the data models
 
 The key to structured LLM outputs is defining clear Pydantic models.
-![Define Models](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/extraction-models.svg)
+![Define Models](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/extraction-models-dark.svg)
 
 ```python title="models.py"
 class FunctionInfo(BaseModel):
@@ -297,7 +297,7 @@ Instructions:
 
 For projects with multiple files, we aggregate into a unified summary:
 
-![Aggregate files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/aggregate.svg)
+![Aggregate files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/aggregate-dark.svg)
 
 ```python title="main.py"
 @coco.fn
@@ -375,7 +375,7 @@ The result is a unified `CodebaseInfo` that represents the entire project, not i
 ## Generate markdown output
 
 Create output markdown for each project.
-![Create Markdown](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/markdown.svg)
+![Create Markdown](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/markdown-dark.svg)
 
 ```python title="main.py"
 @coco.fn

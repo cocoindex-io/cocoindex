@@ -105,7 +105,8 @@ const { size = 'hero' } = Astro.props;
       <pre class="sc-code pm-card-json">&#123;
   <span class="s">"title"</span>: <span class="s">"Attention Is…"</span>,
   <span class="s">"authors"</span>: [
-    &#123;<span class="s">"name"</span>: <span class="s">"Ashish Vaswani"</span>&#125;
+    &#123;<span class="s">"name"</span>:
+      <span class="s">"Ashish Vaswani"</span>&#125;
   ],
   <span class="s">"abstract"</span>: <span class="s">"The…"</span>
 &#125;</pre>
@@ -131,7 +132,9 @@ const { size = 'hero' } = Astro.props;
   .pm-rec { flex: 1 1 0; }
   .pm-tabs { flex: 1.15 1 0; }
   .pm-json { align-self: stretch; }
-  .pm-n { width: 76px; text-align: right; }
+  .pm-n { width: 88px; text-align: right; }
+  .pm-tabs .sc-table th.pm-n { overflow: visible; }
+  .pm-tabs .sc-table td { white-space: normal; overflow-wrap: anywhere; }
   .pm-fine { font-weight: 400; }
   .pm-note { display: flex; align-items: center; gap: 8px; margin: -4px 0 0; font-size: 12px; color: var(--sc-dim); }
   .pm-card { height: 100%; display: flex; align-items: center; }

@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python, and the Kafka topic is just a [ta
 
 ## Flow overview
 
-![CocoIndex CSV → Kafka flow: watch a folder of CSV files, run one process_csv component per file that turns each row into a JSON message, and declare it as a Kafka topic target state](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/flow-v1.svg)
+![CocoIndex CSV → Kafka flow: watch a folder of CSV files, run one process_csv component per file that turns each row into a JSON message, and declare it as a Kafka topic target state](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -90,7 +90,7 @@ The SASL block is what a managed broker (StreamNative or similar) wants. For a l
 
 ## Process a file
 
-![One process_csv component per CSV file, fanned out with mount_each: each file's rows become (key, value) target states on the Kafka topic](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/stage-process-csv.svg)
+![One process_csv component per CSV file, fanned out with mount_each: each file's rows become (key, value) target states on the Kafka topic](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/stage-process-csv-dark.svg)
 
 `process_csv` runs once per file. It reads the text, parses rows with `csv.DictReader` (the header row becomes the keys), and declares each row as a target state — key from the first column, value the JSON-encoded row:
 
@@ -124,7 +124,7 @@ topic_target.declare_target_state(key=key, value=value)
 
 CocoIndex is [state-driven](/docs/programming_guide/core_concepts/): like a spreadsheet cell or a SQL materialized view, you describe what the target *should be* as a function of the source, and the engine figures out the transitions. You don't compute deltas, and you don't write separate insert / update / delete code paths.
 
-![Declared target states above the line and the Kafka messages they produce below: editing one CSV cell, adding a row, and removing a row yield exactly the upsert and delete messages needed — the unchanged row produces nothing](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/state-vs-messages.svg)
+![Declared target states above the line and the Kafka messages they produce below: editing one CSV cell, adding a row, and removing a row yield exactly the upsert and delete messages needed — the unchanged row produces nothing](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/state-vs-messages-dark.svg)
 
 Kafka makes this vivid because its wire model is the opposite of state: a topic is a *log of events*, not a snapshot. CocoIndex owns the gap. When you call `declare_target_state(key=k, value=v)`:
 

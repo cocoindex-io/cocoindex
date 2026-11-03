@@ -5,10 +5,11 @@
 // every page is embedded with vidore/colpali-v1.2 into the Qdrant collection
 // MultiFormatIndexing (max_sim). The README's query "revenue growth" ranks the
 // Sweetgreen then Restaurant Brands pages first, above the healthcare page.
-// restaurant_brands_international_2023.jpg is the added file (Δ).
+// restaurant_brands_international_2023.jpg is the added file (Δ). The stored
+// payload filename is str(file.file_path.path), so it includes source_files/.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
-const B = '/docs/img/examples/scenes/multi-format-indexing';
+const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/multi-format-indexing/scene';
 ---
 {size === 'hero' ? (
   <div class="mf">
@@ -27,12 +28,12 @@ const B = '/docs/img/examples/scenes/multi-format-indexing';
           </div>
           <div class="mf-tile">
             <img class="mf-shot" src={`${B}/healthcare_industry_test_p9.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
-            <span class="mf-name"><span class="sc-ico i-image"></span><span>healthcare_industry_test_p9.jpg</span></span>
+            <span class="mf-name"><span class="sc-ico i-image"></span><span>healthcare_<wbr />industry_<wbr />test_<wbr />p9.jpg</span></span>
             <span class="mf-sub">one page</span>
           </div>
           <div class="mf-tile sc-delta">
             <img class="mf-shot" src={`${B}/restaurant_brands_international_2023.webp`} width="360" height="231" alt="" loading="lazy" decoding="async" />
-            <span class="mf-name"><span class="sc-ico i-image"></span><span class="sc-dtext">restaurant_brands_international_2023.jpg</span></span>
+            <span class="mf-name"><span class="sc-ico i-image"></span><span class="sc-dtext">restaurant_<wbr />brands_<wbr />international_<wbr />2023.jpg</span></span>
             <span class="sc-dmark mf-mark">Δ</span>
           </div>
           <div class="mf-tile">
@@ -51,12 +52,11 @@ const B = '/docs/img/examples/scenes/multi-format-indexing';
           <table class="sc-table">
             <thead><tr><th>filename</th><th class="mf-n">page</th></tr></thead>
             <tbody>
-              <tr><td>1810.04805v2.pdf</td><td class="sc-dim mf-n">1</td></tr>
-              <tr><td>1810.04805v2.pdf</td><td class="sc-dim mf-n">2</td></tr>
+              <tr><td><span class="sc-dim mf-dir">source_files/</span>1810.04805v2.pdf</td><td class="sc-dim mf-n">1</td></tr>
               <tr><td class="sc-dim">⋮</td><td class="sc-dim mf-n">16</td></tr>
-              <tr><td>healthcare_industry_test_p9.jpg</td><td class="sc-dim mf-n">None</td></tr>
-              <tr class="sc-delta"><td><span class="sc-dtext">restaurant_brands_international_2023.jpg</span></td><td class="mf-n"><span class="sc-dtext">None</span></td></tr>
-              <tr><td>sweetgreen_2023.jpg</td><td class="sc-dim mf-n">None</td></tr>
+              <tr><td><span class="sc-dim mf-dir">source_files/</span>healthcare_<wbr />industry_<wbr />test_<wbr />p9.jpg</td><td class="sc-dim mf-n">None</td></tr>
+              <tr class="sc-delta"><td><span class="sc-dtext"><span class="mf-dir">source_files/</span>restaurant_<wbr />brands_<wbr />international_<wbr />2023.jpg</span></td><td class="mf-n"><span class="sc-dtext">None</span></td></tr>
+              <tr><td><span class="sc-dim mf-dir">source_files/</span>sweetgreen_2023.jpg</td><td class="sc-dim mf-n">None</td></tr>
             </tbody>
           </table>
         </div>
@@ -70,15 +70,15 @@ const B = '/docs/img/examples/scenes/multi-format-indexing';
       <div class="sc-row mf-hits">
         <figure class="mf-hit">
           <img src={`${B}/sweetgreen_2023.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
-          <figcaption><span class="r">1</span><span>sweetgreen_2023.jpg</span></figcaption>
+          <figcaption><span class="r">1</span><span><span class="sc-dim mf-dir">source_files/</span>sweetgreen_2023.jpg</span></figcaption>
         </figure>
         <figure class="mf-hit">
           <img src={`${B}/restaurant_brands_international_2023.webp`} width="360" height="231" alt="" loading="lazy" decoding="async" />
-          <figcaption><span class="r">2</span><span>restaurant_brands_international_2023.jpg</span></figcaption>
+          <figcaption><span class="r">2</span><span><span class="sc-dim mf-dir">source_files/</span>restaurant_<wbr />brands_<wbr />international_<wbr />2023.jpg</span></figcaption>
         </figure>
         <figure class="mf-hit is-low">
           <img src={`${B}/healthcare_industry_test_p9.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
-          <figcaption><span>healthcare_industry_test_p9.jpg</span></figcaption>
+          <figcaption><span><span class="sc-dim mf-dir">source_files/</span>healthcare_<wbr />industry_<wbr />test_<wbr />p9.jpg</span></figcaption>
         </figure>
       </div>
       <p class="sc-quote mf-note">The two financial-report pages rank first, <b>above the unrelated healthcare page</b>, matched against each page's best patches with zero text extraction.</p>
@@ -99,7 +99,7 @@ const B = '/docs/img/examples/scenes/multi-format-indexing';
         <div class="sc-query"><span class="sc-ico i-search"></span><span>"revenue growth"</span></div>
         <div class="mf-chit">
           <img src={`${B}/sweetgreen_2023.webp`} width="360" height="202" alt="" loading="lazy" decoding="async" />
-          <span class="sc-mono">1 · sweetgreen_2023.jpg</span>
+          <span class="sc-mono">1 · source_files/sweetgreen_2023.jpg</span>
         </div>
       </div>
     </div>
@@ -124,14 +124,16 @@ const B = '/docs/img/examples/scenes/multi-format-indexing';
   .mf-mark { position: absolute; top: 10px; right: 10px; }
   .mf-sub { font-size: 11.5px; color: var(--sc-dim); }
   .mf-model { align-self: flex-start; color: var(--sc-ink); }
-  .mf-n { width: 52px; text-align: right; }
+  .mf-n { width: 48px; text-align: right; }
+  .mf-dir { display: block; }
+  .mf-tgt .sc-table td { white-space: normal; overflow-wrap: anywhere; }
   .mf-fine { font-weight: 400; }
   .mf-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
   .mf-hits { gap: 8px; }
   .mf-hit { flex: 1 1 0; min-width: 0; margin: 0; border: 1px solid var(--sc-line-2); border-radius: 8px; overflow: hidden; background: var(--sc-panel); }
   .mf-hit img { display: block; width: 100%; height: 96px; object-fit: cover; object-position: left top; }
   .mf-hit figcaption { display: flex; gap: 8px; padding: 6px 9px; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); min-width: 0; }
-  .mf-hit figcaption > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mf-hit figcaption > span:last-child { min-width: 0; overflow-wrap: anywhere; }
   .mf-hit .r { color: var(--sc-dim); }
   .mf-note { margin: 0; }
   @container (max-width: 560px) {
@@ -151,5 +153,5 @@ const B = '/docs/img/examples/scenes/multi-format-indexing';
   .mf-cout { gap: 6px; }
   .mf-chit { border: 1px solid var(--sc-line-2); border-radius: 6px; overflow: hidden; background: var(--sc-panel); }
   .mf-chit img { display: block; width: 100%; height: 66px; object-fit: cover; object-position: left top; }
-  .mf-chit .sc-mono { display: block; padding: 3px 7px; color: var(--sc-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mf-chit .sc-mono { display: block; padding: 3px 7px; color: var(--sc-ink); overflow-wrap: anywhere; }
 </style>

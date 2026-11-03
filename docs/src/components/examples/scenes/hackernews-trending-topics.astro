@@ -6,8 +6,8 @@
 // coco_examples.hn_topics keyed on (topic, message_id); `python main.py` prints
 // "Top 20 Trending Topics:" ordered by a SQL score where a thread mention
 // weighs more than a comment mention. The example ships no sample thread and
-// no recorded output, so the ranking shows order only, with topic names taken
-// from the prompt's examples. A new story in the feed is the change (Δ).
+// no recorded output, so the ranking shows the printed line format with
+// placeholders (<topic>, N) and says so. A new story in the feed is the change (Δ).
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
 ---
@@ -78,13 +78,13 @@ const { size = 'hero' } = Astro.props;
         <div class="sc-panel">
           <div class="sc-panel-h">Top 20 Trending Topics:</div>
           <div class="sc-panel-b hn-list">
-            <div class="sc-hit"><span class="r">1.</span><span class="sc-mono">Claude</span></div>
-            <div class="sc-hit"><span class="r">2.</span><span class="sc-mono">PostgreSQL</span></div>
-            <div class="sc-hit"><span class="r">3.</span><span class="sc-mono">Large Language Model</span></div>
-            <div class="sc-hit"><span class="r">4.</span><span class="sc-mono">React</span></div>
+            <div class="sc-hit"><span class="r">1.</span><span class="sc-mono">&lt;topic&gt;</span><span class="sc-mono sc-dim hn-sc">(score: N, threads: N)</span></div>
+            <div class="sc-hit"><span class="r">2.</span><span class="sc-mono">&lt;topic&gt;</span><span class="sc-mono sc-dim hn-sc">(score: N, threads: N)</span></div>
+            <div class="sc-hit"><span class="r">3.</span><span class="sc-mono">&lt;topic&gt;</span><span class="sc-mono sc-dim hn-sc">(score: N, threads: N)</span></div>
             <div class="sc-hit hn-more"><span class="r"></span><span class="sc-dim">…</span></div>
           </div>
         </div>
+        <span class="sc-cap hn-fine">Output format only. Topics and scores come from the live feed at run time.</span>
         <span class="sc-cap hn-fine">A thread mention scores higher than a comment mention.</span>
       </div>
     </div>
@@ -105,10 +105,10 @@ const { size = 'hero' } = Astro.props;
       <div class="sc-panel hn-card-out">
         <div class="sc-panel-h">Top 20 Trending Topics:</div>
         <div class="sc-panel-b">
-          <span class="sc-li"><span class="sc-dim">1.</span><span>Claude</span></span>
-          <span class="sc-li"><span class="sc-dim">2.</span><span>PostgreSQL</span></span>
-          <span class="sc-li"><span class="sc-dim">3.</span><span>Large Language Model</span></span>
-          <span class="sc-li"><span class="sc-dim">4.</span><span>React</span></span>
+          <span class="sc-li"><span class="sc-dim">1.</span><span class="sc-mono">&lt;topic&gt;</span><span class="sc-mono sc-dim">(score: N)</span></span>
+          <span class="sc-li"><span class="sc-dim">2.</span><span class="sc-mono">&lt;topic&gt;</span><span class="sc-mono sc-dim">(score: N)</span></span>
+          <span class="sc-li"><span class="sc-dim">3.</span><span class="sc-mono">&lt;topic&gt;</span><span class="sc-mono sc-dim">(score: N)</span></span>
+          <span class="sc-cap hn-card-cap">Output format, filled at run time</span>
         </div>
       </div>
     </div>
@@ -141,6 +141,9 @@ const { size = 'hero' } = Astro.props;
   .hn-list { gap: 0; padding-top: 2px; padding-bottom: 2px; }
   .hn-list .sc-hit { padding: 5px 0; }
   .hn-list .sc-mono { font-size: 12.5px; }
+  .hn-list .sc-hit { grid-template-columns: 22px minmax(0, 1fr) auto; }
+  .hn-sc { font-size: 12px; white-space: nowrap; }
+  .hn-card-cap { font-weight: 400; margin-top: 2px; }
   .hn-more { padding: 2px 0 !important; }
   .hn-card { height: 100%; display: flex; align-items: center; }
   .hn-card > .sc-row { width: 100%; align-items: center; }

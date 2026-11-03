@@ -1,5 +1,5 @@
 {
-  "alt": "A Google Drive meeting note, TeamA.docx, lists organizer Alice, attendees Alex and alice c., and a task for Alice Chen; an instructor + LiteLLM extraction and an entity-resolution pass collapse \"Alice\", \"Alice Chen\" and \"alice c.\" into one Person, and Neo4j holds Person, Meeting and Task nodes joined by ATTENDED (with is_organizer), DECIDED and ASSIGNED_TO edges; editing the task line re-derives only the Task node and its two edges, and a Cypher query for Alice Chen's tasks returns it.",
+  "alt": "An illustrative Google Drive meeting note, the Google Doc TeamA exported as Markdown, lists organizer Alice, attendee alice c., and a task for Alice Chen; an instructor + LiteLLM extraction and an entity-resolution pass collapse \"Alice\", \"Alice Chen\" and \"alice c.\" into one Person, and Neo4j holds Person, Meeting and Task nodes joined by ATTENDED (with is_organizer), DECIDED and ASSIGNED_TO edges; editing the task line re-derives only the Task node and its two edges, and a Cypher query for Alice Chen's tasks returns it.",
   "needs": ["Docker (for Neo4j)", "Python 3.11+", "OPENAI_API_KEY", "a Google Drive service account"],
   "run": [
     { "note": "Start Neo4j", "cmd": "docker run -d -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/cocoindex --name cocoindex-neo4j neo4j:5.26-community" },
