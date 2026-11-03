@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 ## Flow overview
 
-![CocoIndex PDF embedding flow: walk a folder of PDFs, convert each to Markdown with docling on a GPU runner, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](/docs/img/examples/flows/pdf-embedding/flow-v1.svg)
+![CocoIndex PDF embedding flow: walk a folder of PDFs, convert each to Markdown with docling on a GPU runner, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -103,7 +103,7 @@ Two things make this hold up at scale:
 
 ## Process a file
 
-![One processing component per PDF: convert to Markdown, chunk, embed each chunk, and declare PdfEmbedding rows into Postgres](/docs/img/examples/flows/pdf-embedding/stage-file-process.svg)
+![One processing component per PDF: convert to Markdown, chunk, embed each chunk, and declare PdfEmbedding rows into Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-file-process-dark.svg)
 
 `process_file` runs once per PDF. It converts the PDF to Markdown, [splits the text](/docs/ops/text/) into overlapping chunks, and maps each chunk to `process_chunk`.
 
@@ -151,7 +151,7 @@ We use [`SentenceTransformerEmbedder`](/docs/ops/sentence_transformers/) with `a
 
 ## Define the main function
 
-![mount_each fans out one processing component per PDF, from the filesystem source to the Postgres target](/docs/img/examples/flows/pdf-embedding/stage-main-function.svg)
+![mount_each fans out one processing component per PDF, from the filesystem source to the Postgres target](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-main-function-dark.svg)
 
 `app_main` wires the source to the target. It mounts the Postgres table, walks the source directory for PDFs, and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 

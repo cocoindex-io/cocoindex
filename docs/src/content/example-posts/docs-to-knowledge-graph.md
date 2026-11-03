@@ -26,7 +26,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 The graph schema is small — two node types, two relationship types:
 
-![Graph schema: Document nodes connected to Entity nodes by MENTION edges, and Entity nodes connected to each other by RELATIONSHIP edges carrying the predicate](/docs/img/examples/flows/docs-to-knowledge-graph/schema.svg)
+![Graph schema: Document nodes connected to Entity nodes by MENTION edges, and Entity nodes connected to each other by RELATIONSHIP edges carrying the predicate](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/schema-dark.svg)
 
 - **`Document`** nodes — one per Markdown file, keyed by filename, with an LLM-generated `title` and `summary`.
 - **`Entity`** nodes — one per distinct concept named in any triple, keyed by the concept name.
@@ -48,7 +48,7 @@ A knowledge graph over living docs is exactly the kind of pipeline that's easy t
 
 ## Pipeline overview
 
-![CocoIndex flow: Markdown docs walked from the filesystem, per-doc LLM extraction declaring Document nodes and carrying triples forward, then a single graph-building pass declaring Entity nodes and edges into Neo4j](/docs/img/examples/flows/docs-to-knowledge-graph/flow-v1.svg)
+![CocoIndex flow: Markdown docs walked from the filesystem, per-doc LLM extraction declaring Document nodes and carrying triples forward, then a single graph-building pass declaring Entity nodes and edges into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/flow-v1-dark.svg)
 
 The pipeline runs in two phases:
 
@@ -157,7 +157,7 @@ async def extract_relationships(content: str) -> list[Triple]:
 
 ## Phase 1: per-file extraction
 
-![Phase 1 — one processing component per doc: each file goes through memoized LLM extraction, declares its Document node into Neo4j, and returns DocTriples for phase 2](/docs/img/examples/flows/docs-to-knowledge-graph/stage-phase1.svg)
+![Phase 1 — one processing component per doc: each file goes through memoized LLM extraction, declares its Document node into Neo4j, and returns DocTriples for phase 2](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/stage-phase1-dark.svg)
 
 `process_file` runs once per document: extract the summary, declare the `Document` node, extract the triples, and return them for phase 2.
 
@@ -199,7 +199,7 @@ Why a component per file? Ownership. The component at `("file", path_key)` owns 
 
 ## Phase 2: build the concept graph
 
-![Phase 2 — a single build_graph component: all docs' triples are deduplicated into Entity nodes and RELATIONSHIP / MENTION edges, declared into Neo4j](/docs/img/examples/flows/docs-to-knowledge-graph/stage-phase2.svg)
+![Phase 2 — a single build_graph component: all docs' triples are deduplicated into Entity nodes and RELATIONSHIP / MENTION edges, declared into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/stage-phase2-dark.svg)
 
 A single component takes every file's triples and declares the cross-document parts of the graph: deduplicated `Entity` nodes and the two edge types.
 

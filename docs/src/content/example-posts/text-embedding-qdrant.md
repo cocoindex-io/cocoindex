@@ -16,7 +16,7 @@ If you want the full chunk-and-embed walkthrough, read the [base example](/docs/
 
 ## Flow overview
 
-![CocoIndex text embedding flow with Qdrant: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Qdrant collection](/docs/img/examples/flows/text-embedding-qdrant/flow-v1.svg)
+![CocoIndex text embedding flow with Qdrant: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Qdrant collection](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-qdrant/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 

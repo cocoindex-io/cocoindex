@@ -20,7 +20,7 @@ A normal embedding squashes a whole page into one vector — fine for a paragrap
 
 ## Flow overview
 
-![CocoIndex flow: walk a folder of PDFs and images, render each PDF to per-page images, embed every page with ColPali, and store one multi-vector Qdrant point per page](/docs/img/examples/flows/multi-format-indexing/flow-v1.svg)
+![CocoIndex flow: walk a folder of PDFs and images, render each PDF to per-page images, embed every page with ColPali, and store one multi-vector Qdrant point per page](https://cocoindex.io/blobs/docs-v1/img/examples/multi-format-indexing/flow-v1-dark.svg)
 
 A file fans out to **pages**, so the shape is *file → N pages → N points*:
 
