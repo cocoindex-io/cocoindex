@@ -13,19 +13,24 @@ paging and parsing code runs against it. The end-to-end pipeline creates its
 ``DiscordApp`` in its main function, as a real one does, and ``_setup`` points
 it at the fake there.
 
-Live tests run against a real server and are skipped unless a bot token is
-set.
+Live tests run against a real server and are skipped unless
+``DISCORD_BOT_TOKEN``, ``DISCORD_TEST_GUILD`` and ``DISCORD_TEST_CHANNEL`` are
+set (and, for the forum and missing-permission tests, ``DISCORD_TEST_FORUM``
+and ``DISCORD_TEST_NO_HISTORY_CHANNEL``). They post, edit, archive and delete
+the bot's own messages and threads, so point them at a test server.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
 import re
 import ssl
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple, cast
+from urllib.parse import quote
 
 import certifi
 import httpx
@@ -36,7 +41,11 @@ from cocoindex._internal.memo_fingerprint import memo_fingerprint
 from cocoindex.connectors import discord
 from cocoindex.connectors.discord import _source
 from cocoindex.connectors.discord._source import (
+    _ROUTE_ARCHIVED_PUBLIC_THREADS,
     _ROUTE_CHANNEL,
+    _ROUTE_CHANNEL_MESSAGES,
+    _ROUTE_JOINED_PRIVATE_THREADS,
+    _archived_before,
     _DiscordError,
     _error_hint,
     _parse_message,
@@ -3033,6 +3042,35 @@ async def _sync_channel(channel: discord.DiscordChannel) -> None:
     await coco.mount_each(_export_item, channel.items(), channel.channel_id)
 
 
+async def _sync_channels(
+    app: discord.DiscordApp,
+    channel_ids: Sequence[str],
+    message_fields: Sequence[str] | None = None,
+) -> None:
+    """Mounts ``_sync_channel`` for each channel in ``channel_ids``."""
+    async with app:
+        channels = [
+            (
+                channel_id,
+                discord.DiscordChannel(
+                    app=app, channel_id=channel_id, message_fields=message_fields
+                ),
+            )
+            for channel_id in channel_ids
+        ]
+        handle = await coco.mount_each(_sync_channel, channels)
+        # mount_each returns once the channels are scheduled; the App has to
+        # stay open until they and their items are done.
+        await handle.ready()
+
+
+def _clear_outputs() -> None:
+    """An empty target, and nothing recorded of earlier runs."""
+    GlobalDictTarget.store.clear()
+    _metrics.clear()
+    _failures.clear()
+
+
 class _Run(NamedTuple):
     """What one run of a ``_Pipeline`` did."""
 
@@ -3055,9 +3093,7 @@ class _Pipeline:
     def __init__(
         self, name: str, fake: _FakeDiscord, channel_ids: Sequence[str]
     ) -> None:
-        GlobalDictTarget.store.clear()
-        _metrics.clear()
-        _failures.clear()
+        _clear_outputs()
         self.fake = fake
         self.channel_ids = list(channel_ids)
         self.message_fields: list[str] | None = None
@@ -3067,22 +3103,7 @@ class _Pipeline:
 
     async def _main(self) -> None:
         app, _ = await _setup(self.fake)
-        async with app:
-            channels = [
-                (
-                    channel_id,
-                    discord.DiscordChannel(
-                        app=app,
-                        channel_id=channel_id,
-                        message_fields=self.message_fields,
-                    ),
-                )
-                for channel_id in self.channel_ids
-            ]
-            handle = await coco.mount_each(_sync_channel, channels)
-            # mount_each returns once the channels are scheduled; the App has
-            # to stay open until they and their items are done.
-            await handle.ready()
+        await _sync_channels(app, self.channel_ids, self.message_fields)
 
     def run(self) -> _Run:
         self.fake.requests.clear()
@@ -3365,3 +3386,427 @@ class TestEndToEnd:
         assert run == _Run({"1002/1080": 1}, [], ["1080"])
         entries["1002/1080"] += "\nAda: message 1097"
         assert _entries() == entries
+
+
+# ---------------------------------------------------------------------------
+# Live tests against a real server
+# ---------------------------------------------------------------------------
+
+_HAS_LIVE = all(
+    os.environ.get(name)
+    for name in ("DISCORD_BOT_TOKEN", "DISCORD_TEST_GUILD", "DISCORD_TEST_CHANNEL")
+)
+requires_live = pytest.mark.skipif(
+    not _HAS_LIVE,
+    reason="DISCORD_BOT_TOKEN, DISCORD_TEST_GUILD or DISCORD_TEST_CHANNEL not set",
+)
+requires_live_forum = pytest.mark.skipif(
+    not (_HAS_LIVE and os.environ.get("DISCORD_TEST_FORUM")),
+    reason="the live variables or DISCORD_TEST_FORUM not set",
+)
+requires_live_no_history = pytest.mark.skipif(
+    not (_HAS_LIVE and os.environ.get("DISCORD_TEST_NO_HISTORY_CHANNEL")),
+    reason="the live variables or DISCORD_TEST_NO_HISTORY_CHANNEL not set",
+)
+
+
+class _LiveFixtures:
+    """Posts, edits, reacts to and archives the bot's own messages and
+    threads on the real server; a forum post is a thread. On exit, deletes
+    the threads it started, which deletes the messages inside them, then the
+    messages it posted elsewhere, newest first.
+
+    Needs more of the bot than the connector does: Send Messages (and in
+    Threads), Create Public Threads, Embed Links, Add Reactions, and Manage
+    Threads, to archive and delete threads."""
+
+    def __init__(self) -> None:
+        self._client = httpx.AsyncClient(
+            base_url=_source._BASE_URL,
+            timeout=60.0,
+            headers={
+                "Authorization": f"Bot {os.environ['DISCORD_BOT_TOKEN']}",
+                "User-Agent": (
+                    "DiscordBot (https://github.com/cocoindex-io/cocoindex, "
+                    f"{coco.__version__})"
+                ),
+            },
+        )
+        # (channel ID, message ID), in the order posted.
+        self._messages: list[tuple[str, str]] = []
+        self._threads: list[str] = []
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        missing_ok: bool = False,
+    ) -> Any:
+        """One request, waiting out a 429, then for the bucket's reset when
+        the response says it's used up."""
+        while True:
+            resp = await self._client.request(method, path, json=body)
+            if resp.headers.get("X-RateLimit-Remaining") == "0":
+                reset_after = resp.headers.get("X-RateLimit-Reset-After", "1")
+                await asyncio.sleep(float(reset_after))
+            if resp.status_code != 429:
+                break
+            await asyncio.sleep(float(resp.json().get("retry_after", 1)))
+        if missing_ok and resp.status_code == 404:
+            return None
+        assert resp.is_success, (
+            f"Discord {method} {path} failed: HTTP {resp.status_code}, {resp.text[:200]}"
+        )
+        return None if resp.status_code == 204 else resp.json()
+
+    async def post(
+        self, channel_id: str, content: str = "", **fields: Any
+    ) -> dict[str, Any]:
+        """Posts a message in ``channel_id``, a thread's ID included; returns
+        it as Discord does."""
+        body = {"content": content, **fields} if content else fields
+        message: dict[str, Any] = await self._send(
+            "POST", f"/channels/{channel_id}/messages", body
+        )
+        self._messages.append((channel_id, message["id"]))
+        return message
+
+    async def edit(self, channel_id: str, message_id: str, content: str) -> None:
+        await self._send(
+            "PATCH",
+            f"/channels/{channel_id}/messages/{message_id}",
+            {"content": content},
+        )
+
+    async def react(self, channel_id: str, message_id: str, emoji: str) -> None:
+        await self._send(
+            "PUT",
+            f"/channels/{channel_id}/messages/{message_id}/reactions/{quote(emoji)}/@me",
+        )
+
+    async def start_thread(
+        self, channel_id: str, message_id: str, name: str
+    ) -> dict[str, Any]:
+        """Starts a thread on a message; returns the thread object."""
+        thread: dict[str, Any] = await self._send(
+            "POST",
+            f"/channels/{channel_id}/messages/{message_id}/threads",
+            {"name": name},
+        )
+        self._threads.append(thread["id"])
+        return thread
+
+    async def forum_post(
+        self, forum_id: str, name: str, content: str
+    ) -> dict[str, Any]:
+        """Posts in a forum; returns the post's thread object, whose ID is
+        its opening message's too."""
+        thread: dict[str, Any] = await self._send(
+            "POST",
+            f"/channels/{forum_id}/threads",
+            {"name": name, "message": {"content": content}},
+        )
+        self._threads.append(thread["id"])
+        return thread
+
+    async def archive(self, thread_id: str) -> None:
+        await self._send("PATCH", f"/channels/{thread_id}", {"archived": True})
+
+    async def __aenter__(self) -> _LiveFixtures:
+        return self
+
+    async def __aexit__(self, *_exc_info: Any) -> None:
+        try:
+            for thread_id in reversed(self._threads):
+                await self._send("DELETE", f"/channels/{thread_id}", missing_ok=True)
+            for channel_id, message_id in reversed(self._messages):
+                if channel_id not in self._threads:
+                    await self._send(
+                        "DELETE",
+                        f"/channels/{channel_id}/messages/{message_id}",
+                        missing_ok=True,
+                    )
+        finally:
+            await self._client.aclose()
+
+
+def _live_app() -> discord.DiscordApp:
+    return discord.DiscordApp(token=os.environ["DISCORD_BOT_TOKEN"])
+
+
+def _author_name(raw_message: dict[str, Any]) -> str:
+    """The display name of a message's author, as Discord returned it: the
+    test server's own, so never written in this file."""
+    author = raw_message["author"]
+    name: str = author.get("global_name") or author["username"]
+    return name
+
+
+# Each test posts up to seven messages, at about five per 5 s in a channel,
+# deletes them, and lists the whole test channel up to five times, each a few
+# pages and paced by Discord: more than pytest's 30 s.
+@requires_live
+@pytest.mark.timeout(120)
+@pytest.mark.asyncio
+class TestLive:
+    async def test_intent_and_list_channels(self) -> None:
+        async with _live_app() as app:
+            ctx = await app._get_context()
+            await ctx.check_message_content_intent()
+            listed = await app.list_channels(os.environ["DISCORD_TEST_GUILD"])
+        types = {channel.id: channel.type for channel in listed}
+        assert types[os.environ["DISCORD_TEST_CHANNEL"]] == 0
+        if forum := os.environ.get("DISCORD_TEST_FORUM"):
+            assert types[forum] == 15
+        # The test server has channels under categories, so this checks that
+        # category_id is the category's ID.
+        category_ids = {c.category_id for c in listed if c.category_id is not None}
+        assert category_ids
+        assert {types.get(category_id) for category_id in category_ids} == {4}
+
+    async def test_text_channel_items(self) -> None:
+        channel_id = os.environ["DISCORD_TEST_CHANNEL"]
+        async with _LiveFixtures() as fx, _live_app() as app:
+            first = await fx.post(channel_id, "live: a message")
+            reply = await fx.post(
+                channel_id,
+                "live: a reply",
+                message_reference={"message_id": first["id"]},
+            )
+            starter = await fx.post(channel_id, "live: a thread's first message")
+            thread_id = (
+                await fx.start_thread(channel_id, starter["id"], "live: a thread")
+            )["id"]
+            inside = [
+                await fx.post(thread_id, f"live: in the thread, {n}") for n in (1, 2)
+            ]
+            embed = await fx.post(
+                channel_id,
+                embeds=[
+                    {
+                        "title": "live: an embed",
+                        "description": "Its description",
+                        "fields": [{"name": "Field", "value": "Value"}],
+                        "footer": {"text": "Its footer"},
+                    }
+                ],
+            )
+            bot = _author_name(first)
+
+            listed = await _items(
+                discord.DiscordChannel(app=app, channel_id=channel_id)
+            )
+            # Newest first, and nothing has been posted since.
+            assert _keys(listed)[:3] == [embed["id"], reply["id"], first["id"]]
+            items = dict(listed)
+            message = items[first["id"]]
+            assert isinstance(message, discord.DiscordMessage)
+            assert await message.read_text() == f"{bot}: live: a message"
+            replying = items[reply["id"]]
+            assert isinstance(replying, discord.DiscordMessage)
+            assert (replying.type, replying.reply_to) == (19, first["id"])
+            embedding = items[embed["id"]]
+            assert isinstance(embedding, discord.DiscordMessage)
+            assert embedding.embeds == (
+                discord.DiscordEmbed(
+                    title="live: an embed",
+                    description="Its description",
+                    url=None,
+                    author=None,
+                    footer="Its footer",
+                    fields=(("Field", "Value"),),
+                ),
+            )
+            assert await embedding.read_text() == (
+                f"{bot}: live: an embed\nIts description\nField: Value\nIts footer"
+            )
+            # The starter is the thread's, not an item of its own.
+            thread = items[thread_id]
+            assert isinstance(thread, discord.DiscordThread)
+            assert thread_id == starter["id"]
+            assert thread.starter is not None and thread.starter.id == starter["id"]
+            assert [m.id for m in await thread.messages()] == [
+                starter["id"],
+                *(m["id"] for m in inside),
+            ]
+            assert await thread.read_text() == (
+                f"live: a thread\n{bot}: live: a thread's first message\n"
+                f"{bot}: live: in the thread, 1\n{bot}: live: in the thread, 2"
+            )
+
+    @requires_live_forum
+    async def test_forum_items(self) -> None:
+        forum_id = os.environ["DISCORD_TEST_FORUM"]
+        async with _LiveFixtures() as fx, _live_app() as app:
+            post_id = (
+                await fx.forum_post(
+                    forum_id, "live: a forum post", "live: its opening message"
+                )
+            )["id"]
+            reply = await fx.post(post_id, "live: a reply in the post")
+
+            items = dict(
+                await _items(discord.DiscordChannel(app=app, channel_id=forum_id))
+            )
+            thread = items[post_id]
+            assert isinstance(thread, discord.DiscordThread)
+            assert thread.starter is None
+            assert [m.id for m in await thread.messages()] == [post_id, reply["id"]]
+
+    async def test_change_signals(self) -> None:
+        channel_id = os.environ["DISCORD_TEST_CHANNEL"]
+        async with _LiveFixtures() as fx, _live_app() as app:
+            message_id = (await fx.post(channel_id, "live: a message"))["id"]
+            starter = await fx.post(channel_id, "live: a thread's first message")
+            thread_id = (
+                await fx.start_thread(channel_id, starter["id"], "live: a thread")
+            )["id"]
+            inside_id = (await fx.post(thread_id, "live: in the thread"))["id"]
+            channel = discord.DiscordChannel(app=app, channel_id=channel_id)
+            fingerprints: dict[str, object] = {}
+
+            async def changed() -> set[str]:
+                """Which of the two items' fingerprints changed since the
+                last listing."""
+                before = dict(fingerprints)
+                fingerprints.update(
+                    (key, memo_fingerprint(item))
+                    for key, item in await _items(channel)
+                    if key in (message_id, thread_id)
+                )
+                return {key for key in before if before[key] != fingerprints[key]}
+
+            await changed()
+            assert fingerprints.keys() == {message_id, thread_id}
+            await fx.edit(channel_id, message_id, "live: a message, edited")
+            assert await changed() == {message_id}
+            await fx.react(channel_id, message_id, "👍")
+            assert await changed() == {message_id}
+            # Nothing Discord reports for the thread changes: the gap inside
+            # threads.
+            await fx.edit(thread_id, inside_id, "live: in the thread, edited")
+            assert await changed() == set()
+            await fx.post(thread_id, "live: in the thread, again")
+            assert await changed() == {thread_id}
+
+    @requires_live_no_history
+    async def test_no_read_message_history(self) -> None:
+        channel_id = os.environ["DISCORD_TEST_NO_HISTORY_CHANNEL"]
+        async with _live_app() as app:
+            with pytest.raises(_DiscordError, match="HTTP 403, code 50001"):
+                await _items(discord.DiscordChannel(app=app, channel_id=channel_id))
+
+    async def test_archived_paging(self) -> None:
+        channel_id = os.environ["DISCORD_TEST_CHANNEL"]
+        async with _LiveFixtures() as fx, _live_app() as app:
+            starter = await fx.post(channel_id, "live: a thread to archive")
+            thread_id = (
+                await fx.start_thread(channel_id, starter["id"], "live: archived")
+            )["id"]
+            await fx.archive(thread_id)
+            ctx = await app._get_context()
+
+            async def listed(before: str | None = None) -> list[dict[str, Any]]:
+                """The archived public listing's first page, of 100."""
+                params: dict[str, str | int] = {"limit": 100}
+                if before is not None:
+                    params["before"] = before
+                listing = await ctx.get(
+                    _ROUTE_ARCHIVED_PUBLIC_THREADS, channel_id, params
+                )
+                threads: list[dict[str, Any]] = listing["threads"]
+                return threads
+
+            # A page of 100 is accepted by both archived listings; get()
+            # raises on an error.
+            await ctx.get(_ROUTE_JOINED_PRIVATE_THREADS, channel_id, {"limit": 100})
+            thread = next(t for t in await listed() if t["id"] == thread_id)
+            # `before` is strict, and 1 ms later lists the thread again.
+            archived_at = thread["thread_metadata"]["archive_timestamp"]
+            assert thread_id not in {t["id"] for t in await listed(archived_at)}
+            assert thread_id in {
+                t["id"] for t in await listed(_archived_before([thread]))
+            }
+
+
+async def _live_main(channel_ids: list[str]) -> None:
+    await _sync_channels(_live_app(), channel_ids)
+
+
+@requires_live
+@pytest.mark.asyncio
+class TestLiveEndToEnd:
+    # The first run exports every item in the test channels, not only the
+    # ones posted here, and lists each thread's messages.
+    @pytest.mark.timeout(180)
+    async def test_two_runs(self) -> None:
+        channel_id = os.environ["DISCORD_TEST_CHANNEL"]
+        forum_id = os.environ.get("DISCORD_TEST_FORUM")
+        async with _LiveFixtures() as fx:
+            message = await fx.post(channel_id, "live: a message")
+            starter = await fx.post(channel_id, "live: a thread's first message")
+            thread_id = (
+                await fx.start_thread(channel_id, starter["id"], "live: a thread")
+            )["id"]
+            await fx.post(thread_id, "live: in the thread")
+            bot = _author_name(message)
+            expected = {
+                f"{channel_id}/{message['id']}": f"{bot}: live: a message",
+                f"{channel_id}/{thread_id}": (
+                    f"live: a thread\n{bot}: live: a thread's first message\n"
+                    f"{bot}: live: in the thread"
+                ),
+            }
+            channel_ids = [channel_id]
+            if forum_id:
+                post_id = (
+                    await fx.forum_post(
+                        forum_id, "live: a forum post", "live: its opening message"
+                    )
+                )["id"]
+                expected[f"{forum_id}/{post_id}"] = (
+                    f"live: a forum post\n{bot}: live: its opening message"
+                )
+                channel_ids.append(forum_id)
+
+            _clear_outputs()
+            app = coco.App(
+                coco.AppConfig(name="test_discord_live_two_runs", environment=coco_env),
+                _live_main,
+                channel_ids=channel_ids,
+            )
+            await app.update()
+            assert _failures == []
+            entries = _entries()
+            assert {entry: entries.get(entry) for entry in expected} == expected
+
+            # Nothing changed: the channels are listed again, but no item runs.
+            _metrics.clear()
+            await app.update()
+            assert _failures == []
+            assert _metrics.collect() == {}
+            assert _entries() == entries
+
+
+@requires_live
+@pytest.mark.asyncio
+class TestLivePacing:
+    # Discord has let the message listing take 5 requests per 1 to 6 s per
+    # channel, live, so 25 requests take up to about 30 s.
+    @pytest.mark.timeout(60)
+    async def test_bucket_pacing_avoids_429(self) -> None:
+        channel_id = os.environ["DISCORD_TEST_CHANNEL"]
+        statuses: list[int] = []
+
+        async def on_response(response: httpx.Response) -> None:
+            statuses.append(response.status_code)
+
+        async with _live_app() as app:
+            ctx = await app._get_context()
+            ctx._client.event_hooks = {"response": [on_response]}
+            for _ in range(25):
+                await ctx.get(_ROUTE_CHANNEL_MESSAGES, channel_id, {"limit": 1})
+        # One response per request: no 429, and nothing retried.
+        assert statuses == [200] * 25
