@@ -403,7 +403,9 @@ Every message in the main stream is an item, whatever its type, because Discord'
 | 20, 23 | A bot's reply to a slash command or a context-menu command |
 | 6 | A notice that a message was pinned |
 | 7 | A member joined the server |
-| 18 | A thread was started without a message; its `content` is the thread's name |
+| 18 | A thread was started on an older message; its `content` is the thread's name |
+
+A thread started without a message gets the same notice, under the thread's own ID. It isn't an item while the thread exists, and becomes one if the thread is deleted.
 
 ```python
 @coco.fn(memo=True)

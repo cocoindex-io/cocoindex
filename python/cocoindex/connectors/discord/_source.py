@@ -117,6 +117,10 @@ _REPLY_MESSAGE_TYPE = 19
 # a thread's ``message_count`` doesn't count it.
 _STARTER_STUB_MESSAGE_TYPE = 21
 
+# The notice Discord posts in a channel when a thread is started without a
+# message, or on an older message. The first has the thread's ID.
+_THREAD_CREATED_MESSAGE_TYPE = 18
+
 # A forward's ``message_reference.type``; 0, the default, is any other
 # reference.
 _FORWARD_REFERENCE_TYPE = 1
@@ -1284,11 +1288,12 @@ class DiscordChannel:
                 message = _parse_message(raw, guild_id, self._message_fields)
                 # The thread listings say which messages start a thread, not
                 # the message's flags: a thread started since they ran is
-                # listed next time.
-                if raw["id"] in threads:
-                    starters[raw["id"]] = message
-                else:
+                # listed next time. A thread started without a message has
+                # the ID of Discord's notice for it, which starts nothing.
+                if raw["id"] not in threads:
                     yield raw["id"], message
+                elif raw["type"] != _THREAD_CREATED_MESSAGE_TYPE:
+                    starters[raw["id"]] = message
         for thread_id in sorted(threads, key=int, reverse=True):
             yield (
                 thread_id,

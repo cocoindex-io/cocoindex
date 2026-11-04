@@ -2866,6 +2866,8 @@ class TestItems:
 
     async def test_starters(self) -> None:
         fake = _fake_with_channels()
+        # Started on a message posted well before it.
+        fake.add_thread(_raw_thread("1063", name="Roadmap"))
         fake.add_thread(_raw_thread("1064"))
         # Its starter was deleted.
         fake.add_thread(_raw_thread("1065"))
@@ -2873,14 +2875,24 @@ class TestItems:
         fake.add_thread(_raw_thread("1066", name="Release notes"))
         fake.post(
             _CHANNEL,
+            _raw_message("1063", content="What's next?", flags=1 << 5),
             _raw_message("1064", content="Release planning?", flags=1 << 5),
-            # The notice a thread started without a message leaves: its
-            # content is the thread's name.
+            # The notice Discord posts for a thread started without a
+            # message: its ID is the thread's, and its content the thread's
+            # name.
             _raw_message(
-                "1067",
+                "1066",
                 type=18,
                 content="Release notes",
                 message_reference=_raw_reference("1066", channel_id="1066"),
+            ),
+            # The notice for a thread started on an older message has an ID
+            # of its own.
+            _raw_message(
+                "1067",
+                type=18,
+                content="Roadmap",
+                message_reference=_raw_reference("1063", channel_id="1063"),
             ),
             # Flagged as starting a thread, but the thread was started after
             # the thread listings ran: a message item this time.
@@ -2889,15 +2901,19 @@ class TestItems:
         app, _ = await _setup(fake)
         async with app:
             items = await _items(_channel(app))
-        assert _keys(items) == ["1068", "1067", "1066", "1065", "1064"]
+        assert _keys(items) == ["1068", "1067", "1066", "1065", "1064", "1063"]
         notice = items[1][1]
         assert isinstance(notice, discord.DiscordMessage)
-        assert (notice.type, notice.content) == (18, "Release notes")
+        assert (notice.type, notice.content) == (18, "Roadmap")
         threads = _threads(items)
-        assert threads["1064"].starter == _parse_message(
+        assert threads["1063"].starter == _parse_message(
             fake.messages[_CHANNEL][0], _GUILD, None
         )
+        assert threads["1064"].starter == _parse_message(
+            fake.messages[_CHANNEL][1], _GUILD, None
+        )
         assert threads["1065"].starter is None
+        # The notice sharing its ID isn't the thread's starter, nor an item.
         assert threads["1066"].starter is None
 
     async def test_selection(self) -> None:
@@ -3498,6 +3514,19 @@ class _LiveFixtures:
         self._threads.append(thread["id"])
         return thread
 
+    async def start_thread_without_message(
+        self, channel_id: str, name: str
+    ) -> dict[str, Any]:
+        """Starts a public thread with no message; returns the thread object.
+        The notice Discord posts in the channel for it has the thread's ID
+        and outlives the thread, so it's deleted as a message."""
+        thread: dict[str, Any] = await self._send(
+            "POST", f"/channels/{channel_id}/threads", {"name": name, "type": 11}
+        )
+        self._threads.append(thread["id"])
+        self._messages.append((channel_id, thread["id"]))
+        return thread
+
     async def forum_post(
         self, forum_id: str, name: str, content: str
     ) -> dict[str, Any]:
@@ -3634,6 +3663,33 @@ class TestLive:
             assert await thread.read_text() == (
                 f"live: a thread\n{bot}: live: a thread's first message\n"
                 f"{bot}: live: in the thread, 1\n{bot}: live: in the thread, 2"
+            )
+
+    async def test_thread_without_a_message(self) -> None:
+        channel_id = os.environ["DISCORD_TEST_CHANNEL"]
+        async with _LiveFixtures() as fx, _live_app() as app:
+            thread_id = (
+                await fx.start_thread_without_message(
+                    channel_id, "live: a thread without a message"
+                )
+            )["id"]
+            inside = await fx.post(thread_id, "live: in the thread")
+            bot = _author_name(inside)
+
+            ctx = await app._get_context()
+            newest = await ctx.get(_ROUTE_CHANNEL_MESSAGES, channel_id, {"limit": 10})
+            # Discord's notice for the thread has the thread's ID.
+            assert any(m["id"] == thread_id and m["type"] == 18 for m in newest)
+            listed = await _items(
+                discord.DiscordChannel(app=app, channel_id=channel_id)
+            )
+            # So the ID is listed once, for the thread, which has no starter.
+            assert _keys(listed).count(thread_id) == 1
+            thread = dict(listed)[thread_id]
+            assert isinstance(thread, discord.DiscordThread)
+            assert thread.starter is None
+            assert await thread.read_text() == (
+                f"live: a thread without a message\n{bot}: live: in the thread"
             )
 
     @requires_live_forum
