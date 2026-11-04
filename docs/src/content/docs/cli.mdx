@@ -191,6 +191,7 @@ cocoindex update [OPTIONS] APP_TARGET
 | `--full-reprocess` | Reprocess everything, bypassing all memoization caches: every component and memoized function executes again (external calls such as embeddings included). To force just one function's work to run again, bump its version= instead. |
 | `-L, --live` | Run in live mode (live components continue processing after initial update). |
 | `--preview` | Compute target actions without applying them. Prints planned actions. |
+| `--fail-on-error / --no-fail-on-error` | Exit with a non-zero status when any component reports errors, so schedulers (cron, CI) can detect a failed run. Ignored with --live.  [default: fail-on-error] |
 | `--help` | Show this message and exit. |
 
 ---

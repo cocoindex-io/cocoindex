@@ -25,6 +25,7 @@ CLEANUP_PATTERNS = [
     "db_alpha",
     "out_*",
     "cocoindex_unbound.db",
+    "cocoindex_failing.db",
     "cli_init_*",
     "default_db_test.db",
 ]
@@ -1062,3 +1063,44 @@ class TestShowTargetStatesTypedKeys:
         )
 
         self._assert_typed_keys_rendered(result.stdout)
+
+
+# =============================================================================
+# Test: Failing components and the update exit status
+# =============================================================================
+
+
+class TestUpdateFailOnError:
+    """`cocoindex update` exit status when background components fail.
+
+    Regression for https://github.com/cocoindex-io/cocoindex/issues/2429:
+    every mounted component failing still produced exit code 0 and ✅ icons,
+    so schedulers could not detect a failed run.
+    """
+
+    def test_update_with_component_errors_exits_nonzero(self) -> None:
+        """Default: component errors make `update` exit 1 with a stderr summary."""
+        result = run_cli("update", "./failing_app.py", check=False)
+        assert result.returncode == 1
+        assert "component errors" in result.stderr
+        assert "boom: 3 error(s)" in result.stderr
+        # Completed groups with errors show a warning icon, not ✅.
+        assert "⚠️ boom: 3 total" in result.stdout
+
+    def test_update_with_component_errors_quiet_exits_nonzero(self) -> None:
+        """--quiet hides stats but the stderr summary and exit 1 survive."""
+        result = run_cli("update", "-q", "./failing_app.py", check=False)
+        assert result.returncode == 1
+        assert "boom: 3 error(s)" in result.stderr
+
+    def test_update_no_fail_on_error_exits_zero(self) -> None:
+        """--no-fail-on-error keeps the old exit-0 behavior for tolerant pipelines."""
+        result = run_cli(
+            "update", "./failing_app.py", "--no-fail-on-error", check=False
+        )
+        assert result.returncode == 0
+        assert "component errors" in result.stderr
+
+    def test_update_clean_run_exits_zero(self) -> None:
+        """A run without component errors still exits 0."""
+        run_cli("update", "./single_app.py")
