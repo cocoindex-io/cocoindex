@@ -6,6 +6,7 @@ description: >
   across both logic and input changes.
 ---
 import Tabs from '../../../components/Tabs.astro';
+import PipelinePlayground from '../../../components/PipelinePlayground.astro';
 
 import AppOverview from '/src/components/diagrams/concepts/AppOverview.astro';
 import AppExample from '/src/components/diagrams/concepts/AppExample.astro';
@@ -200,6 +201,15 @@ Here's how memoization behaves in different scenarios:
     As these examples show, memoization can save expensive computations even when logic changes — as long as the intermediate results remain the same.
   </Fragment>
 </Tabs>
+
+## Try incremental processing
+
+Edit, add, or delete a sample file. See which computations run again and which cached results CocoIndex reuses.
+Change the summary setting to explore how a code change affects the pipeline.
+
+The playground uses simulated data. It runs in your browser without API calls or setup.
+
+<PipelinePlayground />
 
 ## Next steps
 
