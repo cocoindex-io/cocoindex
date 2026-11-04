@@ -1,10 +1,11 @@
 """coco-harness: an incremental agent harness on CocoIndex.
 
-See DESIGN.md for the model. The short version: a session is a CocoIndex
-component whose body runs the tools; each model turn is a memoized component
-keyed on the transcript so far, so an unchanged prefix replays with no
-inference. Closed sessions (workers over one input) are memoized whole; open
-sessions (the orchestrator) re-run their body and replay their turns.
+See DESIGN.md for the model. The short version: a session is a memoized
+CocoIndex component whose body runs the tools; each model turn is a memoized
+component keyed on the transcript so far, so an unchanged prefix replays with
+no inference. Closed sessions (workers over one input) are keyed on their
+inputs; open sessions (the orchestrator) also record what they read, and are
+skipped whole while those reads are unchanged.
 
 Public surface, until the harness moves to its own repository: what an app
 needs to configure and run a flow. Everything else is implementation and is

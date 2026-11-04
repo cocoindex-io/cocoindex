@@ -88,7 +88,9 @@ class Harness:
         async def main() -> SessionResult:
             # The spec is built here, each run, so a test can edit the task, the
             # tools or the version between runs: all three are in every turn's key.
-            return await run_open_session(self.config.spec(ROLE.name, self.task))
+            return await coco.use_mount(
+                run_open_session, self.config.spec(ROLE.name, self.task)
+            )
 
         self.app = coco.App(coco.AppConfig(name="replay", environment=self.env), main)
 
@@ -97,6 +99,11 @@ class Harness:
         result = self.app.update_blocking()
         assert isinstance(result, SessionResult)
         return result
+
+    def reconfigure(self, **changes: object) -> None:
+        """A config is frozen once provided: an edit is a new config, provided anew."""
+        self.config = replace(self.config, **changes)
+        self.env.context_provider.provide(HARNESS, self.config)
 
 
 def test_unchanged_run_makes_no_model_calls(coco_env: coco.Environment) -> None:
@@ -168,7 +175,7 @@ def test_task_edit_dumps_at_turn_zero_and_fast_forwards_everything(
 def test_version_bump_invalidates_every_turn(coco_env: coco.Environment) -> None:
     h = Harness(coco_env)
     h.run()
-    h.config.version = 2
+    h.reconfigure(version=2)
     h.run()
     assert h.model.calls == 3
 
@@ -439,8 +446,10 @@ def test_argument_validation_is_the_models_error_and_internal_errors_are_reporte
         cache: dict[str, str] = {}
         return cache["entry"]
 
-    h.config.tools = ToolRegistry([probe_tool(h.values), broken])
-    h.config.roles = {ROLE.name: replace(ROLE, tool_names=("probe", "broken"))}
+    h.reconfigure(
+        tools=ToolRegistry([probe_tool(h.values), broken]),
+        roles={ROLE.name: replace(ROLE, tool_names=("probe", "broken"))},
+    )
     h.task = "task v2"
     h.model.script = lambda spec, prefix, hints: (
         ModelOutput(calls=(ToolCall("broken", {}),))

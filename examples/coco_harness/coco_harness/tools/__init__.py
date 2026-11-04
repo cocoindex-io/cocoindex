@@ -7,15 +7,21 @@ so it may mount children, declare target states and read state.
 Two flags per tool define what a role may do:
 
 - ``closed_ok``: the tool reads nothing beyond the session's item and its
-  seeded inputs, so a closed (memoized) session may have it. Tools that open
-  sources or mount children are not ``closed_ok``.
+  seeded inputs, so a closed session may have it. Tools that open sources or
+  mount children are not ``closed_ok``.
 - ``key_arg``: the argument whose value names the child's slot (its component
   path, ``child/<key>``). Two calls with the same key in one turn, or across
   turns of one session, fail as tool errors instead of reaching the engine's
   duplicate-path check.
 
+Every session is memoized, so a tool that reads beyond the session's
+arguments must **record** each read with ``coco.use_data_dep`` (the source
+handles do; see ``sources.py``): the engine reuses the session's memo only
+while every recorded read validates, and a read that is not recorded is a
+read the engine cannot see. A tool that records nothing is treated as closed.
+
 Handlers are wrapped in ``coco.fn`` so the engine tracks their logic; a
-handler's own code edit invalidates the closed sessions that ran it. Methods of
+handler's own code edit invalidates the sessions that ran it. Methods of
 handle objects and other helpers are not tracked: bump ``HarnessConfig.version``
 for those.
 """
@@ -193,19 +199,34 @@ class ToolRegistry:
         return ToolResult(call.tool, True, normalize_json(value))
 
 
-@dataclass
+@dataclass(frozen=True)
 class HarnessConfig:
     """Roles, tools, default model and version for one app. Provided through ``HARNESS``.
 
     Build every ``SessionSpec`` with ``spec()`` so it carries the concrete
     model id, the role's tool specs and the version — the three things that
     must invalidate a session when they change.
+
+    A session also derives its children's specs from the config it reads
+    through ``HARNESS``, so the key detects changes and the config's memo key
+    is everything a spec can be built from. The config is frozen because its
+    fingerprint is taken when it is provided: an edit is a new config
+    (``dataclasses.replace``), provided anew.
     """
 
     roles: dict[str, RoleSpec]
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     default_model: str = "unspecified"
     version: int = 1
+
+    def __coco_memo_key__(self) -> object:
+        return (
+            "harness_config",
+            tuple(sorted(self.roles.items())),
+            self.tools.specs(),
+            self.default_model,
+            self.version,
+        )
 
     def role(self, name: str) -> RoleSpec:
         try:
@@ -239,4 +260,6 @@ class HarnessConfig:
         ]
 
 
-HARNESS: coco.ContextKey[HarnessConfig] = coco.ContextKey("coco_harness.config")
+HARNESS: coco.ContextKey[HarnessConfig] = coco.ContextKey(
+    "coco_harness.config", detect_change=True
+)
