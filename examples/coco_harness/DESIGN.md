@@ -654,7 +654,7 @@ covered:
   validates: records are never copied upward, but the engine lists the open
   children in the parent's memo and, when it probes the parent, validates
   their reads from their own stored entries (transitive validation by path,
-  engine PR #2667 of 2026-11-04; until then such a parent re-ran its body
+  engine PR #2671 of 2026-11-04; until then such a parent re-ran its body
   every run). One invalid read beneath it re-runs the parent's body, which
   is what mounts and re-runs the child. A child that recorded nothing is
   closed in effect, whatever tool it was mounted with. Open is therefore
@@ -754,13 +754,62 @@ decision uses the prefix argument.
 A `@coco.fn(memo=True)` passed to `use_mount` uses the **component** memo
 layer (one row per path); `memo_key` applies there too.
 
+### Measured: a fan-out at 10,000 files
+
+`benchmarks/fan_out.py` (not in the test suite) runs one orchestrator over a
+localfs source of 10,000 small files with a scripted model: `open_source`,
+then `for_each` with one closed worker per file (`read_input`, answer). Shape
+S1 has no open child; S2 first calls a planner child that samples the source,
+an open child, as the `table` flow does. Six cases per shape, each one
+`app.update_blocking()` after the mutation named. Measured 2026-11-04 on a
+48-core aarch64 Linux box (Azure, shared: load average 150 to 500 from other
+work during the runs, so single numbers carry about ±30 %), release build
+(`maturin develop --release`), Python 3.11, before and after transitive
+validation by path (engine PR #2671). Wall seconds; "tools" is what the
+orchestrator executed, and model calls are the scripted model's.
+
+| Shape | Case | Before (s) | After (s) | Tools executed | Model calls |
+|---|---|---|---|---|---|
+| S1 | cold | 33.0 | 35.2 | open_source, for_each, 10,000 read_input | 20,003 |
+| S1 | unchanged | 4.3 | 4.7 | none | 0 |
+| S1 | touch one | 13.8 | 20.0 | open_source, for_each | 0 |
+| S1 | edit one | 14.3 | 14.2 | open_source, for_each, 1 read_input | 1 |
+| S1 | add one | 16.7 | 12.5 | open_source, for_each, 1 read_input | 2 |
+| S1 | remove one | 17.1 | 13.1 | open_source, for_each | 0 |
+| S2 | cold | 35.1 | 36.0 | + call_agent, call (sample) | 20,006 |
+| S2 | unchanged | **9.7** (open_source, call_agent, for_each ran) | **3.9** (none) | see cells | 0 |
+| S2 | touch one | 13.3 | 15.6 | open_source, call_agent, for_each | 0 |
+| S2 | edit one | 11.5 | 15.3 | open_source, call_agent, for_each, 1 read_input | 1 |
+| S2 | add one | 10.0 | 17.8 | open_source, call_agent, for_each, 1 read_input | 2 |
+| S2 | remove one | 9.3 | 18.6 | open_source, call_agent, for_each | 0 |
+
+What the numbers say:
+
+- The unchanged rerun of S2 is the case transitive validation targets. Before,
+  the orchestrator's memo was flagged by the planner's read and its body
+  re-ran every time: three tools, the walk twice over, 10,000 worker probes,
+  zero inference, about 5.5 s above S1's unchanged rerun. After, the
+  orchestrator's probe validates its own records and the planner's sample from
+  the planner's row, and nothing executes: the same cost as S1.
+- An unchanged rerun still costs about 4 s at 10,000 files in both shapes:
+  the orchestrator's own records are two observations (`stats`, the `for_each`
+  walk), each validated by walking the directory and stat-ing every file. A
+  per-run walk shared between the validators and the body (friction analysis
+  H4) would halve that; not done.
+- Every other case is the floor described under *Open vs closed*: the body
+  re-runs with zero orchestrator inference and probes all 10,000 workers, at
+  about 1 ms per probe plus the walks. The before/after differences in those
+  rows are machine noise, not the change.
+- Cold: about 3.5 ms per worker, two scripted model calls and three component
+  rows each.
+
 ### Framework roadmap
 
 | Capability | Status | Harness v1 | Later |
 |---|---|---|---|
 | Progress survives failure | solved by `use_mount` per turn | ✅ | partial fn-memo flush on failure (S–M; pure entries only) |
 | Skip unchanged **open** sessions | shipped: `coco.DataDep` + `use_data_dep` + `cannot_skip`; adopted 2026-11-04 (*Open vs closed*) | ✅ | — |
-| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2667, 2026-11-04); no harness change | ✅ | per-run validation cache (one validation per record per operation; S) |
+| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2671, 2026-11-04); no harness change | ✅ | per-run validation cache (one validation per record per operation; S) |
 | Memo probe ("would this hit?") | deferred | — | S |
 | A component hit keeps its `use_state` values | engine behaviour | ✅ | — |
 
