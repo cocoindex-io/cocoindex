@@ -214,7 +214,16 @@ pub struct FnCallMemo<Prof: EngineProfile> {
     /// Context-borne memo states, keyed by tracked-context value fingerprint.
     /// See `db_schema::FunctionMemoizationEntry::context_memo_states`.
     pub context_memo_states: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
-    pub(crate) already_stored: bool,
+    /// The DB row already holds this entry. Cleared when the entry is
+    /// built from a run or its memo states are refreshed after a hit, so the
+    /// flush writes it.
+    pub(crate) persisted: bool,
+    /// The entry's cached output was carried over this run instead of the
+    /// body running: its target states were not re-declared, so finalization
+    /// must keep them (and the entries it depends on) alive. Independent of
+    /// `persisted`: a memo-state refresh after a hit clears `persisted` but
+    /// leaves this set.
+    pub(crate) reused: bool,
 }
 
 /// Combined payload of positional and context-borne memo states.
@@ -339,9 +348,9 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
     ///
     /// Inclusion rule:
     ///
-    /// - `Ready(Some, already_stored=false)` → serialize bytes into
-    ///   `writes` (new or re-executed entries that must be written).
-    /// - `Ready(Some, already_stored=true)` → skip (DB row already correct).
+    /// - `Ready(Some, persisted=false)` → serialize bytes into `writes`
+    ///   (new, re-executed, or refreshed entries that must be written).
+    /// - `Ready(Some, persisted=true)` → skip (DB row already correct).
     /// - `Stored(_)` and `Ready(None)` → record in `deletes`, only when
     ///   `is_fully_loaded=true` (otherwise these entries can't exist on
     ///   disk because prefetch didn't run).
@@ -366,8 +375,8 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
             let state = std::mem::replace(&mut *guard, FnCallMemoEntry::Pending);
             match state {
                 FnCallMemoEntry::Ready(Some(memo)) => {
-                    if memo.already_stored {
-                        // Cache hit: DB row already correct.
+                    if memo.persisted {
+                        // Cache hit without refresh: DB row already correct.
                         continue;
                     }
                     let ret_bytes = memo.ret.to_bytes()?;
@@ -476,7 +485,8 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
         logic_deps: decoded.logic_deps.into_iter().collect(),
         memo_states,
         context_memo_states,
-        already_stored: true,
+        persisted: true,
+        reused: true,
     }));
     Ok(())
 }

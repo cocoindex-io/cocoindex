@@ -84,23 +84,29 @@ pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
 /// preview of a lossy schema change would otherwise invalidate memos the next
 /// real run still needs). Whether a stored memo may be consulted at all under
 /// `full_reprocess` is the caller's decision (see `Component::execute_once`).
+/// A stored component memo that passed key, logic-dep and provider validation.
+pub(crate) struct RestoredComponentMemo<Prof: EngineProfile> {
+    pub ret: Prof::FunctionData,
+    pub memo_states: MemoStatesPayload<Prof>,
+    pub logic_deps: Vec<Fingerprint>,
+    pub target_provider_deps: TargetProviderDeps,
+    /// Fingerprint of the row bytes this memo was decoded from. A later
+    /// refresh of its memo states applies only while the row still has it
+    /// (see `update_component_memo_states`).
+    pub row_fp: Fingerprint,
+}
+
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
-) -> Result<
-    Option<(
-        Prof::FunctionData,
-        MemoStatesPayload<Prof>,
-        Vec<Fingerprint>,
-        TargetProviderDeps,
-    )>,
-> {
+) -> Result<Option<RestoredComponentMemo<Prof>>> {
     let app_store = comp_ctx.app_store();
     let path = comp_ctx.stable_path();
     {
         let Some(memo_bytes) = app_store.read_component_memo(path).await? else {
             return Ok(None);
         };
+        let row_fp = Fingerprint::from_bytes(&memo_bytes);
         let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&memo_bytes)?;
         if let Some(processor_fp) = processor_fp
             && memo_info.processor_fp == processor_fp
@@ -126,15 +132,16 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                     // would not depend on it (or its descendants) and would
                     // wrongly stay a memo hit when their code changes. The
                     // target-provider deps ride along for the same reason.
-                    return Ok(Some((
+                    return Ok(Some(RestoredComponentMemo {
                         ret,
-                        MemoStatesPayload {
+                        memo_states: MemoStatesPayload {
                             positional: memo_states,
                             by_context_fp: context_memo_states,
                         },
-                        memo_info.logic_deps.to_vec(),
-                        memo_info.target_provider_deps.into_iter().collect(),
-                    )));
+                        logic_deps: memo_info.logic_deps.to_vec(),
+                        target_provider_deps: memo_info.target_provider_deps.into_iter().collect(),
+                        row_fp,
+                    }));
                 }
                 Err(e) => {
                     warn!(
@@ -167,9 +174,17 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 /// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
 /// preserving `processor_fp`, `return_value`, `logic_deps`, and
 /// `target_provider_deps`. In a preview the write stays in the run's handle.
+///
+/// The states were validated against the row whose bytes fingerprint to
+/// `validated_row_fp`. The probe runs before the build permit, so another run
+/// of the same component can replace the row in the meantime (a different key,
+/// or the same key re-executed); the new states describe the row that was
+/// validated, not the replacement, so the refresh is dropped when the row has
+/// changed. The replacing run stored a complete entry of its own.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
+    validated_row_fp: Fingerprint,
 ) -> Result<()> {
     let app_store = comp_ctx.app_store().clone();
     let path = comp_ctx.stable_path().clone();
@@ -199,6 +214,12 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
                     else {
                         return Ok(());
                     };
+                    if Fingerprint::from_bytes(&existing_bytes) != validated_row_fp {
+                        debug!(
+                            "skip memo state refresh for {path}: the memo was replaced after validation"
+                        );
+                        return Ok(());
+                    }
                     let existing: db_schema::ComponentMemoizationInfo<'_> =
                         from_msgpack_slice(&existing_bytes)?;
                     let memo_states_borrowed = borrow_memo_values(&memo_states_serialized);
@@ -2034,16 +2055,17 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
     let mut visited: HashSet<Fingerprint> = HashSet::new();
     let mut deps_to_walk: VecDeque<Fingerprint> = VecDeque::new();
 
-    // First pass: every Ready(Some) entry with `already_stored=true`
-    // contributes its target states and seeds the dep walk. `already_stored=false`
-    // entries were just executed this run; their target states are in the
-    // regular declared_target_states pipeline, not "contained".
+    // First pass: every Ready(Some) entry with `reused=true` (a cache hit,
+    // whether or not its memo states were refreshed) contributes its target
+    // states and seeds the dep walk. `reused=false` entries were just executed
+    // this run; their target states are in the regular declared_target_states
+    // pipeline, not "contained".
     for (fp, lock) in cache.iter() {
         let guard = lock
             .try_read()
             .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
         if let FnCallMemoEntry::Ready(Some(memo)) = &*guard
-            && memo.already_stored
+            && memo.reused
         {
             visited.insert(*fp);
             contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());

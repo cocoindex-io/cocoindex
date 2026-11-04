@@ -12,8 +12,8 @@ use crate::engine::context::{
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
-    cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
-    update_component_memo_states, use_or_invalidate_component_memoization,
+    RestoredComponentMemo, cleanup_tombstone, eager_existence_upsert, post_submit_for_build,
+    submit, update_component_memo_states, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -693,7 +693,14 @@ async fn lookup_component_memo<Prof: EngineProfile>(
             None
         }
     };
-    let Some((ret, memo_states, stored_logic_deps, stored_provider_deps)) = memo else {
+    let Some(RestoredComponentMemo {
+        ret,
+        memo_states,
+        logic_deps: stored_logic_deps,
+        target_provider_deps: stored_provider_deps,
+        row_fp,
+    }) = memo
+    else {
         return Ok(MemoLookup::Miss {
             revalidated_states: None,
         });
@@ -713,7 +720,7 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         // Reusable, but the states themselves moved (e.g. an mtime changed
         // while the content hash did not): refresh them in the stored memo.
         if states_changed {
-            update_component_memo_states(comp_ctx, &new_states).await?;
+            update_component_memo_states(comp_ctx, &new_states, row_fp).await?;
         }
     }
     // Report the stored dependency sets upward even on a memo hit, so a
