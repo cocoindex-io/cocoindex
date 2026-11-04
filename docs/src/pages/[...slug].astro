@@ -17,9 +17,9 @@ const { Content, headings: mdHeadings } = await render(doc);
 
 const slug = docSlug(doc.id);
 const rel = (doc as unknown as { filePath?: string }).filePath
-  ?.split('/src/content/docs/')
+  ?.split('src/content/docs/')
   .pop();
-const sourcePath = rel ?? `${doc.id}.md`;
+const sourcePath = `src/content/docs/${rel ?? `${doc.id}.md`}`;
 
 // Title may contain *asterisks* marking italic-coral segments
 // (see src/consts.ts titleMarkup); plain metadata strips them.

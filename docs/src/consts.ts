@@ -6,7 +6,7 @@ export const SITE_BLOG = 'https://cocoindex.io/blogs/';
 // `import.meta.env.BASE_URL` reflects `base` in astro.config.mjs (e.g. `/docs-v0/`).
 export const SITE_EXAMPLES = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/examples/`;
 // GitHub web-editor URL prefix for the "Edit this page" link.
-export const DOCS_EDIT_BASE = 'https://github.com/cocoindex-io/cocoindex/edit/main/docs/docs';
+export const DOCS_EDIT_BASE = 'https://github.com/cocoindex-io/cocoindex/edit/v0/docs';
 
 // A content-collection id for `sources/index.md` is `sources/index`; the URL
 // slug we want is just `sources`. Mirrors the blog-site helper pattern.
