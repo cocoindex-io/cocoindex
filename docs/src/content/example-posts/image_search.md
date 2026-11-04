@@ -6,15 +6,14 @@ image: https://cocoindex.io/blobs/docs/img/examples/image_search/cover.png
 
 ![Image Search](https://cocoindex.io/blobs/docs/img/examples/image_search/cover.png)
 
-## Overview
-CocoIndex supports native integration with ColPali - with just a few lines of code, you embed and index images with ColPali’s late-interaction architecture. We also build a light weight image search application with FastAPI.
+Use CocoIndex to embed and index images with ColPali, then serve image search through a FastAPI application.
 
 
 ## ColPali
 
-**ColPali (Contextual Late-interaction over Patches)** is a powerful model for multimodal retrieval.
+**ColPali (Contextual Late-interaction over Patches)** is a model for multimodal retrieval.
 
-It fundamentally rethinks how documents—especially visually complex or image-rich ones—are represented and searched. Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure. Each patch receives its own embedding, which together form a multi-vector representation of the complete document.
+ColPali represents each image or page as multiple patches. Each patch has an embedding, and the embeddings together form a multi-vector representation for retrieval.
 
 ![ColPali Architecture](https://cocoindex.io/blobs/docs/img/examples/image_search/multi_modal_architecture.png)
 
@@ -28,7 +27,7 @@ It fundamentally rethinks how documents—especially visually complex or image-r
 4. Export the embeddings (and optional captions) to a Qdrant collection
 
 ## Setup
-- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres) if you don't have one.
 
 - Make sure Qdrant is running
   ```
@@ -76,7 +75,7 @@ with data_scope["images"].row() as img:
     img_embeddings.collect(**collect_fields)
 ```
 
-This transformation turns the raw image bytes into a list of vectors — one per patch — that can later be used for **late interaction search**. And then we collect the embeddings.
+This transformation turns the raw image bytes into a list of vectors (one per patch) that can later be used for **late interaction search**. And then we collect the embeddings.
 
 ![ColPali Embedding](https://cocoindex.io/blobs/docs/img/examples/image_search/embedding.png)
 
@@ -249,7 +248,7 @@ In general,
 
 ## Connect to Any Data Source
 
-One of CocoIndex’s core strengths is its ability to connect to your existing data sources and automatically keep your index fresh. Beyond local files, CocoIndex natively supports source connectors including:
+One of CocoIndex's core strengths is its ability to connect to your existing data sources and automatically keep your index fresh. Beyond local files, CocoIndex natively supports source connectors including:
 
 - Google Drive
 - Amazon S3 / SQS
@@ -257,4 +256,4 @@ One of CocoIndex’s core strengths is its ability to connect to your existing d
 
 [→ Sources](https://cocoindex.io/docs-v0/sources)
 
-Once connected, CocoIndex continuously watches for changes — new uploads, updates, or deletions — and applies them to your index in real time.
+Once connected, CocoIndex continuously watches for changes (new uploads, updates, or deletions) and applies them to your index in real time.

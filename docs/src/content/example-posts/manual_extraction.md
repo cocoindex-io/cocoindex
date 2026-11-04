@@ -8,7 +8,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/manual_extraction/cover.png
 
 ## Overview
 
-This example shows how to extract structured data from Python Manuals using Ollama.
+Extract structured data from Python manuals using Ollama.
 
 ## Flow Overview
 
@@ -110,7 +110,7 @@ It transforms each document to markdown.
 
 ### Define schema
 
-Let's define the schema `ModuleInfo` using Python dataclasses, and we can pass it to the LLM to extract the structured data. It's easy to do this with CocoIndex.
+Define `ModuleInfo` with Python dataclasses and pass that schema to the LLM extraction function.
 
 ``` python
 @dataclasses.dataclass
@@ -165,7 +165,7 @@ with data_scope["documents"].row() as doc:
 
 ## Add summarization to module info
 
-Using CocoIndex as framework, you can easily add any transformation on the data, and collect it as part of the data index. Let's add some simple summary to each module - like number of classes and methods, using simple Python function.
+Add a Python function to count the classes and methods in each module, then collect those counts alongside the extracted data.
 
 ### Define Schema
 

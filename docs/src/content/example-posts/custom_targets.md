@@ -8,7 +8,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/custom_targets/cover.png
 
 ## Overview
 
-Let’s walk through a simple example—exporting `.md` files as `.html` using a custom file-based target. This project monitors folder changes and continuously converts markdown to HTML incrementally. The overall flow is simple and primarily focuses on how to configure your custom target.
+Export `.md` files as `.html` using a custom file-based target. The pipeline monitors a folder and converts changed Markdown files to HTML incrementally.
 
 ## Ingest files
 
@@ -192,9 +192,9 @@ For **real-time updates**, run in live mode:
     cocoindex update -L main
     ```
 
-This keeps your knowledge graph continuously synchronized with your document source — perfect for fast-changing environments like internal wikis or technical documentation.
+Live mode watches the source and updates the target when files change.
 
-## Best Practices
+## Target implementation guidelines
 
 - **Idempotency matters**: `apply_setup_change()` and `mutate()` should be safe to run multiple times without unintended effects.
 - **Prepare once, mutate many**: If you need setup (such as establishing a connection), use `prepare()` to avoid repeating work.
@@ -209,4 +209,4 @@ These can only be connected through custom targets.
 
 ### Faster adoption of new export logic
 
-When a new tool, database, or API joins your stack, simply define a Target Spec and Target Connector — start exporting right away, with no pipeline refactoring required.
+To export to another tool, database, or API, define a Target Spec and Target Connector and use them in the flow.

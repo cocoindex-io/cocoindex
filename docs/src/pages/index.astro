@@ -114,9 +114,9 @@ const ICONS: Record<string, string> = {
               </div>
               <h1 class="hero-h" set:html={titleMarkup('CocoIndex V0 Documentation *(Legacy)*')} />
               <p class="hero-sub">
-                CocoIndex is an ultra-performant framework for building data pipelines for AI, with
-                built-in incremental processing. Define a flow from your <b>source</b> to your
-                <b>target</b> — the Rust engine keeps it in sync, reprocessing only the&nbsp;Δ.
+                CocoIndex is a framework for building data pipelines for AI, with
+                built-in incremental processing. Define a flow from your source to your
+                target. The Rust engine keeps it in sync, reprocessing changed data.
               </p>
               <div class="hero-cta">
                 <a class="btn btn-coral btn-lg" href={doc('getting_started/quickstart')}>Quickstart →</a>
@@ -182,7 +182,7 @@ const ICONS: Record<string, string> = {
         <section class="dh-sec">
           <div class="sec-head">
             <span class="idx">How it works</span>
-            <h2>Two steps. Then it maintains itself.</h2>
+            <h2>Define a flow and run updates.</h2>
             <p>A flow is a function from source to target. Run it once; re-run it forever — CocoIndex tracks fine-grained lineage and recomputes only what changed, in batch or live mode.</p>
           </div>
           <div class="steps">
@@ -197,7 +197,7 @@ const ICONS: Record<string, string> = {
               <span class="num">2</span>
               <div>
                 <h3>Run — only the Δ recomputes</h3>
-                <p>The engine backfills on first run and keeps the target in sync on every re-run or in <code>live</code> mode. Change one file and only that file reprocesses. No DAGs, no orchestration to babysit.</p>
+                <p>The engine backfills on first run and keeps the target in sync on every re-run or in <code>live</code> mode. Change one file and only that file reprocesses. CocoIndex manages incremental execution.</p>
               </div>
             </div>
           </div>

@@ -62,7 +62,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
       <!-- ═══════════ HERO ═══════════ -->
       <section class="ex-hero">
         <div class="hero-top">
-          <span class="eyb"><span class="dot" aria-hidden="true"></span>{total} live examples · updated weekly</span>
+          <span class="eyb"><span class="dot" aria-hidden="true"></span>{total} legacy examples</span>
           <div class="stats">
             <span><b>{total}</b> examples</span>
             <span><b>9</b> sources</span>
@@ -83,7 +83,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
             </div>
             <h1 class="hero-h">Examples V0 <em>(Legacy)</em></h1>
             <p class="hero-sub">
-              Real pipelines you can <b>clone, run, and bend</b> to your data. Each example is production-wired — one source, a declarative flow, a live target. Pick the one closest to what you need and change the parts that don't fit.
+              Pipelines you can clone, run, and adapt to your data. Each connects a source to a target through a declarative flow. Pick the closest example and change the parts you need.
             </p>
 
             <div class="hero-filters" id="filters">
@@ -166,7 +166,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           <section class="feat" id="feat-scroll">
             <div class="sec-head">
               <h2><span class="idx">★ Featured</span>Start here</h2>
-              <p class="lead">The most complete end-to-end example — a custom source, LLM extraction, and a queryable target.</p>
+              <p class="lead">Connect a custom source to LLM extraction and a queryable target.</p>
             </div>
 
             <a class="feat-card" href={exampleHref(featured.slug)}>
@@ -174,7 +174,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
                 <span class="ribbon"><span class="tick"></span>Multi-stage · custom source · <span class="idx">07 / {total}</span></span>
                 <h3 set:html={titleMarkup('HN Trending *Topics.*')} />
                 <p>
-                  Pulls every new HackerNews thread, extracts topics with an LLM, and keeps a Postgres index continuously fresh. Custom source + live mode = 92% fewer API calls after the first sync.
+                  Read HackerNews threads, extract topics with an LLM, and update a Postgres index. Incremental updates reuse unchanged data.
                 </p>
                 <div class="chips">
                   <span class="chip">Custom source</span>
@@ -252,7 +252,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           <section class="cta-end">
             <div>
               <h3 set:html={titleMarkup("Can't find the *shape* you need?")} />
-              <p>Clone the closest example, swap the source or the target, and keep the rest. Or request a new example — we ship the ones developers ask for.</p>
+              <p>Clone the closest example, swap the source or the target, and keep the rest. Or open an issue to request another example.</p>
               <div class="btns">
                 <a class="btn btn-coral" href={GITHUB_REPO}>Request on GitHub</a>
                 <a class="btn btn-primary" href={base || '/'}>Build your own</a>
@@ -260,7 +260,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
               </div>
             </div>
             <aside class="side">
-              <h3>Popular this week</h3>
+              <h3>Featured examples</h3>
               <ul>
                 {POPULAR.map((p) => (
                   <li><span class="k">{p.label}</span><span class="v">{p.count}</span></li>

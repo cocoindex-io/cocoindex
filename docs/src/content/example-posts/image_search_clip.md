@@ -14,9 +14,7 @@ We are going to use multi-modal embedding model CLIP to understand and directly 
 We are going use CocoIndex to build the indexing flow. It supports long running flow and only process changed files - we can keep adding new files to the folder and it will be indexed within a minute.
 
 
-## CLIP ViT-L/14
-[CLIP ViT-L/14](https://huggingface.co/openai/clip-vit-large-patch14) is a powerful vision-language model that can understand both images and texts.
-It's trained to align visual and textual representations in a shared embedding space, making it perfect for our image search use case.
+CLIP is trained to align visual and textual representations in a shared embedding space, so text queries can retrieve images.
 
 In our project, we use CLIP to:
 1. Generate embeddings of the images directly
@@ -33,7 +31,7 @@ In our project, we use CLIP to:
 3. Save these embeddings into a vector database for efficient search and retrieval
 
 ## Setup
-- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres) if you don't have one.
 
 - Make sure Qdrant is running
   ```
@@ -249,7 +247,7 @@ This initialization ensures that all necessary components are properly configure
 
 
 ### Frontend
-You can check the frontend code [here](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/image_search/frontend). We intentionally kept it simple and minimalistic to focus on the image search functionality.
+You can check the frontend code [here](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/image_search/frontend). The frontend focuses on image search.
 
 
 ## Time to have fun!
@@ -301,7 +299,7 @@ If you want to monitor the indexing progress, you can view it in CocoInsight `co
 
 ## Connect to Any Data Source
 
-One of CocoIndex’s core strengths is its ability to connect to your existing data sources and automatically keep your index fresh. Beyond local files, CocoIndex natively supports source connectors including:
+One of CocoIndex's core strengths is its ability to connect to your existing data sources and automatically keep your index fresh. Beyond local files, CocoIndex natively supports source connectors including:
 
 - Google Drive
 - Amazon S3 / SQS
@@ -309,4 +307,4 @@ One of CocoIndex’s core strengths is its ability to connect to your existing d
 
 [→ Sources](https://cocoindex.io/docs-v0/sources)
 
-Once connected, CocoIndex continuously watches for changes — new uploads, updates, or deletions — and applies them to your index in real time.
+Once connected, CocoIndex continuously watches for changes (new uploads, updates, or deletions) and applies them to your index in real time.

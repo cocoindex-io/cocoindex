@@ -6,18 +6,17 @@ image: https://cocoindex.io/blobs/docs/img/examples/multi_format_index/cover.png
 
 ![Multi Format Index](https://cocoindex.io/blobs/docs/img/examples/multi_format_index/cover.png)
 
-## Overview
-Do you have a messy collection of scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures — that you want to process into the same vector space for semantic search or to power an AI agent?
+Index scanned documents, PDFs, presentation slides, and images together for semantic search.
 
-In this example, we’ll walk through how to build a visual document indexing pipeline using ColPali for embedding both PDFs and images — and then query the index using natural language.
+The pipeline uses ColPali to embed PDF pages and images, stores the embeddings in Qdrant, and queries them with natural language.
 
-We’ll skip OCR entirely — ColPali can directly understand document layouts, tables, and figures from images, making it perfect for semantic search across visual-heavy content.
+ColPali embeds page images directly, including their layouts, tables, and figures, so this pipeline skips OCR.
 
 
 ## Flow Overview
 ![Flow](https://cocoindex.io/blobs/docs/img/examples/multi_format_index/flow.png)
 
-We’ll build a pipeline that:
+We'll build a pipeline that:
 
 - **Ingests PDFs and images** from a local directory
     - **Converts PDF pages** into high-resolution images (300 DPI)
@@ -34,7 +33,7 @@ Example queries:
 
 ## Image Ingestion
 
-We use CocoIndex’s `LocalFile` source to read PDFs and images:
+We use CocoIndex's `LocalFile` source to read PDFs and images:
 
 ```python
 data_scope["documents"] = flow_builder.add_source(
@@ -83,7 +82,7 @@ def file_to_pages(filename: str, content: bytes) -> list[Page]:
 
 For each document:
 - If the file is an image → `file_to_pages` returns a single `Page` where `page["image"]` is just the original image binary.
-- If the file is a PDF → `file_to_pages` converts each page to a PNG, so `page["image"]` contains that page’s PNG binary.
+- If the file is a PDF → `file_to_pages` converts each page to a PNG, so `page["image"]` contains that page's PNG binary.
 
 
 In the flow we convert all the files to pages. this makes each pages and all images in the output data - pages.
@@ -121,7 +120,7 @@ with doc["pages"].row() as page:
 
 ![Embedding](https://cocoindex.io/blobs/docs/img/examples/multi_format_index/embed.png)
 
-ColPali Architecture fundamentally rethinks how documents, especially visually complex or image-rich ones, are represented and searched. Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure.
+ColPali represents each image or page with multiple patch embeddings, preserving spatial and semantic information for retrieval.
 
 Each patch receives its own embedding, which together form a multi-vector representation of the complete document.
 
@@ -132,7 +131,7 @@ Each patch receives its own embedding, which together form a multi-vector repres
 
 ## Export to Qdrant
 
-Note the way to embed image and query are different, as they’re two different types of data.
+Note the way to embed image and query are different, as they're two different types of data.
 
 Create a function to embed query:
 

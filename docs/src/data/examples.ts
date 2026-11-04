@@ -61,7 +61,7 @@ export const examples: ExampleCard[] = [
     category: 'search',
     thumbLabel: 'Text · Postgres',
     motif: MOTIFS.dots,
-    description: 'The cleanest "hello world" for CocoIndex + embeddings — index markdown, query it with natural language.',
+    description: 'Index Markdown with text embeddings and query it with natural language.',
     tags: [
       { kind: 'src', label: 'Local FS' },
       { kind: 'tgt', label: 'Postgres' },
@@ -160,7 +160,7 @@ export const examples: ExampleCard[] = [
     category: 'llm',
     thumbLabel: '★ HackerNews',
     motif: MOTIFS.hnArrow,
-    description: 'Custom source + LLM extraction + live SQL. The showcase multi-stage example with 92% fewer API calls after the first sync.',
+    description: 'Read HackerNews through a custom source, extract topics with an LLM, and query the results in Postgres. Incremental updates reuse unchanged data.',
     tags: [
       { kind: 'src', label: 'HN API' },
       { kind: 'llm', label: 'Gemini 2.5' },
@@ -208,7 +208,7 @@ export const examples: ExampleCard[] = [
     category: 'llm',
     thumbLabel: 'BAML · typed',
     motif: MOTIFS.cross,
-    description: 'BAML as the typed contract between LLM and code. Same intake problem, stronger guarantees.',
+    description: 'Use a BAML schema and vision model to extract typed records from patient intake PDFs.',
     tags: [
       { kind: 'src', label: 'PDF' },
       { kind: 'llm', label: 'BAML' },
@@ -350,7 +350,7 @@ export const examples: ExampleCard[] = [
     category: 'image',
     thumbLabel: 'PDF · unified',
     motif: MOTIFS.pdf,
-    description: 'Extract, embed, and index both text and images from PDFs — SentenceTransformers + CLIP in one vector space.',
+    description: 'Extract text and images from PDFs, embed them with SentenceTransformers and CLIP, and store them for search.',
     tags: [
       { kind: 'src', label: 'PDF' },
       { kind: 'llm', label: 'CLIP + ST' },

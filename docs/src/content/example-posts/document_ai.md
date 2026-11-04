@@ -6,10 +6,10 @@ image: https://cocoindex.io/blobs/docs/img/examples/document_ai/cover.png
 
 ![Document AI](https://cocoindex.io/blobs/docs/img/examples/document_ai/cover.png)
 
-CocoIndex is a flexible ETL framework with incremental processing.  We don’t build parser ourselves, and users can bring in any open source or commercial parser that works best for their scenarios.  In this example, we show how to use **Google Document AI to parse document**, embed the resulting text, and store it in a vectorized database for semantic search.
+CocoIndex is a flexible ETL framework with incremental processing.  We don't build parser ourselves, and users can bring in any open source or commercial parser that works best for their scenarios.  In this example, we show how to use **Google Document AI to parse document**, embed the resulting text, and store it in a vectorized database for semantic search.
 
 ## Set up
-- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres) if you don't have one.
 - Configure Project and Processor ID for Document AI API
     - [Official Google document AI API](https://cloud.google.com/document-ai/docs/try-docai) with free live demo.
     - Sign in to [Google Cloud Console](https://console.cloud.google.com/), create or open a project, and enable Document AI API.
@@ -20,7 +20,7 @@ CocoIndex is a flexible ETL framework with incremental processing.  We don’t b
 
 ## Create Your building block to convert PDFs to Markdown
 
-We define a `ToMarkdown` custom function spec, which leverages Google Document AI to parse PDF content:
+We define a `ToMarkdown` custom function spec, which uses Google Document AI to parse PDF content:
 
 ```python
 class ToMarkdown(cocoindex.op.FunctionSpec):

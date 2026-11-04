@@ -8,7 +8,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/custom_source_hackernews/cov
 ![Extract structured information from HackerNews with a Custom Source and export in Postgres](https://cocoindex.io/blobs/docs/img/examples/custom_source_hackernews/cover.png)
 
 
-Custom Sources are one of the most powerful concepts in CocoIndex. They let you turn *any* API—internal or external — into a first-class, incremental data stream that the framework can automatically diff, track, and sync.
+Custom Sources let you read an internal or external API as an incremental data stream. CocoIndex tracks changes and syncs them to your target.
 
 In this example, we build a custom connector for HackerNews. It fetches recent stories + nested comments, indexes them, and exposes a simple search interface powered by Postgres full-text search.
 
@@ -21,9 +21,9 @@ In many scenarios, pipelines don't just read from clean tables. They depend on:
 - Internal REST services
 - Partner APIs
 - Legacy systems
-- Non-standard data models that don’t fit traditional connectors
+- Non-standard data models that don't fit traditional connectors
 
-CocoIndex’s Custom Source API makes these integrations *declarative*, incremental, and safe by default.
+CocoIndex's Custom Source API makes these integrations *declarative*, incremental, and safe by default.
 
 ## Overview
 
@@ -46,7 +46,7 @@ The pipeline consists of three major parts:
 
 ## Prerequisites
 
-- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres) if you don't have one.
 
 
 ## Defining the Data Model
@@ -59,7 +59,7 @@ Every custom source defines two lightweight data types:
 In hacker news, each news is a thread, and each thread can have multiple comments.
 ![HackerNews Thread and Comments](https://cocoindex.io/blobs/docs/img/examples/custom_source_hackernews/hackernews.png)
 
-For HackerNews, let’s define keys like this:
+For HackerNews, let's define keys like this:
 
 ```python
 class _HackerNewsThreadKey(NamedTuple):
@@ -71,7 +71,7 @@ Keys must be:
 
 - hashable
 - serializable
-- stable (doesn’t change over time)
+- stable (doesn't change over time)
 
 Values hold the actual dataset:
 
@@ -93,7 +93,7 @@ class _HackerNewsThread:
     comments: list[_HackerNewsComment]
 ```
 
-This tells CocoIndex exactly what every HackerNews “item” looks like when fully fetched:
+This tells CocoIndex exactly what every HackerNews "item" looks like when fully fetched:
 - `_HackerNewsThread` holds a post and all its comments
 - `_HackerNewsComment` represents individual comments
 
@@ -106,7 +106,7 @@ A Custom Source has two parts:
 
 ### Writing the SourceSpec
 
-A **SourceSpec** in CocoIndex is a declarative configuration that tells the system **what data to fetch** and **how to connect** to a source. It doesn’t fetch data itself — that’s handled by the source connector.
+A **SourceSpec** in CocoIndex is a declarative configuration that tells the system **what data to fetch** and **how to connect** to a source. It doesn't fetch data itself — that's handled by the source connector.
 
 ```python
 class HackerNewsSource(SourceSpec):
@@ -421,12 +421,12 @@ def search_text(query: str) -> cocoindex.QueryOutput:
             return cocoindex.QueryOutput(results=results)
 ```
 
-This example shows how to create a query handler that lets you search HackerNews threads and comments stored in CocoIndex.
-- The handler looks up the correct database table, then uses PostgreSQL’s full-text search functions (`to_tsvector` and `plainto_tsquery`) to find entries that match your search terms.
+Create a query handler to search the indexed HackerNews threads and comments.
+- The handler looks up the correct database table, then uses PostgreSQL's full-text search functions (`to_tsvector` and `plainto_tsquery`) to find entries that match your search terms.
 - Matching results are sorted by their relevance (`ts_rank`) and by creation time, then converted to dictionaries.
-- Finally, these results are returned in a `cocoindex.QueryOutput` object—making it easy to perform fast, ranked searches across your indexed HackerNews content.
+- Return the ranked results in a `cocoindex.QueryOutput` object.
 
-##  Running Your HackerNews Custom Source
+## Running Your HackerNews Custom Source
 
 Once your custom source and flow are ready, running it with CocoIndex is straightforward. You can either **update the index on-demand** or **keep it continuously in sync** with HackerNews.
 
@@ -468,7 +468,7 @@ cocoindex update -L main
 
 ## 3. Troubleshoot & Inspect with CocoInsight
 
-CocoInsight lets you **visualize and debug your flow**, see the lineage of your data, and understand what’s happening under the hood.
+CocoInsight lets you **visualize and debug your flow**, see the lineage of your data, and understand what's happening under the hood.
 
 Start the server:
 
@@ -478,7 +478,7 @@ cocoindex server -ci main
 
 Then open the UI in your browser: [`https://cocoindex.io/cocoinsight`](https://cocoindex.io/cocoinsight)
 
-> CocoInsight has zero pipeline data retention — it’s safe for debugging and inspecting your flows locally.
+> CocoInsight has zero pipeline data retention — it's safe for debugging and inspecting your flows locally.
 >
 
 Note that this requires QueryHandler setup in previous step.
@@ -532,7 +532,7 @@ Tracking changes on public websites or APIs that don't offer webhooks.
 
 Custom Sources extend this model to *any* API — internal, external, legacy, or real-time.
 
-This unlocks a simple but powerful pattern:
+A custom source supplies the data for indexing and change tracking:
 
 > If you can fetch it, CocoIndex can index it, diff it, and sync it.
 >

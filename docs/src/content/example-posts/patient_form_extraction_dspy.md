@@ -8,7 +8,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction_dspy
 
 ## Overview
 
-This tutorial shows how to use DSPy together with CocoIndex to build a data pipeline that extracts structured patient information from PDF intake forms using vision models. DSPy provides a programming framework for LLMs with typed Signatures and Modules, while CocoIndex orchestrates file input, transformation, and incremental indexing.
+Use DSPy with CocoIndex to build a pipeline that extracts structured patient information from PDF intake forms using vision models. DSPy provides a programming framework for LLMs with typed Signatures and Modules, while CocoIndex orchestrates file input, transformation, and incremental indexing.
 
 :::info
 The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser or open source ones that is tailored for your domain for better results. For example, Document AI from Google Cloud and more.
@@ -25,17 +25,17 @@ Traditional LLM apps rely on prompt engineering: you write a prompt with instruc
 
 [DSPy](https://github.com/stanfordnlp/dspy) replaces this with a programming model: you define what each LLM step should do (inputs, outputs, constraints), and the framework figures out how to prompt the model to satisfy that spec.
 
-### CocoIndex: An ultra performant data processing engine for AI workloads
+### CocoIndex: Incremental data processing
 
-[CocoIndex](https://github.com/cocoindex-io/cocoindex) is an ultra performant compute framework for AI workloads, with incremental processing. Users write simple in-memory computations in Python and coco runs it as a resilient, scalable data pipeline (with Rust Engine) – with fresh data always ready for serving. Same flow definition you use in a notebook can be lifted easily into production.
+[CocoIndex](https://github.com/cocoindex-io/cocoindex) runs Python data transformations on a Rust engine with incremental processing. The same flow definition can run in a notebook or a deployed application.
 
-With CocoIndex, changes in sources or transformation logic only trigger minimal recompute, cutting cold-start "backfill" latencies from hours to seconds while reducing GPU/API spend. In production, this manifests as always-fresh targets: you run in "live" mode with change data capture or polling, and CocoIndex keeps derived stores in sync with complex unstructured sources like codebases, PDFs, and multi-hop API compositions.
+When sources or transformation logic change, CocoIndex recomputes affected work and updates the targets. In live mode, it discovers source changes through change data capture or polling.
 
-Because every transformation step is observable with lineage, teams get auditability and explainability out of the box, which helps for regulated scenarios like healthcare extraction or financial workflows.
+Data lineage lets you trace an extracted field through the transformations that produced it.
 
-### DSPy & CocoIndex Synergy
+### Combining DSPy and CocoIndex
 
-The synergy shows up most clearly in end-to-end AI data products: DSPy defines robust, typed extractors or decision modules, and CocoIndex wires them into a resilient, incremental pipeline that can meet SLOs and compliance needs. Any change in documents, code, or business rules is reflected quickly and explainably in the targets and features those agents consume.
+DSPy defines typed extractors or decision modules. CocoIndex runs them as part of an incremental pipeline and updates the targets when source data or processing logic changes.
 
 ## Flow Overview
 
@@ -49,7 +49,7 @@ The flow itself is fairly simple.
 
 ## Setup
 
-1. [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
+1. [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres) if you don't have one.
 2. Install dependencies
 
     ```
@@ -438,19 +438,19 @@ I used CocoInsight (Free beta now) to troubleshoot the index generation and unde
 cocoindex server -ci main
 ```
 
-## Scalable Open ecosystem, not a closed box
+## Choosing pipeline components
 
-CocoIndex is intentionally "composable by default": it gives you a fast, incremental data engine and clean flow, abstraction, but never locks you into a specific model, vector DB, processing module or orchestration stack.
+Choose the model, database, and processing modules for your pipeline. CocoIndex provides interfaces for sources, transformations, and targets.
 
-CocoIndex treats everything — sources, ops, and storages — as pluggable interfaces rather than proprietary primitives. You can read from local files, S3, APIs, or custom sources, call any data transformation logic (beyond SQL, DSPy modules, any complex Python transformations, generated parsers etc), and export to relational databases, vector databases, search engines, or custom sinks through its storage layer.
+CocoIndex treats everything (sources, ops, and storages) as pluggable interfaces rather than proprietary primitives. You can read from local files, S3, APIs, or custom sources, call any data transformation logic (beyond SQL, DSPy modules, any complex Python transformations, generated parsers etc), and export to relational databases, vector databases, search engines, or custom sinks through its storage layer.
 
 ### Why DSPy + CocoIndex fits this philosophy
 
 DSPy is itself a compositional framework for LLMs: you define typed Signatures and Modules, and it learns how to implement them, making the LLM layer programmable, testable, and optimizable.
 
-CocoIndex treats these modules as first-class operators in the flow, so you get a clean separation of concerns: DSPy owns "how the model thinks," while CocoIndex owns "how data moves, is cached, and is served" across changing PDFs, code, or APIs.
+CocoIndex calls DSPy modules as flow operators. DSPy handles model inference; CocoIndex handles data movement, caching, and updates.
 
-This pairing is powerful because neither system tries to be the entire stack: CocoIndex does not prescribe a prompt framework, and DSPy does not prescribe a data pipeline engine. Instead, they interlock: DSPy modules become composable building blocks inside CocoIndex flows, and CocoIndex gives those modules a production context with retries, batching, caching, and live updates.
+DSPy modules can run inside CocoIndex flows with retries, batching, caching, and live updates.
 
 ## Connect to other sources
 

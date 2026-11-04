@@ -18,7 +18,7 @@ Product taxonomy is a way to organize product catalogs in a logical and hierarch
 
 ## Prerequisites
 
-- [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
+- [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
 - [Install Neo4j](https://cocoindex.io/docs-v0/targets/neo4j), a graph database.
 - [Configure your OpenAI API key](https://cocoindex.io/docs-v0/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
 

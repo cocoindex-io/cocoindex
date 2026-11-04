@@ -9,7 +9,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction_baml
 ## Overview
 
 
-This tutorial shows how to use BAML together with CocoIndex to build a data pipeline that extracts structured patient information from PDF intake forms.  The BAML definitions describe the desired output schema and prompt logic, while CocoIndex orchestrates file input, transformation, and incremental indexing.
+Use BAML with CocoIndex to build a pipeline that extracts structured patient information from PDF intake forms.  The BAML definitions describe the desired output schema and prompt logic, while CocoIndex orchestrates file input, transformation, and incremental indexing.
 
 :::info
 The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser or open source ones that is tailored for your domain for better results. For example, Document AI from Google Cloud and more.
@@ -27,7 +27,7 @@ The flow itself is fairly simple.
 
 ## Setup
 
-1. [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
+1. [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres) if you don't have one.
 2. Install dependencies
 
     ```
@@ -44,7 +44,7 @@ The flow itself is fairly simple.
 
 ## Structured Extraction Component with BAML
 
-Create a `baml_src/` directory for your BAML definitions. We’ll define a schema for patient intake data (nested classes) and a function that prompts Gemini to extract those fields from a PDF. Save this as `baml_src/patient.baml`
+Create a `baml_src/` directory for your BAML definitions. We'll define a schema for patient intake data (nested classes) and a function that prompts Gemini to extract those fields from a PDF. Save this as `baml_src/patient.baml`
 
 ### Define Patient Schema
 
@@ -141,7 +141,7 @@ function ExtractPatientInfo(intake_form: pdf) -> Patient {
 }
 ```
 
-We specify `client Gemini` and a prompt template. The special variable `{{ intake_form }}` injects the PDF, and `{{ ctx.output_format }}` tells BAML to expect the structured format defined by the return type. The prompt explicitly asks Gemini to extract all fields, filling “N/A” if missing.
+We specify `client Gemini` and a prompt template. The special variable `{{ intake_form }}` injects the PDF, and `{{ ctx.output_format }}` tells BAML to expect the structured format defined by the return type. The prompt explicitly asks Gemini to extract all fields, filling "N/A" if missing.
 
 :::tip Why `role("user")` Matters in BAML Extraction
 
@@ -155,7 +155,7 @@ For **OpenAI models**, if the PDF is not in the user role, the model doesn't see
 
 
 
-## Configure the LLM client to use Google’s Gemini model
+## Configure the LLM client to use Google's Gemini model
 
 ```python
 client<llm> Gemini {
@@ -274,7 +274,7 @@ Exports the index to Postgres as the `patients` table, with automatic updates an
 
 ## Running the Pipeline
 
-**Generate BAML client code** (required step, in case you didn’t do it earlier. )
+**Generate BAML client code** (required step, in case you didn't do it earlier. )
 
 ```sh
 baml generate
@@ -298,7 +298,7 @@ cocoindex server -ci main
 
 ## Composable by Default: Use the Best Components for Your Use Case
 
-CocoIndex offers a comprehensive toolkit for building robust LLM pipelines, but it's intentionally built as an open and interoperable system. You can seamlessly incorporate your own preferred components—such as custom document parsers or structured extraction tools like BAML—according to your domain requirements.
+Use custom document parsers or structured extraction tools such as BAML as components in a CocoIndex pipeline. Choose the parser and extractor for your documents and output schema.
 
 ## Connect to other sources
 

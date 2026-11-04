@@ -7,9 +7,9 @@ image: https://cocoindex.io/blobs/docs/img/examples/pdf_elements/cover.png
 ![Index PDF Elements](https://cocoindex.io/blobs/docs/img/examples/pdf_elements/cover.png)
 
 
-PDFs contain a wealth of textual and visual elements—from narrative passages to figures, charts, and images. In this guide, you'll learn how to set up a complete pipeline that extracts, embeds, and indexes both text and images from PDFs, ensuring every element is fully linked back with original page metadata.
+Extract, embed, and index text and images from PDFs. Store the source document and page metadata with each element so search results link back to the original page.
 
-In this example, we split out both text and images, link them back to page metadata, and enable unified semantic search. We’ll use **[CocoIndex](https://github.com/cocoindex-io/cocoindex)** to define the flow, **SentenceTransformers** for text embeddings, and **CLIP** for image embeddings — all stored in **Qdrant** for retrieval.
+In this example, we split out both text and images, link them back to page metadata, and enable unified semantic search. We'll use **[CocoIndex](https://github.com/cocoindex-io/cocoindex)** to define the flow, **SentenceTransformers** for text embeddings, and **CLIP** for image embeddings — all stored in **Qdrant** for retrieval.
 
 :::tip Incremental Indexing
 CocoIndex supports **incremental updates** out of box. You can add new PDFs or update existing ones without reprocessing the entire dataset. Only new or modified elements are embedded and indexed on each run.
@@ -18,7 +18,7 @@ CocoIndex supports **incremental updates** out of box. You can add new PDFs or u
 
 <!-- truncate -->
 
-## 🔍 What It Does
+## What It Does
 
 ![Flow Overview](https://cocoindex.io/blobs/docs/img/examples/pdf_elements/flow.png)
 
@@ -32,19 +32,19 @@ This flow automatically:
 - Saves all embeddings to Qdrant, along with metadata that traces each embedding back to its source text or image
 - Enables unified semantic search across all extracted text and image content
 
-## 📦 Prerequisite:
+## Prerequisite:
 
 ### Run Qdrant
 
-If you don’t have Qdrant running locally, start it via Docker:
+If you don't have Qdrant running locally, start it via Docker:
 
 ```sh
 docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
-### 📁 Input Data
+### Input Data
 
-We’ll use a few sample PDFs (board game manuals). Download them into the `source_files` directory:
+We'll use a few sample PDFs (board game manuals). Download them into the `source_files` directory:
 
 ```sh
 ./pdf_elements/fetch_manual_urls.sh
@@ -53,7 +53,7 @@ We’ll use a few sample PDFs (board game manuals). Download them into the `sour
 Or, feel free to drop in any of your own PDFs.
 
 
-## ⚙️ Run the Flow
+## Run the Flow
 
 Install dependencies:
 
@@ -79,7 +79,7 @@ cocoindex server -ci main
 
 
 
-Let’s break down what happens inside the **`PdfElementsEmbedding`** flow
+Let's break down what happens inside the **`PdfElementsEmbedding`** flow
 
 ```python
 @cocoindex.flow_def(name="PdfElementsEmbedding")
@@ -163,7 +163,7 @@ def extract_pdf_elements(content: bytes) -> list[PdfPage]:
 
 The `extract_pdf_elements` function reads a PDF file from bytes and extracts both text and images from each page in a structured way.
 
-- It parses every page to retrieve text content and any embedded images, skipping empty or very small images to avoid noise.
+- It parses every page to retrieve text content and any embedded images, skipping empty or small images to avoid noise.
 
 - Each image is resized to a consistent thumbnail size (up to 512×512) and converted into bytes for downstream use.
 
@@ -241,7 +241,7 @@ with page["images"].row() as image:
 
 When we collect image outputs, we also want to preserve relevant metadata alongside the embeddings.
 
-For each image, we store not only its embedding and raw image data, but also important metadata like the source file name and page number. This metadata ensures you can always identify which document and page an embedded image came from when retrieving or analyzing results.
+For each image, store its embedding, raw image data, source filename, and page number. The metadata identifies the document and page when you retrieve a result.
 
 
 
@@ -268,7 +268,7 @@ image_output.export(
 )
 ```
 
-## 🧭 Explore with CocoInsight (Free Beta)
+## Explore with CocoInsight (Free Beta)
 
 Use **CocoInsight** to visually trace your data lineage and debug the flow.
 
@@ -282,14 +282,14 @@ cocoindex server -ci main
 
 Then open the UI 👉 `https://cocoindex.io/cocoinsight`
 
-## 💡 Why This Matters
+## Why This Matters
 
-Traditional document search only scratches the surface — it’s text-only and often brittle across document layouts.
+Traditional document search only scratches the surface — it's text-only and often brittle across document layouts.
 This flow gives you **multimodal recall**, meaning you can:
 
 - Search PDFs by text *or* image similarity
 - Retrieve related figures, diagrams, or captions
-- Build next-generation retrieval systems across rich content formats
+- Retrieve text and images from the same PDF collection
 
 ## Compare with ColPali Vision Model (OCR Free)
 We also have an [example for ColPali](https://cocoindex.io/examples/image_search)
