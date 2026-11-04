@@ -178,9 +178,9 @@ class ToolRegistry:
         """Run one call.
 
         Argument validation failures and ``ToolError`` are the model's and
-        become ``ok=False`` results. Any other exception is an infrastructure
-        failure and propagates, failing the session component so nothing of it
-        is committed.
+        become ``ok=False`` results. Any other exception is an environment
+        failure (DESIGN.md §7): it propagates to the session loop, which
+        reports it as a result in an open session and fails a closed one.
         """
         t = self._tools.get(call.tool)
         if t is None:

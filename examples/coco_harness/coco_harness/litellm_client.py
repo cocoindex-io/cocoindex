@@ -15,6 +15,7 @@ Rendering rules that matter for incrementality (DESIGN.md §4):
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any
 
 from .handles import is_handle
@@ -25,6 +26,9 @@ from .transcript import ModelOutput, ToolCall, Transcript, canonical_json
 Message = dict[str, Any]
 
 _ELIDE_CHARS = 160
+# Bound for one model turn including its transient retries; the run's own
+# deadline, when shorter, wins.
+_LLM_TIMEOUT = timedelta(minutes=10)
 
 
 def render_task(spec: SessionSpec) -> str:
@@ -167,12 +171,22 @@ class LiteLLMClient:
     ) -> ModelOutput:
         import litellm  # heavy optional dependency; imported where used
 
-        response = await litellm.acompletion(
-            model=spec.role.model,
-            messages=render_messages(spec, prefix, hints),
-            tools=tools_as_openai(tools),
-            tool_choice="auto",
-            temperature=0,
+        # The engine's LiteLLM retry: transient provider errors (429, 5xx,
+        # transport resets) are retried with backoff inside a deadline that
+        # min-nests with the run's; the model turn never sees them. Private
+        # today; promote it when the harness leaves examples/.
+        from cocoindex.ops.litellm import _retry_litellm_call
+
+        response = await _retry_litellm_call(
+            lambda: litellm.acompletion(
+                model=spec.role.model,
+                messages=render_messages(spec, prefix, hints),
+                tools=tools_as_openai(tools),
+                tool_choice="auto",
+                temperature=0,
+            ),
+            "coco_harness.llm_step",
+            _LLM_TIMEOUT,
         )
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None) or []

@@ -3,13 +3,14 @@
 Also the rules around it: a target passed to workers through `inputs` and found
 by the worker through its input cards; a source refused as a closed-session
 input; a role with open tools refused for closed workers; a tool description
-edit invalidating closed workers; two calls naming one handle in a single turn.
+edit invalidating closed workers; two calls naming one handle in a single turn;
+a failed worker reported to the parent and healing on the next run.
 """
 
 from __future__ import annotations
 
 import pathlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import cocoindex as coco
 
@@ -27,6 +28,7 @@ from coco_harness.spec import SessionSpec
 from coco_harness.testing import ScriptedModel
 from coco_harness.tools import agents, sources, targets
 from coco_harness.transcript import ModelOutput, ToolCall, Transcript
+from helpers import explode_tool
 
 ORCHESTRATOR = RoleSpec(
     "orchestrator",
@@ -34,6 +36,7 @@ ORCHESTRATOR = RoleSpec(
     ("open_source", "open_target", "for_each", "declare", "call_agent"),
 )
 WORKER = RoleSpec("worker", "test", ("read_input", "declare"))
+FRAGILE = RoleSpec("fragile", "test", ("read_input", "explode"))
 OPEN_WORKER = RoleSpec("open_worker", "test", ("read_input", "open_source"))
 HELPER = RoleSpec("helper", "test", ())
 
@@ -121,6 +124,17 @@ class Scenario:
                     )
                 )
             return ModelOutput(answer=str(prefix.steps[1].results[0].value))
+        if spec.role.name == "fragile":
+            # read, then poke the explode tool with the item's key, then answer
+            if n == 0:
+                return ModelOutput(calls=(call("read_input"),))
+            if n == 1:
+                return ModelOutput(
+                    calls=(
+                        call("explode", key=prefix.steps[0].results[0].value["key"]),
+                    )
+                )
+            return ModelOutput(answer="sum:" + prefix.steps[0].results[0].value["text"])
         # worker: read, then (if a target was supplied) declare, then answer
         if n == 0:
             return ModelOutput(calls=(call("read_input"),))
@@ -147,6 +161,7 @@ class Fixture:
     app: coco.App[..., SessionResult]
     scenario: Scenario
     config: HarnessConfig
+    errors: dict[str, Exception] = field(default_factory=dict)
 
     def run(self) -> SessionResult:
         self.model.reset()
@@ -162,8 +177,9 @@ def setup(coco_env: coco.Environment, tmp_path: pathlib.Path, **kw: object) -> F
         (docs / f"{i}.md").write_text(f"doc {i}")
     scenario = Scenario(docs, tmp_path / "out", worker_inputs=[], **kw)  # type: ignore[arg-type]
     model = ScriptedModel(scenario.script)
+    errors: dict[str, Exception] = {}
     config = HarnessConfig(
-        roles={r.name: r for r in (ORCHESTRATOR, WORKER, OPEN_WORKER, HELPER)},
+        roles={r.name: r for r in (ORCHESTRATOR, WORKER, FRAGILE, OPEN_WORKER, HELPER)},
         tools=ToolRegistry(
             [
                 sources.open_source,
@@ -172,6 +188,7 @@ def setup(coco_env: coco.Environment, tmp_path: pathlib.Path, **kw: object) -> F
                 targets.declare,
                 agents.for_each,
                 agents.call_agent,
+                explode_tool(errors),
             ]
         ),
     )
@@ -182,7 +199,7 @@ def setup(coco_env: coco.Environment, tmp_path: pathlib.Path, **kw: object) -> F
         run_open_session,
         config.spec("orchestrator", "summarize the docs"),
     )
-    return Fixture(model, app, scenario, config)
+    return Fixture(model, app, scenario, config, errors)
 
 
 def test_edit_one_file_reruns_one_workers_content_turn_only(
@@ -192,7 +209,7 @@ def test_edit_one_file_reruns_one_workers_content_turn_only(
     docs = f.scenario.docs
 
     first = f.run()
-    assert first.num_steps == 3 and "coll:notes" in str(first.answer)
+    assert first.num_steps == 3 and "coll:notes" in first.answer
     assert f.model.calls_for("orchestrator") == 3
     assert f.model.calls_for("worker") == 10  # 5 workers × (read_input, finish)
 
@@ -239,6 +256,7 @@ def test_a_tool_description_edit_invalidates_closed_workers(
             targets.open_target,
             targets.declare,
             agents.for_each,
+            explode_tool(f.errors),
         ]
     )
     f.run()
@@ -255,7 +273,7 @@ def test_workers_write_to_the_parents_target_named_by_their_input_cards(
     f.scenario.worker_inputs = ["tgt:out"]
 
     result = f.run()
-    assert "coll:notes" in str(result.answer)
+    assert "coll:notes" in result.answer
     assert f.model.calls_for("worker") == 15  # read_input, declare, finish
     written = sorted(p.name for p in f.scenario.out.iterdir())
     assert written == [f"{i}.md.txt" for i in range(5)]
@@ -292,12 +310,41 @@ def test_for_each_without_collect_mounts_workers_in_the_background(
     assert not (f.scenario.out / "3.md.txt").exists()
 
 
+def test_a_failed_worker_is_reported_to_the_parent_and_heals_next_run(
+    coco_env: coco.Environment, tmp_path: pathlib.Path
+) -> None:
+    """A closed worker that hits an environment error commits nothing; the parent sees it as data."""
+    f = setup(coco_env, tmp_path, worker_role="fragile")
+    f.errors["2.md"] = RuntimeError("disk on fire")
+
+    first = f.run()
+    assert "'failed': 1" in first.answer and "'items': '4–8'" in first.answer
+    # Four workers finished (3 turns each); the failing one ran read_input and
+    # explode, then died before its answer turn.
+    assert f.model.calls_for("fragile") == 4 * 3 + 2
+    assert f.model.calls_for("orchestrator") == 3
+
+    # Nothing changed: the failed worker runs again (its two turns hit), fails
+    # again, and the orchestrator replays — zero inference.
+    f.run()
+    assert f.model.calls == 0
+
+    # The cause is fixed: the worker's explode turn hits, the tool succeeds, only
+    # its answer turn needs the model; the collection changes, so the orchestrator
+    # re-decides its final turn.
+    f.errors.clear()
+    healed = f.run()
+    assert "'failed': 0" in healed.answer
+    assert f.model.calls_for("fragile") == 1
+    assert f.model.calls_for("orchestrator") == 1
+
+
 def test_a_source_cannot_be_an_input_of_closed_workers(
     coco_env: coco.Environment, tmp_path: pathlib.Path
 ) -> None:
     f = setup(coco_env, tmp_path, source_as_input=True)
     result = f.run()
-    assert "cannot be an input of a closed session" in str(result.answer)
+    assert "cannot be an input of a closed session" in result.answer
     assert f.model.calls_for("worker") == 0
 
 
@@ -306,9 +353,7 @@ def test_a_role_with_open_tools_cannot_run_closed_workers(
 ) -> None:
     f = setup(coco_env, tmp_path, worker_role="open_worker")
     result = f.run()
-    assert "open_source" in str(result.answer) and "closed session" in str(
-        result.answer
-    )
+    assert "open_source" in result.answer and "closed session" in result.answer
     assert f.model.calls_for("open_worker") == 0
 
 

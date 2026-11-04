@@ -9,7 +9,8 @@ subagents, reducers and model turns run again.
 
 **Status: frozen 2026-11-04.** The design is agreed. It was reviewed
 externally in three rounds and swept once by a fresh reader; the findings are
-folded into the owning sections, and the history is in git. Further findings
+folded into the owning sections, and the history is in git. The failure
+contract (§7) was amended the same day after the code design review. Further findings
 go to implementation and tests. §8 is the delta index between this design and
 the code. The harness lives under `examples/` for now and is expected to
 become its own repository, so it is more elaborate than the other examples.
@@ -151,10 +152,10 @@ harness API: JSON calls are canonical, comparable and pickable (§4).
 | `open_target(kind, name, path)` | a directory of files in v1 | `mount_target` | card | no |
 | `call_agent(key, task, role?, inputs?)` | run an open subagent and wait | `use_mount` at `child/<key>` | `{result: res:key, chars}` | no |
 | `start_agent(key, task, role?, inputs?)` | run in the background; effects only through targets in `inputs` | `mount` at `child/<key>` | `{job: job:key}` | no |
-| `for_each(source, key, task, role?, inputs?, collect?)` | one closed worker per item | `use_mount` per item under `map`; `mount_each` when `collect=false` | `coll:` card (widened count); `{mounted}` when `collect=false` | no |
-| `reduce(collection, key, task, threshold_tokens?)` | hierarchical combine (§6) | `use_mount` per reducer call | `{result: res:key, chars}` | no |
+| `for_each(source, key, task, role?, inputs?, collect?)` | one closed worker per item | `use_mount` per item under `map`; `mount_each` when `collect=false` | `coll:` card (widened count, `failed` count); `{mounted}` when `collect=false` | no |
+| `reduce(collection, key, task, role?, threshold_tokens?)` | hierarchical combine (§6) over the successes | `use_mount` per reducer call | `{result: res:key, chars, omitted}` | no |
 | `declare(target, key, value)` | declare a target state; `value` is text or a `res:` handle | `declare_file`, owned by the calling session's component | acknowledgement | yes |
-| `observe(key, question, inputs?)` | an open planner that may use volatile methods | `use_mount` at `child/<key>` | `{plan}` | no |
+| `observe(key, question, role?, inputs?)` | an open planner that may use volatile methods | `use_mount` at `child/<key>` | `{plan}` | no |
 | `call(handle, method, args)` | call an object method | — | the method's result | yes |
 | `read_input()` | a closed session's input: `{key, text}` for a file, the member list for a reduce | — | the content | yes |
 | `replay(from_step, steps?)` | harness meta tool, §4 | — | never stored | — |
@@ -189,13 +190,14 @@ snapshot of the handle table taken before the turn:
 - two siblings mounting under the same key both fail before anything runs;
 - results keep call order; a call that depends on another belongs in the next
   turn;
-- every call is drained before an infrastructure failure propagates.
+- every call is drained before a failure propagates (§7).
 
 **Arguments are validated at the boundary.** Shape (an object), required and
 unknown names, declared primitive types and enums are checked before a handler
 runs; a failure is the model's (`ok=False`). Arguments that are not an object
 are reported the same way; §4 says how they are stored. Inside a handler, only
-`ToolError` is the model's; any other exception is infrastructure (§7).
+`ToolError` is the model's; a `TransientError` is retried below the model; any
+other exception is an environment failure (§7).
 
 **Inputs and closed children.** `inputs` lists the parent's handles the child
 may use. The child's table is seeded with them under the same names, and the
@@ -231,7 +233,7 @@ another kind of handle, is an error; it is never written as literal text.
 `test_agents.py::test_result_handles_cross_the_mount_and_resolve_or_fail_in_declare`,
 `::test_duplicate_child_keys_are_tool_errors_not_engine_errors`,
 `::test_background_agents_act_through_inputs_and_planners_return_plans`;
-`test_replay.py::test_argument_validation_is_the_models_error_and_internal_lookups_are_not`,
+`test_replay.py::test_argument_validation_is_the_models_error_and_internal_errors_are_reported`,
 `::test_non_object_arguments_are_the_models_error_and_survive_the_run`.
 
 ## 4. Replay policy: "dump once"
@@ -353,7 +355,7 @@ answer is honoured as the model's own answer.
 `replay` is the only call allowed in its turn. An unresolvable pick (bad step
 number, no dump, arguments that are not an object or not integers) is shown
 back to the model once as a note. A second unresolvable pick in the same turn
-fails the session as an infrastructure failure (§7). Meta calls therefore
+fails the session; it is never contained (§7). Meta calls therefore
 never reach the transcript.
 
 ### Why picks matter beyond convenience
@@ -579,8 +581,18 @@ not given as inputs — which is exactly why a closed session may only have
 
 ### Failures
 
-Two classes, decided at the tool boundary:
+Three classes, decided at the tool boundary. (Amended 2026-11-04 after the
+code design review: environment errors are retried or reported instead of
+failing the run.)
 
+- **Transient**: a connector hiccup, a rate limit, a transport reset. Retried
+  below the model with exponential backoff (`errors.retrying`: five attempts,
+  one second to thirty), inside the deadline in scope; model calls use the
+  engine's LiteLLM retry, which has the same shape. The model never sees a
+  transient failure: a call that failed twice and then succeeded is
+  indistinguishable from a success, which is what keeps transcripts clean.
+  Code raises `TransientError` only before any side effect. Exhaustion is an
+  environment failure.
 - **Model-facing**: argument validation failures (§3) and `ToolError` raised
   by a handler — unknown handle, bad reference, invalid inputs, a reused key.
   Becomes an `ok=False` result the model reads next turn. The session may still
@@ -588,16 +600,34 @@ Two classes, decided at the tool boundary:
   undeclared, which the engine then treats as removed. That is the declarative
   contract, and it is the model's responsibility; the harness does not
   second-guess a finish.
-- **Infrastructure**: any other exception — I/O, connector or engine errors, a
-  handler's own bug such as an internal `KeyError`, a second unresolvable
-  replay pick in one turn (§4). It propagates, so the session component fails.
-  The other calls of the turn are drained first. Nothing of that session is
-  committed — no transcript, no memo for the session, no target changes — and
-  the next run retries it. Turns already completed keep their own entries;
-  children already committed keep theirs.
+- **Environment**: any other exception — I/O, connector or engine errors, a
+  handler's own bug. Where it is presented follows where it is memoized:
+  - In an **open** session it becomes an `ok=False` result naming the error
+    class, and is logged with the session. The model adapts. This is safe
+    because an open session runs its tools again next run: when the cause is
+    fixed the result changes, that is a divergence, and the model is consulted
+    again — fixing the environment behaves exactly like changing the data.
+  - In a **closed** session it fails the component: a memoized transcript must
+    not carry a fact about the environment. Nothing of that session is
+    committed; its completed turns keep their memos; it runs again next run.
+    The parent model sees the failure as data: `call_agent` and `observe` fail
+    as a tool error naming the child; a `for_each` collection reports
+    `failed: n` and lists the items on request; `reduce` works on the
+    successes and names how many were left out, or fails as a tool error when
+    a group fails.
+  - When several calls of one turn fail, all are drained first; the failures
+    that propagate are raised together as an `ExceptionGroup`.
 
-*Acceptance:* `test_replay.py::test_model_facing_errors_are_results_and_infrastructure_errors_fail_the_run`,
-`::test_argument_validation_is_the_models_error_and_internal_lookups_are_not`.
+Deadline expiry (`DeadlineExceededError`), cancellation, and a second
+unresolvable replay pick in one turn (§4) are never contained: they fail the
+session and the run, and completed turns keep their memos.
+
+*Acceptance:* `test_errors.py`;
+`test_replay.py::test_environment_errors_are_results_in_open_sessions_and_heal_next_run`,
+`::test_argument_validation_is_the_models_error_and_internal_errors_are_reported`,
+`::test_cached_decision_from_a_failed_run_wins_over_a_requested_replay`
+(deadline expiry fails the run and keeps completed turns);
+`test_for_each.py::test_a_failed_worker_is_reported_to_the_parent_and_heals_next_run`.
 
 ### Why one `use_mount` per turn
 
@@ -656,7 +686,8 @@ would let the harness drop the closed/open split.
 | `call_agent` result handles; `declare` with resolving / missing / wrong-kind references; `call(res:…)` | `test_agents.py::test_result_handles_cross_the_mount_and_resolve_or_fail_in_declare` |
 | Duplicate child keys within and across turns; a rejected call keeps its key free | `test_agents.py::test_duplicate_child_keys_are_tool_errors_not_engine_errors` |
 | `start_agent` acting through an input target; `observe` returning a plan | `test_agents.py::test_background_agents_act_through_inputs_and_planners_return_plans` |
-| Failure classes; completed turns survive a later failure | `test_replay.py` (§7 *Acceptance*) |
+| Failure classes: transient retry, containment in open sessions, a failed closed child reported to its parent and healing next run, completed turns kept | `test_errors.py`, `test_replay.py`, `test_for_each.py` (§7 *Acceptance*) |
+| `reduce` tool: group slots, oversize-output retry at attempt slot 1, per-group reuse across runs | `test_reduce_tool.py::test_reduce_tool_groups_retries_oversize_outputs_and_reuses_groups` |
 | Non-object arguments: canonical form, model-facing error, next run loads the transcript | `test_replay.py::test_non_object_arguments_are_the_models_error_and_survive_the_run` |
 | Distinct child keys across tools never share an engine path | `test_for_each.py::test_distinct_child_keys_never_alias_one_engine_path` |
 | Message rendering: task + input manifest, dump with literal marks, diffs, notes, canonical invalid calls; provider response parsing, malformed arguments kept as the model's error | `test_rendering.py` |
@@ -667,7 +698,6 @@ would let the harness drop the closed/open split.
 
 | Item | Owning section |
 |---|---|
-| `reduce` tool glue: group slots, attempt retry, `run_reduce_session` | §6 |
 | LiteLLM client: the API call itself (rendering and response parsing are covered) | §4 |
 
 **Target** (contract settled where stated, not implemented):
@@ -689,7 +719,7 @@ coco_harness/
                    RoleSpec, SessionSpec, SessionResult, ToolSpec, Tool, tool, ToolRegistry,
                    ToolError, run_open_session. Everything else is implementation.
   spec.py          RoleSpec, SessionSpec, InputCard, SessionResult, ToolSpec, Item
-  errors.py        ToolError
+  errors.py        ToolError, TransientError, retrying
   transcript.py    ToolCall, ModelOutput, ToolResult, Step, Transcript; canonical JSON;
                    canonical_output ($invalid arguments)
   hints.py         RunHints (Dump, Diff, Note, Replay, TurnScratch); the replay tool spec
@@ -703,7 +733,7 @@ coco_harness/
                    sources, targets, agents, reduce, stats
   roles.py         default roles and the protocol text
   litellm_client.py  renders a transcript to messages and calls LiteLLM (API call untested)
-  testing.py       ScriptedModel and probe_tool
+  testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
   app.py           default config; build a coco.App from a flow prompt; CLI
 tests/             see the Acceptance lines in §3–§7 and the table in §8
 ```
@@ -730,7 +760,9 @@ Pointers only; the substance is in the owning section.
   locality; roadmap — §6
 - Reuse model: one memo per path, same inputs; the spec carries tool specs,
   manifest and version; handler logic tracked, helpers via version — §7
-- Failure classes decided at the tool boundary; drain before propagating — §7
+- Three failure classes: transient retried below the model, model-facing as
+  results, environment contained at open sessions and reported upward from
+  closed ones — §7
 - One `use_mount` per turn — §7
 - Engine work: `DataDep` / `use_data_dep` + `cannot_skip` to be built; probe
   deferred — §7

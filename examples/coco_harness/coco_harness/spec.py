@@ -42,6 +42,7 @@ class RoleSpec:
     tool_names: tuple[str, ...]
     model: str = "default"
     max_turns: int = 50
+    volatile_ok: bool = False  # may call volatile handle methods (planners)
 
 
 @dataclass(frozen=True)

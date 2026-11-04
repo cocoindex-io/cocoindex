@@ -66,6 +66,7 @@ PLANNER = RoleSpec(
     "unless the diff makes it wrong.",
     tool_names=("call",),
     max_turns=20,
+    volatile_ok=True,
 )
 
 REDUCER = RoleSpec(

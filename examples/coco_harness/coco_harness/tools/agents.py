@@ -7,6 +7,11 @@ cannot alias; renaming a key recomputes that subtree and cleans up the old
 one. A key reused within a session is a tool error, never an engine error.
 ``inputs`` names the parent's handles a child may see; the child's spec lists
 them as cards so its model knows their names.
+
+A child that fails committed nothing and runs again next run; its failure is
+reported to the parent model as data (DESIGN.md §7): ``call_agent`` and
+``reduce`` fail as tool errors naming the child, ``for_each`` records failed
+items in the collection.
 """
 
 from __future__ import annotations
@@ -18,8 +23,13 @@ import cocoindex as coco
 
 from ..errors import ToolError
 from ..handles import HandleObject, MethodSpec, ResultValue, Volatility, input_card
-from ..session import run_closed_session, run_open_session, run_reduce_session
-from ..spec import InputCard, Item, Json, SessionResult, SessionSpec
+from ..session import (
+    is_environment_error,
+    run_closed_session,
+    run_open_session,
+    run_reduce_session,
+)
+from ..spec import InputCard, Item, Json, SessionSpec
 from . import SessionContext, tool
 from .reduce import Group, GroupItem, ReduceError, hierarchical_reduce, leaf_item
 from .sources import LocalDirSource
@@ -35,31 +45,48 @@ _INPUTS_SCHEMA: dict[str, Json] = {"type": "array", "items": {"type": "string"}}
 class Collection:
     """A ``coll:`` handle: the outputs of a ``for_each(collect=True)``.
 
-    Lives only for the run. The card shows a widened count, never the contents;
-    ``reduce`` consumes it. Not an input for closed sessions.
+    Lives only for the run. The card shows a widened count and how many items
+    failed, never the contents; ``reduce`` consumes the successes. Not an input
+    for closed sessions.
     """
 
     kind = "collection"
     closed_input_ok = False
 
-    def __init__(self, entries: list[tuple[str, str]]) -> None:
+    def __init__(self, entries: list[tuple[str, str]], failed: dict[str, str]) -> None:
         self.entries = sorted(entries)
+        self.failed = dict(sorted(failed.items()))
 
     def methods(self) -> tuple[MethodSpec, ...]:
         return (
-            MethodSpec("stats", "Widened item count.", Volatility.STABLE),
+            MethodSpec(
+                "stats",
+                "Widened item count and the number of failed items.",
+                Volatility.STABLE,
+            ),
             MethodSpec("get", "One item's output by key.", Volatility.PER_ITEM),
+            MethodSpec(
+                "failed", "The failed items and their errors.", Volatility.STABLE
+            ),
         )
 
     async def call(self, method: str, args: dict[str, Json]) -> Json:
         if method == "stats":
-            return {"items": format_range(widen_count(len(self.entries)))}
+            return self.card_fields()
         if method == "get":
             for key, value in self.entries:
                 if key == args.get("key"):
                     return value
             raise ToolError(f"no item {args.get('key')!r}")
+        if method == "failed":
+            return self.failed
         raise ToolError(f"unknown method {method!r} on a collection")
+
+    def card_fields(self) -> dict[str, Json]:
+        return {
+            "items": format_range(widen_count(len(self.entries))),
+            "failed": len(self.failed),
+        }
 
 
 def _child_inputs(
@@ -93,10 +120,15 @@ def _closed_spec(
     return ctx.config.spec(role_name, task, inputs=cards)
 
 
-def _result(ctx: SessionContext, name: str, text: str) -> Json:
+def _result(ctx: SessionContext, name: str, text: str, **fields: Json) -> Json:
     """Every result gets a res: handle; the transcript sees the handle and a size, not the text."""
     handle = ctx.handles.register("res", name, ResultValue(text))
-    return {"result": handle, "chars": format_range(widen_count(len(text)))}
+    return {"result": handle, "chars": format_range(widen_count(len(text))), **fields}
+
+
+def _child_failed(key: str, exc: BaseException) -> ToolError:
+    """A child's environment failure, as the parent model sees it. The child runs again next run."""
+    return ToolError(f"child {key!r} failed: {type(exc).__name__}: {exc}")
 
 
 @tool(
@@ -120,9 +152,14 @@ async def call_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
     handles, cards = _child_inputs(ctx, args, closed=False)
     child = ctx.config.spec(args.get("role", "worker"), args["task"], inputs=cards)
     ctx.claim_slot(key)  # after validation: a rejected call does not consume its key
-    result = await coco.use_mount(
-        coco.component_subpath("child", key), run_open_session, child, handles
-    )
+    try:
+        result = await coco.use_mount(
+            coco.component_subpath("child", key), run_open_session, child, handles
+        )
+    except Exception as exc:
+        if not is_environment_error(exc):
+            raise
+        raise _child_failed(key, exc) from exc
     return _result(ctx, key, result.answer)
 
 
@@ -162,6 +199,7 @@ async def start_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
         "properties": {
             "key": {"type": "string"},
             "question": {"type": "string"},
+            "role": {"type": "string"},
             "inputs": _INPUTS_SCHEMA,
         },
         "required": ["key", "question"],
@@ -171,11 +209,16 @@ async def start_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
 async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key: str = args["key"]
     handles, cards = _child_inputs(ctx, args, closed=False)
-    child = ctx.config.spec("planner", args["question"], inputs=cards)
+    child = ctx.config.spec(args.get("role", "planner"), args["question"], inputs=cards)
     ctx.claim_slot(key)
-    result = await coco.use_mount(
-        coco.component_subpath("child", key), run_open_session, child, handles
-    )
+    try:
+        result = await coco.use_mount(
+            coco.component_subpath("child", key), run_open_session, child, handles
+        )
+    except Exception as exc:
+        if not is_environment_error(exc):
+            raise
+        raise _child_failed(key, exc) from exc
     return {"plan": result.answer}
 
 
@@ -183,7 +226,8 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
     "for_each",
     "Run one closed worker per item of a source. `key` names the fan-out stably; `inputs` "
     "lists target/result handles the workers may use. With collect=true the answers are "
-    "gathered into a coll: handle (you see a count, not the contents).",
+    "gathered into a coll: handle (you see a count and how many items failed, not the "
+    "contents).",
     {
         "type": "object",
         "properties": {
@@ -221,33 +265,45 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
         )
         return {"mounted": key}
 
-    async def one(kv: tuple[str, Item]) -> tuple[str, SessionResult]:
+    failed: dict[str, str] = {}
+
+    async def one(kv: tuple[str, Item]) -> tuple[str, str | None]:
         item_key, item = kv
-        result = await coco.use_mount(
-            coco.component_subpath("child", key, item_key),
-            run_closed_session,
-            item,
-            child,
-            handles,
-        )
-        return item_key, result
+        try:
+            result = await coco.use_mount(
+                coco.component_subpath("child", key, item_key),
+                run_closed_session,
+                item,
+                child,
+                handles,
+            )
+        except Exception as exc:
+            if not is_environment_error(exc):
+                raise
+            # The worker committed nothing and runs again next run; the parent
+            # model sees the failure in the collection, not as a crash.
+            failed[item_key] = f"{type(exc).__name__}: {exc}"
+            return item_key, None
+        return item_key, result.answer
 
     results = await coco.map(one, items())
-    coll = Collection([(k, r.answer) for k, r in results])
+    coll = Collection([(k, a) for k, a in results if a is not None], failed)
     handle = ctx.handles.register("coll", key, coll)
-    return ctx.handles.card(handle, items=format_range(widen_count(len(coll.entries))))
+    return ctx.handles.card(handle, **coll.card_fields())
 
 
 @tool(
     "reduce",
-    "Combine every item of a coll: handle into one answer with `task`, hierarchically. "
-    "Returns a res: handle to the answer.",
+    "Combine every successful item of a coll: handle into one answer with `task`, "
+    "hierarchically. Returns a res: handle to the answer and how many failed items were "
+    "left out.",
     {
         "type": "object",
         "properties": {
             "collection": {"type": "string"},
             "key": {"type": "string"},
             "task": {"type": "string"},
+            "role": {"type": "string"},
             "threshold_tokens": {"type": "integer"},
         },
         "required": ["collection", "key", "task"],
@@ -259,7 +315,7 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
     coll = ctx.handles.get(args["collection"])
     if not isinstance(coll, Collection):
         raise ToolError("reduce needs a coll: handle")
-    child = _closed_spec(ctx, "reducer", args["task"], ())
+    child = _closed_spec(ctx, args.get("role", "reducer"), args["task"], ())
     threshold: int = args.get("threshold_tokens", _DEFAULT_REDUCE_THRESHOLD_TOKENS)
     if threshold < 2:
         raise ToolError("threshold_tokens must be at least 2")
@@ -300,7 +356,11 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
         )
     except ReduceError as exc:
         raise ToolError(f"reduce {key!r} failed: {exc}") from exc
-    return _result(ctx, key, answer)
+    except Exception as exc:
+        if not is_environment_error(exc):
+            raise
+        raise _child_failed(key, exc) from exc
+    return _result(ctx, key, answer, omitted=len(coll.failed))
 
 
 def _estimate_tokens(text: str) -> int:

@@ -139,16 +139,15 @@ async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
 async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
     obj = ctx.handles.get(args["handle"])
     method: str = args["method"]
-    allowed_volatile = ctx.spec.role.name == "planner"
     for m in obj.methods():
         if (
             m.name == method
             and m.volatility is Volatility.VOLATILE
-            and not allowed_volatile
+            and not ctx.spec.role.volatile_ok
         ):
             raise ToolError(
-                f"{method!r} is volatile and only available inside observe(); "
-                "use stats/sample, or ask a planner"
+                f"{method!r} is volatile and only available to planner roles; "
+                "use stats/sample, or ask a planner with observe()"
             )
     return await obj.call(method, dict(args.get("args", {})))
 
