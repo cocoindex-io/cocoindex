@@ -8,9 +8,9 @@ tags: [vector-index, pdf]
 
 ![Semantic Search over PDFs with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/cover.png)
 
-We'll take a folder of PDFs — papers, RFCs, manuals, contracts — and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English. The trick PDFs add over plain text: they have to be *parsed* first. We use [docling](https://github.com/docling-project/docling) to convert each PDF to clean Markdown, then chunk, embed, and store the vectors in Postgres.
+We'll take a folder of PDFs (papers, RFCs, manuals, contracts) and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English. The trick PDFs add over plain text: they have to be *parsed* first. We use [docling](https://github.com/docling-project/docling) to convert each PDF to clean Markdown, then chunk, embed, and store the vectors in Postgres.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-parsed and re-embedded. The one genuinely expensive step (PDF parsing) runs on a [GPU runner](/docs/programming_guide/function/) so it doesn't block the event loop.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only changed PDFs get re-parsed and re-embedded. The one genuinely expensive step (PDF parsing) runs on a [GPU runner](/docs/programming_guide/function/) so it doesn't block the event loop.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding)
 
@@ -45,7 +45,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-`PdfEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, character offsets, text, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+`PdfEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, character offsets, text, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

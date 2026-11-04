@@ -10,7 +10,7 @@ tags: [vector-index, semantic-search]
 
 We'll take a folder of Markdown files and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English — the foundation under every RAG and semantic-search system. Point it at your docs, and "how does incremental processing work?" finds the right passage even when it shares no keywords with the text.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only what changed gets re-embedded and re-upserted.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only what changed gets re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding)
 
@@ -46,7 +46,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up two things the rest of the code builds on. `DocEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, location, text, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up two things the rest of the code builds on. `DocEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, location, text, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python
 import os

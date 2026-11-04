@@ -8,7 +8,7 @@ tags: [vector-index, qdrant]
 
 ![Semantic Search with Qdrant on CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-qdrant/cover.png)
 
-This is the [Semantic Search 101](/docs/examples/text-embedding/) example with one thing swapped: instead of Postgres + pgvector, the vectors land in a [Qdrant](https://qdrant.tech/) collection. Everything else — walk Markdown, chunk, embed locally with `all-MiniLM-L6-v2` — is identical, so this post stays short and spends its words on the connector, the collection setup, and how to run it.
+Use a [Qdrant](https://qdrant.tech/) collection as the target for [Semantic Search 101](/docs/examples/text-embedding/). The pipeline still reads Markdown, chunks it, and embeds locally with `all-MiniLM-L6-v2`. Configure the Qdrant connector and collection to store the vectors.
 
 If you want the full chunk-and-embed walkthrough, read the [base example](/docs/examples/text-embedding/) first; the only difference here is the target.
 

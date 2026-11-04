@@ -2,7 +2,7 @@
 title: "*Neo4j* connector"
 toc_max_heading_level: 4
 description: >
-  Write to Neo4j — a property graph database — with support for node tables,
+  Write to Neo4j (a property graph database) with support for node tables,
   relationship tables (edges), per-database multitenancy, atomic-batch writes
   via Bolt transactions, real CREATE CONSTRAINT uniqueness, and vector
   indexes with cosine / euclidean similarity.
@@ -80,7 +80,7 @@ Different `ContextKey`s with different database names produce fully separate tar
 
 The `neo4j` connector provides target state APIs for writing nodes to node tables and edges to relationship tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
 
-Each apply batch is wrapped in a single Neo4j transaction (`tx.commit()` on success, rollback on exception), so partial writes never leak into the database. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch that fails with a transient error — typically a deadlock between concurrent batches merging edges onto the same nodes — is rolled back and retried with backoff before the failure is reported.
+Each apply batch is wrapped in a single Neo4j transaction (`tx.commit()` on success, rollback on exception), so partial writes never leak into the database. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch that fails with a transient error (typically a deadlock between concurrent batches merging edges onto the same nodes) is rolled back and retried with backoff before the failure is reported.
 
 :::note
 The node and relationship APIs below replace the table and relation APIs (`mount_table_target`, `mount_relation_target`, …), which are deprecated. To move an existing table over, see [Deprecated: table and relation APIs](#deprecated-table-and-relation-apis).
@@ -336,7 +336,7 @@ A system-managed table owns its label or relationship type, the way a Postgres t
 
 The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Its vector indexes are dropped and created again. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
 
-When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the schema — and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
+When `managed_by="user"` is set, the connector skips DDL entirely (you're responsible for creating and dropping the schema) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
 
 ### Example: Node tables
 

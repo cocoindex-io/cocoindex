@@ -65,8 +65,8 @@ wheels published to PyPI). Local development installs via `maturin develop`
 produce a debug build and never send any events — the check is compile-time,
 so the code path doesn't exist in debug binaries.
 
-Delivery is non-blocking: each event is dispatched on a background task with a
-5-second timeout. Failures are logged at INFO level and never affect your app.
+CocoIndex dispatches each event on a background task with a 5-second timeout,
+so delivery is non-blocking. It logs failures at INFO level without affecting your app.
 
 ## Opting out
 

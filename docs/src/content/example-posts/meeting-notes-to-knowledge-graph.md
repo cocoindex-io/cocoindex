@@ -10,9 +10,9 @@ tags: [knowledge-graph, llm-extraction]
 
 Meeting notes are a graph pretending to be a folder of documents. Every note records who ran the meeting, who showed up, what got decided, and who owns each task — relationships between people, meetings, and tasks. But they're written as prose, scattered across a shared drive, so you can full-text search them and not much else. You can't ask *"what is Alice on the hook for across every meeting this quarter?"* or *"which meetings did the platform team actually attend?"*
 
-In this tutorial, we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a Google Drive folder of Markdown meeting notes into a queryable knowledge graph in [Neo4j](https://neo4j.com/). An LLM extracts the organizer, participants, and tasks from each meeting; an embedding + LLM **entity-resolution** pass collapses the same person written five different ways into one node; and the result is a property graph you can query in Cypher.
+Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a Google Drive folder of Markdown meeting notes into a queryable knowledge graph in [Neo4j](https://neo4j.com/). An LLM extracts the organizer, participants, and tasks from each meeting; an embedding + LLM **entity-resolution** pass collapses the same person written five different ways into one node; and the result is a property graph you can query in Cypher.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed graph targets — runs in a Rust engine underneath, so editing one note re-extracts only that note, and the graph reconciles itself: no orphaned people, no stale edges, no cleanup scripts.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and graph target management. As a result, editing one note re-extracts only that note, and CocoIndex reconciles the graph nodes and edges.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j)
 
@@ -48,7 +48,7 @@ Extraction is [instructor](https://github.com/instructor-ai/instructor) over [Li
 
 ## Pipeline overview
 
-![CocoIndex flow: Google Drive meeting notes through three phases — per-note extraction declaring Meeting and Task nodes, person entity resolution, and a final person-relations pass — landing in a Neo4j property graph](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/flow-v1-dark.svg)
+![CocoIndex flow: Google Drive meeting notes through three phases (per-note extraction declaring Meeting and Task nodes, person entity resolution, and a final person-relations pass) landing in a Neo4j property graph](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/flow-v1-dark.svg)
 
 The pipeline runs in three phases:
 
@@ -100,7 +100,7 @@ So a `Meeting(note_file=…, time=…, note=…)` becomes a `Meeting` node carry
 
 ## Shared resources: the lifespan
 
-The [lifespan](/docs/programming_guide/context/) provides what every step needs — the graph connection factory, two LLM model ids, and the embedder — once at startup, via [context keys](/docs/programming_guide/context/):
+The [lifespan](/docs/programming_guide/context/) provides what every step needs (the graph connection factory, two LLM model ids, and the embedder) once at startup, via [context keys](/docs/programming_guide/context/):
 
 ```python title="main.py"
 KG_DB = coco.ContextKey[neo4j.ConnectionFactory]("kg_db")
@@ -426,7 +426,7 @@ This is where the declarative model pays for itself. You never compute a diff or
 - **Edit one note** — only that note's component re-runs and re-extracts its sections. Its `Meeting` / `Task` nodes are diffed; if it introduced or dropped a person, phase 2 reruns and phase 3 reconciles the edges. Every other note is served from the memo cache.
 - **Add a note** — one new component, a handful of extractions, plus the resolution and graph diff.
 - **Delete a note** — its component disappears, so its `Meeting` and `Task` nodes and `DECIDED` edges are cleaned up automatically; people only that note introduced fall out of the canonical set on the next resolution pass.
-- **Nothing changed** — the run completes in a fraction of a second with zero LLM calls.
+- **Nothing changed** — the run reuses cached work and makes zero LLM calls.
 
 **Logic changes** are reconciled the same way:
 

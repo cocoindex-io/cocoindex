@@ -10,7 +10,7 @@ tags: [multimodal, image-search]
 
 We'll take a folder of images and make it searchable in plain English — type *"long neck"* and get the giraffe back, with no tags, no captions, no manual labeling. The trick is [CLIP](https://openai.com/research/clip): it embeds images **and** text into the *same* vector space, so a text query and a matching picture land near each other. We store the image vectors in [Qdrant](https://qdrant.tech/) and serve search through a small FastAPI + React app.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, the managed Qdrant collection — runs in a Rust engine underneath, and the flow runs in [live mode](/docs/programming_guide/live_mode/) inside the API server, so dropping a new photo into the folder updates the index within a second.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and the Qdrant collection. The flow runs in [live mode](/docs/programming_guide/live_mode/) inside the API server, so adding a photo to the folder triggers an index update.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search)
 
@@ -112,7 +112,7 @@ async def process_file(file: FileLike, target: qdrant.CollectionTarget) -> None:
 
 ## Define the main function
 
-`app_main` mounts the Qdrant collection — sizing the vector to CLIP's projection dimension and using cosine distance — then walks the image folder and mounts one component per file:
+`app_main` mounts the Qdrant collection (sizing the vector to CLIP's projection dimension and using cosine distance) then walks the image folder and mounts one component per file:
 
 ```python title="pipeline.py"
 @coco.fn
@@ -149,7 +149,7 @@ app = coco.App(
 )
 ```
 
-`mount_collection_target` creates and manages the Qdrant collection for you — schema, idempotent upserts, and cleanup when an image disappears. The vector size comes straight from the model, so swapping CLIP variants just works.
+`mount_collection_target` creates and manages the Qdrant collection for you — schema, idempotent upserts, and cleanup when an image disappears. The collection schema takes its vector size from the selected model.
 
 ## Run it as a service
 
@@ -200,7 +200,7 @@ That's the whole point of a shared image-text space: the match is by *meaning*, 
 
 Because the flow runs live inside the server, the index tracks the folder with no extra work from you:
 
-- **Add an image** — `process_file` runs once for it, embeds it, and upserts one Qdrant point. It's searchable within a second.
+- **Add an image** — `process_file` runs once for it, embeds it, and upserts one Qdrant point. It becomes searchable after the update completes.
 - **Replace an image** — same id (derived from the path), new vector; the point is updated in place.
 - **Delete an image** — its component disappears and the point is removed from Qdrant.
 - **Restart the server** — the initial sweep reconciles against what's already in Qdrant and re-embeds nothing that's unchanged.

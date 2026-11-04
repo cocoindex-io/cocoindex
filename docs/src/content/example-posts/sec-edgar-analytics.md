@@ -8,7 +8,7 @@ tags: [structured-data, full-text-search, hybrid-search]
 
 ![Index multi-format SEC filings into Apache Doris with vector + full-text indexes for hybrid search](https://cocoindex.io/blobs/docs-v1/img/examples/sec-edgar-analytics/cover.png)
 
-SEC filings come in many shapes — narrative 10-K risk factors as text, structured financials as XBRL JSON, exhibits as PDF. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that pulls these formats into a *single* searchable index in [Apache Doris](https://doris.apache.org/), with both a **vector index** for semantic search and a **full-text index** for keyword search — the foundation for hybrid retrieval. Along the way each document is scrubbed of PII, chunked, embedded, and tagged with risk/topic labels.
+SEC filings come in many shapes — narrative 10-K risk factors as text, structured financials as XBRL JSON, exhibits as PDF. Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that pulls these formats into a *single* searchable index in [Apache Doris](https://doris.apache.org/), with both a **vector index** for semantic search and a **full-text index** for keyword search — the foundation for hybrid retrieval. Along the way each document is scrubbed of PII, chunked, embedded, and tagged with risk/topic labels.
 
 The whole pipeline is ordinary `async` Python. Embedding runs on a [GPU runner](/docs/programming_guide/function/), and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — add a filing and only its chunks are embedded and loaded.
 
@@ -27,7 +27,7 @@ Two source formats fan into one chunk table:
 
 ## One table, two index types
 
-The row type is a plain dataclass. The magic is in `mount_table_target`: the same table gets a **vector index** (for `l2_distance` semantic search) and an **inverted index** (for `MATCH_ANY` keyword search):
+The row type is a plain dataclass. With `mount_table_target`, the same table gets a **vector index** (for `l2_distance` semantic search) and an **inverted index** (for `MATCH_ANY` keyword search):
 
 ```python title="main.py"
 @dataclass

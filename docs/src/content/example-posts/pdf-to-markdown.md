@@ -8,7 +8,7 @@ tags: [pdf, custom-building-blocks]
 
 ![PDF to Markdown](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/cover.png)
 
-In this tutorial, we'll build a simple app that converts PDF files to Markdown and saves them to a local directory.
+Build an app that converts PDF files to Markdown and saves them to a local directory.
 
 
 ## Overview

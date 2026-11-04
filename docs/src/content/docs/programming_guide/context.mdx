@@ -29,7 +29,7 @@ The type parameter (`asyncpg.Pool`, `SentenceTransformerEmbedder`) enables type 
 
 By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, [context changes](./function#change-detection) are their own category — tracked by `use_context()` at the call site, independent of `@coco.fn`. When a fingerprint changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
 
-Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results — database connections, loggers, debug flags, monitoring clients — can use the default (`detect_change=False`).
+Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results (database connections, loggers, debug flags, monitoring clients) can use the default (`detect_change=False`).
 
 :::tip
 Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a change-detected key, then `foo`'s memo is also invalidated when the context value changes.
@@ -37,7 +37,7 @@ Change detection is transitive: if function `foo` (memoized) calls function `bar
 
 ## ContextKey as stable identity
 
-Beyond sharing resources, a `ContextKey` also serves as the **stable identity** of the resource it points to. When you anchor sources or targets to a `ContextKey`, CocoIndex treats *the key itself* — not the underlying value — as the identifier across runs.
+Beyond sharing resources, a `ContextKey` also serves as the **stable identity** of the resource it points to. When you anchor sources or targets to a `ContextKey`, CocoIndex treats *the key itself* (not the underlying value) as the identifier across runs.
 
 This has two consequences:
 
@@ -204,7 +204,7 @@ app = coco.App(
 
 ## Accessing context outside processing components
 
-If you need to access context values outside of CocoIndex processing components — for example, in query/serving logic that shares resources with your indexing pipeline — use `env.get_context()`:
+If you need to access context values outside of CocoIndex processing components (for example, in query/serving logic that shares resources with your indexing pipeline) use `env.get_context()`:
 
 ```python
 env = await coco.default_env()

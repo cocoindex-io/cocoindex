@@ -23,7 +23,7 @@ Logic changes propagate based on **runtime invocations**, not static call graphs
 
 ### What about hidden dependencies like global variables or files?
 
-Like any memoization system (e.g., `@functools.cache`), CocoIndex's change detection assumes functions depend only on their declared inputs. If a function reads a global variable, a file, or external state not passed through arguments, changes to those won't be detected automatically.
+Like any memoization system (e.g., `@functools.cache`), CocoIndex's change detection assumes functions depend only on their declared inputs. If a function reads a global variable, a file, or external state not passed through arguments, CocoIndex won't detect changes to those automatically.
 
 CocoIndex provides mechanisms to capture some of these dependencies:
 
@@ -36,8 +36,8 @@ For per-call values that change at runtime, pass them as regular function argume
 
 ### What happens if my pipeline crashes mid-update?
 
-CocoIndex's internal state is always consistent — even after a crash or `kill -9`. On the next `app.update()`, CocoIndex automatically recovers: it computes the current desired state and reconciles against all possible previous states, converging the target to the correct state. No manual cleanup is needed. See [Error Handling — Interrupted updates and recovery](./advanced_topics/exception_handlers#interrupted-updates-and-recovery) for details.
+CocoIndex's internal state stays consistent after a crash or `kill -9`. On the next `app.update()`, CocoIndex automatically recovers: it computes the current desired state and reconciles against all possible previous states, converging the target to the correct state. No manual cleanup is needed. See [Error Handling — Interrupted updates and recovery](./advanced_topics/exception_handlers#interrupted-updates-and-recovery) for details.
 
 ### Are target state writes transactional across targets?
 
-Not across targets. When a processing component finishes, CocoIndex sends all its target state changes to each target backend as a unit — all writes happen after processing completes, never partially during execution. Each target backend applies its batch atomically when supported (e.g., within a database transaction). A batch may also carry the changes of several components that finish around the same time; if the backend rejects it, CocoIndex retries the changes in smaller batches per component, so one component's failure never undoes another's. But changes across *different* target backends (e.g., Postgres and local files) are not transactional with each other. See [How target states sync](./programming_guide/processing_component#how-target-states-sync) for details.
+Not across targets. When a processing component finishes, CocoIndex sends all its target state changes to each target backend as a unit. All writes happen after processing completes, never partially during execution. Each target backend applies its batch atomically when supported (e.g., within a database transaction). A batch may also carry the changes of several components that finish around the same time; if the backend rejects it, CocoIndex retries the changes in smaller batches per component, so one component's failure never undoes another's. But changes across *different* target backends (e.g., Postgres and local files) are not transactional with each other. See [How target states sync](./programming_guide/processing_component#how-target-states-sync) for details.

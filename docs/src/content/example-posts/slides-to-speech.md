@@ -8,9 +8,9 @@ tags: [multimodal, text-to-speech]
 
 ![Turn slide decks into narrated, searchable audio with a vision LLM and Pocket TTS](https://cocoindex.io/blobs/docs-v1/img/examples/slides-to-speech/cover.png)
 
-A slide deck is a great outline and a terrible thing to *listen to* or *search*. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that fixes both: for each slide, a vision LLM writes natural speaker notes, [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) synthesizes them to audio locally on the CPU, and the notes are embedded into [LanceDB](https://lancedb.com/) so you can search the deck by meaning and play back the narration for any hit.
+A slide deck is a great outline and a terrible thing to *listen to* or *search*. Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that fixes both: for each slide, a vision LLM writes natural speaker notes, [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) synthesizes them to audio locally on the CPU, and the notes are embedded into [LanceDB](https://lancedb.com/) so you can search the deck by meaning and play back the narration for any hit.
 
-The whole pipeline is ordinary `async` Python. The vision and TTS steps run on a [`coco.GPU` runner](/docs/programming_guide/function/) that offloads each blocking call off the event loop and serializes it — Pocket TTS is CPU-only, so no GPU is required — and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — add a deck and only its slides get processed.
+Write the pipeline in `async` Python. The vision and TTS steps run on a [`coco.GPU` runner](/docs/programming_guide/function/), which moves blocking calls off the event loop and serializes them. Pocket TTS is CPU-only, so no GPU is required. The Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/): adding a deck processes only its slides.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/slides_to_speech)
 
@@ -104,7 +104,7 @@ Embed a query the same way and search LanceDB:
 python main.py "reducing latency and reliability"
 ```
 
-On the sample deck, that query ranks the **Engineering Priorities** slide first — above the roadmap and go-to-market slides — matching the spoken notes by meaning, not keywords. Each hit carries the slide's MP3 narration, ready to play.
+On the sample deck, that query ranks the **Engineering Priorities** slide first (above the roadmap and go-to-market slides) matching the spoken notes by meaning, not keywords. Each hit carries the slide's MP3 narration, ready to play.
 
 ## Incremental updates
 
