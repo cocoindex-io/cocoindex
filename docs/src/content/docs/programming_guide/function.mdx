@@ -133,7 +133,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). Two more tools cover what a decorator parameter cannot: [`coco.LogicDep` / `coco.use_logic_dep`](#per-call-dependencies-logicdep-and-use_logic_dep) for a dependency decided per call, and [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers) for callbacks that cross a `"self"` boundary.
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). Three more tools cover what a decorator parameter cannot: [`coco.LogicDep` / `coco.use_logic_dep`](#per-call-dependencies-logicdep-and-use_logic_dep) for a dependency decided per call, [`coco.DataDep` / `coco.use_data_dep`](#data-dependencies-datadep-and-use_data_dep) for data a body reads that is not among its arguments, and [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers) for callbacks that cross a `"self"` boundary.
 
 #### `logic_tracking`
 
@@ -222,6 +222,46 @@ A memo entry is validated against the dependencies registered in the process at 
 :::
 
 Adopting `use_logic_dep` in a function that memoized callers already stored entries for does not re-store those entries (the caution under [`logic_tracking`](#logic_tracking) applies): ship the adoption with a `version` bump or a memoization-key change on those callers.
+
+#### Data dependencies: `DataDep` and `use_data_dep`
+
+Logic, arguments and context values are all known before a body runs. Some bodies read things decided only while they run: an agent session opens the files the model chose, a test runner touches the files the tests import. `coco.DataDep` declares a *kind* of such a read once, at module import, with a validator; `coco.use_data_dep` records one read into the current call, as a key and the state observed. The next probe validates each record from the stored key and state alone, through the kind's validator, so the entry can be reused even though nothing in its arguments covers the read.
+
+```python
+def _validate_file(key: str, prev: tuple[int, bytes]) -> coco.MemoStateOutcome:
+    try:
+        st = os.stat(key)
+    except FileNotFoundError:
+        return coco.MemoStateOutcome(state=prev)  # memo_valid defaults to False
+    if st.st_mtime_ns == prev[0]:
+        return coco.MemoStateOutcome(state=prev, memo_valid=True)
+    digest = hashlib.sha256(Path(key).read_bytes()).digest()
+    return coco.MemoStateOutcome(state=(st.st_mtime_ns, digest), memo_valid=digest == prev[1])
+
+
+# Module level, at import, after the validator it names.
+FILE = coco.DataDep("file", validate=_validate_file)
+
+
+@coco.fn(memo=True)
+async def session(task: Task) -> Outcome:
+    ...
+    # Stat *before* reading, so the recorded mtime is never newer than the bytes.
+    st = os.stat(path)
+    data = path.read_bytes()
+    coco.use_data_dep(FILE, key=str(path.resolve()), state=(st.st_mtime_ns, hashlib.sha256(data).digest()))
+    ...
+```
+
+The validator takes the recorded key and the stored state and returns a [`MemoStateOutcome`](../advanced_topics/memoization_keys#memo-state-validation), sync or awaitable; its parameter annotations drive typed deserialization of the stored key and state, so annotate both. It never receives `NON_EXISTENCE`. Renaming a kind invalidates every entry that recorded it, which doubles as its version bump.
+
+Key and state are any serializable values and are **snapshotted at the call**: identity and equality are fingerprints of the serialized bytes, and `__coco_memo_key__` is not consulted, so use plain values (the resolved path string, a tuple of mtime and digest). Recording the same kind and key again with an equal state records once; recording it with a **different** state makes the run store no entry, because output that used two states of one key has no single state to validate against. A body that writes what it then reads back should not record the read-back.
+
+The rules for an entry that recorded data dependencies:
+
+- The entry is reused only when its arguments, logic and context match **and** every record validates. A record whose kind is no longer registered, or whose stored key or state no longer deserializes, is a logged miss; a validator's exception propagates. A changed-but-valid state is refreshed without a run. On a miss the body's new records replace the stored set.
+- A record rides up through every enclosing function frame regardless of `logic_tracking`, into every enclosing memoized function's entry and the component's entry, where it stops. Records are **not** copied into ancestor components' entries. A component reports one bit upward instead: **a component is skipped only if it has no descendant that recorded data dependencies and its own entry validates.** A memoized component above one re-runs its body every run, while its memoized children still hit on their own entries. A component that records nothing is unaffected.
+- `use_data_dep` raises outside a component context, and when the current frame has already closed. The check covers the current frame only: a `@coco.fn` reader started as a task that outlives the decorated function which started it keeps its own open frame, so its records merge into an already-joined frame and are lost, as its logic deps are today. Await readers inside the function that started them.
 
 #### Callbacks: `logic_propagated_to_callers`
 

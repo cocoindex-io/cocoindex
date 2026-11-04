@@ -236,6 +236,8 @@ class Tracked:
 
 The flag is only read when the cached result is not reused. It applies to memoized functions; a memoized component that returns it raises an error.
 
+When the state is the set of things the function *read* that are not among its arguments, record each read with [`coco.use_data_dep`](../programming_guide/function#data-dependencies-datadep-and-use_data_dep) instead: it works for components too, and validates each read on its own.
+
 ### Async state methods
 
 A state method can return an `Awaitable`. CocoIndex handles this automatically:

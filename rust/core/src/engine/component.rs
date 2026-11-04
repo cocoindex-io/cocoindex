@@ -12,8 +12,9 @@ use crate::engine::context::{
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
-    RestoredComponentMemo, cleanup_tombstone, eager_existence_upsert, post_submit_for_build,
-    submit, update_component_memo_states, use_or_invalidate_component_memoization,
+    RestoredComponentMemo, cleanup_tombstone, delete_component_memo, eager_existence_upsert,
+    post_submit_for_build, submit, update_component_memo_states,
+    use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -82,6 +83,15 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     /// Whether this processor has a memo state handler for post-fingerprint validation.
     fn has_memo_state_handler(&self) -> bool {
         false
+    }
+
+    /// Whether `handle_memo_states(None)` has initial states to collect after
+    /// a miss. A processor whose handler only validates on a hit (one with
+    /// neither argument nor context state functions, attached because a
+    /// stored entry may carry data dependencies) returns false, and the miss
+    /// path skips the call.
+    fn collects_initial_states(&self) -> bool {
+        self.has_memo_state_handler()
     }
 
     /// Validate or collect memo states after a fingerprint match.
@@ -304,6 +314,11 @@ pub(crate) struct ComponentRunOutcome {
     has_exception: bool,
     logic_deps: HashSet<Fingerprint>,
     target_provider_deps: TargetProviderDeps,
+    /// The component, or a descendant, recorded data dependencies. A parent
+    /// stores its memo flagged `has_open_descendants`, which is never reused:
+    /// a reuse would carry the recording component over without validating
+    /// what it read. Records themselves never travel upward.
+    cannot_skip: bool,
 }
 
 impl ComponentRunOutcome {
@@ -319,11 +334,16 @@ impl ComponentRunOutcome {
     /// memo depends on this subtree — and likewise its target-provider deps, so
     /// a parent that later memo-hits (and therefore never mounts this child)
     /// still re-checks the provider generations this child declared against.
-    fn reused(logic_deps: Vec<Fingerprint>, target_provider_deps: TargetProviderDeps) -> Self {
+    fn reused(
+        logic_deps: Vec<Fingerprint>,
+        target_provider_deps: TargetProviderDeps,
+        cannot_skip: bool,
+    ) -> Self {
         Self {
             has_exception: false,
             logic_deps: logic_deps.into_iter().collect(),
             target_provider_deps,
+            cannot_skip,
         }
     }
 
@@ -331,6 +351,7 @@ impl ComponentRunOutcome {
         self.has_exception |= other.has_exception;
         self.logic_deps.extend(other.logic_deps);
         self.target_provider_deps.extend(other.target_provider_deps);
+        self.cannot_skip |= other.cannot_skip;
     }
 }
 
@@ -639,6 +660,18 @@ impl LastStoredMemos {
         }
     }
 
+    /// Forget the memo recorded for `scope`: its row was deleted.
+    fn forget(&mut self, scope: WriteScope) {
+        match scope {
+            WriteScope::Persisted => self.persisted = None,
+            WriteScope::Run(run) => {
+                if matches!(self.in_run, Some((r, _)) if r == run) {
+                    self.in_run = None;
+                }
+            }
+        }
+    }
+
     /// The latest memo a run reading through `app_store` can find.
     fn readable_by(&self, app_store: &crate::state_store::AppStore) -> Option<StoredMemo> {
         match self.in_run {
@@ -699,12 +732,25 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         logic_deps: stored_logic_deps,
         target_provider_deps: stored_provider_deps,
         row_fp,
+        has_open_descendants,
     }) = memo
     else {
         return Ok(MemoLookup::Miss {
             revalidated_states: None,
         });
     };
+    if has_open_descendants {
+        // A descendant recorded data dependencies: this memo is never reused
+        // (the row stays; the run that follows stores a fresh one).
+        debug!(
+            "memo of {} is not reused: a descendant recorded data dependencies",
+            comp_ctx.stable_path()
+        );
+        return Ok(MemoLookup::Miss {
+            revalidated_states: None,
+        });
+    }
+    let has_own_data_deps = !memo_states.data_deps.is_empty();
     if processor.has_memo_state_handler() && !memo_states.is_empty() {
         let fut = processor.handle_memo_states(
             comp_ctx.app_ctx().env().host_runtime_ctx(),
@@ -713,8 +759,13 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         )?;
         let (new_states, can_reuse, states_changed) = fut.await?;
         if !can_reuse {
+            // The states ride into the new memo; the data dependencies do not:
+            // the body about to run records the set that replaces them.
             return Ok(MemoLookup::Miss {
-                revalidated_states: Some(new_states),
+                revalidated_states: Some(MemoStatesPayload {
+                    data_deps: Vec::new(),
+                    ..new_states
+                }),
             });
         }
         // Reusable, but the states themselves moved (e.g. an mtime changed
@@ -727,7 +778,7 @@ async fn lookup_component_memo<Prof: EngineProfile>(
     // mounting parent's memo depends on this whole subtree (see
     // `merge_logic_deps` in `execute_once`).
     Ok(MemoLookup::Reuse(
-        ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps),
+        ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps, has_own_data_deps),
         ComponentBuildOutput {
             ret,
             built_target_states_providers: Default::default(),
@@ -1330,7 +1381,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                             // Collect initial memo states on cache miss if processor has a state handler.
                             let memo_states: MemoStatesPayload<Prof> = if let Some(processor) =
                                 processor
-                                && processor.has_memo_state_handler()
+                                && (memo_states_for_store.is_some()
+                                    || processor.collects_initial_states())
                             {
                                 if let Some(states) = memo_states_for_store.take() {
                                     // From invalid cache hit path
@@ -1361,17 +1413,48 @@ impl<Prof: EngineProfile> Component<Prof> {
                             let logic_deps = processor_context.take_logic_deps();
                             let target_provider_deps =
                                 processor_context.take_target_provider_deps();
+                            let data_deps = processor_context.take_data_deps();
+                            let has_open_descendants = children_outcome.cannot_skip;
+                            let comp_memo = if let Some((kind_fp, key_fp)) = data_deps.conflict() {
+                                // The run observed one key in two states: no
+                                // stored state can validate its output. Store
+                                // no memo, and drop the previous one: submit has
+                                // replaced the target states, so an older
+                                // entry's return value must not be reused.
+                                debug!(
+                                    "{} observed data dependency (kind {kind_fp:?}, key {key_fp:?}) in two states; storing no memo",
+                                    processor_context.stable_path()
+                                );
+                                if memo_fp_to_store.is_some() {
+                                    delete_component_memo(processor_context).await?;
+                                    self.inner
+                                        .last_stored_memos
+                                        .lock()
+                                        .unwrap()
+                                        .forget(processor_context.app_store().write_scope());
+                                }
+                                None
+                            } else {
+                                comp_memo
+                            };
+                            let data_dep_records = data_deps.into_sorted_records();
                             post_submit_for_build(
                                 processor_context,
                                 comp_memo,
                                 &logic_deps,
                                 &target_provider_deps,
+                                &data_dep_records,
+                                has_open_descendants,
                             )
                             .await?;
+                            children_outcome.cannot_skip =
+                                has_open_descendants || !data_dep_records.is_empty();
                             // Record the store for a run queued on the permit
                             // (see the re-check above). Still under the permit,
                             // so this is the component's latest memo.
-                            if let Some(memo_fp) = memo_fp_to_store {
+                            if let Some(memo_fp) = memo_fp_to_store
+                                && comp_memo.is_some()
+                            {
                                 self.inner.last_stored_memos.lock().unwrap().record(
                                     processor_context.app_store().write_scope(),
                                     StoredMemo {
@@ -1541,7 +1624,10 @@ impl<Prof: EngineProfile> Component<Prof> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, StatsGroup};
+    use super::{
+        ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, ComponentRunOutcome,
+        StatsGroup,
+    };
     use crate::engine::app::{App, AppUpdateOptions};
     use crate::engine::context::{
         ComponentProcessingAction, ComponentProcessorContext, FnCallContext, MemoStatesPayload,
@@ -1583,6 +1669,28 @@ mod tests {
     /// Activity is explicit: a task's `ActivityGuard` counts on the component
     /// and its ancestors, and dropping it wakes `wait_until_inactive`. Holding
     /// `Component`s has no effect on either.
+    #[test]
+    fn the_cannot_skip_bit_merges_upward_and_a_reused_memo_reports_its_own() {
+        let mut parent = ComponentRunOutcome::default();
+        parent.merge(ComponentRunOutcome::reused(
+            vec![],
+            Default::default(),
+            false,
+        ));
+        assert!(!parent.cannot_skip);
+        parent.merge(ComponentRunOutcome::reused(
+            vec![],
+            Default::default(),
+            true,
+        ));
+        assert!(parent.cannot_skip);
+        // A failed child reports no bit: its parent stores no memo at all.
+        assert!(!ComponentRunOutcome::exception().cannot_skip);
+        let mut grandparent = ComponentRunOutcome::default();
+        grandparent.merge(parent);
+        assert!(grandparent.cannot_skip);
+    }
+
     #[tokio::test]
     async fn activity_propagates_up_the_parent_chain_and_wakes_waiters() {
         let (app, _dir) = test_app("activity_guard").await;
@@ -1887,6 +1995,7 @@ mod tests {
                     MemoStatesPayload {
                         positional: vec![TestData(state)],
                         by_context_fp: Vec::new(),
+                        data_deps: Vec::new(),
                     },
                     reusable,
                     changed,

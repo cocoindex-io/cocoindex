@@ -267,6 +267,24 @@ pub enum MemoizedValue<'a> {
     Inlined(#[serde_as(as = "Bytes")] Cow<'a, [u8]>),
 }
 
+/// One data dependency a body recorded while it ran (`use_data_dep`): what it
+/// read (`key`) and what it observed (`state`), both as the serialized
+/// snapshot taken at the call, with the fingerprints of those bytes. Validated
+/// on the next probe by the kind registered under `kind_fp`.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DataDepEntry<'a> {
+    #[serde(rename = "K")]
+    pub kind_fp: Fingerprint,
+    #[serde(rename = "KF")]
+    pub key_fp: Fingerprint,
+    #[serde(rename = "SF")]
+    pub state_fp: Fingerprint,
+    #[serde(rename = "KV", borrow)]
+    pub key: MemoizedValue<'a>,
+    #[serde(rename = "SV", borrow)]
+    pub state: MemoizedValue<'a>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ComponentMemoizationInfo<'a> {
     #[serde(rename = "F")]
@@ -289,6 +307,17 @@ pub struct ComponentMemoizationInfo<'a> {
     /// at validation time.
     #[serde(rename = "CS", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub context_memo_states: Vec<(Fingerprint, Vec<MemoizedValue<'a>>)>,
+    /// Data dependencies the component's own run recorded, sorted by
+    /// `(kind_fp, key_fp)`. Never those of its descendants: see
+    /// `has_open_descendants`.
+    #[serde(rename = "DD", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub data_deps: Vec<DataDepEntry<'a>>,
+    /// A descendant component recorded data dependencies when this memo was
+    /// stored. Such a memo is never reused: a reuse would carry the descendant
+    /// over without validating what it read. Stored rather than omitted so the
+    /// permit re-check and `last_stored_memos` keep working unchanged.
+    #[serde(rename = "OD", default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_open_descendants: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -319,6 +348,10 @@ pub struct FunctionMemoizationEntry<'a> {
     /// See `ComponentMemoizationInfo::context_memo_states`.
     #[serde(rename = "CS", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub context_memo_states: Vec<(Fingerprint, Vec<MemoizedValue<'a>>)>,
+    /// Data dependencies the call recorded (its own and its callees'), sorted
+    /// by `(kind_fp, key_fp)`. See `ComponentMemoizationInfo::data_deps`.
+    #[serde(rename = "DD", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub data_deps: Vec<DataDepEntry<'a>>,
 }
 
 #[serde_as]

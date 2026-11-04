@@ -204,6 +204,115 @@ pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
     pub provider_registry: TargetStateProviderRegistry<Prof>,
 }
 
+/// One data dependency a body recorded with `use_data_dep`: what it read
+/// (`key`) and what it observed (`state`), as the serialized snapshot taken at
+/// the call, with the fingerprints of those bytes. `key_fp` is the record's
+/// identity within its kind and `state_fp` its equality; neither goes through
+/// the memo-key pipeline, so two unequal observations never collapse into one.
+#[derive(Clone, Debug)]
+pub struct DataDepRecord {
+    pub kind_fp: Fingerprint,
+    pub key_fp: Fingerprint,
+    pub state_fp: Fingerprint,
+    pub key: bytes::Bytes,
+    pub state: bytes::Bytes,
+}
+
+/// The data dependencies a frame or a component recorded in one run.
+///
+/// One record per `(kind_fp, key_fp)`. Recording a key again with an equal
+/// state is a no-op; with a different state it marks a *conflict*: output that
+/// used two states of one key has no single state to validate against, so the
+/// run stores no entry (see `FnCallMemoGuard::resolve` and
+/// `Component::execute_once`). The rule is symmetric, so merge order does not
+/// matter.
+#[derive(Clone, Debug, Default)]
+pub struct DataDeps {
+    records: HashMap<(Fingerprint, Fingerprint), DataDepRecord>,
+    /// The first `(kind_fp, key_fp)` observed in two states, if any.
+    conflict: Option<(Fingerprint, Fingerprint)>,
+}
+
+impl DataDeps {
+    pub fn insert(&mut self, record: DataDepRecord) {
+        match self.records.entry((record.kind_fp, record.key_fp)) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(record);
+            }
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                if slot.get().state_fp != record.state_fp {
+                    self.conflict.get_or_insert((record.kind_fp, record.key_fp));
+                }
+            }
+        }
+    }
+
+    pub fn merge(&mut self, other: DataDeps) {
+        if self.conflict.is_none() {
+            self.conflict = other.conflict;
+        }
+        for record in other.records.into_values() {
+            self.insert(record);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// The first key observed in two states during the run, as
+    /// `(kind_fp, key_fp)`, if any.
+    pub fn conflict(&self) -> Option<(Fingerprint, Fingerprint)> {
+        self.conflict
+    }
+
+    /// The records sorted by `(kind_fp, key_fp)`, for deterministic storage.
+    pub fn sorted_records(&self) -> Vec<DataDepRecord> {
+        let mut records: Vec<DataDepRecord> = self.records.values().cloned().collect();
+        records.sort_by_key(|r| (r.kind_fp, r.key_fp));
+        records
+    }
+
+    /// [`sorted_records`](Self::sorted_records), consuming the set.
+    pub fn into_sorted_records(self) -> Vec<DataDepRecord> {
+        let mut records: Vec<DataDepRecord> = self.records.into_values().collect();
+        records.sort_by_key(|r| (r.kind_fp, r.key_fp));
+        records
+    }
+}
+
+/// Encode records for storage. `key` and `state` are already the serialized
+/// snapshot, so this only re-wraps the bytes.
+pub(crate) fn encode_data_deps(records: &[DataDepRecord]) -> Vec<db_schema::DataDepEntry<'_>> {
+    records
+        .iter()
+        .map(|r| db_schema::DataDepEntry {
+            kind_fp: r.kind_fp,
+            key_fp: r.key_fp,
+            state_fp: r.state_fp,
+            key: db_schema::MemoizedValue::Inlined(Cow::Borrowed(r.key.as_ref())),
+            state: db_schema::MemoizedValue::Inlined(Cow::Borrowed(r.state.as_ref())),
+        })
+        .collect()
+}
+
+pub(crate) fn decode_data_deps(entries: Vec<db_schema::DataDepEntry<'_>>) -> Vec<DataDepRecord> {
+    entries
+        .into_iter()
+        .map(|e| {
+            let db_schema::MemoizedValue::Inlined(key) = e.key;
+            let db_schema::MemoizedValue::Inlined(state) = e.state;
+            DataDepRecord {
+                kind_fp: e.kind_fp,
+                key_fp: e.key_fp,
+                state_fp: e.state_fp,
+                key: bytes::Bytes::copy_from_slice(key.as_ref()),
+                state: bytes::Bytes::copy_from_slice(state.as_ref()),
+            }
+        })
+        .collect()
+}
+
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
@@ -214,6 +323,9 @@ pub struct FnCallMemo<Prof: EngineProfile> {
     /// Context-borne memo states, keyed by tracked-context value fingerprint.
     /// See `db_schema::FunctionMemoizationEntry::context_memo_states`.
     pub context_memo_states: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
+    /// Data dependencies the call recorded, sorted by `(kind_fp, key_fp)`.
+    /// See `db_schema::FunctionMemoizationEntry::data_deps`.
+    pub data_deps: Vec<DataDepRecord>,
     /// The DB row already holds this entry. Cleared when the entry is
     /// built from a run or its memo states are refreshed after a hit, so the
     /// flush writes it.
@@ -235,6 +347,9 @@ pub struct FnCallMemo<Prof: EngineProfile> {
 pub struct MemoStatesPayload<Prof: EngineProfile> {
     pub positional: Vec<Prof::FunctionData>,
     pub by_context_fp: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
+    /// Data dependencies, validated by the host beside the states: stored
+    /// records on a hit, refreshed records back from the handler.
+    pub data_deps: Vec<DataDepRecord>,
 }
 
 impl<Prof: EngineProfile> Default for MemoStatesPayload<Prof> {
@@ -242,13 +357,14 @@ impl<Prof: EngineProfile> Default for MemoStatesPayload<Prof> {
         Self {
             positional: Vec::new(),
             by_context_fp: Vec::new(),
+            data_deps: Vec::new(),
         }
     }
 }
 
 impl<Prof: EngineProfile> MemoStatesPayload<Prof> {
     pub fn is_empty(&self) -> bool {
-        self.positional.is_empty() && self.by_context_fp.is_empty()
+        self.positional.is_empty() && self.by_context_fp.is_empty() && self.data_deps.is_empty()
     }
 }
 
@@ -395,6 +511,7 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                         logic_deps: memo.logic_deps.into_iter().collect(),
                         memo_states: memo_states_serialized,
                         context_memo_states: context_memo_states_serialized,
+                        data_deps: encode_data_deps(&memo.data_deps),
                     };
                     let encoded = rmp_serde::to_vec_named(&entry)?;
                     plan.writes.push((fp, encoded));
@@ -485,6 +602,7 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
         logic_deps: decoded.logic_deps.into_iter().collect(),
         memo_states,
         context_memo_states,
+        data_deps: decode_data_deps(decoded.data_deps),
         persisted: true,
         reused: true,
     }));
@@ -737,6 +855,11 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
 
+    /// Data dependencies this component's own run recorded (its top-level
+    /// function frame and the frames beneath it). Never a child component's:
+    /// a child reports one bit instead (`ComponentRunOutcome::cannot_skip`).
+    data_deps: Mutex<DataDeps>,
+
     /// Target-state provider generations this component declared against,
     /// accumulated from its own declarations and from child components. Stored
     /// with this component's memo entry and re-checked on the next probe.
@@ -861,6 +984,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 operation_generation,
                 admission,
                 logic_deps: Mutex::new(HashSet::new()),
+                data_deps: Mutex::new(DataDeps::default()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
                 host_ctx,
             }),
@@ -1098,15 +1222,17 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// component, so a tagged set at this level could never be resolved and
     /// would be observably identical to the flattened one.
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let (logic_deps, target_provider_deps) = fn_ctx.update(|inner| {
+        let (logic_deps, target_provider_deps, data_deps) = fn_ctx.update(|inner| {
             (
                 inner.entry_logic_deps().collect::<Vec<_>>(),
                 inner.target_provider_deps.clone(),
+                std::mem::take(&mut inner.data_deps),
             )
         });
         fn_ctx.close();
         self.inner.logic_deps.lock().unwrap().extend(logic_deps);
         self.merge_target_provider_deps(target_provider_deps);
+        self.inner.data_deps.lock().unwrap().merge(data_deps);
     }
 
     /// Merge target-provider generation deps (from this component's own
@@ -1143,6 +1269,12 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// during cache-miss memo-state collection) has run.
     pub(crate) fn take_logic_deps(&self) -> HashSet<Fingerprint> {
         std::mem::take(&mut *self.inner.logic_deps.lock().unwrap())
+    }
+
+    /// Take the data dependencies this component's own run recorded. Like
+    /// [`take_logic_deps`](Self::take_logic_deps), an O(1) move for the store.
+    pub(crate) fn take_data_deps(&self) -> DataDeps {
+        std::mem::take(&mut *self.inner.data_deps.lock().unwrap())
     }
 
     /// Collect initial memo states for the change-detection context fingerprints
@@ -1245,6 +1377,10 @@ pub struct FnCallContextInner {
     /// `"self"` frame therefore records more after a hit than after a miss
     /// (its callee's own logic too) — more invalidation, never a stale entry.
     pub reoffered_logic_deps: HashSet<Fingerprint>,
+    /// Data dependencies recorded in this frame and the frames beneath it.
+    /// They ride up through every frame regardless of `logic_tracking`, as
+    /// `context_change_deps` do: they describe what the call read, not its code.
+    pub data_deps: DataDeps,
 }
 
 impl FnCallContextInner {
@@ -1363,6 +1499,7 @@ impl FnCallContext {
             inner
                 .reoffered_logic_deps
                 .extend(child_inner.reoffered_logic_deps);
+            inner.data_deps.merge(child_inner.data_deps);
             // Function logic deps conditionally propagate.
             if self.propagate_children_fn_logic {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
@@ -1410,6 +1547,13 @@ impl FnCallContext {
     pub fn add_context_change_dep(&self, fp: Fingerprint) {
         self.update(|inner| {
             inner.context_change_deps.insert(fp);
+        });
+    }
+
+    /// Record a data dependency into this frame (see [`DataDeps::insert`]).
+    pub fn add_data_dep(&self, record: DataDepRecord) {
+        self.update(|inner| {
+            inner.data_deps.insert(record);
         });
     }
 
@@ -1766,7 +1910,7 @@ mod tests {
 
 #[cfg(test)]
 mod fn_call_context_tests {
-    use super::FnCallContext;
+    use super::{DataDepRecord, DataDeps, FnCallContext};
     use cocoindex_utils::fingerprint::Fingerprint;
     use std::collections::HashSet;
 
@@ -1776,6 +1920,53 @@ mod fn_call_context_tests {
 
     fn fn_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {
         ctx.update(|inner| inner.fn_logic_deps.clone())
+    }
+
+    fn record(kind: &str, key: &str, state: &str) -> DataDepRecord {
+        DataDepRecord {
+            kind_fp: fp(kind),
+            key_fp: fp(key),
+            state_fp: fp(state),
+            key: bytes::Bytes::from(key.to_owned()),
+            state: bytes::Bytes::from(state.to_owned()),
+        }
+    }
+
+    #[test]
+    fn data_deps_dedupe_equal_observations_and_flag_conflicting_ones() {
+        let mut deps = DataDeps::default();
+        deps.insert(record("file", "a", "s1"));
+        deps.insert(record("file", "a", "s1"));
+        deps.insert(record("file", "b", "s1"));
+        assert_eq!(deps.sorted_records().len(), 2);
+        assert!(deps.conflict().is_none());
+
+        // The same key in another state: a conflict naming that key,
+        // whichever side merges.
+        let mut other = DataDeps::default();
+        other.insert(record("file", "a", "s2"));
+        let mut left = deps.clone();
+        left.merge(other.clone());
+        assert_eq!(left.conflict(), Some((fp("file"), fp("a"))));
+        other.merge(deps.clone());
+        assert_eq!(other.conflict(), Some((fp("file"), fp("a"))));
+
+        // Another kind with the same key is a different record.
+        deps.insert(record("dir", "a", "s2"));
+        assert!(deps.conflict().is_none());
+        assert_eq!(deps.sorted_records().len(), 3);
+    }
+
+    #[test]
+    fn data_deps_ride_through_a_frame_whatever_its_logic_tracking() {
+        let child = FnCallContext::new(true);
+        child.add_data_dep(record("file", "a", "s1"));
+        let parent = FnCallContext::new(false);
+        parent.join_child(&child);
+        assert_eq!(
+            parent.update(|inner| inner.data_deps.sorted_records().len()),
+            1
+        );
     }
 
     fn entry_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {

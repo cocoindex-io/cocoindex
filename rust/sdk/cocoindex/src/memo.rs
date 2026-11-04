@@ -782,6 +782,9 @@ where
             guard.update_memo_states(MemoStatesPayload {
                 positional: memo_states_for_resolve,
                 by_context_fp: context_validation.states,
+                // The SDK records no data dependencies (`use_data_dep` has no
+                // Rust API yet), so an entry it refreshes holds none.
+                data_deps: Vec::new(),
             });
         }
         return Ok(value);
@@ -793,6 +796,7 @@ where
     let memo_states = MemoStatesPayload {
         positional: memo_states_for_resolve,
         by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
+        data_deps: Vec::new(),
     };
     // Recorded after `resolve`, which snapshots the frame's dependency
     // entries: an entry must not list itself.

@@ -84,6 +84,7 @@ class ComponentProcessor(Generic[T_co]):
         processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+        collects_initial_states: bool = True,
     ) -> ComponentProcessor[T_co]: ...
     @staticmethod
     def new_async(
@@ -91,6 +92,7 @@ class ComponentProcessor(Generic[T_co]):
         processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+        collects_initial_states: bool = True,
     ) -> ComponentProcessor[T_co]: ...
 
 # --- ComponentProcessorContext ---
@@ -130,6 +132,7 @@ class FnCallContext:
     def closed(self) -> bool: ...
     def add_fn_logic_dep(self, fp: Fingerprint) -> None: ...
     def add_context_change_dep(self, fp: Fingerprint) -> None: ...
+    def add_data_dep(self, kind_fp: Fingerprint, key: Any, state: Any) -> None: ...
     def initial_context_memo_states(
         self, env: "Environment"
     ) -> dict[Fingerprint, list[StoredValue]]: ...
@@ -150,11 +153,17 @@ class FnCallMemoGuard:
     def cached_context_memo_states(
         self,
     ) -> dict[Fingerprint, list[StoredValue]] | None: ...
+    @property
+    def cached_data_deps(
+        self,
+    ) -> list[tuple[Fingerprint, Fingerprint, StoredValue, StoredValue]] | None: ...
     def update_memo_states(
         self,
         memo_states: list[Any] | None = None,
         context_memo_states: dict[Fingerprint, list[Any]] | None = None,
+        data_deps: list[tuple[Fingerprint, Fingerprint, Any, Any]] | None = None,
     ) -> None: ...
+    def join_cached_data_deps(self, fn_ctx: FnCallContext) -> None: ...
     def join_cached_target_provider_deps(
         self, parent_fn_ctx: FnCallContext
     ) -> None: ...

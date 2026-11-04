@@ -5,8 +5,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
 use crate::engine::context::{
-    ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
+    ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext, DataDepRecord,
+    DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY, decode_data_deps, encode_data_deps,
 };
 use crate::engine::context::{
     FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
@@ -94,6 +94,8 @@ pub(crate) struct RestoredComponentMemo<Prof: EngineProfile> {
     /// refresh of its memo states applies only while the row still has it
     /// (see `update_component_memo_states`).
     pub row_fp: Fingerprint,
+    /// See `db_schema::ComponentMemoizationInfo::has_open_descendants`.
+    pub has_open_descendants: bool,
 }
 
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
@@ -137,10 +139,12 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                         memo_states: MemoStatesPayload {
                             positional: memo_states,
                             by_context_fp: context_memo_states,
+                            data_deps: decode_data_deps(memo_info.data_deps),
                         },
                         logic_deps: memo_info.logic_deps.to_vec(),
                         target_provider_deps: memo_info.target_provider_deps.into_iter().collect(),
                         row_fp,
+                        has_open_descendants: memo_info.has_open_descendants,
                     }));
                 }
                 Err(e) => {
@@ -154,7 +158,20 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
     }
 
     // Invalidate the memoization.
-    let path = path.clone();
+    delete_component_memo(comp_ctx).await?;
+
+    Ok(None)
+}
+
+/// Delete the component's stored memo, if any. Used when a stored memo failed
+/// validation, and after a run that observed a data dependency in two states
+/// (which stores no memo of its own, and must not leave an older one behind
+/// now that submit has replaced the target states).
+pub(crate) async fn delete_component_memo<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+) -> Result<()> {
+    let app_store = comp_ctx.app_store();
+    let path = comp_ctx.stable_path().clone();
     let app_store_in_txn = app_store.clone();
     app_store
         .run_txn(move |wtxn| {
@@ -162,9 +179,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
             let path = path.clone();
             Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
         })
-        .await?;
-
-    Ok(None)
+        .await
 }
 
 /// Update only the memo states of an existing component memoization entry.
@@ -199,6 +214,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     let context_memo_states_serialized = Arc::new(serialize_context_memo_states::<Prof>(
         &new_states.by_context_fp,
     )?);
+    let data_deps = Arc::new(new_states.data_deps.clone());
 
     let app_store_in_txn = app_store.clone();
     app_store
@@ -207,6 +223,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
             let path = path.clone();
             let memo_states_serialized = Arc::clone(&memo_states_serialized);
             let context_memo_states_serialized = Arc::clone(&context_memo_states_serialized);
+            let data_deps = Arc::clone(&data_deps);
             Box::pin(async move {
                 let encoded = {
                     let Some(existing_bytes) =
@@ -232,6 +249,8 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
                         target_provider_deps: existing.target_provider_deps,
                         memo_states: memo_states_borrowed,
                         context_memo_states: context_memo_states_borrowed,
+                        data_deps: encode_data_deps(&data_deps),
+                        has_open_descendants: existing.has_open_descendants,
                     };
                     rmp_serde::to_vec_named(&new_info)?
                 };
@@ -1933,6 +1952,8 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     )>,
     logic_deps: &HashSet<Fingerprint>,
     target_provider_deps: &TargetProviderDeps,
+    data_deps: &[DataDepRecord],
+    has_open_descendants: bool,
 ) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(());
@@ -1957,6 +1978,8 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
             .collect(),
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
+        data_deps: encode_data_deps(data_deps),
+        has_open_descendants,
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
 
