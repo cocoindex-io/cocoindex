@@ -266,6 +266,19 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
   }
 }
 
+// Edit links must resolve to files in this checkout, independently of whether
+// GitHub redirects an unsigned visitor to its sign-in page.
+for (const file of walk(DIST, /\.html$/)) {
+  for (const match of read(file).matchAll(/<a\b[^>]*\bhref="(https:\/\/github\.com\/cocoindex-io\/cocoindex\/edit\/[^\"]+)"/g)) {
+    const prefix = 'https://github.com/cocoindex-io/cocoindex/edit/main/docs/';
+    const href = match[1];
+    const source = decodeURIComponent(href.slice(prefix.length));
+    if (!href.startsWith(prefix) || !source.startsWith('src/') || !existsSync(here('../' + source))) {
+      errors.push(`${relative(REPO_ROOT, file)}: invalid edit source: ${href}`);
+    }
+  }
+}
+
 if (errors.length) {
   console.error(`check-agent-output: ${errors.length} problem(s)`);
   for (const e of errors) console.error(`  - ${e}`);

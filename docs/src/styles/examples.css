@@ -117,7 +117,7 @@ body.ex-listing .ex-sec-head p { margin: 0; font-size: 0.9375rem; color: var(--m
 body.ex-listing .ex-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 
 body.ex-listing .ex-card {
-  display: grid; grid-template-rows: subgrid; grid-row: span 2; row-gap: 0; margin-bottom: 16px;
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid; grid-row: span 2; row-gap: 0; margin-bottom: 16px;
   background: var(--cream); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--edge-light);
   color: inherit; text-decoration: none; overflow: hidden;
   transition: border-color var(--dur-fast) var(--ease);

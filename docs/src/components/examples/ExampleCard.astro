@@ -19,8 +19,6 @@ const title = titleText(ex.title);
 <a
   class="ex-card"
   href={href}
-  aria-labelledby={`ex-t-${ex.slug}`}
-  aria-describedby={`ex-d-${ex.slug} ex-m-${ex.slug}`}
   data-cat={ex.category}
   data-src={facetOf(ex, 'src').join('|')}
   data-tgt={facetOf(ex, 'tgt').join('|')}

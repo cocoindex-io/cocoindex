@@ -8,7 +8,7 @@ tags: [llm-extraction, pdf]
 
 ![Extract structured data from PDF manuals with docling + an LLM and CocoIndex](https://cocoindex.io/blobs/docs-v1/img/examples/manuals-llm-extraction/cover.png)
 
-Manuals, datasheets, and reference docs are full of structure — classes, functions, parameters, defaults — laid out for humans, not machines. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that pulls that structure out: convert each PDF manual to Markdown with [docling](https://github.com/docling-project/docling), LLM-extract a typed summary of the module it documents, and store the result in Postgres. The sample manuals are the reference docs for a few Python standard-library modules.
+Manuals, datasheets, and reference docs are full of structure (classes, functions, parameters, defaults) laid out for humans, not machines. Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that pulls that structure out: convert each PDF manual to Markdown with [docling](https://github.com/docling-project/docling), LLM-extract a typed summary of the module it documents, and store the result in Postgres. The sample manuals are the reference docs for a few Python standard-library modules.
 
 The whole pipeline is ordinary `async` Python and your own types. The heavy PDF parse runs on a [GPU runner](/docs/programming_guide/function/), and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — edit one manual and only that one is re-parsed and re-extracted.
 

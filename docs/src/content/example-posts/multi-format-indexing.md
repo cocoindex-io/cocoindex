@@ -8,7 +8,7 @@ tags: [multimodal, colpali]
 
 ![Index PDFs and images together with ColPali and CocoIndex](https://cocoindex.io/blobs/docs-v1/img/examples/multi-format-indexing/cover.png)
 
-Real document sets are a mix — scanned reports, slide exports, screenshots, and PDFs all jumbled together. Parsing each format into clean text is brittle and loses the layout (tables, charts, figures) that often *is* the answer. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that sidesteps parsing entirely: render every PDF page to an image, embed pages and standalone images alike with the multi-vector [ColPali](https://huggingface.co/vidore/colpali-v1.2) model, and store them in one [Qdrant](https://qdrant.tech/) collection. A text query then retrieves the most relevant *page*, no matter what format it started as.
+Real document sets are a mix — scanned reports, slide exports, screenshots, and PDFs all jumbled together. Parsing each format into clean text is brittle and loses the layout (tables, charts, figures) that often *is* the answer. Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that sidesteps parsing entirely: render every PDF page to an image, embed pages and standalone images alike with the multi-vector [ColPali](https://huggingface.co/vidore/colpali-v1.2) model, and store them in one [Qdrant](https://qdrant.tech/) collection. A text query then retrieves the most relevant *page*, no matter what format it started as.
 
 The whole pipeline is ordinary `async` Python. The slow per-page model inference runs on a [GPU runner](/docs/programming_guide/function/), and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — add a document and only its pages get embedded.
 

@@ -8,9 +8,9 @@ tags: [vector-index, ai-sessions]
 
 ![Search your AI coding sessions with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/cover.png)
 
-[Entire](https://entire.io) captures every AI coding session you run — the full conversation transcript, the prompt you started from, an AI-written context summary, and metadata like token counts and files touched — as checkpoints on disk. We'll take that folder of checkpoints and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English: "how did I fix the auth bug" finds the right session even when it shares no keywords with what you typed.
+[Entire](https://entire.io) captures every AI coding session you run (the full conversation transcript, the prompt you started from, an AI-written context summary, and metadata like token counts and files touched) as checkpoints on disk. We'll take that folder of checkpoints and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English: "how did I fix the auth bug" finds the right session even when it shares no keywords with what you typed.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so each new session you capture only embeds what changed, and every kind of checkpoint file is parsed by the same `process_file` component.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, each new session you capture only embeds what changed, and every kind of checkpoint file is parsed by the same `process_file` component.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/entire_session_search)
 
@@ -53,7 +53,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-Each row of the embeddings table is one searchable piece of text — a transcript turn, a prompt, or a context chunk — tagged with its `content_type`, `role`, and the session it came from. The metadata table keeps one row per session for the structured fields. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+Each row of the embeddings table is one searchable piece of text (a transcript turn, a prompt, or a context chunk) tagged with its `content_type`, `role`, and the session it came from. The metadata table keeps one row per session for the structured fields. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

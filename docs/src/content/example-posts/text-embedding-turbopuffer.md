@@ -26,7 +26,7 @@ From a high level, these are the steps:
 
 You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
-For the chunk-and-embed half of the pipeline — `process_file`, `RecursiveSplitter`, and `SentenceTransformerEmbedder` — read the [base walkthrough](/docs/examples/text-embedding/). Here we focus on the one part that differs: the Turbopuffer target.
+For the chunk-and-embed half of the pipeline (`process_file`, `RecursiveSplitter`, and `SentenceTransformerEmbedder`) read the [base walkthrough](/docs/examples/text-embedding/). Here we focus on the one part that differs: the Turbopuffer target.
 
 ## Set up the Turbopuffer client
 

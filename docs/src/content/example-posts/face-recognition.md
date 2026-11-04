@@ -10,7 +10,7 @@ tags: [multimodal, face-recognition]
 
 We'll take a folder of photos and make them searchable *by face* — the core of "find every photo of this person." For each image we detect every face, crop it, embed it into a 128-d vector with [`face_recognition`](https://github.com/ageitgey/face_recognition) (dlib), and index the faces in [Qdrant](https://qdrant.tech/). Then a query face finds the nearest indexed faces — the same person across different photos lands close together.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, the managed Qdrant collection — runs in a Rust engine underneath, so adding a photo only re-detects that photo, and the slow detection/embedding steps run on a [GPU runner](/docs/programming_guide/function/) instead of blocking the event loop.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and the Qdrant collection. As a result, adding a photo only re-detects that photo, and the slow detection/embedding steps run on a [GPU runner](/docs/programming_guide/function/) instead of blocking the event loop.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition)
 
@@ -133,7 +133,7 @@ The example ships a handful of famous group photos in `images/` (the 1927 Solvay
 cocoindex update main        # or: cocoindex update -L main   (keep watching the folder)
 ```
 
-On the sample set this indexes **36 faces** — 29 from the Solvay conference alone — each as a Qdrant point keyed by `(filename, bounding box)`.
+On the sample set this indexes **36 faces** (29 from the Solvay conference alone) each as a Qdrant point keyed by `(filename, bounding box)`.
 
 ## Search by face
 

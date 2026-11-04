@@ -1,4 +1,5 @@
 ---
+import ScrollRegions from './ScrollRegions.astro';
 // Docs header: the shared <Nav> bar from @cocoindex/brand, fed this site's
 // links. v1 is the only version in the header; the legacy v0 docs are linked
 // from the footer instead.
@@ -21,3 +22,5 @@ const { mobileSheetId } = Astro.props as Props;
 <!-- Copy-to-clipboard for every `.code-figure .copy` button — shared behavior
      from @cocoindex/brand/copy-code (identical to home + blog). -->
 <script>import '@cocoindex/brand/copy-code';</script>
+
+<ScrollRegions />

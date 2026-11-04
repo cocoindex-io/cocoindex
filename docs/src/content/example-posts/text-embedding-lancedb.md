@@ -8,9 +8,9 @@ tags: [vector-index, lancedb]
 
 ![Semantic Search with LanceDB and CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-lancedb/cover.png)
 
-This is the [Semantic Search 101](/docs/examples/text-embedding/) example with one thing changed: the vectors land in [LanceDB](https://lancedb.github.io/lancedb/) instead of Postgres. LanceDB is an embedded, file-based vector store — no server to stand up, no `POSTGRES_URL`, just a directory on disk you can copy to move. Everything else — read Markdown, chunk, embed each chunk — is identical, so this post focuses on the one part that differs: the connector.
+Use [LanceDB](https://lancedb.github.io/lancedb/) as the target for [Semantic Search 101](/docs/examples/text-embedding/). LanceDB stores the vectors in a directory on disk, so you don't need a server or `POSTGRES_URL`. Reading Markdown, chunking, and embedding follow the base example.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only what changed gets re-embedded and re-upserted.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only what changed gets re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_lancedb)
 

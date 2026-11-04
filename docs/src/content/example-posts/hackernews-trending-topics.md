@@ -8,7 +8,7 @@ tags: [llm, custom-source]
 
 ![Trending Topics from HackerNews](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/cover.png)
 
-What is the tech community talking about right now? In this tutorial, we'll build a pipeline that scrapes recent HackerNews stories and their comment threads, uses an LLM to pull out the topics each message is about, and stores everything in Postgres so you can rank what's trending and search by topic.
+Build a pipeline that scrapes recent HackerNews stories and their comment threads, uses an LLM to pull out the topics each message is about, and stores everything in Postgres so you can rank what's trending and search by topic.
 
 The data source here isn't a folder of files — it's a public HTTP API. We fetch threads on the fly with the [Algolia HackerNews API](https://hn.algolia.com/api), so this example doubles as a recipe for plugging any custom source into a CocoIndex pipeline. Each run catches up on the latest stories, and because CocoIndex memoizes per-message work, re-running only does the new work.
 
@@ -120,7 +120,7 @@ async def extract_topics(text: str | None) -> list[str]:
     return TopicsResponse.model_validate_json(content).topics
 ```
 
-The prompt in `TopicsResponse` does the heavy lifting: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
+The prompt in `TopicsResponse` defines topic normalization: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
 
 [→ Function](/docs/programming_guide/function/)
 

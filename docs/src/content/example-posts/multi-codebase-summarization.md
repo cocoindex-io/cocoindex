@@ -8,7 +8,7 @@ tags: [llm, structured-data-extraction]
 
 ![Multi-Codebase Summarization](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/cover.png)
 
-Your code is the source of truth. In this tutorial, we'll build a pipeline that automatically generates a one-pager wiki for each project in a list, that never goes out-of-date with incremental processing. Think about building your own deep wiki that is always fresh.
+Build a pipeline that generates a one-page wiki for each project in a list. Incremental processing updates each summary when its source code changes.
 
 For example, for each [cocoindex example project](https://github.com/cocoindex-io/cocoindex/tree/main/examples), we can have an auto-one-pager like this:
 
@@ -484,7 +484,7 @@ Only the new project is processed.
 
 ## Key patterns demonstrated
 
-This example showcases several powerful patterns:
+The pipeline combines these patterns:
 
 1. **Structured LLM outputs** with Instructor + Pydantic models
 2. **Memoized LLM calls** to avoid redundant API costs

@@ -10,11 +10,11 @@ tags: [knowledge-graph, llm-extraction]
 
 Podcasts are one of the richest sources of expert knowledge on the internet. A single Lex Fridman or Dwarkesh Patel episode can contain dozens of substantive claims about people, technologies, and organizations — but it's all locked inside hours of audio. You can't query any of it, and you can't cross-reference what two different guests said about the same topic.
 
-In this tutorial, we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns YouTube podcast episodes into a queryable knowledge graph. It downloads audio, transcribes with speaker diarization, uses an LLM to extract structured statements and entities, resolves duplicates across episodes, and stores everything in [SurrealDB](https://github.com/surrealdb/surrealdb) as a graph.
+Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns YouTube podcast episodes into a queryable knowledge graph. It downloads audio, transcribes with speaker diarization, uses an LLM to extract structured statements and entities, resolves duplicates across episodes, and stores everything in [SurrealDB](https://github.com/surrealdb/surrealdb) as a graph.
 
 ![Podcast episodes flowing through CocoIndex with typed LLM extraction into a SurrealDB knowledge graph](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/diagram-dark.svg)
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed graph targets — runs in a Rust engine underneath, so re-running only processes new or changed episodes.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and graph target management. As a result, re-running only processes new or changed episodes.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/conversation_to_knowledge)
 
@@ -113,7 +113,7 @@ class RawStatement(pydantic.BaseModel):
     mentioned_org: list[str]     # ["OpenAI"]
 ```
 
-Every name must be **self-contained** — the prompt forbids pronouns, speaker labels, or contextual references — because statements from different episodes get cross-referenced later, and a name like "he" or "the host" is meaningless outside its transcript.
+Every name must be **self-contained** (the prompt forbids pronouns, speaker labels, or contextual references) because statements from different episodes get cross-referenced later, and a name like "he" or "the host" is meaningless outside its transcript.
 
 ### Declare the session and statements
 
@@ -198,7 +198,7 @@ async def create_knowledge_base(all_session_raw, entity_dedup, entity_tables, ..
                         to_table=entity_tables[cfg.name])   # polymorphic target
 ```
 
-The `statement_mentions` relationship is **polymorphic** — its target can be a person, tech, or org table — and `to_table` tells CocoIndex which table the target ID belongs to. The targets themselves are mounted once in `app_main`:
+The `statement_mentions` relationship is **polymorphic** (its target can be a person, tech, or org table) and `to_table` tells CocoIndex which table the target ID belongs to. The targets themselves are mounted once in `app_main`:
 
 ```python title="conv_knowledge/app.py"
 statement_mentions_rel = await surrealdb.mount_relation_target(
@@ -224,7 +224,7 @@ This isn't a one-shot job — you'll add episodes over time and evolve the schem
 | Entity resolution (product) | **Runs fresh** | New type |
 | Knowledge base creation | **Re-declared** | New nodes + relationships |
 
-The expensive operations — download, transcription, speaker ID — are fully reused. Add one entity type across 50 episodes and you re-run only the statement-extraction calls plus resolution for the new type.
+The expensive operations (download, transcription, speaker ID) are fully reused. Add one entity type across 50 episodes and you re-run only the statement-extraction calls plus resolution for the new type.
 
 ## Run the pipeline
 
