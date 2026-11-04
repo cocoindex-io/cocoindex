@@ -145,10 +145,26 @@ def test_dump_diffs_and_notes_render_at_their_positions() -> None:
     assert len(contents) == 7
 
 
-def test_a_final_answer_renders_as_an_assistant_message() -> None:
+def test_a_parallel_step_renders_one_tool_message_per_call_in_call_order() -> None:
+    """Every tool call id must be answered, in order, or the provider rejects the history."""
     spec = _spec().spec("worker", "t")
-    prefix = Transcript((Step(ModelOutput(answer="done"), ()),))
-    assert render_messages(spec, prefix, RunHints())[2] == {
-        "role": "assistant",
-        "content": "done",
-    }
+    batch = ModelOutput(
+        calls=(ToolCall("probe", {"name": "a"}), ToolCall("probe", {"name": "b"}))
+    )
+    prefix = Transcript(
+        (
+            Step(
+                batch,
+                (ToolResult("probe", True, "A"), ToolResult("probe", False, "no b")),
+            ),
+            Step(ModelOutput(answer="done"), ()),
+        )
+    )
+    messages = render_messages(spec, prefix, RunHints())
+    assert [tc["id"] for tc in messages[2]["tool_calls"]] == ["call_0_0", "call_0_1"]
+    assert [(m["role"], m["tool_call_id"], m["content"]) for m in messages[3:5]] == [
+        ("tool", "call_0_0", '{"ok":true,"value":"A"}'),
+        ("tool", "call_0_1", '{"ok":false,"value":"no b"}'),
+    ]
+    assert messages[5] == {"role": "assistant", "content": "done"}
+    assert len(messages) == 6
