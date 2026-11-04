@@ -690,7 +690,15 @@ a { color: var(--maroon-ink); }
 :root #main-content:focus { outline: none; }
 :root .prose :is(h2, h3, h4, h5, h6) { scroll-margin-top: calc(var(--bar-h) + 24px); }
 :root .side-group li a { min-height: 34px; display: flex; align-items: center; }
-:root .code-figure:not(:has(.file)) pre.astro-code { padding-top: 52px !important; }
+/* Untitled blocks float the copy button in the top-right corner. A one-line
+   block reserves the button's width on the right, so a short command keeps its
+   normal height. A multi-line block gets a top row for the button only on touch
+   screens, where the button is always visible. With hover, the button shows
+   only while the pointer is over the block. */
+:root .code-figure:not(:has(.file)):not(:has(.line + .line)) pre.astro-code { padding-right: 104px !important; }
+@media (hover: none) {
+  :root .code-figure:not(:has(.file)):has(.line + .line) pre.astro-code { padding-top: 52px !important; }
+}
 :root .code-figure .bar .copy { min-height: 32px; }
 :root .ai-toggle { min-width: 36px; }
 :root .prose code { overflow-wrap: anywhere; }
@@ -720,7 +728,9 @@ a { color: var(--maroon-ink); }
   :root .mobile-list a, :root .mobile-tabs button, :root .mobile-close { min-height: 44px; }
   :root .mobile-list a.sub-sub { padding-left: 36px; }
   :root .ai-primary, :root .ai-toggle, :root .code-figure .bar .copy { min-height: 40px; }
-  :root .code-figure:not(:has(.file)) pre.astro-code { padding-top: 60px !important; }
+  @media (hover: none) {
+    :root .code-figure:not(:has(.file)):has(.line + .line) pre.astro-code { padding-top: 60px !important; }
+  }
 }
 
 /* Section directories put page names before decoration. */
