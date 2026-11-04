@@ -1,16 +1,16 @@
-"""Test-only tools. The scripted model lives in ``coco_harness.testing``."""
+"""Test-only tools. The scripted model and the counting registry live in
+``coco_harness.testing``."""
 
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 
 import cocoindex as coco
 
-from coco_harness import Tool, ToolRegistry, tool
+from coco_harness import Tool, tool
 from coco_harness.spec import Json
 from coco_harness.tools import SessionContext
-from coco_harness.transcript import ToolCall, ToolResult, canonical_json
+from coco_harness.transcript import canonical_json
 
 # The mapping behind the live probe tool, read by the kind's validator. One
 # probe tool is live at a time: a test builds its own.
@@ -89,28 +89,3 @@ def explode_tool(errors: Mapping[str, Exception]) -> Tool:
         return "fine"
 
     return explode
-
-
-class CountingRegistry(ToolRegistry):
-    """A registry that counts executions per tool, across ``restrict()``.
-
-    Tests assert on model calls to see inference, and on tool executions to
-    see whether a session's body ran at all: a skipped session executes no
-    tool.
-    """
-
-    def __init__(
-        self, tools: Iterable[Tool] = (), executed: Counter[str] | None = None
-    ) -> None:
-        super().__init__(tools)
-        self.executed: Counter[str] = executed if executed is not None else Counter()
-
-    def restrict(self, names: Iterable[str]) -> ToolRegistry:
-        return CountingRegistry(super().restrict(names).tools(), self.executed)
-
-    async def execute(self, ctx: SessionContext, call: ToolCall) -> ToolResult:
-        self.executed[call.tool] += 1
-        return await super().execute(ctx, call)
-
-    def reset(self) -> None:
-        self.executed.clear()

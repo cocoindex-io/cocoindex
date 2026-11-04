@@ -125,7 +125,9 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         }
 
         // 3. Create readiness guard from parent's components_readiness.
-        let readiness_guard = parent_ctx.components_readiness().clone().add_child();
+        // A live component resolves its registration with a default outcome
+        // (no bit, no open children): live re-runs report nothing upward.
+        let readiness_guard = parent_ctx.components_readiness().clone().add_child(None);
 
         // 4. Create cancellation token as child of app's root token.
         let cancellation_token = parent_ctx.app_ctx().cancellation_token().child_token();

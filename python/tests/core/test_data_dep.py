@@ -432,17 +432,24 @@ async def _parent(name: str, children: list[str]) -> None:
 
 
 @coco.fn(memo=True)
-async def _grandparent(name: str, parent: str, children: list[str]) -> None:
+async def _grandparent(name: str, parent: str, children: list[str], salt: int = 0) -> None:
     _metrics.increment(f"run.{name}")
     await coco.use_mount(coco.component_subpath(parent), _parent, parent, children)
 
 
 @coco.fn
-async def _tree_main(gp: str, parent: str, children: list[str]) -> None:
-    await coco.use_mount(coco.component_subpath(gp), _grandparent, gp, parent, children)
+async def _tree_main(gp: str, parent: str, children: list[str], salt: int = 0) -> None:
+    await coco.use_mount(
+        coco.component_subpath(gp), _grandparent, gp, parent, children, salt
+    )
 
 
-def test_a_memoized_ancestor_of_an_open_component_reruns_its_body() -> None:
+def test_a_memoized_ancestor_is_reused_while_its_open_descendants_reads_validate() -> (
+    None
+):
+    """Transitive validation by path: a flagged ancestor validates the open
+    descendants its memo lists from their stored rows and is reused without
+    mounting anything; one invalid read beneath it re-runs its body."""
     _reset()
     with tempfile.TemporaryDirectory() as d:
         a = pathlib.Path(d) / "a.txt"
@@ -458,13 +465,25 @@ def test_a_memoized_ancestor_of_an_open_component_reruns_its_body() -> None:
             "run.closed": 1,
         }
 
-        # Unchanged: both ancestors run their bodies (their memos are flagged),
-        # the closed sibling and the open child hit on their own entries.
+        # Unchanged: the grandparent's probe follows its memo's list to the
+        # parent's row and the parent's list to the open child's row, validates
+        # that read once and reuses. Nothing beneath is probed or run.
         app.update_blocking()
-        assert _metrics.collect() == {"run.gp": 1, "run.p": 1, "validate.file": 1}
+        assert _metrics.collect() == {"validate.file": 1}
 
-        # Once the open child records nothing on a miss, its entry is closed,
-        # the ancestors store unflagged memos, and the next run reuses them.
+        # Touched: the read moved while staying valid. The grandparent's probe
+        # refreshes the open child's row in place, so the next probe takes the
+        # mtime fast path again.
+        _touch(a)
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1, "validate.file.digest": 1}
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1}
+
+        # Edited: the read is invalid at the grandparent's probe, then at the
+        # parent's, then at the open child's own; each level re-runs its body.
+        # This run records nothing, so the ancestors store unflagged memos and
+        # the next run reuses the grandparent without validating anything.
         _reads["open"] = []
         _write(a, "A2")
         app.update_blocking()
@@ -472,11 +491,61 @@ def test_a_memoized_ancestor_of_an_open_component_reruns_its_body() -> None:
             "run.gp": 1,
             "run.p": 1,
             "run.open": 1,
-            "validate.file": 1,
-            "validate.file.digest": 1,
+            "validate.file": 3,
+            "validate.file.digest": 3,
         }
         app.update_blocking()
         assert _metrics.collect() == {}
+
+
+def test_a_reused_ancestor_of_open_descendants_still_flags_its_parent() -> None:
+    """A flagged memo reused through the walk still reports the bit upward, so
+    a parent whose body re-runs lists it again; otherwise that parent would
+    store an unflagged memo and skip the read on its next probe."""
+    _reset()
+    with tempfile.TemporaryDirectory() as d:
+        a = pathlib.Path(d) / "a.txt"
+        _write(a, "A1")
+        _reads["open"] = [a]
+        app = _app("test_dd_tree_bit", _tree_main, "gp", "p", ["open"], 0)
+        app.update_blocking()
+        _metrics.clear()
+
+        # The grandparent's own key changes; the parent's memo is reused
+        # through the walk and must report the bit.
+        app = _app("test_dd_tree_bit", _tree_main, "gp", "p", ["open"], 1)
+        app.update_blocking()
+        assert _metrics.collect() == {"run.gp": 1, "validate.file": 1}
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1}
+
+
+def test_a_flagged_ancestor_under_full_reprocess_and_in_a_preview() -> None:
+    _reset()
+    with tempfile.TemporaryDirectory() as d:
+        a = pathlib.Path(d) / "a.txt"
+        _write(a, "A1")
+        _reads["open"] = [a]
+        app = _app("test_dd_tree_modes", _tree_main, "gp", "p", ["open"])
+        app.update_blocking()
+        _metrics.clear()
+
+        # full_reprocess bypasses every memo from earlier operations, the
+        # flagged ones included; the memos it stores are reused next run.
+        app.update_blocking(full_reprocess=True)
+        assert _metrics.collect() == {"run.gp": 1, "run.p": 1, "run.open": 1}
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1}
+
+        # A preview reuses through the walk too, and its refresh of the open
+        # child's row stays in the preview: the next real run refreshes again.
+        _touch(a)
+        app.update_blocking(preview=True)
+        assert _metrics.collect() == {"validate.file": 1, "validate.file.digest": 1}
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1, "validate.file.digest": 1}
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1}
 
 
 @coco.fn(memo=False)
@@ -500,6 +569,8 @@ async def _non_memoized_main(parent: str, child: str) -> None:
 
 
 def test_a_non_memoized_open_child_still_flags_its_memoized_parent() -> None:
+    """A non-memoized child drops its records, so there is no row to validate
+    them from: the parent's probe stops there and its body re-runs every run."""
     _reset()
     with tempfile.TemporaryDirectory() as d:
         a = pathlib.Path(d) / "a.txt"
@@ -802,6 +873,73 @@ def test_a_released_kind_invalidates_its_entries_and_a_duplicate_name_warns(
         first = coco.DataDep("test-dup", validate=_validate_keep)
         second = coco.DataDep("test-dup", validate=_validate_keep)
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Stop conditions of the walk through open descendants
+# ---------------------------------------------------------------------------
+
+
+_STOP_CHILDREN: dict[str, tuple[Any, tuple[Any, ...]]] = {
+    "conflict": (_snapshot_body, ("conflict",)),
+    "narrow": (_record_kind, ("n", "narrow")),
+    "dynamic": (_record_dynamic_kind, ("k",)),
+}
+
+
+@coco.fn(memo=True)
+async def _parent_of_stop_child(name: str, child: str) -> None:
+    _metrics.increment(f"run.{name}")
+    fn, args = _STOP_CHILDREN[child]
+    await coco.use_mount(coco.component_subpath(child), fn, *args)
+
+
+@coco.fn
+async def _stop_main(name: str, child: str) -> None:
+    await coco.use_mount(coco.component_subpath(name), _parent_of_stop_child, name, child)
+
+
+def test_an_open_child_without_a_row_stops_the_walk() -> None:
+    """A child whose run observed one key in two states stores no row (and
+    still reports the bit): the parent's probe finds nothing to validate and
+    its body re-runs, which is what lets the child run again."""
+    _reset()
+    app = _app("test_dd_stop_conflict", _stop_main, "p", "conflict")
+    app.update_blocking()
+    app.update_blocking()
+    assert _metrics.collect() == {"run.p": 2, "run.snapshot": 2}
+
+
+def test_a_descendant_record_that_fails_to_decode_stops_the_walk(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _reset()
+    app = _app("test_dd_stop_narrow", _stop_main, "p", "narrow")
+    app.update_blocking()
+    with caplog.at_level("WARNING", logger="cocoindex._internal.data_dep"):
+        app.update_blocking()
+    # Neither the parent's walk nor the child's own probe called the validator
+    # (which raises): both bodies re-ran.
+    assert _metrics.collect() == {"run.p": 2, "run.n": 2}
+    assert any("failed to deserialize" in r.message for r in caplog.records)
+
+
+def test_a_descendant_kind_no_longer_registered_stops_the_walk(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _reset()
+    _kinds["k"] = coco.DataDep("test-released-under-parent", validate=_validate_keep)
+    app = _app("test_dd_stop_released", _stop_main, "p", "dynamic")
+    app.update_blocking()
+    app.update_blocking()
+    assert _metrics.collect() == {"run.p": 1, "run.k": 1}
+
+    _kinds["k"] = RECORDED
+    gc.collect()
+    with caplog.at_level("WARNING", logger="cocoindex._internal.data_dep"):
+        app.update_blocking()
+    assert _metrics.collect() == {"run.p": 1, "run.k": 1}
+    assert any("no longer registered" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

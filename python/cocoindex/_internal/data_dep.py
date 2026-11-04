@@ -334,3 +334,22 @@ async def validate_data_deps_async(
         for i, value in zip(awaitable_indices, resolved):
             outcomes[i] = value
     return _fold_outcomes(decoded, outcomes)
+
+
+async def validate_stored_data_deps(
+    path: str, stored: list[StoredDataDep]
+) -> tuple[list[RefreshedDataDep], bool, bool]:
+    """The engine's processor-free entry (``EngineProfile::validate_data_deps``).
+
+    A memoized ancestor's probe validates the open descendants its memo lists
+    from their stored rows before reusing it, while none of them is mounted:
+    there is no processor, no state handler and no component context for the
+    row at ``path``, only its records. Same two phases as a component's own
+    probe: decode (a failure is a logged miss, no validator called), then the
+    validators, whose exceptions propagate. Registered at ``init_runtime``.
+    """
+    decoded = decode_stored_data_deps(stored, where=f"component {path}")
+    if decoded is None:
+        return [], False, False
+    validation = await validate_data_deps_async(decoded)
+    return validation.refreshed, validation.can_reuse, validation.states_changed

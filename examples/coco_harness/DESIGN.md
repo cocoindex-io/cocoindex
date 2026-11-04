@@ -650,14 +650,32 @@ covered:
   count it saw, are unchanged — an edit elsewhere under the root costs
   nothing — and a `for_each` session re-runs its body (no inference) on any
   change under the walk, which is what gets its workers probed.
-- A session whose **child** recorded a read re-runs its body every run (the
-  engine's `cannot_skip` bit; records are never copied upward) while the
-  child is skipped on its own entry. A child that recorded nothing is closed
-  in effect, whatever tool it was mounted with. Open is therefore decided by
-  what a run actually read; `closed_ok` and `closed_input_ok` remain as the
-  check of a different property — what may be an input of a memoized worker
-  whose key must cover everything, so that a fan-out of thousands never flags
-  its parent.
+- A session whose **child** recorded a read is skipped too while that read
+  validates: records are never copied upward, but the engine lists the open
+  children in the parent's memo and, when it probes the parent, validates
+  their reads from their own stored entries (transitive validation by path,
+  engine PR #2667 of 2026-11-04; until then such a parent re-ran its body
+  every run). One invalid read beneath it re-runs the parent's body, which
+  is what mounts and re-runs the child. A child that recorded nothing is
+  closed in effect, whatever tool it was mounted with. Open is therefore
+  decided by what a run actually read; `closed_ok` and `closed_input_ok`
+  remain as the check of a different property — what may be an input of a
+  memoized worker whose key must cover everything, so that a fan-out of
+  thousands never makes its parent walk thousands of entries. The parent's
+  reuse remains authoritative over everything its own records and its open
+  children's records do not cover, exactly as for closed children: a child
+  that reads without recording (a non-memoized child drops its records; a
+  closed worker must not read at all) is the parent's miss or the user's bug.
+
+The floor for an edit under a `for_each`: any change under the walk re-runs
+the orchestrator's body (zero inference) and probes every worker, because a
+worker can only be probed or re-run by its parent's body, which builds the
+worker's processor and consumes its answer; the N probes are what ownership
+and change detection need. The body re-run with zero inference *is* the skip
+for a fan-out parent. What transitive validation removes is the other case:
+the unchanged rerun of a flow with a planner or reader child, which used to
+re-run the orchestrator's body and probe every worker although nothing had
+changed.
 - A **contained failure** (below) is recorded as a read that never
   validates, so a session that absorbed one re-runs until a run absorbs none.
 
@@ -742,6 +760,7 @@ layer (one row per path); `memo_key` applies there too.
 |---|---|---|---|
 | Progress survives failure | solved by `use_mount` per turn | ✅ | partial fn-memo flush on failure (S–M; pure entries only) |
 | Skip unchanged **open** sessions | shipped: `coco.DataDep` + `use_data_dep` + `cannot_skip`; adopted 2026-11-04 (*Open vs closed*) | ✅ | — |
+| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2667, 2026-11-04); no harness change | ✅ | per-run validation cache (one validation per record per operation; S) |
 | Memo probe ("would this hit?") | deferred | — | S |
 | A component hit keeps its `use_state` values | engine behaviour | ✅ | — |
 
@@ -752,8 +771,10 @@ dependency; `DataDep`/`use_data_dep` is the runtime data dependency.
 fingerprints registered in the process now, must be constructed at import,
 and is unioned into every ancestor's entry. The engine design stores deps
 only in the component that read them, validates them from stored bytes at
-lookup, and propagates an O(1) `cannot_skip` flag so a memoized ancestor
-re-runs its body while its closed children still hit. With it, "open" is
+lookup, and propagates an O(1) `cannot_skip` flag plus the list of open children, so
+a memoized ancestor validates its open descendants' records from their rows
+and is skipped with them, while its closed children are carried over. With
+it, "open" is
 decided by what a run actually read rather than by the entry point; the
 harness keeps `closed_ok` / `closed_input_ok` as the check of what may be an
 input of a worker whose key must cover everything (*Open vs closed*).
@@ -762,7 +783,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 `test_a_session_is_skipped_while_what_it_read_is_unchanged`,
 `test_a_missing_file_is_a_recorded_read_too`,
 `test_a_file_edit_under_for_each_reruns_its_worker_and_the_fan_out_body_only`,
-`test_a_child_that_read_flags_its_parent_while_being_skipped_itself`,
+`test_a_parent_is_skipped_while_its_childs_reads_validate`,
 `test_a_child_that_read_nothing_lets_its_parent_skip`,
 `test_a_contained_failure_reruns_the_session_until_a_run_absorbs_none`.
 

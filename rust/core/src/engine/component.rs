@@ -14,7 +14,7 @@ use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
     RestoredComponentMemo, cleanup_tombstone, delete_component_memo, eager_existence_upsert,
     post_submit_for_build, submit, update_component_memo_states,
-    use_or_invalidate_component_memoization,
+    use_or_invalidate_component_memoization, validate_open_descendants,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -315,10 +315,19 @@ pub(crate) struct ComponentRunOutcome {
     logic_deps: HashSet<Fingerprint>,
     target_provider_deps: TargetProviderDeps,
     /// The component, or a descendant, recorded data dependencies. A parent
-    /// stores its memo flagged `has_open_descendants`, which is never reused:
-    /// a reuse would carry the recording component over without validating
-    /// what it read. Records themselves never travel upward.
+    /// stores its memo flagged `has_open_descendants` and lists the child
+    /// among its `open_children`; its next probe reuses the memo only after
+    /// validating that child's records from the child's own row, since a
+    /// reuse carries the child over without mounting it. Records themselves
+    /// never travel upward.
     cannot_skip: bool,
+    /// In a parent's accumulated children outcome: the paths, relative to the
+    /// parent, of the direct children that reported `cannot_skip`. Set by the
+    /// child's readiness guard when the child's outcome is merged (see
+    /// `ComponentBgChildReadinessChildGuard::resolve_result`), so an
+    /// outcome's own list is never what a component reports upward about
+    /// itself: a component is listed by its parent, not by its own outcome.
+    open_children: Vec<StablePath>,
 }
 
 impl ComponentRunOutcome {
@@ -344,6 +353,7 @@ impl ComponentRunOutcome {
             logic_deps: logic_deps.into_iter().collect(),
             target_provider_deps,
             cannot_skip,
+            open_children: Vec::new(),
         }
     }
 
@@ -352,6 +362,7 @@ impl ComponentRunOutcome {
         self.logic_deps.extend(other.logic_deps);
         self.target_provider_deps.extend(other.target_provider_deps);
         self.cannot_skip |= other.cannot_skip;
+        self.open_children.extend(other.open_children);
     }
 }
 
@@ -367,6 +378,11 @@ pub struct ComponentBgChildReadiness {
 
 pub struct ComponentBgChildReadinessChildGuard {
     readiness: ComponentBgChildReadiness,
+    /// The child this guard stands for, relative to the component whose
+    /// readiness this is: `Some` for a component's run, `None` for a
+    /// forwarded aggregate (a `StatsGroup`, a live component's registration),
+    /// whose outcome already carries the right `open_children`.
+    child: Option<StablePath>,
     resolved: bool,
 }
 
@@ -395,7 +411,22 @@ impl ComponentBgChildReadinessChildGuard {
     /// Like `resolve`, but propagates a full `SharedResult`: `Ok` merges the
     /// outcome (logic deps), `Err` fails the enclosing readiness. Used by a
     /// `StatsGroup` to forward its members' aggregate readiness to its parent.
-    pub(crate) fn resolve_result(mut self, result: SharedResult<ComponentRunOutcome>) {
+    ///
+    /// For a component's own guard the outcome's `open_children` is rewritten
+    /// here: it becomes this child's relative path when the child reported
+    /// `cannot_skip`, and empty otherwise. The outcome a component returns
+    /// from `execute_once` is its *children* outcome (its own list), which
+    /// must not leak into the parent's.
+    pub(crate) fn resolve_result(mut self, mut result: SharedResult<ComponentRunOutcome>) {
+        if let Some(child) = self.child.take()
+            && let Ok(outcome) = &mut result
+        {
+            outcome.open_children = if outcome.cannot_skip {
+                vec![child]
+            } else {
+                Vec::new()
+            };
+        }
         {
             let mut state = self.readiness.state().lock().unwrap();
             state.remaining_count -= 1;
@@ -430,10 +461,15 @@ impl ComponentBgChildReadiness {
         &self.inner.readiness
     }
 
-    pub fn add_child(self) -> ComponentBgChildReadinessChildGuard {
+    /// Register one pending child. `child` is the child's path relative to
+    /// the component whose readiness this is, for a component's run; `None`
+    /// for an aggregate forwarded as a unit (see
+    /// `ComponentBgChildReadinessChildGuard::child`).
+    pub fn add_child(self, child: Option<StablePath>) -> ComponentBgChildReadinessChildGuard {
         self.state().lock().unwrap().remaining_count += 1;
         ComponentBgChildReadinessChildGuard {
             readiness: self,
+            child,
             resolved: false,
         }
     }
@@ -527,7 +563,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
         // The group counts as one pending child of the enclosing readiness, so
         // the parent component (or outer group) waits for it as a unit.
-        let parent_guard = self.components_readiness().clone().add_child();
+        let parent_guard = self.components_readiness().clone().add_child(None);
 
         let cancel_token = self.app_ctx().cancellation_token();
         let live = self.live();
@@ -733,24 +769,19 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         target_provider_deps: stored_provider_deps,
         row_fp,
         has_open_descendants,
+        open_children,
     }) = memo
     else {
         return Ok(MemoLookup::Miss {
             revalidated_states: None,
         });
     };
-    if has_open_descendants {
-        // A descendant recorded data dependencies: this memo is never reused
-        // (the row stays; the run that follows stores a fresh one).
-        debug!(
-            "memo of {} is not reused: a descendant recorded data dependencies",
-            comp_ctx.stable_path()
-        );
-        return Ok(MemoLookup::Miss {
-            revalidated_states: None,
-        });
-    }
     let has_own_data_deps = !memo_states.data_deps.is_empty();
+    // The component's own entry first: its states and records, through its
+    // processor. On a miss the states ride into the new memo; the data
+    // dependencies do not: the body about to run records the set that
+    // replaces them.
+    let mut revalidated_states: Option<(MemoStatesPayload<Prof>, bool)> = None;
     if processor.has_memo_state_handler() && !memo_states.is_empty() {
         let fut = processor.handle_memo_states(
             comp_ctx.app_ctx().env().host_runtime_ctx(),
@@ -759,8 +790,6 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         )?;
         let (new_states, can_reuse, states_changed) = fut.await?;
         if !can_reuse {
-            // The states ride into the new memo; the data dependencies do not:
-            // the body about to run records the set that replaces them.
             return Ok(MemoLookup::Miss {
                 revalidated_states: Some(MemoStatesPayload {
                     data_deps: Vec::new(),
@@ -768,17 +797,46 @@ async fn lookup_component_memo<Prof: EngineProfile>(
                 }),
             });
         }
-        // Reusable, but the states themselves moved (e.g. an mtime changed
-        // while the content hash did not): refresh them in the stored memo.
-        if states_changed {
-            update_component_memo_states(comp_ctx, &new_states, row_fp).await?;
+        revalidated_states = Some((new_states, states_changed));
+    }
+    if has_open_descendants {
+        // A descendant recorded data dependencies. Everything else a reuse
+        // would carry over unvalidated is already covered here: a
+        // descendant's logic and target-provider deps were merged into this
+        // row when it was stored (`execute_once`), and its argument and
+        // context memo states are the ancestor's inputs' doing, as for a
+        // closed descendant. Its data-dependency records are the one thing
+        // only its own row holds, so they are validated from there, by path,
+        // down through every open descendant.
+        if let Some(reason) = validate_open_descendants(comp_ctx, &open_children).await? {
+            debug!(
+                "memo of {} is not reused: {reason}",
+                comp_ctx.stable_path()
+            );
+            return Ok(MemoLookup::Miss {
+                revalidated_states: revalidated_states.map(|(new_states, _)| MemoStatesPayload {
+                    data_deps: Vec::new(),
+                    ..new_states
+                }),
+            });
         }
+    }
+    // Reusable, but the states themselves moved (e.g. an mtime changed
+    // while the content hash did not): refresh them in the stored memo.
+    if let Some((new_states, true)) = &revalidated_states {
+        update_component_memo_states(comp_ctx.app_store(), comp_ctx.stable_path(), new_states, row_fp)
+            .await?;
     }
     // Report the stored dependency sets upward even on a memo hit, so a
     // mounting parent's memo depends on this whole subtree (see
-    // `merge_logic_deps` in `execute_once`).
+    // `merge_logic_deps` in `execute_once`). The bit too: a reused ancestor
+    // of open descendants is still one, and its parent's row must list it.
     Ok(MemoLookup::Reuse(
-        ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps, has_own_data_deps),
+        ComponentRunOutcome::reused(
+            stored_logic_deps,
+            stored_provider_deps,
+            has_own_data_deps || has_open_descendants,
+        ),
         ComponentBuildOutput {
             ret,
             built_target_states_providers: Default::default(),
@@ -821,18 +879,27 @@ impl<Prof: EngineProfile> Component<Prof> {
     /// prune it before its task had started); readiness and membership are
     /// registered together, so a group can never see a member become ready
     /// without also tracking its activity.
-    fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> StartedTask<Prof> {
+    fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> Result<StartedTask<Prof>> {
         let activity = ActivityGuard::new(self.clone());
         let run = RunGuard::new(self.clone());
-        let child_readiness = context.parent_context().map(|parent_ctx| {
-            parent_ctx.push_active_member(self);
-            parent_ctx.components_readiness().clone().add_child()
-        });
-        StartedTask {
+        let child_readiness = match context.parent_context() {
+            Some(parent_ctx) => {
+                parent_ctx.push_active_member(self);
+                let relative_path: StablePath = self.relative_path()?.into();
+                Some(
+                    parent_ctx
+                        .components_readiness()
+                        .clone()
+                        .add_child(Some(relative_path)),
+                )
+            }
+            None => None,
+        };
+        Ok(StartedTask {
             activity,
             run,
             child_readiness,
-        }
+        })
     }
 
     /// Admit a run to the in-flight pool before its task is spawned, so a
@@ -1011,7 +1078,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         deadline: DeadlineContext,
         caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
-        let started = self.start_task(&context);
+        let started = self.start_task(&context)?;
         self.admit_before_spawn(&context, &started).await?;
         let StartedTask {
             activity,
@@ -1066,7 +1133,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
-        let started = self.start_task(&context);
+        let started = self.start_task(&context)?;
         self.admit_before_spawn(&context, &started).await?;
         let StartedTask {
             activity,
@@ -1145,7 +1212,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             activity,
             run,
             child_readiness: child_readiness_guard,
-        } = self.start_task(&context);
+        } = self.start_task(&context)?;
         // Pull on_error out of the delete context so the spawned task
         // can invoke it. The context still carries the same handler for
         // descendant GC sweeps to read and cascade.
@@ -1414,7 +1481,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                             let target_provider_deps =
                                 processor_context.take_target_provider_deps();
                             let data_deps = processor_context.take_data_deps();
-                            let has_open_descendants = children_outcome.cannot_skip;
+                            // The direct children that reported the bit, in
+                            // path order for deterministic storage. Taken, so
+                            // this component's list never leaks into the
+                            // parent's accumulated outcome (the parent's
+                            // guard would rewrite it anyway).
+                            let mut open_children =
+                                std::mem::take(&mut children_outcome.open_children);
+                            open_children.sort();
+                            open_children.dedup();
+                            let has_open_descendants = !open_children.is_empty();
                             let comp_memo = if let Some((kind_fp, key_fp)) = data_deps.conflict() {
                                 // The run observed one key in two states: no
                                 // stored state can validate its output. Store
@@ -1444,7 +1520,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 &logic_deps,
                                 &target_provider_deps,
                                 &data_dep_records,
-                                has_open_descendants,
+                                &open_children,
                             )
                             .await?;
                             children_outcome.cannot_skip =
@@ -1625,8 +1701,8 @@ impl<Prof: EngineProfile> Component<Prof> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, ComponentRunOutcome,
-        StatsGroup,
+        ActivityGuard, Component, ComponentBgChildReadiness, ComponentProcessor,
+        ComponentProcessorInfo, ComponentRunOutcome, StatsGroup,
     };
     use crate::engine::app::{App, AppUpdateOptions};
     use crate::engine::context::{
@@ -1643,7 +1719,7 @@ mod tests {
         submit,
     };
     use crate::engine::live_component::{MountLiveResult, mount_live_prepare};
-    use crate::engine::profile::{EngineProfile, Persist};
+    use crate::engine::profile::{DataDepsValidation, EngineProfile, Persist};
     use crate::engine::stats::ProcessingStats;
     use crate::engine::target_state::{
         ChildHandling, TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot,
@@ -1689,6 +1765,53 @@ mod tests {
         let mut grandparent = ComponentRunOutcome::default();
         grandparent.merge(parent);
         assert!(grandparent.cannot_skip);
+    }
+
+    /// A parent's accumulated outcome lists the direct children that reported
+    /// the bit, by the relative path their readiness guard was registered
+    /// with. A child's own list (its children) is replaced by the guard, so it
+    /// never leaks a level up; a forwarded aggregate (a stats group's) passes
+    /// its list through, since its members are the parent's direct children.
+    #[tokio::test]
+    async fn a_parents_outcome_lists_the_children_that_reported_the_bit() {
+        fn relative(key: &str) -> StablePath {
+            StablePath::root().concat_part(StableKey::Str(Arc::from(key)))
+        }
+        let readiness = ComponentBgChildReadiness::default();
+        let open_child = readiness.clone().add_child(Some(relative("open")));
+        let closed_child = readiness.clone().add_child(Some(relative("closed")));
+        let group = readiness.clone().add_child(None);
+
+        // An open child whose own children were open too: its outcome still
+        // carries its list, which must not become the parent's.
+        let mut open_outcome =
+            ComponentRunOutcome::reused(vec![], Default::default(), true);
+        open_outcome.open_children = vec![relative("grandchild")];
+        open_child.resolve(open_outcome);
+        closed_child.resolve(ComponentRunOutcome::reused(
+            vec![],
+            Default::default(),
+            false,
+        ));
+        let mut aggregate = ComponentRunOutcome::default();
+        aggregate.merge({
+            let mut member = ComponentRunOutcome::reused(vec![], Default::default(), true);
+            member.open_children = vec![relative("member")];
+            member
+        });
+        group.resolve(aggregate);
+        readiness.set_build_done();
+
+        let outcome = readiness
+            .readiness()
+            .wait()
+            .await
+            .clone()
+            .expect("readiness resolved with an error");
+        assert!(outcome.cannot_skip);
+        let mut listed = outcome.open_children.clone();
+        listed.sort();
+        assert_eq!(listed, vec![relative("member"), relative("open")]);
     }
 
     #[tokio::test]
@@ -1872,6 +1995,23 @@ mod tests {
         type TargetAction = ();
         type TargetActionSink = NoopSink;
         type TargetStateValue = ();
+
+        /// The test profile registers no kinds, so no record validates.
+        fn validate_data_deps(
+            _host_runtime_ctx: &(),
+            _path: &StablePath,
+            records: Vec<crate::engine::context::DataDepRecord>,
+        ) -> crate::prelude::Result<
+            impl Future<Output = crate::prelude::Result<DataDepsValidation>> + Send + 'static,
+        > {
+            Ok(async move {
+                Ok(DataDepsValidation {
+                    records,
+                    can_reuse: false,
+                    states_changed: false,
+                })
+            })
+        }
     }
 
     /// Optional processor body, given the component's processor context.
