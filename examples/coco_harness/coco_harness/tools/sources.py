@@ -154,12 +154,19 @@ class LocalDirSource:
                 "`k` representative files (default 5) with the head of each; the set is "
                 "hash-stable, so it barely changes when files are added.",
                 Volatility.STABLE,
+                args=("k",),
             ),
-            MethodSpec("read", "Full text of one file by key.", Volatility.PER_ITEM),
+            MethodSpec(
+                "read",
+                "Full text of one file by key.",
+                Volatility.PER_ITEM,
+                args=("key",),
+            ),
             MethodSpec(
                 "keys",
                 "Every file key (optionally under `prefix`). Volatile: planners only.",
                 Volatility.VOLATILE,
+                args=("prefix",),
             ),
         )
 
@@ -315,19 +322,30 @@ async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
     closed_ok=True,  # only ever reaches seeded handles in a closed session
 )
 async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
+    """Dispatch to the handle's method after checking it against the handle's card.
+
+    The name, the volatility gate and the argument names are all checked here,
+    for every handle kind, so an object's ``call`` only ever sees a method it
+    advertises with arguments it takes.
+    """
     obj = ctx.handles.get(args["handle"])
     method: str = args["method"]
-    for m in obj.methods():
-        if (
-            m.name == method
-            and m.volatility is Volatility.VOLATILE
-            and not ctx.spec.role.volatile_ok
-        ):
-            raise ToolError(
-                f"{method!r} is volatile and only available to planner roles; "
-                "use stats/sample, or ask a planner with observe()"
-            )
-    return await obj.call(method, dict(args.get("args", {})))
+    spec = next((m for m in obj.methods() if m.name == method), None)
+    if spec is None:
+        raise ToolError(f"unknown method {method!r} on a {obj.kind} handle")
+    if spec.volatility is Volatility.VOLATILE and not ctx.spec.role.volatile_ok:
+        raise ToolError(
+            f"{method!r} is volatile and only available to planner roles; "
+            "use stats/sample, or ask a planner with observe()"
+        )
+    call_args = dict(args.get("args", {}))
+    unknown = sorted(set(call_args) - set(spec.args))
+    if unknown:
+        raise ToolError(
+            f"{method} does not take {unknown}; it takes "
+            f"{list(spec.args) if spec.args else 'no arguments'}"
+        )
+    return await obj.call(method, call_args)
 
 
 @tool(
