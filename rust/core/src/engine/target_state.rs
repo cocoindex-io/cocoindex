@@ -748,7 +748,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
         provider: TargetStateProvider<Prof>,
     ) -> Result<()> {
         if self.providers.contains_key(&target_state_path) {
-            client_bail!(
+            already_declared_bail!(
                 "Target state provider already registered for path: {:?}",
                 target_state_path
             );

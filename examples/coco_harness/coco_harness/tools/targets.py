@@ -53,15 +53,16 @@ class LocalDirTargetHandle:
                 raise ToolError("declare_file needs string `filename` and `content`")
             try:
                 self.target.declare_file(filename, content)
+            except coco.AlreadyDeclaredError:
+                # A second declaration of one filename by this session: the
+                # engine refuses it, and the model cannot amend what it
+                # declared.
+                raise ToolError(
+                    f"{filename!r} was already declared by this session; a "
+                    "declaration is final for the run"
+                ) from None
             except ValueError as exc:
-                # An absolute or escaping filename, or a second declaration of
-                # one filename by this session: the engine refuses it, and
-                # the model cannot amend what it declared.
-                if "already declared" in str(exc):
-                    raise ToolError(
-                        f"{filename!r} was already declared by this session; a "
-                        "declaration is final for the run"
-                    ) from None
+                # An absolute, escaping or self-naming filename.
                 raise ToolError(str(exc)) from None
             return {"declared": filename}
         raise ToolError(f"unknown method {method!r} on a directory target")

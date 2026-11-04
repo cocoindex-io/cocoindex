@@ -160,7 +160,7 @@ impl<Prof: EngineProfile> AppRegistration<Prof> {
     pub fn new(name: &str, env: &Environment<Prof>) -> Result<Self> {
         let mut app_names = env.inner.app_names.lock().unwrap();
         if !app_names.insert(name.to_string()) {
-            client_bail!("App name already registered: {}", name);
+            already_declared_bail!("App name already registered: {}", name);
         }
         Ok(Self {
             name: name.to_string(),

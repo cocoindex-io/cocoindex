@@ -313,7 +313,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
             .entry(target_state_path.clone())
         {
             btree_map::Entry::Occupied(_) => {
-                client_bail!("Target state already declared with key: {key:?}");
+                already_declared_bail!("Target state already declared with key: {key:?}");
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_target_state);
@@ -409,7 +409,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             .entry(child_provider.target_state_path().clone())
         {
             btree_map::Entry::Occupied(_) => {
-                client_bail!("Target state already declared with key: {key:?}");
+                already_declared_bail!("Target state already declared with key: {key:?}");
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_target_state);

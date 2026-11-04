@@ -151,7 +151,7 @@ ExceptionHandler = Callable[
 Handlers receive the same exception object that a foreground call such as `await coco.use_mount(...)` would raise for the same failure:
 
 - **Python-originated failures** (your component, or a target connector, raised) arrive as the original exception. `type(exc)` is what was raised, `exc.__traceback__` is intact, and `exc.__cause__` / `exc.__context__` are preserved. Route by type with `isinstance`; render the traceback with `traceback.format_exception(exc)` or `logger.error(..., exc_info=exc)`.
-- **Engine-native failures** map to Python types: client-side misuse becomes `ValueError`, cooperative deadline expiry becomes `coco.DeadlineExceededError`, and internal engine errors become `RuntimeError`. The engine never delivers cancellation of the component itself to handlers.
+- **Engine-native failures** map to Python types: client-side misuse becomes `ValueError`, cooperative deadline expiry becomes `coco.DeadlineExceededError`, and internal engine errors become `RuntimeError`. One family of client errors has its own `ValueError` subclass, `coco.AlreadyDeclaredError`: something declared a second time within one run, where the first declaration is final (a target state key, a `use_state` key, a child component path, an app name). Catch it to branch on that case; `except ValueError` still catches it. The engine never delivers cancellation of the component itself to handlers.
 
 An exception raised by a handler keeps its type as well: `await handle.ready()` raises exactly what the last handler in the chain raised, so `except MyDeadLetterError:` or `except coco.DeadlineExceededError:` work as expected on the awaiting side.
 

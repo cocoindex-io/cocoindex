@@ -682,7 +682,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
         match self.entries.entry(key) {
             Entry::Occupied(mut e) => match e.get() {
                 UserStateEntry::Declared(_) => {
-                    client_bail!(
+                    already_declared_bail!(
                         "coco.use_state() key {:?} declared more than once in the same component run",
                         e.key()
                     );

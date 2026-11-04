@@ -57,16 +57,40 @@ impl HostError for CancelledError {
     }
 }
 
+/// What a client error means, beyond "the request was invalid". A host
+/// language maps each kind to its own exception type, so a caller can branch
+/// on the kind instead of on message text. Every client error that no kind
+/// below describes is `Generic`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClientErrorKind {
+    #[default]
+    Generic,
+    /// Something was declared a second time within one run, where one
+    /// declaration is final: a target state key, a target state provider
+    /// path, a `use_state` key, a child component path, an app name. The
+    /// first declaration stands; the second is refused.
+    AlreadyDeclared,
+}
+
 pub enum Error {
-    Context { msg: String, source: Box<SError> },
+    Context {
+        msg: String,
+        source: Box<SError>,
+    },
     HostLang(Box<dyn HostError>),
     // `bt` follows the same sharing model as `Client`: replicas preserve the
     // original cold-path capture site instead of re-capturing at fan-out.
-    DeadlineExceeded { bt: Arc<Backtrace> },
+    DeadlineExceeded {
+        bt: Arc<Backtrace>,
+    },
     // `bt` is shared via `Arc` so `Error::replica` can clone a `Client` error
     // while keeping the original capture site (capturing afresh would point
     // at the replica call instead).
-    Client { msg: String, bt: Arc<Backtrace> },
+    Client {
+        kind: ClientErrorKind,
+        msg: String,
+        bt: Arc<Backtrace>,
+    },
     Internal(anyhow::Error),
 }
 
@@ -94,7 +118,7 @@ impl Debug for Error {
             Error::DeadlineExceeded { bt } => {
                 write!(f, "CocoIndex timeout deadline exceeded\n\n{bt}\n")
             }
-            Error::Client { msg, bt } => {
+            Error::Client { msg, bt, .. } => {
                 write!(f, "Invalid Request: {msg}\n\n{bt}\n")
             }
             Error::Internal(e) => write!(f, "{e:?}"),
@@ -114,9 +138,28 @@ impl Error {
     }
 
     pub fn client(msg: impl Into<String>) -> Self {
+        Self::client_of_kind(ClientErrorKind::Generic, msg)
+    }
+
+    pub fn client_of_kind(kind: ClientErrorKind, msg: impl Into<String>) -> Self {
         Self::Client {
+            kind,
             msg: msg.into(),
             bt: Arc::new(Backtrace::capture()),
+        }
+    }
+
+    /// A client error of kind [`ClientErrorKind::AlreadyDeclared`].
+    pub fn already_declared(msg: impl Into<String>) -> Self {
+        Self::client_of_kind(ClientErrorKind::AlreadyDeclared, msg)
+    }
+
+    /// The kind of this client error, through any context layers; `None` for
+    /// an error that is not a client error.
+    pub fn client_kind(&self) -> Option<ClientErrorKind> {
+        match self.without_contexts() {
+            Error::Client { kind, .. } => Some(*kind),
+            _ => None,
         }
     }
 
@@ -204,7 +247,8 @@ impl Error {
                 None => Error::internal(ResidualError::new(self)),
             },
             Error::DeadlineExceeded { bt } => Error::DeadlineExceeded { bt: bt.clone() },
-            Error::Client { msg, bt } => Error::Client {
+            Error::Client { kind, msg, bt } => Error::Client {
+                kind: *kind,
                 msg: msg.clone(),
                 // Share the original capture site rather than re-capturing here.
                 bt: bt.clone(),
@@ -326,6 +370,15 @@ macro_rules! client_bail {
 macro_rules! client_error {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
         $crate::error::Error::client(format!($fmt $(, $($arg)*)?))
+    };
+}
+
+/// `client_bail!` for a second declaration of something within one run
+/// ([`ClientErrorKind::AlreadyDeclared`]).
+#[macro_export]
+macro_rules! already_declared_bail {
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        return Err($crate::error::Error::already_declared(format!($fmt $(, $($arg)*)?)))
     };
 }
 
