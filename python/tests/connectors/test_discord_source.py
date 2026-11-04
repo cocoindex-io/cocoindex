@@ -629,7 +629,14 @@ class TestGet:
             sleeps.clear()
             fake.script[path] = [httpx.Response(503) for _ in range(7)]
             await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
-        assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+            assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+
+            # A 429's wait is Discord's, not a backoff, so it doesn't double
+            # the next one.
+            sleeps.clear()
+            fake.script[path] = [_rate_limited(0.5), httpx.Response(502)]
+            await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
+        assert sleeps == [0.5, 1.0]
 
     async def test_retry_cap(self, sleeps: list[float]) -> None:
         fake = _fake_with_channels()
@@ -707,12 +714,14 @@ class TestGet:
                 await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
             assert len(fake.requests) == 1
 
-    async def test_non_json_body(self) -> None:
+    # A 2xx too: its body would otherwise reach the parsers.
+    @pytest.mark.parametrize("status", [403, 200])
+    async def test_non_json_body(self, status: int) -> None:
         fake = _fake_with_channels()
         path = f"/channels/{_CHANNEL}"
         fake.script[path] = [
             httpx.Response(
-                403,
+                status,
                 text=(
                     "<!DOCTYPE html><html><head><title>Access denied | discord.com "
                     "used Cloudflare to restrict access</title></head></html>"
@@ -723,7 +732,7 @@ class TestGet:
         async with app:
             with pytest.raises(
                 _DiscordError,
-                match=r"HTTP 403, and the body isn't JSON: '<!DOCTYPE html><html>",
+                match=rf"HTTP {status}, and the body isn't JSON: '<!DOCTYPE html><html>",
             ):
                 await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
 
@@ -780,6 +789,28 @@ class TestPacing:
             await ctx.get(_ROUTE_CHANNEL, _OTHER_CHANNEL)
             await ctx.get(_ROUTE_CHANNEL, _OTHER_CHANNEL)
         assert len(sleeps) == 1
+
+    async def test_429_headers_pace_the_retry(self, sleeps: list[float]) -> None:
+        # A 429's body can ask for less than its headers say the bucket needs
+        # to reset; the retry waits out both, the second wait uncounted.
+        fake = _fake_with_channels()
+        fake.script[f"/channels/{_CHANNEL}"] = [
+            httpx.Response(
+                429,
+                json={
+                    "message": "You are being rate limited.",
+                    "retry_after": 0.5,
+                    "global": False,
+                },
+                headers=_bucket_headers(remaining=0, reset_after=4.5),
+            )
+        ]
+        app, ctx = await _setup(fake)
+        async with app:
+            await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
+        assert len(sleeps) == 2
+        assert sleeps[0] == 0.5
+        assert 4.0 < sleeps[1] <= 4.5
 
     async def test_routes_without_headers_not_paced(self, sleeps: list[float]) -> None:
         app, ctx = await _setup(_fake_with_channels())
