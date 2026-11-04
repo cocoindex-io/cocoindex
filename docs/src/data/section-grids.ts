@@ -10,70 +10,69 @@ type SectionGridGroups = DocCardGridProps['groups'];
 export const programmingGuideGroups: SectionGridGroups = [
   {
     label: 'Core building blocks',
-    blurb: 'The pieces you compose into a pipeline, from the App down to a single function.',
     accent: 'coral',
     cards: [
       {
         href: '/docs/programming_guide/app/',
         title: 'App',
         glyph: 'app',
-        body: 'The top-level runnable unit: create one, trigger updates, set the db path, and manage lifespan resources.',
+        body: 'Run your pipeline. An App starts the main function and manages updates and shared resources.',
       },
       {
         href: '/docs/programming_guide/target_state/',
         title: 'Target state',
         glyph: 'target',
-        body: 'Declare what should exist in an external system and let CocoIndex sync minimal creates, updates, and deletes.',
+        body: 'Describe the output you want, such as a file or database row. CocoIndex keeps that output up to date.',
       },
       {
         href: '/docs/programming_guide/processing_component/',
         title: 'Processing component',
         glyph: 'component',
-        body: 'The unit of incremental execution and the sync boundary for target states. Covers the mounting APIs and paths.',
+        body: 'Run one part of a pipeline and own its target states. Learn how to create and identify components.',
       },
       {
         href: '/docs/programming_guide/function/',
         title: 'Functions',
         glyph: 'function',
-        body: 'Decorate Python with @coco.fn so it joins change detection and memoization, with async, batching, and GPU runners.',
+        body: 'Write processing logic with @coco.fn. Enable memoization to reuse results when inputs and code stay unchanged.',
       },
     ],
   },
   {
     label: 'Resources & runtime',
-    blurb: 'Share what components need, and keep the pipeline reacting after the first run.',
+    blurb: 'Share resources and respond to source changes.',
     accent: 'palm',
     cards: [
       {
         href: '/docs/programming_guide/context/',
         title: 'Context',
         glyph: 'context',
-        body: 'Share connections, models, and config across components with ContextKey, provide(), and use_context().',
+        body: 'Share database connections, models, and configuration across processing components.',
       },
       {
         href: '/docs/programming_guide/live_mode/',
         title: 'Live mode',
         glyph: 'livemode',
-        body: 'Keep an App running after its first sweep so it reacts to source changes continuously.',
+        body: 'Keep an App running so it processes source changes after the first update.',
       },
     ],
   },
   {
-    label: 'Under the hood',
-    blurb: 'The mechanics underneath: how values are stored, and how the SDK is laid out.',
+    label: 'Storage and SDK',
+    blurb: 'Learn how CocoIndex stores results and organizes its Python API.',
     accent: 'peach',
     cards: [
       {
         href: '/docs/programming_guide/serialization/',
         title: 'Serialization',
         glyph: 'serialization',
-        body: 'How memoized returns serialize with msgspec: supported types, required annotations, and custom registration.',
+        body: 'Store function results for reuse. Learn which Python types CocoIndex supports and how to register custom types.',
       },
       {
         href: '/docs/programming_guide/sdk_overview/',
         title: 'SDK overview',
         glyph: 'sdk',
-        body: 'A tour of the Python SDK: package layout, common types, and how async orchestration composes with sync leaves.',
+        body: 'Find Python packages and common types. Learn how synchronous and asynchronous functions work together.',
       },
     ],
   },
