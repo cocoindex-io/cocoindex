@@ -163,6 +163,8 @@ def test_an_oversize_reducer_output_is_an_error_for_the_caller_to_retry() -> Non
         _run(hierarchical_reduce(_items(8, size=4), 10, too_big, len))
 
 
-def test_empty_input_is_rejected() -> None:
-    with pytest.raises(ValueError):
+def test_empty_input_is_rejected_as_a_reduce_error() -> None:
+    from coco_harness.tools.reduce import EmptyInput
+
+    with pytest.raises(EmptyInput):
         _run(hierarchical_reduce([], 10, _recording_reducer([]), len))

@@ -11,59 +11,39 @@ Three entry points share one loop:
   mounting tool checks; the loop checks again).
 - ``run_reduce_session(members, spec)`` — memoized on the members' contents.
 
-The replay contract (DESIGN.md §4) as the loop implements it:
-
-* ``prev`` is the transcript stored by this component's last *successful*
-  run. ``cursor`` is the index in ``prev`` of the step expected next; it
-  starts at 0 and follows alignment.
-* Every turn is ``use_mount(turn/k, llm_step, ...)``. ``TurnScratch`` (inside
-  ``hints``, excluded from the key) tells the loop what happened: nothing
-  (memo hit), inference, a harness replay, or a pick with its step number.
-* Until the first inference, the dump passed is "``prev`` from ``cursor``
-  on", positioned at the current turn. It costs nothing on a hit. At the
-  first inference it is frozen where the model saw it and never moves again
-  this run; a changed result freezes it one position later (the next turn
-  will infer).
-* Alignment, in order: a pick → exactly the picked step; a harness replay
-  that ran, or a hit that returned the same action → the replayed step;
-  otherwise ``prev[cursor]`` if it is
-  the same action; otherwise the first same action after the last aligned
-  one (advisory). Aligned steps have their results compared; differences
-  become diffs.
-* A requested replay can be answered by an existing memo instead (an entry a
-  failed run committed for this exact prefix). That entry is the model's own
-  earlier decision for this state and wins: the loop executes it, re-aligns
-  it like any composed action, stops fast-forwarding, and notes the
-  interruption for the model.
-* Fast-forward: after a pick (or a replay that ran and matched), the next
-  step of ``prev`` is replayed through ``llm_step`` with ``hints.replay`` — so
-  a memo entry is still written — until a result differs, the pick's
-  ``steps`` budget runs out, or the next step is a final answer (then a note
-  asks the model to confirm).
-* Stored: ``(output, results)`` pairs only.
+The replay contract (DESIGN.md §4) lives in ``_ReplayState``; the loop only
+sequences turns. Failures (DESIGN.md §7): in an open session an environment
+error from a tool becomes a result the model reads, because the tool runs
+again next run and a changed outcome is an ordinary divergence; in a closed
+session it fails the component, because a memoized transcript must not carry
+a fact about the environment. Deadline expiry and cancellation always pass
+through.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 import cocoindex as coco
 
 from .handles import HandleObject, HandleTable
 from .hints import Diff, Dump, Note, Replay, RunHints, TurnScratch, replay_tool_spec
 from .replay import find_same_action, llm_step
-from .spec import Item, SessionResult, SessionSpec
+from .spec import Item, SessionInput, SessionResult, SessionSpec
 from .tools import HARNESS, SessionContext, ToolRegistry
 from .transcript import ModelOutput, Step, ToolCall, ToolResult, Transcript, same_action
+
+logger = logging.getLogger(__name__)
 
 
 @coco.fn
 async def run_open_session(
     spec: SessionSpec, handles: Mapping[str, HandleObject] | None = None
 ) -> SessionResult:
-    return await _session_loop(spec, {}, handles or {}, closed=False)
+    return await _session_loop(spec, None, handles or {}, closed=False)
 
 
 @coco.fn(memo=True)
@@ -72,20 +52,145 @@ async def run_closed_session(
     spec: SessionSpec,
     handles: Mapping[str, HandleObject] | None = None,
 ) -> SessionResult:
-    return await _session_loop(spec, {"input": item}, handles or {}, closed=True)
+    return await _session_loop(spec, item, handles or {}, closed=True)
 
 
 @coco.fn(memo=True)
 async def run_reduce_session(
     members: tuple[str, ...], spec: SessionSpec
 ) -> SessionResult:
-    return await _session_loop(spec, {"input": members}, {}, closed=True)
+    return await _session_loop(spec, members, {}, closed=True)
+
+
+@dataclass
+class _ReplayState:
+    """Where this run stands against ``prev``, the last successful transcript.
+
+    * ``cursor``: index in ``prev`` of the step expected next; follows alignment.
+    * Until the first inference, the dump passed to a turn is "``prev`` from
+      ``cursor`` on", positioned at the current turn: unused on a hit, what
+      the model needs on a miss. The first inference freezes it where the
+      model saw it; a changed result freezes it one position later.
+    * Alignment, in order: a pick → the picked step; a harness replay that
+      ran, or a hit that returned the same action → the replayed step;
+      ``prev[cursor]`` if it is the same action; else the first same action at
+      or after ``cursor`` (advisory). An aligned step moves ``cursor`` past
+      itself and has its results compared; differences become diffs.
+    * A requested replay answered by an existing memo with a different action
+      is the session's own earlier decision and wins: it is executed, aligned
+      like a composed action, fast-forward stops, and the model is told.
+    * Fast-forward continues after a pick or a matching replay until a result
+      differs, the pick's ``steps`` budget runs out, or the next step is a
+      final answer (then a note asks the model to confirm).
+    """
+
+    prev: Transcript
+    hints: RunHints = field(default_factory=RunHints)
+    cursor: int = 0
+    dump_frozen: bool = False
+    ff_next: int | None = None  # index in prev to replay next turn
+    ff_budget: int | None = None  # replays left after a bounded pick; None = unbounded
+
+    def turn_hints(self, k: int) -> tuple[RunHints, TurnScratch]:
+        if not self.dump_frozen:
+            self.hints = replace(
+                self.hints, dump=_dump_from(self.prev, self.cursor, at_step=k)
+            )
+        scratch = TurnScratch()
+        replay = (
+            Replay(self.prev.steps[self.ff_next].output)
+            if self.ff_next is not None
+            else None
+        )
+        return replace(self.hints, scratch=scratch, replay=replay), scratch
+
+    def after_turn(
+        self, k: int, scratch: TurnScratch, output: ModelOutput
+    ) -> int | None:
+        """Fold the turn's scratch in; return the ``prev`` index this turn replayed, if any."""
+        requested, self.ff_next = self.ff_next, None
+        for note in scratch.notes:
+            self.hints = self.hints.add_note(note)
+        if scratch.inferred:
+            self.dump_frozen = True
+        if requested is None:
+            return None
+        if scratch.replayed or same_action(output, self.prev.steps[requested].output):
+            return requested
+        # Requested provenance is not actual provenance: a memo hit answered
+        # with a different action, and that earlier decision wins.
+        self.hints = self.hints.add_note(
+            Note(
+                k + 1,
+                f"fast-forward interrupted at [{requested}]: this session had already "
+                "decided a different action for this exact state, and it was executed",
+            )
+        )
+        return None
+
+    def align(
+        self,
+        k: int,
+        scratch: TurnScratch,
+        replayed: int | None,
+        output: ModelOutput,
+        results: tuple[ToolResult, ...],
+    ) -> None:
+        if scratch.picked_step is not None:
+            aligned: int | None = scratch.picked_step
+        elif replayed is not None:
+            aligned = replayed
+        elif self.cursor < len(self.prev) and same_action(
+            self.prev.steps[self.cursor].output, output
+        ):
+            aligned = self.cursor
+        else:
+            aligned = find_same_action(self.prev, output, self.cursor)
+
+        diffs: list[Diff] = []
+        if aligned is not None:
+            self.cursor = aligned + 1
+            diffs = _diffs(k, output, self.prev.steps[aligned].results, results)
+            for d in diffs:
+                self.hints = self.hints.add_diff(d)
+        if diffs and not self.dump_frozen:
+            self.dump_frozen = True
+            self.hints = replace(
+                self.hints, dump=_dump_from(self.prev, self.cursor, at_step=k + 1)
+            )
+
+        if scratch.picked_step is not None:
+            self.ff_budget = (
+                None if scratch.pick_steps is None else scratch.pick_steps - 1
+            )
+        continuing = (
+            aligned is not None
+            and not diffs
+            and (scratch.picked_step is not None or replayed is not None)
+            and (self.ff_budget is None or self.ff_budget > 0)
+        )
+        if not continuing or aligned is None:
+            return
+        nxt = aligned + 1
+        if nxt >= len(self.prev):
+            return
+        if self.prev.steps[nxt].output.answer is not None:
+            self.hints = self.hints.add_note(
+                Note(
+                    k + 1,
+                    f"fast-forward reached last run's final answer [{nxt}]; confirm or revise",
+                )
+            )
+        else:
+            self.ff_next = nxt
+            if self.ff_budget is not None:
+                self.ff_budget -= 1
 
 
 @coco.fn
 async def _session_loop(
     spec: SessionSpec,
-    inputs: Mapping[str, object],
+    input: SessionInput,
     handles: Mapping[str, HandleObject],
     *,
     closed: bool,
@@ -97,114 +202,38 @@ async def _session_loop(
     table = HandleTable()
     for name, obj in handles.items():
         table.seed(name, obj)
-    ctx = SessionContext(spec=spec, inputs=inputs, handles=table, config=config)
+    ctx = SessionContext(spec=spec, input=input, handles=table, config=config)
 
     prev_handle = coco.use_state(
         "transcript", initial_value=Transcript(), type_hint=Transcript
     )
-    prev: Transcript = prev_handle.value
-
+    state = _ReplayState(prev=prev_handle.value)
     steps: list[Step] = []
-    hints = RunHints()
-    dump_frozen = False
-    cursor = 0
-    last_aligned = -1
-    ff_next: int | None = None  # index in prev to replay next turn
-    ff_budget: int | None = None  # replays left after a bounded pick; None = unbounded
-    answer: str | None = None
 
     for k in range(spec.role.max_turns):
-        prefix = Transcript(tuple(steps))
-        if not dump_frozen:
-            hints = replace(hints, dump=_dump_from(prev, cursor, at_step=k))
-        scratch = TurnScratch()
-        replay = Replay(prev.steps[ff_next].output) if ff_next is not None else None
+        turn_hints, scratch = state.turn_hints(k)
         output: ModelOutput = await coco.use_mount(
             coco.component_subpath("turn", k),
             llm_step,
             spec,
             tools,
-            prefix,
-            replace(hints, scratch=scratch, replay=replay),
+            Transcript(tuple(steps)),
+            turn_hints,
         )
-        requested, ff_next = ff_next, None
-        for note in scratch.notes:
-            hints = hints.add_note(note)
-        if scratch.inferred:
-            dump_frozen = True
+        replayed = state.after_turn(k, scratch, output)
 
-        # Requested provenance is not actual provenance: a memo hit may have
-        # answered instead of the replay body, with a different action.
-        replayed: int | None = None
-        if requested is not None:
-            if scratch.replayed or same_action(output, prev.steps[requested].output):
-                replayed = requested
-            else:
-                hints = hints.add_note(
-                    Note(
-                        k + 1,
-                        f"fast-forward interrupted at [{requested}]: this session had already "
-                        "decided a different action for this exact state, and it was executed",
-                    )
-                )
-
-        if output.is_finish:
-            answer = output.answer
+        if output.answer is not None:
             steps.append(Step(output, ()))
-            break
+            prev_handle.value = Transcript(tuple(steps))
+            return SessionResult(answer=output.answer, num_steps=len(steps))
 
-        results = await _execute_all(registry, ctx, output)
+        results = await _execute_all(registry, ctx, output, contain=not closed)
         steps.append(Step(output, results))
+        state.align(k, scratch, replayed, output, results)
 
-        if scratch.picked_step is not None:
-            aligned: int | None = scratch.picked_step
-        elif replayed is not None:
-            aligned = replayed
-        elif cursor < len(prev) and same_action(prev.steps[cursor].output, output):
-            aligned = cursor
-        else:
-            aligned = find_same_action(prev, output, last_aligned + 1)
-
-        diffs: list[Diff] = []
-        if aligned is not None:
-            last_aligned = aligned
-            cursor = aligned + 1
-            diffs = _diffs(k, output, prev.steps[aligned].results, results)
-            for d in diffs:
-                hints = hints.add_diff(d)
-        if diffs and not dump_frozen:
-            dump_frozen = True
-            hints = replace(hints, dump=_dump_from(prev, cursor, at_step=k + 1))
-
-        if scratch.picked_step is not None:
-            ff_budget = None if scratch.steps is None else scratch.steps - 1
-        if (
-            aligned is not None
-            and not diffs
-            and (scratch.picked_step is not None or replayed is not None)
-            and (ff_budget is None or ff_budget > 0)
-        ):
-            nxt = aligned + 1
-            if nxt < len(prev):
-                if prev.steps[nxt].output.is_finish:
-                    hints = hints.add_note(
-                        Note(
-                            k + 1,
-                            f"fast-forward reached last run's final answer [{nxt}]; "
-                            "confirm or revise",
-                        )
-                    )
-                else:
-                    ff_next = nxt
-                    if ff_budget is not None:
-                        ff_budget -= 1
-    else:
-        raise RuntimeError(
-            f"session {spec.role.name!r} exceeded {spec.role.max_turns} turns"
-        )
-
-    prev_handle.value = Transcript(tuple(steps))
-    return SessionResult(answer=answer, num_steps=len(steps))
+    raise RuntimeError(
+        f"session {spec.role.name!r} exceeded {spec.role.max_turns} turns"
+    )
 
 
 def _check_spec(
@@ -245,16 +274,27 @@ def _dump_from(prev: Transcript, start: int, *, at_step: int) -> Dump | None:
     )
 
 
+def is_environment_error(exc: BaseException) -> bool:
+    """An error a session may contain as a result: anything but deadline expiry and cancellation."""
+    return isinstance(exc, Exception) and not isinstance(
+        exc, coco.DeadlineExceededError
+    )
+
+
 async def _execute_all(
-    registry: ToolRegistry, ctx: SessionContext, output: ModelOutput
+    registry: ToolRegistry, ctx: SessionContext, output: ModelOutput, *, contain: bool
 ) -> tuple[ToolResult, ...]:
     """Run one turn's calls concurrently against a snapshot of the handle table.
 
     Results keep call order. A call cannot see a handle a sibling registers in
     the same turn, and two siblings registering the same name both fail. Two
     calls that would mount children under the same key both fail before
-    anything runs. Every call is drained before an infrastructure failure
-    propagates.
+    anything runs. Every call is drained before a failure propagates.
+
+    With ``contain`` (open sessions), an environment error becomes an
+    ``ok=False`` result naming the error class; the model reads it and the
+    tool runs again next run. Without it (closed sessions), the first error
+    propagates — all of them, as an ``ExceptionGroup``, when there are several.
     """
     calls = output.calls
     results: list[ToolResult | None] = [None] * len(calls)
@@ -270,12 +310,26 @@ async def _execute_all(
         *(registry.execute(replace(ctx, handles=forks[i]), calls[i]) for i in pending),
         return_exceptions=True,
     )
-    for outcome in outcomes:
-        if isinstance(outcome, BaseException):
-            raise outcome
+    failures: list[BaseException] = []
     for i, outcome in zip(pending, outcomes):
-        assert isinstance(outcome, ToolResult)
-        results[i] = outcome
+        if isinstance(outcome, ToolResult):
+            results[i] = outcome
+        elif contain and is_environment_error(outcome):
+            logger.warning(
+                "tool %s failed in session %r: %s: %s",
+                calls[i].tool,
+                ctx.spec.role.name,
+                type(outcome).__name__,
+                outcome,
+            )
+            results[i] = ToolResult(
+                calls[i].tool, False, f"{type(outcome).__name__}: {outcome}"
+            )
+        else:
+            assert isinstance(outcome, BaseException)
+            failures.append(outcome)
+    if failures:
+        raise_all(failures)
     conflicts = ctx.handles.merge([forks[i] for i in pending])
     for j in conflicts:
         i = pending[j]
@@ -285,6 +339,19 @@ async def _execute_all(
             "handle name registered twice in one turn; give each call its own name",
         )
     return tuple(r for r in results if r is not None)
+
+
+def raise_all(failures: list[BaseException]) -> None:
+    """Raise one failure as is, several as a group; cancellation first."""
+    for exc in failures:
+        if not isinstance(exc, Exception):
+            raise exc
+    if len(failures) == 1:
+        raise failures[0]
+    raise ExceptionGroup(
+        "several tool calls failed",
+        [exc for exc in failures if isinstance(exc, Exception)],
+    )
 
 
 def _duplicate_keys(registry: ToolRegistry, calls: tuple[ToolCall, ...]) -> set[int]:

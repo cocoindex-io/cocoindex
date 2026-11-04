@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from coco_harness.tools.stats import bottom_k, format_range, widen_count
+from coco_harness.tools.stats import Bucket, bottom_k, format_range, widen_count
 
 
 def test_widen_count_log2_buckets() -> None:
@@ -12,21 +12,21 @@ def test_widen_count_log2_buckets() -> None:
 
 
 def test_widen_count_hysteresis_keeps_previous_bucket_near_a_boundary() -> None:
-    prev = (1024, 2048)
+    prev = Bucket(1024, 2048)
     assert widen_count(1000, prev) == prev  # within 10% below the lower bound
     assert widen_count(2100, prev) == prev  # within 10% above the upper bound
     assert widen_count(800, prev) == (512, 1024)  # far enough: move
-    assert widen_count(5, (4, 8)) == (4, 8)
+    assert widen_count(5, Bucket(4, 8)) == (4, 8)
 
 
 def test_format_range() -> None:
-    assert format_range((0, 0)) == "0"
-    assert format_range((4, 8)) == "4–8"
-    assert format_range((1024, 2048)) == "1k–2k"  # log₂ buckets render with k/M
-    assert format_range((4096, 8192)) == "4k–8k"
-    assert format_range((1 << 20, 1 << 21)) == "1M–2M"
-    assert format_range((1000, 2000)) == "1k–2k"
-    assert format_range((512, 1024)) == "512–1k"
+    assert format_range(Bucket(0, 0)) == "0"
+    assert format_range(Bucket(4, 8)) == "4–8"
+    assert format_range(Bucket(1024, 2048)) == "1k–2k"  # log₂ buckets render with k/M
+    assert format_range(Bucket(4096, 8192)) == "4k–8k"
+    assert format_range(Bucket(1 << 20, 1 << 21)) == "1M–2M"
+    assert format_range(Bucket(1000, 2000)) == "1k–2k"
+    assert format_range(Bucket(512, 1024)) == "512–1k"
 
 
 def test_bottom_k_sample_barely_moves_when_the_population_grows() -> None:

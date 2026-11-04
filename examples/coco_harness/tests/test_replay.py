@@ -25,9 +25,10 @@ from coco_harness import (
 )
 from coco_harness.hints import RunHints
 from coco_harness.spec import SessionSpec
-from coco_harness.testing import ScriptedModel, probe_tool
+from coco_harness.testing import ScriptedModel
 from coco_harness.tools import SessionContext, tool
 from coco_harness.transcript import ModelOutput, ToolCall, Transcript
+from helpers import probe_tool
 
 ROLE = RoleSpec(name="orchestrator", system_prompt="test", tool_names=("probe",))
 
@@ -126,7 +127,7 @@ def test_changed_result_shows_dump_once_then_fast_forwards(
     assert first.step == 1
     assert first.hints.dump is not None
     assert (first.hints.dump.at_step, first.hints.dump.first_step) == (1, 1)
-    assert [o.is_finish for o in first.hints.dump.outputs] == [False, True]
+    assert [o.answer is not None for o in first.hints.dump.outputs] == [False, True]
     assert [(d.at_step, d.before, d.after) for d in first.hints.diffs] == [
         (0, "A", "A2")
     ]
@@ -313,7 +314,12 @@ def test_invalid_pick_is_shown_back_once_and_the_note_stays(
 def test_cached_decision_from_a_failed_run_wins_over_a_requested_replay(
     coco_env: coco.Environment,
 ) -> None:
-    """A fast-forward request met by an existing turn memo executes the memo, not the request."""
+    """A fast-forward request met by an existing turn memo executes the memo, not the request.
+
+    The failed runs here hit their deadline inside a tool: deadline expiry is
+    never contained, so the run fails and `prev` keeps the last successful
+    transcript while the completed turns keep their memos.
+    """
     h = Harness(coco_env)
 
     def v1(spec: SessionSpec, prefix: Transcript, hints: RunHints) -> ModelOutput:
@@ -329,7 +335,7 @@ def test_cached_decision_from_a_failed_run_wins_over_a_requested_replay(
 
     # Task v2 decides `x` at turn 1 and fails there: turn 1's memo (x) is committed.
     h.task = "task v2"
-    h.values["x"] = RuntimeError("x is down")
+    h.values["x"] = coco.DeadlineExceededError("x is down")
     h.model.script = (
         lambda spec, prefix, hints: probe("a") if not prefix.steps else probe("x")
     )
@@ -338,7 +344,7 @@ def test_cached_decision_from_a_failed_run_wins_over_a_requested_replay(
 
     # Task v3 fails at turn 0, overwriting only turn 0's memo.
     h.task = "task v3"
-    h.values["y"] = RuntimeError("y is down")
+    h.values["y"] = coco.DeadlineExceededError("y is down")
     h.model.script = lambda spec, prefix, hints: probe("y")
     with pytest.raises(Exception, match="y is down"):
         h.run()
@@ -364,26 +370,47 @@ def test_cached_decision_from_a_failed_run_wins_over_a_requested_replay(
     assert "interrupted" in note and "[1]" in note
 
 
-def test_model_facing_errors_are_results_and_infrastructure_errors_fail_the_run(
+def test_environment_errors_are_results_in_open_sessions_and_heal_next_run(
     coco_env: coco.Environment,
 ) -> None:
+    """An open session reads an environment error as a result; the tool runs again next run."""
     h = Harness(coco_env)
     h.values["b"] = RuntimeError("disk on fire")
-    with pytest.raises(Exception, match="disk on fire"):
-        h.run()
-    assert h.model.calls == 2  # turns 0 and 1 ran before the tool failed
 
-    # Turn 1's memo was committed by the failed run: only turn 2 needs the model now.
+    def script(spec: SessionSpec, prefix: Transcript, hints: RunHints) -> ModelOutput:
+        n = len(prefix.steps)
+        if n == 0:
+            return probe("a")
+        if n == 1:
+            return probe("b")
+        return ModelOutput(answer=str(prefix.steps[1].results[0]))
+
+    h.model.script = script
+    first = h.run()
+    assert (
+        first.answer
+        == "ToolResult(tool='probe', ok=False, value='RuntimeError: disk on fire')"
+    )
+    assert h.model.calls == 3
+
+    # The cause is fixed: probe(b) runs again, its result differs, and only the
+    # turn that read it needs the model. The transcript heals without a reset.
     h.values["b"] = "B"
-    assert h.run().answer == "done:A"
+    assert h.run().answer == "ToolResult(tool='probe', ok=True, value='B')"
     assert h.model.calls == 1
 
-    # A ToolError reaches the model as a failed result.
+    # A ToolError reaches the model the same way, as the model's own error.
     h.values["a"] = ToolError("no such probe today")
+    h.model.script = basic_script
     assert h.run().answer == "done:no such probe today"
 
+    # Deadline expiry is never contained: it fails the run.
+    h.values["a"] = coco.DeadlineExceededError("out of time")
+    with pytest.raises(Exception, match="out of time"):
+        h.run()
 
-def test_argument_validation_is_the_models_error_and_internal_lookups_are_not(
+
+def test_argument_validation_is_the_models_error_and_internal_errors_are_reported(
     coco_env: coco.Environment,
 ) -> None:
     h = Harness(coco_env)
@@ -400,12 +427,13 @@ def test_argument_validation_is_the_models_error_and_internal_lookups_are_not(
         return ModelOutput(answer=str([s.results[0].value for s in prefix.steps]))
 
     h.model.script = bad_args
-    answer = h.run().answer or ""
+    answer = h.run().answer
     assert "missing argument 'name'" in answer
     assert "must be of type string" in answer
     assert "unknown argument 'extra'" in answer
 
-    # A KeyError inside a handler with valid arguments is an infrastructure failure.
+    # A KeyError inside a handler with valid arguments is an environment error: in
+    # an open session it is reported to the model, named, not hidden.
     @tool("broken", "Looks something up internally.")
     async def broken(ctx: SessionContext, args: dict[str, object]) -> object:
         cache: dict[str, str] = {}
@@ -414,11 +442,12 @@ def test_argument_validation_is_the_models_error_and_internal_lookups_are_not(
     h.config.tools = ToolRegistry([probe_tool(h.values), broken])
     h.config.roles = {ROLE.name: replace(ROLE, tool_names=("probe", "broken"))}
     h.task = "task v2"
-    h.model.script = lambda spec, prefix, hints: ModelOutput(
-        calls=(ToolCall("broken", {}),)
+    h.model.script = lambda spec, prefix, hints: (
+        ModelOutput(calls=(ToolCall("broken", {}),))
+        if not prefix.steps
+        else ModelOutput(answer=str(prefix.steps[0].results[0].value))
     )
-    with pytest.raises(Exception, match="entry"):
-        h.run()
+    assert h.run().answer == "KeyError: 'entry'"
 
 
 def test_non_object_arguments_are_the_models_error_and_survive_the_run(
@@ -447,7 +476,7 @@ def test_non_object_arguments_are_the_models_error_and_survive_the_run(
     result = h.run()
     dump = h.model.seen[0].hints.dump
     assert dump is not None and dump.outputs[0].calls[0].args == {"$invalid": ["a"]}
-    assert result.answer == "done:" + (first.answer or "") and h.model.calls == 2
+    assert result.answer == "done:" + first.answer and h.model.calls == 2
 
 
 def test_result_values_are_normalized_json(coco_env: coco.Environment) -> None:

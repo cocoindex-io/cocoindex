@@ -1,20 +1,20 @@
-"""Test doubles: a scripted model that counts its calls, and fake tools.
+"""A scripted model: the test double for the ``ModelClient`` seam.
 
 The point of the harness is to spend less inference, so tests assert on
 inference counts: "edit 1 of N files → that worker's content turn re-runs,
 nothing else". The scripted model sees exactly what the real client sees
-(spec, transcript prefix, hints) and records it for assertions.
+(spec, transcript prefix, hints) and records it for assertions. Users testing
+their own flows need the same double, which is why it ships with the package;
+test-only tools live under ``tests/``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .handles import Volatility
 from .hints import RunHints
-from .spec import Json, SessionSpec, ToolSpec
-from .tools import SessionContext, Tool, tool
+from .spec import SessionSpec, ToolSpec
 from .transcript import ModelOutput, Transcript
 
 Script = Callable[[SessionSpec, Transcript, RunHints], ModelOutput]
@@ -52,29 +52,3 @@ class ScriptedModel:
     def reset(self) -> None:
         self.calls = 0
         self.seen.clear()
-
-
-def probe_tool(values: Mapping[str, Json]) -> Tool:
-    """``probe(name)`` returns ``values[name]``; mutate ``values`` between runs to force a divergence.
-
-    A value that is an ``Exception`` instance is raised instead: a ``ToolError``
-    reaches the model as a failed result, anything else fails the session.
-    """
-
-    @tool(
-        "probe",
-        "Read a probe value by name.",
-        {
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        },
-        volatility=Volatility.PER_ITEM,
-    )
-    async def probe(ctx: SessionContext, args: dict[str, Json]) -> Json:
-        value = values[str(args["name"])]
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-    return probe

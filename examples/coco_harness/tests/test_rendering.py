@@ -70,6 +70,19 @@ def test_dump_marks_literal_payloads_and_renders_canonical_invalid_calls() -> No
     assert marked == ["  [4]", "  [5]", "  [7]"]
 
 
+def test_parse_response_keeps_malformed_arguments_as_the_models_error() -> None:
+    from coco_harness.litellm_client import parse_response
+
+    assert parse_response("done", []) == ModelOutput(answer="done")
+    assert parse_response(None, []) == ModelOutput(answer="")
+    good = parse_response(None, [("probe", '{"name": "a"}'), ("read_input", None)])
+    assert good.calls == (ToolCall("probe", {"name": "a"}), ToolCall("read_input", {}))
+    # Invalid JSON is not a crash: the raw text survives and becomes a canonical
+    # invalid call that the registry reports back to the model.
+    bad = canonical_output(parse_response(None, [("probe", "{not json")]))
+    assert bad.calls == (ToolCall("probe", {INVALID_ARGS_KEY: "{not json"}),)
+
+
 def test_dump_diffs_and_notes_render_at_their_positions() -> None:
     spec = _spec().spec("worker", "t")
     probe_a = ModelOutput(calls=(ToolCall("probe", {"name": "a"}),))

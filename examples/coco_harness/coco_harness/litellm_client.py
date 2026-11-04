@@ -15,6 +15,7 @@ Rendering rules that matter for incrementality (DESIGN.md §4):
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any
 
 from .handles import is_handle
@@ -25,6 +26,9 @@ from .transcript import ModelOutput, ToolCall, Transcript, canonical_json
 Message = dict[str, Any]
 
 _ELIDE_CHARS = 160
+# Bound for one model turn including its transient retries; the run's own
+# deadline, when shorter, wins.
+_LLM_TIMEOUT = timedelta(minutes=10)
 
 
 def render_task(spec: SessionSpec) -> str:
@@ -167,19 +171,48 @@ class LiteLLMClient:
     ) -> ModelOutput:
         import litellm  # heavy optional dependency; imported where used
 
-        response = await litellm.acompletion(
-            model=spec.role.model,
-            messages=render_messages(spec, prefix, hints),
-            tools=tools_as_openai(tools),
-            tool_choice="auto",
-            temperature=0,
+        # The engine's LiteLLM retry: transient provider errors (429, 5xx,
+        # transport resets) are retried with backoff inside a deadline that
+        # min-nests with the run's; the model turn never sees them. Private
+        # today; promote it when the harness leaves examples/.
+        from cocoindex.ops.litellm import _retry_litellm_call
+
+        response = await _retry_litellm_call(
+            lambda: litellm.acompletion(
+                model=spec.role.model,
+                messages=render_messages(spec, prefix, hints),
+                tools=tools_as_openai(tools),
+                tool_choice="auto",
+                temperature=0,
+            ),
+            "coco_harness.llm_step",
+            _LLM_TIMEOUT,
         )
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None) or []
-        if not tool_calls:
-            return ModelOutput(answer=message.content or "")
-        calls = tuple(
-            ToolCall(tc.function.name, json.loads(tc.function.arguments or "{}"))
-            for tc in tool_calls
+        return parse_response(
+            message.content,
+            [(tc.function.name, tc.function.arguments) for tc in tool_calls],
         )
-        return ModelOutput(calls=calls)
+
+
+def parse_response(
+    content: str | None, tool_calls: list[tuple[str, str | None]]
+) -> ModelOutput:
+    """Turn a provider message into a ``ModelOutput``.
+
+    ``tool_calls`` are ``(name, raw JSON arguments)`` pairs. Arguments that are
+    not valid JSON are kept as the raw string: ``canonical_output`` then stores
+    the call as ``{"$invalid": …}`` and the registry reports it to the model as
+    its error, instead of the session failing on a decode exception.
+    """
+    if not tool_calls:
+        return ModelOutput(answer=content or "")
+    calls = []
+    for name, raw in tool_calls:
+        try:
+            args = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            args = raw
+        calls.append(ToolCall(name, args))
+    return ModelOutput(calls=tuple(calls))
