@@ -158,5 +158,3 @@ In catch-up mode CocoIndex discovers these by re-scanning the bucket; in live mo
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/oci_object_storage_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/oci_object_storage_embedding). If you're starting from a local folder instead of a bucket, [Semantic Search 101](/docs/examples/text-embedding/) is the same flow on the local filesystem.
-
-If this helped, [give CocoIndex a star on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi on [Discord](https://discord.com/invite/zpA9S2DR7s).

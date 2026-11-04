@@ -2,6 +2,8 @@
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
+import { unified } from '@astrojs/markdown-remark';
+import bamlGrammar from './scripts/vendor/baml.tmLanguage.json' with { type: 'json' };
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkCodeTitles from './scripts/remark-code-titles.mjs';
@@ -46,17 +48,13 @@ export default defineConfig({
   // Pages's own 301 redirect, so this doesn't break inbound traffic.
   trailingSlash: 'always',
   integrations: [
-    mdx({
-      // MDX's own remark pipeline doesn't inherit `markdown.remarkPlugins`
-      // reliably across Astro versions — wire admonitions + code titles
-      // explicitly so .mdx content collection pages get them for sure.
-      remarkPlugins,
-    }),
+    mdx(),
     sitemap(),
   ],
   markdown: {
-    remarkPlugins,
-    shikiConfig: { theme: docsCodeTheme, wrap: false },
+    // Astro 7 and MDX share this processor and its plugin pipeline.
+    processor: unified({ remarkPlugins }),
+    shikiConfig: { theme: docsCodeTheme, wrap: false, langs: [bamlGrammar] },
   },
   redirects,
   // Vite's default envPrefix is `VITE_`; Astro adds `PUBLIC_`. We also

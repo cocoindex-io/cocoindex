@@ -188,5 +188,3 @@ The same machinery covers **logic** changes too: swap the transcription model an
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/audio_to_text](https://github.com/cocoindex-io/cocoindex/tree/main/examples/audio_to_text). Once this clicks, [Semantic Search 101](/docs/examples/text-embedding/) is the natural next step — embed those transcripts and search them by meaning.
-
-If CocoIndex helps you, star us on [GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s).

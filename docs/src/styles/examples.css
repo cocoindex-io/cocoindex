@@ -290,3 +290,14 @@ body.ex-detail .prose th { font-family: var(--sans); font-size: 0.8125rem; lette
 body.ex-listing .ex-rail { padding-left: 10px; padding-right: 10px; margin-left: -10px; margin-right: -10px; }
 /* Rail group headings at the label size (the brand default is 10.24px). */
 :root body.ex-detail aside.side .side-group > h5 { font-family: var(--sans); font-size: 0.8125rem; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--maroon-ink); }
+
+/* Native filter controls keep full labels and clear touch targets. */
+body.ex-listing .ex-select > span {
+  position: static; display: block; width: auto; height: auto; overflow: visible;
+  clip: auto; margin: 0 0 6px; font-size: 0.8125rem; color: var(--muted);
+}
+body.ex-listing .ex-select::after { top: auto; bottom: 16px; }
+@media (max-width: 820px) {
+  body.ex-listing .ex-chips .t-filter,
+  body.ex-listing .ex-select select { min-height: 44px; }
+}

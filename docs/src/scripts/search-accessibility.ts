@@ -1,5 +1,5 @@
 /** Adapt DocSearch 4's overlay and result markup to its actual interaction model. */
-export function installSearchAccessibility(host: HTMLElement) {
+export function installSearchAccessibility(host: HTMLElement, getReturnFocus?: () => HTMLElement | null) {
   host.setAttribute('aria-hidden', 'true');
   let dialog: HTMLElement | null = null;
   let returnFocus: HTMLElement | null = null;
@@ -73,8 +73,9 @@ export function installSearchAccessibility(host: HTMLElement) {
       dialog = null;
       for (const [element, inert] of background) element.inert = inert;
       background.clear();
-      const target = returnFocus?.isConnected && returnFocus.getClientRects().length
-        ? returnFocus
+      const preferred = getReturnFocus?.() ?? returnFocus;
+      const target = preferred?.isConnected && preferred.getClientRects().length
+        ? preferred
         : Array.from(document.querySelectorAll<HTMLElement>('[data-search-btn], main'))
             .find(element => element.getClientRects().length);
       if (target) {

@@ -365,5 +365,3 @@ This is where the declarative model pays for itself. You never compute a diff or
 The full, runnable example is in the CocoIndex repo: [examples/docs_to_knowledge_graph](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph).
 
 One natural next step: the LLM will sometimes name the same concept two ways ("CocoIndex" vs "Cocoindex"). The [meeting notes graph example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j) adds an embedding + LLM [entity-resolution](/docs/ops/entity_resolution/) pass that collapses near-duplicates — it drops into this pipeline between the two phases. For a bigger end-to-end graph build (transcription, multi-entity schemas, polymorphic edges), see [Turn Podcasts into a Knowledge Graph](/docs/examples/podcast-to-knowledge-graph/).
-
-Got a docs folder, a wiki, or a pile of specs you want to turn into a graph? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

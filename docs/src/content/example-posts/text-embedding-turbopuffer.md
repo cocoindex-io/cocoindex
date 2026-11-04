@@ -149,4 +149,4 @@ The same machinery covers **logic** changes: tune the chunk size or swap the emb
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/text_embedding_turbopuffer](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer). To swap the store for self-hosted Postgres instead, see the [base Semantic Search 101 example](/docs/examples/text-embedding/). Questions? Come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s), and if this helped, a [star on GitHub](https://github.com/cocoindex-io/cocoindex) goes a long way.
+The full, runnable example is in the CocoIndex repo: [examples/text_embedding_turbopuffer](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer). To swap the store for self-hosted Postgres instead, see the [base Semantic Search 101 example](/docs/examples/text-embedding/).

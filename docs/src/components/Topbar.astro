@@ -24,3 +24,14 @@ const { mobileSheetId } = Astro.props as Props;
 <script>import '@cocoindex/brand/copy-code';</script>
 
 <ScrollRegions />
+
+<script>
+  // Mark the current section across docs and example routes.
+  const examples = location.pathname.startsWith('/docs/examples/');
+  document.querySelectorAll<HTMLAnchorElement>('nav.top .nav-links a').forEach((link) => {
+    const path = new URL(link.href).pathname;
+    if (path === (examples ? '/docs/examples/' : '/docs/')) {
+      link.setAttribute('aria-current', 'location');
+    }
+  });
+</script>

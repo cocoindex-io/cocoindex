@@ -183,7 +183,7 @@ ls output_patients/
 # ...one .json per intake PDF
 ```
 
-Each file is a fully populated, schema-validated patient record — the same shape every time, ready to load into a database, a chart, or another pipeline.
+Each file contains a schema-validated patient record in JSON format.
 
 ## Incremental updates
 
@@ -197,6 +197,4 @@ The same machinery covers **logic** changes too: edit the BAML schema (add a fie
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/patient_intake_extraction_baml](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_baml). The exact same task (intake PDFs to a typed `Patient`) has a [DSPy twin](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy) that swaps BAML for a DSPy signature and module, so you can compare the two structured-extraction libraries side by side on one flow.
-
-Got a stack of forms, invoices, or reports you want to turn into validated records? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
+The full, runnable example is in the CocoIndex repo: [examples/patient_intake_extraction_baml](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_baml). The exact same task — intake PDFs to a typed `Patient` — has a [DSPy twin](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy) that swaps BAML for a DSPy signature and module, so you can compare the two structured-extraction libraries side by side on one flow.

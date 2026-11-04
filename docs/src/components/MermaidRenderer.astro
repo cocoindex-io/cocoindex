@@ -5,79 +5,100 @@
 // nothing here uses the Δ accent. Fine-tuning lives in site.css §7.
 ---
 <script>
+  import { makeDiagramScrollable } from '../lib/readable-diagrams';
   const renderMermaidDiagrams = async () => {
     const nodes = Array.from(document.querySelectorAll<HTMLElement>('.mermaid:not([data-processed="true"])'));
     if (nodes.length === 0) return;
 
-    const { default: mermaid } = await import('mermaid');
-    const sans = getComputedStyle(document.documentElement).getPropertyValue('--sans').trim() || 'sans-serif';
-
-    const ground = '#0a0a0a';
-    const panel = '#0f0f0f';
-    const node = '#141414';
-    const raised = '#1a1a1a';
-    const edge = '#2e2e2e';
-    const line = '#8a8a8a';
-    const ink = '#ededed';
-    const muted = '#a1a1a1';
-
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      theme: 'base',
-      themeVariables: {
-        fontFamily: sans,
-        fontSize: '14px',
-        background: panel,
-        primaryColor: node,
-        mainBkg: node,
-        primaryTextColor: ink,
-        nodeTextColor: ink,
-        primaryBorderColor: edge,
-        nodeBorder: edge,
-        lineColor: line,
-        defaultLinkColor: line,
-        secondaryColor: raised,
-        secondaryBorderColor: edge,
-        secondaryTextColor: ink,
-        tertiaryColor: ground,
-        tertiaryBorderColor: edge,
-        tertiaryTextColor: muted,
-        clusterBkg: ground,
-        clusterBorder: edge,
-        titleColor: ink,
-        edgeLabelBackground: panel,
-        noteBkgColor: node,
-        noteTextColor: muted,
-        noteBorderColor: edge,
-        // sequence diagrams
-        actorBkg: node,
-        actorBorder: edge,
-        actorTextColor: ink,
-        actorLineColor: edge,
-        signalColor: line,
-        signalTextColor: ink,
-        labelBoxBkgColor: raised,
-        labelBoxBorderColor: edge,
-        labelTextColor: ink,
-        loopTextColor: muted,
-        activationBkgColor: raised,
-        activationBorderColor: edge,
-        sequenceNumberColor: ground,
-      },
-    });
-
     try {
+      const { default: mermaid } = await import('mermaid');
+      const styles = getComputedStyle(document.documentElement);
+      const token = (name: string) => styles.getPropertyValue(name).trim();
+      const sans = token('--sans');
+
+      const ground = token('--paper');
+      const panel = token('--paper-2');
+      const node = token('--diagram-node');
+      const raised = token('--diagram-raised');
+      const edge = token('--cream-body');
+      const line = token('--text-3');
+      const ink = token('--maroon-ink');
+      const muted = token('--muted');
+
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'base',
+        themeVariables: {
+          fontFamily: sans,
+          fontSize: '14px',
+          background: panel,
+          primaryColor: node,
+          mainBkg: node,
+          primaryTextColor: ink,
+          nodeTextColor: ink,
+          primaryBorderColor: edge,
+          nodeBorder: edge,
+          lineColor: line,
+          defaultLinkColor: line,
+          secondaryColor: raised,
+          secondaryBorderColor: edge,
+          secondaryTextColor: ink,
+          tertiaryColor: ground,
+          tertiaryBorderColor: edge,
+          tertiaryTextColor: muted,
+          clusterBkg: ground,
+          clusterBorder: edge,
+          titleColor: ink,
+          edgeLabelBackground: panel,
+          noteBkgColor: node,
+          noteTextColor: muted,
+          noteBorderColor: edge,
+          // sequence diagrams
+          actorBkg: node,
+          actorBorder: edge,
+          actorTextColor: ink,
+          actorLineColor: edge,
+          signalColor: line,
+          signalTextColor: ink,
+          labelBoxBkgColor: raised,
+          labelBoxBorderColor: edge,
+          labelTextColor: ink,
+          loopTextColor: muted,
+          activationBkgColor: raised,
+          activationBorderColor: edge,
+          sequenceNumberColor: ground,
+        },
+      });
+
       await mermaid.run({ nodes });
+      nodes.forEach((region) => {
+        const hint = document.createElement('p');
+        hint.className = 'diagram-scroll-hint';
+        hint.textContent = 'Scroll horizontally to explore the diagram. Use arrow keys when focused.';
+        region.after(hint);
+        makeDiagramScrollable(region, hint);
+      });
     } catch (error) {
       console.error('Failed to render Mermaid diagram', error);
       nodes.forEach((n) => n.closest('.mermaid-figure')?.classList.add('mermaid-figure-error'));
     }
   };
 
+  // Mermaid and its diagram parser load only when a diagram approaches view.
+  const observeDiagrams = () => {
+    const figures = document.querySelectorAll('.mermaid-figure');
+    if (!figures.length) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      renderMermaidDiagrams();
+    }, { rootMargin: '300px' });
+    figures.forEach((figure) => observer.observe(figure));
+  };
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', renderMermaidDiagrams, { once: true });
+    document.addEventListener('DOMContentLoaded', observeDiagrams, { once: true });
   } else {
-    renderMermaidDiagrams();
+    observeDiagrams();
   }
 </script>

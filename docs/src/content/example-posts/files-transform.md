@@ -125,5 +125,3 @@ The same machinery covers **logic** changes too: change the markdown-it preset o
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/files_transform](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform). This is the minimal building block — once it clicks, swap the transform for chunking and embedding and you have [Semantic Search 101](/docs/examples/text-embedding/), or point the same flow at a Postgres or vector target.
-
-If this helped, [give CocoIndex a star on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s) — we'd love to see what you build.
