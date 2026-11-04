@@ -1208,8 +1208,12 @@ class DiscordChannel:
     :class:`DiscordThread`. ``None`` or an empty sequence means all of them,
     and ``id`` is always set. ``message_fields`` applies to thread starters
     and the messages inside threads too. A field left out holds ``None``, or
-    ``()`` for a tuple field, so a change to it reruns nothing. Discord's
-    listings return whole objects, so leaving fields out saves no requests.
+    ``()`` for a tuple field, so a change to it reruns nothing. The messages
+    inside a thread aren't part of its memo key, so a ``thread_fields`` that
+    leaves out all of ``message_count``, ``total_message_sent`` and
+    ``last_message_id`` keeps a message posted inside a thread from rerunning
+    it. Discord's listings return whole objects, so leaving fields out saves
+    no requests.
     An unknown name raises ``ValueError``.
     """
 
