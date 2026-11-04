@@ -45,6 +45,10 @@ class HashExhausted(ReduceError):
     """Distinct keys share all 64 identity bits and do not fit together."""
 
 
+class EmptyInput(ReduceError):
+    """There is nothing to reduce."""
+
+
 @dataclass(frozen=True)
 class GroupItem(Generic[T]):
     ident: int  # 64-bit identity, MSB first
@@ -146,7 +150,7 @@ async def hierarchical_reduce(
     ``OutputTooLarge`` for the caller to re-ask. ``max_levels`` is a guard only.
     """
     if not items:
-        raise ValueError("nothing to reduce")
+        raise EmptyInput("the collection is empty; nothing to reduce")
     half = threshold // 2
 
     async def call(group: Group[T]) -> GroupItem[T]:

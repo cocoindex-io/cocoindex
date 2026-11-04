@@ -65,6 +65,7 @@ class Collection:
 def _child_inputs(
     ctx: SessionContext, args: dict[str, Json], *, closed: bool
 ) -> tuple[dict[str, HandleObject], tuple[InputCard, ...]]:
+    # The shallow validator does not type array items, so the names are coerced here.
     names = [str(h) for h in args.get("inputs", [])]
     handles = ctx.handles.resolve(names)
     if closed:
@@ -115,16 +116,14 @@ def _result(ctx: SessionContext, name: str, text: str) -> Json:
     key_arg="key",
 )
 async def call_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    key = str(args["key"])
+    key: str = args["key"]
     handles, cards = _child_inputs(ctx, args, closed=False)
-    child = ctx.config.spec(
-        str(args.get("role", "worker")), str(args["task"]), inputs=cards
-    )
+    child = ctx.config.spec(args.get("role", "worker"), args["task"], inputs=cards)
     ctx.claim_slot(key)  # after validation: a rejected call does not consume its key
     result = await coco.use_mount(
         coco.component_subpath("child", key), run_open_session, child, handles
     )
-    return _result(ctx, key, result.answer or "")
+    return _result(ctx, key, result.answer)
 
 
 @tool(
@@ -144,11 +143,9 @@ async def call_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key_arg="key",
 )
 async def start_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    key = str(args["key"])
+    key: str = args["key"]
     handles, cards = _child_inputs(ctx, args, closed=False)
-    child = ctx.config.spec(
-        str(args.get("role", "worker")), str(args["task"]), inputs=cards
-    )
+    child = ctx.config.spec(args.get("role", "worker"), args["task"], inputs=cards)
     ctx.claim_slot(key)
     await coco.mount(
         coco.component_subpath("child", key), run_open_session, child, handles
@@ -172,9 +169,9 @@ async def start_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key_arg="key",
 )
 async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    key = str(args["key"])
+    key: str = args["key"]
     handles, cards = _child_inputs(ctx, args, closed=False)
-    child = ctx.config.spec("planner", str(args["question"]), inputs=cards)
+    child = ctx.config.spec("planner", args["question"], inputs=cards)
     ctx.claim_slot(key)
     result = await coco.use_mount(
         coco.component_subpath("child", key), run_open_session, child, handles
@@ -202,12 +199,12 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key_arg="key",
 )
 async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    key = str(args["key"])
-    src = ctx.handles.get(str(args["source"]))
+    key: str = args["key"]
+    src = ctx.handles.get(args["source"])
     if not isinstance(src, LocalDirSource):
         raise ToolError("for_each needs a src: handle")
     handles, cards = _child_inputs(ctx, args, closed=True)
-    child = _closed_spec(ctx, str(args.get("role", "worker")), str(args["task"]), cards)
+    child = _closed_spec(ctx, args.get("role", "worker"), args["task"], cards)
 
     async def items() -> AsyncIterator[tuple[str, Item]]:
         async for item_key, file in src.walker().items():
@@ -236,7 +233,7 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
         return item_key, result
 
     results = await coco.map(one, items())
-    coll = Collection([(k, r.answer or "") for k, r in results])
+    coll = Collection([(k, r.answer) for k, r in results])
     handle = ctx.handles.register("coll", key, coll)
     return ctx.handles.card(handle, items=format_range(widen_count(len(coll.entries))))
 
@@ -258,14 +255,12 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key_arg="key",
 )
 async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    key = str(args["key"])
-    coll = ctx.handles.get(str(args["collection"]))
+    key: str = args["key"]
+    coll = ctx.handles.get(args["collection"])
     if not isinstance(coll, Collection):
         raise ToolError("reduce needs a coll: handle")
-    if not coll.entries:
-        raise ToolError("the collection is empty; nothing to reduce")
-    child = _closed_spec(ctx, "reducer", str(args["task"]), ())
-    threshold = int(args.get("threshold_tokens", _DEFAULT_REDUCE_THRESHOLD_TOKENS))
+    child = _closed_spec(ctx, "reducer", args["task"], ())
+    threshold: int = args.get("threshold_tokens", _DEFAULT_REDUCE_THRESHOLD_TOKENS)
     if threshold < 2:
         raise ToolError("threshold_tokens must be at least 2")
     half = threshold // 2
@@ -287,9 +282,8 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
                 members,
                 spec,
             )
-            answer = result.answer or ""
-            if _estimate_tokens(answer) <= half:
-                return answer
+            if _estimate_tokens(result.answer) <= half:
+                return result.answer
             spec = replace(
                 child,
                 task=child.task

@@ -83,8 +83,7 @@ async def llm_step(
 ) -> ModelOutput:
     scratch = hints.scratch
     if hints.replay is not None:
-        if scratch is not None:
-            scratch.replayed = True
+        scratch.replayed = True
         return hints.replay.output
 
     client = coco.use_context(MODEL_CLIENT)
@@ -94,18 +93,16 @@ async def llm_step(
         output = canonical_output(
             await client.complete(spec, tools, prefix, attempt_hints)
         )
-        if scratch is not None:
-            scratch.inferred = True
+        scratch.inferred = True
         resolution = resolve_replay(output, hints.dump)
         if resolution.invalid is None:
-            if scratch is not None and resolution.picked_step is not None:
+            if resolution.picked_step is not None:
                 scratch.picked_step = resolution.picked_step
-                scratch.steps = resolution.steps
+                scratch.pick_steps = resolution.steps
             return resolution.output
         last_invalid = resolution.invalid
         note = Note(len(prefix), f"invalid replay call ignored: {resolution.invalid}")
-        if scratch is not None:
-            scratch.notes.append(note)  # the loop keeps it in the rendered history
+        scratch.notes.append(note)  # the loop keeps it in the rendered history
         attempt_hints = attempt_hints.add_note(note)
     raise ValueError(
         f"the model issued an unresolvable replay call {_MAX_PICK_ATTEMPTS} times: {last_invalid}"

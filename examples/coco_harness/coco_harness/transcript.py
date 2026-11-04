@@ -53,9 +53,6 @@ class Transcript:
     def __len__(self) -> int:
         return len(self.steps)
 
-    def prefix(self, n: int) -> Transcript:
-        return Transcript(self.steps[:n])
-
 
 def same_action(a: ModelOutput, b: ModelOutput) -> bool:
     """Action identity: the whole turn — same calls in the same order, same answer.

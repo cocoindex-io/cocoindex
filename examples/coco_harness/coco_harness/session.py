@@ -26,10 +26,9 @@ The replay contract (DESIGN.md §4) as the loop implements it:
   will infer).
 * Alignment, in order: a pick → exactly the picked step; a harness replay
   that ran, or a hit that returned the same action → the replayed step;
-  otherwise ``prev[cursor]`` if it is
-  the same action; otherwise the first same action after the last aligned
-  one (advisory). Aligned steps have their results compared; differences
-  become diffs.
+  otherwise ``prev[cursor]`` if it is the same action; otherwise the first
+  same action at or after ``cursor`` (advisory). Aligned steps set ``cursor``
+  past themselves and have their results compared; differences become diffs.
 * A requested replay can be answered by an existing memo instead (an entry a
   failed run committed for this exact prefix). That entry is the model's own
   earlier decision for this state and wins: the loop executes it, re-aligns
@@ -54,7 +53,7 @@ import cocoindex as coco
 from .handles import HandleObject, HandleTable
 from .hints import Diff, Dump, Note, Replay, RunHints, TurnScratch, replay_tool_spec
 from .replay import find_same_action, llm_step
-from .spec import Item, SessionResult, SessionSpec
+from .spec import Item, SessionInput, SessionResult, SessionSpec
 from .tools import HARNESS, SessionContext, ToolRegistry
 from .transcript import ModelOutput, Step, ToolCall, ToolResult, Transcript, same_action
 
@@ -63,7 +62,7 @@ from .transcript import ModelOutput, Step, ToolCall, ToolResult, Transcript, sam
 async def run_open_session(
     spec: SessionSpec, handles: Mapping[str, HandleObject] | None = None
 ) -> SessionResult:
-    return await _session_loop(spec, {}, handles or {}, closed=False)
+    return await _session_loop(spec, None, handles or {}, closed=False)
 
 
 @coco.fn(memo=True)
@@ -72,20 +71,20 @@ async def run_closed_session(
     spec: SessionSpec,
     handles: Mapping[str, HandleObject] | None = None,
 ) -> SessionResult:
-    return await _session_loop(spec, {"input": item}, handles or {}, closed=True)
+    return await _session_loop(spec, item, handles or {}, closed=True)
 
 
 @coco.fn(memo=True)
 async def run_reduce_session(
     members: tuple[str, ...], spec: SessionSpec
 ) -> SessionResult:
-    return await _session_loop(spec, {"input": members}, {}, closed=True)
+    return await _session_loop(spec, members, {}, closed=True)
 
 
 @coco.fn
 async def _session_loop(
     spec: SessionSpec,
-    inputs: Mapping[str, object],
+    input: SessionInput,
     handles: Mapping[str, HandleObject],
     *,
     closed: bool,
@@ -97,7 +96,7 @@ async def _session_loop(
     table = HandleTable()
     for name, obj in handles.items():
         table.seed(name, obj)
-    ctx = SessionContext(spec=spec, inputs=inputs, handles=table, config=config)
+    ctx = SessionContext(spec=spec, input=input, handles=table, config=config)
 
     prev_handle = coco.use_state(
         "transcript", initial_value=Transcript(), type_hint=Transcript
@@ -108,10 +107,8 @@ async def _session_loop(
     hints = RunHints()
     dump_frozen = False
     cursor = 0
-    last_aligned = -1
     ff_next: int | None = None  # index in prev to replay next turn
     ff_budget: int | None = None  # replays left after a bounded pick; None = unbounded
-    answer: str | None = None
 
     for k in range(spec.role.max_turns):
         prefix = Transcript(tuple(steps))
@@ -148,10 +145,10 @@ async def _session_loop(
                     )
                 )
 
-        if output.is_finish:
-            answer = output.answer
+        if output.answer is not None:
             steps.append(Step(output, ()))
-            break
+            prev_handle.value = Transcript(tuple(steps))
+            return SessionResult(answer=output.answer, num_steps=len(steps))
 
         results = await _execute_all(registry, ctx, output)
         steps.append(Step(output, results))
@@ -163,11 +160,10 @@ async def _session_loop(
         elif cursor < len(prev) and same_action(prev.steps[cursor].output, output):
             aligned = cursor
         else:
-            aligned = find_same_action(prev, output, last_aligned + 1)
+            aligned = find_same_action(prev, output, cursor)
 
         diffs: list[Diff] = []
         if aligned is not None:
-            last_aligned = aligned
             cursor = aligned + 1
             diffs = _diffs(k, output, prev.steps[aligned].results, results)
             for d in diffs:
@@ -177,7 +173,7 @@ async def _session_loop(
             hints = replace(hints, dump=_dump_from(prev, cursor, at_step=k + 1))
 
         if scratch.picked_step is not None:
-            ff_budget = None if scratch.steps is None else scratch.steps - 1
+            ff_budget = None if scratch.pick_steps is None else scratch.pick_steps - 1
         if (
             aligned is not None
             and not diffs
@@ -186,7 +182,7 @@ async def _session_loop(
         ):
             nxt = aligned + 1
             if nxt < len(prev):
-                if prev.steps[nxt].output.is_finish:
+                if prev.steps[nxt].output.answer is not None:
                     hints = hints.add_note(
                         Note(
                             k + 1,
@@ -198,13 +194,10 @@ async def _session_loop(
                     ff_next = nxt
                     if ff_budget is not None:
                         ff_budget -= 1
-    else:
-        raise RuntimeError(
-            f"session {spec.role.name!r} exceeded {spec.role.max_turns} turns"
-        )
 
-    prev_handle.value = Transcript(tuple(steps))
-    return SessionResult(answer=answer, num_steps=len(steps))
+    raise RuntimeError(
+        f"session {spec.role.name!r} exceeded {spec.role.max_turns} turns"
+    )
 
 
 def _check_spec(

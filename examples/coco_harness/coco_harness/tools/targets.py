@@ -72,10 +72,10 @@ class LocalDirTargetHandle:
     },
 )
 async def open_target(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    path = pathlib.Path(str(args["path"]))
+    path = pathlib.Path(args["path"])
     target = await localfs.mount_dir_target(path)
     handle = ctx.handles.register(
-        "tgt", str(args["name"]), LocalDirTargetHandle(path, target)
+        "tgt", args["name"], LocalDirTargetHandle(path, target)
     )
     return ctx.handles.card(handle, path=str(path))
 
@@ -96,8 +96,8 @@ async def open_target(ctx: SessionContext, args: dict[str, Json]) -> Json:
     closed_ok=True,
 )
 async def declare(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    obj = ctx.handles.get(str(args["target"]))
-    value = str(args["value"])
+    obj = ctx.handles.get(args["target"])
+    value: str = args["value"]
     if is_handle(value):
         # A reference must resolve to a result; a stale or wrong-kind one is an
         # error, never literal content.

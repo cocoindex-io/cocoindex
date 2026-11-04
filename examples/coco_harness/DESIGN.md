@@ -659,7 +659,7 @@ would let the harness drop the closed/open split.
 | Failure classes; completed turns survive a later failure | `test_replay.py` (§7 *Acceptance*) |
 | Non-object arguments: canonical form, model-facing error, next run loads the transcript | `test_replay.py::test_non_object_arguments_are_the_models_error_and_survive_the_run` |
 | Distinct child keys across tools never share an engine path | `test_for_each.py::test_distinct_child_keys_never_alias_one_engine_path` |
-| Message rendering: task + input manifest, dump with literal marks, diffs, notes, canonical invalid calls | `test_rendering.py` |
+| Message rendering: task + input manifest, dump with literal marks, diffs, notes, canonical invalid calls; provider response parsing, malformed arguments kept as the model's error | `test_rendering.py` |
 | Reduce algorithm (pure): admission, bisection, output check, termination, collision | `test_reduce_grouping.py` |
 | Widened counts, bottom-k, stable hash, canonical JSON | `test_stats.py`, `test_stable_hash.py`, `test_transcript.py` |
 
@@ -668,7 +668,7 @@ would let the harness drop the closed/open split.
 | Item | Owning section |
 |---|---|
 | `reduce` tool glue: group slots, attempt retry, `run_reduce_session` | §6 |
-| LiteLLM client: the API call and tool-call parsing (rendering is covered) | §4 |
+| LiteLLM client: the API call itself (rendering and response parsing are covered) | §4 |
 
 **Target** (contract settled where stated, not implemented):
 

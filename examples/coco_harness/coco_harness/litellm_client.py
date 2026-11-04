@@ -176,10 +176,29 @@ class LiteLLMClient:
         )
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None) or []
-        if not tool_calls:
-            return ModelOutput(answer=message.content or "")
-        calls = tuple(
-            ToolCall(tc.function.name, json.loads(tc.function.arguments or "{}"))
-            for tc in tool_calls
+        return parse_response(
+            message.content,
+            [(tc.function.name, tc.function.arguments) for tc in tool_calls],
         )
-        return ModelOutput(calls=calls)
+
+
+def parse_response(
+    content: str | None, tool_calls: list[tuple[str, str | None]]
+) -> ModelOutput:
+    """Turn a provider message into a ``ModelOutput``.
+
+    ``tool_calls`` are ``(name, raw JSON arguments)`` pairs. Arguments that are
+    not valid JSON are kept as the raw string: ``canonical_output`` then stores
+    the call as ``{"$invalid": …}`` and the registry reports it to the model as
+    its error, instead of the session failing on a decode exception.
+    """
+    if not tool_calls:
+        return ModelOutput(answer=content or "")
+    calls = []
+    for name, raw in tool_calls:
+        try:
+            args = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            args = raw
+        calls.append(ToolCall(name, args))
+    return ModelOutput(calls=tuple(calls))

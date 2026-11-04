@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
-from .handles import Volatility
 from .hints import RunHints
 from .spec import Json, SessionSpec, ToolSpec
 from .tools import SessionContext, Tool, tool
@@ -69,10 +68,9 @@ def probe_tool(values: Mapping[str, Json]) -> Tool:
             "properties": {"name": {"type": "string"}},
             "required": ["name"],
         },
-        volatility=Volatility.PER_ITEM,
     )
     async def probe(ctx: SessionContext, args: dict[str, Json]) -> Json:
-        value = values[str(args["name"])]
+        value = values[args["name"]]
         if isinstance(value, Exception):
             raise value
         return value

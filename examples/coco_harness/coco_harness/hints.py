@@ -73,12 +73,10 @@ class TurnScratch:
     inferred: bool = False
     replayed: bool = False
     picked_step: int | None = None  # previous-transcript step number the model picked
-    steps: int | None = (
-        None  # how many actions the pick covers; None = until a result differs
+    pick_steps: int | None = (
+        None  # actions the pick covers; None = until a result differs
     )
-    notes: list[Note] = field(
-        default_factory=list
-    )  # notes shown during this turn's retries
+    notes: list[Note] = field(default_factory=list)  # shown during this turn's retries
 
 
 @dataclass(frozen=True)
@@ -87,7 +85,7 @@ class RunHints:
     diffs: tuple[Diff, ...] = ()
     notes: tuple[Note, ...] = ()
     replay: Replay | None = None
-    scratch: TurnScratch | None = None
+    scratch: TurnScratch = field(default_factory=TurnScratch)
 
     def add_diff(self, diff: Diff) -> RunHints:
         return replace(self, diffs=(*self.diffs, diff))

@@ -15,19 +15,12 @@ from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 
 from ..errors import ToolError
-from ..handles import MethodSpec, Volatility
+from ..handles import MethodSpec, Volatility, int_arg
 from ..spec import Item, Json
 from . import SessionContext, tool
 from .stats import bottom_k, format_range, widen_count
 
 _SAMPLE_HEAD_CHARS = 400
-
-
-def _int_arg(args: dict[str, Json], name: str, default: int) -> int:
-    value = args.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ToolError(f"{name} must be a non-negative integer")
-    return value
 
 
 class LocalDirSource:
@@ -48,14 +41,10 @@ class LocalDirSource:
         )
         return localfs.walk_dir(self.root, recursive=True, path_matcher=matcher)
 
-    async def keys(self) -> list[str]:
-        return sorted([key async for key, _file in self.walker().items()])
-
-    async def file(self, key: str) -> localfs.File | None:
-        async for k, f in self.walker().items():
-            if k == key:
-                return f
-        return None
+    async def files(self) -> dict[str, localfs.File]:
+        """One walk: every file by its key, in key order."""
+        found = {key: file async for key, file in self.walker().items()}
+        return dict(sorted(found.items()))
 
     def methods(self) -> tuple[MethodSpec, ...]:
         return (
@@ -79,32 +68,30 @@ class LocalDirSource:
         )
 
     async def call(self, method: str, args: dict[str, Json]) -> Json:
+        files = await self.files()
         if method == "stats":
             # Target (DESIGN.md §5): hysteresis against the previous bucket, kept in
             # use_state on the session component. Not implemented yet.
-            return {"files": format_range(widen_count(len(await self.keys())))}
+            return {"files": format_range(widen_count(len(files)))}
         if method == "sample":
-            k = _int_arg(args, "k", 5)
-            keys = await self.keys()
-            out: list[dict[str, Json]] = []
-            for key in bottom_k(keys, k):
-                f = await self.file(key)
-                head = (
-                    (await f.read_text())[:_SAMPLE_HEAD_CHARS] if f is not None else ""
-                )
-                out.append({"key": key, "head": head})
-            return out
+            k = int_arg(args, "k", 5)
+            return [
+                {
+                    "key": key,
+                    "head": (await files[key].read_text())[:_SAMPLE_HEAD_CHARS],
+                }
+                for key in bottom_k(files, k)
+            ]
         if method == "read":
             file_key = args.get("key")
             if not isinstance(file_key, str):
                 raise ToolError("read needs a string `key`")
-            f = await self.file(file_key)
-            if f is None:
+            if file_key not in files:
                 raise ToolError(f"no file {file_key!r} under {self.root}")
-            return await f.read_text()
+            return await files[file_key].read_text()
         if method == "keys":
             prefix = str(args.get("prefix", ""))
-            return [k for k in await self.keys() if k.startswith(prefix)]
+            return [k for k in files if k.startswith(prefix)]
         raise ToolError(f"unknown method {method!r} on a localfs source")
 
 
@@ -124,11 +111,9 @@ class LocalDirSource:
     },
 )
 async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    src = LocalDirSource(
-        pathlib.Path(str(args["path"])), tuple(args.get("patterns", ()))
-    )
-    handle = ctx.handles.register("src", str(args["name"]), src)
-    count = len(await src.keys())
+    src = LocalDirSource(pathlib.Path(args["path"]), tuple(args.get("patterns", ())))
+    handle = ctx.handles.register("src", args["name"], src)
+    count = len(await src.files())
     return ctx.handles.card(
         handle,
         root=str(src.root),
@@ -152,8 +137,8 @@ async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
     closed_ok=True,  # only ever reaches seeded handles in a closed session
 )
 async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    obj = ctx.handles.get(str(args["handle"]))
-    method = str(args["method"])
+    obj = ctx.handles.get(args["handle"])
+    method: str = args["method"]
     allowed_volatile = ctx.spec.role.name == "planner"
     for m in obj.methods():
         if (
@@ -171,15 +156,11 @@ async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
 @tool(
     "read_input",
     "Read this session's input: for a file, {key, text}; for a reduce, the list of partial results.",
-    volatility=Volatility.PER_ITEM,
     closed_ok=True,
 )
 async def read_input(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    item = ctx.inputs.get("input")
-    if item is None:
+    if ctx.input is None:
         raise ToolError("this session has no input; it is an open session")
-    if isinstance(item, Item):
-        return {"key": item.key, "text": await item.file.read_text()}
-    if isinstance(item, (list, tuple)):
-        return list(item)
-    return str(item)
+    if isinstance(ctx.input, Item):
+        return {"key": ctx.input.key, "text": await ctx.input.file.read_text()}
+    return list(ctx.input)

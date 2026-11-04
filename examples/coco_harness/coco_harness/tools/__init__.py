@@ -22,15 +22,15 @@ for those.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, field, replace
 from typing import cast
 
 import cocoindex as coco
 
 from ..errors import ToolError
-from ..handles import HandleTable, Volatility
-from ..spec import InputCard, Json, RoleSpec, SessionSpec, ToolSpec
+from ..handles import HandleTable
+from ..spec import InputCard, Json, RoleSpec, SessionInput, SessionSpec, ToolSpec
 from ..transcript import (
     INVALID_ARGS_KEY,
     ToolCall,
@@ -47,7 +47,6 @@ __all__ = [
     "ToolError",
     "ToolHandler",
     "ToolRegistry",
-    "Volatility",
     "tool",
     "validate_args",
 ]
@@ -55,10 +54,10 @@ __all__ = [
 
 @dataclass
 class SessionContext:
-    """What a tool handler sees: the session, its inputs, its handles, the harness."""
+    """What a tool handler sees: the session, its input, its handles, the harness."""
 
     spec: SessionSpec
-    inputs: Mapping[str, object]
+    input: SessionInput
     handles: HandleTable
     config: HarnessConfig
     used_slots: set[str] = field(default_factory=set)
@@ -79,7 +78,6 @@ ToolHandler = Callable[[SessionContext, dict[str, Json]], Awaitable[Json]]
 class Tool:
     spec: ToolSpec
     handler: ToolHandler
-    volatility: Volatility = Volatility.STABLE
     closed_ok: bool = False
     key_arg: str | None = None
 
@@ -89,7 +87,6 @@ def tool(
     description: str,
     parameters: dict[str, Json] | None = None,
     *,
-    volatility: Volatility = Volatility.STABLE,
     closed_ok: bool = False,
     key_arg: str | None = None,
 ) -> Callable[[ToolHandler], Tool]:
@@ -102,13 +99,7 @@ def tool(
             parameters=parameters or {"type": "object", "properties": {}},
         )
         tracked = cast(ToolHandler, coco.fn(handler))
-        return Tool(
-            spec=spec,
-            handler=tracked,
-            volatility=volatility,
-            closed_ok=closed_ok,
-            key_arg=key_arg,
-        )
+        return Tool(spec=spec, handler=tracked, closed_ok=closed_ok, key_arg=key_arg)
 
     return wrap
 
@@ -224,13 +215,7 @@ class HarnessConfig:
                 f"unknown role {name!r}; known: {sorted(self.roles)}"
             ) from None
         if role.model == "default":
-            role = RoleSpec(
-                name=role.name,
-                system_prompt=role.system_prompt,
-                tool_names=role.tool_names,
-                model=self.default_model,
-                max_turns=role.max_turns,
-            )
+            role = replace(role, model=self.default_model)
         return role
 
     def spec(

@@ -75,9 +75,9 @@ class SessionSpec:
 
 @dataclass(frozen=True)
 class SessionResult:
-    """What a session returns to its mounter."""
+    """What a session returns to its mounter. A session always ends with an answer."""
 
-    answer: str | None
+    answer: str
     num_steps: int
 
 
@@ -91,3 +91,8 @@ class Item:
 
     key: str
     file: FileLike[Any]
+
+
+# What a session was mounted for: a source item (closed worker), the partial
+# results to combine (reducer), or nothing (open session).
+SessionInput = Item | tuple[str, ...] | None

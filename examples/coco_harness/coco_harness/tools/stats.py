@@ -7,10 +7,16 @@ the population changes a little.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import NamedTuple
 
 from ..stable_hash import stable_hash64
 
-Bucket = tuple[int, int]  # [lo, hi)
+
+class Bucket(NamedTuple):
+    """A widened count: the half-open range ``[lo, hi)``. Compares equal to a plain tuple."""
+
+    lo: int
+    hi: int
 
 
 def widen_count(n: int, prev: Bucket | None = None, slack: float = 0.1) -> Bucket:
@@ -23,20 +29,20 @@ def widen_count(n: int, prev: Bucket | None = None, slack: float = 0.1) -> Bucke
     if n < 0:
         raise ValueError("count cannot be negative")
     if prev is not None:
-        lo, hi = prev
-        if lo * (1 - slack) <= n < hi * (1 + slack) and (lo > 0 or n == 0):
+        if prev.lo * (1 - slack) <= n < prev.hi * (1 + slack) and (
+            prev.lo > 0 or n == 0
+        ):
             return prev
     if n == 0:
-        return (0, 0)
+        return Bucket(0, 0)
     lo = 1 << (n.bit_length() - 1)
-    return (lo, lo * 2)
+    return Bucket(lo, lo * 2)
 
 
 def format_range(bucket: Bucket) -> str:
-    lo, hi = bucket
-    if hi == 0:
+    if bucket.hi == 0:
         return "0"
-    return f"{_short(lo)}–{_short(hi)}"
+    return f"{_short(bucket.lo)}–{_short(bucket.hi)}"
 
 
 def _short(n: int) -> str:

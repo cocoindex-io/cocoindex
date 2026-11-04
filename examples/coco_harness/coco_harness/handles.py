@@ -67,6 +67,14 @@ def input_card(handle: str, obj: HandleObject) -> InputCard:
     )
 
 
+def int_arg(args: dict[str, Json], name: str, default: int) -> int:
+    """A method argument that must be a non-negative integer; anything else is the model's error."""
+    value = args.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ToolError(f"{name} must be a non-negative integer")
+    return value
+
+
 @dataclass
 class ResultValue:
     """A tool or agent result behind a ``res:`` handle.
@@ -98,10 +106,7 @@ class ResultValue:
         if method == "read":
             return self.text
         if method == "head":
-            chars = args.get("chars", 500)
-            if isinstance(chars, bool) or not isinstance(chars, int) or chars < 0:
-                raise ToolError("chars must be a non-negative integer")
-            return self.text[:chars]
+            return self.text[: int_arg(args, "chars", 500)]
         raise ToolError(f"unknown method {method!r} on a result handle")
 
 
@@ -168,17 +173,18 @@ class HandleTable:
     def merge(self, forks: Sequence[HandleTable]) -> set[int]:
         """Fold the forks' registrations in; return the indices of forks that conflicted.
 
-        A name registered by two forks, or already present, marks every fork
-        that registered it as conflicting; a conflicting fork publishes none of
-        its names, so a failed call leaves no partial handles behind.
+        A name registered by two forks marks both as conflicting, and a
+        conflicting fork publishes none of its names, so a failed call leaves
+        no partial handles behind. A name already in this table cannot appear
+        in a fork: ``register`` sees the parent and rejects it at call time.
         """
         owners: dict[str, list[int]] = {}
         for i, fork in enumerate(forks):
             for handle in fork._objects:
                 owners.setdefault(handle, []).append(i)
         conflicts: set[int] = set()
-        for handle, idxs in owners.items():
-            if len(idxs) > 1 or handle in self._objects:
+        for idxs in owners.values():
+            if len(idxs) > 1:
                 conflicts.update(idxs)
         for i, fork in enumerate(forks):
             if i not in conflicts:
