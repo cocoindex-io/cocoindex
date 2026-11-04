@@ -213,8 +213,9 @@
 .dg-state-removed>.dg-label,
 .dg-state-removed>foreignObject .dg-fo-label {
   text-decoration: line-through;
-  color: var(--muted);
-  fill: var(--muted);
+  /* Keep labels readable after the removed group's opacity is applied. */
+  color: var(--maroon-ink);
+  fill: var(--maroon-ink);
 }
 
 /* `changed` is kept as a thin invalidation marker (pink stroke, no fill
