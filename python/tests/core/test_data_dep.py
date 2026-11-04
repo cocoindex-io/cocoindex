@@ -437,10 +437,14 @@ async def _grandparent(name: str, parent: str, children: list[str], salt: int = 
     await coco.use_mount(coco.component_subpath(parent), _parent, parent, children)
 
 
+# An extra input of the grandparent alone, to make it miss while the parent hits.
+_gp_salt = {"value": 0}
+
+
 @coco.fn
-async def _tree_main(gp: str, parent: str, children: list[str], salt: int = 0) -> None:
+async def _tree_main(gp: str, parent: str, children: list[str]) -> None:
     await coco.use_mount(
-        coco.component_subpath(gp), _grandparent, gp, parent, children, salt
+        coco.component_subpath(gp), _grandparent, gp, parent, children, _gp_salt["value"]
     )
 
 
@@ -451,6 +455,7 @@ def test_a_memoized_ancestor_is_reused_while_its_open_descendants_reads_validate
     descendants its memo lists from their stored rows and is reused without
     mounting anything; one invalid read beneath it re-runs its body."""
     _reset()
+    _gp_salt["value"] = 0
     with tempfile.TemporaryDirectory() as d:
         a = pathlib.Path(d) / "a.txt"
         _write(a, "A1")
@@ -503,17 +508,18 @@ def test_a_reused_ancestor_of_open_descendants_still_flags_its_parent() -> None:
     a parent whose body re-runs lists it again; otherwise that parent would
     store an unflagged memo and skip the read on its next probe."""
     _reset()
+    _gp_salt["value"] = 0
     with tempfile.TemporaryDirectory() as d:
         a = pathlib.Path(d) / "a.txt"
         _write(a, "A1")
         _reads["open"] = [a]
-        app = _app("test_dd_tree_bit", _tree_main, "gp", "p", ["open"], 0)
+        app = _app("test_dd_tree_bit", _tree_main, "gp", "p", ["open"])
         app.update_blocking()
         _metrics.clear()
 
         # The grandparent's own key changes; the parent's memo is reused
         # through the walk and must report the bit.
-        app = _app("test_dd_tree_bit", _tree_main, "gp", "p", ["open"], 1)
+        _gp_salt["value"] = 1
         app.update_blocking()
         assert _metrics.collect() == {"run.gp": 1, "validate.file": 1}
         app.update_blocking()
@@ -522,6 +528,7 @@ def test_a_reused_ancestor_of_open_descendants_still_flags_its_parent() -> None:
 
 def test_a_flagged_ancestor_under_full_reprocess_and_in_a_preview() -> None:
     _reset()
+    _gp_salt["value"] = 0
     with tempfile.TemporaryDirectory() as d:
         a = pathlib.Path(d) / "a.txt"
         _write(a, "A1")
