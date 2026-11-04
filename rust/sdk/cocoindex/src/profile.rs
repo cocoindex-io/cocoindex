@@ -201,6 +201,9 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
                     MemoStatesPayload {
                         positional,
                         by_context_fp: validation.states,
+                        // The SDK records no data dependencies (`use_data_dep`
+                        // has no Rust API yet), so an entry it validates holds none.
+                        data_deps: Vec::new(),
                     },
                     positional_valid && validation.memo_valid,
                     positional_changed || validation.states_changed,
@@ -213,6 +216,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
                 MemoStatesPayload {
                     positional,
                     by_context_fp: initial_context_states,
+                    data_deps: Vec::new(),
                 },
                 true,
                 false,
