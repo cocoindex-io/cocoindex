@@ -189,14 +189,14 @@ const ICONS: Record<string, string> = {
             <div class="step">
               <span class="num">1</span>
               <div>
-                <h4>Define the flow</h4>
+                <h3>Define the flow</h3>
                 <p>Point at a source (<code>LocalFile</code>, <code>Postgres</code>, Google&nbsp;Drive, S3…), transform it — chunk, embed, extract, resolve entities — and collect the rows, vectors, or graph nodes you want, then <code>export</code> them to a target.</p>
               </div>
             </div>
             <div class="step">
               <span class="num">2</span>
               <div>
-                <h4>Run — only the Δ recomputes</h4>
+                <h3>Run — only the Δ recomputes</h3>
                 <p>The engine backfills on first run and keeps the target in sync on every re-run or in <code>live</code> mode. Change one file and only that file reprocesses. No DAGs, no orchestration to babysit.</p>
               </div>
             </div>
@@ -296,15 +296,15 @@ def text_embedding_flow(flow_builder, data_scope):
           </div>
           <div class="bb">
             <div class="bb-col">
-              <h4>Sources</h4>
+              <h3>Sources</h3>
               <div class="chips">{sources.map((s) => <a class="chip" href={doc(s.slug)}>{s.label}</a>)}</div>
             </div>
             <div class="bb-col">
-              <h4>Operations</h4>
+              <h3>Operations</h3>
               <div class="chips">{operations.map((s) => <a class="chip" href={doc(s.slug)}>{s.label}</a>)}</div>
             </div>
             <div class="bb-col">
-              <h4>Targets</h4>
+              <h3>Targets</h3>
               <div class="chips">{targets.map((s) => <a class="chip" href={doc(s.slug)}>{s.label}</a>)}</div>
             </div>
           </div>
@@ -548,16 +548,16 @@ def text_embedding_flow(flow_builder, data_scope):
       body.docs-home .card.build h3 { font-size: 17px; }
 
       /* steps */
-      body.docs-home .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+      body.docs-home .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 18px; }
       body.docs-home .step {
-        display: grid; grid-template-columns: auto 1fr; gap: 18px;
+        display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px;
         background: var(--cream-soft); border: 1px solid var(--rule); border-radius: 12px; padding: 24px;
       }
       body.docs-home .step .num {
         width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
         background: var(--maroon); color: var(--cream); font-family: var(--serif); font-size: 20px;
       }
-      body.docs-home .step h4 { margin: 2px 0 8px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+      body.docs-home .step h3 { margin: 2px 0 8px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
       body.docs-home .step p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.55; }
       body.docs-home .step code {
         font-family: var(--mono); font-size: 12.5px; background: rgba(190, 81, 51, 0.1);
@@ -592,7 +592,7 @@ def text_embedding_flow(flow_builder, data_scope):
 
       /* building blocks */
       body.docs-home .bb { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 22px; }
-      body.docs-home .bb-col h4 {
+      body.docs-home .bb-col h3 {
         font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
         color: var(--coral); margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--rule);
       }

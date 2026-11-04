@@ -5,9 +5,10 @@ import Search from './Search.astro';
 export interface Props {
   /** Slug of the currently-rendered doc, e.g. `getting_started/quickstart`. */
   currentSlug: string;
+  mobile?: boolean;
 }
 
-const { currentSlug } = Astro.props;
+const { currentSlug, mobile = false } = Astro.props;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 function href(slug: string): string {
@@ -17,7 +18,7 @@ function href(slug: string): string {
 }
 ---
 
-<aside class="side" aria-label="Documentation navigation">
+<aside class:list={["side", { "mobile-side": mobile }]} aria-label="Documentation navigation">
   <Search />
   <div class="side-group">
     <ul>
@@ -72,7 +73,8 @@ function href(slug: string): string {
   // On load, scroll the active sidebar entry into view so the user never
   // lands on a page where the highlighted nav item is off-screen. `nearest`
   // avoids jumping the whole viewport — it just nudges the sidebar scroller.
-  const current = document.querySelector<HTMLAnchorElement>('aside.side a[data-current]');
+  const current = Array.from(document.querySelectorAll<HTMLAnchorElement>('aside.side a[data-current]'))
+    .find(link => link.getClientRects().length);
   if (current) {
     current.scrollIntoView({ block: 'center', inline: 'nearest' });
   }

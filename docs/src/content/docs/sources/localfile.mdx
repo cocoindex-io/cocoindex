@@ -7,7 +7,7 @@ meta:
 ---
 The `LocalFile` source imports files from a local file system.
 
-### Spec
+## Spec
 
 The spec takes the following fields:
 *   `path` (`str`): full path of the root directory to import files from
@@ -30,7 +30,7 @@ The spec takes the following fields:
 *   `watch_changes` (`bool`, optional): if `True`, the source watches the file system for changes and automatically triggers updates when files are added, modified, or deleted.
     Defaults to `False`.
 
-### Schema
+## Schema
 
 The output is a [*KTable*](/docs-v0/core/data_types#ktable) with the following sub fields:
 *   `filename` (*Str*, key): the filename of the file, including the path, relative to the root directory, e.g. `"dir1/file1.md"`
