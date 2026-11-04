@@ -55,7 +55,6 @@ from cocoindex.resources.rate_limit import RateLimiter
 from tests import common
 from tests.common.target_states import GlobalDictTarget, Metrics
 
-# IDs of different lengths, so that comparing them as strings would show.
 _GUILD = "1001"
 _OTHER_GUILD = "901"
 _CHANNEL = "1002"
@@ -2126,7 +2125,8 @@ class TestThreadMessages:
             assert [m.id for m in await thread.messages()] == [_THREAD_ID, "1025"]
 
     async def test_pages_sorts_and_drops_the_stub(self) -> None:
-        # IDs from 4 digits to 5, so that sorting them as text would show.
+        # IDs from 4 digits to 5: sorted as text, "10000" would come before
+        # "9999".
         ids = [str(n) for n in range(9901, 10151)]
         fake = _FakeDiscord()
         fake.page_cap = 70
@@ -2752,7 +2752,8 @@ class TestItems:
         assert "same millisecond" not in str(exc_info.value)
 
     async def test_archived_private_paging_by_id(self) -> None:
-        # IDs from 4 digits to 5, so that comparing them as text would show.
+        # IDs from 4 digits to 5: compared as text, "10000" would be smaller
+        # than "9999".
         ids = ["9998", "9999", "10000", "10001", "10002"]
         fake = _fake_with_channels()
         fake.page_cap = 2

@@ -352,7 +352,6 @@ class DiscordChannelInfo:
     # Discord's channel type, such as 0 for text, 2 voice, 4 a category, 5
     # announcement and 15 forum.
     type: int
-    # The category the channel sits under, if any.
     category_id: str | None
 
 
