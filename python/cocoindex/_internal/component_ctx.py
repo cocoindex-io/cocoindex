@@ -191,6 +191,9 @@ class ComponentContext:
             if node is None:
                 # No handlers registered — log directly without building
                 # the ExceptionContext metadata at all. Don't propagate.
+                # The callback also serves descendant deletion failures, so
+                # the path is where the failure was reported, not necessarily
+                # the exact failing component; the processor name pins it down.
                 mode = display_mode()
                 if mode is not None:
                     # A progress display lists only the first few failures of
@@ -198,15 +201,34 @@ class ComponentContext:
                     # On a terminal a traceback per failure would push the
                     # display off screen; in scrolling output it costs nothing.
                     path = readable_path(str(stable_path))
-                    message = "%s failed: %s: %s"
-                    args = (path, type(exc).__name__, exc)
+                    if processor_name is not None:
+                        message = "%s failed (%s): %s: %s"
+                        args: tuple[object, ...] = (
+                            path,
+                            processor_name,
+                            type(exc).__name__,
+                            exc,
+                        )
+                    else:
+                        message = "%s failed: %s: %s"
+                        args = (path, type(exc).__name__, exc)
                     if mode is DisplayMode.TERMINAL:
                         _failure_logger.error(message, *args)
                         _failure_logger.debug("traceback of %s", path, exc_info=exc)
                     else:
                         _failure_logger.error(message, *args, exc_info=exc)
                 else:
-                    _logger.error("component build failed: %s", exc, exc_info=exc)
+                    path = readable_path(str(stable_path))
+                    if processor_name is not None:
+                        _logger.error(
+                            "%s failed (%s): %s",
+                            path,
+                            processor_name,
+                            exc,
+                            exc_info=exc,
+                        )
+                    else:
+                        _logger.error("%s failed: %s", path, exc, exc_info=exc)
                 return
 
             env_name = self._env.name
