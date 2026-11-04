@@ -1,0 +1,18 @@
+[project]
+name = "coco-harness"
+version = "0.1.0"
+description = "CocoIndex example: an incremental agent harness — subagents as components, model turns as memoized functions."
+requires-python = ">=3.11"
+dependencies = ["cocoindex>=1.0.7"]
+
+[project.optional-dependencies]
+llm = ["litellm!=1.107.0"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.setuptools]
+packages = ["coco_harness", "coco_harness.tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
