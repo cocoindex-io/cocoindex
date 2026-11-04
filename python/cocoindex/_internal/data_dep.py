@@ -61,6 +61,8 @@ def _param_deserializer(
 class DataDep:
     """A kind of data dependency, declared once at module import.
 
+    **Experimental:** the API and its semantics may change in a later release.
+
     ``name`` is a stable string. It is hashed into the kind's fingerprint in
     its own namespace and identifies the kind in stored memo entries, so
     renaming a kind invalidates every entry that recorded it; that doubles as
@@ -163,6 +165,8 @@ class DataDep:
 
 def use_data_dep(kind: DataDep, /, *, key: object, state: object) -> None:
     """Record one data dependency into the current call.
+
+    **Experimental:** the API and its semantics may change in a later release.
 
     ``key`` identifies what was read; ``state`` is what was observed. Both are
     serializable values and are **snapshotted now**: serialized once, with
