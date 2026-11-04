@@ -942,8 +942,9 @@ class DiscordThread:
     A memoized function that takes the thread reruns when any of its fields
     or its starter changes: a message posted or deleted (the counters), a
     rename, new tags, an archive or unarchive, a lock or a pin. The messages
-    inside aren't part of that, so an edit or a reaction inside the thread
-    waits for the thread's next change, such as Discord archiving it, which
+    inside aren't part of that, so an edit or a reaction inside the thread,
+    or a new display name of a message's author, waits for the thread's next
+    change, such as Discord archiving it, which
     Discord does on its own schedule and, on a quiet server, may never do.
 
     A field the channel's ``thread_fields`` leaves out holds ``None``, or
@@ -1252,8 +1253,10 @@ class DiscordChannel:
         its threads, forum posts included, newest first. The key is the
         message's or the thread's ID. A message that starts a thread isn't an
         item of its own: it's the thread's :attr:`~DiscordThread.starter`,
-        under the same ID, so a message that gains a thread turns into one. A
-        private thread is listed once someone adds the bot to it.
+        under the same ID, so a message that gains a thread turns into one.
+        Discord's notice for a thread started without a message has the
+        thread's ID and isn't an item either. A private thread is listed once
+        someone adds the bot to it.
 
         Any error raises rather than ending the listing early, since the
         items missing from a cut-short listing would look deleted, and their

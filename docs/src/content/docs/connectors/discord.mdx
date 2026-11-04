@@ -195,10 +195,10 @@ class DiscordChannel:
 
 `items()` yields `(key, item)` pairs for [`coco.mount_each`](../programming_guide/processing_component#mount_each):
 
-- a [`DiscordMessage`](#discordmessage) for each message in the channel's main stream, newest first, except a message that starts a thread;
+- a [`DiscordMessage`](#discordmessage) for each message in the channel's main stream, newest first, except a message that starts a thread and Discord's notice for a thread started without one (see [System message types](#system-message-types-and-filtering));
 - then a [`DiscordThread`](#discordthread) for each thread in the channel, newest first: active and archived, forum posts included, and private threads the bot is a member of.
 
-The key is the message's or the thread's ID. A thread started from a message has that message's ID, and the message is the thread's `starter` rather than an item of its own. So when someone starts a thread on a message, the item under that key turns from a message into a thread, and its outputs are replaced in one step.
+The key is the message's or the thread's ID. A thread started from a message has that message's ID, and the message is the thread's `starter` rather than an item of its own. So when someone starts a thread on a message, the item under that key turns from a message into a thread, and its outputs are replaced in one step; if the thread is deleted, it turns back into a message.
 
 A forum channel has no main stream: its items are its posts, which are threads. Use `isinstance` to tell the two kinds apart:
 
@@ -394,7 +394,7 @@ The connector doesn't expose the text in a message's components or polls. So a b
 
 ### System message types and filtering
 
-Every message in the main stream is an item, whatever its type, because Discord's listing can't filter by type. Each message exposes Discord's [message type](https://discord.com/developers/docs/resources/message#message-object-message-types) as `type`, so filter in your function:
+Messages in the main stream are items whatever their type, because Discord's listing can't filter by type. Each message exposes Discord's [message type](https://discord.com/developers/docs/resources/message#message-object-message-types) as `type`, so filter in your function:
 
 | `type` | Message |
 |---|---|
@@ -425,7 +425,7 @@ Discord has no content hash, so an item is fingerprinted by every field it expos
 | object | memo key | changes detected by |
 |---|---|---|
 | `DiscordMessage` | every field | an edit, a new embed, a rename of the author or a mentioned user; with the default fields, a reaction, a pin or an unpin |
-| `DiscordThread` | every field, its starter, and the message fields its messages expose | a message posted or deleted (the counters), a rename, new tags, an archive or unarchive, a lock, a pin, an edit to its starter; with the default fields, people joining |
+| `DiscordThread` | every field, its starter, and the message fields its messages expose | a message posted or deleted (the counters), a rename, new tags, an archive or unarchive, a lock, a pin, an edit to its starter or a rename of the starter's author; with the default fields, people joining |
 | `DiscordAttachment` | every field but `url` | the ID stands for the file's content, so a newly signed URL reruns nothing |
 | `DiscordChannel` | its ID and field selections | not memoized itself: it's listed again on every run |
 
@@ -439,10 +439,10 @@ Deleting a reply's parent doesn't rerun the reply: `reply_to` keeps the parent's
 
 ### The gap inside threads
 
-A thread item holds the thread and its starter; the messages inside it are fetched only when the thread reruns, so they aren't part of its fingerprint. Discord reports nothing on the thread when a message inside it is edited or reacted to.
+A thread item holds the thread and its starter; the messages inside it are fetched only when the thread reruns, so they aren't part of its fingerprint. Discord reports nothing on the thread when a message inside it is edited or reacted to, or when its author changes their display name.
 
 :::caution[Edits inside a thread wait for the thread's next change]
-An edit or a reaction on a message inside a thread, including a forum post's opening message, is picked up the next time the thread changes in one of the ways above, such as a new message, or Discord archiving it. Discord archives threads on its own schedule, and on a quiet server it may never do so; a pinned forum post never archives on its own. So on a quiet server, an edit inside a thread may never be picked up.
+An edit or a reaction on a message inside a thread, including a forum post's opening message, or its author's new display name, is picked up the next time the thread changes in one of the ways above, such as a new message, or Discord archiving it. Discord archives threads on its own schedule, and on a quiet server it may never do so; a pinned forum post never archives on its own. So on a quiet server, an edit inside a thread may never be picked up.
 
 To remove a message from the index quickly, **delete it rather than edit it**: a deletion lowers the thread's message count, so the thread reruns on the next run.
 :::
