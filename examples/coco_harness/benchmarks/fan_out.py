@@ -61,7 +61,6 @@ WORKER = RoleSpec("worker", "bench", ("read_input",))
 PLANNER = RoleSpec("planner", "bench", ("call",))
 
 SHAPES = ("S1", "S2")
-CASES = ("cold", "unchanged", "touch one", "edit one", "add one", "remove one")
 
 
 def _call(tool: str, **args: object) -> ToolCall:
@@ -162,53 +161,62 @@ def _workspace(files: int) -> Iterator[tuple[pathlib.Path, pathlib.Path]]:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def run_shape(shape: str, files: int) -> list[Measurement]:
+def run_shape(shape: str, files: int) -> None:
     with _workspace(files) as (docs, db_path):
         env = coco.Environment(coco.Settings.from_env(db_path=db_path))
-        model = _script(docs, shape)
-        tools = CountingRegistry(
-            [
-                sources.open_source,
-                sources.call_method,
-                sources.read_input,
-                agents.for_each,
-                agents.call_agent,
-            ]
-        )
-        config = HarnessConfig(
-            roles={r.name: r for r in (ORCHESTRATOR, WORKER, PLANNER)}, tools=tools
-        )
-        env.context_provider.provide(MODEL_CLIENT, model)
-        env.context_provider.provide(HARNESS, config)
-        app = coco.App(
-            coco.AppConfig(name=f"fan_out_{shape}", environment=env),
-            run_open_session,
-            config.spec("orchestrator", "count the characters of every doc"),
-        )
+        try:
+            _run_cases(env, docs, shape, files)
+        finally:
+            env.close()
 
-        def measure(case: str, mutate: Callable[[], None]) -> Measurement:
-            mutate()
-            model.reset()
-            tools.reset()
-            started = time.perf_counter()
-            result = app.update_blocking()
-            seconds = time.perf_counter() - started
-            assert isinstance(result, SessionResult)
-            m = Measurement(shape, case, seconds, model.calls, dict(tools.executed))
-            print(m.row(), flush=True)
-            return m
 
-        mutations: dict[str, Callable[[], None]] = {
-            "cold": lambda: None,
-            "unchanged": lambda: None,
-            "touch one": lambda: _bump_mtime(docs / "000001.md"),
-            "edit one": lambda: _write(docs / "000002.md", "edited\n"),
-            "add one": lambda: _write(docs / f"{files:06d}.md", "added\n"),
-            "remove one": lambda: (docs / "000003.md").unlink(),
-        }
-        measurements = [measure(case, mutations[case]) for case in CASES]
-        env.close()
-        return measurements
+def _run_cases(env: coco.Environment, docs: pathlib.Path, shape: str, files: int) -> None:
+    model = _script(docs, shape)
+    tools = CountingRegistry(
+        [
+            sources.open_source,
+            sources.call_method,
+            sources.read_input,
+            agents.for_each,
+            agents.call_agent,
+        ]
+    )
+    config = HarnessConfig(
+        roles={r.name: r for r in (ORCHESTRATOR, WORKER, PLANNER)}, tools=tools
+    )
+    env.context_provider.provide(MODEL_CLIENT, model)
+    env.context_provider.provide(HARNESS, config)
+    app = coco.App(
+        coco.AppConfig(name=f"fan_out_{shape}", environment=env),
+        run_open_session,
+        config.spec("orchestrator", "count the characters of every doc"),
+    )
+
+    def measure(case: str, mutate: Callable[[], None]) -> None:
+        mutate()
+        model.reset()
+        tools.reset()
+        started = time.perf_counter()
+        result = app.update_blocking()
+        seconds = time.perf_counter() - started
+        assert isinstance(result, SessionResult)
+        m = Measurement(shape, case, seconds, model.calls, dict(tools.executed))
+        print(m.row(), flush=True)
+
+    def nothing() -> None:
+        pass
+
+    # In order: a cold run, then one mutation per incremental case.
+    cases: dict[str, Callable[[], None]] = {
+        "cold": nothing,
+        "unchanged": nothing,
+        "touch one": lambda: _bump_mtime(docs / "000001.md"),
+        "edit one": lambda: _write(docs / "000002.md", "edited\n"),
+        "add one": lambda: _write(docs / f"{files:06d}.md", "added\n"),
+        "remove one": lambda: (docs / "000003.md").unlink(),
+    }
+    for case, mutate in cases.items():
+        measure(case, mutate)
 
 
 def main(argv: list[str] | None = None) -> int:

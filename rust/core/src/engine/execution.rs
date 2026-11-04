@@ -298,8 +298,7 @@ pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
     let app_store = comp_ctx.app_store();
     let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
     let mut pending: Vec<StablePath> = Vec::new();
-    if let Some(reason) = follow_open_children(comp_ctx.stable_path(), open_children, &mut pending)
-    {
+    if let Err(reason) = follow_open_children(comp_ctx.stable_path(), open_children, &mut pending) {
         return Ok(OpenDescendantsVerdict::NotReusable(reason));
     }
     while let Some(path) = pending.pop() {
@@ -338,8 +337,7 @@ pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
             }
         }
         if memo_info.has_open_descendants
-            && let Some(reason) =
-                follow_open_children(&path, &memo_info.open_children, &mut pending)
+            && let Err(reason) = follow_open_children(&path, &memo_info.open_children, &mut pending)
         {
             return Ok(OpenDescendantsVerdict::NotReusable(reason));
         }
@@ -357,14 +355,14 @@ pub(crate) enum OpenDescendantsVerdict {
 
 /// Queue a flagged row's open children for `validate_open_descendants`. A
 /// flagged row that lists none was written before the list existed and
-/// cannot be validated: the reason it is not reusable.
+/// cannot be validated: the `Err` is the reason it is not reusable.
 fn follow_open_children(
     parent: &StablePath,
     open_children: &[StablePath],
     pending: &mut Vec<StablePath>,
-) -> Option<String> {
+) -> std::result::Result<(), String> {
     if open_children.is_empty() {
-        return Some(format!(
+        return Err(format!(
             "{parent} was flagged as having open descendants without listing them (a memo stored before the list existed)"
         ));
     }
@@ -373,7 +371,7 @@ fn follow_open_children(
             .iter()
             .map(|relative| parent.concat(relative.as_ref())),
     );
-    None
+    Ok(())
 }
 
 /// Create a borrowed view of `Vec<MemoizedValue<'static>>` — each element

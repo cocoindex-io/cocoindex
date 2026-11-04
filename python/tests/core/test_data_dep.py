@@ -533,6 +533,34 @@ def test_a_reused_ancestor_of_open_descendants_still_flags_its_parent() -> None:
         assert _metrics.collect() == {"validate.file": 1}
 
 
+def test_several_open_children_are_all_validated_through_the_walk() -> None:
+    _reset()
+    _gp_salt["value"] = 0
+    with tempfile.TemporaryDirectory() as d:
+        a = pathlib.Path(d) / "a.txt"
+        b = pathlib.Path(d) / "b.txt"
+        _write(a, "A1")
+        _write(b, "B1")
+        _reads["open"] = [a]
+        _reads["open2"] = [b]
+        app = _app("test_dd_tree_two", _tree_main, "gp", "p", ["open", "open2", "closed"])
+        app.update_blocking()
+        _metrics.clear()
+
+        # Both open children's reads are validated at the grandparent's probe.
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 2}
+
+        # One of them changed: every level above it re-runs its body, that
+        # child re-runs, its open sibling and the closed one hit.
+        _write(b, "B2")
+        app.update_blocking()
+        runs = {k: v for k, v in _metrics.collect().items() if k.startswith("run.")}
+        assert runs == {"run.gp": 1, "run.p": 1, "run.open2": 1}
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 2}
+
+
 def test_a_flagged_ancestor_under_full_reprocess_and_in_a_preview() -> None:
     _reset()
     _gp_salt["value"] = 0
@@ -897,6 +925,7 @@ def test_a_released_kind_invalidates_its_entries_and_a_duplicate_name_warns(
 _STOP_CHILDREN: dict[str, tuple[Any, tuple[Any, ...]]] = {
     "conflict": (_snapshot_body, ("conflict",)),
     "narrow": (_record_kind, ("n", "narrow")),
+    "raising": (_record_kind, ("r", "raising")),
     "dynamic": (_record_dynamic_kind, ("k",)),
 }
 
@@ -938,6 +967,18 @@ def test_a_descendant_record_that_fails_to_decode_stops_the_walk(
     # (which raises): both bodies re-ran.
     assert _metrics.collect() == {"run.p": 2, "run.n": 2}
     assert any("failed to deserialize" in r.message for r in caplog.records)
+
+
+def test_a_validator_raising_during_the_walk_propagates() -> None:
+    """A validator's own exception propagates from the ancestor's probe, as it
+    does from the component's own probe; no body runs."""
+    _reset()
+    app = _app("test_dd_stop_raising", _stop_main, "p", "raising")
+    app.update_blocking()
+    _metrics.clear()
+    with pytest.raises(Exception, match="validator boom"):
+        app.update_blocking()
+    assert _metrics.collect() == {}
 
 
 def test_a_descendant_kind_no_longer_registered_stops_the_walk(
