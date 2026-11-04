@@ -58,7 +58,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
     <Topbar />
     <Banner />
 
-    <div class="ex-wrap">
+    <main class="ex-wrap">
       <!-- ═══════════ HERO ═══════════ -->
       <section class="ex-hero">
         <div class="hero-top">
@@ -128,22 +128,22 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           </ol>
 
           <div class="side-group">
-            <h6>By target</h6>
+            <h2>By target</h2>
             <div class="tags-row">{SIDEBAR_TARGETS.map((t) => <span class="mini-tag">{t}</span>)}</div>
           </div>
 
           <div class="side-group">
-            <h6>By source</h6>
+            <h2>By source</h2>
             <div class="tags-row">{SIDEBAR_SOURCES.map((t) => <span class="mini-tag">{t}</span>)}</div>
           </div>
 
           <div class="side-group">
-            <h6>By LLM</h6>
+            <h2>By LLM</h2>
             <div class="tags-row">{SIDEBAR_LLMS.map((t) => <span class="mini-tag">{t}</span>)}</div>
           </div>
 
           <div class="side-group">
-            <h6>Popular</h6>
+            <h2>Popular</h2>
             <div class="links">
               {POPULAR.map((p) => (
                 <a href={exampleHref(p.slug)}>{p.label}<span class="c">{p.count}</span></a>
@@ -152,7 +152,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           </div>
 
           <div class="side-group">
-            <h6>Resources</h6>
+            <h2>Resources</h2>
             <div class="links">
               <a href={`${GITHUB_REPO}/tree/v1/examples`}>↗ Source on GitHub</a>
               <a href={base || '/'}>↗ Documentation</a>
@@ -260,7 +260,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
               </div>
             </div>
             <aside class="side">
-              <h5>Popular this week</h5>
+              <h3>Popular this week</h3>
               <ul>
                 {POPULAR.map((p) => (
                   <li><span class="k">{p.label}</span><span class="v">{p.count}</span></li>
@@ -270,7 +270,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           </section>
         </div>
       </div>
-    </div>
+    </main>
 
     <script is:inline>
       // Category filter chips — toggle visibility of category sections.
@@ -454,7 +454,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
       body.ex-listing .side-nav ol li.active a .count { color: var(--coral); border-color: var(--coral); }
 
       body.ex-listing .side-group { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--rule); }
-      body.ex-listing .side-group h6 {
+      body.ex-listing .side-group h2 {
         font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
         color: var(--muted); margin: 0 0 10px;
       }
@@ -709,7 +709,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         padding: 24px; border-radius: 10px;
         background: var(--paper); border: 1px solid var(--rule);
       }
-      body.ex-listing .cta-end .side h5 {
+      body.ex-listing .cta-end .side h3 {
         font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
         color: var(--muted); margin: 0;
       }
@@ -734,7 +734,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         body.ex-listing .side-nav ol li a { padding: 8px 12px; margin-left: 0; border-left: none; border: 1px solid var(--rule); }
         body.ex-listing .side-nav ol li.active a { border-color: var(--coral); }
         body.ex-listing .side-group { margin-top: 10px; padding-top: 10px; }
-        body.ex-listing .hero-grid { grid-template-columns: 1fr; gap: 40px; }
+        body.ex-listing .hero-grid { grid-template-columns: minmax(0, 1fr); gap: 40px; }
         body.ex-listing .feat-card { grid-template-columns: 1fr; }
         body.ex-listing .feat-viz { border-left: none; border-top: 1px solid rgba(252, 243, 216, 0.12); }
         body.ex-listing .cat-grid { grid-template-columns: repeat(2, 1fr); }
@@ -744,6 +744,9 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         body.ex-listing .cat-grid { grid-template-columns: 1fr; }
         body.ex-listing .hero-top { flex-wrap: wrap; }
         body.ex-listing .hero-top .stats { order: 3; width: 100%; }
+      }
+      @media (max-width: 400px) {
+        body.ex-listing .hero-viz { grid-template-columns: repeat(2, minmax(0, 1fr)); aspect-ratio: auto; grid-auto-rows: minmax(100px, auto); }
       }
     </style>
 

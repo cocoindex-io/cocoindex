@@ -7,9 +7,9 @@ meta:
   language: Python 3.11+
   requires: AWS S3 bucket
 ---
-### Setup for Amazon S3
+## Setup for Amazon S3
 
-#### Setup AWS accounts
+### Setup AWS accounts
 
 You need to setup AWS accounts to own and access Amazon S3. In particular,
 
@@ -21,7 +21,7 @@ You need to setup AWS accounts to own and access Amazon S3. In particular,
         Note that `AmazonSQSReadOnlyAccess` is not enough, as we need to be able to delete messages from the queue after they're processed.
 
 
-#### Setup Credentials for AWS SDK
+### Setup Credentials for AWS SDK
 
 AWS SDK needs to access credentials to access Amazon S3.
 The easiest way to setup credentials is to run:
@@ -38,14 +38,14 @@ See the following documents if you need more control:
 *   [Globally configuring AWS SDKs and tools](https://docs.aws.amazon.com/sdkref/latest/guide/creds-config-files.html)
 
 
-#### Create Amazon S3 buckets
+### Create Amazon S3 buckets
 
 You can create a Amazon S3 bucket in the [Amazon S3 Console](https://s3.console.aws.amazon.com/s3/home), and upload your files to it.
 
 It's also doable by using the AWS CLI `aws s3 mb` (to create buckets) and `aws s3 cp` (to upload files).
 When doing so, make sure your current user also has permission policy `AmazonS3FullAccess`.
 
-#### (Optional) Setup SQS queue for event notifications
+### (Optional) Setup SQS queue for event notifications
 
 You can setup an Amazon Simple Queue Service (Amazon SQS) queue to receive change event notifications from Amazon S3.
 It provides a change capture mechanism for your AmazonS3 data source, to trigger reprocessing of your AWS S3 files on any creation, update or deletion.  Please use a dedicated SQS queue for each of your S3 data source.
@@ -89,7 +89,7 @@ This is how to setup:
 
 AWS's [Guide of Configuring a Bucket for Notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ways-to-add-notification-config-to-bucket.html#step1-create-sqs-queue-for-notification) provides more details.
 
-#### (Alternative) Setup Redis for event notifications (MinIO)
+### (Alternative) Setup Redis for event notifications (MinIO)
 
 For MinIO setups that don't use AWS SQS, you can configure MinIO to publish event notifications to Redis:
 
@@ -116,7 +116,7 @@ For MinIO setups that don't use AWS SQS, you can configure MinIO to publish even
 
 MinIO's [Redis Notification Settings](https://min.io/docs/minio/linux/reference/minio-server/settings/notifications/redis.html) documentation provides more details on configuration options.
 
-### Spec
+## Spec
 
 The spec takes the following fields:
 *   `bucket_name` (`str`): Amazon S3 bucket name.
@@ -157,7 +157,7 @@ The spec takes the following fields:
 
     :::
 
-### Schema
+## Schema
 
 The output is a [*KTable*](/docs-v0/core/data_types#ktable) with the following sub fields:
 

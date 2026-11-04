@@ -9,9 +9,9 @@ meta:
 ---
 The `AzureBlob` source imports files from Azure Blob Storage.
 
-### Setup for Azure Blob Storage
+## Setup for Azure Blob Storage
 
-#### Get Started
+### Get Started
 
 If you didn't have experience with Azure Blob Storage, you can refer to the [quickstart](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal).
 These are actions you need to take:
@@ -21,7 +21,7 @@ These are actions you need to take:
 *   Upload your files to the container.
 *   Grant the user / identity / service principal (depends on your authentication method, see below) access to the storage account. At minimum, a **Storage Blob Data Reader** role is needed. See [this doc](https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-data-operations-portal) for reference.
 
-#### Authentication
+### Authentication
 
 We support the following authentication methods:
 
@@ -53,7 +53,7 @@ We support the following authentication methods:
 
 You can refer to [this doc](https://learn.microsoft.com/en-us/azure/developer/python/sdk/authentication/overview) for more details.
 
-### Spec
+## Spec
 
 The spec takes the following fields:
 
@@ -79,7 +79,7 @@ The spec takes the following fields:
 *   `sas_token` (`cocoindex.TransientAuthEntryReference[str]`, optional): a SAS token for authentication.
 *   `account_access_key` (`cocoindex.TransientAuthEntryReference[str]`, optional): an account access key for authentication.
 
-### Schema
+## Schema
 
 The output is a [*KTable*](/docs-v0/core/data_types#ktable) with the following sub fields:
 
