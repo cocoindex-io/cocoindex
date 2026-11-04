@@ -212,7 +212,6 @@ body.ex-detail .ex-run-code .p { color: var(--text-3); user-select: none; }
 /* ═══════════════════════════ 8. Walkthrough: prose deltas ════════════════
    The body keeps the docs prose. The hosted cream cover (first image) is
    retired: the figure above already says what you'll build. */
-body.ex-detail .ex-prose > p:first-child:has(> img[src*="/cover."]) { display: none; }
 body.ex-detail .prose em { font-style: italic; font-weight: inherit; color: inherit; }
 body.ex-detail .prose img { max-width: 100%; height: auto; border-radius: var(--r-md); }
 body.ex-detail .prose > :last-child { margin-bottom: 0; }
@@ -300,4 +299,13 @@ body.ex-listing .ex-select::after { top: auto; bottom: 16px; }
 @media (max-width: 820px) {
   body.ex-listing .ex-chips .t-filter,
   body.ex-listing .ex-select select { min-height: 44px; }
+}
+
+/* Remote article diagrams expose their authored detail without shrinking the
+   reading column or requiring pointer-only image gestures. */
+body.ex-detail .example-diagram { margin: 24px 0; }
+body.ex-detail .example-diagram > img { display: block; }
+body.ex-detail .example-diagram-open {
+  display: inline-flex; align-items: center; min-height: 44px;
+  margin-top: 4px; font-size: 0.875rem;
 }
