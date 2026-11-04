@@ -2,11 +2,10 @@ use crate::{
     engine::profile::EngineProfile,
     engine::target_state::TargetStateProviderRegistry,
     prelude::*,
-    state_store::{AppStore, Storage, StorageSettings, WriteTxn},
+    state_store::{AppStore, Storage, StorageSettings},
 };
 
 use cocoindex_utils::fingerprint::Fingerprint;
-use futures::future::BoxFuture;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::RwLock;
 
@@ -70,19 +69,6 @@ impl<Prof: EngineProfile> Environment<Prof> {
     /// Close the environment's storage. See [`Storage::close`].
     pub async fn close(&self) {
         self.inner.storage.close().await
-    }
-
-    /// Run a batched write transaction. Delegates to
-    /// [`Storage::run_txn`].
-    pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.inner.storage.run_txn(body).await
     }
 
     /// Create the per-app sub-store. Delegates to [`Storage::create_app_store`].

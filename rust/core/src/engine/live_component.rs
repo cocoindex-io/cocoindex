@@ -15,6 +15,7 @@ use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
+use crate::state_store::AppStore;
 use cocoindex_utils::error::{SharedError, SharedResult};
 
 use tokio::sync::oneshot;
@@ -143,7 +144,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         //   - For `coco.mount(LiveCompClass)` from inside `process()`: by
         //     submit/commit, via `update_building_state`'s `child_path_set`.
         //   - For `operator.update(LiveCompClass)` from `process_live`: by
-        //     `mount_inner_live` directly via `Storage::run_txn`, just below this
+        //     `mount_inner_live` directly via `AppStore::run_txn`, just below this
         //     `complete()` call. (See `LiveComponentController::mount_inner_live`.)
         // Both paths produce the same on-disk state.
         //
@@ -166,6 +167,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.full_reprocess(),
             live,
             parent_ctx.preview_collector().cloned(),
+            parent_ctx.app_store().clone(),
             providers,
             parent_ctx.admission().lender().clone(),
             parent_ctx.admission().share().new_live(),
@@ -457,11 +459,9 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// The mounting run's preview collector: in a preview, this component's
     /// runs preview too rather than apply.
     preview_collector: Option<PreviewActionCollector<Prof>>,
-    /// What a preview "committed" through [`Self::write_committed_state`]:
-    /// kept for this run only, so a later read in the same run sees it as
-    /// an update's would, and nothing persists. Shared by the clones of
-    /// this controller, as the preview collector is.
-    preview_committed_state: Arc<parking_lot::Mutex<HashMap<StableKey, Vec<u8>>>>,
+    /// The mounting run's store handle, which persists nothing in a preview
+    /// (see [`ComponentProcessorContext::app_store`]).
+    app_store: AppStore,
 
     /// Providers inherited from the parent component context at creation time.
     /// Immutable — process() may not call use_mount(), so no new providers are created.
@@ -490,6 +490,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         full_reprocess: bool,
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
+        app_store: AppStore,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
         share: LiveShare,
@@ -502,7 +503,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             full_reprocess,
             live,
             preview_collector,
-            preview_committed_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            app_store,
             providers,
             lender,
             share,
@@ -534,14 +535,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// set-reduces, and not participating in any commit, so it is safe in the
     /// non-committing `process_live` context.
     pub async fn read_committed_state(&self, key: &StableKey) -> Result<Option<Vec<u8>>> {
-        if self.preview_collector.is_some()
-            && let Some(value) = self.preview_committed_state.lock().get(key)
-        {
-            return Ok(Some(value.clone()));
-        }
-        self.component
-            .app_ctx()
-            .app_store()
+        self.app_store
             .read_user_state(
                 self.component.stable_path(),
                 db_schema::StateKind::Live,
@@ -558,18 +552,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// `coco.use_state` (which targets the prune-eligible `Regular` keyspace).
     ///
     /// A preview persists nothing: a marker it committed would make the next
-    /// real run skip work the preview never did. It keeps the value for this
-    /// run, so a later [`Self::read_committed_state`] reads it back.
+    /// real run skip work the preview never did. Its store handle keeps the
+    /// value for the run instead, so a later [`Self::read_committed_state`]
+    /// reads it back.
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
-        if self.preview_collector.is_some() {
-            self.preview_committed_state
-                .lock()
-                .insert(key.clone(), value);
-            return Ok(());
-        }
-        self.component
-            .app_ctx()
-            .app_store()
+        self.app_store
             .write_user_state_standalone(
                 self.component.stable_path(),
                 db_schema::StateKind::Live,
@@ -627,6 +614,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 on_error.clone(),
                 self.preview_collector.clone(),
             ),
+            self.app_store.clone(),
         );
 
         let handle = self
@@ -675,9 +663,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// returned handle. The tombstone always remains in the DB, so even
     /// a failed delete is retried by the next reconcile's GC sweep.
     ///
-    /// A preview writes no tombstone and deletes nothing: like the deletes of
-    /// the components an update no longer mounts, a live delete is not
-    /// previewed.
+    /// A preview deletes nothing: like the deletes of the components an update
+    /// no longer mounts, a live delete is not previewed (the tombstone never
+    /// persists, and the drain task skips the op).
     pub async fn delete(
         &self,
         subpath: StablePath,
@@ -685,18 +673,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     ) -> Result<ComponentExecutionHandle> {
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract.
-        if self.preview_collector.is_none()
-            && let Some((parent_ref, child_key)) = subpath.as_ref().split_parent()
-        {
-            let app_store = self.component.app_ctx().app_store().clone();
+        if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
+            let app_store = self.app_store.clone();
             let parent_path: StablePath = parent_ref.into();
             let child_key = child_key.clone();
             let component_path = self.component.stable_path().clone();
             let relative_child = subpath.as_ref().strip_parent(component_path.as_ref())?;
             let relative_child: StablePath = relative_child.into();
-            self.component
-                .app_ctx()
-                .env()
+            self.app_store
                 .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
                     let parent_path = parent_path.clone();
@@ -784,6 +768,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let full_reprocess = self.full_reprocess;
         let live = self.live;
         let preview_collector = self.preview_collector.clone();
+        let app_store = self.app_store.clone();
         let lender = self.lender.clone();
         let share = self.share.clone();
 
@@ -802,6 +787,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 full_reprocess,
                 live,
                 preview_collector,
+                app_store,
                 lender,
                 share,
             )
@@ -933,7 +919,8 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // (mirroring `update_full`'s ctx construction). The building state
         // is local to this context — child registration in `child_path_set`
         // is benign: nothing else reads this isolated state.
-        // Its update share puts the inner live component under this one.
+        // Its update share puts the inner live component under this one. It
+        // has no lender: it admits nothing itself.
         let parent_ctx = ComponentProcessorContext::new_borrowing_from(
             self.component.clone(),
             None,
@@ -950,6 +937,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 None,
                 self.preview_collector.clone(),
             ),
+            self.app_store.clone(),
         );
         let fn_ctx = FnCallContext::default();
 
@@ -962,17 +950,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // tombstone scan can't see this child and won't reconcile its
         // target states on parent re-runs that DON'T re-issue this
         // operator.update call. With this row, the install/tombstone
-        // state machine is symmetric across both installer paths. A preview
-        // writes no state, so it skips this as submit/commit does.
-        if self.preview_collector.is_none()
-            && let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent()
-        {
-            let app_store = self.component.app_ctx().app_store().clone();
+        // state machine is symmetric across both installer paths.
+        if let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent() {
+            let app_store = self.app_store.clone();
             let parent_path: StablePath = parent_path_ref.into();
             let child_key = child_key.clone();
-            self.component
-                .app_ctx()
-                .env()
+            self.app_store
                 .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
                     let parent_path = parent_path.clone();
@@ -1116,6 +1099,7 @@ async fn drain_task_body<Prof: EngineProfile>(
     full_reprocess: bool,
     live: bool,
     preview_collector: Option<PreviewActionCollector<Prof>>,
+    app_store: AppStore,
     lender: Lender,
     share: LiveShare,
 ) {
@@ -1185,6 +1169,7 @@ async fn drain_task_body<Prof: EngineProfile>(
             full_reprocess,
             live,
             &preview_collector,
+            &app_store,
             &lender,
             &share,
         )
@@ -1244,6 +1229,7 @@ async fn run_op<Prof: EngineProfile>(
     full_reprocess: bool,
     live: bool,
     preview_collector: &Option<PreviewActionCollector<Prof>>,
+    app_store: &AppStore,
     lender: &Lender,
     share: &LiveShare,
 ) -> Result<()> {
@@ -1270,6 +1256,7 @@ async fn run_op<Prof: EngineProfile>(
                     on_error.clone(),
                     preview_collector.clone(),
                 ),
+                app_store.clone(),
             );
             let inner_handle = child
                 .run_in_background(processor, context, on_error)
@@ -1277,9 +1264,9 @@ async fn run_op<Prof: EngineProfile>(
             inner_handle.ready().await
         }
         Op::Delete { on_error } => {
-            // A preview previews no deletes of components (see
-            // `LiveComponentController::delete`).
-            if preview_collector.is_some() {
+            // A run that persists nothing (a preview) previews no deletes of
+            // components (see `LiveComponentController::delete`).
+            if app_store.write_scope() != crate::state_store::WriteScope::Persisted {
                 return Ok(());
             }
             let context = ComponentProcessorContext::new_borrowing_from(
@@ -1289,6 +1276,7 @@ async fn run_op<Prof: EngineProfile>(
                 processing_stats.clone(),
                 host_ctx.clone(),
                 ComponentProcessingAction::new_delete(providers.clone(), on_error),
+                app_store.clone(),
             );
             let inner_handle = child.delete(context)?;
             inner_handle.ready().await

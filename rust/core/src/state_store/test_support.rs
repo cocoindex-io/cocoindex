@@ -25,7 +25,10 @@ pub(crate) async fn make_test_store() -> (AppStore, TempDir) {
     let db = env.create_database(&mut wtxn, Some("test_app")).unwrap();
     wtxn.commit().unwrap();
     let storage = Storage::from_env(env);
-    (AppStore::new(db, storage), dir)
+    (
+        AppStore::new(super::txn::Db::new(db, "test_app"), storage),
+        dir,
+    )
 }
 
 /// A write batch held open by [`hold_write_batch`].
