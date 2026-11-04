@@ -131,9 +131,9 @@ _PINNED_THREAD_FLAG = 1 << 1
 # The Discord tokens that a message's ``read_text()`` rewrites: a user
 # mention, a custom emoji, a timestamp and a slash command. Channel, role,
 # game-profile and server-navigation tokens stay as typed, since naming them
-# would take requests. A name is any run of characters but whitespace, ``:``, ``<`` and
-# ``>``, and a timestamp's style any letter, so a style Discord adds later
-# still renders.
+# would take requests. A name is any run of characters but whitespace,
+# ``:``, ``<`` and ``>``, and a timestamp's style any letter, so a style
+# Discord adds later still renders.
 _TOKEN = re.compile(
     r"<(?:@!?(?P<user>\d+)"
     r"|a?:(?P<emoji>[^\s:<>]+):\d+"
@@ -944,8 +944,8 @@ class DiscordThread:
     rename, new tags, an archive or unarchive, a lock or a pin. The messages
     inside aren't part of that, so an edit or a reaction inside the thread,
     or a new display name of a message's author, waits for the thread's next
-    change, such as Discord archiving it, which
-    Discord does on its own schedule and, on a quiet server, may never do.
+    change, such as Discord archiving it, which Discord does on its own
+    schedule and, on a quiet server, may never do.
 
     A field the channel's ``thread_fields`` leaves out holds ``None``, or
     ``()`` for ``tags``; ``id`` is always set.
