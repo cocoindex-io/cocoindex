@@ -17,7 +17,7 @@ function href(slug: string): string {
 }
 ---
 
-<aside class="side" aria-label="Documentation navigation">
+<aside class="side" aria-label="Documentation pages">
   <Search />
   <div class="side-group">
     <ul>
@@ -26,6 +26,7 @@ function href(slug: string): string {
           href={`${base}/`}
           class={currentSlug === '' ? 'on' : ''}
           data-current={currentSlug === '' || null}
+          aria-current={currentSlug === '' ? 'page' : undefined}
         >
           About CocoIndex
         </a>
@@ -41,6 +42,7 @@ function href(slug: string): string {
               href={href(item.slug)}
               class={currentSlug === item.slug ? 'on' : ''}
               data-current={currentSlug === item.slug || null}
+              aria-current={currentSlug === item.slug ? 'page' : undefined}
             >
               {item.label ?? item.slug}
             </a>
@@ -64,6 +66,7 @@ function href(slug: string): string {
                   href={href(child.slug)}
                   class={currentSlug === child.slug ? 'on' : ''}
                   data-current={currentSlug === child.slug || null}
+                  aria-current={currentSlug === child.slug ? 'page' : undefined}
                 >
                   {child.label ?? child.slug}
                 </a>

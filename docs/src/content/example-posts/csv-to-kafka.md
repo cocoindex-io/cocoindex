@@ -199,5 +199,3 @@ A catch-up run (`cocoindex update main.py`) does this once and exits; live mode 
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/csv_to_kafka](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka). The natural next step is the consumer side — [kafka_to_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/kafka_to_lancedb) reads JSON messages off a topic and dispatches them into LanceDB tables, so the same declarative flow that *produces* changes can *consume* them too.
-
-Got a folder of exports, a vendor dump, or any tabular data you want on a topic? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

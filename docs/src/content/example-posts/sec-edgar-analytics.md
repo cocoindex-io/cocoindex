@@ -118,5 +118,3 @@ On the sample data that ranks **Microsoft's** cloud-and-AI filing first (it carr
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/sec_edgar_analytics](https://github.com/cocoindex-io/cocoindex/tree/main/examples/sec_edgar_analytics). For the PDF-extraction side, see [Manuals to Structured Data](/docs/examples/manuals-llm-extraction/); for a pure-vector setup, see [Text Embedding](/docs/examples/text-embedding/).
-
-Indexing your own filing archive? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

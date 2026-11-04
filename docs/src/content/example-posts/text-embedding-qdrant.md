@@ -144,5 +144,3 @@ CocoIndex keeps the Qdrant collection in sync and does the **minimum work** to g
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/text_embedding_qdrant](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant). It's the [Semantic Search 101](/docs/examples/text-embedding/) flow with Qdrant as the store — start there if you want the chunk-and-embed details, and see [the Postgres version](/docs/examples/text-embedding/) to compare targets.
-
-Already running Qdrant and want your docs searchable by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

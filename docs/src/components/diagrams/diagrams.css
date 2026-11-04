@@ -1,3 +1,5 @@
+.dg-figure { min-width: 0; max-width: 100%; margin: 24px auto; }
+
 /* Shared styles for inline SVG diagrams in docs pages.
    Palette vars come from src/styles/globals.css.
    Diagrams are static: no hover loops. Neutral boxes and arrows; periwinkle
@@ -8,8 +10,8 @@
 .dg-root {
   display: block;
   width: 100%;
-  max-width: 720px;
-  margin: 24px auto;
+  max-width: var(--dg-max-width, 720px);
+  margin: 0 auto;
   overflow: visible;
   font-family: var(--sans);
   color: var(--maroon-ink);

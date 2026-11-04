@@ -101,6 +101,7 @@ const breadcrumbLd = {
     <link rel="icon" href={`${base}/img/favicon.ico`} />
   </head>
   <body class="ex-listing">
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
     <MobileSheet sidebarItems={examplesSidebar} />
 
@@ -164,7 +165,7 @@ const breadcrumbLd = {
           </div>
         </div>
 
-        <div class="ex-main">
+        <main class="ex-main" id="main-content" tabindex="-1">
           <div class="ex-results" tabindex="-1">
             <p aria-live="polite"><b data-count>{total}</b> <span data-count-noun>examples</span></p>
             <button type="button" class="ex-clear" data-clear hidden>Clear filters</button>
@@ -198,7 +199,7 @@ const breadcrumbLd = {
               <a class="btn btn-outline-muted" href={DISCORD_URL}>Ask on Discord</a>
             </div>
           </section>
-        </div>
+        </main>
       </div>
     </main>
 

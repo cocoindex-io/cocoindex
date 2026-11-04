@@ -115,5 +115,3 @@ On the sample deck, that query ranks the **Engineering Priorities** slide first 
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/slides_to_speech](https://github.com/cocoindex-io/cocoindex/tree/main/examples/slides_to_speech). For transcribing existing audio instead of generating it, see [Audio → Text](/docs/examples/audio-to-text/).
-
-Got a deck library you want to narrate and search? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

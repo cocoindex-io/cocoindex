@@ -244,5 +244,3 @@ The same machinery covers **logic** changes too: tune the chunk size or swap the
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/pdf_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding). If your inputs are already plain text or Markdown, [Semantic Search 101](/docs/examples/text-embedding/) is the same flow without the docling step; if you want the Markdown itself as the output, see [PDF → Markdown](/docs/examples/pdf-to-markdown/).
-
-Got a folder of papers, reports, or scanned docs you want to search by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

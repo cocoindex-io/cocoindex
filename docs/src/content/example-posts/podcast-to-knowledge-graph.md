@@ -288,4 +288,4 @@ FROM statement;
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/conversation_to_knowledge](https://github.com/cocoindex-io/cocoindex/tree/main/examples/conversation_to_knowledge). Got a podcast, a meeting archive, or any other corpus you want to turn into a graph? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
+The full, runnable example is in the CocoIndex repo: [examples/conversation_to_knowledge](https://github.com/cocoindex-io/cocoindex/tree/main/examples/conversation_to_knowledge).

@@ -28,7 +28,7 @@ You declare the transformation logic with native Python without worrying about c
 Think:
 **target_state = transformation(source_state)**
 
-When the HackerNews feed moves on, or your processing logic changes (for example, switching to a different model, or refining the topic-extraction prompt), CocoIndex performs smart incremental processing that only reprocesses the minimum, and keeps your `hn_messages` and `hn_topics` tables in sync.
+When the HackerNews feed moves on, or your processing logic changes (for example, switching to a different model, or refining the topic-extraction prompt), CocoIndex reprocesses affected items and updates the `hn_messages` and `hn_topics` tables.
 
 ## Define the data models
 
@@ -395,5 +395,3 @@ Edit the topic-extraction prompt or switch `LLM_MODEL`, then run `cocoindex upda
 Full source on GitHub:
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/hn_trending_topics)
-
-If CocoIndex helps, give us a star ⭐ on [GitHub](https://github.com/cocoindex-io/cocoindex) and join the conversation on [Discord](https://discord.com/invite/zpA9S2DR7s) — we'd love to hear what you build.

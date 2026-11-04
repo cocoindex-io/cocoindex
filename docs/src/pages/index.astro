@@ -26,7 +26,7 @@ const canonical = new URL(`${base}/`, SITE_URL).toString();
 
 // Start here: labels and slugs match the sidebar exactly.
 const start = [
-  { slug: 'getting_started/quickstart', label: 'Quickstart', meta: '5 min',
+  { slug: 'getting_started/quickstart', label: 'Quickstart', meta: 'Tutorial',
     body: 'Build one pipeline end to end: convert PDFs to Markdown, change a file, and watch only that file reprocess.' },
   { slug: 'getting_started/installation', label: 'Installation', meta: 'Setup',
     body: 'Install the package and the Rust engine. Python 3.11 or later, with pip, uv or Poetry.' },
@@ -115,13 +115,14 @@ app.update_blocking()`;
     <!-- Fonts self-hosted via @fontsource in src/styles/site.css. -->
   </head>
   <body class="docs-home">
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
     <MobileSheet sidebarItems={sidebar} />
 
     <div class="layout dh-layout">
       <Sidebar currentSlug="" />
 
-      <main class="content dh-main">
+      <main class="content dh-main" id="main-content" tabindex="-1">
         <section class="dh-hero" aria-labelledby="dh-title">
           <div>
             <h1 class="dh-title" id="dh-title">CocoIndex documentation</h1>

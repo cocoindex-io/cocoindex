@@ -211,5 +211,3 @@ Swap the ColPali model and CocoIndex re-embeds everything against the new space;
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/image_search_colpali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali). For the lighter, single-vector version that fits more images in memory and indexes faster, see the [CLIP image search example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search); for the text equivalent, see [Semantic Search 101](/docs/examples/text-embedding/).
-
-Got a document-image archive, a product catalog, or a screenshot pile you want to search by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
