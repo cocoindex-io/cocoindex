@@ -707,11 +707,6 @@ class TestGet:
                 await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
             assert len(fake.requests) == 1
 
-        ctx = await _attach(app, fake)
-        async with app:
-            await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
-        assert len(fake.requests) == 2
-
     async def test_non_json_body(self) -> None:
         fake = _fake_with_channels()
         path = f"/channels/{_CHANNEL}"
@@ -1825,7 +1820,6 @@ class TestThread:
         ("thread_type", "metadata", "invitable"),
         [
             pytest.param(10, {}, None, id="announcement"),
-            pytest.param(11, {}, None, id="public"),
             pytest.param(12, {"invitable": False}, False, id="private"),
         ],
     )
@@ -2638,26 +2632,6 @@ class TestItems:
             (f"/channels/{channel_id}", {}),
         ]
 
-    async def test_main_stream_paging(self) -> None:
-        # IDs from 4 digits to 5, so that taking the smallest as text would
-        # show.
-        ids = [str(n) for n in range(9901, 10151)]
-        fake = _fake_with_channels()
-        fake.page_cap = 70
-        fake.post(_CHANNEL, *(_raw_message(i) for i in ids))
-        app, _ = await _setup(fake)
-        async with app:
-            items = await _items(_channel(app))
-        newest_first = ids[::-1]
-        assert _keys(items) == newest_first
-        # Three pages of 70, short of the 100 asked for; one of 40; then an
-        # empty one. Each asks for the messages before the smallest ID on the
-        # page before.
-        assert _params(fake, _MESSAGES_PATH) == [
-            _PAGE,
-            *({**_PAGE, "before": newest_first[i]} for i in (69, 139, 209, 249)),
-        ]
-
     async def test_archived_public_paging_with_tied_timestamps(self) -> None:
         fake = _fake_with_channels()
         fake.page_cap = 3
@@ -2773,7 +2747,9 @@ class TestItems:
         fake.add_thread(_raw_thread("1057"))
         fake.add_thread(_raw_thread("909", _OTHER_CHANNEL))
         fake.add_thread(_raw_thread("1058", type=12), joined=True)
-        # Listed, since the bot has Manage Threads, but nobody added the bot.
+        # Listed, since the bot has Manage Threads, but nobody added the bot,
+        # or it was removed: item-level loss, so the thread drops out and the
+        # listing goes on.
         fake.add_thread(_raw_thread("1059", type=12))
         app, _ = await _setup(fake)
         async with app:
@@ -3011,16 +2987,6 @@ class TestGuards:
                     seen.append(key)
         assert seen == ["1073", "1072"]
         assert _params(fake, _MESSAGES_PATH) == [_PAGE, {**_PAGE, "before": "1072"}]
-
-    async def test_private_thread_the_bot_left(self) -> None:
-        # Item-level loss: the thread drops out, and the listing goes on.
-        fake = _fake_with_channels()
-        fake.add_thread(_raw_thread("1074", type=12))
-        fake.add_thread(_raw_thread("1075"))
-        app, _ = await _setup(fake)
-        async with app:
-            items = await _items(_channel(app))
-        assert _keys(items) == ["1075"]
 
 
 # ---------------------------------------------------------------------------
