@@ -1,8 +1,10 @@
 """Assemble a harness: default roles + built-in tools, and build a ``coco.App`` for a flow prompt.
 
-Usage (sketch):
+Usage:
 
-    LLM_MODEL=gemini/gemini-2.5-flash python -m coco_harness.app "For every .md under ./docs, ..."
+    LLM_MODEL=anthropic/claude-sonnet-5-5 python -m coco_harness.app "For every .md under ./docs, ..."
+
+The sample flows under ``flows/`` drive this with checked-in data.
 """
 
 from __future__ import annotations
@@ -61,8 +63,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args:
         print("usage: python -m coco_harness.app <flow prompt>", file=sys.stderr)
         return 2
+    import litellm  # optional dependency, needed only to run
+
+    # LiteLLM's aiohttp transport leaves a pending close task at interpreter
+    # exit ("Task was destroyed but it is pending"); httpx does not.
+    litellm.disable_aiohttp_transport = True
     env = coco.Environment(coco.Settings.from_env())
-    config = default_config(os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash"))
+    config = default_config(os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-5-5"))
     env.context_provider.provide(MODEL_CLIENT, LiteLLMClient())
     env.context_provider.provide(HARNESS, config)
     app = build_app("coco_harness", " ".join(args), env=env, config=config)

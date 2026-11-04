@@ -1,31 +1,55 @@
-"""A ``ModelClient`` over LiteLLM. Sketch: rendering is real, the API call is untested.
+"""A ``ModelClient`` over LiteLLM.
 
 Rendering rules that matter for incrementality (DESIGN.md §4):
 
 - The system prompt, the task and the input manifest come first, so the
   provider's prompt cache covers them.
+- The transcript is rendered as the provider's native tool protocol: an
+  assistant message carrying ``tool_calls`` and one ``tool`` message per
+  result. Rendered as prose, models re-issue actions whose results they were
+  already shown (observed with Claude Sonnet 5.5 on the first real-model
+  drive). Call ids are positional (``call_<step>_<index>``): they are never
+  stored, so they cannot leak into a memo key.
 - The dump is rendered at ``dump.at_step`` and the loop never moves it once
   the model has seen it; diffs and notes render after the step they refer to,
   retry notes included.
 - Dump lines mark actions that carry literal payloads (a final answer, a
   ``declare`` whose value is not a handle), since reissuing those repeats old
   content. Arguments are elided; a pick reissues the exact arguments anyway.
+  Literal payloads themselves are shown in full: the model is told to review
+  them before reuse, and on the first real-model drive a planner that could
+  not read its previous plan reworded it, which recomputed everything
+  downstream, while a worker reissued an elided ``declare`` it could not
+  review and then found it wrong.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+from collections import Counter
 from datetime import timedelta
 from typing import Any
 
 from .handles import is_handle
 from .hints import RunHints
 from .spec import SessionSpec, ToolSpec
-from .transcript import ModelOutput, ToolCall, Transcript, canonical_json
+from .transcript import (
+    ModelOutput,
+    Step,
+    ToolCall,
+    Transcript,
+    canonical_json,
+    elide,
+)
 
 Message = dict[str, Any]
 
-_ELIDE_CHARS = 160
+logger = logging.getLogger(__name__)
+# The rendered request of every call, at DEBUG: what the model actually saw,
+# for prompt work. Enabled separately because it is large.
+messages_logger = logging.getLogger(__name__ + ".messages")
+
 # Bound for one model turn including its transient retries; the run's own
 # deadline, when shorter, wins.
 _LLM_TIMEOUT = timedelta(minutes=10)
@@ -53,21 +77,7 @@ def render_messages(
             messages.append({"role": "user", "content": render_dump(hints)})
         if i in notes_at:
             messages.extend(_notes(hints, i))
-        messages.append(
-            {"role": "assistant", "content": canonical_json(_output_json(step.output))}
-        )
-        if step.results:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": canonical_json(
-                        [
-                            {"tool": r.tool, "ok": r.ok, "value": r.value}
-                            for r in step.results
-                        ]
-                    ),
-                }
-            )
+        messages.extend(_step_messages(i, step))
         for d in hints.diffs:
             if d.at_step == i:
                 messages.append(
@@ -85,6 +95,34 @@ def render_messages(
     if end in notes_at:
         messages.extend(_notes(hints, end))
     return messages
+
+
+def _step_messages(i: int, step: Step) -> list[Message]:
+    """One step as the provider sees it: the model's turn, then one ``tool`` message per result."""
+    if step.output.is_finish:
+        return [{"role": "assistant", "content": step.output.answer}]
+    ids = [f"call_{i}_{j}" for j in range(len(step.output.calls))]
+    turn: Message = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": c.tool, "arguments": canonical_json(c.args)},
+            }
+            for call_id, c in zip(ids, step.output.calls)
+        ],
+    }
+    results: list[Message] = [
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": canonical_json({"ok": r.ok, "value": r.value}),
+        }
+        for call_id, r in zip(ids, step.results)
+    ]
+    return [turn, *results]
 
 
 def _notes(hints: RunHints, at_step: int) -> list[Message]:
@@ -106,11 +144,12 @@ def render_dump(hints: RunHints) -> str:
             else ""
         )
         if out.is_finish:
-            lines.append(f"  [{n}] finish: {_elide(out.answer or '')}{mark}")
-        else:
-            calls = "; ".join(
-                f"{c.tool}({_elide(canonical_json(c.args))})" for c in out.calls
+            body = "\n".join(
+                f"      {line}" for line in (out.answer or "").splitlines()
             )
+            lines.append(f"  [{n}] finish:{mark}\n{body}".rstrip())
+        else:
+            calls = "; ".join(f"{c.tool}({_dump_args(c)})" for c in out.calls)
             lines.append(f"  [{n}] {calls}{mark}")
     lines.append(
         "Call replay(from_step=N) to reissue [N] and the following until a result differs; "
@@ -121,22 +160,27 @@ def render_dump(hints: RunHints) -> str:
 
 def has_literal_payload(out: ModelOutput) -> bool:
     """A final answer, or a declare whose value is text rather than a handle."""
-    if out.is_finish:
-        return True
-    return any(
-        c.tool == "declare" and not is_handle(c.args.get("value", ""))
-        for c in out.calls
-    )
+    return out.is_finish or any(_declares_literal(c) for c in out.calls)
 
 
-def _elide(s: str, n: int = _ELIDE_CHARS) -> str:
-    return s if len(s) <= n else s[: n - 1] + "…"
+def _declares_literal(call: ToolCall) -> bool:
+    return call.tool == "declare" and not is_handle(call.args.get("value", ""))
 
 
-def _output_json(out: ModelOutput) -> Any:
-    if out.is_finish:
-        return {"answer": out.answer}
-    return {"calls": [{"tool": c.tool, "args": c.args} for c in out.calls]}
+def _dump_args(call: ToolCall) -> str:
+    """Elided, except a literal payload: the model is told to review it before reuse."""
+    text = canonical_json(call.args)
+    return text if _declares_literal(call) else elide(text)
+
+
+def _describe_message(m: Message) -> str:
+    if "tool_calls" in m:
+        calls = "; ".join(
+            f"{tc['function']['name']}({tc['function']['arguments']})"
+            for tc in m["tool_calls"]
+        )
+        return f"--- assistant (tool calls)\n{calls}"
+    return f"--- {m['role']}\n{m['content']}"
 
 
 def tools_as_openai(tools: tuple[ToolSpec, ...]) -> list[dict[str, Any]]:
@@ -160,7 +204,14 @@ class LiteLLMClient:
     concrete, so the model identity is part of the turn's memo key. Arguments
     that are not a JSON object are passed through as is; the registry and the
     replay resolver report them to the model as errors.
+
+    ``calls`` counts the model calls made through this client per role, and
+    each one is logged: a run's inference cost is the whole point of the
+    harness, and a memo hit never reaches the client.
     """
+
+    def __init__(self) -> None:
+        self.calls: Counter[str] = Counter()
 
     async def complete(
         self,
@@ -177,13 +228,32 @@ class LiteLLMClient:
         # today; promote it when the harness leaves examples/.
         from cocoindex.ops.litellm import _retry_litellm_call
 
+        self.calls[spec.role.name] += 1
+        logger.info(
+            "model call %d: role=%s step=%d model=%s",
+            sum(self.calls.values()),
+            spec.role.name,
+            len(prefix),
+            spec.role.model,
+        )
+        messages = render_messages(spec, prefix, hints)
+        if messages_logger.isEnabledFor(logging.DEBUG):
+            messages_logger.debug(
+                "%s step %d request:\n%s",
+                spec.role.name,
+                len(prefix),
+                "\n".join(_describe_message(m) for m in messages),
+            )
         response = await _retry_litellm_call(
             lambda: litellm.acompletion(
                 model=spec.role.model,
-                messages=render_messages(spec, prefix, hints),
+                messages=messages,
                 tools=tools_as_openai(tools),
                 tool_choice="auto",
+                # Determinism where the provider offers it; dropped where it
+                # does not (Claude 5.5 accepts only its default temperature).
                 temperature=0,
+                drop_params=True,
             ),
             "coco_harness.llm_step",
             _LLM_TIMEOUT,

@@ -210,3 +210,50 @@ def test_background_agents_act_through_inputs_and_planners_return_plans(
 
     f.run()
     assert f.model.calls == 0
+
+
+def test_a_second_declaration_of_one_file_is_the_models_error_and_the_first_stands(
+    coco_env: coco.Environment, tmp_path: pathlib.Path
+) -> None:
+    """A declaration is final for the run: the engine refuses a repeat, and the model is told so.
+
+    Seen on the first real-model drive: a worker reissued a stale ``declare``
+    and then tried to correct it.
+    """
+    out = tmp_path / "out"
+
+    def script(spec: SessionSpec, prefix: Transcript, hints: RunHints) -> ModelOutput:
+        n = len(prefix.steps)
+        if n == 0:
+            return ModelOutput(
+                calls=(
+                    call("open_target", kind="localfs_dir", name="out", path=str(out)),
+                )
+            )
+        if n <= 2:
+            return ModelOutput(
+                calls=(
+                    call(
+                        "declare",
+                        target="tgt:out",
+                        key="dup.txt",
+                        value="first" if n == 1 else "second",
+                    ),
+                )
+            )
+        return ModelOutput(
+            answer=str([(r.ok, r.value) for r in prefix.steps[2].results])
+        )
+
+    f = setup(coco_env, tmp_path, ScriptedModel(script))
+    result = f.run()
+    assert result.answer == str(
+        [
+            (
+                False,
+                "'dup.txt' was already declared by this session; a declaration is final "
+                "for the run",
+            )
+        ]
+    )
+    assert (out / "dup.txt").read_text() == "first"

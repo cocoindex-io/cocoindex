@@ -325,7 +325,11 @@ replay(from_step=N, steps=K) for at most K; or act on your own.
 Numbers are `prev`'s step numbers. Arguments are truncated to 160 characters
 in the listing; a pick reissues the exact arguments. Lines carrying literal
 payloads (a final answer, a `declare` whose value is not a handle, a call with
-`$invalid` arguments) are marked, because reissuing them repeats old content.
+`$invalid` arguments) are marked, because reissuing them repeats old content,
+and the payload itself is shown in full so the model can review it: on the
+first real-model drive (2026-11-04) a planner shown its previous plan elided
+reworded it, which recomputed every worker, and a worker reissued an elided
+`declare` it could not review and then found it wrong.
 
 ### Alignment
 
@@ -755,7 +759,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 
 | Item | Owning section |
 |---|---|
-| LiteLLM client: the API call itself (rendering and response parsing are covered) | §4 |
+| LiteLLM client: the API call itself (rendering and response parsing are covered; the sample flows under `flows/` drive it with a real model and record the measured inference counts) | §4 |
 
 **Target** (contract settled where stated, not implemented):
 
@@ -794,6 +798,8 @@ coco_harness/
   testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
   app.py           default config; build a coco.App from a flow prompt; CLI
 tests/             see the Acceptance lines in §3–§7 and the table in §8
+flows/             three sample flows (shapes A–C of §2) with data, a runner, and the
+                   model calls measured with a real model
 ```
 
 Tests use a scripted model that counts its calls, so assertions are about
