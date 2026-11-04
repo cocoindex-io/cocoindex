@@ -19,6 +19,13 @@ Three entry points share one loop:
   never flags the session that fanned it out.
 - ``run_reduce_session(members, spec)`` — memoized on the members' contents.
 
+Each takes a ``scratch`` the memo key excludes: the body marks it, so an
+untouched scratch tells the mounter the engine served the session from its
+memo. Every session returns its ``SessionTrace`` (``trace.py``) inside its
+result: what it did, how each turn was served, its children's traces, and why
+its body ran — compared against the ``last_run`` state it keeps next to the
+transcript.
+
 The replay contract (DESIGN.md §4) lives in ``_ReplayState``; the loop only
 sequences turns. Failures (DESIGN.md §7): in an open session an environment
 error from a tool becomes a result the model reads, because the tool runs
@@ -34,6 +41,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from typing import NamedTuple
 
 import cocoindex as coco
 
@@ -43,40 +51,62 @@ from .hints import Diff, Dump, Note, Replay, RunHints, TurnScratch, replay_tool_
 from .replay import find_same_action, llm_step
 from .spec import Item, SessionInput, SessionResult, SessionSpec
 from .tools import HARNESS, SessionContext, ToolRegistry
+from .trace import (
+    ActionSink,
+    ActionTrace,
+    ChildTrace,
+    DeclaredFile,
+    LastRun,
+    SessionScratch,
+    SessionTrace,
+    StepTrace,
+    TraceSink,
+    answer_step,
+    explain_run,
+    session_tallies,
+    turn_tag,
+)
 from .transcript import (
     ModelOutput,
     Step,
     ToolCall,
     ToolResult,
     Transcript,
+    describe_action,
     describe_output,
     same_action,
+    task_of,
 )
 
 logger = logging.getLogger(__name__)
 
 
-@coco.fn(memo=True)
+@coco.fn(memo=True, memo_key={"scratch": None})
 async def run_open_session(
-    spec: SessionSpec, handles: Mapping[str, HandleObject] | None = None
+    spec: SessionSpec,
+    handles: Mapping[str, HandleObject] | None = None,
+    scratch: SessionScratch | None = None,
 ) -> SessionResult:
-    return await _session_loop(spec, None, handles or {}, closed=False)
+    return await _session_loop(spec, None, handles or {}, closed=False, scratch=scratch)
 
 
-@coco.fn(memo=True)
+@coco.fn(memo=True, memo_key={"scratch": None})
 async def run_closed_session(
     item: Item,
     spec: SessionSpec,
     handles: Mapping[str, HandleObject] | None = None,
+    scratch: SessionScratch | None = None,
 ) -> SessionResult:
-    return await _session_loop(spec, item, handles or {}, closed=True)
+    return await _session_loop(spec, item, handles or {}, closed=True, scratch=scratch)
 
 
-@coco.fn(memo=True)
+@coco.fn(memo=True, memo_key={"scratch": None})
 async def run_reduce_session(
-    members: tuple[str, ...], spec: SessionSpec
+    members: tuple[str, ...],
+    spec: SessionSpec,
+    scratch: SessionScratch | None = None,
 ) -> SessionResult:
-    return await _session_loop(spec, members, {}, closed=True)
+    return await _session_loop(spec, members, {}, closed=True, scratch=scratch)
 
 
 @dataclass
@@ -152,7 +182,8 @@ class _ReplayState:
         replayed: int | None,
         output: ModelOutput,
         results: tuple[ToolResult, ...],
-    ) -> None:
+    ) -> list[Diff]:
+        """Align the turn with ``prev`` and fold its diffs in; return those diffs."""
         if scratch.picked_step is not None:
             aligned: int | None = scratch.picked_step
         elif replayed is not None:
@@ -187,10 +218,10 @@ class _ReplayState:
             and (self.ff_budget is None or self.ff_budget > 0)
         )
         if not continuing or aligned is None:
-            return
+            return diffs
         nxt = aligned + 1
         if nxt >= len(self.prev):
-            return
+            return diffs
         if self.prev.steps[nxt].output.answer is not None:
             self.hints = self.hints.add_note(
                 Note(
@@ -202,6 +233,7 @@ class _ReplayState:
             self.ff_next = nxt
             if self.ff_budget is not None:
                 self.ff_budget -= 1
+        return diffs
 
 
 @coco.fn
@@ -211,7 +243,10 @@ async def _session_loop(
     handles: Mapping[str, HandleObject],
     *,
     closed: bool,
+    scratch: SessionScratch | None,
 ) -> SessionResult:
+    if scratch is not None:
+        scratch.ran = True
     config = coco.use_context(HARNESS)
     registry: ToolRegistry = config.tools.restrict(spec.role.tool_names)
     _check_spec(spec, registry, handles, closed=closed)
@@ -219,16 +254,24 @@ async def _session_loop(
     table = HandleTable()
     for name, obj in handles.items():
         table.seed(name, obj)
-    ctx = SessionContext(spec=spec, input=input, handles=table, config=config)
+    sink = TraceSink()
+    ctx = SessionContext(
+        spec=spec, input=input, handles=table, config=config, trace=sink
+    )
 
     prev_handle = coco.use_state(
         "transcript", initial_value=Transcript(), type_hint=Transcript
     )
+    last_handle = coco.use_state("last_run", initial_value=LastRun(), type_hint=LastRun)
     state = _ReplayState(prev=prev_handle.value)
     steps: list[Step] = []
+    step_traces: list[StepTrace] = []
+    spec_changed = False  # turn 0 missed although a previous transcript exists
+    input_changed = False  # a closed session's read_input result differs
 
     for k in range(spec.role.max_turns):
-        turn_hints, scratch = state.turn_hints(k)
+        turn_hints, turn_scratch = state.turn_hints(k)
+        notes_before = len(state.hints.notes)
         output: ModelOutput = await coco.use_mount(
             coco.component_subpath("turn", k),
             llm_step,
@@ -237,32 +280,121 @@ async def _session_loop(
             Transcript(tuple(steps)),
             turn_hints,
         )
-        replayed = state.after_turn(k, scratch, output)
+        replayed = state.after_turn(k, turn_scratch, output)
+        tag = turn_tag(
+            inferred=turn_scratch.inferred,
+            replayed=replayed,
+            picked=turn_scratch.picked_step,
+        )
+        # An inference, plus one call per invalid pick the model was asked to correct.
+        calls = 1 + len(turn_scratch.notes) if turn_scratch.inferred else 0
+        if k == 0 and turn_scratch.inferred and len(state.prev) > 0:
+            spec_changed = True
         logger.debug(
-            "%s turn %d (%s): %s",
-            spec.role.name,
-            k,
-            f"picked [{scratch.picked_step}]"
-            if scratch.picked_step is not None
-            else "inferred"
-            if scratch.inferred
-            else "replayed"
-            if scratch.replayed
-            else "hit",
-            describe_output(output),
+            "%s turn %d (%s): %s", spec.role.name, k, tag, describe_output(output)
         )
 
         if output.answer is not None:
             steps.append(Step(output, ()))
+            step_traces.append(
+                answer_step(tag, calls, _notes_since(state, notes_before))
+            )
             prev_handle.value = Transcript(tuple(steps))
-            return SessionResult(answer=output.answer, num_steps=len(steps))
+            trace = _finish_trace(
+                spec,
+                input,
+                tuple(step_traces),
+                sink,
+                last_handle.value,
+                is_new=len(state.prev) == 0,
+                spec_changed=spec_changed,
+                input_changed=input_changed,
+            )
+            last_handle.value = LastRun(
+                recorded=True,
+                reads=tuple(sink.reads),
+                declared=tuple(sink.declared),
+                failed=bool(sink.failures),
+            )
+            return SessionResult(
+                answer=output.answer, num_steps=len(steps), trace=trace
+            )
 
-        results = await _execute_all(registry, ctx, output, contain=not closed)
-        steps.append(Step(output, results))
-        state.align(k, scratch, replayed, output, results)
+        executed = await _execute_all(registry, ctx, output, contain=not closed)
+        steps.append(Step(output, executed.results))
+        diffs = state.align(k, turn_scratch, replayed, output, executed.results)
+        differs = tuple(any(d.call == c for d in diffs) for c in output.calls)
+        if closed and any(
+            d and c.tool == "read_input" for d, c in zip(differs, output.calls)
+        ):
+            input_changed = True
+        step_traces.append(
+            StepTrace(
+                tag,
+                calls,
+                tuple(
+                    ActionTrace(
+                        describe_action(c),
+                        ok=r.ok,
+                        differs=d,
+                        task=task_of(c),
+                        child=ch,
+                    )
+                    for c, r, d, ch in zip(
+                        output.calls, executed.results, differs, executed.children
+                    )
+                ),
+                _notes_since(state, notes_before),
+            )
+        )
 
     raise RuntimeError(
         f"session {spec.role.name!r} exceeded {spec.role.max_turns} turns"
+    )
+
+
+def _notes_since(state: _ReplayState, n: int) -> tuple[str, ...]:
+    return tuple(note.text for note in state.hints.notes[n:])
+
+
+def _finish_trace(
+    spec: SessionSpec,
+    input: SessionInput,
+    steps: tuple[StepTrace, ...],
+    sink: TraceSink,
+    last: LastRun,
+    *,
+    is_new: bool,
+    spec_changed: bool,
+    input_changed: bool,
+) -> SessionTrace:
+    """The session's account of this run, with why its body ran."""
+    before = {d.display: d.digest for d in last.declared} if last.recorded else {}
+    declared = tuple(
+        DeclaredFile(d.display, written=before.get(d.display) != d.digest)
+        for d in sink.declared
+    )
+    children = [a.child for s in steps for a in s.actions if a.child is not None]
+    status, reason = explain_run(
+        is_new=is_new,
+        spec_changed=spec_changed,
+        input_changed=input_changed,
+        input_name="input" if isinstance(input, Item) else "members",
+        reads=sink.reads,
+        last=last,
+        children=children,
+    )
+    total, spent = session_tallies(steps, declared)
+    return SessionTrace(
+        role=spec.role.name,
+        status=status,
+        reason=reason,
+        steps=steps,
+        declared=declared,
+        failures=tuple(sink.failures),
+        reads=len(sink.reads),
+        total=total,
+        spent=spent,
     )
 
 
@@ -311,9 +443,14 @@ def is_environment_error(exc: BaseException) -> bool:
     )
 
 
+class Executed(NamedTuple):
+    results: tuple[ToolResult, ...]
+    children: tuple[ChildTrace | None, ...]  # per call: the child it mounted
+
+
 async def _execute_all(
     registry: ToolRegistry, ctx: SessionContext, output: ModelOutput, *, contain: bool
-) -> tuple[ToolResult, ...]:
+) -> Executed:
     """Run one turn's calls concurrently against a snapshot of the handle table.
 
     Results keep call order. A call cannot see a handle a sibling registers in
@@ -337,8 +474,12 @@ async def _execute_all(
         )
     pending = [i for i in range(len(calls)) if results[i] is None]
     forks = {i: ctx.handles.fork() for i in pending}
+    sinks = {i: ActionSink() for i in pending}
     outcomes = await asyncio.gather(
-        *(registry.execute(replace(ctx, handles=forks[i]), calls[i]) for i in pending),
+        *(
+            registry.execute(replace(ctx, handles=forks[i], action=sinks[i]), calls[i])
+            for i in pending
+        ),
         return_exceptions=True,
     )
     failures: list[BaseException] = []
@@ -353,7 +494,7 @@ async def _execute_all(
                 type(outcome).__name__,
                 outcome,
             )
-            record_contained_failure(f"tool:{calls[i].tool}", outcome)
+            record_contained_failure(ctx.trace, f"tool:{calls[i].tool}", outcome)
             results[i] = ToolResult(
                 calls[i].tool, False, f"{type(outcome).__name__}: {outcome}"
             )
@@ -370,7 +511,10 @@ async def _execute_all(
             False,
             "handle name registered twice in one turn; give each call its own name",
         )
-    return tuple(r for r in results if r is not None)
+    return Executed(
+        tuple(r for r in results if r is not None),
+        tuple(sinks[i].child if i in sinks else None for i in range(len(calls))),
+    )
 
 
 def raise_all(failures: list[BaseException]) -> None:

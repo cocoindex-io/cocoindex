@@ -24,7 +24,18 @@ From the repository root, with the LiteLLM extra installed
 uv run python examples/coco_harness/flows/run.py summaries
 uv run python examples/coco_harness/flows/run.py report -v     # log every turn: hit, replayed, picked, inferred
 uv run python examples/coco_harness/flows/run.py table -vv    # also log every request as the model saw it
+uv run python examples/coco_harness/flows/run.py table --stats --plan   # cache usage, and the plan with what it reused
 ```
+
+The answer goes to stdout; everything else to stderr. By default the runner
+prints the model calls made, per role. `--stats` replaces that with one line:
+per count, what the run would have cost with no cache and the share reused,
+then this run's tokens with the provider's prompt-cache share, the files
+unchanged, and the wall time. `--plan` prints the plan the harness chose as a
+tree — the orchestrator turn by turn, each child with whether it was reused
+or recomputed and why, a planner's plan verbatim, a fan-out as counts with
+only the workers that re-ran itemized. On an unchanged rerun it shows the
+stored plan at no model call (DESIGN.md §7, *Observability*).
 
 The model is `$LLM_MODEL`, else `openai/gpt-6.1-terra` (`coco_harness.app.DEFAULT_MODEL`;
 LiteLLM routes the bare `gpt-6.1-terra` to OpenAI too, the prefix just makes
@@ -69,8 +80,12 @@ respectively.
 
 What the counts show:
 
-- An unchanged run is skipped whole: no session's body runs, no turn is
-  probed (DESIGN.md §7, *Open vs closed*).
+- An unchanged `summaries` or `report` run is skipped whole: no session's
+  body runs, no turn is probed (DESIGN.md §7, *Open vs closed*). An unchanged
+  `table` run re-runs the orchestrator's body without inference — its
+  planner records the sample it reads, so the engine cannot skip the parent
+  (`cannot_skip`) — while the planner and the workers are skipped;
+  `--stats` shows it as `sessions 6 (skipped 5 / 83%)`.
 - A worker's first turn (`read_input`) hits even for the edited file: its memo
   key is the spec and an empty transcript. Only the turns after the content
   entered the transcript run again.
@@ -85,6 +100,17 @@ What the counts show:
   plan, and the orchestrator and the three other workers are untouched. With
   a realistic folder the sample rarely moves and the planner is skipped
   outright.
+
+What `--stats` reports for these runs, from the scripted drives of the same
+shapes in `tests/test_observability.py` (the counts are the ones above; the
+tokens and the wall time come from the real run):
+
+| Flow | Run | `stats:` |
+|---|---|---|
+| `summaries` | unchanged | `model calls 12 (reused 12 / 100%), sessions 4 (skipped 4 / 100%), tool calls 9 (reused 9 / 100%), files 3 (unchanged 3 / 100%)` |
+| `summaries` | one edit | `model calls 12 (reused 10 / 83%), sessions 4 (skipped 2 / 50%), tool calls 9 (reused 4 / 44%), spent tokens …, files 3 (unchanged 2 / 67%)` |
+| `table` | unchanged | `model calls 18 (reused 18 / 100%), sessions 6 (skipped 5 / 83%), tool calls 13 (reused 9 / 69%), files 4 (unchanged 4 / 100%)` |
+| `table` | one edit | `model calls 18 (reused 15 / 83%), sessions 6 (skipped 3 / 50%), tool calls 13 (reused 6 / 46%), spent tokens …, files 4 (unchanged 3 / 75%)` |
 
 The first drive of these flows (2026-11-04, `anthropic/claude-sonnet-5-5`,
 prompts that still named workers and planners) measured 15/15/18 calls on a

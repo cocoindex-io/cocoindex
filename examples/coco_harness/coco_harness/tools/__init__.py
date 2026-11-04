@@ -37,6 +37,7 @@ import cocoindex as coco
 from ..errors import ToolError
 from ..handles import HandleTable
 from ..spec import InputCard, Json, RoleSpec, SessionInput, SessionSpec, ToolSpec
+from ..trace import ActionSink, TraceSink
 from ..transcript import (
     INVALID_ARGS_KEY,
     ToolCall,
@@ -60,13 +61,20 @@ __all__ = [
 
 @dataclass
 class SessionContext:
-    """What a tool handler sees: the session, its input, its handles, the harness."""
+    """What a tool handler sees: the session, its input, its handles, the harness.
+
+    ``trace`` collects what the session's tools report for its trace (reads,
+    declared files, contained failures); ``action`` is this call's own sink,
+    where a tool that mounts a child leaves the child's trace.
+    """
 
     spec: SessionSpec
     input: SessionInput
     handles: HandleTable
     config: HarnessConfig
     used_slots: set[str] = field(default_factory=set)
+    trace: TraceSink = field(default_factory=TraceSink)
+    action: ActionSink = field(default_factory=ActionSink)
 
     def claim_slot(self, key: str) -> None:
         """Reserve a child key for this session; a repeat is the model's error."""

@@ -7,7 +7,9 @@ A flow is a directory with a ``prompt.md`` and its sample data; outputs go to
 ``<flow>/out`` and the CocoIndex state to ``<flow>/.coco_db``. The prompt's
 paths are relative to the flow directory. Run a flow twice unchanged, then
 edit one input and run again, to see the model calls the harness saves
-(``README.md`` records what was measured).
+(``README.md`` records what was measured). ``--stats`` prints one line of
+cache usage and ``--plan`` the plan the harness chose, with what each node
+reused; both go to stderr, the answer to stdout.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import logging
 import os
 import pathlib
 import sys
+import time
 
 import cocoindex as coco
 import litellm
@@ -26,7 +29,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from coco_harness.app import DEFAULT_MODEL, build_app, default_config  # noqa: E402
 from coco_harness.litellm_client import LiteLLMClient  # noqa: E402
 from coco_harness.model import MODEL_CLIENT  # noqa: E402
+from coco_harness.report import RunReport, render_plan, render_stats_line  # noqa: E402
 from coco_harness.tools import HARNESS  # noqa: E402
+from coco_harness.trace import SessionScratch  # noqa: E402
 
 FLOWS = pathlib.Path(__file__).resolve().parent
 
@@ -46,6 +51,18 @@ def main(argv: list[str] | None = None) -> int:
         action="count",
         default=0,
         help="log every model turn's action; twice to log every request as the model saw it",
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="one line of cache usage: what the run would have cost with no cache, "
+        "and the share reused (stderr)",
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="the plan the harness chose, as a tree, with what each node reused "
+        "or recomputed and why (stderr)",
     )
     args = parser.parse_args(argv)
 
@@ -67,12 +84,32 @@ def main(argv: list[str] | None = None) -> int:
     config = default_config(args.model)
     env.context_provider.provide(MODEL_CLIENT, client)
     env.context_provider.provide(HARNESS, config)
-    app = build_app(f"coco_harness_{args.flow}", prompt, env=env, config=config)
+    scratch = SessionScratch()
+    app = build_app(
+        f"coco_harness_{args.flow}", prompt, env=env, config=config, scratch=scratch
+    )
 
+    started = time.monotonic()
     result = app.update_blocking()
+    report = RunReport.from_result(
+        args.flow,
+        result.trace,
+        ran=scratch.ran,
+        model=args.model,
+        wall_seconds=time.monotonic() - started,
+        usage=client.usage,
+    )
     print(f"answer: {result.answer}")
-    by_role = ", ".join(f"{role}={n}" for role, n in sorted(client.calls.items()))
-    print(f"model calls: {sum(client.calls.values())} ({by_role or 'none'})")
+    if args.plan:
+        print(render_plan(report), file=sys.stderr)
+    if args.stats:
+        print(render_stats_line(report), file=sys.stderr)
+    else:
+        by_role = ", ".join(f"{r}={n}" for r, n in report.model_calls_by_role().items())
+        print(
+            f"model calls: {report.spent.model_calls} ({by_role or 'none'})",
+            file=sys.stderr,
+        )
     return 0
 
 

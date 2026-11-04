@@ -14,6 +14,8 @@ from typing import Any
 
 from cocoindex.resources.file import FileLike
 
+from .trace import SessionTrace
+
 # A JSON-like value: tool arguments and tool results. The shape is decided by
 # each tool, so this is one of the few places a truly generic type is right.
 Json = Any
@@ -76,10 +78,16 @@ class SessionSpec:
 
 @dataclass(frozen=True)
 class SessionResult:
-    """What a session returns to its mounter. A session always ends with an answer."""
+    """What a session returns to its mounter. A session always ends with an answer.
+
+    ``trace`` is the session's account of its run (``trace.py``): what it did
+    and what it reused, with its subtree's tallies. It is a memo *value*;
+    only ``answer`` reaches transcripts and memo keys, and a test pins that.
+    """
 
     answer: str
     num_steps: int
+    trace: SessionTrace
 
 
 @dataclass(frozen=True)

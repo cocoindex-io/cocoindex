@@ -30,6 +30,8 @@ import cocoindex as coco
 # harness moves to its own repository.
 from cocoindex._internal.deadline import exponential_backoff, retry_transient
 
+from .trace import TraceSink
+
 _T = TypeVar("_T")
 
 _RETRY_MAX_ATTEMPTS = 5
@@ -81,8 +83,9 @@ CONTAINED_FAILURE = coco.DataDep(
 )
 
 
-def record_contained_failure(where: str, exc: BaseException) -> None:
-    """Mark the current session as holding a fact about the environment."""
+def record_contained_failure(sink: TraceSink, where: str, exc: BaseException) -> None:
+    """Mark the current session as holding a fact about the environment, and note it in its trace."""
     coco.use_data_dep(
         CONTAINED_FAILURE, key=where, state=f"{type(exc).__name__}: {exc}"
     )
+    sink.note_failure(where)

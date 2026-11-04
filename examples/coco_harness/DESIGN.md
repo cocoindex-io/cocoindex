@@ -575,7 +575,7 @@ The `reduce` tool's glue (slots, attempt retry) is not yet covered (§8).
 | A model turn | `use_mount(subpath("turn", k), llm_step, …)` — a memoized component per turn |
 | Previous transcript | `coco.use_state("transcript")` on the session component |
 | A tool handler | `coco.fn`-wrapped, so its own code is tracked |
-| Per-run report | `UpdateStats` |
+| Per-run report | `SessionTrace` in every `SessionResult`; `RunReport` for the run (*Observability*); the engine's `UpdateStats` through `report_to_stdout` |
 
 ### Reuse model
 
@@ -803,6 +803,59 @@ What the numbers say:
 - Cold: about 3.5 ms per worker, two scripted model calls and three component
   rows each.
 
+### Observability: the trace and the report
+
+(Added 2026-11-04.) The harness reports what a run reused and what it
+recomputed, and the plan it chose, from its own records; the engine's
+counters know neither roles nor turns, and a skipped session executes no
+Python, so its account has to be stored where the engine returns it.
+
+- **Every session returns a `SessionTrace`** in its `SessionResult`
+  (`trace.py`): its actions, how each turn was served (hit, replayed,
+  picked, inferred), its children's traces, the files it declared, the reads
+  it recorded, and two tallies — `total`, the subtree as if nothing were
+  cached, and `spent`, what this run did. A fan-out or reduce itemizes only
+  the members that did not simply hit, up to `MAX_ITEMIZED`; the rest are
+  counted.
+- **A skipped session is credited as its producer ran it.** The mounting
+  tool passes a `SessionScratch` the memo key excludes; the body marks it,
+  so an untouched scratch means the engine served the memo. The stored
+  trace comes back with the memo value and is marked reused (`as_reused`:
+  `spent` zeroed, `total` kept). The root's scratch is the runner's. Nothing
+  is estimated: a count the harness does not have is not shown.
+- **Why a body ran** comes from a `last_run` state kept next to the
+  transcript: the reads and declared files of the last run of the body,
+  with digests. The vocabulary is closed: `new`; `task, role or tools
+  changed` (turn 0 missed with a previous transcript); `input changed` /
+  `members changed` (a closed session's `read_input` diverged); `<read>
+  changed` / `<read> is new` (`walk of src:x`, `sample of src:x`, `read of
+  src:x key`, `stats of src:x`); `absorbed a failure last run`; `an open
+  child reads data` (the engine's `cannot_skip`); and `reason not recorded`.
+  A skipped session is `nothing it read changed` (open), `input unchanged`
+  or `members unchanged` (closed).
+- **Nothing here enters a memo key.** The trace is a return value and only
+  `answer` crosses into transcripts and arguments; the scratch is excluded
+  from the key; `last_run` is component state like `transcript`; tool
+  results are unchanged; `llm_step` is unchanged, so a turn memo holds no
+  usage and tokens are reported for this run's calls only, from the client.
+  A run with `--plan` stores exactly what a run without it stores.
+- **The report** (`report.py`): one `stats:` line — per count, what the run
+  would have cost with no cache, and the reused share only when it is
+  non-zero (`model calls 18 (reused 15 / 83%)`), then sessions skipped, tool
+  calls reused, this run's tokens with the provider's prompt-cache share
+  (`?` when the client reports none, omitted when no call was made), files
+  unchanged, what re-runs next run, and the wall time; and the plan as a
+  tree — the control plane turn by turn, the data plane as counts, and
+  under a skipped session only the structure the plan built on, never
+  per-turn detail it no longer has.
+
+*Acceptance:* `test_observability.py` — the stats line of shapes A and C on
+a first run, an unchanged rerun and a one-edit rerun equals the counts
+measured in `flows/README.md`; the derived model-call count equals the
+scripted model's on every run; the plan of a one-edit rerun and of a stored
+run; every other test's unchanged-rerun assertion (no inference, closed
+workers skipped) pins that the trace changed nothing memoized.
+
 ### Framework roadmap
 
 | Capability | Status | Harness v1 | Later |
@@ -861,6 +914,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 | Default roles fit the recipes (worker and reducer closed, only the planner observes freely); the `call` tool rejects a method argument the card does not list | `test_roles.py` |
 | Reduce algorithm (pure): admission, bisection, output check, termination, collision | `test_reduce_grouping.py` |
 | Widened counts, bottom-k, stable hash, canonical JSON | `test_stats.py`, `test_stable_hash.py`, `test_transcript.py` |
+| Trace and report: stats line per shape and run, skipped subtrees credited from their stored trace, reasons, plan rendering | `test_observability.py` (§7 *Observability*) |
 
 **Implemented, not covered by a test:**
 
@@ -892,6 +946,9 @@ coco_harness/
   transcript.py    ToolCall, ModelOutput, ToolResult, Step, Transcript; canonical JSON;
                    canonical_output ($invalid arguments)
   hints.py         RunHints (Dump, Diff, Note, Replay, TurnScratch); the replay tool spec
+  trace.py         SessionTrace and its records, SessionScratch, the sinks tools report to,
+                   the reasons vocabulary (no package imports: spec.py depends on it)
+  report.py        RunReport; the stats line and the plan tree
   replay.py        llm_step; resolve_replay; alignment by action identity
   session.py       the loop: run_open_session / run_closed_session / run_reduce_session
   handles.py       HandleTable (seed, fork/merge), HandleObject, cards, ResultValue
@@ -902,7 +959,8 @@ coco_harness/
                    sources (the OBSERVATION and FILE_READ data-dependency kinds), targets,
                    agents, reduce, stats
   roles.py         default roles, the protocol text, and the orchestrator's recipes
-  litellm_client.py  renders a transcript to messages and calls LiteLLM (API call untested)
+  litellm_client.py  renders a transcript to messages and calls LiteLLM (API call untested);
+                   sums the usage the provider reports
   testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
   app.py           default config; build a coco.App from a flow prompt; CLI
 tests/             see the Acceptance lines in §3–§7 and the table in §8
@@ -943,3 +1001,6 @@ Pointers only; the substance is in the owning section.
   adopted; probe deferred — §7
 - Stable keyed hash; `k`/`M` rendering of power-of-two buckets — §5
 - Model client: LiteLLM behind a protocol — §3, §9
+- Observability: a trace per session as a memo value, skipped subtrees
+  credited as their producer ran them, a closed reasons vocabulary, one
+  stats line and a plan tree — §7

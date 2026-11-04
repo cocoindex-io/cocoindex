@@ -110,7 +110,7 @@ def test_unchanged_run_makes_no_model_calls(coco_env: coco.Environment) -> None:
     h = Harness(coco_env)
     first = h.run()
     assert h.model.calls == 3
-    assert first == SessionResult(answer="done:A", num_steps=3)
+    assert (first.answer, first.num_steps) == ("done:A", 3)
 
     second = h.run()
     assert h.model.calls == 0
@@ -142,7 +142,7 @@ def test_changed_result_shows_dump_once_then_fast_forwards(
     # answer and asked the model to confirm; the dump did not move.
     assert second.step == 2 and second.hints.notes
     assert second.hints.dump is not None and second.hints.dump.at_step == 1
-    assert result == SessionResult(answer="done:A2", num_steps=3)
+    assert (result.answer, result.num_steps) == ("done:A2", 3)
 
     # The fast-forwarded turn wrote its memo entry: a third run is free.
     assert h.run() == result
@@ -247,7 +247,7 @@ def test_pick_keeps_its_occurrence_among_repeated_actions(
     h.model.script = picker
     result = h.run()
 
-    assert result == SessionResult(answer="y", num_steps=3)  # a, c, finish
+    assert (result.answer, result.num_steps) == ("y", 3)  # a, c, finish
     assert h.model.calls == 2
     assert h.model.seen[1].step == 2 and h.model.seen[1].hints.notes
 
@@ -267,7 +267,7 @@ def test_bounded_pick_stops_after_its_steps(coco_env: coco.Environment) -> None:
 
     # a (picked) and b (replayed) ran without further inference; then the model was
     # asked again — no note, because the budget, not the final answer, stopped it.
-    assert result == SessionResult(answer="after two", num_steps=3)
+    assert (result.answer, result.num_steps) == ("after two", 3)
     assert h.model.calls == 2
     assert h.model.seen[1].step == 2 and not h.model.seen[1].hints.notes
 
@@ -371,7 +371,7 @@ def test_cached_decision_from_a_failed_run_wins_over_a_requested_replay(
 
     h.model.script = resume
     result = h.run()
-    assert result == SessionResult(answer="resumed", num_steps=3)  # a, x, finish
+    assert (result.answer, result.num_steps) == ("resumed", 3)  # a, x, finish
     assert h.model.calls == 2
     note = h.model.seen[1].hints.notes[0].text
     assert "interrupted" in note and "[1]" in note

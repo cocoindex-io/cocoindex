@@ -9,6 +9,7 @@ fingerprints every dataclass field, so a field here is a field in the key.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 
@@ -70,6 +71,48 @@ def elide(s: str, n: int = ELIDE_CHARS) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+# A child's task is quoted in the plan to this many characters.
+_TASK_CHARS = 100
+
+
+def describe_action(call: ToolCall) -> str:
+    """One line for a tool call in the plan: the tool and what it names, never its payload."""
+    a = call.args if isinstance(call.args, dict) else {}
+    tool = call.tool
+    if tool in ("open_source", "open_target") and "name" in a:
+        prefix = "src" if tool == "open_source" else "tgt"
+        return f"{tool} {prefix}:{a['name']} {a.get('path', '')}".rstrip()
+    if tool in ("observe", "call_agent", "start_agent") and "key" in a:
+        inputs = ", ".join(str(h) for h in a.get("inputs", []))
+        return f"{tool} {a['key']}" + (f" ← {inputs}" if inputs else "")
+    if tool == "for_each" and "key" in a:
+        inputs = ", ".join(str(h) for h in a.get("inputs", []))
+        return f"for_each {a['key']}: {a.get('source', '?')}" + (
+            f" → {inputs}" if inputs else ""
+        )
+    if tool == "reduce" and "key" in a:
+        return f"reduce {a['key']}: {a.get('collection', '?')}"
+    if tool == "declare" and "key" in a:
+        value = a.get("value")
+        ref = (
+            f" ← {value}" if isinstance(value, str) and value.startswith("res:") else ""
+        )
+        return f"declare {a.get('target', '?')} {a['key']}{ref}"
+    if tool == "call" and "handle" in a:
+        return f"call {a['handle']} {a.get('method', '?')}"
+    if not a:
+        return tool
+    return f"{tool}({elide(canonical_json(a), 60)})"
+
+
+def task_of(call: ToolCall) -> str | None:
+    """A child's task or question, elided for the plan."""
+    if not isinstance(call.args, dict):
+        return None
+    task = call.args.get("task") or call.args.get("question")
+    return elide(" ".join(task.split()), _TASK_CHARS) if isinstance(task, str) else None
+
+
 def same_action(a: ModelOutput, b: ModelOutput) -> bool:
     """Action identity: the whole turn — same calls in the same order, same answer.
 
@@ -82,6 +125,11 @@ def same_action(a: ModelOutput, b: ModelOutput) -> bool:
 def canonical_json(value: Json) -> str:
     """Deterministic JSON: sorted keys, no whitespace, non-ASCII kept as is."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def digest_json(value: Json) -> str:
+    """A hex digest of the canonical form, for comparing a value across runs."""
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def normalize_json(value: Json) -> Json:

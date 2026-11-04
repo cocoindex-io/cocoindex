@@ -27,13 +27,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from datetime import timedelta
 from typing import Any
 
 from .handles import is_handle
 from .hints import RunHints
 from .spec import SessionSpec, ToolSpec
+from .trace import Usage
 from .transcript import (
     ModelOutput,
     Step,
@@ -205,13 +205,14 @@ class LiteLLMClient:
     that are not a JSON object are passed through as is; the registry and the
     replay resolver report them to the model as errors.
 
-    ``calls`` counts the model calls made through this client per role, and
-    each one is logged: a run's inference cost is the whole point of the
-    harness, and a memo hit never reaches the client.
+    ``usage`` sums the tokens of every call made through this client, as the
+    provider reported them (the prompt-cache share included); it becomes
+    ``None`` for good once a response carries no usage, so an unknown is
+    never shown as a zero. Calls are counted by the session traces, not here.
     """
 
     def __init__(self) -> None:
-        self.calls: Counter[str] = Counter()
+        self.usage: Usage | None = Usage()
 
     async def complete(
         self,
@@ -228,10 +229,8 @@ class LiteLLMClient:
         # today; promote it when the harness leaves examples/.
         from cocoindex.ops.litellm import _retry_litellm_call
 
-        self.calls[spec.role.name] += 1
         logger.info(
-            "model call %d: role=%s step=%d model=%s",
-            sum(self.calls.values()),
+            "model call: role=%s step=%d model=%s",
             spec.role.name,
             len(prefix),
             spec.role.model,
@@ -258,11 +257,25 @@ class LiteLLMClient:
             "coco_harness.llm_step",
             _LLM_TIMEOUT,
         )
+        self._account(getattr(response, "usage", None))
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None) or []
         return parse_response(
             message.content,
             [(tc.function.name, tc.function.arguments) for tc in tool_calls],
+        )
+
+    def _account(self, usage: Any) -> None:
+        if self.usage is None:
+            return
+        if usage is None or getattr(usage, "prompt_tokens", None) is None:
+            self.usage = None  # unknown, and unknown stays unknown
+            return
+        details = getattr(usage, "prompt_tokens_details", None)
+        self.usage += Usage(
+            input_tokens=usage.prompt_tokens,
+            output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            cached_input_tokens=getattr(details, "cached_tokens", 0) or 0,
         )
 
 
