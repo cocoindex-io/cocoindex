@@ -16,6 +16,7 @@ from typing import (
 )
 
 from . import core, environment
+from .core import AlreadyDeclaredError
 from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
 from .deadline import (
     DeadlineExceededError,
@@ -475,7 +476,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         A handle that can be used to wait until all processing units are ready.
 
     Raises:
-        ValueError: If a keyed iterable yields the same key more than once.
+        AlreadyDeclaredError: If a keyed iterable yields the same key more than
+            once (a ``ValueError`` subclass).
     """
     check_cancellation()
     check_not_in_process_live("coco.mount_each")
@@ -883,9 +885,13 @@ def use_state(
         # initial_value passed unserialized; engine core drops it if a value is
         # already stored on the previous run for this key.
         stored = ctx._core_processor_ctx.use_state(key, initial_value)
+    except AlreadyDeclaredError:
+        # A second use_state() of one key in one component run: typed, so a
+        # caller can branch on it as on any other repeated declaration.
+        raise
     except ValueError as e:
-        # Rust client errors surface as ValueError; normalize to RuntimeError so
-        # all use_state usage errors have a consistent type for callers.
+        # Other Rust client errors surface as ValueError; normalize to
+        # RuntimeError so use_state usage errors have a consistent type.
         raise RuntimeError(str(e)) from None
     if type_hint is not None:
         deserializer = get_deserialize_fn(
@@ -926,6 +932,7 @@ __all__ = [
     "timeout",
     "check_cancellation",
     "DeadlineExceededError",
+    "AlreadyDeclaredError",
     # .batching
     "RetryWithSmallerBatch",
     # .context_keys

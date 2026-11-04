@@ -153,7 +153,7 @@ await coco.mount_each(coco.component_subpath("files"), process_file, files.items
 
 Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
 
-Keys must be unique within one `mount_each()` call. If the iterable yields the same key twice, `mount_each()` raises a `ValueError` that names the repeated component path.
+Keys must be unique within one `mount_each()` call. If the iterable yields the same key twice, `mount_each()` raises a `coco.AlreadyDeclaredError` (a `ValueError` subclass) that names the repeated component path.
 
 An item's key is relative to its source, so two sources can yield the same key. When you mount several sources under one parent component, give each `mount_each()` its own subpath:
 
