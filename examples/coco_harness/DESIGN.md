@@ -228,6 +228,37 @@ another kind of handle, is an error; it is never written as literal text.
 
 **Volatile methods are role-gated.** `keys()` is available only to planners.
 
+**Method arguments are checked by name.** A card lists each method's
+argument names, and `call` rejects any other name as the model's error
+(`sample does not take ['count']; it takes ['k']`) rather than letting the
+method default: a silent default hides the mistake from the model and from
+the transcript.
+
+### The orchestrator plans the decomposition
+
+(Added 2026-11-04, after the second real-model drive.) A flow prompt is
+written by a user who does not know the roles or the tools: it names the
+outcome, the data, the output, the file naming when it matters, and what to
+answer. The orchestrator's system prompt (`roles.py`, `RECIPES`) turns that
+into sessions by recipe, and the recipes fix every free choice that does not
+depend on the task: sources and targets open together in the first turn,
+named after their folders; a fan-out is `for_each(key="items")` with the
+target in `inputs` and `collect` at its default; a combined output is that
+fan-out, `reduce(key="combined")` and `declare(value="res:combined")`; a
+choice the data decides is `observe(key="plan")` first, with the plan's text
+verbatim in the tasks that depend on it. What remains to the model is the
+task text of each child, written from the user's words. The planner, for its
+part, observes in one turn, names things after the data's own labels rather
+than synonyms it invents, covers each labelled field once without splitting
+or deriving, and answers as a compact list. Measured
+(`flows/README.md`): three drives of each sample flow from an empty state make
+the same actions with the same keys and write the same output structure; with
+the one-line role prompt before the recipes, one drive in three chose
+`collect=false` and fanned out twice, and the planner's column names drifted
+between near-synonyms. No harness-level planning step was needed: the
+recipes and the cards were enough for the shapes of §2 with this model, so
+the contracts of §4 and §7 are unchanged.
+
 *Acceptance:* `test_for_each.py::test_workers_write_to_the_parents_target_named_by_their_input_cards`
 (the worker finds the target in its input cards),
 `::test_for_each_without_collect_mounts_workers_in_the_background`,
@@ -239,7 +270,9 @@ another kind of handle, is an error; it is never written as literal text.
 `::test_duplicate_child_keys_are_tool_errors_not_engine_errors`,
 `::test_background_agents_act_through_inputs_and_planners_return_plans`;
 `test_replay.py::test_argument_validation_is_the_models_error_and_internal_errors_are_reported`,
-`::test_non_object_arguments_are_the_models_error_and_survive_the_run`.
+`::test_non_object_arguments_are_the_models_error_and_survive_the_run`;
+`test_roles.py::test_default_roles_fit_the_recipes`,
+`::test_source_methods_reject_unknown_arguments`.
 
 ## 4. Replay policy: "dump once"
 
@@ -403,9 +436,12 @@ with one word changed would miss for the whole subtree.
 
 `observe()` runs an open planner whose transcript may be as volatile as it
 likes; only its answer (the plan) reaches the caller, and the plan feeds every
-child's memo key, so plan stability matters most. Three layers protect it:
-stable observations (below), a keep-or-revise prompt, and value-based reuse
-(an unchanged plan lets its dependents hit).
+child's memo key, so plan stability matters most. Four layers protect it:
+stable observations (below), a keep-or-revise prompt, value-based reuse (an
+unchanged plan lets its dependents hit), and a naming rule in the planner's
+prompt — names come from the data's own labels, never from synonyms the model
+invents, because a name read from the data comes out the same every run and
+an invented one does not (observed on the second real-model drive, §3).
 
 ### Widened counts
 
@@ -752,6 +788,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 | Non-object arguments: canonical form, model-facing error, next run loads the transcript | `test_replay.py::test_non_object_arguments_are_the_models_error_and_survive_the_run` |
 | Distinct child keys across tools never share an engine path | `test_for_each.py::test_distinct_child_keys_never_alias_one_engine_path` |
 | Message rendering: task + input manifest, dump with literal marks, diffs, notes, canonical invalid calls; provider response parsing, malformed arguments kept as the model's error | `test_rendering.py` |
+| Default roles fit the recipes (worker and reducer closed, only the planner observes freely); the `call` tool rejects a method argument the card does not list | `test_roles.py` |
 | Reduce algorithm (pure): admission, bisection, output check, termination, collision | `test_reduce_grouping.py` |
 | Widened counts, bottom-k, stable hash, canonical JSON | `test_stats.py`, `test_stable_hash.py`, `test_transcript.py` |
 
@@ -760,6 +797,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 | Item | Owning section |
 |---|---|
 | LiteLLM client: the API call itself (rendering and response parsing are covered; the sample flows under `flows/` drive it with a real model and record the measured inference counts) | §4 |
+| The recipes' effect on a real model: that user-level prompts decompose the same way run after run is measured by the drives recorded in `flows/README.md`, not by a scripted test | §3 |
 
 **Target** (contract settled where stated, not implemented):
 
@@ -793,13 +831,13 @@ coco_harness/
                    ToolRegistry (validate_args), HarnessConfig (spec, version; change-detected);
                    sources (the OBSERVATION and FILE_READ data-dependency kinds), targets,
                    agents, reduce, stats
-  roles.py         default roles and the protocol text
+  roles.py         default roles, the protocol text, and the orchestrator's recipes
   litellm_client.py  renders a transcript to messages and calls LiteLLM (API call untested)
   testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
   app.py           default config; build a coco.App from a flow prompt; CLI
 tests/             see the Acceptance lines in §3–§7 and the table in §8
-flows/             three sample flows (shapes A–C of §2) with data, a runner, and the
-                   model calls measured with a real model
+flows/             three sample flows (shapes A–C of §2) with user-level prompts, data, a
+                   runner, and the stability and model calls measured with a real model
 ```
 
 Tests use a scripted model that counts its calls, so assertions are about

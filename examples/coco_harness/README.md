@@ -1,14 +1,19 @@
 # coco-harness
 
-An agent harness on top of CocoIndex. You describe a flow in a prompt; an
-orchestrator agent runs it with subagents, sources and targets; CocoIndex makes
-the whole thing incremental, so when the inputs change only the affected
-subagents, reducers and model turns run again.
+An agent harness on top of CocoIndex. You describe an outcome in a prompt
+("turn the invoices under `./invoices` into a table of JSON files in `./out`");
+an orchestrator agent decides how to split it into subagents over sources and
+targets, following the recipes in its system prompt; CocoIndex makes the whole
+thing incremental, so when the inputs change only the affected subagents,
+reducers and model turns run again.
 
-**Status: design frozen 2026-11-04; skeleton under construction.** Read
-[`DESIGN.md`](DESIGN.md) first. The tests drive the harness with a scripted
-model and assert on inference counts; the sample flows under `flows/` drive it
-with a real model through LiteLLM and record what they measured.
+**Status: design frozen 2026-11-04; implementation driven with a real model.**
+Read [`DESIGN.md`](DESIGN.md) first. The tests drive the harness with a
+scripted model and assert on inference counts; the sample flows under `flows/`
+drive it with a real model through LiteLLM (`openai/gpt-6.1-terra`) and record
+what they measured: the same decomposition in three drives of each flow, no
+model call on an unchanged rerun, and two or three calls after one edited
+input.
 
 ## Layout
 

@@ -73,7 +73,9 @@ class Collection:
                 "Widened item count and the number of failed items.",
                 Volatility.STABLE,
             ),
-            MethodSpec("get", "One item's output by key.", Volatility.PER_ITEM),
+            MethodSpec(
+                "get", "One item's output by key.", Volatility.PER_ITEM, args=("key",)
+            ),
             MethodSpec(
                 "failed", "The failed items and their errors.", Volatility.STABLE
             ),
@@ -147,8 +149,10 @@ def _contain_child_failure(key: str, exc: BaseException) -> ToolError:
 
 @tool(
     "call_agent",
-    "Run a subagent with `task` and wait for it. `key` names it stably across runs; "
-    "`inputs` lists handles it may use. Returns a res: handle to its answer.",
+    "Run one open subagent with `task` and wait for it. `key` names it stably across "
+    "runs; `inputs` lists the handles it may use. Returns a res: handle to its answer, "
+    "never the text. For one piece of work over the whole data; per-file work is "
+    "for_each.",
     {
         "type": "object",
         "properties": {
@@ -206,8 +210,11 @@ async def start_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
 @tool(
     "observe",
-    "Ask a planner to look at data (it may list and sample freely) and return a plan. "
-    "Only the plan comes back; keep it stable.",
+    "Ask a planner to look at the data and answer `question` with a plan. Give it the "
+    "source in `inputs`; it may list and sample freely. Use it before a fan-out for a "
+    "choice the data decides (a table's columns, the categories, a format the task "
+    "leaves open). Only the plan's text comes back; put it verbatim into the tasks "
+    "that depend on it.",
     {
         "type": "object",
         "properties": {
@@ -238,10 +245,13 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
 @tool(
     "for_each",
-    "Run one closed worker per item of a source. `key` names the fan-out stably; `inputs` "
-    "lists target/result handles the workers may use. With collect=true the answers are "
-    "gathered into a coll: handle (you see a count and how many items failed, not the "
-    "contents).",
+    "Run one closed worker per file of a source, in parallel. `key` names the fan-out "
+    "stably across runs; `task` is every worker's instruction (each reads its own file "
+    "with read_input); `inputs` lists the handles the workers may use: the target they "
+    "write to, a result they must follow. With collect=true (the default) the answers are "
+    "gathered into a coll: handle for reduce; its card shows a widened count and how many "
+    "workers failed, never the answers. collect=false runs the workers in the background "
+    "and returns no card.",
     {
         "type": "object",
         "properties": {
@@ -308,9 +318,9 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
 @tool(
     "reduce",
-    "Combine every successful item of a coll: handle into one answer with `task`, "
-    "hierarchically. Returns a res: handle to the answer and how many failed items were "
-    "left out.",
+    "Combine every successful item of a coll: handle into one text with `task`, "
+    "hierarchically, so any number of items fits. Returns a res: handle to the text and "
+    'how many failed items were left out; write it with declare(value="res:<key>").',
     {
         "type": "object",
         "properties": {

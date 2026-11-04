@@ -40,8 +40,9 @@ class LocalDirTargetHandle:
         return (
             MethodSpec(
                 "declare_file",
-                "Declare a file (args: filename, content). Prefer the declare tool.",
+                "Declare a file. Prefer the declare tool.",
                 Volatility.STABLE,
+                args=("filename", "content"),
             ),
         )
 

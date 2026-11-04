@@ -35,14 +35,24 @@ class Volatility(enum.Enum):
 
 @dataclass(frozen=True)
 class MethodSpec:
+    """One method of a handle object, as its card shows it.
+
+    ``args`` names every argument the method accepts; the ``call`` tool
+    rejects any other name as the model's error rather than letting the
+    method default silently (on a real-model drive a planner wrote
+    ``sample(count=8)`` three runs in a row and got five heads each time).
+    """
+
     name: str
     description: str
     volatility: Volatility
+    args: tuple[str, ...] = ()
 
     def as_json(self) -> dict[str, Json]:
         return {
             "name": self.name,
             "description": self.description,
+            "args": list(self.args),
             "volatility": self.volatility.value,
         }
 
@@ -99,6 +109,7 @@ class ResultValue:
                 "head",
                 "The first `chars` characters (default 500).",
                 Volatility.PER_ITEM,
+                args=("chars",),
             ),
         )
 

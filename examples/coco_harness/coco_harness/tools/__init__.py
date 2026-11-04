@@ -217,7 +217,7 @@ class HarnessConfig:
     roles: dict[str, RoleSpec]
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     default_model: str = "unspecified"
-    version: int = 1
+    version: int = 2
 
     def __coco_memo_key__(self) -> object:
         return (

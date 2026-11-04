@@ -1,7 +1,7 @@
 """Run one of the sample flows with a real model and report its model calls.
 
     uv run python examples/coco_harness/flows/run.py summaries   # from the repository root
-    LLM_MODEL=gemini/gemini-3.5-flash uv run python examples/coco_harness/flows/run.py report
+    LLM_MODEL=anthropic/claude-sonnet-5-5 uv run python examples/coco_harness/flows/run.py report
 
 A flow is a directory with a ``prompt.md`` and its sample data; outputs go to
 ``<flow>/out`` and the CocoIndex state to ``<flow>/.coco_db``. The prompt's
@@ -23,13 +23,12 @@ import litellm
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from coco_harness.app import build_app, default_config  # noqa: E402
+from coco_harness.app import DEFAULT_MODEL, build_app, default_config  # noqa: E402
 from coco_harness.litellm_client import LiteLLMClient  # noqa: E402
 from coco_harness.model import MODEL_CLIENT  # noqa: E402
 from coco_harness.tools import HARNESS  # noqa: E402
 
 FLOWS = pathlib.Path(__file__).resolve().parent
-DEFAULT_MODEL = "anthropic/claude-sonnet-5-5"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -2,7 +2,7 @@
 
 Usage:
 
-    LLM_MODEL=anthropic/claude-sonnet-5-5 python -m coco_harness.app "For every .md under ./docs, ..."
+    LLM_MODEL=openai/gpt-6.1-terra python -m coco_harness.app "For every .md under ./docs, ..."
 
 The sample flows under ``flows/`` drive this with checked-in data.
 """
@@ -19,6 +19,10 @@ from .model import MODEL_CLIENT
 from .roles import default_roles
 from .session import run_open_session
 from .tools import HARNESS, HarnessConfig, Tool, ToolRegistry, agents, sources, targets
+
+# The LiteLLM model id used when ``$LLM_MODEL`` is unset. The sample flows
+# were measured with it (flows/README.md).
+DEFAULT_MODEL = "openai/gpt-6.1-terra"
 
 
 def builtin_tools() -> list[Tool]:
@@ -69,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     # exit ("Task was destroyed but it is pending"); httpx does not.
     litellm.disable_aiohttp_transport = True
     env = coco.Environment(coco.Settings.from_env())
-    config = default_config(os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-5-5"))
+    config = default_config(os.environ.get("LLM_MODEL", DEFAULT_MODEL))
     env.context_provider.provide(MODEL_CLIENT, LiteLLMClient())
     env.context_provider.provide(HARNESS, config)
     app = build_app("coco_harness", " ".join(args), env=env, config=config)

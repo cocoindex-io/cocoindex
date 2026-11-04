@@ -175,7 +175,7 @@ def test_task_edit_dumps_at_turn_zero_and_fast_forwards_everything(
 def test_version_bump_invalidates_every_turn(coco_env: coco.Environment) -> None:
     h = Harness(coco_env)
     h.run()
-    h.reconfigure(version=2)
+    h.reconfigure(version=h.config.version + 1)
     h.run()
     assert h.model.calls == 3
 
