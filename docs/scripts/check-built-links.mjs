@@ -27,6 +27,13 @@ for (const file of files(root)) {
   }
   for (const link of links) {
     const url = new URL(link, page);
+    if (url.href.startsWith('https://github.com/cocoindex-io/cocoindex/edit/')) {
+      const prefix = 'https://github.com/cocoindex-io/cocoindex/edit/v0/docs/';
+      const source = decodeURIComponent(url.href.slice(prefix.length));
+      if (!url.href.startsWith(prefix) || !source.startsWith('src/content/docs/') || !existsSync(resolve(source))) {
+        failures.add(`${page.pathname}: invalid legacy edit source: ${link}`);
+      }
+    }
     if (url.origin !== origin || !url.pathname.startsWith(base)) continue;
     let target = join(root, decodeURIComponent(url.pathname.slice(base.length)));
     if (existsSync(target) && statSync(target).isDirectory()) target = join(target, 'index.html');
