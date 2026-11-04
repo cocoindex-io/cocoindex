@@ -210,5 +210,3 @@ Swap the CLIP model and CocoIndex re-embeds everything against the new space; le
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/image_search](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search). For higher-fidelity retrieval, [image_search_colpali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali) swaps CLIP for the multi-vector ColPali model with Qdrant MaxSim; for the text equivalent, see [Semantic Search 101](/docs/examples/text-embedding/).
-
-Got a photo library, a product catalog, or a screenshot pile you want to search by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

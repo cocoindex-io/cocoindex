@@ -30,8 +30,7 @@ You declare the transformation logic with native Python without worrying about c
 Think:
 **target_state = transformation(source_state)**
 
-When your source data is updated, or your processing logic is changed (for example, switching to a different model, updating your LLM extraction logic), CocoIndex performs smart incremental processing that only reprocesses the minimum. And it keeps your wikis always up to date in production.
-
+When your source data is updated, or your processing logic is changed (for example, switching to a different model, updating your LLM extraction logic), CocoIndex reprocesses affected files and updates their wiki pages.
 
 
 ## Setup
@@ -292,7 +291,6 @@ Instructions:
 [→ Function](/docs/programming_guide/function/)
 
 
-
 ## Aggregate project information
 
 For projects with multiple files, we aggregate into a unified summary:
@@ -484,7 +482,7 @@ Only the new project is processed.
 
 ## Key patterns demonstrated
 
-The pipeline combines these patterns:
+This example uses these patterns:
 
 1. **Structured LLM outputs** with Instructor + Pydantic models
 2. **Memoized LLM calls** to avoid redundant API costs

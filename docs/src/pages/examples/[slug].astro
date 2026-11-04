@@ -114,6 +114,7 @@ const runnable = (sceneMeta(ex.slug)?.run?.length ?? 0) > 0;
     <link rel="icon" href={`${base}/img/favicon.ico`} />
   </head>
   <body class="ex-detail">
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
     <MobileSheet currentSlug={`examples/${slug}`} headings={headings} sidebarItems={examplesSidebar} />
     <MermaidRenderer />
@@ -139,7 +140,7 @@ const runnable = (sceneMeta(ex.slug)?.run?.length ?? 0) > 0;
         ))}
       </aside>
 
-      <main class="content">
+      <main class="content" id="main-content" tabindex="-1">
         <div class="page-head">
           <nav class="breadcrumb" aria-label="Breadcrumb">
             <a href={`${base}/`}>Docs</a>

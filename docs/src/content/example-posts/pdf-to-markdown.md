@@ -25,7 +25,7 @@ You declare the transformation logic with native Python without worrying about c
 Think:
 **target_state = transformation(source_state)**
 
-When your source data is updated, or your processing logic is changed (for example, switching parsers or tweaking conversion settings), CocoIndex performs smart incremental processing that only reprocesses the minimum. And it keeps your Markdown files always up to date in production.
+When your source data is updated, or your processing logic is changed (for example, switching parsers or tweaking conversion settings), CocoIndex reprocesses affected files and updates their Markdown output.
 
 ## Setup
 

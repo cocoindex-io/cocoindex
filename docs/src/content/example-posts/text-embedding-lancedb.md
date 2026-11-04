@@ -157,5 +157,3 @@ A catch-up run (`cocoindex update main`) does this once and exits; live mode (`c
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/text_embedding_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_lancedb). For the chunk-and-embed walkthrough, see [Semantic Search 101](/docs/examples/text-embedding/) — same flow, Postgres as the target.
-
-If this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord community](https://discord.com/invite/zpA9S2DR7s).

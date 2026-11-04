@@ -117,7 +117,7 @@ The most semantically similar chunks come back ranked — even when they share n
 Just like the [base example](/docs/examples/text-embedding/), CocoIndex does the **minimum work** to keep the index in sync. `@coco.fn(memo=True)` on `process_file` skips any Drive file whose content and the function's code are both unchanged, and `mount_table_target` derives each row's [`id`](/docs/common_resources/id_generation/) from its chunk text, so only the rows that actually changed are upserted and rows whose source is gone are deleted.
 
 - **A document is added to the folder** — only that file is chunked and embedded, and its rows are inserted.
-- **A document is edited** — it is re-chunked; unchanged chunks keep their `id` and embedding, genuinely new chunks are embedded and inserted, and chunks that no longer exist are deleted.
+- **A document is edited** — it is re-chunked; unchanged chunks keep their `id` and embedding, new chunks are embedded and inserted, and chunks that no longer exist are deleted.
 - **A document is removed from the folder** — its rows are removed from the target automatically.
 
 Because the Drive source is catch-up only, each `cocoindex update main` rescans the folders and applies exactly the difference.
@@ -125,5 +125,3 @@ Because the Drive source is catch-up only, each `cocoindex update main` rescans 
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/gdrive_text_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/gdrive_text_embedding). If you haven't yet, read [Semantic Search 101](/docs/examples/text-embedding/) for the line-by-line tour of chunking and embedding.
-
-Found this useful? [Star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s).

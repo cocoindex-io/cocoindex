@@ -134,4 +134,4 @@ Because S3 is catch-up only, you re-run `cocoindex update main` to pick up bucke
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/amazon_s3_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/amazon_s3_embedding). Have a question or want to show what you built? Join us on [Discord](https://discord.com/invite/zpA9S2DR7s), and if CocoIndex saves you time, a [star on GitHub](https://github.com/cocoindex-io/cocoindex) helps others find it.
+The full, runnable example is in the CocoIndex repo: [examples/amazon_s3_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/amazon_s3_embedding).

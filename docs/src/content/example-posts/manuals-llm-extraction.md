@@ -113,5 +113,3 @@ FROM coco_examples.modules_info WHERE filename = 'copy.pdf';
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/manuals_llm_extraction](https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction). For extracting metadata from research papers instead, see [Index Academic Papers](/docs/examples/paper-metadata/); for extraction into typed JSON files, see the patient-intake examples.
-
-Got a pile of manuals or datasheets to structure? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

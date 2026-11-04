@@ -30,9 +30,10 @@ const places = [
     <link rel="icon" href={`${base}/img/favicon.ico`} />
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
-    <MobileSheet />
-    <main class="nf">
+    <MobileSheet currentSlug="404" />
+    <main class="nf" id="main-content" tabindex="-1">
       <div class="nf-wrap">
         <p class="nf-code">404</p>
         <h1 class="nf-title">Page not found</h1>

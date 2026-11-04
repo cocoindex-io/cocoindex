@@ -149,5 +149,3 @@ On the sample data, recommending for a pen surfaces the notepad and the multipur
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/product_recommendation](https://github.com/cocoindex-io/cocoindex/tree/main/examples/product_recommendation). For a concept graph over prose docs instead of products, see [Turn Docs into a Knowledge Graph](/docs/examples/docs-to-knowledge-graph/).
-
-Got a product catalog you want to turn into a recommendation graph? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

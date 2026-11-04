@@ -121,5 +121,3 @@ On the sample set, *"revenue growth"* ranks the two financial-report images at t
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/multi_format_indexing](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing). For the image-only version with a web UI, see [Search Images by Text · ColPali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali); for a text-extraction pipeline over PDFs instead, see [Semantic Search over PDFs](/docs/examples/pdf-embedding/).
-
-Got a pile of mixed-format documents to make searchable? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

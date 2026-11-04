@@ -4,7 +4,7 @@
 // @cocoindex/brand/MobileSheet; this component fills its slot with the docs
 // content: a search box + two segmented tabs —
 //   - Pages        : the full sidebar tree (mirrors Sidebar.astro)
-//   - On this page : the current doc's H2/H3 headings
+//   - On this page : the current doc's H2/H3/H4 headings
 // and adds the tab-switch script (open/close, scrim, Esc, scroll-lock, and
 // close-on-link-tap all live in the shared controller). The tab/pane/group/
 // search styling stays in globals.css; the shell styling is brand nav.css.
@@ -17,7 +17,7 @@ import MobileSheet from '@cocoindex/brand/MobileSheet.astro';
 export interface Props {
   /** Slug of the currently-rendered doc. Drives the `aria-current` row in the Pages tab. */
   currentSlug?: string;
-  /** Page headings (already filtered to H2/H3 by the layout, or raw — we re-filter here). */
+  /** Page headings (already filtered to H2/H3/H4 by the layout, or raw — we re-filter here). */
   headings?: MarkdownHeading[];
   /** Sidebar tree to surface in the Pages pane before the Site links. Pass
    *  `null` to render no docs sidebar (e.g. on examples listing or 404).
@@ -47,16 +47,16 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 // width. Surfaced here so phones still have a path to Examples / Docs /
 // Enterprise / Blog when `.nav-links` is hidden.
 const SITE_LINKS: Array<{ href: string; label: string }> = [
-  { href: `${SITE_MAIN}/cocoindex-code`, label: 'CocoIndex Code' },
+  { href: `${SITE_MAIN}/cocoindex-code/`, label: 'CocoIndex Code' },
   { href: SITE_EXAMPLES,                 label: 'Examples'       },
   { href: `${base}/`,                    label: 'Documentation'  },
-  { href: `${SITE_MAIN}/enterprise`,     label: 'Enterprise'     },
+  { href: `${SITE_MAIN}/enterprise/`,     label: 'Enterprise'     },
   { href: SITE_BLOG,                     label: 'Blog'           },
 ];
 
-// Same H2/H3 filter as Toc.astro so the phone "On this page" list matches
+// Same H2/H3/H4 filter as Toc.astro so the phone "On this page" list matches
 // the desktop rail one-for-one. No numbering: the rail is a list, not an index.
-const tocRows = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+const tocRows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
 
 function href(slug: string): string {
   // Trailing slash matches the canonical URL Astro emits under
@@ -65,7 +65,7 @@ function href(slug: string): string {
 }
 ---
 
-<MobileSheet id="mobileSheet" title="Menu" closeAbove={820}>
+<MobileSheet id="mobileSheet" title="Menu" closeAbove={1120}>
   <div class="mobile-search">
     <Search />
   </div>
@@ -75,7 +75,7 @@ function href(slug: string): string {
       <button id="tabPages" type="button" role="tab" aria-selected="true" aria-controls="panePages">
         Pages
       </button>
-      <button id="tabToc" type="button" role="tab" aria-selected="false" aria-controls="paneToc">
+      <button id="tabToc" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="paneToc">
         On this page
       </button>
     </div>
@@ -88,7 +88,7 @@ function href(slug: string): string {
           <a
             href={`#${h.slug}`}
             data-mobile-toc-link={h.slug}
-            class={h.depth === 3 ? 'sub' : ''}
+            class={h.depth === 3 ? 'sub' : h.depth === 4 ? 'sub-sub' : ''}
           >
             <span class="lbl">{h.text}</span>
           </a>
@@ -97,7 +97,16 @@ function href(slug: string): string {
     </div>
   )}
 
-  <div class="mobile-pane" id="panePages" role="tabpanel" aria-labelledby="tabPages">
+  <div class="mobile-pane" id="panePages" role={tocRows.length > 0 ? 'tabpanel' : undefined} aria-labelledby={tocRows.length > 0 ? 'tabPages' : undefined}>
+    {sidebarItems === sidebar && (
+      <div class="mobile-group">
+        <nav class="mobile-list" aria-label="Documentation home">
+          <a href={`${base}/`} aria-current={currentSlug === '' ? 'page' : undefined}>
+            <span class="lbl">About CocoIndex</span>
+          </a>
+        </nav>
+      </div>
+    )}
     {mobileItems.map((item) => (
       item.type === 'doc' ? (
         <div class="mobile-group">
@@ -139,7 +148,7 @@ function href(slug: string): string {
       <p class="mobile-h"><span>Site</span></p>
       <nav class="mobile-list" aria-label="Site">
         {SITE_LINKS.map((l) => (
-          <a href={l.href}><span class="lbl">{l.label}</span></a>
+          <a href={l.href} aria-current={l.label === 'Documentation' && !Astro.url.pathname.startsWith(`${base}/examples/`) ? 'location' : l.label === 'Examples' && Astro.url.pathname.startsWith(`${base}/examples/`) ? 'location' : undefined}><span class="lbl">{l.label}</span></a>
         ))}
       </nav>
     </div>
@@ -162,6 +171,8 @@ function href(slug: string): string {
       const onToc = which === 'toc';
       tabToc.setAttribute('aria-selected', onToc ? 'true' : 'false');
       tabPages.setAttribute('aria-selected', onToc ? 'false' : 'true');
+      tabToc.tabIndex = onToc ? 0 : -1;
+      tabPages.tabIndex = onToc ? -1 : 0;
       paneToc.hidden = !onToc;
       panePages.hidden = onToc;
     };
@@ -170,12 +181,13 @@ function href(slug: string): string {
     tabPages.addEventListener('click', () => setTab('pages'));
 
     // Arrow-key tab navigation (a11y).
-    const tabsArr = [tabToc, tabPages];
+    const tabsArr = [tabPages, tabToc];
     tabsArr.forEach((t, i, arr) => {
       t.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        if (['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(e.key)) {
           e.preventDefault();
-          const target = arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length];
+          const target = e.key === 'Home' ? arr[0] : e.key === 'End' ? arr[arr.length - 1]
+            : arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length];
           target.focus();
           setTab(target === tabToc ? 'toc' : 'pages');
         }

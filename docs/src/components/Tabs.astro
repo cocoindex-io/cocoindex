@@ -5,11 +5,12 @@
 interface Props {
   labels: string[];
   initial?: number;
+  label?: string;
 }
-const { labels, initial = 0 } = Astro.props;
+const { labels, initial = 0, label = 'Choose an option' } = Astro.props;
 const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
 ---
-<div class="coco-tabs" role="group" aria-label="Examples">
+<div class="coco-tabs" role="group" aria-label={label}>
   {labels.map((_, i) => (
     <input
       type="radio"
@@ -17,6 +18,8 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
       name={id}
       id={`${id}-${i}`}
       checked={i === initial}
+      aria-label={labels[i]}
+      aria-controls={`${id}-panel-${i}`}
     />
   ))}
   <div class="coco-tabs-bar">
@@ -28,19 +31,19 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
   </div>
   <div class="coco-tabs-panels">
     {labels[0] && (
-      <section class="coco-tabs-panel" data-tab-index="0"><slot name="tab-0" /></section>
+      <section class="coco-tabs-panel" data-tab-index="0" id={`${id}-panel-0`} aria-label={labels[0]}><slot name="tab-0" /></section>
     )}
     {labels[1] && (
-      <section class="coco-tabs-panel" data-tab-index="1"><slot name="tab-1" /></section>
+      <section class="coco-tabs-panel" data-tab-index="1" id={`${id}-panel-1`} aria-label={labels[1]}><slot name="tab-1" /></section>
     )}
     {labels[2] && (
-      <section class="coco-tabs-panel" data-tab-index="2"><slot name="tab-2" /></section>
+      <section class="coco-tabs-panel" data-tab-index="2" id={`${id}-panel-2`} aria-label={labels[2]}><slot name="tab-2" /></section>
     )}
     {labels[3] && (
-      <section class="coco-tabs-panel" data-tab-index="3"><slot name="tab-3" /></section>
+      <section class="coco-tabs-panel" data-tab-index="3" id={`${id}-panel-3`} aria-label={labels[3]}><slot name="tab-3" /></section>
     )}
     {labels[4] && (
-      <section class="coco-tabs-panel" data-tab-index="4"><slot name="tab-4" /></section>
+      <section class="coco-tabs-panel" data-tab-index="4" id={`${id}-panel-4`} aria-label={labels[4]}><slot name="tab-4" /></section>
     )}
   </div>
 </div>
