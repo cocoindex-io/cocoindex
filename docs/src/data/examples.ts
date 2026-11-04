@@ -73,7 +73,7 @@ export const examples: ExampleCard[] = [
     index: '03 / 32',
     category: 'llm',
     thumbLabel: 'Code · structured output',
-    description: 'Walk many Python repos, LLM-extract a typed summary per file — classes, functions, Mermaid call graphs — and aggregate into an always-fresh wiki page per project.',
+    description: 'Walk Python repos, extract typed summaries of classes, functions, and Mermaid call graphs with an LLM, and update a wiki page per project as code changes.',
     tags: [
       { kind: 'src', label: 'Multi-repo' },
       { kind: 'tgt', label: 'Local FS' },
@@ -499,7 +499,7 @@ export const examples: ExampleCard[] = [
     index: '28 / 32',
     category: 'agents',
     thumbLabel: 'Products · taxonomy graph',
-    description: 'LLM-extract what each product is and what pairs with it from product docs, into a Neo4j graph of products and taxonomies that powers "customers also bought" recommendations.',
+    description: 'LLM-extract what each product is and what pairs with it from product docs, then build a Neo4j graph for complementary-product recommendations.',
     tags: [
       { kind: 'src', label: 'Local FS' },
       { kind: 'ops', label: 'LLM extraction' },
@@ -678,7 +678,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     entries: [
       { dir: 'text_embedding', docs: 'text-embedding', title: 'Semantic Search 101', description: 'Chunk local Markdown, embed each chunk, store the vectors in Postgres (pgvector), and search in plain English. The simplest end-to-end vector index.', run: RUN_MAIN },
       { dir: 'code_embedding', docs: 'index-codebase', title: 'Index Your Codebase', description: 'Walk a repo, split by syntax with Tree-sitter, embed, and query your codebase in English — a live pgvector index for AI coding agents.', run: RUN_MAIN },
-      { dir: 'multi_codebase_summarization', docs: 'multi-codebase-summarization', title: 'Multi-codebase Summarization', description: 'Walk many Python repos, LLM-extract typed per-file info (classes, functions, Mermaid call graphs), and aggregate into an always-fresh Markdown wiki page per project.', run: RUN_MAIN_PY },
+      { dir: 'multi_codebase_summarization', docs: 'multi-codebase-summarization', title: 'Multi-codebase Summarization', description: 'Walk Python repos, LLM-extract typed per-file info (classes, functions, Mermaid call graphs), and update a Markdown wiki page per project as code changes.', run: RUN_MAIN_PY },
       { dir: 'pdf_to_markdown', docs: 'pdf-to-markdown', title: 'PDF → Markdown', description: 'Incrementally convert a folder of local PDFs to Markdown with docling.', run: RUN_MAIN },
       { dir: 'conversation_to_knowledge', docs: 'podcast-to-knowledge-graph', title: 'Podcasts → Knowledge Graph', description: 'Turn YouTube podcasts into a SurrealDB knowledge graph: diarized transcription, two-step LLM extraction, and embedding-based entity resolution.', run: 'cocoindex update conv_knowledge.app' },
       { dir: 'docs_to_knowledge_graph', docs: 'docs-to-knowledge-graph', title: 'Docs → Knowledge Graph', description: 'Turn a folder of Markdown docs into a Neo4j concept graph: LLM-extracted (subject, predicate, object) triples, declared as nodes and edges that stay in sync.', run: RUN_MAIN },

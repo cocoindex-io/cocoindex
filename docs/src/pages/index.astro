@@ -29,7 +29,7 @@ const start = [
   { slug: 'getting_started/quickstart', label: 'Quickstart', meta: '5 min',
     body: 'Build one pipeline end to end: convert PDFs to Markdown, change a file, and watch only that file reprocess.' },
   { slug: 'getting_started/installation', label: 'Installation', meta: 'Setup',
-    body: 'Install the package and the Rust engine. Python 3.10 or later, with pip, uv or poetry.' },
+    body: 'Install the package and the Rust engine. Python 3.11 or later, with pip, uv or Poetry.' },
   { slug: 'programming_guide/core_concepts', label: 'Core concepts', meta: 'Mental model',
     body: 'Apps, processing components, target states, and how an incremental update decides what to re-run.' },
   { slug: 'getting_started/ai_coding_agents', label: 'Use with AI coding agents', meta: 'Skill',
@@ -139,7 +139,7 @@ app.update_blocking()`;
               <button class="dh-copy" type="button" aria-label="Copy install command">Copy</button>
             </div>
             <ul class="dh-facts">
-              <li><b>Python 3.10+</b></li>
+              <li><b>Python 3.11+</b></li>
               <li><b>Rust engine</b>, parallel by default</li>
               <li><b>Apache-2.0</b></li>
             </ul>
@@ -168,7 +168,7 @@ app.update_blocking()`;
         <section class="dh-sec" aria-labelledby="dh-start">
           <div class="dh-head">
             <h2 id="dh-start">Start here</h2>
-            <p>Four pages cover the install, the first pipeline and the model behind it. Most readers finish them in an afternoon.</p>
+            <p>Start with installation, a first pipeline, the core concepts, or the AI coding agent skill.</p>
           </div>
           <ul class="dh-list">
             {start.map((c) => (
@@ -224,7 +224,7 @@ app.update_blocking()</code></pre>
         <section class="dh-sec" aria-labelledby="dh-build">
           <div class="dh-head">
             <h2 id="dh-build">What people build with it</h2>
-            <p>CocoIndex builds the views an agent reads, not analytics tables. Fan-out joins, multi-stage symbol resolution and cross-entity relations are ordinary pipelines.</p>
+            <p>Build vector indexes, knowledge graphs, and structured views for agents. Pipelines can include fan-out joins, symbol resolution, and relations across entities.</p>
           </div>
           <ul class="dh-list two">
             {build.map((c) => (

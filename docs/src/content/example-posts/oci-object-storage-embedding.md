@@ -49,7 +49,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         yield
 ```
 
-Everything downstream of this — `DocEmbedding`, `process_file`, `process_chunk` — is the same chunk-and-embed code as the [base example](/docs/examples/text-embedding/), so we won't repeat it here. The one small difference is the source type: `process_file` takes an `oci_object_storage.OCIFile` and reads its text with `await file.read_text()`, just like the local `FileLike`.
+Everything downstream of this (`DocEmbedding`, `process_file`, `process_chunk`) is the same chunk-and-embed code as the [base example](/docs/examples/text-embedding/), so we won't repeat it here. The one small difference is the source type: `process_file` takes an `oci_object_storage.OCIFile` and reads its text with `await file.read_text()`, just like the local `FileLike`.
 
 ## List objects from the bucket
 

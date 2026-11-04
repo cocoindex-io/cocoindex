@@ -8,9 +8,9 @@ tags: [vector-index, amazon-s3]
 
 ![Embed Markdown from Amazon S3 with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/amazon-s3-embedding/cover.png)
 
-This is the [Semantic Search 101](/docs/examples/text-embedding/) example with one thing swapped: the source is an **Amazon S3 bucket** instead of a local directory. Everything downstream — chunking, embedding, the Postgres/pgvector target, and the query — is identical, so this post spends its words on the part that differs: the S3 connector, its env vars, and the catch-up run.
+Use an Amazon S3 bucket as the source for [Semantic Search 101](/docs/examples/text-embedding/). The chunking, embedding, Postgres/pgvector target, and query are the same as in the local-directory example. Configure the S3 connector and environment variables, then run catch-up to process the bucket.
 
-If you haven't read the base example yet, start there — it walks through the chunk-and-embed flow line by line. Here we'll move fast.
+Start with [Semantic Search 101](/docs/examples/text-embedding/) for the chunk-and-embed implementation.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/amazon_s3_embedding)
 
@@ -124,7 +124,7 @@ The most semantically similar chunks come back ranked — even when they share n
 
 ## Incremental updates
 
-CocoIndex keeps the index in sync with the bucket and does the **minimum work** to get there. `@coco.fn(memo=True)` decides what to *recompute* — a file is skipped when its content and the function's code are both unchanged — and `mount_table_target` decides what to *write*, deriving each row's [`id`](/docs/common_resources/id_generation/) from its chunk text so it upserts only the rows that actually changed and deletes rows whose source object is gone.
+CocoIndex keeps the index in sync with the bucket and does the **minimum work** to get there. `@coco.fn(memo=True)` decides what to *recompute* (a file is skipped when its content and the function's code are both unchanged) and `mount_table_target` decides what to *write*, deriving each row's [`id`](/docs/common_resources/id_generation/) from its chunk text so it upserts only the rows that actually changed and deletes rows whose source object is gone.
 
 - **An object is added** — only that file is chunked and embedded; the rest is untouched.
 - **An object is edited** — it is re-chunked; unchanged chunks keep their `id` and embedding, new chunks are embedded and inserted, and stale ones are deleted.

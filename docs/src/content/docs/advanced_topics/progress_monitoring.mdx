@@ -7,7 +7,7 @@ description: >
 
 Most runs only need the basics covered in [App](../programming_guide/app#updating-an-app): awaiting `app.update()` for the result, or the built-in stdout progress display — `report_to_stdout=True` on `app.update_blocking()` (or the CLI), or `await coco.show_progress(handle)` with the async API. `report_to_stdout` accepts a `timedelta` to set the refresh interval (`True` uses the default); `show_progress` takes a `refresh_interval` keyword.
 
-This page covers the **structured** progress APIs for cases that need more: a daemon streaming progress to a client, a custom dashboard, or splitting a large pipeline into independently-reported phases.
+Use the structured progress APIs to stream progress from a daemon to a client, build a custom dashboard, or report pipeline phases separately.
 
 ## Structured update stats
 

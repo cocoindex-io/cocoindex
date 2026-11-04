@@ -8,9 +8,9 @@ tags: [multimodal, image-search]
 
 ![Image search with ColPali multi-vector embeddings and CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/cover.png)
 
-This is the multi-vector cousin of the [CLIP image search example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search). Same idea — type *"long neck"*, get the giraffe back, no tags or captions — but instead of squeezing each image into a *single* vector, [ColPali](https://huggingface.co/vidore/colpali-v1.2) emits a *bag* of vectors, one per image patch, and matches a query the same way it reads a document: token against patch. The cost is more vectors per image; the payoff is finer-grained retrieval that holds up on dense, text-heavy, or busy images where a single embedding blurs everything together.
+This is the multi-vector cousin of the [CLIP image search example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search). Same idea (type *"long neck"*, get the giraffe back, no tags or captions) but instead of squeezing each image into a *single* vector, [ColPali](https://huggingface.co/vidore/colpali-v1.2) emits a *bag* of vectors, one per image patch, and matches a query the same way it reads a document: token against patch. The cost is more vectors per image; the payoff is finer-grained retrieval that holds up on dense, text-heavy, or busy images where a single embedding blurs everything together.
 
-The store does the heavy lifting on the query side. We give [Qdrant](https://qdrant.tech/) a **multivector** collection configured for **MaxSim**, so a query's bag of vectors and an image's bag of patch vectors are scored late-interaction style — each query vector finds its best-matching patch, summed across the query. The whole pipeline is ordinary `async` Python and your own types; [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and the managed Qdrant collection run in a Rust engine underneath, in [live mode](/docs/programming_guide/live_mode/) inside the API server, so a new photo in the folder is searchable within a second.
+We give [Qdrant](https://qdrant.tech/) a **multivector** collection configured for **MaxSim**, so a query's bag of vectors and an image's bag of patch vectors are scored late-interaction style — each query vector finds its best-matching patch, summed across the query. The whole pipeline is ordinary `async` Python and your own types; [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and the managed Qdrant collection run in a Rust engine underneath, in [live mode](/docs/programming_guide/live_mode/) inside the API server, so a new photo becomes searchable after its update completes.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali)
 
@@ -28,7 +28,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Multi-vector embeddings: a bag of vectors per image
 
-This is what sets the example apart from its CLIP sibling. CLIP gives you *one* vector per image; ColPali gives you *many* — a vector per visual patch — and embeds a text query into the same per-token space. Both indexing and querying use the same model, two different entry points: `process_images` for the index side, `process_queries` for the query side.
+This is what sets the example apart from its CLIP sibling. CLIP gives you *one* vector per image; ColPali gives you *many* (a vector per visual patch) and embeds a text query into the same per-token space. Both indexing and querying use the same model, two different entry points: `process_images` for the index side, `process_queries` for the query side.
 
 ```python title="pipeline.py"
 @functools.cache
@@ -155,7 +155,7 @@ app = coco.App(
 )
 ```
 
-`mount_collection_target` creates and manages the Qdrant collection for you — multivector schema, idempotent upserts, and cleanup when an image disappears. Because the per-vector size comes from the model, swapping ColPali variants just works.
+`mount_collection_target` creates and manages the Qdrant collection for you — multivector schema, idempotent upserts, and cleanup when an image disappears. The collection schema takes its per-vector size from the selected model.
 
 ## Run it as a service
 
@@ -201,7 +201,7 @@ The React app posts your query to `/search`, which embeds the text into ColPali'
 
 Because the flow runs live inside the server, the index tracks the folder with no extra work from you:
 
-- **Add an image** — `process_file` runs once for it, embeds it into a multi-vector, and upserts one Qdrant point. It's searchable within a second.
+- **Add an image** — `process_file` runs once for it, embeds it into a multi-vector, and upserts one Qdrant point. It becomes searchable after the update completes.
 - **Replace an image** — same id (derived from the path), new bag of vectors; the point is updated in place.
 - **Delete an image** — its component disappears and the point is removed from Qdrant.
 - **Restart the server** — the initial sweep reconciles against what's already in Qdrant and re-embeds nothing that's unchanged.

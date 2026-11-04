@@ -106,7 +106,7 @@ class ImageEmbedding:
     embedding: Annotated[NDArray, VectorSchema(dtype=np.dtype(np.float32), size=768)]
 ```
 
-When a connector's `TableSchema.from_class()` encounters an `Annotated[NDArray, annotation]` field, it resolves the annotation — unwrapping `ContextKey` if needed — and calls `__coco_vector_schema__()` to determine the column's dimension and dtype.
+When a connector's `TableSchema.from_class()` encounters an `Annotated[NDArray, annotation]` field, it resolves the annotation (unwrapping `ContextKey` if needed) and calls `__coco_vector_schema__()` to determine the column's dimension and dtype.
 
 ## MultiVectorSchema / MultiVectorSchemaProvider
 

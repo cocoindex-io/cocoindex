@@ -8,9 +8,9 @@ tags: [structured-extraction, dspy]
 
 ![Patient Intake Extraction with DSPy on CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/cover.png)
 
-We'll take a folder of patient intake PDFs — names, addresses, insurance, medications, allergies, consent — and turn each one into a clean, validated JSON record. The hard part isn't the file plumbing; it's that intake forms are *visual*: checkboxes, hand-filled fields, tables of medications. So instead of extracting text, we render each PDF page to an image and let a vision model read the form the way a person would. [DSPy](https://github.com/stanfordnlp/dspy) handles the prompting — you declare a typed `Signature` and it produces a [Pydantic](https://docs.pydantic.dev/) `Patient`, no prompt strings to hand-tune.
+We'll take a folder of patient intake PDFs (names, addresses, insurance, medications, allergies, consent) and turn each one into a clean, validated JSON record. The hard part isn't the file plumbing; it's that intake forms are *visual*: checkboxes, hand-filled fields, tables of medications. So instead of extracting text, we render each PDF page to an image and let a vision model read the form the way a person would. [DSPy](https://github.com/stanfordnlp/dspy) handles the prompting — you declare a typed `Signature` and it produces a [Pydantic](https://docs.pydantic.dev/) `Patient`, no prompt strings to hand-tune.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed forms get re-extracted, and each one becomes exactly one JSON file on disk.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only changed forms get re-extracted, and each one becomes exactly one JSON file on disk.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy)
 
@@ -199,7 +199,7 @@ ls output_patients/
 # ...
 ```
 
-Open one and you'll see the full `Patient` record — name, date of birth, address, insurance, the medication and allergy lists, consent — extracted straight from the rendered form and validated against the schema.
+Open one and you'll see the full `Patient` record (name, date of birth, address, insurance, the medication and allergy lists, consent) extracted straight from the rendered form and validated against the schema.
 
 ## Incremental updates
 

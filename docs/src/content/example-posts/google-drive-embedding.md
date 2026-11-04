@@ -8,9 +8,9 @@ tags: [vector-index, google-drive]
 
 ![Semantic Search over Google Drive with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/google-drive-embedding/cover.png)
 
-This is the [Semantic Search 101](/docs/examples/text-embedding/) example with exactly one thing swapped: instead of reading Markdown off your local disk, it reads documents straight from a **Google Drive** folder. Everything downstream — chunking, embedding, and storing the vectors in Postgres with pgvector — is identical, so this post spends its prose on the one piece that differs: the Drive connector.
+Use a Google Drive folder as the source for [Semantic Search 101](/docs/examples/text-embedding/). The chunking, embedding, and Postgres/pgvector target stay the same.
 
-The chunk-and-embed half is explained in full in the [base walkthrough](/docs/examples/text-embedding/); read that first if you want the line-by-line tour. Here we focus on wiring [Google Drive](/docs/connectors/google_drive/) as the source.
+Start with the [base walkthrough](/docs/examples/text-embedding/) for the chunk-and-embed implementation, then connect [Google Drive](/docs/connectors/google_drive/) as the source.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/gdrive_text_embedding)
 

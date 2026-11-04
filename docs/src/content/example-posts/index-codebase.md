@@ -8,9 +8,9 @@ tags: [data-indexing, semantic-search]
 
 ![Index Your Codebase for AI Agents with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png)
 
-In this tutorial, we'll build a live semantic index over a codebase with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Point it at a repo, and you get a vector index you can search in natural language ("where do we embed chunks?") that updates itself as you edit — the kind of fresh, low-latency context an agent needs.
+Build a live semantic index over a codebase with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Point it at a repo, and you get a vector index you can search in natural language ("where do we embed chunks?") that updates itself as you edit — the kind of fresh, low-latency context an agent needs.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — incremental processing, change tracking, managed targets — runs in a Rust engine underneath, so only what changed gets re-embedded and re-upserted.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles incremental processing, change tracking, and target management. As a result, only what changed gets re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding)
 
@@ -62,7 +62,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up two things the rest of the code builds on. `CodeEmbedding` defines one row of the output table — each chunk of code becomes one row, with its text, location, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up two things the rest of the code builds on. `CodeEmbedding` defines one row of the output table — each chunk of code becomes one row, with its text, location, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python
 import os
