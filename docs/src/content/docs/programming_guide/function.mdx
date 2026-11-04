@@ -225,6 +225,10 @@ Adopting `use_logic_dep` in a function that memoized callers already stored entr
 
 #### Data dependencies: `DataDep` and `use_data_dep`
 
+:::caution[Experimental]
+`DataDep` and `use_data_dep` are experimental: the API and its semantics may change in a later release. Under revision in particular is the ancestor rule below, by which a memoized ancestor of a component that recorded a read re-runs its body every run.
+:::
+
 Logic, arguments and context values are all known before a body runs. Some bodies read things decided only while they run: an agent session opens the files the model chose, a test runner touches the files the tests import. `coco.DataDep` declares a *kind* of such a read once, at module import, with a validator; `coco.use_data_dep` records one read into the current call, as a key and the state observed. The next probe validates each record from the stored key and state alone, through the kind's validator, so the entry can be reused even though nothing in its arguments covers the read.
 
 ```python
