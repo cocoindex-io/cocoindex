@@ -203,7 +203,8 @@
   stroke-dasharray: 4 3;
   fill: transparent;
 }
-.dg-state-removed { opacity: 0.6; }
+/* Fade neither the group nor its children: removed labels still explain the
+   diagram, and opacity would compound inside a deleted processing component. */
 
 /* Removed elements also strike through their label and mute its color
    so the "no longer there" reading is immediate. The native SVG
