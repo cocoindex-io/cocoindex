@@ -248,20 +248,26 @@ def test_a_tool_description_edit_invalidates_closed_workers(
     edited = replace(
         sources.read_input, spec=replace(sources.read_input.spec, description="v2")
     )
-    f.config.tools = ToolRegistry(
-        [
-            agents.call_agent,
-            sources.open_source,
-            edited,
-            targets.open_target,
-            targets.declare,
-            agents.for_each,
-            explode_tool(f.errors),
-        ]
+    # A provided config is immutable: the edit is a new config, provided anew.
+    f.config = replace(
+        f.config,
+        tools=ToolRegistry(
+            [
+                agents.call_agent,
+                sources.open_source,
+                edited,
+                targets.open_target,
+                targets.declare,
+                agents.for_each,
+                explode_tool(f.errors),
+            ]
+        ),
     )
+    coco_env.context_provider.provide(HARNESS, f.config)
     f.run()
-    # The workers' spec changed (their tool specs are in it), so every worker and
-    # every worker turn re-ran; the orchestrator does not have read_input.
+    # The config changed, so every session re-ran its body. The workers' spec
+    # changed with it (their tool specs are in it), so every worker turn
+    # re-ran; the orchestrator does not have read_input, so its turns hit.
     assert f.model.calls_for("worker") == 10
     assert f.model.calls_for("orchestrator") == 0
 

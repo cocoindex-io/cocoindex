@@ -16,12 +16,11 @@ items in the collection.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import replace
 
 import cocoindex as coco
 
-from ..errors import ToolError
+from ..errors import ToolError, record_contained_failure
 from ..handles import HandleObject, MethodSpec, ResultValue, Volatility, input_card
 from ..session import (
     is_environment_error,
@@ -30,6 +29,8 @@ from ..session import (
     run_reduce_session,
 )
 from ..spec import InputCard, Item, Json, SessionSpec
+from ..stable_hash import stable_hash64
+from ..transcript import canonical_json
 from . import SessionContext, tool
 from .reduce import Group, GroupItem, ReduceError, hierarchical_reduce, leaf_item
 from .sources import LocalDirSource
@@ -47,7 +48,9 @@ class Collection:
 
     Lives only for the run. The card shows a widened count and how many items
     failed, never the contents; ``reduce`` consumes the successes. Not an input
-    for closed sessions.
+    for closed sessions. Its memo key is its contents: a child given a
+    collection is reused only while every item's output is unchanged, since
+    nothing a validator could re-observe from a stored key stands behind it.
     """
 
     kind = "collection"
@@ -56,6 +59,12 @@ class Collection:
     def __init__(self, entries: list[tuple[str, str]], failed: dict[str, str]) -> None:
         self.entries = sorted(entries)
         self.failed = dict(sorted(failed.items()))
+
+    def __coco_memo_key__(self) -> object:
+        return (
+            "collection",
+            stable_hash64(canonical_json(self.entries), canonical_json(self.failed)),
+        )
 
     def methods(self) -> tuple[MethodSpec, ...]:
         return (
@@ -126,8 +135,13 @@ def _result(ctx: SessionContext, name: str, text: str, **fields: Json) -> Json:
     return {"result": handle, "chars": format_range(widen_count(len(text))), **fields}
 
 
-def _child_failed(key: str, exc: BaseException) -> ToolError:
-    """A child's environment failure, as the parent model sees it. The child runs again next run."""
+def _contain_child_failure(key: str, exc: BaseException) -> ToolError:
+    """A child's environment failure, as the parent model sees it.
+
+    Recorded in the parent, so the parent re-runs and the child runs again
+    next run (DESIGN.md §7).
+    """
+    record_contained_failure(f"child:{key}", exc)
     return ToolError(f"child {key!r} failed: {type(exc).__name__}: {exc}")
 
 
@@ -159,7 +173,7 @@ async def call_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
     except Exception as exc:
         if not is_environment_error(exc):
             raise
-        raise _child_failed(key, exc) from exc
+        raise _contain_child_failure(key, exc) from exc
     return _result(ctx, key, result.answer)
 
 
@@ -218,7 +232,7 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
     except Exception as exc:
         if not is_environment_error(exc):
             raise
-        raise _child_failed(key, exc) from exc
+        raise _contain_child_failure(key, exc) from exc
     return {"plan": result.answer}
 
 
@@ -249,17 +263,16 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
         raise ToolError("for_each needs a src: handle")
     handles, cards = _child_inputs(ctx, args, closed=True)
     child = _closed_spec(ctx, args.get("role", "worker"), args["task"], cards)
-
-    async def items() -> AsyncIterator[tuple[str, Item]]:
-        async for item_key, file in src.walker().items():
-            yield item_key, Item(item_key, file)
+    # The walk is this session's read of the source: recorded, so a changed
+    # file re-runs the session and the workers are probed (DESIGN.md §7).
+    items = await src.listing()
 
     ctx.claim_slot(key)
     if not args.get("collect", True):
         await coco.mount_each(
             coco.component_subpath("child", key),
             run_closed_session,
-            items(),
+            items.items(),
             child,
             handles,
         )
@@ -282,11 +295,12 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
                 raise
             # The worker committed nothing and runs again next run; the parent
             # model sees the failure in the collection, not as a crash.
+            record_contained_failure(f"child:{key}/{item_key}", exc)
             failed[item_key] = f"{type(exc).__name__}: {exc}"
             return item_key, None
         return item_key, result.answer
 
-    results = await coco.map(one, items())
+    results = await coco.map(one, items.items())
     coll = Collection([(k, a) for k, a in results if a is not None], failed)
     handle = ctx.handles.register("coll", key, coll)
     return ctx.handles.card(handle, **coll.card_fields())
@@ -359,7 +373,7 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
     except Exception as exc:
         if not is_environment_error(exc):
             raise
-        raise _child_failed(key, exc) from exc
+        raise _contain_child_failure(key, exc) from exc
     return _result(ctx, key, answer, omitted=len(coll.failed))
 
 

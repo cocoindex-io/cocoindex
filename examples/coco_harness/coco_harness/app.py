@@ -51,7 +51,7 @@ def build_app(
     env: coco.Environment,
     config: HarnessConfig,
 ) -> coco.App[..., object]:
-    """One app per flow. The orchestrator is an open session: its body re-runs, its turns replay."""
+    """One app per flow. The orchestrator is an open session: skipped while what it read is unchanged."""
     spec = config.spec("orchestrator", flow_prompt)
     return coco.App(coco.AppConfig(name=name, environment=env), run_open_session, spec)
 

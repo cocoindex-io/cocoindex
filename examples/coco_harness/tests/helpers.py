@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping
 
-from coco_harness import Tool, tool
+import cocoindex as coco
+
+from coco_harness import Tool, ToolRegistry, tool
 from coco_harness.spec import Json
 from coco_harness.tools import SessionContext
+from coco_harness.transcript import ToolCall, ToolResult, canonical_json
+
+# The mapping behind the live probe tool, read by the kind's validator. One
+# probe tool is live at a time: a test builds its own.
+_probe_values: Mapping[str, object] = {}
+
+
+def _probe_state(value: object) -> str:
+    """What a probe read observed, as the record's state; an exception is one too."""
+    if isinstance(value, Exception):
+        return f"raise {type(value).__name__}: {value}"
+    return canonical_json(value)
+
+
+def _validate_probe(key: str, prev: str) -> coco.MemoStateOutcome:
+    state = _probe_state(_probe_values[key])
+    return coco.MemoStateOutcome(state=state, memo_valid=state == prev)
+
+
+PROBE = coco.DataDep("coco_harness.tests.probe", validate=_validate_probe)
 
 
 def probe_tool(values: Mapping[str, object]) -> Tool:
@@ -16,7 +39,13 @@ def probe_tool(values: Mapping[str, object]) -> Tool:
     reaches the model as a failed result, a ``DeadlineExceededError`` fails the
     run, anything else is an environment error (contained in an open session,
     fatal in a closed one).
+
+    The probe is a source: it reads beyond the session's arguments, so each
+    read is recorded as a data dependency, which is what lets an unchanged
+    session be skipped and a mutated value re-run it.
     """
+    global _probe_values
+    _probe_values = values
 
     @tool(
         "probe",
@@ -29,6 +58,7 @@ def probe_tool(values: Mapping[str, object]) -> Tool:
     )
     async def probe(ctx: SessionContext, args: dict[str, Json]) -> Json:
         value = values[args["name"]]
+        coco.use_data_dep(PROBE, key=args["name"], state=_probe_state(value))
         if isinstance(value, Exception):
             raise value
         return value
@@ -59,3 +89,28 @@ def explode_tool(errors: Mapping[str, Exception]) -> Tool:
         return "fine"
 
     return explode
+
+
+class CountingRegistry(ToolRegistry):
+    """A registry that counts executions per tool, across ``restrict()``.
+
+    Tests assert on model calls to see inference, and on tool executions to
+    see whether a session's body ran at all: a skipped session executes no
+    tool.
+    """
+
+    def __init__(
+        self, tools: Iterable[Tool] = (), executed: Counter[str] | None = None
+    ) -> None:
+        super().__init__(tools)
+        self.executed: Counter[str] = executed if executed is not None else Counter()
+
+    def restrict(self, names: Iterable[str]) -> ToolRegistry:
+        return CountingRegistry(super().restrict(names).tools(), self.executed)
+
+    async def execute(self, ctx: SessionContext, call: ToolCall) -> ToolResult:
+        self.executed[call.tool] += 1
+        return await super().execute(ctx, call)
+
+    def reset(self) -> None:
+        self.executed.clear()

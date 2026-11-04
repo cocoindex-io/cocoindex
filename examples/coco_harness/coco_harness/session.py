@@ -1,14 +1,22 @@
-"""The agent loop: a session is a component; each turn is a memoized child component.
+"""The agent loop: a session is a memoized component; each turn is a memoized child component.
 
 Three entry points share one loop:
 
-- ``run_open_session(spec, handles)`` — not memoized. The body re-runs every
-  time; its turns replay from their per-turn memos and its tools re-execute.
+- ``run_open_session(spec, handles)`` — memoized on ``(spec, handles)`` plus
+  what the run **read**: a tool that reads beyond the session's arguments (a
+  source method, a ``for_each`` walk) records the read with
+  ``coco.use_data_dep``, and a contained failure is recorded as a read that
+  never validates. Unchanged spec, handles and reads → skipped entirely, turns
+  and children carried over; otherwise the body re-runs, its turns replay from
+  their per-turn memos and its tools re-execute. A session whose child
+  recorded a read re-runs its body too (the engine's ``cannot_skip``), while
+  that child is skipped on its own entry.
 - ``run_closed_session(item, spec, handles)`` — memoized on ``(item, spec,
   handles)``. A worker over one file: unchanged inputs → skipped entirely,
   children and target states carried over. Its role may only have
   ``closed_ok`` tools and ``handles`` only ``closed_input_ok`` objects (the
-  mounting tool checks; the loop checks again).
+  mounting tool checks; the loop checks again), so it records nothing and
+  never flags the session that fanned it out.
 - ``run_reduce_session(members, spec)`` — memoized on the members' contents.
 
 The replay contract (DESIGN.md §4) lives in ``_ReplayState``; the loop only
@@ -29,6 +37,7 @@ from dataclasses import dataclass, field, replace
 
 import cocoindex as coco
 
+from .errors import record_contained_failure
 from .handles import HandleObject, HandleTable
 from .hints import Diff, Dump, Note, Replay, RunHints, TurnScratch, replay_tool_spec
 from .replay import find_same_action, llm_step
@@ -39,7 +48,7 @@ from .transcript import ModelOutput, Step, ToolCall, ToolResult, Transcript, sam
 logger = logging.getLogger(__name__)
 
 
-@coco.fn
+@coco.fn(memo=True)
 async def run_open_session(
     spec: SessionSpec, handles: Mapping[str, HandleObject] | None = None
 ) -> SessionResult:
@@ -292,9 +301,10 @@ async def _execute_all(
     anything runs. Every call is drained before a failure propagates.
 
     With ``contain`` (open sessions), an environment error becomes an
-    ``ok=False`` result naming the error class; the model reads it and the
-    tool runs again next run. Without it (closed sessions), the first error
-    propagates — all of them, as an ``ExceptionGroup``, when there are several.
+    ``ok=False`` result naming the error class; the model reads it, the
+    session records it so its memo is not reused, and the tool runs again
+    next run. Without it (closed sessions), the first error propagates — all
+    of them, as an ``ExceptionGroup``, when there are several.
     """
     calls = output.calls
     results: list[ToolResult | None] = [None] * len(calls)
@@ -322,6 +332,7 @@ async def _execute_all(
                 type(outcome).__name__,
                 outcome,
             )
+            record_contained_failure(f"tool:{calls[i].tool}", outcome)
             results[i] = ToolResult(
                 calls[i].tool, False, f"{type(outcome).__name__}: {outcome}"
             )

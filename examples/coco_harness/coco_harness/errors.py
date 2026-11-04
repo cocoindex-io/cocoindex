@@ -11,12 +11,19 @@ Three classes of failure, decided at the tool boundary (DESIGN.md §7):
 - anything else — an environment failure. Contained at the nearest open
   session as a result; fails a closed session, whose parent then sees the
   failure as a result (``session.py``).
+
+A contained failure is **recorded** in the session that absorbed it
+(``record_contained_failure``): a data dependency that never validates, so
+the session's memo is not reused and the tool runs again next run, as the
+failure contract promises. A session that absorbed none records none.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
+
+import cocoindex as coco
 
 # The engine's retry loop and backoff live in an internal module today; the
 # harness is their second consumer. Promote them to the public API when the
@@ -59,4 +66,23 @@ async def retrying(
         or exponential_backoff(
             initial=_RETRY_INITIAL_BACKOFF_SECONDS, max_delay=_RETRY_MAX_BACKOFF_SECONDS
         ),
+    )
+
+
+def _never_valid(key: str, prev: str) -> coco.MemoStateOutcome:
+    return coco.MemoStateOutcome(state=prev)
+
+
+# Keyed by where the failure was absorbed (a tool, a child key); the state is
+# the error as the model saw it. Always invalid: the memo of a session that
+# absorbed a failure is never reused.
+CONTAINED_FAILURE = coco.DataDep(
+    "coco_harness.contained-failure", validate=_never_valid
+)
+
+
+def record_contained_failure(where: str, exc: BaseException) -> None:
+    """Mark the current session as holding a fact about the environment."""
+    coco.use_data_dep(
+        CONTAINED_FAILURE, key=where, state=f"{type(exc).__name__}: {exc}"
     )

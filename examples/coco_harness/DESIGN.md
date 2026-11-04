@@ -10,7 +10,9 @@ subagents, reducers and model turns run again.
 **Status: frozen 2026-11-04.** The design is agreed. It was reviewed
 externally in three rounds and swept once by a fresh reader; the findings are
 folded into the owning sections, and the history is in git. The failure
-contract (§7) was amended the same day after the code design review. Further findings
+contract (§7) was amended the same day after the code design review, and
+open sessions became memoized on what they read the same day, when the
+engine's data dependencies landed (§7, *Open vs closed*). Further findings
 go to implementation and tests. §8 is the delta index between this design and
 the code. The harness lives under `examples/` for now and is expected to
 become its own repository, so it is more elaborate than the other examples.
@@ -41,8 +43,9 @@ prompt should be written.
 
 - **Session**: one agent conversation, run as a CocoIndex component.
 - **Closed session**: everything it can read is an argument of its component,
-  so the component is memoized whole (§7). **Open session**: it can read
-  beyond its arguments, so only its turns are memoized.
+  so its memo key covers it (§7). **Open session**: it can read beyond its
+  arguments; every such read is recorded, and the component is memoized on
+  its arguments plus the recorded reads.
 - **Turn**: one model call; a memoized child component of the session.
 - **Slot**: the component path a child is mounted at (`turn/<n>`,
   `child/<key>`).
@@ -71,8 +74,10 @@ reads `for_each(src:docs, …) → coll:notes (4k–8k items)` in both runs, so 
 orchestrator's turns replay without inference; that file's worker reruns its
 content-dependent turn; the reduce tree reruns the groups whose members
 changed (§6). The orchestrator needs inference again only where a value it
-actually read has changed. Tool execution, source scans and memo validation
-still run every time: what scales with change is inference, not wall time.
+actually read has changed, and its body runs again only where something it
+read — or something a child read — has changed; otherwise its recorded reads
+are validated and the session is skipped whole (§7). What scales with change
+is inference first, then tool execution.
 
 Two engine facts shape the design:
 
@@ -525,7 +530,7 @@ The `reduce` tool's glue (slots, attempt retry) is not yet covered (§8).
 | Harness concept | CocoIndex |
 |---|---|
 | A run of the flow | `coco.App(run_open_session, config.spec("orchestrator", prompt))` |
-| An open session | a component; body re-runs each time |
+| An open session | a `memo=True` component on `(spec, handles)` plus the reads it recorded with `coco.use_data_dep` |
 | A closed session | a `memo=True` component on `(item, spec, handles)`; a reducer call on `(members, spec)` |
 | A model turn | `use_mount(subpath("turn", k), llm_step, …)` — a memoized component per turn |
 | Previous transcript | `coco.use_state("transcript")` on the session component |
@@ -552,6 +557,11 @@ A session's inputs — and so what invalidates it — are:
 - for a closed session: the item (file identity, then mtime/content memo
   state), and the memo keys of its `inputs` handles (a target's key, a
   result's content hash);
+- for an open session: the memo keys of its `inputs` handles (a source's
+  identity, a collection's content hash) and its **recorded reads** (below);
+- the **harness config** it reads through `HARNESS`: roles, tool specs,
+  model and version, fingerprinted when the config is provided (the key
+  detects changes), because a session builds its children's specs from it;
 - tool **logic**: a handler's own source is tracked because handlers are
   `coco.fn`-wrapped; editing one invalidates the closed sessions that ran it
   (their turns still hit where the transcript is unchanged, so this costs tool
@@ -563,21 +573,56 @@ method (`LocalDirSource.call`, `LocalDirTargetHandle.call`) or any other
 helper is **not** tracked. Bump `HarnessConfig.version` when such code changes
 behaviour; it is in every spec.
 
-Not tracked, by design: the model client object and the harness config
-(context keys without change detection), and external resources a session was
-not given as inputs — which is exactly why a closed session may only have
-`closed_ok` tools (§3).
+Not tracked, by design: the model client object (a context key without
+change detection), and external resources a session reads without recording
+them — which is exactly why a closed session may only have `closed_ok` tools
+(§3), and why a tool that reads beyond a session's arguments must record what
+it read (below).
 
 ### Open vs closed
 
-- A **closed** session's component is `memo=True`: unchanged item, spec and
+(Amended 2026-11-04, when the engine's `coco.DataDep` / `coco.use_data_dep`
+landed: open sessions are memoized too. Until then an open session's body
+re-ran every time and only its turns were memoized.)
+
+Every session is a `memo=True` component. What differs is how its reads are
+covered:
+
+- A **closed** session's reads are all arguments: unchanged item, spec and
   input handles → skipped entirely, children and target states carried over.
   Its role has only `closed_ok` tools and its inputs only `closed_input_ok`
-  objects; both are checked by the mounting tool and again by the loop.
-- An **open** session reads beyond its arguments (a source, a collection);
-  memoizing it would give wrong hits. Its body reruns; its turns hit the
-  per-turn memo; its tools re-execute. Cost per run: tool execution plus one
-  component-memo read per turn and per child.
+  objects; both are checked by the mounting tool and again by the loop. It
+  records nothing, so it never flags the session that fanned it out.
+- An **open** session reads beyond its arguments (a source, a collection). A
+  source handle **records** every read as a data dependency of the session
+  that made it: `stats`, `sample`, `keys` and the walk a `for_each` makes
+  are *observations*, keyed by the source and the call and validated by
+  observing again and comparing a digest of the result; `read(key)` is a
+  *file read*, keyed by the path and validated by mtime, then content digest
+  (a file that did not exist is recorded as such). A collection crosses a
+  mount by its content hash, as a result does. On the next run the engine
+  validates the recorded reads from their stored keys and states, without
+  running anything of the session: all valid → skipped entirely, turns and
+  children carried over, `use_state` kept; one invalid → the body re-runs,
+  its turns hit the per-turn memo where the transcript is unchanged, its
+  tools re-execute, and the new reads replace the stored set. So an
+  orchestrator that read one file is skipped while that file, and the widened
+  count it saw, are unchanged — an edit elsewhere under the root costs
+  nothing — and a `for_each` session re-runs its body (no inference) on any
+  change under the walk, which is what gets its workers probed.
+- A session whose **child** recorded a read re-runs its body every run (the
+  engine's `cannot_skip` bit; records are never copied upward) while the
+  child is skipped on its own entry. A child that recorded nothing is closed
+  in effect, whatever tool it was mounted with. Open is therefore decided by
+  what a run actually read; `closed_ok` and `closed_input_ok` remain as the
+  check of a different property — what may be an input of a memoized worker
+  whose key must cover everything, so that a fan-out of thousands never flags
+  its parent.
+- A **contained failure** (below) is recorded as a read that never
+  validates, so a session that absorbed one re-runs until a run absorbs none.
+
+A skipped session's per-turn memos are not touched: the replay contract (§4)
+is unchanged, and so are `for_each` workers.
 
 ### Failures
 
@@ -604,9 +649,11 @@ failing the run.)
   handler's own bug. Where it is presented follows where it is memoized:
   - In an **open** session it becomes an `ok=False` result naming the error
     class, and is logged with the session. The model adapts. This is safe
-    because an open session runs its tools again next run: when the cause is
-    fixed the result changes, that is a divergence, and the model is consulted
-    again — fixing the environment behaves exactly like changing the data.
+    because the session records the failure as a read that never validates
+    (`errors.record_contained_failure`), so its memo is not reused and the
+    tool runs again next run: when the cause is fixed the result changes,
+    that is a divergence, and the model is consulted again — fixing the
+    environment behaves exactly like changing the data.
   - In a **closed** session it fails the component: a memoized transcript must
     not carry a fact about the environment. Nothing of that session is
     committed; its completed turns keep their memos; it runs again next run.
@@ -627,7 +674,8 @@ session and the run, and completed turns keep their memos.
 `::test_argument_validation_is_the_models_error_and_internal_errors_are_reported`,
 `::test_cached_decision_from_a_failed_run_wins_over_a_requested_replay`
 (deadline expiry fails the run and keeps completed turns);
-`test_for_each.py::test_a_failed_worker_is_reported_to_the_parent_and_heals_next_run`.
+`test_for_each.py::test_a_failed_worker_is_reported_to_the_parent_and_heals_next_run`;
+`test_data_deps.py::test_a_contained_failure_reruns_the_session_until_a_run_absorbs_none`.
 
 ### Why one `use_mount` per turn
 
@@ -653,22 +701,30 @@ layer (one row per path); `memo_key` applies there too.
 | Capability | Status | Harness v1 | Later |
 |---|---|---|---|
 | Progress survives failure | solved by `use_mount` per turn | ✅ | partial fn-memo flush on failure (S–M; pure entries only) |
-| Skip unchanged **open** sessions | being built: `coco.DataDep` + `use_data_dep` + `cannot_skip` | replay | first slice: `recollect_after_run` for components (S) |
+| Skip unchanged **open** sessions | shipped: `coco.DataDep` + `use_data_dep` + `cannot_skip`; adopted 2026-11-04 (*Open vs closed*) | ✅ | — |
 | Memo probe ("would this hit?") | deferred | — | S |
 | A component hit keeps its `use_state` values | engine behaviour | ✅ | — |
 
 Engine terms in this table: `LogicDep` is the engine's import-time logic
-dependency; `recollect_after_run` lets a memo state be collected after the
-body runs; `DataDep`/`use_data_dep` is the planned runtime data dependency.
+dependency; `DataDep`/`use_data_dep` is the runtime data dependency.
 
 `LogicDep` cannot carry data deps: it is a set-membership check against
 fingerprints registered in the process now, must be constructed at import,
-and is unioned into every ancestor's entry. The chosen engine design stores
-deps only in the component that read them, validates them from stored bytes
-at lookup, and propagates an O(1) `cannot_skip` flag so a memoized ancestor
+and is unioned into every ancestor's entry. The engine design stores deps
+only in the component that read them, validates them from stored bytes at
+lookup, and propagates an O(1) `cannot_skip` flag so a memoized ancestor
 re-runs its body while its closed children still hit. With it, "open" is
-decided by what a run actually read rather than by the entry point, which
-would let the harness drop the closed/open split.
+decided by what a run actually read rather than by the entry point; the
+harness keeps `closed_ok` / `closed_input_ok` as the check of what may be an
+input of a worker whose key must cover everything (*Open vs closed*).
+
+*Acceptance:* `test_data_deps.py` —
+`test_a_session_is_skipped_while_what_it_read_is_unchanged`,
+`test_a_missing_file_is_a_recorded_read_too`,
+`test_a_file_edit_under_for_each_reruns_its_worker_and_the_fan_out_body_only`,
+`test_a_child_that_read_flags_its_parent_while_being_skipped_itself`,
+`test_a_child_that_read_nothing_lets_its_parent_skip`,
+`test_a_contained_failure_reruns_the_session_until_a_run_absorbs_none`.
 
 ## 8. Status: implemented, covered, target
 
@@ -679,8 +735,9 @@ would let the harness drop the closed/open split.
 |---|---|
 | Replay contract of §4: hits, dump freezing, picks, bounded steps, invalid picks, cached-decision precedence, notes retained | `test_replay.py` (see §4 *Acceptance*) |
 | Closed workers over a localfs source; one worker's content turn per edit | `test_for_each.py::test_edit_one_file_reruns_one_workers_content_turn_only` |
+| Open sessions memoized on recorded reads: skipped whole when unchanged (no tool runs), re-run on an edited read with only that read diverging, missing files recorded, `for_each` walk recorded, `cannot_skip` from a reading child, contained failures re-run | `test_data_deps.py` (§7 *Acceptance*) |
 | `for_each(collect=false)`: background workers, their declarations, cleanup on delete | `test_for_each.py::test_for_each_without_collect_mounts_workers_in_the_background` |
-| Tool description edit invalidates closed workers | `test_for_each.py::test_a_tool_description_edit_invalidates_closed_workers` |
+| Harness config edit (re-provided) invalidates every session; closed workers re-infer when their tool specs changed | `test_for_each.py::test_a_tool_description_edit_invalidates_closed_workers` |
 | Version bump invalidates turns | `test_replay.py::test_version_bump_invalidates_every_turn` |
 | Inputs across mounts, input cards, closed-input and closed-role checks | `test_for_each.py` (§3 *Acceptance*) |
 | `call_agent` result handles; `declare` with resolving / missing / wrong-kind references; `call(res:…)` | `test_agents.py::test_result_handles_cross_the_mount_and_resolve_or_fail_in_declare` |
@@ -719,7 +776,7 @@ coco_harness/
                    RoleSpec, SessionSpec, SessionResult, ToolSpec, Tool, tool, ToolRegistry,
                    ToolError, run_open_session. Everything else is implementation.
   spec.py          RoleSpec, SessionSpec, InputCard, SessionResult, ToolSpec, Item
-  errors.py        ToolError, TransientError, retrying
+  errors.py        ToolError, TransientError, retrying; the contained-failure record
   transcript.py    ToolCall, ModelOutput, ToolResult, Step, Transcript; canonical JSON;
                    canonical_output ($invalid arguments)
   hints.py         RunHints (Dump, Diff, Note, Replay, TurnScratch); the replay tool spec
@@ -729,8 +786,9 @@ coco_harness/
   model.py         ModelClient protocol, MODEL_CLIENT
   stable_hash.py   keyed blake2b
   tools/           Tool (closed_ok; key_arg = the argument that names the child slot),
-                   ToolRegistry (validate_args), HarnessConfig (spec, version);
-                   sources, targets, agents, reduce, stats
+                   ToolRegistry (validate_args), HarnessConfig (spec, version; change-detected);
+                   sources (the OBSERVATION and FILE_READ data-dependency kinds), targets,
+                   agents, reduce, stats
   roles.py         default roles and the protocol text
   litellm_client.py  renders a transcript to messages and calls LiteLLM (API call untested)
   testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
@@ -739,9 +797,11 @@ tests/             see the Acceptance lines in §3–§7 and the table in §8
 ```
 
 Tests use a scripted model that counts its calls, so assertions are about
-inference ("edit 1 of 5 files → 1 worker call, 0 orchestrator calls"). Tools
-in replay tests are fakes whose results the test mutates between runs to force
-a divergence. Child scripts derive handle names from the spec's input cards,
+inference ("edit 1 of 5 files → 1 worker call, 0 orchestrator calls"); a
+counting registry (`tests/helpers.py`) counts tool executions, so they can
+also say whether a session's body ran at all. Tools in replay tests are fakes
+whose results the test mutates between runs to force a divergence; the probe
+records its reads, as a source does. Child scripts derive handle names from the spec's input cards,
 not from the test's knowledge.
 
 ## 10. Decisions index
@@ -751,7 +811,8 @@ Pointers only; the substance is in the owning section.
 - Control plane / data plane split, handles, fixed tool set, JSON tool calls
   rather than a code mode — §1, §3
 - Results as handles; inputs across mounts with cards; closed = checked
-  capability (`closed_ok` tools, `closed_input_ok` inputs) — §3, §7
+  capability (`closed_ok` tools, `closed_input_ok` inputs); open = memoized
+  on recorded reads — §3, §7
 - Child path layout `child/<key>`; one key per session — §3
 - Replay: dump once, frozen at first inference; scratch channel; exact pick
   provenance; bounded `steps`; meta calls never stored; an existing memo wins
@@ -761,10 +822,10 @@ Pointers only; the substance is in the owning section.
 - Reuse model: one memo per path, same inputs; the spec carries tool specs,
   manifest and version; handler logic tracked, helpers via version — §7
 - Three failure classes: transient retried below the model, model-facing as
-  results, environment contained at open sessions and reported upward from
-  closed ones — §7
+  results, environment contained at open sessions (and recorded, so the
+  session re-runs) and reported upward from closed ones — §7
 - One `use_mount` per turn — §7
-- Engine work: `DataDep` / `use_data_dep` + `cannot_skip` to be built; probe
-  deferred — §7
+- Engine work: `DataDep` / `use_data_dep` + `cannot_skip` shipped and
+  adopted; probe deferred — §7
 - Stable keyed hash; `k`/`M` rendering of power-of-two buckets — §5
 - Model client: LiteLLM behind a protocol — §3, §9
