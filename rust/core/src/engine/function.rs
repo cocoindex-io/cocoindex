@@ -23,7 +23,8 @@ fn build_fn_call_memo<Prof: EngineProfile>(
             logic_deps: inner.entry_logic_deps().collect(),
             memo_states: memo_states.positional,
             context_memo_states: memo_states.by_context_fp,
-            already_stored: false,
+            persisted: false,
+            reused: false,
         })
     })
 }
@@ -129,14 +130,15 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
     /// Update memo states on a cache hit without re-execution.
     ///
     /// Used when the state function indicates `can_reuse=true` but the state value itself
-    /// has changed (e.g. mtime changed but content fingerprint is the same). Sets
-    /// `already_stored = false` so the entry gets persisted with updated states at
-    /// finalization time.
+    /// has changed (e.g. mtime changed but content fingerprint is the same). Clears
+    /// `persisted` so the entry gets written with updated states at finalization
+    /// time, and leaves `reused` set: the body did not run, so the entry must keep
+    /// protecting its target states and the entries it depends on.
     pub fn update_memo_states(&mut self, memo_states: MemoStatesPayload<Prof>) {
         if let FnCallMemoEntry::Ready(Some(ref mut memo)) = *self.guard {
             memo.memo_states = memo_states.positional;
             memo.context_memo_states = memo_states.by_context_fp;
-            memo.already_stored = false;
+            memo.persisted = false;
         }
     }
 
