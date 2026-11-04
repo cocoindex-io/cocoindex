@@ -63,11 +63,28 @@ def test_dump_marks_literal_payloads_and_renders_canonical_invalid_calls() -> No
     )
     text = render_dump(hints)
     assert "[4] declare(" in text and '"$invalid":["x"]' in text
+    # A literal value is shown whole (the model is told to review it); a
+    # handle-valued declare is elided like any other call.
+    assert '[5] declare({"key":"a","target":"tgt:out","value":"text"})' in text
     lines = text.splitlines()
     # Marked: the invalid declare (its arguments are not a handle), the literal
     # declare, and the final answer. Not marked: the declare by handle.
     marked = [line[:5] for line in lines if "literal content" in line]
     assert marked == ["  [4]", "  [5]", "  [7]"]
+
+
+def test_dump_shows_a_final_answer_in_full() -> None:
+    """The model is asked to confirm or revise it, so it must be able to read it."""
+    plan = "columns:\n" + "\n".join(
+        f"- col_{i}:" + " a long description" * 8 for i in range(8)
+    )
+    hints = RunHints(
+        dump=Dump(at_step=1, first_step=1, outputs=(ModelOutput(answer=plan),))
+    )
+    text = render_dump(hints)
+    assert "[1] finish:    <- literal content; review before reuse" in text
+    for line in plan.splitlines():
+        assert f"      {line}" in text
 
 
 def test_parse_response_keeps_malformed_arguments_as_the_models_error() -> None:
@@ -96,9 +113,26 @@ def test_dump_diffs_and_notes_render_at_their_positions() -> None:
             ),
         ),
     )
-    contents = [m["content"] for m in render_messages(spec, prefix, hints)]
-    assert contents[2] == '{"calls":[{"args":{"name":"a"},"tool":"probe"}]}'
-    assert contents[3] == '[{"ok":true,"tool":"probe","value":"A2"}]'
+    messages = render_messages(spec, prefix, hints)
+    contents = [m["content"] for m in messages]
+    # The step is the provider's native tool protocol: a tool call with a
+    # positional id, answered by a tool message with that id.
+    assert messages[2] == {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_0_0",
+                "type": "function",
+                "function": {"name": "probe", "arguments": '{"name":"a"}'},
+            }
+        ],
+    }
+    assert messages[3] == {
+        "role": "tool",
+        "tool_call_id": "call_0_0",
+        "content": '{"ok":true,"value":"A2"}',
+    }
     assert (
         contents[4].startswith("[replay] result differs")
         and 'before: "A"' in contents[4]
@@ -109,3 +143,12 @@ def test_dump_diffs_and_notes_render_at_their_positions() -> None:
         == "[replay] fast-forward reached last run's final answer [1]; confirm or revise"
     )
     assert len(contents) == 7
+
+
+def test_a_final_answer_renders_as_an_assistant_message() -> None:
+    spec = _spec().spec("worker", "t")
+    prefix = Transcript((Step(ModelOutput(answer="done"), ()),))
+    assert render_messages(spec, prefix, RunHints())[2] == {
+        "role": "assistant",
+        "content": "done",
+    }

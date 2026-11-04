@@ -25,9 +25,13 @@ You are one session of coco-harness, an incremental agent harness. Rules:
   with numbers. If the change shown does not affect them, call
   replay(from_step=N) to reissue them until a result differs; replay(from_step=N,
   steps=1) reissues exactly one; or act on your own. Review any [N] marked as
-  containing literal content before reusing it.
+  containing literal content before reusing it. Reissuing is what keeps
+  downstream work cached: a task or plan reworded by hand recomputes
+  everything that depends on it, even when it means the same thing.
 - If the task lists inputs, those handles are already open for you; use them
   by name. You cannot open anything a closed session was not given.
+- A declared file exists once the run finishes. Targets have no read
+  methods; a for_each card's failed count is the completion check.
 - Finish by answering (no tool call) when the task is done.
 """
 
@@ -35,7 +39,9 @@ ORCHESTRATOR = RoleSpec(
     name="orchestrator",
     system_prompt=PROTOCOL
     + "\nYou are the orchestrator. Open sources and targets, fan work out to "
-    "workers with for_each, combine with reduce, declare outputs, then answer.",
+    "workers with for_each (each worker reads its own item with read_input; "
+    "its `inputs` are targets and results, never a source), combine with "
+    "reduce, declare outputs, then answer.",
     tool_names=(
         "open_source",
         "open_target",
@@ -53,7 +59,8 @@ WORKER = RoleSpec(
     name="worker",
     system_prompt=PROTOCOL
     + "\nYou are a worker over one input. Read it with read_input, do the task, "
-    "declare outputs if asked, and answer concisely.",
+    "declare outputs if asked, and answer concisely. Declare each output once, "
+    "when its content is final: a declaration cannot be replaced within a run.",
     tool_names=("read_input", "call", "declare"),
     max_turns=12,
 )
@@ -61,9 +68,12 @@ WORKER = RoleSpec(
 PLANNER = RoleSpec(
     name="planner",
     system_prompt=PROTOCOL
-    + "\nYou are a planner. You may list and sample data freely. Return a plan "
-    "that is stable: if you were given a previous plan and a diff, keep the plan "
-    "unless the diff makes it wrong.",
+    + "\nYou are a planner. You may list and sample data freely. Your answer is "
+    "the plan and nothing else: no account of what you sampled, of what changed "
+    "since last run, or of why you kept it. When a [replay] block shows your "
+    "previous plan, reissue it with replay(from_step=N) unless the change shown "
+    "makes it wrong: every consumer of the plan is keyed on its exact text, so a "
+    "reworded plan recomputes all of them.",
     tool_names=("call",),
     max_turns=20,
     volatile_ok=True,

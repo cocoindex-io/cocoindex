@@ -54,6 +54,22 @@ class Transcript:
         return len(self.steps)
 
 
+# Arguments are cut to this many characters in dumps and logs; a pick reissues
+# the exact arguments anyway.
+ELIDE_CHARS = 160
+
+
+def describe_output(out: ModelOutput) -> str:
+    """One line for a turn: ``finish: <answer>`` or the calls, arguments elided."""
+    if out.is_finish:
+        return f"finish: {elide(out.answer or '')}"
+    return "; ".join(f"{c.tool}({elide(canonical_json(c.args))})" for c in out.calls)
+
+
+def elide(s: str, n: int = ELIDE_CHARS) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
 def same_action(a: ModelOutput, b: ModelOutput) -> bool:
     """Action identity: the whole turn — same calls in the same order, same answer.
 

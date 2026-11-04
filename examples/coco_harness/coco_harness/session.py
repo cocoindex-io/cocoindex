@@ -43,7 +43,15 @@ from .hints import Diff, Dump, Note, Replay, RunHints, TurnScratch, replay_tool_
 from .replay import find_same_action, llm_step
 from .spec import Item, SessionInput, SessionResult, SessionSpec
 from .tools import HARNESS, SessionContext, ToolRegistry
-from .transcript import ModelOutput, Step, ToolCall, ToolResult, Transcript, same_action
+from .transcript import (
+    ModelOutput,
+    Step,
+    ToolCall,
+    ToolResult,
+    Transcript,
+    describe_output,
+    same_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +238,19 @@ async def _session_loop(
             turn_hints,
         )
         replayed = state.after_turn(k, scratch, output)
+        logger.debug(
+            "%s turn %d (%s): %s",
+            spec.role.name,
+            k,
+            f"picked [{scratch.picked_step}]"
+            if scratch.picked_step is not None
+            else "inferred"
+            if scratch.inferred
+            else "replayed"
+            if scratch.replayed
+            else "hit",
+            describe_output(output),
+        )
 
         if output.answer is not None:
             steps.append(Step(output, ()))
