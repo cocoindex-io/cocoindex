@@ -12,8 +12,8 @@ use crate::engine::context::{
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
-    RestoredComponentMemo, cleanup_tombstone, delete_component_memo, eager_existence_upsert,
-    post_submit_for_build, submit, update_component_memo_states,
+    OpenDescendantsVerdict, RestoredComponentMemo, cleanup_tombstone, delete_component_memo,
+    eager_existence_upsert, post_submit_for_build, submit, update_component_memo_states,
     use_or_invalidate_component_memoization, validate_open_descendants,
 };
 use crate::engine::profile::EngineProfile;
@@ -744,6 +744,16 @@ enum GuardedRun<Prof: EngineProfile> {
     },
 }
 
+/// The component's own memo states after its handler validated them as
+/// reusable (see `lookup_component_memo`).
+struct ValidatedOwnStates<Prof: EngineProfile> {
+    /// The states as the handler returned them: the stored ones, or refreshed
+    /// where a state moved while staying valid.
+    states: MemoStatesPayload<Prof>,
+    /// Some state moved; `states` should replace the stored ones on a reuse.
+    states_changed: bool,
+}
+
 /// Look up the memo stored for `comp_ctx`'s component and, when `processor`
 /// has a memo state handler, validate the stored memo states through it. A
 /// stored memo whose key is not `memo_fp` — or any stored memo, when the
@@ -781,23 +791,26 @@ async fn lookup_component_memo<Prof: EngineProfile>(
     // processor. On a miss the states ride into the new memo; the data
     // dependencies do not: the body about to run records the set that
     // replaces them.
-    let mut revalidated_states: Option<(MemoStatesPayload<Prof>, bool)> = None;
+    let mut own_validation: Option<ValidatedOwnStates<Prof>> = None;
     if processor.has_memo_state_handler() && !memo_states.is_empty() {
         let fut = processor.handle_memo_states(
             comp_ctx.app_ctx().env().host_runtime_ctx(),
             comp_ctx,
             Some(memo_states),
         )?;
-        let (new_states, can_reuse, states_changed) = fut.await?;
+        let (states, can_reuse, states_changed) = fut.await?;
         if !can_reuse {
             return Ok(MemoLookup::Miss {
                 revalidated_states: Some(MemoStatesPayload {
                     data_deps: Vec::new(),
-                    ..new_states
+                    ..states
                 }),
             });
         }
-        revalidated_states = Some((new_states, states_changed));
+        own_validation = Some(ValidatedOwnStates {
+            states,
+            states_changed,
+        });
     }
     if has_open_descendants {
         // A descendant recorded data dependencies. Everything else a reuse
@@ -808,23 +821,26 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         // closed descendant. Its data-dependency records are the one thing
         // only its own row holds, so they are validated from there, by path,
         // down through every open descendant.
-        if let Some(reason) = validate_open_descendants(comp_ctx, &open_children).await? {
-            debug!(
-                "memo of {} is not reused: {reason}",
-                comp_ctx.stable_path()
-            );
+        if let OpenDescendantsVerdict::NotReusable(reason) =
+            validate_open_descendants(comp_ctx, &open_children).await?
+        {
+            debug!("memo of {} is not reused: {reason}", comp_ctx.stable_path());
             return Ok(MemoLookup::Miss {
-                revalidated_states: revalidated_states.map(|(new_states, _)| MemoStatesPayload {
+                revalidated_states: own_validation.map(|own| MemoStatesPayload {
                     data_deps: Vec::new(),
-                    ..new_states
+                    ..own.states
                 }),
             });
         }
     }
     // Reusable, but the states themselves moved (e.g. an mtime changed
     // while the content hash did not): refresh them in the stored memo.
-    if let Some((new_states, true)) = &revalidated_states {
-        update_component_memo_states(comp_ctx.app_store(), comp_ctx.stable_path(), new_states, row_fp)
+    if let Some(ValidatedOwnStates {
+        states,
+        states_changed: true,
+    }) = &own_validation
+    {
+        update_component_memo_states(comp_ctx.app_store(), comp_ctx.stable_path(), states, row_fp)
             .await?;
     }
     // Report the stored dependency sets upward even on a memo hit, so a
@@ -1784,8 +1800,7 @@ mod tests {
 
         // An open child whose own children were open too: its outcome still
         // carries its list, which must not become the parent's.
-        let mut open_outcome =
-            ComponentRunOutcome::reused(vec![], Default::default(), true);
+        let mut open_outcome = ComponentRunOutcome::reused(vec![], Default::default(), true);
         open_outcome.open_children = vec![relative("grandchild")];
         open_child.resolve(open_outcome);
         closed_child.resolve(ComponentRunOutcome::reused(

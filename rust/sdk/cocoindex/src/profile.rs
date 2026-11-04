@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorInfo};
-use cocoindex_core::engine::context::{ComponentProcessorContext, DataDepRecord, MemoStatesPayload};
+use cocoindex_core::engine::context::{
+    ComponentProcessorContext, DataDepRecord, MemoStatesPayload,
+};
 use cocoindex_core::engine::profile::{DataDepsValidation, EngineProfile, Persist};
 use cocoindex_core::engine::target_state::{
     ChildHandling, TargetActionSink, TargetActionWithChildSlot, TargetHandler,

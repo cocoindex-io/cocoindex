@@ -12,9 +12,11 @@ run that recorded it survives in memory.
 
 Records stay in the entry of the function or component that recorded them.
 They are never copied into ancestor components' entries; a component reports
-one bit upward instead (see the engine's ``ComponentRunOutcome``), so a
-memoized ancestor of a component that recorded a data dependency re-runs its
-body instead of reusing its memo. Spec: cocoindex-specs ``data_deps/spec.md``.
+one bit upward instead (see the engine's ``ComponentRunOutcome``), and the
+parent's entry lists the children that reported it. A memoized ancestor's
+probe then validates those descendants' records from their own entries
+(``validate_stored_data_deps`` below) and reuses the ancestor when they all
+hold. Spec: cocoindex-specs ``data_deps/spec.md``.
 """
 
 from __future__ import annotations

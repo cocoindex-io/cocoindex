@@ -432,7 +432,9 @@ async def _parent(name: str, children: list[str]) -> None:
 
 
 @coco.fn(memo=True)
-async def _grandparent(name: str, parent: str, children: list[str], salt: int = 0) -> None:
+async def _grandparent(
+    name: str, parent: str, children: list[str], salt: int = 0
+) -> None:
     _metrics.increment(f"run.{name}")
     await coco.use_mount(coco.component_subpath(parent), _parent, parent, children)
 
@@ -444,7 +446,12 @@ _gp_salt = {"value": 0}
 @coco.fn
 async def _tree_main(gp: str, parent: str, children: list[str]) -> None:
     await coco.use_mount(
-        coco.component_subpath(gp), _grandparent, gp, parent, children, _gp_salt["value"]
+        coco.component_subpath(gp),
+        _grandparent,
+        gp,
+        parent,
+        children,
+        _gp_salt["value"],
     )
 
 
@@ -903,7 +910,9 @@ async def _parent_of_stop_child(name: str, child: str) -> None:
 
 @coco.fn
 async def _stop_main(name: str, child: str) -> None:
-    await coco.use_mount(coco.component_subpath(name), _parent_of_stop_child, name, child)
+    await coco.use_mount(
+        coco.component_subpath(name), _parent_of_stop_child, name, child
+    )
 
 
 def test_an_open_child_without_a_row_stops_the_walk() -> None:

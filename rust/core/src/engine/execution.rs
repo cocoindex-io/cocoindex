@@ -283,28 +283,28 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
 /// turn. The walk visits open descendants only: closed children are carried
 /// over by the reuse unvalidated, as they always were.
 ///
-/// `Ok(None)` when every record validates. `Ok(Some(reason))` when the memo
-/// must not be reused; the body then re-runs and probes its children itself.
-/// That is the answer for a listed child with no row (a non-memoized open
-/// child, whose records were dropped, or one whose last run observed a key in
-/// two states and stored nothing), a row that fails to decode, a record the
-/// host could not decode or whose kind is no longer registered, a validator
+/// `Valid` when every record validates. `NotReusable` names why the memo must
+/// not be reused; the body then re-runs and probes its children itself. That
+/// is the verdict for a listed child with no row (a non-memoized open child,
+/// whose records were dropped, or one whose last run observed a key in two
+/// states and stored nothing), a row that fails to decode, a record the host
+/// could not decode or whose kind is no longer registered, a validator
 /// answering invalid, and a flagged row with no list (written before the list
 /// existed). A validator's own error propagates, as it does from a probe.
 pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     open_children: &[StablePath],
-) -> Result<Option<String>> {
+) -> Result<OpenDescendantsVerdict> {
     let app_store = comp_ctx.app_store();
     let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
     let mut pending: Vec<StablePath> = Vec::new();
     if let Some(reason) = follow_open_children(comp_ctx.stable_path(), open_children, &mut pending)
     {
-        return Ok(Some(reason));
+        return Ok(OpenDescendantsVerdict::NotReusable(reason));
     }
     while let Some(path) = pending.pop() {
         let Some(memo_bytes) = app_store.read_component_memo(&path).await? else {
-            return Ok(Some(format!(
+            return Ok(OpenDescendantsVerdict::NotReusable(format!(
                 "open descendant {path} has no memo (not memoized, or its last run observed a data dependency in two states)"
             )));
         };
@@ -313,7 +313,7 @@ pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
             match from_msgpack_slice(&memo_bytes) {
                 Ok(info) => info,
                 Err(err) => {
-                    return Ok(Some(format!(
+                    return Ok(OpenDescendantsVerdict::NotReusable(format!(
                         "memo of open descendant {path} failed to decode: {err:?}"
                     )));
                 }
@@ -322,7 +322,7 @@ pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
             let records = decode_data_deps(memo_info.data_deps);
             let validation = Prof::validate_data_deps(host_runtime_ctx, &path, records)?.await?;
             if !validation.can_reuse {
-                return Ok(Some(format!(
+                return Ok(OpenDescendantsVerdict::NotReusable(format!(
                     "a data dependency of open descendant {path} no longer validates"
                 )));
             }
@@ -341,10 +341,18 @@ pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
             && let Some(reason) =
                 follow_open_children(&path, &memo_info.open_children, &mut pending)
         {
-            return Ok(Some(reason));
+            return Ok(OpenDescendantsVerdict::NotReusable(reason));
         }
     }
-    Ok(None)
+    Ok(OpenDescendantsVerdict::Valid)
+}
+
+/// What `validate_open_descendants` found.
+pub(crate) enum OpenDescendantsVerdict {
+    /// Every open descendant's records validate; the flagged memo is reusable.
+    Valid,
+    /// The memo must not be reused, and why (for the probe's debug log).
+    NotReusable(String),
 }
 
 /// Queue a flagged row's open children for `validate_open_descendants`. A
