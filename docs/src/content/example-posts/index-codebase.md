@@ -6,8 +6,6 @@ image: https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png
 tags: [data-indexing, semantic-search]
 ---
 
-![Index Your Codebase for AI Agents with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png)
-
 Build a live semantic index over a codebase with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Point it at a repo, and you get a vector index you can search in natural language ("where do we embed chunks?") that updates itself as you edit — the kind of fresh, low-latency context an agent needs.
 
 Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles incremental processing, change tracking, and target management. As a result, only what changed gets re-embedded and re-upserted.
