@@ -117,5 +117,5 @@ async def declare(ctx: SessionContext, args: dict[str, Json]) -> Json:
             raise ToolError(f"{value!r} is a {res.kind} handle, not a result")
         value = res.text
     result = await obj.call("declare_file", {"filename": args["key"], "content": value})
-    ctx.trace.note_declared(args["key"], digest_json(value))
+    ctx.action.declared = ctx.trace.note_declared(args["key"], digest_json(value))
     return result

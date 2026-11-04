@@ -54,8 +54,6 @@ from .tools import HARNESS, SessionContext, ToolRegistry
 from .trace import (
     ActionSink,
     ActionTrace,
-    ChildTrace,
-    DeclaredFile,
     LastRun,
     SessionScratch,
     SessionTrace,
@@ -64,7 +62,6 @@ from .trace import (
     answer_step,
     explain_run,
     session_tallies,
-    turn_tag,
 )
 from .transcript import (
     ModelOutput,
@@ -254,15 +251,14 @@ async def _session_loop(
     table = HandleTable()
     for name, obj in handles.items():
         table.seed(name, obj)
-    sink = TraceSink()
-    ctx = SessionContext(
-        spec=spec, input=input, handles=table, config=config, trace=sink
-    )
-
     prev_handle = coco.use_state(
         "transcript", initial_value=Transcript(), type_hint=Transcript
     )
     last_handle = coco.use_state("last_run", initial_value=LastRun(), type_hint=LastRun)
+    sink = TraceSink(last_declared=last_handle.value.declared_digests())
+    ctx = SessionContext(
+        spec=spec, input=input, handles=table, config=config, trace=sink
+    )
     state = _ReplayState(prev=prev_handle.value)
     steps: list[Step] = []
     step_traces: list[StepTrace] = []
@@ -281,23 +277,30 @@ async def _session_loop(
             turn_hints,
         )
         replayed = state.after_turn(k, turn_scratch, output)
-        tag = turn_tag(
-            inferred=turn_scratch.inferred,
-            replayed=replayed,
-            picked=turn_scratch.picked_step,
-        )
+        if turn_scratch.picked_step is not None:
+            served, from_step = "picked", turn_scratch.picked_step
+        elif turn_scratch.inferred:
+            served, from_step = "inferred", None
+        elif replayed is not None:
+            served, from_step = "replayed", replayed
+        else:
+            served, from_step = "hit", None
         # An inference, plus one call per invalid pick the model was asked to correct.
         calls = 1 + len(turn_scratch.notes) if turn_scratch.inferred else 0
         if k == 0 and turn_scratch.inferred and len(state.prev) > 0:
             spec_changed = True
         logger.debug(
-            "%s turn %d (%s): %s", spec.role.name, k, tag, describe_output(output)
+            "%s turn %d (%s): %s",
+            spec.role.name,
+            k,
+            served if from_step is None else f"{served} [{from_step}]",
+            describe_output(output),
         )
 
         if output.answer is not None:
             steps.append(Step(output, ()))
             step_traces.append(
-                answer_step(tag, calls, _notes_since(state, notes_before))
+                answer_step(served, from_step, calls, _notes_since(state, notes_before))
             )
             prev_handle.value = Transcript(tuple(steps))
             trace = _finish_trace(
@@ -330,7 +333,8 @@ async def _session_loop(
             input_changed = True
         step_traces.append(
             StepTrace(
-                tag,
+                served,
+                from_step,
                 calls,
                 tuple(
                     ActionTrace(
@@ -338,10 +342,11 @@ async def _session_loop(
                         ok=r.ok,
                         differs=d,
                         task=task_of(c),
-                        child=ch,
+                        child=a.child,
+                        declared=a.declared,
                     )
-                    for c, r, d, ch in zip(
-                        output.calls, executed.results, differs, executed.children
+                    for c, r, d, a in zip(
+                        output.calls, executed.results, differs, executed.actions
                     )
                 ),
                 _notes_since(state, notes_before),
@@ -369,11 +374,6 @@ def _finish_trace(
     input_changed: bool,
 ) -> SessionTrace:
     """The session's account of this run, with why its body ran."""
-    before = {d.display: d.digest for d in last.declared} if last.recorded else {}
-    declared = tuple(
-        DeclaredFile(d.display, written=before.get(d.display) != d.digest)
-        for d in sink.declared
-    )
     children = [a.child for s in steps for a in s.actions if a.child is not None]
     status, reason = explain_run(
         is_new=is_new,
@@ -384,13 +384,12 @@ def _finish_trace(
         last=last,
         children=children,
     )
-    total, spent = session_tallies(steps, declared)
+    total, spent = session_tallies(steps)
     return SessionTrace(
         role=spec.role.name,
         status=status,
         reason=reason,
         steps=steps,
-        declared=declared,
         failures=tuple(sink.failures),
         reads=len(sink.reads),
         total=total,
@@ -445,7 +444,7 @@ def is_environment_error(exc: BaseException) -> bool:
 
 class Executed(NamedTuple):
     results: tuple[ToolResult, ...]
-    children: tuple[ChildTrace | None, ...]  # per call: the child it mounted
+    actions: tuple[ActionSink, ...]  # per call: what its handler reported
 
 
 async def _execute_all(
@@ -513,7 +512,7 @@ async def _execute_all(
         )
     return Executed(
         tuple(r for r in results if r is not None),
-        tuple(sinks[i].child if i in sinks else None for i in range(len(calls))),
+        tuple(sinks.get(i, ActionSink()) for i in range(len(calls))),
     )
 
 

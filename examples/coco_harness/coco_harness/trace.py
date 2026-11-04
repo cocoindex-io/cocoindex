@@ -23,7 +23,9 @@ the reused share is shown only when it is non-zero; an unknown prints as
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
+from typing import NamedTuple
 
 
 # Items of a fan-out or reduce that are shown one by one: those that did not
@@ -129,11 +131,13 @@ class ActionTrace:
     differs: bool = False  # the result differs from last run's for the same action
     task: str | None = None  # a child's task, elided
     child: ChildTrace | None = None
+    declared: DeclaredFile | None = None  # a declare's file
 
 
 @dataclass(frozen=True)
 class StepTrace:
-    turn: str  # "hit" | "replayed [n]" | "picked [n]" | "inferred"
+    served: str  # "hit" | "replayed" | "picked" | "inferred"
+    from_step: int | None  # the previous transcript's step a replay or pick came from
     calls: int  # model calls this turn made (retries included)
     actions: tuple[ActionTrace, ...]
     notes: tuple[str, ...] = ()  # what the loop told the model at this step
@@ -154,7 +158,6 @@ class SessionTrace:
     status: str  # "new" | "ran" | "skipped"
     reason: str  # why it ran, or why it was skipped
     steps: tuple[StepTrace, ...]
-    declared: tuple[DeclaredFile, ...] = ()
     failures: tuple[str, ...] = ()  # contained this run; the session re-runs next run
     reads: int = 0  # recorded reads: a session that reads flags its parent
     total: Tally = field(default_factory=Tally)
@@ -163,17 +166,18 @@ class SessionTrace:
     def as_reused(self, reason: str) -> SessionTrace:
         """The stored trace of a session the engine skipped: nothing spent, all carried over."""
         return replace(
-            self,
-            status="skipped",
-            reason=reason,
-            declared=tuple(replace(d, written=False) for d in self.declared),
-            failures=(),
-            spent=Tally(),
+            self, status="skipped", reason=reason, failures=(), spent=Tally()
         )
 
     @property
-    def model_calls_by_turn(self) -> Counter[str]:
-        return Counter(s.turn.split(" ")[0] for s in self.steps)
+    def declared(self) -> tuple[DeclaredFile, ...]:
+        return tuple(
+            a.declared for s in self.steps for a in s.actions if a.declared is not None
+        )
+
+    @property
+    def turns_by_served(self) -> Counter[str]:
+        return Counter(s.served for s in self.steps)
 
     def children(self) -> list[ChildTrace]:
         return [a.child for s in self.steps for a in s.actions if a.child is not None]
@@ -195,10 +199,14 @@ class SessionScratch:
 
 
 @dataclass(frozen=True)
-class ReadRecord:
-    display: (
-        str  # "walk of src:docs", "sample of src:invoices", "read of src:docs a.md"
-    )
+class Record:
+    """Something a session read or declared, by name, with a digest of its content.
+
+    Names: ``walk of src:docs``, ``sample of src:invoices``, ``read of src:docs
+    a.md``, or a declared filename.
+    """
+
+    name: str
     digest: str
 
 
@@ -211,24 +219,35 @@ class LastRun:
     """
 
     recorded: bool = False
-    reads: tuple[ReadRecord, ...] = ()
-    declared: tuple[ReadRecord, ...] = ()  # filename → content digest
+    reads: tuple[Record, ...] = ()
+    declared: tuple[Record, ...] = ()
     failed: bool = False
+
+    def declared_digests(self) -> dict[str, str]:
+        return {d.name: d.digest for d in self.declared} if self.recorded else {}
 
 
 @dataclass
 class TraceSink:
-    """What the tools of one session run report, folded into its trace at the end."""
+    """What the tools of one session run report, folded into its trace at the end.
 
-    reads: list[ReadRecord] = field(default_factory=list)
-    declared: list[ReadRecord] = field(default_factory=list)
+    ``last_declared`` is what the session declared the last time its body ran,
+    so a declaration is told written from unchanged as it happens.
+    """
+
+    last_declared: dict[str, str] = field(default_factory=dict)
+    reads: list[Record] = field(default_factory=list)
+    declared: list[Record] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
 
-    def note_read(self, display: str, digest: str) -> None:
-        self.reads.append(ReadRecord(display, digest))
+    def note_read(self, name: str, digest: str) -> None:
+        self.reads.append(Record(name, digest))
 
-    def note_declared(self, filename: str, digest: str) -> None:
-        self.declared.append(ReadRecord(filename, digest))
+    def note_declared(self, filename: str, digest: str) -> DeclaredFile:
+        self.declared.append(Record(filename, digest))
+        return DeclaredFile(
+            filename, written=self.last_declared.get(filename) != digest
+        )
 
     def note_failure(self, where: str) -> None:
         self.failures.append(where)
@@ -236,20 +255,22 @@ class TraceSink:
 
 @dataclass
 class ActionSink:
-    """What one tool call reports: the child it mounted, if any."""
+    """What one tool call reports: the child it mounted, or the file it declared."""
 
     child: ChildTrace | None = None
+    declared: DeclaredFile | None = None
 
 
-def answer_step(turn: str, calls: int, notes: tuple[str, ...] = ()) -> StepTrace:
-    return StepTrace(turn, calls, (ActionTrace(ANSWER),), notes)
+def answer_step(
+    served: str, from_step: int | None, calls: int, notes: tuple[str, ...] = ()
+) -> StepTrace:
+    return StepTrace(served, from_step, calls, (ActionTrace(ANSWER),), notes)
 
 
-def session_tallies(
-    steps: tuple[StepTrace, ...], declared: tuple[DeclaredFile, ...]
-) -> tuple[Tally, Tally]:
+def session_tallies(steps: tuple[StepTrace, ...]) -> tuple[Tally, Tally]:
     """``(total, spent)`` of a session that ran, its children's tallies folded in."""
     children = [a.child for s in steps for a in s.actions if a.child is not None]
+    declared = [a.declared for s in steps for a in s.actions if a.declared is not None]
     total = Tally(
         sessions=1,
         # A hit turn is priced at one call: what it would cost with no cache.
@@ -286,51 +307,56 @@ def child_session(
         trace.role,
         session=trace,
         plan=plan,
-        counts=Counts(**{_count_field(trace): 1}),
+        counts=_counts([trace]),
         total=trace.total,
         spent=trace.spent,
     )
+
+
+class Member(NamedTuple):
+    """One member of a fan-out or reduce, as its mounting tool saw it."""
+
+    key: str
+    trace: SessionTrace
+    ran: bool  # the member's scratch: False means the engine skipped it
 
 
 def child_members(
     kind: str,
     key: str,
     role: str,
-    members: list[tuple[str, SessionTrace, bool]],
+    members: list[Member],
     *,
     failed: int,
     skipped_reason: str,
 ) -> ChildTrace:
-    """The node for a fan-out or a reduce: ``members`` are ``(key, trace, ran)``."""
-    traces = [(k, t if ran else t.as_reused(skipped_reason)) for k, t, ran in members]
-    counts = Counter(_count_field(t) for _, t in traces)
+    """The node for a fan-out or a reduce."""
+    traces = {
+        m.key: m.trace if m.ran else m.trace.as_reused(skipped_reason) for m in members
+    }
     total = spent = Tally()
-    for _, t in traces:
+    for t in traces.values():
         total += t.total
         spent += t.spent
     itemized = [
-        ItemTrace(k, t)
-        for k, t in sorted(traces, key=lambda kt: kt[0])
-        if t.status != "skipped"
+        ItemTrace(k, t) for k, t in sorted(traces.items()) if t.status != "skipped"
     ]
     return ChildTrace(
         kind,
         key,
         role,
         items=tuple(itemized[:MAX_ITEMIZED]),
-        counts=Counts(
-            new=counts["new"],
-            ran=counts["ran"],
-            skipped=counts["skipped"],
-            failed=failed,
-        ),
+        counts=replace(_counts(traces.values()), failed=failed),
         total=total,
         spent=spent,
     )
 
 
-def _count_field(trace: SessionTrace) -> str:
-    return {"new": "new", "ran": "ran", "skipped": "skipped"}[trace.status]
+def _counts(traces: Iterable[SessionTrace]) -> Counts:
+    by_status = Counter(t.status for t in traces)
+    return Counts(
+        new=by_status["new"], ran=by_status["ran"], skipped=by_status["skipped"]
+    )
 
 
 # --- reasons ------------------------------------------------------------------
@@ -342,7 +368,7 @@ def explain_run(
     spec_changed: bool,
     input_changed: bool,
     input_name: str,
-    reads: list[ReadRecord],
+    reads: list[Record],
     last: LastRun,
     children: list[ChildTrace],
 ) -> tuple[str, str]:
@@ -359,12 +385,12 @@ def explain_run(
     if input_changed:
         return "ran", f"{input_name} changed"
     if last.recorded:
-        before = {r.display: r.digest for r in last.reads}
+        before = {r.name: r.digest for r in last.reads}
         for r in reads:
-            if r.display not in before:
-                return "ran", f"{r.display} is new"
-            if before[r.display] != r.digest:
-                return "ran", f"{r.display} changed"
+            if r.name not in before:
+                return "ran", f"{r.name} is new"
+            if before[r.name] != r.digest:
+                return "ran", f"{r.name} changed"
     if last.failed:
         return "ran", "absorbed a failure last run"
     if any(_reads_data(c) for c in children):
@@ -378,13 +404,3 @@ def _reads_data(child: ChildTrace) -> bool:
         and child.session is not None
         and child.session.reads > 0
     )
-
-
-def turn_tag(*, inferred: bool, replayed: int | None, picked: int | None) -> str:
-    if picked is not None:
-        return f"picked [{picked}]"
-    if inferred:
-        return "inferred"
-    if replayed is not None:
-        return f"replayed [{replayed}]"
-    return "hit"

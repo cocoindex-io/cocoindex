@@ -12,10 +12,10 @@ from collections import Counter
 from dataclasses import dataclass
 
 from .trace import (
-    ActionTrace,
     ChildTrace,
     DeclaredFile,
     SessionTrace,
+    StepTrace,
     Tally,
     Usage,
 )
@@ -168,7 +168,7 @@ def _turns_tag(t: SessionTrace, *, stored: bool) -> str:
     turns = f"{n} turn{'s' if n != 1 else ''}"
     if stored:
         return turns
-    by = t.model_calls_by_turn
+    by = t.turns_by_served
     detail = ", ".join(
         f"{by[k]} {k}" for k in ("hit", "replayed", "picked", "inferred") if by[k]
     )
@@ -208,13 +208,13 @@ def _render_session(
             left = f"{k:>2}  {action.text}" if j == 0 else f"    {action.text}"
             tags = []
             if j == 0 and not stored:
-                tags.append(step.turn)
+                tags.append(_served_tag(step))
             if not action.ok:
                 tags.append("failed")
             if action.differs and not stored:
                 tags.append("result differs from last run")
-            if action.text.startswith("declare "):
-                tags.append(_declare_tag(t, action, stored))
+            if action.declared is not None:
+                tags.append(_file_tag(action.declared, stored))
             if action.child is not None:
                 tags.append(_child_tag(action.child, stored))
             _line(lines, indent + 2, left, tags)
@@ -274,14 +274,10 @@ def _child_tag(c: ChildTrace, stored: bool) -> str:
     return f"{c.role} × {n}: {', '.join(parts)}"
 
 
-def _declare_tag(t: SessionTrace, action: ActionTrace, stored: bool) -> str:
-    # "declare tgt:x <key> [← res:y]": the key is the filename declared.
-    parts = action.text.split(" ")
-    filename = parts[2] if len(parts) > 2 else ""
-    for d in t.declared:
-        if d.filename == filename:
-            return _file_tag(d, stored)
-    return ""
+def _served_tag(step: StepTrace) -> str:
+    if step.from_step is not None:
+        return f"{step.served} [{step.from_step}]"
+    return step.served
 
 
 def _file_tag(d: DeclaredFile, stored: bool) -> str:

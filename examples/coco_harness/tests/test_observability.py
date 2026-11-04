@@ -247,7 +247,7 @@ def test_shape_a_stats_first_unchanged_and_one_edit(
     )
     (item,) = fan_out.items
     assert item.key == "1.txt" and item.session.reason == "input changed"
-    assert [s.turn for s in item.session.steps] == ["hit", "inferred", "inferred"]
+    assert [s.served for s in item.session.steps] == ["hit", "inferred", "inferred"]
     assert [d.written for d in item.session.declared] == [True]
 
 

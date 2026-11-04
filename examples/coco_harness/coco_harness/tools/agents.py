@@ -34,13 +34,7 @@ from ..session import (
 )
 from ..spec import InputCard, Item, Json, SessionSpec
 from ..stable_hash import stable_hash64
-from ..trace import (
-    ChildTrace,
-    SessionScratch,
-    SessionTrace,
-    child_members,
-    child_session,
-)
+from ..trace import ChildTrace, Member, SessionScratch, child_members, child_session
 from ..transcript import canonical_json
 from . import SessionContext, tool
 from .reduce import Group, GroupItem, ReduceError, hierarchical_reduce, leaf_item
@@ -330,7 +324,7 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
         return {"mounted": key}
 
     failed: dict[str, str] = {}
-    traces: list[tuple[str, SessionTrace, bool]] = []
+    members: list[Member] = []
 
     async def one(kv: tuple[str, Item]) -> tuple[str, str | None]:
         item_key, item = kv
@@ -352,7 +346,7 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
             record_contained_failure(ctx.trace, f"child:{key}/{item_key}", exc)
             failed[item_key] = f"{type(exc).__name__}: {exc}"
             return item_key, None
-        traces.append((item_key, result.trace, scratch.ran))
+        members.append(Member(item_key, result.trace, scratch.ran))
         return item_key, result.answer
 
     results = await coco.map(one, items.items())
@@ -362,7 +356,7 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
         "fan_out",
         key,
         child.role.name,
-        traces,
+        members,
         failed=len(failed),
         skipped_reason=_CLOSED_SKIPPED,
     )
@@ -403,7 +397,7 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
         for item_key, text in coll.entries
     ]
 
-    traces: list[tuple[str, SessionTrace, bool]] = []
+    groups: list[Member] = []
 
     async def reduce_group(group: Group[str]) -> str:
         # Slot: the group's prefix (unique across levels, DESIGN §6) plus the
@@ -420,7 +414,7 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
                 spec,
                 scratch,
             )
-            traces.append((f"{slot}/{attempt}", result.trace, scratch.ran))
+            groups.append(Member(f"{slot}/{attempt}", result.trace, scratch.ran))
             if _estimate_tokens(result.answer) <= half:
                 return result.answer
             spec = replace(
@@ -447,7 +441,7 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
         "reduce",
         key,
         child.role.name,
-        traces,
+        groups,
         failed=0,
         skipped_reason="members unchanged",
     )
