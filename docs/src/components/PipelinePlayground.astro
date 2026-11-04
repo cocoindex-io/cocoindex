@@ -1,0 +1,28 @@
+<div class="pipeline-playground">
+  <iframe
+    src="https://cocoindex.io/playground/"
+    title="Interactive CocoIndex pipeline playground"
+    width="100%"
+    height="1200"
+    loading="lazy"
+  ></iframe>
+  <p><a href="https://cocoindex.io/playground/" target="_blank" rel="noopener">Open the playground in a separate tab ↗</a></p>
+</div>
+
+<style>
+  .pipeline-playground { margin-block: 24px; }
+  iframe { display: block; width: 100%; border: 1px solid var(--rule); border-radius: 12px; background: #0a0a0a; }
+  p { margin: 8px 0 0; font-size: .875rem; }
+</style>
+
+<script>
+  const frames = [...document.querySelectorAll<HTMLIFrameElement>('.pipeline-playground iframe')];
+  window.addEventListener('message', (event) => {
+    if (event.data?.type !== 'cocoindex-playground:resize') return;
+    const frame = frames.find((item) => event.source === item.contentWindow && event.origin === new URL(item.src).origin);
+    const height = event.data.height;
+    if (frame && typeof height === 'number' && Number.isFinite(height) && height > 0) {
+      frame.style.height = `${Math.ceil(height)}px`;
+    }
+  });
+</script>
