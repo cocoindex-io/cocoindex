@@ -183,6 +183,7 @@ p { color: var(--muted); }
 .btn-xl { padding: 0 22px; height: 46px; font-size: 1rem; }
 .btn-lg { padding: 0 18px; height: 40px; font-size: 0.9375rem; }
 .stars.btn, .btn .count { font-family: var(--sans); }
+.stars .count { font-size: 0.875rem; }
 
 /* ═══════════════════════════ 4. Shell: nav + footer ══════════════════════ */
 nav.top, nav.top.no-morph, nav.top.is-floating {
@@ -219,7 +220,7 @@ a { color: var(--maroon-ink); }
 
 /* reading column: 16/1.65 body on a 68ch measure; figures, tables and code run
    the full column (Vercel / Stripe docs) */
-:root .prose { font-size: 16px; line-height: 1.65; --measure: 68ch; }
+:root .prose { font-size: 16px; line-height: 1.65; --measure: 54ch; }
 :root .prose h1 { font-weight: 600; font-size: clamp(2rem, 3.2vw, 2.625rem); line-height: 1.1; letter-spacing: -0.035em; margin: 0 0 14px; text-wrap: balance; }
 :root .prose p.lede { font-size: 1.125rem; line-height: 1.55; letter-spacing: -0.01em; color: var(--muted); max-width: 62ch; margin: 0 0 20px; overflow-wrap: anywhere; }
 :root .prose h2 { font-weight: 600; font-size: 1.5rem; line-height: 1.25; letter-spacing: -0.03em; margin: 56px 0 14px; max-width: none; }
@@ -228,7 +229,7 @@ a { color: var(--maroon-ink); }
 :root .prose :is(h2, h3, h4) code { font-size: 0.85em; font-weight: 500; }
 :root .prose :is(p, li) { color: #C8C8C8; }
 :root .prose p { margin: 14px 0; text-wrap: pretty; }
-:root .prose li { margin: 6px 0; }
+:root .prose li { margin: 6px 0; text-wrap: pretty; }
 :root .prose :is(ul, ol) { padding-left: 24px; }
 :root .prose :is(strong, b) { color: var(--maroon-ink); font-weight: 600; }
 :root .prose :is(h1, h2, h3, h4) a.anchor { color: var(--text-3); }
