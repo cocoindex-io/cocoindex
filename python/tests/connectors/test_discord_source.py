@@ -3092,8 +3092,8 @@ class _Run(NamedTuple):
     # The failed components' errors, sorted, since components run
     # concurrently.
     failures: list[str]
-    # The threads whose messages were listed, by ID.
-    threads_listed: list[str]
+    # The IDs of the threads whose messages were listed.
+    threads_listed: set[str]
 
 
 class _Pipeline:
@@ -3129,7 +3129,7 @@ class _Pipeline:
             if (m := re.fullmatch(r"/channels/(\d+)/messages", path))
             and m[1] in self.fake.threads
         }
-        return _Run(_metrics.collect(), failures, sorted(threads_listed, key=int))
+        return _Run(_metrics.collect(), failures, threads_listed)
 
 
 def _entries() -> dict[str, str]:
@@ -3228,7 +3228,7 @@ class TestEndToEnd:
         )
         run = pipeline.run()
         assert run == _Run(
-            dict.fromkeys(_SERVER_ENTRIES, 1), [], ["1080", "1085", "1089", "1091"]
+            dict.fromkeys(_SERVER_ENTRIES, 1), [], {"1080", "1085", "1089", "1091"}
         )
         assert _entries() == _SERVER_ENTRIES
 
@@ -3270,7 +3270,7 @@ class TestEndToEnd:
             "1019/1091": 1,
         }
         # The new thread holds only its starter, so it needs no request.
-        assert run.threads_listed == ["1080", "1091"]
+        assert run.threads_listed == {"1080", "1091"}
         entries = {
             **_SERVER_ENTRIES,
             "1002/1077": "Ada: message 1077, edited",
@@ -3290,7 +3290,7 @@ class TestEndToEnd:
         # Nothing changed: every channel is listed again, but no item runs,
         # and no thread's messages are listed.
         run = pipeline.run()
-        assert run == _Run({}, [], [])
+        assert run == _Run({}, [], set())
         assert {f"/channels/{channel_id}" for channel_id in _SERVER_CHANNELS} <= {
             path for _, path, _ in fake.requests
         }
@@ -3322,7 +3322,7 @@ class TestEndToEnd:
         # starter.
         fake.message(_CHANNEL, "1077")["reactions"] = [_raw_reaction("👍", 1)]
         fake.message(_CHANNEL, "1080")["reactions"] = [_raw_reaction("👀", 1)]
-        assert pipeline.run() == _Run({}, [], [])
+        assert pipeline.run() == _Run({}, [], set())
 
     def test_removing_a_channel(self) -> None:
         fake = _server()
@@ -3330,7 +3330,7 @@ class TestEndToEnd:
         assert pipeline.run().failures == []
 
         pipeline.channel_ids.remove(_OTHER_CHANNEL)
-        assert pipeline.run() == _Run({}, [], [])
+        assert pipeline.run() == _Run({}, [], set())
         # Its message and its thread lose their entries; nothing of it is
         # requested.
         assert _entries() == {
@@ -3396,7 +3396,7 @@ class TestEndToEnd:
         # saved; nothing else does.
         del fake.fail[thread_path]
         run = pipeline.run()
-        assert run == _Run({"1002/1080": 1}, [], ["1080"])
+        assert run == _Run({"1002/1080": 1}, [], {"1080"})
         entries["1002/1080"] += "\nAda: message 1097"
         assert _entries() == entries
 
