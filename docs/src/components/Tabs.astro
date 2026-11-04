@@ -9,7 +9,7 @@ interface Props {
 const { labels, initial = 0 } = Astro.props;
 const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
 ---
-<div class="coco-tabs">
+<div class="coco-tabs" role="group" aria-label="Examples">
   {labels.map((_, i) => (
     <input
       type="radio"
@@ -19,28 +19,28 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
       checked={i === initial}
     />
   ))}
-  <div class="coco-tabs-bar" role="tablist">
+  <div class="coco-tabs-bar">
     {labels.map((label, i) => (
-      <label for={`${id}-${i}`} class="coco-tabs-label" role="tab">
+      <label for={`${id}-${i}`} class="coco-tabs-label">
         <span>{label}</span>
       </label>
     ))}
   </div>
   <div class="coco-tabs-panels">
     {labels[0] && (
-      <section class="coco-tabs-panel" data-tab-index="0" role="tabpanel"><slot name="tab-0" /></section>
+      <section class="coco-tabs-panel" data-tab-index="0"><slot name="tab-0" /></section>
     )}
     {labels[1] && (
-      <section class="coco-tabs-panel" data-tab-index="1" role="tabpanel"><slot name="tab-1" /></section>
+      <section class="coco-tabs-panel" data-tab-index="1"><slot name="tab-1" /></section>
     )}
     {labels[2] && (
-      <section class="coco-tabs-panel" data-tab-index="2" role="tabpanel"><slot name="tab-2" /></section>
+      <section class="coco-tabs-panel" data-tab-index="2"><slot name="tab-2" /></section>
     )}
     {labels[3] && (
-      <section class="coco-tabs-panel" data-tab-index="3" role="tabpanel"><slot name="tab-3" /></section>
+      <section class="coco-tabs-panel" data-tab-index="3"><slot name="tab-3" /></section>
     )}
     {labels[4] && (
-      <section class="coco-tabs-panel" data-tab-index="4" role="tabpanel"><slot name="tab-4" /></section>
+      <section class="coco-tabs-panel" data-tab-index="4"><slot name="tab-4" /></section>
     )}
   </div>
 </div>
