@@ -5,7 +5,7 @@ meta:
   time: ~3 minutes
   language: Python 3.11+
 ---
-## 🖥️ System Requirements
+## System Requirements
 
 CocoIndex is supported on the following operating systems:
 
@@ -13,20 +13,20 @@ CocoIndex is supported on the following operating systems:
 - **Linux**: x86_64 or arm64, glibc 2.28+ (e.g., Debian 10+, Ubuntu 18.10+, Fedora 29+, CentOS/RHEL 8+)
 - **Windows**: 10+ on x86_64
 
-## 🐍 Install Python and Pip
+## Install Python and Pip
 
-To follow the steps in this guide, you'll need:
+You'll need:
 
 1. Install [Python](https://wiki.python.org/moin/BeginnersGuide(2f)Download.html). We support Python 3.11 to 3.13.
 2. Install [pip](https://pip.pypa.io/en/stable/installation/) - a Python package installer
 
-## 🌴 Install CocoIndex
+## Install CocoIndex
 
 ```sh
 pip install -U cocoindex
 ```
 
-## 📦 Install Postgres
+## Install Postgres
 
 You can skip this step if you already have a Postgres database with pgvector extension installed.
 
@@ -39,7 +39,7 @@ If you don't have a Postgres database:
 docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
 ```
 
-## 🤖 Install Claude Code Skill (Optional)
+## Install Claude Code Skill (Optional)
 
 If you're using [Claude Code](https://claude.com/claude-code), you can install the CocoIndex skill for enhanced development support. Run these commands in Claude Code:
 
@@ -50,6 +50,6 @@ If you're using [Claude Code](https://claude.com/claude-code), you can install t
 
 This provides specialized CocoIndex knowledge and workflow support within Claude Code.
 
-## 🎉 All set
+## All set
 
 You can now start using CocoIndex.

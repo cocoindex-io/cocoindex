@@ -9,7 +9,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction/cove
 
 ## Overview
 
-With CocoIndex, you can easily define nested schema in Python dataclass and use LLM to extract structured data from unstructured data. This example shows how to extract structured data from patient intake forms.
+Define a nested schema with Python dataclasses and use an LLM to extract structured data from patient intake forms.
 
 :::info
 The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser or open source ones that is tailored for your domain for better results. For example, Document AI from Google Cloud and more.
@@ -99,7 +99,7 @@ with data_scope["documents"].row() as doc:
 
 We are going to define the patient info schema for structured extraction. One of the best examples to define a patient info schema is probably following the [FHIR standard - Patient Resource](https://build.fhir.org/patient.html#resource).
 
-In this tutorial, we'll define a simplified schema in nested dataclass for patient information extraction:
+Define a nested dataclass schema for patient information extraction:
 
 ```python
 @dataclasses.dataclass
@@ -242,7 +242,7 @@ You could see the patients_info table.
 
 ## Evaluate
 
-For mission-critical use cases, it is important to evaluate the quality of the extraction. CocoIndex supports a simple way to evaluate the extraction. More updates are coming soon.
+Evaluate extraction quality before relying on the results. CocoIndex supports extraction evaluation; more updates are planned.
 
 1. Dump the extracted data to YAML files.
 

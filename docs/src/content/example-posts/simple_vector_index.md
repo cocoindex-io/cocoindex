@@ -8,7 +8,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/simple_vector_index/cover.pn
 
 ## Overview
 
-In this tutorial, we will build index with text embeddings and query it with natural language.
+Build an index with text embeddings and query it with natural language.
 We try to keep it minimalistic and focus on the gist of the indexing flow.
 
 ## Flow Overview

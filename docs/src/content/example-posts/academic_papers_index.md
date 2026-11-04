@@ -33,7 +33,7 @@ to answer questions like "Give me all the papers by Jeff Dean."
 
 ## Setup
 
-- [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres).
+- [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres).
   CocoIndex uses PostgreSQL internally for incremental processing.
 - [Configure your OpenAI API key](https://cocoindex.io/docs-v0/ai/llm#openai). Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
@@ -83,7 +83,7 @@ def extract_basic_info(content: bytes) -> PaperBasicInfo:
 
 ```
 
-Now plug this into the flow. We extract metadata from the first page to minimize processing cost, since the entire PDF can be very large.
+Now plug this into the flow. We extract metadata from the first page to minimize processing cost, since processing the full PDF can be costly.
 
 ```python
 with data_scope["documents"].row() as doc:
@@ -189,7 +189,7 @@ paper_metadata.collect(
 Just collect anything you need :)
 
 ### Collect `author` to `filename` information
-We’ve already extracted author list. Here we want to collect Author → Papers in a separate table to build a look up functionality.
+We've already extracted author list. Here we want to collect Author → Papers in a separate table to build a look up functionality.
 Simply collect by author.
 
 ```python
@@ -219,7 +219,7 @@ doc["title_embedding"] = doc["metadata"]["title"].transform(
 ### Abstract
 
 Split abstract into chunks, embed each chunk and collect their embeddings.
-Sometimes the abstract could be very long.
+Some abstracts are long enough to need chunking.
 
 ```python
 doc["abstract_chunks"] = doc["metadata"]["abstract"].transform(
@@ -321,7 +321,7 @@ You can refer to this section of [Text Embeddings](https://cocoindex.io/blogs/te
 how to build query against embeddings.
 For now CocoIndex doesn't provide additional query interface. We can write SQL or rely on the query engine by the target storage.
 
-- Many databases already have optimized query implementations with their own best practices
+- Many databases provide query implementations tuned to their storage model
 - The query space has excellent solutions for querying, reranking, and other search-related functionality.
 
 If you need assist with writing the query, please feel free to reach out to us at [Discord](https://discord.com/invite/zpA9S2DR7s).

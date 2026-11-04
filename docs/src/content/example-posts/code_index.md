@@ -9,7 +9,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/codebase_index/cover.png
 
 ## Overview
 
-In this tutorial, we will build codebase index. [CocoIndex](https://github.com/cocoindex-io/cocoindex) provides built-in support for codebase chunking, with native Tree-sitter support. It works with large codebases, and can be updated in near real-time with incremental processing - only reprocess what's changed.
+Build a codebase index with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Its Tree-sitter integration chunks code by syntax, and incremental processing updates the index as the code changes.
 
 ## Use Cases
 
@@ -39,7 +39,7 @@ The flow is composed of the following steps:
 
 ## Setup
 
-- Install Postgres, follow [installation guide](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres).
+- Install Postgres, follow [installation guide](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres).
 - Install CocoIndex
 
   ```sh
@@ -221,8 +221,7 @@ The returned results - each entry contains score (Cosine Similarity), filename, 
 
 ## CocoInsight
 
-To get a better understanding of the indexing flow, you can use CocoInsight to help the development step by step.
-To spin up, it is super easy.
+Start the query interface:
 
 ```sh
 cocoindex server -ci main

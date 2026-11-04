@@ -9,7 +9,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/docs_to_knowledge_graph/cove
 
 ## Overview
 
-[CocoIndex](https://github.com/cocoindex-io/cocoindex) makes it easy to build and maintain knowledge graphs with continuous source updates. In this tutorial, we will use LLM to extract relationships between the concepts in each document, and generate two kinds of relationships:
+Use an LLM to extract relationships between concepts in each document, then maintain the knowledge graph as the source changes with [CocoIndex](https://github.com/cocoindex-io/cocoindex). The graph contains two kinds of relationships:
 
 1. Relationships between subjects and objects. E.g., "CocoIndex supports Incremental Processing"
 2. Mentions of entities in a document. E.g., "core/basics.mdx" mentions `CocoIndex` and `Incremental Processing`.
@@ -29,7 +29,7 @@ and then build a knowledge graph.
 
 ## Setup
 
-* [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
+* [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
 - [Install Neo4j](https://cocoindex.io/docs-v0/targets/neo4j#neo4j-dev-instance), a graph database.
 
     [→ Neo4j](https://cocoindex.io/docs-v0/targets/neo4j)

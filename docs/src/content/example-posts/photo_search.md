@@ -7,11 +7,11 @@ image: https://cocoindex.io/blobs/docs/img/examples/photo_search/cover.png
 ![Photo Search](https://cocoindex.io/blobs/docs/img/examples/photo_search/cover.png)
 
 ## Overview
-We’ll walk through a comprehensive example of building a scalable face recognition pipeline. We’ll
+Build a face recognition pipeline that can:
 - Detect all faces in the image and extract their bounding boxes
 - Crop and encode each face image into a 128-dimensional face embedding
 - Store metadata and vectors in a structured index to support queries like:
-“Find all similar faces to this one” or “Search images that include this person”
+"Find all similar faces to this one" or "Search images that include this person"
 
 With this, you can build your own photo search app with face detection and search.
 
@@ -26,7 +26,7 @@ With this, you can build your own photo search app with face detection and searc
     - Filename, rect, embedding for each face.
 
 ## Setup
-- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#install-postgres) if you don't have one.
 
 - Install Qdrant
     ```sh
@@ -59,7 +59,7 @@ or [Azure Blob store](https://cocoindex.io/docs-v0/sources/azureblob).
 
 ## Detect and Extract Faces
 
-We use the `face_recognition` library under the hood, powered by dlib’s CNN-based face detector. Since the model is slow on large images, we downscale wide images before detection.
+We use the `face_recognition` library under the hood, powered by dlib's CNN-based face detector. Since the model is slow on large images, we downscale wide images before detection.
 
 ```python
 @cocoindex.op.function(
@@ -187,11 +187,10 @@ You can now build facial search apps or dashboards. For example:
 
 For querying embeddings, check out [Image Search project](https://cocoindex.io/blogs/live-image-search).
 
-If you’d like to see a full example on the query path with image match, give it a shout at
+If you'd like to see a full example on the query path with image match, give it a shout at
 [our group](https://discord.com/invite/zpA9S2DR7s).
 
-## CocoInsight
-CocoInsight is a tool to help you understand your data pipeline and data index. It can now visualize identified sections of an image based on the bounding boxes and makes it easier to understand and evaluate AI extractions - seamlessly attaching computed features in the context of unstructured visual data.
+CocoInsight displays detected regions of an image using their bounding boxes, alongside the computed features. Use it to inspect the face extraction and index.
 
 You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
 

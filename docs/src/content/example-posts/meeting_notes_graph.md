@@ -7,24 +7,18 @@ image: https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/cover.pn
 ![Meeting Notes Graph](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/cover.png)
 
 
-Meeting notes capture decisions, action items, participant information, and the relationships between people and tasks. Yet most organizations treat them as static documents—searchable only through basic text search.
+Meeting notes capture decisions, action items, participant information, and the relationships between people and tasks.
 
 With a knowledge graph, you can run queries like: *"Who attended meetings where the topic was 'budget planning'?"* or *"What tasks did Sarah get assigned across all meetings?"*
 
-This example shows how to build a meeting knowledge graph from Google Drive Markdown notes using LLM extraction and Neo4j, with automatic continuous updates.
+Build a meeting knowledge graph from Google Drive Markdown notes using LLM extraction and Neo4j, with automatic continuous updates.
 
 
 ![Neo4j Property Graph](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/neo4j.png)
 
 ## The Problem: Unstructured Meeting Data at Enterprise Scale
 
-Even for a conservative estimate, [80% of enterprise data](https://arxiv.org/abs/2406.02962) resides in unstructured files, stored in data lakes that accommodate heterogeneous formats. Organizations hold [62-80 million](https://myhours.com/articles/meeting-statistics-2025) meetings per day in the US.
-
-- **Massive document volumes** - Tens of thousands to millions of meeting notes across departments, teams, and time periods
-- **Continuous editing and updates** - Meeting notes are living documents. Participants correct information, tasks get reassigned, attendee names get fixed, and decisions get updated as situations evolve
-- **Information scattered across systems** - Organizations often use multiple document repositories to store information, and the majority of business documents reside in email inboxes. This fragmentation makes it challenging to build a comprehensive knowledge graph without intelligent, incremental processing.
-
-In a typical large enterprise with thousands of employees, even a conservative estimate of documents needing re-processing due to edits, corrections, and task reassignments could easily reach hundreds or thousands monthly. Without incremental processing capabilities, this creates either unsustainable computational costs or forces organizations to accept stale, outdated knowledge graphs.
+Meeting notes change after publication: participants correct details, reassign tasks, and revise decisions. A knowledge graph needs to reflect those edits and remove data deleted from the source. Reprocessing the full collection on each update repeats extraction work for unchanged notes.
 
 ## Architecture Overview
 
@@ -105,14 +99,14 @@ The pipeline starts by connecting to Google Drive using a service account. CocoI
 
 ![Ingest documents](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/ingest.png)
 
-This is one of CocoIndex's superpowers: **incremental processing with automatic change tracking**. Instead of reprocessing all documents on every run, the framework:
+The Google Drive source connector tracks file changes:
 
 1. Lists files from Google Drive with last modified time
 2. Identifies only the files that have been added or modified since the last successful run
 3. Skips unchanged files entirely
 4. Passes only changed documents downstream
 
-The result? In an enterprise with 1% daily churn, only 1% of documents trigger downstream processing. Unchanged files never hit your LLM API, never generate Neo4j queries, and never consume compute resources.
+When the source data and processing logic are unchanged, CocoIndex reuses cached results instead of repeating LLM extraction. It still checks the source for changes.
 
 Check out How live updates work in CocoIndex:
 
@@ -177,7 +171,7 @@ class Meeting:
     tasks: list[Task]
 ```
 
-The LLM uses the schema of this dataclass as its "extraction template," automatically returning structured data that matches the Python types. This provides direct guidance for the LLM about what information to extract and their schema. This is far more reliable than asking an LLM to generate free-form output, from which we cannot get structured information to build a knowledge graph.
+The dataclass schema specifies the fields and Python types that the LLM should return. CocoIndex parses the response into this structure for the graph-building steps.
 
 ### Extract and collect relationship
 
@@ -193,7 +187,7 @@ with document["meetings"].row() as meeting:
     )
 ```
 
-Importantly, this step also benefits from incremental processing. Since `ExtractByLlm` is a heavy step, we keep the output in cache, and as long as inputs (input data text, model, output type definition) have no change, we reuse the cached output without re-running the LLM.
+CocoIndex caches `ExtractByLlm` output. It reuses the result while the input text, model, and output type definition remain unchanged.
 
 [→ ExtractByLlm](https://cocoindex.io/docs-v0/ops/functions/#extractbyllm)
 
@@ -235,7 +229,7 @@ with parsed["tasks"].row() as task:
         )
 ```
 
-**Collectors** in CocoIndex act like in‑memory buffers: you declare collectors for different categories (meeting nodes, attendance, tasks, assignments), then as you process each document you “collect” relevant entries.
+**Collectors** in CocoIndex act like in‑memory buffers: you declare collectors for different categories (meeting nodes, attendance, tasks, assignments), then as you process each document you "collect" relevant entries.
 
 This block **collects nodes and relationships** from parsed meeting notes to build a knowledge graph in Neo4j using CocoIndex:
 
@@ -276,11 +270,11 @@ meeting_nodes.export(
 )
 ```
 
-- This uses CocoIndex’s **Neo4j target** to export data to a graph database.
+- This uses CocoIndex's **Neo4j target** to export data to a graph database.
 - The `mapping=cocoindex.targets.Nodes(label="Meeting")` part tells CocoIndex: "Take each row collected in `meeting_nodes` and map it to a **node** in the Neo4j graph, with label `Meeting`."
 - `primary_key_fields=["note_file", "time"]` instructs CocoIndex which fields uniquely identify a node. That way, if the same meeting (same `note_file` and `time`) appears in different runs/updates, it will map to the same node — avoiding duplicates.
 
-### What “node export” means in CocoIndex → Neo4j context
+### What "node export" means in CocoIndex → Neo4j context
 
 | Collector rows | Graph entities |
 | --- | --- |
@@ -306,12 +300,12 @@ flow_builder.declare(
 )
 ```
 
-- The `declare(...)` [method](https://cocoindex.io/docs-v0/core/flow_def) on `flow_builder` lets you **pre‐declare** node labels that may appear as source or target nodes in relationships — even if you don’t have an explicit collector exporting them as standalone node rows.
+- The `declare(...)` [method](https://cocoindex.io/docs-v0/core/flow_def) on `flow_builder` lets you **pre‐declare** node labels that may appear as source or target nodes in relationships — even if you don't have an explicit collector exporting them as standalone node rows.
 - `Neo4jDeclaration` is the specification for such declared nodes: you give it the connection, the node label (type), and the `primary_key_fields` that uniquely identify instances of that node
 
 For example, for the `Person` Declaration,
 
-- You tell CocoIndex: “We expect `Person`‑labeled nodes to exist in the graph. They will be referenced in relationships (e.g. a meeting’s organizer or attendees, task assignee), but we don’t have a dedicated collector exporting Person rows.”
+- You tell CocoIndex: "We expect `Person`‑labeled nodes to exist in the graph. They will be referenced in relationships (e.g. a meeting's organizer or attendees, task assignee), but we don't have a dedicated collector exporting Person rows."
 - By declaring `Person`, CocoIndex will handle deduplication: multiple relationships referencing the same `name` will map to the same `Person` node in Neo4j (because `name` is the primary key).
 
 #### How declaration works with relationships & export logic
@@ -351,10 +345,10 @@ attended_rels.export(
 )
 ```
 
-- This call ensures that **ATTENDED relationships** — i.e. “Person → Meeting” (organizer or participant → the meeting) — are explicitly encoded as edges in the Neo4j graph.
-- It links `Person` nodes with `Meeting` nodes via `ATTENDED` relationships, enabling queries like “which meetings did Alice attend?” or “who attended meeting X?”.
+- This call ensures that **ATTENDED relationships** — i.e. "Person → Meeting" (organizer or participant → the meeting) — are explicitly encoded as edges in the Neo4j graph.
+- It links `Person` nodes with `Meeting` nodes via `ATTENDED` relationships, enabling queries like "which meetings did Alice attend?" or "who attended meeting X?".
 - By mapping `Person` and `Meeting` nodes correctly and consistently (using unique keys), it ensures a clean graph with no duplicate persons or meetings.
-- Because relationships get unique IDs and are exported with consistent keys, the graph remains stable across incremental updates: re-runs won’t duplicate edges or nodes.
+- Because relationships get unique IDs and are exported with consistent keys, the graph remains stable across incremental updates: re-runs won't duplicate edges or nodes.
 
 ![Map ATTENDED relationship](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/export.png)
 
@@ -389,7 +383,7 @@ decided_tasks_rels.export(
 ```
 
 - Encodes **DECIDED** edges: links `Meeting` → `Task` in the graph.
-- Enables queries like: “Tasks decided in Meeting X?” or “Which meeting decided Task Y?”
+- Enables queries like: "Tasks decided in Meeting X?" or "Which meeting decided Task Y?"
 - Consistent mapping avoids duplicate nodes; unique IDs keep the graph deduped on re-runs.
 
 ### Map ASSIGNED_TO Relationship
@@ -436,7 +430,7 @@ It takes all the **task assignment data** you collected (`assigned_rels`) — i.
 
 ## The Resulting Graph
 
-After running this pipeline, your Neo4j database contains a rich, queryable graph:
+After running this pipeline, query these nodes and relationships in Neo4j:
 
 ![Resulting Graph](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/neo4j.png)
 
@@ -505,45 +499,30 @@ cocoindex server -ci main
 
 ## Key CocoIndex Features Demonstrated
 
-This example showcases several powerful CocoIndex capabilities, each critical for enterprise deployment:
+The pipeline uses these CocoIndex features:
 
 ### 1. Incremental Processing with Change Detection
 
-Changes to only a few meeting notes files trigger re-processing of just those files, not the entire document set. This dramatically reduces:
-
-- LLM API costs (99%+ reduction for typical 1% daily churn)
-- Compute resource consumption
-- Database I/O and storage operations
-- Overall pipeline execution time
-
-In large enterprises, this transforms knowledge graph pipelines from expensive luxury to cost-effective standard practice.
+When meeting-note files change, CocoIndex reprocesses those files and reuses the work for unchanged files. This avoids repeating LLM extraction for the entire collection.
 
 ### 2. Data Lineage and Observability
 
-CocoIndex tracks data transformations step-by-step. You can see where every field in your Neo4j graph came from—tracing back through LLM extraction, collection, and mapping. This becomes critical when meeting notes are edited: you can identify which changes propagated to the graph and when.
+CocoIndex records data lineage through LLM extraction, collection, and mapping. Use it to trace a graph field back to the source data and processing steps that produced it.
 
 ### 3. Declarative Data Flow
 
-The entire pipeline is defined declaratively in Python without complex plumbing. The framework handles scheduling, error recovery, state management, and change tracking automatically. This reduces development time and operational burden compared to building incremental ETL logic from scratch.
+The pipeline is defined in Python. CocoIndex handles scheduling, error recovery, state management, and change tracking.
 
 ### 4. Schema Management and Idempotency
 
-CocoIndex automatically manages Neo4j schema based on your data transformations—creating nodes and relationships on-the-fly while enforcing primary key constraints for data consistency. Primary key fields ensure that document edits, section deletions, and task reassignments update existing records rather than creating duplicates—essential for maintaining data quality in large, evolving document sets.
+CocoIndex creates Neo4j nodes and relationships from the declared mappings. Primary key fields identify existing records during incremental updates, so changes can update or remove those records.
 
 ### 5. Real-time Update Capability
 
-By changing the execution mode from batch to live, the pipeline continuously monitors Google Drive for changes and updates your knowledge graph in near real-time. The moment a meeting note is updated, edited, or a section is deleted, the graph reflects those changes within the next polling interval.
+In live mode, the pipeline polls Google Drive for changes and updates the graph after processing them. Update latency depends on the polling interval and processing time.
 
-## Summary
-
-The combination of CocoIndex's incremental processing, LLM-powered extraction, and Neo4j's graph database creates a powerful system for turning unstructured meeting notes into queryable, actionable intelligence. In enterprise environments where document volumes reach millions and change rates run into thousands daily, incremental processing isn't a nice-to-have—it's essential for cost-effective, scalable knowledge graph operations.
-
-Rather than drowning in plain-text documents or reprocessing the entire corpus constantly, organizations can now explore meeting data as a connected graph, uncovering patterns and relationships invisible in static documents—without the prohibitive costs of full reprocessing.
-
-This example demonstrates a broader principle: **modern data infrastructure combines AI, databases, and intelligent orchestration**. CocoIndex handles the orchestration with change detection and incremental processing, LLMs provide intelligent understanding, and Neo4j provides efficient relationship querying. Together, they form a foundation for knowledge extraction at enterprise scale.
-
-## Support CocoIndex ❤️
+## Support CocoIndex
 
 If this example was helpful, the easiest way to support CocoIndex is to [give the project a ⭐ on GitHub](https://github.com/cocoindex-io/cocoindex).
 
-Your stars help us grow the community, stay motivated, and keep shipping better tools for real-time data ingestion and transformation.
+Share the example or [open an issue](https://github.com/cocoindex-io/cocoindex/issues) if you find a problem.

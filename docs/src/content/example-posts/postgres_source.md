@@ -6,7 +6,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/postgres_source/cover.png
 >
 ![PostgreSQL Product Indexing Flow](https://cocoindex.io/blobs/docs/img/examples/postgres_source/cover.png)
 
-[CocoIndex](https://github.com/cocoindex-io/cocoindex) is one framework for building **incremental** data flows across **structured and unstructured** sources. This tutorial shows how to take data from PostgreSQL table as source, transform with both AI and non-AI data mappings, and write them into a new PostgreSQL table with PgVector for semantic + structured search.
+Read a PostgreSQL table with [CocoIndex](https://github.com/cocoindex-io/cocoindex), apply AI and non-AI transformations, and write the results to a new PostgreSQL table with PgVector for semantic and structured search.
 
 ## PostgreSQL Product Indexing Flow
 
@@ -82,7 +82,7 @@ with data_scope["products"].row() as product:
 
 ### Data Transformation & AI Transformation
 
-Create a custom function creates a `full_description` field by combining the product’s category, name, and description.
+Create a custom function creates a `full_description` field by combining the product's category, name, and description.
 
 ```python
 @cocoindex.op.function()
@@ -245,7 +245,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
 This function
 
 - Converts the query text into an embedding (`query_vector`).
-- Compares it with each product’s stored embedding (`embedding`) using vector distance.
+- Compares it with each product's stored embedding (`embedding`) using vector distance.
 - Returns the closest matches, including both metadata and the similarity score (`distance`).
 
 ### Create an command-line interactive loop
@@ -283,10 +283,6 @@ This [example](https://cocoindex.io/examples/image_search#fast-api-application) 
 
 ## Why One Framework for Structured + Unstructured?
 
-- Unified workflow: All data— files, APIs, or databases—is processed through a single, consistent system, and AI operations are handled alongside standard data transformations.
-
-- True incremental processing with live updates: Out-of-box incremental support from the framework, process only what’s changed, avoiding redundant computation and ensuring faster updates to downstream indexes.
-
-- Reliable consistency: Embeddings and derived data always reflect the accurate, transformed state of each row, ensuring results are dependable and current in a single flow.
-
-- Streamlined operations: A single deployment manages everything, providing clear data lineage and reducing the complexity of the data stack.
+- Use the same flow model for files, APIs, and databases, with AI operations alongside other transformations.
+- Incremental processing reuses unchanged work and updates the derived index when source rows change.
+- Data lineage records how the flow produces embeddings and other derived fields.

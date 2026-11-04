@@ -4,15 +4,15 @@ image: https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/c
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/hn_trending_topics)
 
-![Building a Real-Time HackerNews Trending Topics Detector with CocoIndex: A Deep Dive into Custom Sources and AI](https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/cover.png)
+![HackerNews trending-topic pipeline with a custom source and LLM extraction](https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/cover.png)
 
 
-In the age of information overload, understanding what's trending—and why—is crucial for developers, researchers, and data engineers. HackerNews is one of the most influential tech communities, but manually tracking emerging topics across thousands of threads and comments is practically impossible.
+HackerNews discussions span thousands of threads and comments. An index of their topics lets you track what people are discussing without reading every thread.
 
 What if you could automatically index HackerNews content, extract topics using AI, and query trending discussions in real-time? That's exactly what CocoIndex enables through its [**Custom Sources**](https://cocoindex.io/blogs/custom-source) framework
 combined with [LLM-powered extraction](https://cocoindex.io/docs-v0/ai/llm).
 
-In this post, we'll explore the **HackerNews Trending Topics** example, a production-ready pipeline that demonstrates some of the most powerful concepts in CocoIndex: incremental data syncing, LLM-powered information extraction, and queryable indexes.
+Build a HackerNews trending-topic pipeline with incremental syncing, LLM topic extraction, and a Postgres index you can query.
 
 
 ## Why build from HackerNews?
@@ -108,7 +108,7 @@ class _HackerNewsThreadKey(NamedTuple):
     thread_id: str
 ```
 
-CocoIndex recommends using stable keys. HN thread IDs are perfect keys.
+Use HN thread IDs as stable keys.
 
 #### Value Type
 
@@ -728,11 +728,10 @@ cocoindex update -L main
 
 - Polls HackerNews every 30 seconds (configurable)
 - Automatically keeps index in sync
-- Perfect for dashboards and real-time apps
 
 ### Debug with CocoInsight
 
-CocoInsight lets you **visualize and debug your flow**, see the lineage of your data, and understand what’s happening under the hood.
+CocoInsight lets you **visualize and debug your flow**, see the lineage of your data, and understand what's happening under the hood.
 
 Start the server:
 
@@ -742,7 +741,7 @@ cocoindex server -ci main
 
 Then open the UI in your browser: [**`https://cocoindex.io/cocoinsight`**](https://cocoindex.io/cocoinsight)
 
-> CocoInsight has zero pipeline data retention — it’s safe for debugging and inspecting your flows locally.
+> CocoInsight connects to the local CocoIndex server and doesn't retain pipeline data.
 >
 
 Note that this requires QueryHandler setup in previous step.
@@ -762,7 +761,7 @@ cocoindex query main.py search_by_topic --topic "Claude"
 cocoindex query main.py search_text --query "artificial intelligence"
 ```
 
-You can also test the query handlers in CocoInsight. It shows the query results and the data lineage to debug, iterate, and audit easily.
+You can also test the query handlers in CocoInsight and inspect the results alongside their data lineage.
 
 ![CocoInsight](https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/cocoinsight.png)
 
@@ -770,18 +769,17 @@ You can also test the query handlers in CocoInsight. It shows the query results 
 
 ## What Can Be Built on Top of This Pipeline?
 
-Once you have structured topics extracted from HackerNews in real-time, the possibilities are vast. Here are some ideas:
+The topic index can support dashboards, topic queries, and additional analysis.
 
 ### 1. Real-Time Trending Dashboards
 
 With the `get_trending_topics()` and `get_threads_for_topic()` query handlers, you can create a live dashboard showing the hottest topics, which threads are driving discussion, and how the conversation evolves over time.
 
-- **Use case:** A tech news portal that surfaces trending technologies and products daily.
-- **Benefit:** Decision-makers, researchers, and investors can act on emerging trends faster than traditional news aggregation.
+- **Benefit:** Readers can inspect the topics and source threads in one view.
 
 ### 2. Sentiment-Aware Trend Analysis
 
-By enriching this pipeline with an LLM-powered sentiment extraction function, you can track not just what’s trending, but **how people feel about it**.
+Add a sentiment extraction function to track how people describe the topics they're discussing.
 
 - **Use case:** Detect early hype or criticism for a new product or technology.
 - **Benefit:** Investors or product managers can gauge public reception in near real-time.
@@ -804,7 +802,7 @@ The extracted topics can feed a **knowledge graph**, connecting companies, produ
 
 By integrating with an AI agent framework, the indexed topics and threads become actionable knowledge. Your agent could:
 
-- Answer questions like “What are the top AI models being discussed today?”
+- Answer questions like "What are the top AI models being discussed today?"
 - Suggest investment opportunities or competitive intelligence insights.
 - Automatically generate summaries or reports for Slack/email.
 
@@ -812,15 +810,15 @@ By integrating with an AI agent framework, the indexed topics and threads become
 
 1. **Incremental Sync**
 
-    Traditional pipelines fetch everything repeatedly. CocoIndex fetches only new or updated threads, dramatically reducing API calls and latency.
+    CocoIndex fetches new or updated threads and reuses unchanged data.
 
 2. **Declarative & Modular**
 
     Flows, collectors, and query handlers are modular. You can add new sources (Reddit, Twitter, internal chat logs) or new transformations (summaries, sentiment analysis, embeddings) without rewriting the entire pipeline.
 
-3. **LLM Integration is Seamless**
+3. **Structured LLM extraction**
 
-    CocoIndex treats LLMs as first-class citizens for structured extraction. You don’t need complex glue code — the framework handles transformation, type enforcement, and storage.
+    CocoIndex runs the LLM extraction step, enforces the output type, and stores the result.
 
 4. **Queryable Structured Index**
 
@@ -828,13 +826,11 @@ By integrating with an AI agent framework, the indexed topics and threads become
 
 5. **Supports Continuous Workflows**
 
-    CocoIndex pipelines can run live, with real-time updates every few seconds. Combine this with AI agents, and you have a **self-updating knowledge system** that reasons over the latest information.
+    CocoIndex pipelines can run in live mode and update the index as the source reports changes. AI agents can query that index.
 
 
-## Why CocoIndex Fits Continuous Monitoring Workloads
 
-CocoIndex is designed for systems that need to continuously monitor, detect, and respond to change with minimal engineering overhead. Its incremental syncing, structured extraction, and automatic index updates let you react to new data instantly—without rebuilding pipelines, reprocessing everything, or managing complex workflows. It’s a lightweight but powerful foundation for real-time analytics, alerting, and autonomous agents.
 
-## Support Us ❤️
+## Support Us
 
 Enjoying CocoIndex? Give us a [⭐️ on GitHub](https://github.com/cocoindex-io/cocoindex) and share it with your peers. Every star helps more developers discover the project and strengthens the community.
