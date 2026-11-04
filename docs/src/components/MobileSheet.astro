@@ -19,7 +19,7 @@ export interface Props {
   currentSlug?: string;
   /** Page headings (already filtered to H2/H3 by the layout, or raw — we re-filter here). */
   headings?: MarkdownHeading[];
-  /** Sidebar tree to surface in the Pages pane below the Site links. Pass
+  /** Sidebar tree to surface in the Pages pane before the Site links. Pass
    *  `null` to render no docs sidebar (e.g. on examples listing or 404).
    *  Defaults to the docs-sidebar tree (regular doc pages). */
   sidebarItems?: SidebarItem[] | null;
@@ -32,6 +32,15 @@ const {
 } = Astro.props;
 const sidebarItems: SidebarItem[] | null =
   sidebarItemsRaw === undefined ? sidebar : sidebarItemsRaw;
+// Put the current section first without changing the shared desktop order.
+function containsCurrent(item: SidebarItem): boolean {
+  return item.slug === currentSlug ||
+    (item.type === 'category' && item.items.some(containsCurrent));
+}
+const mobileItems = sidebarItems ? [
+  ...sidebarItems.filter(containsCurrent),
+  ...sidebarItems.filter((item) => !containsCurrent(item)),
+] : [];
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 // Site-level nav — same set rendered inline in Topbar.astro at desktop
@@ -89,20 +98,7 @@ function href(slug: string): string {
   )}
 
   <div class="mobile-pane" id="panePages" role="tabpanel" aria-labelledby="tabPages">
-    <div class="mobile-group">
-      <p class="mobile-h"><span>Site</span></p>
-      <nav class="mobile-list" aria-label="Site">
-        {SITE_LINKS.map((l) => (
-          <a href={l.href}><span class="lbl">{l.label}</span></a>
-        ))}
-      </nav>
-    </div>
-
-    {sidebarItems && sidebarItems.length > 0 && (
-      <hr class="mobile-divider" />
-    )}
-
-    {sidebarItems?.map((item) => (
+    {mobileItems.map((item) => (
       item.type === 'doc' ? (
         <div class="mobile-group">
           <nav class="mobile-list" aria-label={item.label ?? item.slug}>
@@ -138,6 +134,16 @@ function href(slug: string): string {
         </div>
       )
     ))}
+    {mobileItems.length > 0 && <hr class="mobile-divider" />}
+    <div class="mobile-group">
+      <p class="mobile-h"><span>Site</span></p>
+      <nav class="mobile-list" aria-label="Site">
+        {SITE_LINKS.map((l) => (
+          <a href={l.href}><span class="lbl">{l.label}</span></a>
+        ))}
+      </nav>
+    </div>
+
   </div>
 </MobileSheet>
 

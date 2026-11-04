@@ -655,3 +655,21 @@ a { color: var(--maroon-ink); }
 :root .nf .nf-list a span { color: var(--muted); font-weight: 400; font-size: 0.875rem; text-align: right; }
 :root .nf .nf-list a:hover { color: #FFFFFF; }
 :root .nf .nf-list a:hover span { color: var(--maroon-ink); }
+
+/* Keep the programming guide index compact so its topic links appear early. */
+:root .programming-overview .intro-meta {
+  gap: 8px 24px;
+  margin: 12px 0;
+  padding: 10px 0;
+}
+:root .programming-overview .intro-meta .m {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+:root .programming-overview .intro-meta .v { margin: 0; }
+:root .programming-overview .coco-grid { margin-top: 24px; }
+:root .programming-overview .coco-grid__head { margin-bottom: 16px; }
+:root .programming-overview .coco-grid__label { margin-top: 0; }
