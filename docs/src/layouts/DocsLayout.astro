@@ -280,7 +280,7 @@ const breadcrumbLd = {
         </div>
         </div>
 
-        <article class="prose">
+        <article class:list={["prose", { "programming-overview": slug === "programming_guide" }]}>
           <h1 set:html={renderedTitle} />
           {description && <p class="lede">{description}</p>}
           {introItems.length > 0 && (
