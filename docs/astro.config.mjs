@@ -7,6 +7,7 @@ import bamlGrammar from './scripts/vendor/baml.tmLanguage.json' with { type: 'js
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkCodeTitles from './scripts/remark-code-titles.mjs';
+import remarkExampleImages from './scripts/remark-example-images.mjs';
 import remarkMermaid from '@cocoindex/brand/remark-mermaid';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/redirects.ts';
@@ -31,6 +32,7 @@ const remarkPlugins = [
   remarkAdmonitions,
   remarkMermaid,
   remarkCodeTitles,
+  remarkExampleImages,
   [remarkLinkChecker, { base: BASE }],
 ];
 
