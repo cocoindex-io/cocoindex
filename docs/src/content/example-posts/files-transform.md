@@ -10,7 +10,7 @@ tags: [file-transform, incremental]
 
 We'll take a folder of Markdown files and render each one to HTML, writing the results to a second folder that stays in sync with the source. No database, no embeddings, no API keys — just files in, files out. It's the smallest complete CocoIndex pipeline, and the cleanest way to see the **source → transform → target** shape that every larger example is built from.
 
-The transform is your own ordinary `async` function. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, watching the directory, and keeping the output folder in sync — runs in a Rust engine underneath, so only the files that actually changed get re-rendered and re-written.
+Write the transform as an `async` function. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, watching the directory, and keeping the output folder in sync. As a result, only the files that actually changed get re-rendered and re-written.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform)
 

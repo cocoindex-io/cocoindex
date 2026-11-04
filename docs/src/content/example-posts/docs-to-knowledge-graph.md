@@ -10,9 +10,9 @@ tags: [knowledge-graph, llm-extraction]
 
 Documentation is a web of concepts pretending to be a list of files. "Incremental processing relies on change detection", "a target receives declared target states" — every page asserts relationships like these, but they're locked in prose. You can search docs for keywords; you can't ask how the concepts connect.
 
-In this tutorial, we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a folder of Markdown docs into a concept knowledge graph in [Neo4j](https://neo4j.com/). For each document, an LLM extracts a summary plus a set of `(subject, predicate, object)` triples — *"engine detects source changes"*, *"triple becomes relationship in graph"* — and the triples become a property graph you can query in Cypher.
+Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a folder of Markdown docs into a concept knowledge graph in [Neo4j](https://neo4j.com/). For each document, an LLM extracts a summary plus a set of `(subject, predicate, object)` triples (*"engine detects source changes"*, *"triple becomes relationship in graph"*) and the triples become a property graph you can query in Cypher.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed graph targets — runs in a Rust engine underneath, so editing one doc re-extracts only that doc, and the graph reconciles itself: no orphaned nodes, no stale edges, no cleanup scripts.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and graph target management. As a result, editing one doc re-extracts only that doc, and CocoIndex reconciles the graph nodes and edges.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph)
 
@@ -88,7 +88,7 @@ class Relationship:
 
 ## Shared resources: the lifespan
 
-The [lifespan](/docs/programming_guide/context/) provides what every step needs — the Neo4j connection factory and the LLM model id — once at startup, via [context keys](/docs/programming_guide/context/):
+The [lifespan](/docs/programming_guide/context/) provides what every step needs (the Neo4j connection factory and the LLM model id) once at startup, via [context keys](/docs/programming_guide/context/):
 
 ```python title="main.py"
 KG_DB = coco.ContextKey[neo4j.ConnectionFactory]("kg_db")
@@ -324,7 +324,7 @@ The example ships a small `markdown_files/` folder of sample docs so it runs out
 cocoindex update main
 ```
 
-To graph your own docs, drop `.md` / `.mdx` files into `markdown_files/` — or point `sourcedir` at your real docs folder — and re-run.
+To graph your own docs, drop `.md` / `.mdx` files into `markdown_files/` (or point `sourcedir` at your real docs folder) and re-run.
 
 ## Explore the graph
 
@@ -353,7 +353,7 @@ This is where the declarative model pays for itself. You never compute a diff or
 - **Edit one doc** — only that doc's component re-runs and re-extracts. If its triples changed, `build_graph` re-runs and diffs the graph: new entities and edges are inserted, ones no longer supported anywhere are deleted. Every other doc's extraction is served from the memo cache.
 - **Add a doc** — one new component, one extraction, plus the graph diff.
 - **Delete a doc** — its component disappears, so its `Document` node and `MENTION` edges are cleaned up automatically; concepts only that doc introduced vanish from the entity set on the next graph pass.
-- **Nothing changed** — the run completes in a fraction of a second with zero LLM calls.
+- **Nothing changed** — the run reuses cached work and makes zero LLM calls.
 
 **Logic changes** are reconciled the same way:
 

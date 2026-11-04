@@ -14,13 +14,13 @@ import ComponentWithChunks from '/src/components/diagrams/concepts/ComponentWith
 
 ## Incremental processing
 
-When processing data and storing results in targets (e.g., a database) for knowledge retrieval by AI agents or search systems, both your data and code evolve over time. Reprocessing everything after every change is expensive, slow, and disruptive. Incremental processing solves this by only processing what's changed, and applying those changes to the target.
+Data and code change over time. Incremental processing recomputes the affected work and applies the resulting changes to targets, such as a database used for search or AI retrieval.
 
 Implementing incremental processing by hand is complicated because:
 
 - You need to figure out what has changed and what has not.
 
-- You need to think in the time dimension and carefully compute the “delta”, e.g., what needs to be inserted, updated, or deleted in your target.
+- You need to think in the time dimension and carefully compute the "delta", e.g., what needs to be inserted, updated, or deleted in your target.
 
 - You need to track and preserve intermediate states to avoid full recomputation when possible.
 
@@ -73,7 +73,7 @@ For example, here's an app that reads PDFs from a drive, converts them to markdo
 
 ## Processing Component
 
-In practice, your source often contains many items — files, rows, or entities — each of which can be processed independently. A ***processing component*** groups an item's processing together with its target states. Each processing component runs independently and applies its target states to the external system as soon as it completes, without waiting for the rest of the app.
+In practice, your source often contains many items (files, rows, or entities) each of which can be processed independently. A ***processing component*** groups an item's processing together with its target states. Each processing component runs independently and applies its target states to the external system as soon as it completes, without waiting for the rest of the app.
 
 For example, if you have many files in a drive and want to process them file by file, your processing component would operate at the file level:
 
@@ -117,7 +117,7 @@ Let's see what happens when the source state changes in different ways:
       ] },
     ]}} />
 
-    When file `b.md` is updated — say its content is reduced to just one chunk instead of two — the processing component's target state changes from `vector3` and `vector4` to just `vector5`. CocoIndex deletes `vector3` and `vector4`, then inserts `vector5` into the vector database, all within a single transaction.
+    When file `b.md` is updated (say its content is reduced to just one chunk instead of two) the processing component's target state changes from `vector3` and `vector4` to just `vector5`. CocoIndex deletes `vector3` and `vector4`, then inserts `vector5` into the vector database, all within a single transaction.
   </Fragment>
   <Fragment slot="tab-2">
     <ComponentWithChunks scenario={{ rows: [
@@ -203,7 +203,7 @@ Here's how memoization behaves in different scenarios:
 
 ## Next steps
 
-Now that you understand the mental model, dive into the Programming Guide to learn how to use these concepts in code:
+Use these guides to implement the concepts:
 
 - [App](./app) — creating and running pipelines
 - [Target State](./target_state) — declaring what should exist in external systems

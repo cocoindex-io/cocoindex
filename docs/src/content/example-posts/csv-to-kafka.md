@@ -8,7 +8,7 @@ tags: [streaming, kafka]
 
 ![CSV in, Kafka out — row by row, live, with CocoIndex](https://cocoindex.io/blobs/docs-v1/img/examples/csv-to-kafka/cover.png)
 
-We'll take a folder of CSV files and turn it into a live [Kafka](https://kafka.apache.org/) stream — each row published as a JSON message, keyed by its primary key. Edit a cell and, within a second, exactly one message for that one row lands on the topic. Add a row, get one new message. Delete a file, and every row from it is tombstoned.
+We'll take a folder of CSV files and turn it into a live [Kafka](https://kafka.apache.org/) stream — each row published as a JSON message, keyed by its primary key. Edit a cell and the pipeline publishes one message for the changed row. Add a row, get one new message. Delete a file, and every row from it is tombstoned.
 
 The whole pipeline is ordinary `async` Python, and the Kafka topic is just a [target](/docs/connectors/kafka/) you declare — the same way you'd declare a Postgres table or a vector index. CocoIndex's Rust engine does the [incremental processing](/docs/programming_guide/core_concepts/) underneath: it tracks what each row last looked like and produces a message only for rows that *actually changed* — no producer loop, no dedup bookkeeping, no "did I already send this?" logic.
 

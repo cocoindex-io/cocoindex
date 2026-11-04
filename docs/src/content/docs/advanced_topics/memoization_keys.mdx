@@ -5,7 +5,7 @@ description: >
   registered functions, and layer state validation (e.g. mtime, then content hash)
   on top — plus NotMemoKeyable to opt out for stateful types.
 ---
-As described in [Function — Change detection](../programming_guide/function#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
+CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether it can reuse a memo. It fingerprints function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with `detect_change=True` through the same pipeline. Most types work automatically. You can customize fingerprinting and validation with:
 
 - **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
 - **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
@@ -413,7 +413,7 @@ coco.register_not_memo_keyable(StatefulGenerator)
 
 In either case, attempting to use the type as a memo key raises a clear error.
 
-## Best practices
+## Choosing keys and states
 
 - **Keep keys small and deterministic**: use identifiers and versions, not full payloads. No `id(obj)`, pointer addresses, or random values.
 - **Separate identity from freshness**: put stable identifiers (file path, URL, primary key) in the key. Put freshness checks (mtime, ETag, version) in the state.

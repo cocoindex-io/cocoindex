@@ -6,7 +6,7 @@ description: >
   resources.
 ---
 :::note[Prerequisite]
-This page builds on [Core Concepts](./core_concepts), which introduces the App and the source → transform → target-state model **with diagrams**. If the App model feels abstract, start there.
+Read [Core Concepts](./core_concepts) for the App and source → transform → target-state model, with diagrams.
 :::
 
 An **App** is the top-level runnable unit in CocoIndex.
@@ -165,7 +165,7 @@ You can also use the lifespan to provide resources (like database connections) t
 
 The lifespan runs automatically the first time any App updates — most users don't need to do anything beyond defining the lifespan and calling `app.update()`.
 
-If you need more explicit control — for example, to know when startup completes for health checks, or to explicitly trigger shutdown — you can manage the lifecycle directly:
+If you need more explicit control (for example, to know when startup completes for health checks, or to explicitly trigger shutdown) you can manage the lifecycle directly:
 
 ```python
 # Async API

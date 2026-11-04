@@ -8,9 +8,9 @@ tags: [llm-extraction, pdf]
 
 ![Index academic papers and extract metadata for AI agents with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/cover.png)
 
-We'll take a folder of academic PDFs and pull out the parts you actually want to query — **title, authors, abstract** — as structured, typed rows. The first page of a paper holds almost all of this, so we read just that page, hand the text to an LLM with a strict schema, and get back clean JSON. The same metadata is then embedded so you can search papers by meaning, not just by exact words.
+We'll take a folder of academic PDFs and pull out the parts you actually want to query (**title, authors, abstract**) as structured, typed rows. The first page of a paper holds almost all of this, so we read just that page, hand the text to an LLM with a strict schema, and get back clean JSON. The same metadata is then embedded so you can search papers by meaning, not just by exact words.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-extracted and re-embedded. One file fans out into three Postgres tables — paper metadata, an author-to-paper index, and embeddings — and CocoIndex keeps all three in sync for you.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only changed PDFs get re-extracted and re-embedded. One file fans out into three Postgres tables (paper metadata, an author-to-paper index, and embeddings) and CocoIndex keeps all three in sync for you.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata)
 
@@ -68,7 +68,7 @@ class PaperMetadataModel(BaseModel):
 
 ## Define the data and shared resources
 
-Each output table maps to one dataclass: `PaperMetadataRow` is one row per paper, `AuthorPaperRow` is one row per (author, paper) pair — an index you can join against — and `MetadataEmbeddingRow` is one embedded chunk of text. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+Each output table maps to one dataclass: `PaperMetadataRow` is one row per paper, `AuthorPaperRow` is one row per (author, paper) pair (an index you can join against) and `MetadataEmbeddingRow` is one embedded chunk of text. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

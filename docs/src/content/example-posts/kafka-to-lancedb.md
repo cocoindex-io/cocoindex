@@ -221,6 +221,6 @@ A catch-up run (`cocoindex update main.py`) drains the backlog once and exits; l
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/kafka_to_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/kafka_to_lancedb). It pairs with the producer side — [csv-to-kafka](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka) turns a folder of CSV files into the very topic this example consumes, so you can run both and watch a row edited on disk land in the right LanceDB table.
+The full, runnable example is in the CocoIndex repo: [examples/kafka_to_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/kafka_to_lancedb). It pairs with the producer side — [csv-to-kafka](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka) turns a folder of CSV files into the topic this example consumes, so you can run both and watch a row edited on disk land in the right LanceDB table.
 
 Got a topic full of mixed events you want sorted into typed tables? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

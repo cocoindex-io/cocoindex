@@ -177,7 +177,7 @@ for chunk in chunks:
 
 By default, `app.update()` runs in **catch-up mode**: it scans all sources, processes what changed since the last run (memoized components are skipped), syncs target states, and returns. Each call still has to scan sources to discover changes.
 
-**Live mode** keeps the app running after catch-up and lets components stream changes continuously from their sources (e.g., file watcher, Kafka consumer), applying them with very low latency.
+**Live mode** keeps the app running after catch-up and lets components stream changes continuously from their sources (e.g., file watcher, Kafka consumer), applying them with low latency.
 
 ```python
 # Enable live mode
@@ -387,7 +387,7 @@ cocoindex ls [main.py]                 # List apps
 cocoindex show main.py [--tree]        # Show component paths
 ```
 
-## Best Practices
+## Pipeline design guidelines
 
 ### 1. Use `@coco.fn` on All Processing Functions
 

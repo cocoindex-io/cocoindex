@@ -8,7 +8,7 @@ description: >
 import MountVsUseMount from '/src/components/diagrams/concepts/MountVsUseMount.astro';
 
 :::note[Prerequisite]
-This page builds on [Core Concepts](./core_concepts), which introduces processing components, target states, and incremental sync **with diagrams** — the per-file fan-out and the chunk-embedding pipeline it walks through are referenced throughout this page. If the mounting APIs below feel abstract, start there.
+Read [Core Concepts](./core_concepts) for processing components, target states, and incremental sync. Its per-file fan-out and chunk-embedding diagrams illustrate the mounting APIs below.
 :::
 
 Most apps process many independent source items — files, rows, or entities. A **Processing Component** is the unit of execution for one: it runs that item's transformation logic and declares the set of **target states** produced for it.
@@ -275,7 +275,7 @@ To react to background failures, you can:
 - Install [exception handlers](../advanced_topics/exception_handlers#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic. A handler that raises propagates the failure through `await handle.ready()` if you choose to await it.
 - [Monitor app progress](../advanced_topics/progress_monitoring) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
 
-For the full picture — including the critical-path principle applied to every API, interrupted update recovery, and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers).
+For the full picture (including the critical-path principle applied to every API, interrupted update recovery, and the exception handler API) see [Error Handling](../advanced_topics/exception_handlers).
 
 ### No rollback, convergent roll-forward
 
@@ -286,7 +286,7 @@ CocoIndex does not roll back partial writes. The two-phase design makes this saf
 
 ## How big should a processing component be?
 
-When defining processing components, think about granularity — what one path represents — because it determines the sync boundary for target states.
+When defining processing components, think about granularity (what one path represents) because it determines the sync boundary for target states.
 
 For example, if you're processing files:
 
