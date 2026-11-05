@@ -89,6 +89,8 @@ app = coco.App("DiscordToMarkdown", app_main, outdir=pathlib.Path("./discord_exp
 
 Each channel becomes a component keyed by its ID, and each message and thread a component under it, keyed by its own ID. Delete a message in Discord and run again: its file disappears. Remove a channel from `CHANNEL_IDS`: all its files disappear.
 
+For semantic search over a forum channel, chunked and embedded into Postgres with pgvector, see the [`discord_text_embedding` example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/discord_text_embedding).
+
 ### DiscordApp
 
 The bot's token, plus the authenticated HTTP connection it opens.

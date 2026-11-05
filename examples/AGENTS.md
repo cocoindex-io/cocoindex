@@ -109,6 +109,7 @@ A walkthrough URL means there's a step-by-step guide at
 - `pdf_embedding` — PDFs → markdown → chunks → pgvector.
 - `paper_metadata` — extract title/authors/abstract from PDFs → Postgres + embeddings.
 - `amazon_s3_embedding` / `gdrive_text_embedding` / `oci_object_storage_embedding` — same flow, remote source (S3 / Google Drive / OCI).
+- `discord_text_embedding` — Discord forum posts and messages → chunks → pgvector, with a script that seeds a forum.
 - `postgres_source` — read from an existing Postgres table as the source.
 - `entire_session_search` — semantic search over AI coding sessions captured by Entire.
 - `sec_edgar_analytics` — multi-format SEC filings → Apache Doris with a vector **and** a full-text index; hybrid (semantic + keyword) RRF search. *(walkthrough: sec-edgar-analytics)*
