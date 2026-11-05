@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import hashlib
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, NamedTuple
+from typing import Any, ClassVar, Generic, NamedTuple, TypeVar
 
 import cocoindex as coco
 from cocoindex.resources.file import FileLike
@@ -61,12 +61,16 @@ def digest_of_json(value: Json) -> bytes:
     return digest_bytes(canonical_json(value).encode("utf-8"))
 
 
+# The file type a kind's walk yields: ``localfs.File``, ``google_drive.DriveFile``.
+FileT = TypeVar("FileT", bound=FileLike[Any])
+
+
 class Listing(NamedTuple):
     items: dict[str, Item]
     digest: str  # of the walk, for the session's trace
 
 
-class FolderSource(ABC):
+class FolderSource(ABC, Generic[FileT]):
     """A ``src:`` handle over a folder of files, whatever holds the folder.
 
     Its memo key is its identity, not its contents: what a session read
@@ -85,7 +89,7 @@ class FolderSource(ABC):
     def __coco_memo_key__(self) -> object: ...
 
     @abstractmethod
-    async def files(self) -> dict[str, FileLike[Any]]:
+    async def files(self) -> dict[str, FileT]:
         """One walk: every file by its key, in key order. Records nothing."""
 
     @abstractmethod
@@ -93,7 +97,7 @@ class FolderSource(ABC):
         """The record key of one observation (``args`` is the call's canonical JSON)."""
 
     @abstractmethod
-    async def entries(self, files: dict[str, FileLike[Any]]) -> Json:
+    async def entries(self, files: dict[str, FileT]) -> Json:
         """What the fan-out's walk records: every file with what identifies its content."""
 
     @abstractmethod
@@ -150,7 +154,7 @@ class FolderSource(ABC):
         self,
         method: str,
         args: dict[str, Json],
-        files: dict[str, FileLike[Any]] | None = None,
+        files: dict[str, FileT] | None = None,
     ) -> Json:
         result = await self.observe(method, args, files)
         coco.use_data_dep(
@@ -164,7 +168,7 @@ class FolderSource(ABC):
         self,
         method: str,
         args: dict[str, Json],
-        files: dict[str, FileLike[Any]] | None = None,
+        files: dict[str, FileT] | None = None,
     ) -> Json:
         """Compute an observation without recording it (the validator's path).
 

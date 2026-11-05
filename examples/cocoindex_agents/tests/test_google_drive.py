@@ -386,9 +386,9 @@ def test_another_account_or_no_sign_in_reruns_what_was_read(fixture: Fixture) ->
     # Signed out: opening the source fails, which an open session contains
     # and reports; the model sees the error class, not a token.
     google_drive.UserAccount().token_path.unlink()
-    out = f.run()
+    f.run()
     assert f.executed()["open_source"] == 1
-    assert "SignInRequiredError" in out.answer or f.model.calls_for("orchestrator") >= 1
+    assert "SignInRequiredError" in f.scenario.transcripts["orchestrator"]
     transcript = "".join(f.scenario.transcripts.values())
     for secret in ("access-value", "refresh-value", "secret-value"):
         assert secret not in transcript
@@ -396,6 +396,33 @@ def test_another_account_or_no_sign_in_reruns_what_was_read(fixture: Fixture) ->
     # Signed in again: heals.
     sign_in(f.token_path, "other@example.com")
     healed = f.run()
-    assert "items" in healed.answer or "collection" in healed.answer
+    assert '"handle":"coll:items"' in healed.answer and '"failed":0' in healed.answer
+    f.run()
+    assert f.model.calls == 0 and f.executed() == {}
+
+
+def test_a_revoked_sign_in_reruns_the_session_instead_of_failing_the_run(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Google refusing the stored sign-in (expired or revoked) surfaces inside the
+    Drive walk, in the validators as well as in the body: a validator treats it
+    as an invalid record, so the session re-runs and contains it."""
+    f = fixture
+    first = f.run()
+    revoked = True
+
+    def build_service(spec: google_drive.GoogleDriveSourceSpec) -> object:
+        if revoked:  # what the first request's token refresh raises
+            raise google_drive.SignInRequiredError("Google refused the stored sign-in")
+        return f.drive.service()
+
+    monkeypatch.setattr(_source, "_build_service", build_service)
+    f.run()  # does not raise: the validators did not fail the run
+    assert f.executed()["open_source"] == 1
+    assert "SignInRequiredError" in f.scenario.transcripts["orchestrator"]
+
+    revoked = False
+    healed = f.run()
+    assert healed.answer == first.answer
     f.run()
     assert f.model.calls == 0 and f.executed() == {}

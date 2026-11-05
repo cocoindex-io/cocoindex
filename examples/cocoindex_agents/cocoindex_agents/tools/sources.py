@@ -21,7 +21,7 @@ from typing import Any
 
 import cocoindex as coco
 from cocoindex.connectors import localfs
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import PatternFilePathMatcher
 
 from ..documents import Document, document_media_type
 from ..errors import ToolError
@@ -86,7 +86,7 @@ def _mtime_ns(path: pathlib.Path) -> int | None:
         return None
 
 
-class LocalDirSource(FolderSource):
+class LocalDirSource(FolderSource[localfs.File]):
     """A ``src:`` handle over ``localfs.walk_dir``."""
 
     kind = "localfs"
@@ -109,14 +109,14 @@ class LocalDirSource(FolderSource):
     def walker(self) -> localfs.DirWalker:
         return localfs.walk_dir(self.root, recursive=True, path_matcher=self._matcher())
 
-    async def files(self) -> dict[str, FileLike[Any]]:
+    async def files(self) -> dict[str, localfs.File]:
         found = {key: file async for key, file in self.walker().items()}
         return dict(sorted(found.items()))
 
     def observation_key(self, method: str, args: str) -> object:
         return Observation(str(self.root), self.patterns, method, args)
 
-    async def entries(self, files: dict[str, FileLike[Any]]) -> Json:
+    async def entries(self, files: dict[str, localfs.File]) -> Json:
         def stat_all() -> list[tuple[str, int, int]]:
             out: list[tuple[str, int, int]] = []
             for key, file in files.items():
@@ -183,7 +183,7 @@ class LocalDirSource(FolderSource):
 )
 async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
     patterns = tuple(args.get("patterns", ()))
-    src: FolderSource
+    src: FolderSource[Any]
     where: dict[str, Json]
     if args["kind"] == "google_drive":
         src = drive.GoogleDriveFolderSource(drive.folder_id_of(args["path"]), patterns)

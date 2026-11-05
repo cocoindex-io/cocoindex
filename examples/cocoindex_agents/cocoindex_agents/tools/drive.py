@@ -38,11 +38,10 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
 
 import cocoindex as coco
 from cocoindex.connectors import google_drive
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import PatternFilePathMatcher
 
 from ..documents import Document
 from ..errors import ToolError
@@ -113,7 +112,13 @@ DriveFileState = tuple[str, str, str] | None
 
 
 def _source_of(ref: DriveSourceRef) -> GoogleDriveFolderSource | None:
-    """The recorded source, if the recorded account is still signed in at its token path."""
+    """The recorded source, if the recorded account is still signed in at its token path.
+
+    ``None`` makes the record invalid, so the session re-runs: its body meets the
+    same missing sign-in in ``open_source``, where an open session contains it
+    (DESIGN.md §7). Raising here instead would fail the whole run, since the
+    engine propagates a validator's exception.
+    """
     account = google_drive.UserAccount(ref.token_path)
     try:
         email = account.email
@@ -131,7 +136,11 @@ async def _validate_observation(
     src = _source_of(key.source)
     if src is None:
         return coco.MemoStateOutcome(state=prev)
-    digest = digest_of_json(await src.observe(key.method, json.loads(key.args)))
+    try:
+        observed = await src.observe(key.method, json.loads(key.args))
+    except google_drive.SignInError:  # refused at refresh: expired or revoked
+        return coco.MemoStateOutcome(state=prev)
+    digest = digest_of_json(observed)
     return coco.MemoStateOutcome(state=digest, memo_valid=digest == prev)
 
 
@@ -142,7 +151,10 @@ async def _validate_file_read(
     src = _source_of(key.source)
     if src is None:
         return coco.MemoStateOutcome(state=prev)
-    file = _drive_files(await src.files()).get(key.key)
+    try:
+        file = (await src.files()).get(key.key)
+    except google_drive.SignInError:  # refused at refresh: expired or revoked
+        return coco.MemoStateOutcome(state=prev)
     if prev is None or file is None:
         return coco.MemoStateOutcome(
             state=prev, memo_valid=prev is None and file is None
@@ -152,7 +164,10 @@ async def _validate_file_read(
         return coco.MemoStateOutcome(state=prev)
     if _modified_time(file) == modified:
         return coco.MemoStateOutcome(state=prev, memo_valid=True)
-    state = await _file_state(file)
+    try:
+        state = await _file_state(file)
+    except google_drive.SignInError:
+        return coco.MemoStateOutcome(state=prev)
     return coco.MemoStateOutcome(state=state, memo_valid=state[2] == fingerprint)
 
 
@@ -176,19 +191,7 @@ async def _file_state(file: google_drive.DriveFile) -> tuple[str, str, str]:
     return (file.info.file_id, _modified_time(file), fingerprint)
 
 
-def _drive_files(files: dict[str, FileLike[Any]]) -> dict[str, google_drive.DriveFile]:
-    """The walk as the connector's files, which carry the listing's metadata."""
-    out: dict[str, google_drive.DriveFile] = {}
-    for key, file in files.items():
-        if not isinstance(file, google_drive.DriveFile):
-            raise TypeError(
-                f"a Drive walk holds DriveFile objects, not {type(file).__name__}"
-            )
-        out[key] = file
-    return out
-
-
-class GoogleDriveFolderSource(FolderSource):
+class GoogleDriveFolderSource(FolderSource[google_drive.DriveFile]):
     """A ``src:`` handle over one Drive folder, read as the signed-in account."""
 
     kind = "google_drive"
@@ -222,7 +225,7 @@ class GoogleDriveFolderSource(FolderSource):
             else None
         )
 
-    async def files(self) -> dict[str, FileLike[Any]]:
+    async def files(self) -> dict[str, google_drive.DriveFile]:
         """One walk through the Drive API, keyed by path; a path two files share keeps both.
 
         Drive allows two files of one name in a folder; the second (by id)
@@ -233,7 +236,7 @@ class GoogleDriveFolderSource(FolderSource):
         )
         listed = await asyncio.to_thread(lambda: list(google_drive.list_files(spec)))
         matcher = self._matcher()
-        found: dict[str, FileLike[Any]] = {}
+        found: dict[str, google_drive.DriveFile] = {}
         for file in sorted(listed, key=lambda f: (f.file_path.path, f.info.file_id)):
             if matcher is not None and not matcher.is_file_included(
                 file.file_path.path
@@ -248,10 +251,10 @@ class GoogleDriveFolderSource(FolderSource):
     def observation_key(self, method: str, args: str) -> object:
         return DriveObservation(self.ref(), method, args)
 
-    async def entries(self, files: dict[str, FileLike[Any]]) -> Json:
+    async def entries(self, files: dict[str, google_drive.DriveFile]) -> Json:
         return [
             (key, file.info.file_id, _modified_time(file), file.info.md5_checksum or "")
-            for key, file in _drive_files(files).items()
+            for key, file in files.items()
         ]
 
     async def read(self, args: dict[str, Json]) -> str | Document:
@@ -260,7 +263,7 @@ class GoogleDriveFolderSource(FolderSource):
         elsewhere in the folder does not touch the session.
         """
         file_key = file_key_arg(args)
-        file = _drive_files(await self.files()).get(file_key)
+        file = (await self.files()).get(file_key)
         state: DriveFileState = None
         data = b""
         if file is not None:

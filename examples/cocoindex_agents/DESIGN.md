@@ -376,7 +376,11 @@ and the read. The second kind is a Google Drive folder
   transcript, and no token is anywhere the engine stores or the model sees.
   A run with no sign-in fails in `open_source`, which an open session
   contains and reports as the error's class name; the session re-runs until
-  a run finds a sign-in.
+  a run finds a sign-in. A sign-in Google refuses (the consent expired or
+  was revoked) surfaces inside the Drive walk, in the validators too: they
+  treat it as an invalid record rather than raising, since the engine
+  propagates a validator's exception and would fail the run, so it reaches
+  the same contained failure.
 - **Keys are paths under the folder** (`archive/old.txt`), as a local file's
   key is its relative path, so a worker names its output after the file.
   Two files of one name in one folder (Drive allows it) keep both: the
@@ -409,6 +413,7 @@ re-running one worker's two turns; an added and a removed file),
 `::test_a_reader_is_skipped_while_its_file_is_unchanged_without_a_download`
 (an edit elsewhere and a touch do not re-run the reader; an edit and a rename
 do), `::test_another_account_or_no_sign_in_reruns_what_was_read`,
+`::test_a_revoked_sign_in_reruns_the_session_instead_of_failing_the_run`,
 `::test_folder_ids_come_from_links_or_ids`.
 
 ## 4. Replay policy: "dump once"
@@ -1071,6 +1076,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 |---|---|
 | LiteLLM client: the API call itself (rendering and response parsing are covered; the sample flows under `flows/` drive it with a real model and record the measured inference counts) | §4 |
 | The recipes' effect on a real model: that user-level prompts decompose the same way run after run is measured by the drives recorded in `flows/README.md`, not by a scripted test | §3 |
+| The Google Drive source against the real Drive API and a real sign-in: the tests use an in-memory Drive; the `drive` flow has not been driven against an account yet, and `flows/README.md` records it when it is | §3 |
 | The `file` content part reaching each provider's API as a document: LiteLLM's transformation is read, not tested here; the `orders` flow drives it with the default model and records what it extracted | §3 |
 
 **Target** (contract settled where stated, not implemented):
