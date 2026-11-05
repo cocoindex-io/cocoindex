@@ -22,6 +22,7 @@ cocoindex_code_match = { path = "../code_match" }
 
 pyo3 = { workspace = true, features = ["uuid", "bytes"] }
 pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
+numpy = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -30,3 +31,4 @@ tracing = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+turbovec = { workspace = true }

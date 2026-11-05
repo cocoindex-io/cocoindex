@@ -40,6 +40,7 @@ hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
 nix = { version = "0.30", features = ["fs", "term"] }
 itertools = "0.14.0"
+numpy = "0.29.0"
 parking_lot = "0.12.5"
 pyo3 = { version = "0.29.0", features = ["auto-initialize", "chrono", "uuid"] }
 pyo3-async-runtimes = { version = "0.29.0", features = ["tokio-runtime"] }
@@ -71,6 +72,7 @@ tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17", features = ["rt"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+turbovec = "1.1.2"
 unicase = "2.8.1"
 uuid = { version = "1.18.1", features = ["serde", "v4", "v8"] }
 
