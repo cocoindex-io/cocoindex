@@ -3,8 +3,10 @@ name = "cocoindex-agents"
 version = "0.1.0"
 description = "CocoIndex example: incremental agents over your data — subagents as components, model turns as memoized functions."
 requires-python = ">=3.11"
-# use_state, memo_key on components and the APIs this example builds on: v1.1.0 and later.
-dependencies = ["cocoindex>=1.1.0"]
+# use_state, memo_key on components and the APIs this example builds on: v1.1.0 and
+# later; the Google Drive source signs in with `google_drive.UserAccount` (unreleased
+# at the time of writing: run from the repository with the local build).
+dependencies = ["cocoindex[google_drive]>=1.1.0"]
 
 [project.optional-dependencies]
 llm = ["litellm!=1.107.0"]

@@ -1,58 +1,35 @@
-"""Source handles. v1: a local directory. Other connectors follow the same shape.
+"""Source handles and the tools over them: a local directory, or a Google Drive
+folder (``drive.py``). The contract both keep is ``folder.FolderSource``; this
+module holds the local kind's records and walk, and the ``open_source``,
+``call`` and ``read_input`` tools.
 
-A source handle exposes stable observations (widened ``stats``, hash-stable
-``sample``), per-item reads, and — for planners only — the volatile ``keys``.
-A source's contents are not an argument of anyone, so every read through it is
-**recorded** as a data dependency of the session that made it
-(``coco.use_data_dep``, DESIGN.md §7): the session is skipped next run only
-while every recorded read validates. Two kinds of record:
-
-- ``OBSERVATION`` — ``stats``, ``sample``, ``keys`` and the ``listing`` a
-  ``for_each`` walks. Keyed by the source and the call; the state is a digest
-  of what came back. Validated by observing again and comparing, so a change
-  that leaves the observation byte-identical (a new file inside the same
-  widened bucket, a sample that did not move) keeps the session skippable.
-- ``FILE_READ`` — ``read(key)``. Keyed by the file's path; the state is its
-  mtime and content digest, or ``None`` when it did not exist. An unchanged
-  mtime validates without reading the file.
-
-A source may only be an input of open sessions: a closed session's memo key
-must cover everything it reads, and ``open_source`` is not ``closed_ok``.
-
-What a read returns is decided by the file's media type (``documents.py``):
-text as text; a document (a PDF) as a reference, with the bytes attached to
-the session for the client to render. ``sample`` shows a document's media
-type and size in place of a text head.
+The local kind's records: an ``OBSERVATION`` is keyed by the root, the
+patterns and the call, and validated by walking again; a ``FILE_READ`` is
+keyed by the file's path, its state the mtime and content digest (``None``
+for a file that did not exist), and an unchanged mtime validates without
+reading the file.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import pathlib
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import Any
 
 import cocoindex as coco
 from cocoindex.connectors import localfs
-from cocoindex.resources.file import PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
 from ..documents import Document, document_media_type
 from ..errors import ToolError
-from ..handles import MethodSpec, Volatility, int_arg
+from ..handles import Volatility
 from ..spec import Item, Json
-from ..transcript import canonical_json, digest_json, normalize_json
-from . import SessionContext, tool
-from .stats import bottom_k, format_range, widen_count
-
-_SAMPLE_HEAD_CHARS = 400
-
-# What ``for_each`` walks: every file by key with its mtime and size, so an
-# edit, a touch, an addition or a removal all re-run the fan-out's session.
-# Not a model-visible method: ``call`` rejects it.
-_LISTING = "listing"
+from ..transcript import digest_json, normalize_json
+from . import SessionContext, drive, tool
+from .folder import FolderSource, content_of, digest_bytes, digest_of_json, file_key_arg
 
 # mtime and digest of a file that was read; ``None`` when it did not exist.
 FileState = tuple[int, bytes] | None
@@ -60,7 +37,7 @@ FileState = tuple[int, bytes] | None
 
 @dataclass(frozen=True)
 class Observation:
-    """The key of an ``OBSERVATION`` record: which source, which call."""
+    """The key of a local ``OBSERVATION`` record: which source, which call."""
 
     root: str
     patterns: tuple[str, ...]
@@ -68,18 +45,10 @@ class Observation:
     args: str  # canonical JSON of the call's arguments
 
 
-def _digest(data: bytes) -> bytes:
-    return hashlib.sha256(data).digest()
-
-
-def _digest_json(value: Json) -> bytes:
-    return _digest(canonical_json(value).encode("utf-8"))
-
-
 async def _validate_observation(key: Observation, prev: bytes) -> coco.MemoStateOutcome:
     """Observe again; valid iff the result is byte-identical to what was recorded."""
     src = LocalDirSource(pathlib.Path(key.root), key.patterns)
-    digest = _digest_json(await src.observe(key.method, json.loads(key.args)))
+    digest = digest_of_json(await src.observe(key.method, json.loads(key.args)))
     return coco.MemoStateOutcome(state=digest, memo_valid=digest == prev)
 
 
@@ -98,7 +67,7 @@ async def _validate_file_read(key: str, prev: FileState) -> coco.MemoStateOutcom
     if mtime == prev[0]:
         return coco.MemoStateOutcome(state=prev, memo_valid=True)
     try:
-        digest = _digest(await asyncio.to_thread(path.read_bytes))
+        digest = digest_bytes(await asyncio.to_thread(path.read_bytes))
     except OSError:  # vanished between the stat and the read
         return coco.MemoStateOutcome(state=prev)
     return coco.MemoStateOutcome(state=(mtime, digest), memo_valid=digest == prev[1])
@@ -117,20 +86,11 @@ def _mtime_ns(path: pathlib.Path) -> int | None:
         return None
 
 
-class Listing(NamedTuple):
-    items: dict[str, Item]
-    digest: str  # of the walk, for the session's trace
-
-
-class LocalDirSource:
-    """A ``src:`` handle over ``localfs.walk_dir``.
-
-    Its memo key is its identity (root and patterns), not its contents: what a
-    session read through it is recorded per call, as the module docstring says.
-    """
+class LocalDirSource(FolderSource):
+    """A ``src:`` handle over ``localfs.walk_dir``."""
 
     kind = "localfs"
-    closed_input_ok = False
+    observation = OBSERVATION
 
     def __init__(self, root: pathlib.Path, patterns: tuple[str, ...]) -> None:
         self.root = root
@@ -149,113 +109,29 @@ class LocalDirSource:
     def walker(self) -> localfs.DirWalker:
         return localfs.walk_dir(self.root, recursive=True, path_matcher=self._matcher())
 
-    async def files(self) -> dict[str, localfs.File]:
-        """One walk: every file by its key, in key order. Records nothing."""
+    async def files(self) -> dict[str, FileLike[Any]]:
         found = {key: file async for key, file in self.walker().items()}
         return dict(sorted(found.items()))
 
-    def methods(self) -> tuple[MethodSpec, ...]:
-        return (
-            MethodSpec(
-                "stats",
-                "Widened file count (a range, not an exact number).",
-                Volatility.STABLE,
-            ),
-            MethodSpec(
-                "sample",
-                "`k` representative files (default 5) with the head of each text file; "
-                "a PDF shows its media type and size instead. The set is hash-stable, "
-                "so it barely changes when files are added.",
-                Volatility.STABLE,
-                args=("k",),
-            ),
-            MethodSpec(
-                "read",
-                "One file by key: its full text, or for a PDF a reference with the "
-                "document attached to your next message.",
-                Volatility.PER_ITEM,
-                args=("key",),
-            ),
-            MethodSpec(
-                "keys",
-                "Every file key (optionally under `prefix`). Volatile: planners only.",
-                Volatility.VOLATILE,
-                args=("prefix",),
-            ),
-        )
+    def observation_key(self, method: str, args: str) -> object:
+        return Observation(str(self.root), self.patterns, method, args)
 
-    async def call(self, method: str, args: dict[str, Json]) -> Json:
-        """A model-visible method: observe or read, and record what was seen."""
-        if method == "read":
-            return await self.read(args)
-        if method not in {m.name for m in self.methods()}:
-            raise ToolError(f"unknown method {method!r} on a localfs source")
-        return await self._observe_recorded(method, args)
+    async def entries(self, files: dict[str, FileLike[Any]]) -> Json:
+        def stat_all() -> list[tuple[str, int, int]]:
+            out: list[tuple[str, int, int]] = []
+            for key, file in files.items():
+                st = os.stat(file.file_path.resolve())
+                out.append((key, st.st_mtime_ns, st.st_size))
+            return out
 
-    async def listing(self) -> Listing:
-        """Every file as a ``for_each`` item, recorded as one observation of the walk."""
-        files = await self.files()
-        walk = await self._observe_recorded(_LISTING, {}, files)
-        return Listing(
-            {key: Item(key, file) for key, file in files.items()}, digest_json(walk)
-        )
-
-    async def _observe_recorded(
-        self,
-        method: str,
-        args: dict[str, Json],
-        files: dict[str, localfs.File] | None = None,
-    ) -> Json:
-        result = await self.observe(method, args, files)
-        coco.use_data_dep(
-            OBSERVATION,
-            key=Observation(
-                str(self.root), self.patterns, method, canonical_json(args)
-            ),
-            state=_digest_json(result),
-        )
-        return result
-
-    async def observe(
-        self,
-        method: str,
-        args: dict[str, Json],
-        files: dict[str, localfs.File] | None = None,
-    ) -> Json:
-        """Compute an observation without recording it (the validator's path).
-
-        ``files`` is the walk to observe; a caller that already walked passes it.
-        """
-        if files is None:
-            files = await self.files()
-        if method == "stats":
-            # Target (DESIGN.md §5): hysteresis against the previous bucket, kept in
-            # use_state on the session component. Not implemented yet.
-            return {"files": format_range(widen_count(len(files)))}
-        if method == "sample":
-            return [
-                await _sample_entry(key, files[key])
-                for key in bottom_k(files, int_arg(args, "k", 5))
-            ]
-        if method == "keys":
-            prefix = str(args.get("prefix", ""))
-            return [k for k in files if k.startswith(prefix)]
-        if method == _LISTING:
-            return await _listing(files)
-        raise ValueError(f"not an observation: {method!r}")  # call() screens the model
+        return await asyncio.to_thread(stat_all)
 
     async def read(self, args: dict[str, Json]) -> str | Document:
-        """One file, recorded as a read of that file alone: its text, or a document.
-
-        Resolved from the key directly rather than through a walk, so the
+        """Resolved from the key directly rather than through a walk, so the
         record covers this file and not the listing: an edit elsewhere under
-        the root does not touch the session. A document is returned as is;
-        the ``call`` tool attaches it to the session and returns its
-        reference.
+        the root does not touch the session.
         """
-        file_key = args.get("key")
-        if not isinstance(file_key, str):
-            raise ToolError("read needs a string `key`")
+        file_key = file_key_arg(args)
         path = self._path_of(file_key)
         # Stat before reading, so the recorded mtime is never newer than the bytes.
         mtime = await asyncio.to_thread(_mtime_ns, path)
@@ -265,16 +141,13 @@ class LocalDirSource:
         if mtime is not None:
             try:
                 data = await file.read()
-                state = (mtime, _digest(data))
+                state = (mtime, digest_bytes(data))
             except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
                 state = None  # vanished, or the key names a directory
         coco.use_data_dep(FILE_READ, key=str(path), state=state)
         if state is None:
             raise ToolError(f"no file {file_key!r} under {self.root}")
-        media_type = document_media_type(file_key)
-        if media_type is None:
-            return await file.read_text()  # decodes the bytes read above
-        return Document.of(file_key, media_type, data)
+        return await content_of(file_key, file, data)
 
     def _path_of(self, file_key: str) -> pathlib.Path:
         """The path a walk key denotes; a key outside the root or the patterns is the model's error."""
@@ -291,33 +164,16 @@ class LocalDirSource:
         return path
 
 
-async def _sample_entry(key: str, file: localfs.File) -> dict[str, Json]:
-    """A text file's head; a document's media type and size (its content is not text)."""
-    media_type = document_media_type(key)
-    if media_type is None:
-        return {"key": key, "head": (await file.read_text())[:_SAMPLE_HEAD_CHARS]}
-    return {"key": key, "media_type": media_type, "bytes": await file.size()}
-
-
-async def _listing(files: dict[str, localfs.File]) -> list[tuple[str, int, int]]:
-    def stat_all() -> list[tuple[str, int, int]]:
-        out: list[tuple[str, int, int]] = []
-        for key, file in files.items():
-            st = os.stat(file.file_path.path)
-            out.append((key, st.st_mtime_ns, st.st_size))
-        return out
-
-    return await asyncio.to_thread(stat_all)
-
-
 @tool(
     "open_source",
     "Open a data source and get a handle (src:<name>) plus a card of its methods. "
-    "Kinds: localfs (args: path, patterns?).",
+    "Kinds: localfs (args: path, patterns?); google_drive (args: path = the Drive "
+    "folder's link or id, patterns?), read with the Google account signed in on "
+    "this machine.",
     {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["localfs"]},
+            "kind": {"type": "string", "enum": ["localfs", "google_drive"]},
             "name": {"type": "string"},
             "path": {"type": "string"},
             "patterns": {"type": "array", "items": {"type": "string"}},
@@ -326,13 +182,19 @@ async def _listing(files: dict[str, localfs.File]) -> list[tuple[str, int, int]]
     },
 )
 async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    src = LocalDirSource(pathlib.Path(args["path"]), tuple(args.get("patterns", ())))
+    patterns = tuple(args.get("patterns", ()))
+    src: FolderSource
+    where: dict[str, Json]
+    if args["kind"] == "google_drive":
+        src = drive.GoogleDriveFolderSource(drive.folder_id_of(args["path"]), patterns)
+        where = {"folder": src.folder_id}
+    else:
+        src = LocalDirSource(pathlib.Path(args["path"]), patterns)
+        where = {"root": str(src.root)}
     handle = ctx.handles.register("src", args["name"], src)
     stats = await src.call("stats", {})
     ctx.trace.note_read(f"stats of {handle}", digest_json(stats))
-    return ctx.handles.card(
-        handle, root=str(src.root), patterns=list(src.patterns), **stats
-    )
+    return ctx.handles.card(handle, **where, patterns=list(src.patterns), **stats)
 
 
 @tool(

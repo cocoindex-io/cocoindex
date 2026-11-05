@@ -38,7 +38,7 @@ from ..trace import ChildTrace, Member, SessionScratch, child_members, child_ses
 from ..transcript import canonical_json
 from . import SessionContext, tool
 from .reduce import Group, GroupItem, ReduceError, hierarchical_reduce, leaf_item
-from .sources import LocalDirSource
+from .folder import FolderSource
 from .stats import format_range, widen_count
 
 _DEFAULT_REDUCE_THRESHOLD_TOKENS = 6000
@@ -301,7 +301,7 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
 async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key: str = args["key"]
     src = ctx.handles.get(args["source"])
-    if not isinstance(src, LocalDirSource):
+    if not isinstance(src, FolderSource):
         raise ToolError("for_each needs a src: handle")
     handles, cards = _child_inputs(ctx, args, closed=True)
     child = _closed_spec(ctx, args.get("role", "worker"), args["task"], cards)

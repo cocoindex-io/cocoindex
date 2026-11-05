@@ -1,7 +1,8 @@
 # Sample flows
 
-Four small flows, one per shape of DESIGN.md §2 and one over PDFs, each a
-directory with a `prompt.md` and a few short input files. The prompts are written as a user
+Five small flows: one per shape of DESIGN.md §2, one over PDFs, and one over
+a Google Drive folder, each a directory with a `prompt.md` and (except
+`drive`) a few short input files. The prompts are written as a user
 would write them: the outcome, where the data is, where the output goes, the
 file naming when it matters, and what to answer. They do not mention workers,
 planners or reducers; the orchestrator decomposes the task itself, following
@@ -15,6 +16,7 @@ many model calls the run made, per role.
 | `report` | B. map → reduce → answer | the decisions and open questions in `notes/`, as one `report.md` |
 | `table` | C. observe → plan → map | one JSON object per invoice under `invoices/`, columns chosen from the data |
 | `orders` | A. map → targets, over PDFs | one JSON object per purchase order under `orders/`, with the fields the prompt names, including which box of the Approval section is ticked |
+| `drive` | A. map → targets, over a Google Drive folder | one summary file per file in the Drive folder `$DRIVE_FOLDER`, `Meeting notes` → `Meeting notes.summary.md` |
 
 The purchase orders are PDFs the model reads natively (DESIGN.md §3,
 *Documents*): one page each, a ruled line-item table, totals, and three
@@ -53,6 +55,44 @@ changes into.
 
 To see the incrementality, run a flow twice unchanged (the second run makes no
 model call), then edit one input file and run again.
+
+### The `drive` flow: a Google Drive folder of your own
+
+The `drive` flow reads a folder in your Google Drive as you, through the
+connector's OAuth sign-in (experimental; the connector docs describe the
+setup). Once:
+
+1. In a Google Cloud project of yours, enable the Google Drive API, configure
+   the OAuth consent screen (external, Testing status, your account as a test
+   user) and create an OAuth client of type **Desktop app**; download its
+   JSON.
+2. Sign in on the machine that runs the flow:
+
+   ```sh
+   uv run cocoindex google-drive sign-in ~/Downloads/client_secret_XXXX.json
+   ```
+
+   On a host with no browser the command prints a link to open elsewhere and
+   takes the address the browser lands on, pasted back. The sign-in is kept
+   in a file readable by your user only; `cocoindex google-drive sign-out`
+   ends it.
+3. Put a few files in a Drive folder: a Google Doc, a Google Sheet, a text
+   file, a PDF. The model reads a Doc as Markdown, a Sheet as CSV and a
+   Slides deck as text (the connector exports them), and a PDF natively.
+
+Then run it with the folder's link (the address bar in Drive, or *Copy link*)
+in `$DRIVE_FOLDER`; `run.py` fills the prompt's `$DRIVE_FOLDER` from the
+environment and refuses to run with it unset:
+
+```sh
+DRIVE_FOLDER='https://drive.google.com/drive/folders/1AbC...' uv run python examples/cocoindex_agents/flows/run.py drive --stats
+```
+
+The prompt names the folder and nothing else: the orchestrator opens it as a
+source of kind `google_drive`, read with the account signed in on this
+machine, and never sees or names a credential (DESIGN.md §3, *Sources: a
+Google Drive folder*). To see the incrementality, run it twice unchanged,
+then edit one of the files in Drive and run again.
 
 ## Measured: stability of the decomposition
 
@@ -145,6 +185,12 @@ The first drive of these flows (2026-11-04, `anthropic/claude-sonnet-5-5`,
 prompts that still named workers and planners) measured 15/15/18 calls on a
 first run, 0 unchanged and 2/2/3 after one edit; its findings are in the
 next section.
+
+## Measured: the `drive` flow against a real account
+
+Not yet measured: the three runs (fresh, unchanged, one file edited in
+Drive) are recorded here once a signed-in account and a shared folder are
+available.
 
 ## What the drives changed in the package
 
