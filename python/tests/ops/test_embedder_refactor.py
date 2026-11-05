@@ -364,36 +364,49 @@ async def test_litellm_embedder_does_not_retry_missing_credentials_server_error(
 # ============================================================================
 
 
-def _raise_local_request_failure(message: str) -> None:
-    """Fail the way litellm does when its own request transformation rejects
-    an input: the ``ValueError`` is re-raised inside an ``except`` block as
-    ``APIConnectionError`` — implicit ``__context__``, and a ``status_code``
-    of 500 although no request was sent."""
+def _raise_local_request_failure(local_error: Exception) -> None:
+    """Fail the way litellm does when it cannot build a request: the local
+    error is re-raised inside an ``except`` block as ``APIConnectionError``
+    — implicit ``__context__``, and a ``status_code`` of 500 although no
+    request was sent."""
     try:
-        raise ValueError(message)
-    except ValueError:
+        raise local_error
+    except Exception:
         raise APIConnectionError(
-            message=message, model="fake-model", llm_provider="gemini"
+            message=str(local_error), model="fake-model", llm_provider="gemini"
         )
 
 
+@pytest.mark.parametrize(
+    "local_error",
+    [
+        # litellm's own request transformation rejecting an input.
+        pytest.param(
+            ValueError("Unsupported MIME type for embedding: application/octet-stream"),
+            id="value-error",
+        ),
+        # A dependency litellm imports at call time and the install lacks.
+        pytest.param(ModuleNotFoundError("No module named 'mcp'"), id="import-error"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_litellm_embedder_does_not_retry_local_request_failures() -> None:
-    message = "Unsupported MIME type for embedding: application/octet-stream"
+async def test_litellm_embedder_does_not_retry_local_request_failures(
+    local_error: Exception,
+) -> None:
     embedder = LiteLLMEmbedder("fake-model")
     mocked_embedding = AsyncMock(
-        side_effect=lambda **kwargs: _raise_local_request_failure(message)
+        side_effect=lambda **kwargs: _raise_local_request_failure(local_error)
     )
 
     with (
         patch("cocoindex.ops.litellm.litellm.aembedding", new=mocked_embedding),
         patch("cocoindex.ops.litellm._asyncio.sleep", new=AsyncMock()) as sleep,
     ):
-        with pytest.raises(APIConnectionError, match="Unsupported MIME") as exc_info:
+        with pytest.raises(APIConnectionError, match=str(local_error)) as exc_info:
             await embedder.embed("hello")
 
     # The wrapper's status code is a constant, not an HTTP result: the rule
-    # that stops the retry has to see past it to the wrapped ValueError.
+    # that stops the retry has to see past it to the wrapped local error.
     assert exc_info.value.status_code == 500
     mocked_embedding.assert_awaited_once()
     sleep.assert_not_called()
@@ -414,7 +427,7 @@ async def test_litellm_embedder_fails_only_the_input_litellm_rejects() -> None:
             await release.wait()
         for text in input:
             if text.startswith("bad"):
-                _raise_local_request_failure(f"rejected {text}")
+                _raise_local_request_failure(ValueError(f"rejected {text}"))
         return _fake_embedding_response(input)
 
     # A short bound so that, were the failure retried, the test ends with a
