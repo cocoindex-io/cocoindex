@@ -795,6 +795,7 @@ all = [
     { name = "litellm" },
     { name = "neo4j" },
     { name = "oci" },
+    { name = "omnigraph" },
     { name = "pgvector" },
     { name = "pyarrow" },
     { name = "pymysql" },
@@ -862,6 +863,9 @@ neo4j = [
 oci = [
     { name = "oci" },
 ]
+omnigraph = [
+    { name = "omnigraph" },
+]
 postgres = [
     { name = "asyncpg" },
 ]
@@ -910,6 +914,7 @@ ci = [
     { name = "moto", extra = ["s3"] },
     { name = "mypy" },
     { name = "neo4j" },
+    { name = "omnigraph" },
     { name = "pydantic" },
     { name = "pymysql" },
     { name = "pytest" },
@@ -923,6 +928,7 @@ ci-enabled-optional-deps = [
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "neo4j" },
+    { name = "omnigraph" },
     { name = "pydantic" },
     { name = "pymysql" },
     { name = "valkey-glide", marker = "sys_platform != 'win32'" },
@@ -936,6 +942,7 @@ dev = [
     { name = "moto", extra = ["s3"] },
     { name = "mypy" },
     { name = "neo4j" },
+    { name = "omnigraph" },
     { name = "prek" },
     { name = "pydantic" },
     { name = "pymysql" },
@@ -1009,6 +1016,8 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.23.2" },
     { name = "oci", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "oci", marker = "extra == 'oci'", specifier = ">=2.0" },
+    { name = "omnigraph", marker = "extra == 'all'", specifier = ">=0.14.0,<0.15" },
+    { name = "omnigraph", marker = "extra == 'omnigraph'", specifier = ">=0.14.0,<0.15" },
     { name = "pgvector", marker = "extra == 'all'", specifier = ">=0.4.2" },
     { name = "psutil", specifier = ">=7.2.1" },
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=23.0.0" },
@@ -1036,7 +1045,7 @@ requires-dist = [
     { name = "zvec", marker = "extra == 'all'", specifier = ">=0.5.0" },
     { name = "zvec", marker = "extra == 'zvec'", specifier = ">=0.5.0" },
 ]
-provides-extras = ["all", "amazon-s3", "azure-blob", "bigquery", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer", "valkey", "zvec"]
+provides-extras = ["all", "amazon-s3", "azure-blob", "bigquery", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "omnigraph", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer", "valkey", "zvec"]
 
 [package.metadata.requires-dev]
 build-test = [
@@ -1058,6 +1067,7 @@ ci = [
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },
     { name = "neo4j", specifier = ">=5.18.0" },
+    { name = "omnigraph", specifier = ">=0.14.0,<0.15" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymysql", specifier = ">=1.1.0" },
     { name = "pytest", specifier = ">=9.0.3" },
@@ -1071,6 +1081,7 @@ ci-enabled-optional-deps = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "neo4j", specifier = ">=5.18.0" },
+    { name = "omnigraph", specifier = ">=0.14.0,<0.15" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymysql", specifier = ">=1.1.0" },
     { name = "valkey-glide", marker = "sys_platform != 'win32'", specifier = ">=2.5.2" },
@@ -1084,6 +1095,7 @@ dev = [
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },
     { name = "neo4j", specifier = ">=5.18.0" },
+    { name = "omnigraph", specifier = ">=0.14.0,<0.15" },
     { name = "prek" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymysql", specifier = ">=1.1.0" },
@@ -3171,6 +3183,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/74/2d/fa5368cfabb868f4111c6978e8b5f66aa3a55076c40c1a59ac3081b0227b/oci-2.184.1.tar.gz", hash = "sha256:617dad69caf8dd6e521d224dbc3e8a8bc289906943a0214fd2c3419094e26435", size = 17990631, upload-time = "2026-08-11T11:01:26.194Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/63/5ae22e42aaf96a5da74dc2b9de449c78b4d7418cce621d5da723b3e49f32/oci-2.184.1-py3-none-any.whl", hash = "sha256:bd814e38a70da2190e721937455a08689ab13c0750bd2ef8dd0c98b2dc5a38ea", size = 36628063, upload-time = "2026-08-11T11:01:18.178Z" },
+]
+
+[[package]]
+name = "omnigraph"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5e/28/3d21fbc5aeb195046fb1fd00ed49464f9db745353436f48fc37ad2effa9b/omnigraph-0.14.0.tar.gz", hash = "sha256:941fb0f751bea7ff0e68af89df82279b6073070c4fe2bf5b73b8fa788b898016", size = 145393, upload-time = "2026-11-02T10:47:14.511Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/4e/db24ade26fbe4831e526ea6122490d8a8a7b0faf9231586bcbf3c50b40da/omnigraph-0.14.0-py3-none-any.whl", hash = "sha256:3dc7bd47e7544f5c0163a9c409c7b323b174894c672be0a9fed80a3eae943537", size = 27135, upload-time = "2026-11-02T10:47:13.361Z" },
 ]
 
 [[package]]

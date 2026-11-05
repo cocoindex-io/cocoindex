@@ -517,6 +517,83 @@ class Row:
 
 ---
 
+## Omnigraph
+
+**Import**: `from cocoindex.connectors import omnigraph` (`pip install "cocoindex[omnigraph]"`)
+
+**Capabilities**: Target only | **Vector**: Not yet | **Model**: Property graph (node and edge types in a `.pg` schema), served by `omnigraph-server` 0.14
+
+### Connection Setup
+
+```python
+from cocoindex.connectors import omnigraph
+
+KG = coco.ContextKey[omnigraph.ConnectionFactory]("kg")
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    kg = omnigraph.ConnectionFactory(
+        "http://127.0.0.1:8080",          # omnigraph-server; token from OMNIGRAPH_TOKEN
+        graph_id="knowledge",
+        # Needed for managed_by="system" types: schema changes are deployed
+        # through the cluster configuration with the `omnigraph` CLI.
+        cluster=omnigraph.ClusterConfig(
+            config_dir="./cluster", target="local", schema_file="knowledge.pg"
+        ),
+    )
+    builder.provide(KG, kg)
+    yield
+    await kg.close()
+```
+
+### As Target (Nodes + Edges)
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Person:
+    name: str
+
+@dataclass
+class Task:
+    description: str
+    due: str | None  # non-key properties of an edge endpoint must be optional
+
+@dataclass
+class Assigned:
+    priority: int
+
+people = await omnigraph.mount_node_target(
+    KG, "Person", await omnigraph.NodeSchema.from_class(Person, key="name")
+)
+tasks = await omnigraph.mount_node_target(
+    KG, "Task", await omnigraph.NodeSchema.from_class(Task, key="description")
+)
+assigned = await omnigraph.mount_edge_target(
+    KG, "AssignedTo", people, tasks, await omnigraph.EdgeSchema.from_class(Assigned)
+)
+
+people.declare_node(node=Person(name="Alice"))
+tasks.declare_node(node=Task(description="ship v1", due=None))
+assigned.declare_edge(from_id="Alice", to_id="ship v1", record=Assigned(priority=1))
+```
+
+A node type has exactly one key, a `str` or `int` for a type used as an edge endpoint. An edge's identity is its `(from_id, to_id)` pair. Use `managed_by="user"` for a type whose `.pg` you maintain yourself; it must declare `coco_key: String`, and an edge type also `@key(@src, @dst)`.
+
+### Type Override
+
+```python
+from typing import Annotated
+
+@dataclass
+class Reading:
+    sensor: str
+    value: Annotated[int, omnigraph.OmnigraphType("I32")]  # default for int is I64
+```
+
+---
+
 ## LocalFS
 
 **Import**: `from cocoindex.connectors import localfs`
@@ -727,6 +804,7 @@ await coco.mount_each(process_file, source.items(), target)
 | **SurrealDB** | - | Y | Native | Graph + document DB |
 | **Neo4j** | - | Y | Native | Knowledge graphs |
 | **FalkorDB** | - | Y | Native | Knowledge graphs (Redis) |
+| **Omnigraph** | - | Y | - | Property graphs with a typed schema and branches |
 | **Apache Doris** | - | Y | Native | Analytical DB + vectors |
 | **LocalFS** | Y | Y | N/A | File-based pipelines |
 | **Amazon S3** | Y | - | N/A | Cloud object storage |

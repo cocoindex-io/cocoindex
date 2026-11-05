@@ -732,6 +732,8 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     blurb: 'Extract entities and relationships into graph databases that stay in sync.',
     entries: [
       { dir: 'meeting_notes_graph_falkordb', title: 'Meeting Notes → Knowledge Graph · FalkorDB', description: 'Extract structured info from Google Drive meeting notes into a FalkorDB knowledge graph.' },
+      { dir: 'gdrive_doc_links_omnigraph', title: 'Google Docs → Link Graph · Omnigraph', description: 'Turn Google Docs that link to each other into an Omnigraph graph of Docs and links; no LLM.' },
+      { dir: 'meeting_notes_graph_omnigraph', title: 'Meeting Notes → Knowledge Graph · Omnigraph', description: 'Extract structured info from Google Drive meeting notes into an Omnigraph knowledge graph.' },
       { dir: 'product_recommendation', docs: 'product-recommendation', title: 'Product Recommendation Graph', description: 'LLM-extract what each product is and what pairs with it from product docs, into a Neo4j graph of products and taxonomies that powers recommendations.', run: RUN_MAIN },
     ],
   },

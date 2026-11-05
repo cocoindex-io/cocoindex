@@ -1,5 +1,5 @@
 """Per-event-loop connection caching of the graph connectors' ``ConnectionFactory``
-(neo4j, falkordb, surrealdb), with fake drivers and no server."""
+(neo4j, falkordb, surrealdb, omnigraph), with fake drivers and no server."""
 
 from __future__ import annotations
 
@@ -76,8 +76,19 @@ def _surrealdb(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Callable[[Any], An
     return factory, lambda conn: conn
 
 
+def _omnigraph(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Callable[[Any], Any]]:
+    sdk = pytest.importorskip("omnigraph")
+    from cocoindex.connectors import omnigraph
+
+    monkeypatch.setattr(sdk, "Omnigraph", _FakeConnection)
+    factory = omnigraph.ConnectionFactory("http://fake", graph_id="g")
+    return factory, lambda client: client
+
+
 _FACTORIES = pytest.mark.parametrize(
-    "make_factory", [_neo4j, _falkordb, _surrealdb], ids=lambda f: f.__name__[1:]
+    "make_factory",
+    [_neo4j, _falkordb, _surrealdb, _omnigraph],
+    ids=lambda f: f.__name__[1:],
 )
 
 
@@ -190,9 +201,20 @@ def _surrealdb_factories() -> tuple[Any, Any, Any]:
     return (factory("p1"), factory("p2"), factory("p1", "n/d", "x"))
 
 
+def _omnigraph_factories() -> tuple[Any, Any, Any]:
+    pytest.importorskip("omnigraph")
+    from cocoindex.connectors import omnigraph
+
+    return (
+        omnigraph.ConnectionFactory("https://h", graph_id="g", token="t1"),
+        omnigraph.ConnectionFactory("https://h", graph_id="g", token="t2"),
+        omnigraph.ConnectionFactory("https://h", graph_id="g2", token="t1"),
+    )
+
+
 @pytest.mark.parametrize(
     "factories",
-    [_neo4j_factories, _falkordb_factories, _surrealdb_factories],
+    [_neo4j_factories, _falkordb_factories, _surrealdb_factories, _omnigraph_factories],
     ids=lambda f: f.__name__[1:].removesuffix("_factories"),
 )
 def test_factory_is_memo_keyable_without_its_credentials(
