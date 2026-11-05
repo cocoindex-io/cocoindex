@@ -21,6 +21,7 @@ const API_KEY = (import.meta.env.COCOINDEX_DOCS_ALGOLIA_API_KEY ?? '') as string
 // Keep in sync with the crawler config
 // (PR #1551 renamed it from `cocoindex`).
 const INDEX   = 'cocoindex';
+const available = !!APP_ID && !!API_KEY;
 ---
 
 <div class="search-wrap">
@@ -28,14 +29,14 @@ const INDEX   = 'cocoindex';
     class="search-btn"
     type="button"
     data-search-btn
-    aria-label="Search documentation"
+    disabled={!available}
   >
     <svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="11" cy="11" r="7"></circle>
       <path d="m20 20-3.5-3.5"></path>
     </svg>
-    <span class="lbl">Search docs</span>
-    <kbd class="kbd"><span class="cmd">⌘</span>K</kbd>
+    <span class="lbl">{available ? 'Search docs' : 'Search unavailable'}</span>
+    {available && <kbd class="kbd"><span class="cmd">⌘</span>K</kbd>}
   </button>
 </div>
 
@@ -60,8 +61,10 @@ const INDEX   = 'cocoindex';
 </script>
 
 <script>
-  import docsearch from '@docsearch/js';
+  import { accessibleSearchHit } from '../scripts/search-hit';
+  import { installSearchAccessibility } from '../scripts/search-accessibility';
   import '@docsearch/css';
+  import '../styles/search-accessibility.css';
 
   type DocSearchConfig = { APP_ID: string; API_KEY: string; INDEX: string };
 
@@ -77,6 +80,11 @@ const INDEX   = 'cocoindex';
 
     const cfg = window.__COCOINDEX_DOCSEARCH__ ?? { APP_ID: '', API_KEY: '', INDEX: '' };
     const hasKeys = !!cfg.APP_ID && !!cfg.API_KEY;
+    const status = document.createElement('span');
+    status.className = 'sr-only';
+    status.setAttribute('role', 'status');
+    document.body.appendChild(status);
+    let returnTo: HTMLElement | null = null;
 
     // Find DocSearch's own button inside our hidden host. DocSearch
     // renders synchronously after init(), but a requestAnimationFrame
@@ -105,7 +113,7 @@ const INDEX   = 'cocoindex';
         return Promise.resolve(null);
       }
       if (bootP) return bootP;
-      bootP = Promise.resolve().then(() => {
+      bootP = import('@docsearch/js').then(({ default: docsearch }) => {
         let host = document.getElementById('docsSearchHost');
         if (!host) {
           host = document.createElement('div');
@@ -120,10 +128,17 @@ const INDEX   = 'cocoindex';
           apiKey: cfg.API_KEY,
           indexName: cfg.INDEX,
           container: host,
+          hitComponent: accessibleSearchHit,
+        });
+        installSearchAccessibility(host, () => {
+          const target = returnTo;
+          returnTo = null;
+          return target;
         });
         return host;
       }).catch((err: unknown) => {
         console.error('[CocoIndex docs] DocSearch failed to load:', err);
+        bootP = null;
         return null;
       });
       return bootP;
@@ -133,8 +148,20 @@ const INDEX   = 'cocoindex';
     document.addEventListener('click', (e) => {
       const target = e.target as HTMLElement | null;
       const btn = target?.closest?.('[data-search-btn]');
-      if (!btn) return;
-      boot().then((host) => { if (host) fireDocSearch(host); });
+      if (!btn || !hasKeys) return;
+      // Close the navigation dialog before opening the search dialog.
+      const sheet = btn.closest('.mobile-sheet');
+      returnTo = sheet ? document.querySelector<HTMLElement>('#menuBtn') : btn as HTMLElement;
+      sheet?.querySelector<HTMLButtonElement>('.mobile-close')?.click();
+      status.textContent = '';
+      boot().then((host) => {
+        if (host) fireDocSearch(host);
+        else {
+          status.textContent = 'Search could not load. Try again.';
+          returnTo?.focus({ preventScroll: true });
+          returnTo = null;
+        }
+      });
     });
 
     // Pre-warm on idle so the first click feels instant. DocSearch's

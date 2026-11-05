@@ -14,9 +14,7 @@ impl Tokenizer for IndentedString {
         let mut offset = 2;
         while offset < input.len() {
             let rest = &input[offset..];
-            if rest.starts_with("'''") {
-                offset += 3;
-            } else if rest.starts_with("''$") {
+            if rest.starts_with("'''") || rest.starts_with("''$") {
                 offset += 3;
             } else if rest.starts_with("''\\") {
                 offset += 3;

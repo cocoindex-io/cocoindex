@@ -19,6 +19,7 @@ __all__ = [
     "build_node_upsert",
     "build_node_delete",
     "build_node_delete_all",
+    "build_node_vector_index_list",
     "build_relationship_upsert",
     "build_relationship_delete",
     "build_relationship_delete_all",
@@ -114,8 +115,16 @@ def build_relationship_upsert(
     to_pk_fields: Sequence[str],
     rel_pk_fields: Sequence[str],
     has_value_fields: bool,
+    has_legacy_key: bool,
 ) -> str:
-    """Three MERGEs: source endpoint, target endpoint, then the relationship.
+    """MERGE the source endpoint, the target endpoint, then the relationship.
+
+    Before the relationship MERGE, any other relationship of the type with
+    this primary key is deleted: the key names one edge, so one found between
+    other endpoints is the edge before its endpoints changed (the MERGE would
+    otherwise create a second edge beside it). With ``has_legacy_key``, the
+    edge between these endpoints keyed by ``$legacy_key_*`` (the key the
+    deprecated relation API gave it) is deleted too.
 
     Endpoint properties are NOT touched — they are owned by their table's own
     record handler. We only ``SET r += $props`` on the relationship itself.
@@ -124,11 +133,24 @@ def build_relationship_upsert(
         raise ValueError(
             "build_relationship_upsert requires PK fields for from, to, and the relationship"
         )
+    rel = _quote(rel_type)
+    rel_key = _key_clause("rel_key", rel_pk_fields, "r")
     cypher = (
         f"MERGE (s:{_quote(from_label)} {_key_clause('from_key', from_pk_fields, 's')}) "
         f"MERGE (t:{_quote(to_label)} {_key_clause('to_key', to_pk_fields, 't')}) "
-        f"MERGE (s)-[r:{_quote(rel_type)} {_key_clause('rel_key', rel_pk_fields, 'r')}]->(t)"
+        f"WITH s, t "
+        f"OPTIONAL MATCH (a)-[o:{rel} {_key_clause('rel_key', rel_pk_fields, 'o')}]->(b) "
+        f"WHERE a <> s OR b <> t "
+        f"DELETE o "
+        f"WITH DISTINCT s, t "
     )
+    if has_legacy_key:
+        cypher += (
+            f"OPTIONAL MATCH (s)-[l:{rel} {_key_clause('legacy_key', rel_pk_fields, 'l')}]->(t) "
+            f"DELETE l "
+            f"WITH DISTINCT s, t "
+        )
+    cypher += f"MERGE (s)-[r:{rel} {rel_key}]->(t)"
     if has_value_fields:
         cypher += " SET r += $props"
     return cypher
@@ -218,3 +240,18 @@ def build_vector_index_drop(label: str, field: str) -> str:
     take an index name — it identifies the index by (label, field).
     """
     return f"DROP VECTOR INDEX FOR (e:{_quote(label)}) ON (e.{_quote(field)})"
+
+
+def build_node_vector_index_list() -> str:
+    """The fields with a vector index on the nodes of label ``$label``.
+
+    One row per field: ``db.indexes()`` gives a label one row, whose
+    ``types`` maps each indexed field to its index types.
+    """
+    return (
+        "CALL db.indexes() YIELD label, types, entitytype "
+        "WHERE label = $label AND entitytype = 'NODE' "
+        "UNWIND keys(types) AS field "
+        "WITH field, types WHERE 'VECTOR' IN types[field] "
+        "RETURN field"
+    )

@@ -1,5 +1,6 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
+use crate::state_store::WriteScope;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Weak;
@@ -11,8 +12,9 @@ use crate::engine::context::{
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
-    cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
-    update_component_memo_states, use_or_invalidate_component_memoization,
+    OpenDescendantsVerdict, RestoredComponentMemo, cleanup_tombstone, delete_component_memo,
+    eager_existence_upsert, post_submit_for_build, submit, update_component_memo_states,
+    use_or_invalidate_component_memoization, validate_open_descendants,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -83,6 +85,15 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
         false
     }
 
+    /// Whether `handle_memo_states(None)` has initial states to collect after
+    /// a miss. A processor whose handler only validates on a hit (one with
+    /// neither argument nor context state functions, attached because a
+    /// stored entry may carry data dependencies) returns false, and the miss
+    /// path skips the call.
+    fn collects_initial_states(&self) -> bool {
+        self.has_memo_state_handler()
+    }
+
     /// Validate or collect memo states after a fingerprint match.
     /// `stored_states`: `Some(payload)` on cache hit, `None` on cache miss (collect initial states).
     /// Returns `(new_states, can_reuse, states_changed)`:
@@ -124,7 +135,7 @@ struct ComponentInner<Prof: EngineProfile> {
     /// run just completed and stored its result, so it re-checks the memo
     /// instead of executing again — under `full_reprocess` only when that run
     /// belonged to the same operation (see `execute_once`).
-    last_stored_memo: Mutex<Option<StoredMemo>>,
+    last_stored_memos: Mutex<LastStoredMemos>,
 
     /// Identity registry of child components, keyed by their full StablePath,
     /// so a re-mount of a path whose component is still referenced shares the
@@ -303,6 +314,20 @@ pub(crate) struct ComponentRunOutcome {
     has_exception: bool,
     logic_deps: HashSet<Fingerprint>,
     target_provider_deps: TargetProviderDeps,
+    /// The component, or a descendant, recorded data dependencies. A parent
+    /// stores its memo flagged `has_open_descendants` and lists the child
+    /// among its `open_children`; its next probe reuses the memo only after
+    /// validating that child's records from the child's own row, since a
+    /// reuse carries the child over without mounting it. Records themselves
+    /// never travel upward.
+    cannot_skip: bool,
+    /// In a parent's accumulated children outcome: the paths, relative to the
+    /// parent, of the direct children that reported `cannot_skip`. Set by the
+    /// child's readiness guard when the child's outcome is merged (see
+    /// `ComponentBgChildReadinessChildGuard::resolve_result`), so an
+    /// outcome's own list is never what a component reports upward about
+    /// itself: a component is listed by its parent, not by its own outcome.
+    open_children: Vec<StablePath>,
 }
 
 impl ComponentRunOutcome {
@@ -318,11 +343,17 @@ impl ComponentRunOutcome {
     /// memo depends on this subtree — and likewise its target-provider deps, so
     /// a parent that later memo-hits (and therefore never mounts this child)
     /// still re-checks the provider generations this child declared against.
-    fn reused(logic_deps: Vec<Fingerprint>, target_provider_deps: TargetProviderDeps) -> Self {
+    fn reused(
+        logic_deps: Vec<Fingerprint>,
+        target_provider_deps: TargetProviderDeps,
+        cannot_skip: bool,
+    ) -> Self {
         Self {
             has_exception: false,
             logic_deps: logic_deps.into_iter().collect(),
             target_provider_deps,
+            cannot_skip,
+            open_children: Vec::new(),
         }
     }
 
@@ -330,6 +361,8 @@ impl ComponentRunOutcome {
         self.has_exception |= other.has_exception;
         self.logic_deps.extend(other.logic_deps);
         self.target_provider_deps.extend(other.target_provider_deps);
+        self.cannot_skip |= other.cannot_skip;
+        self.open_children.extend(other.open_children);
     }
 }
 
@@ -345,6 +378,11 @@ pub struct ComponentBgChildReadiness {
 
 pub struct ComponentBgChildReadinessChildGuard {
     readiness: ComponentBgChildReadiness,
+    /// The child this guard stands for, relative to the component whose
+    /// readiness this is: `Some` for a component's run, `None` for a
+    /// forwarded aggregate (a `StatsGroup`, a live component's registration),
+    /// whose outcome already carries the right `open_children`.
+    child: Option<StablePath>,
     resolved: bool,
 }
 
@@ -373,7 +411,22 @@ impl ComponentBgChildReadinessChildGuard {
     /// Like `resolve`, but propagates a full `SharedResult`: `Ok` merges the
     /// outcome (logic deps), `Err` fails the enclosing readiness. Used by a
     /// `StatsGroup` to forward its members' aggregate readiness to its parent.
-    pub(crate) fn resolve_result(mut self, result: SharedResult<ComponentRunOutcome>) {
+    ///
+    /// For a component's own guard the outcome's `open_children` is rewritten
+    /// here: it becomes this child's relative path when the child reported
+    /// `cannot_skip`, and empty otherwise. The outcome a component returns
+    /// from `execute_once` is its *children* outcome (its own list), which
+    /// must not leak into the parent's.
+    pub(crate) fn resolve_result(mut self, mut result: SharedResult<ComponentRunOutcome>) {
+        if let Some(child) = self.child.take()
+            && let Ok(outcome) = &mut result
+        {
+            outcome.open_children = if outcome.cannot_skip {
+                vec![child]
+            } else {
+                Vec::new()
+            };
+        }
         {
             let mut state = self.readiness.state().lock().unwrap();
             state.remaining_count -= 1;
@@ -408,10 +461,15 @@ impl ComponentBgChildReadiness {
         &self.inner.readiness
     }
 
-    pub fn add_child(self) -> ComponentBgChildReadinessChildGuard {
+    /// Register one pending child. `child` is the child's path relative to
+    /// the component whose readiness this is, for a component's run; `None`
+    /// for an aggregate forwarded as a unit (see
+    /// `ComponentBgChildReadinessChildGuard::child`).
+    pub fn add_child(self, child: Option<StablePath>) -> ComponentBgChildReadinessChildGuard {
         self.state().lock().unwrap().remaining_count += 1;
         ComponentBgChildReadinessChildGuard {
             readiness: self,
+            child,
             resolved: false,
         }
     }
@@ -505,7 +563,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
         // The group counts as one pending child of the enclosing readiness, so
         // the parent component (or outer group) waits for it as a unit.
-        let parent_guard = self.components_readiness().clone().add_child();
+        let parent_guard = self.components_readiness().clone().add_child(None);
 
         let cancel_token = self.app_ctx().cancellation_token();
         let live = self.live();
@@ -620,6 +678,45 @@ struct StoredMemo {
     memo_fp: Fingerprint,
 }
 
+/// The latest memo a component stored in each place a run can read: LMDB,
+/// which every run reads, and the overlay of one run that persists nothing
+/// (a preview), which only that run reads. Kept apart so a preview's memo
+/// does not displace the persisted one a queued update re-checks.
+#[derive(Default)]
+struct LastStoredMemos {
+    persisted: Option<StoredMemo>,
+    in_run: Option<(u64, StoredMemo)>,
+}
+
+impl LastStoredMemos {
+    fn record(&mut self, scope: WriteScope, memo: StoredMemo) {
+        match scope {
+            WriteScope::Persisted => self.persisted = Some(memo),
+            WriteScope::Run(run) => self.in_run = Some((run, memo)),
+        }
+    }
+
+    /// Forget the memo recorded for `scope`: its row was deleted.
+    fn forget(&mut self, scope: WriteScope) {
+        match scope {
+            WriteScope::Persisted => self.persisted = None,
+            WriteScope::Run(run) => {
+                if matches!(self.in_run, Some((r, _)) if r == run) {
+                    self.in_run = None;
+                }
+            }
+        }
+    }
+
+    /// The latest memo a run reading through `app_store` can find.
+    fn readable_by(&self, app_store: &crate::state_store::AppStore) -> Option<StoredMemo> {
+        match self.in_run {
+            Some((run, memo)) if app_store.write_scope() == WriteScope::Run(run) => Some(memo),
+            _ => self.persisted,
+        }
+    }
+}
+
 /// Result of looking up a component's memo for the processor about to run.
 enum MemoLookup<Prof: EngineProfile> {
     /// A valid memo stands in for a run: report the stored run's outcome and
@@ -647,6 +744,16 @@ enum GuardedRun<Prof: EngineProfile> {
     },
 }
 
+/// The component's own memo states after its handler validated them as
+/// reusable (see `lookup_component_memo`).
+struct ValidatedOwnStates<Prof: EngineProfile> {
+    /// The states as the handler returned them: the stored ones, or refreshed
+    /// where a state moved while staying valid.
+    states: MemoStatesPayload<Prof>,
+    /// Some state moved; `states` should replace the stored ones on a reuse.
+    states_changed: bool,
+}
+
 /// Look up the memo stored for `comp_ctx`'s component and, when `processor`
 /// has a memo state handler, validate the stored memo states through it. A
 /// stored memo whose key is not `memo_fp` — or any stored memo, when the
@@ -665,34 +772,87 @@ async fn lookup_component_memo<Prof: EngineProfile>(
             None
         }
     };
-    let Some((ret, memo_states, stored_logic_deps, stored_provider_deps)) = memo else {
+    let Some(RestoredComponentMemo {
+        ret,
+        memo_states,
+        logic_deps: stored_logic_deps,
+        target_provider_deps: stored_provider_deps,
+        row_fp,
+        has_open_descendants,
+        open_children,
+    }) = memo
+    else {
         return Ok(MemoLookup::Miss {
             revalidated_states: None,
         });
     };
+    let has_own_data_deps = !memo_states.data_deps.is_empty();
+    // The component's own entry first: its states and records, through its
+    // processor. On a miss the states ride into the new memo; the data
+    // dependencies do not: the body about to run records the set that
+    // replaces them.
+    let mut own_validation: Option<ValidatedOwnStates<Prof>> = None;
     if processor.has_memo_state_handler() && !memo_states.is_empty() {
         let fut = processor.handle_memo_states(
             comp_ctx.app_ctx().env().host_runtime_ctx(),
             comp_ctx,
             Some(memo_states),
         )?;
-        let (new_states, can_reuse, states_changed) = fut.await?;
+        let (states, can_reuse, states_changed) = fut.await?;
         if !can_reuse {
             return Ok(MemoLookup::Miss {
-                revalidated_states: Some(new_states),
+                revalidated_states: Some(MemoStatesPayload {
+                    data_deps: Vec::new(),
+                    ..states
+                }),
             });
         }
-        // Reusable, but the states themselves moved (e.g. an mtime changed
-        // while the content hash did not): refresh them in the stored memo.
-        if states_changed {
-            update_component_memo_states(comp_ctx, &new_states).await?;
+        own_validation = Some(ValidatedOwnStates {
+            states,
+            states_changed,
+        });
+    }
+    if has_open_descendants {
+        // A descendant recorded data dependencies. Everything else a reuse
+        // would carry over unvalidated is already covered here: a
+        // descendant's logic and target-provider deps were merged into this
+        // row when it was stored (`execute_once`), and its argument and
+        // context memo states are the ancestor's inputs' doing, as for a
+        // closed descendant. Its data-dependency records are the one thing
+        // only its own row holds, so they are validated from there, by path,
+        // down through every open descendant.
+        if let OpenDescendantsVerdict::NotReusable(reason) =
+            validate_open_descendants(comp_ctx, &open_children).await?
+        {
+            debug!("memo of {} is not reused: {reason}", comp_ctx.stable_path());
+            return Ok(MemoLookup::Miss {
+                revalidated_states: own_validation.map(|own| MemoStatesPayload {
+                    data_deps: Vec::new(),
+                    ..own.states
+                }),
+            });
         }
+    }
+    // Reusable, but the states themselves moved (e.g. an mtime changed
+    // while the content hash did not): refresh them in the stored memo.
+    if let Some(ValidatedOwnStates {
+        states,
+        states_changed: true,
+    }) = &own_validation
+    {
+        update_component_memo_states(comp_ctx.app_store(), comp_ctx.stable_path(), states, row_fp)
+            .await?;
     }
     // Report the stored dependency sets upward even on a memo hit, so a
     // mounting parent's memo depends on this whole subtree (see
-    // `merge_logic_deps` in `execute_once`).
+    // `merge_logic_deps` in `execute_once`). The bit too: a reused ancestor
+    // of open descendants is still one, and its parent's row must list it.
     Ok(MemoLookup::Reuse(
-        ComponentRunOutcome::reused(stored_logic_deps, stored_provider_deps),
+        ComponentRunOutcome::reused(
+            stored_logic_deps,
+            stored_provider_deps,
+            has_own_data_deps || has_open_descendants,
+        ),
         ComponentBuildOutput {
             ret,
             built_target_states_providers: Default::default(),
@@ -712,7 +872,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 stable_path,
                 parent,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
-                last_stored_memo: Mutex::new(None),
+                last_stored_memos: Mutex::new(LastStoredMemos::default()),
                 active_children: parking_lot::Mutex::new(HashMap::new()),
                 live_state: parking_lot::Mutex::new(None),
                 active_ops: std::sync::atomic::AtomicUsize::new(0),
@@ -735,18 +895,27 @@ impl<Prof: EngineProfile> Component<Prof> {
     /// prune it before its task had started); readiness and membership are
     /// registered together, so a group can never see a member become ready
     /// without also tracking its activity.
-    fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> StartedTask<Prof> {
+    fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> Result<StartedTask<Prof>> {
         let activity = ActivityGuard::new(self.clone());
         let run = RunGuard::new(self.clone());
-        let child_readiness = context.parent_context().map(|parent_ctx| {
-            parent_ctx.push_active_member(self);
-            parent_ctx.components_readiness().clone().add_child()
-        });
-        StartedTask {
+        let child_readiness = match context.parent_context() {
+            Some(parent_ctx) => {
+                parent_ctx.push_active_member(self);
+                let relative_path: StablePath = self.relative_path()?.into();
+                Some(
+                    parent_ctx
+                        .components_readiness()
+                        .clone()
+                        .add_child(Some(relative_path)),
+                )
+            }
+            None => None,
+        };
+        Ok(StartedTask {
             activity,
             run,
             child_readiness,
-        }
+        })
     }
 
     /// Admit a run to the in-flight pool before its task is spawned, so a
@@ -834,10 +1003,10 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn get_child(&self, stable_path: StablePath) -> Self {
         let mut children = self.inner.active_children.lock();
-        if let Some(weak) = children.get(&stable_path) {
-            if let Some(inner) = weak.upgrade() {
-                return Self { inner };
-            }
+        if let Some(weak) = children.get(&stable_path)
+            && let Some(inner) = weak.upgrade()
+        {
+            return Self { inner };
         }
         let child = Self::new(
             self.app_ctx().clone(),
@@ -925,7 +1094,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         deadline: DeadlineContext,
         caller_deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
-        let started = self.start_task(&context);
+        let started = self.start_task(&context)?;
         self.admit_before_spawn(&context, &started).await?;
         let StartedTask {
             activity,
@@ -959,7 +1128,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // observes readiness also observes the component as inactive.
                 drop(run);
                 drop(activity);
-                child_readiness_guard.map(|guard| guard.resolve(outcome));
+                if let Some(guard) = child_readiness_guard {
+                    guard.resolve(outcome)
+                }
                 output?
                     .ok_or_else(|| internal_error!("component deletion can only run in background"))
             }
@@ -978,7 +1149,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
-        let started = self.start_task(&context);
+        let started = self.start_task(&context)?;
         self.admit_before_spawn(&context, &started).await?;
         let StartedTask {
             activity,
@@ -1057,7 +1228,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             activity,
             run,
             child_readiness: child_readiness_guard,
-        } = self.start_task(&context);
+        } = self.start_task(&context)?;
         // Pull on_error out of the delete context so the spawned task
         // can invoke it. The context still carries the same handler for
         // descendant GC sweeps to read and cascade.
@@ -1175,7 +1346,12 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // a memo stored by this same operation qualifies: that is
                     // the operation's own execution of the component, not a
                     // cache from a previous run.
-                    let last_stored_memo = *self.inner.last_stored_memo.lock().unwrap();
+                    let last_stored_memo = self
+                        .inner
+                        .last_stored_memos
+                        .lock()
+                        .unwrap()
+                        .readable_by(processor_context.app_store());
                     if let Some(processor) = processor
                         && let Some(memo_fp) = memo_fp_to_store
                         && let Some(stored) = last_stored_memo
@@ -1220,9 +1396,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // that existence ⊇ tracked state and eliminates the
                 // dual-writer conflict with the parent's commit-time
                 // existence reconciliation. See `internal_states.md` §3.1.
-                if processor_context.mode() == ComponentProcessingMode::Build
-                    && !processor_context.preview()
-                {
+                if processor_context.mode() == ComponentProcessingMode::Build {
                     eager_existence_upsert(processor_context).await?;
                 }
 
@@ -1244,7 +1418,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Some(processor) => processor
                         .process(
                             processor_context.app_ctx().env().host_runtime_ctx(),
-                            &processor_context,
+                            processor_context,
                         )?
                         .await
                         .map(Some),
@@ -1276,7 +1450,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 deadline.check()?;
                 let submit_output = submit(processor_context, processor, |name| {
                     if reported_processor_name.is_none() {
-                        processing_stats.update(&name, |stats| {
+                        processing_stats.update(name, |stats| {
                             stats.num_execution_starts += 1;
                         });
                         *reported_processor_name = Some(Cow::Owned(name.to_string()));
@@ -1290,7 +1464,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                             // Collect initial memo states on cache miss if processor has a state handler.
                             let memo_states: MemoStatesPayload<Prof> = if let Some(processor) =
                                 processor
-                                && processor.has_memo_state_handler()
+                                && (memo_states_for_store.is_some()
+                                    || processor.collects_initial_states())
                             {
                                 if let Some(states) = memo_states_for_store.take() {
                                     // From invalid cache hit path
@@ -1321,21 +1496,65 @@ impl<Prof: EngineProfile> Component<Prof> {
                             let logic_deps = processor_context.take_logic_deps();
                             let target_provider_deps =
                                 processor_context.take_target_provider_deps();
+                            let data_deps = processor_context.take_data_deps();
+                            // The direct children that reported the bit, in
+                            // path order for deterministic storage. Taken, so
+                            // this component's list never leaks into the
+                            // parent's accumulated outcome (the parent's
+                            // guard would rewrite it anyway).
+                            let mut open_children =
+                                std::mem::take(&mut children_outcome.open_children);
+                            open_children.sort();
+                            open_children.dedup();
+                            let has_open_descendants = !open_children.is_empty();
+                            let comp_memo = if let Some((kind_fp, key_fp)) = data_deps.conflict() {
+                                // The run observed one key in two states: no
+                                // stored state can validate its output. Store
+                                // no memo, and drop the previous one: submit has
+                                // replaced the target states, so an older
+                                // entry's return value must not be reused.
+                                debug!(
+                                    "{} observed data dependency (kind {kind_fp:?}, key {key_fp:?}) in two states; storing no memo",
+                                    processor_context.stable_path()
+                                );
+                                if memo_fp_to_store.is_some() {
+                                    delete_component_memo(processor_context).await?;
+                                    self.inner
+                                        .last_stored_memos
+                                        .lock()
+                                        .unwrap()
+                                        .forget(processor_context.app_store().write_scope());
+                                }
+                                None
+                            } else {
+                                comp_memo
+                            };
+                            let data_dep_records = data_deps.into_sorted_records();
                             post_submit_for_build(
                                 processor_context,
                                 comp_memo,
                                 &logic_deps,
                                 &target_provider_deps,
+                                &data_dep_records,
+                                &open_children,
                             )
                             .await?;
+                            children_outcome.cannot_skip =
+                                has_open_descendants || !data_dep_records.is_empty();
                             // Record the store for a run queued on the permit
                             // (see the re-check above). Still under the permit,
                             // so this is the component's latest memo.
-                            if let Some(memo_fp) = memo_fp_to_store {
-                                *self.inner.last_stored_memo.lock().unwrap() = Some(StoredMemo {
-                                    operation_generation: processor_context.operation_generation(),
-                                    memo_fp,
-                                });
+                            if let Some(memo_fp) = memo_fp_to_store
+                                && comp_memo.is_some()
+                            {
+                                self.inner.last_stored_memos.lock().unwrap().record(
+                                    processor_context.app_store().write_scope(),
+                                    StoredMemo {
+                                        operation_generation: processor_context
+                                            .operation_generation(),
+                                        memo_fp,
+                                    },
+                                );
                             }
                             children_outcome.logic_deps = logic_deps;
                             children_outcome.target_provider_deps = target_provider_deps;
@@ -1364,7 +1583,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         // That's the single, unified error-handling
                         // channel; this branch just preserves metadata.
                         if !children_outcome.has_exception {
-                            cleanup_tombstone(&processor_context).await?;
+                            cleanup_tombstone(processor_context).await?;
                         }
                         None
                     }
@@ -1427,6 +1646,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_processor_context_for_build(
         &self,
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
@@ -1496,7 +1716,10 @@ impl<Prof: EngineProfile> Component<Prof> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivityGuard, Component, ComponentProcessor, ComponentProcessorInfo, StatsGroup};
+    use super::{
+        ActivityGuard, Component, ComponentBgChildReadiness, ComponentProcessor,
+        ComponentProcessorInfo, ComponentRunOutcome, StatsGroup,
+    };
     use crate::engine::app::{App, AppUpdateOptions};
     use crate::engine::context::{
         ComponentProcessingAction, ComponentProcessorContext, FnCallContext, MemoStatesPayload,
@@ -1508,13 +1731,15 @@ mod tests {
     };
     use crate::engine::environment::Environment;
     use crate::engine::execution::{
-        declare_target_state, register_root_target_state_provider, submit,
+        declare_target_state, declare_target_state_with_child, register_root_target_state_provider,
+        submit,
     };
-    use crate::engine::profile::{EngineProfile, Persist};
+    use crate::engine::live_component::{MountLiveResult, mount_live_prepare};
+    use crate::engine::profile::{DataDepsValidation, EngineProfile, Persist};
     use crate::engine::stats::ProcessingStats;
     use crate::engine::target_state::{
-        TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot, TargetHandler,
-        TargetReconcileOutput, TargetStateProviderRegistry,
+        ChildHandling, TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot,
+        TargetHandler, TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
     };
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
@@ -1536,6 +1761,74 @@ mod tests {
     /// Activity is explicit: a task's `ActivityGuard` counts on the component
     /// and its ancestors, and dropping it wakes `wait_until_inactive`. Holding
     /// `Component`s has no effect on either.
+    #[test]
+    fn the_cannot_skip_bit_merges_upward_and_a_reused_memo_reports_its_own() {
+        let mut parent = ComponentRunOutcome::default();
+        parent.merge(ComponentRunOutcome::reused(
+            vec![],
+            Default::default(),
+            false,
+        ));
+        assert!(!parent.cannot_skip);
+        parent.merge(ComponentRunOutcome::reused(
+            vec![],
+            Default::default(),
+            true,
+        ));
+        assert!(parent.cannot_skip);
+        // A failed child reports no bit: its parent stores no memo at all.
+        assert!(!ComponentRunOutcome::exception().cannot_skip);
+        let mut grandparent = ComponentRunOutcome::default();
+        grandparent.merge(parent);
+        assert!(grandparent.cannot_skip);
+    }
+
+    /// A parent's accumulated outcome lists the direct children that reported
+    /// the bit, by the relative path their readiness guard was registered
+    /// with. A child's own list (its children) is replaced by the guard, so it
+    /// never leaks a level up; a forwarded aggregate (a stats group's) passes
+    /// its list through, since its members are the parent's direct children.
+    #[tokio::test]
+    async fn a_parents_outcome_lists_the_children_that_reported_the_bit() {
+        fn relative(key: &str) -> StablePath {
+            StablePath::root().concat_part(StableKey::Str(Arc::from(key)))
+        }
+        let readiness = ComponentBgChildReadiness::default();
+        let open_child = readiness.clone().add_child(Some(relative("open")));
+        let closed_child = readiness.clone().add_child(Some(relative("closed")));
+        let group = readiness.clone().add_child(None);
+
+        // An open child whose own children were open too: its outcome still
+        // carries its list, which must not become the parent's.
+        let mut open_outcome = ComponentRunOutcome::reused(vec![], Default::default(), true);
+        open_outcome.open_children = vec![relative("grandchild")];
+        open_child.resolve(open_outcome);
+        closed_child.resolve(ComponentRunOutcome::reused(
+            vec![],
+            Default::default(),
+            false,
+        ));
+        let mut aggregate = ComponentRunOutcome::default();
+        aggregate.merge({
+            let mut member = ComponentRunOutcome::reused(vec![], Default::default(), true);
+            member.open_children = vec![relative("member")];
+            member
+        });
+        group.resolve(aggregate);
+        readiness.set_build_done();
+
+        let outcome = readiness
+            .readiness()
+            .wait()
+            .await
+            .clone()
+            .expect("readiness resolved with an error");
+        assert!(outcome.cannot_skip);
+        let mut listed = outcome.open_children.clone();
+        listed.sort();
+        assert_eq!(listed, vec![relative("member"), relative("open")]);
+    }
+
     #[tokio::test]
     async fn activity_propagates_up_the_parent_chain_and_wakes_waiters() {
         let (app, _dir) = test_app("activity_guard").await;
@@ -1600,16 +1893,64 @@ mod tests {
         }
     }
 
-    struct NoopSink;
+    /// Applies nothing but counts its `apply` calls. With `children`, it
+    /// provides a `CountingHandler` counting into the given counter for every
+    /// child-bearing action, in the given way: from `child_handlers` or by
+    /// fulfilling the slots in `apply`.
+    #[derive(Default)]
+    struct NoopSink {
+        apply_calls: Arc<AtomicUsize>,
+        children: Option<(ChildHandling, Arc<AtomicUsize>)>,
+    }
+
+    impl NoopSink {
+        fn container(child_handling: ChildHandling) -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+            let apply_calls = Arc::new(AtomicUsize::new(0));
+            let child_reconcile_calls = Arc::new(AtomicUsize::new(0));
+            let sink = Self {
+                apply_calls: apply_calls.clone(),
+                children: Some((child_handling, child_reconcile_calls.clone())),
+            };
+            (sink, apply_calls, child_reconcile_calls)
+        }
+
+        fn child_handler(&self) -> CountingHandler {
+            let (_, child_reconcile_calls) = self.children.as_ref().expect("a container sink");
+            CountingHandler {
+                reconcile_calls: child_reconcile_calls.clone(),
+                sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                reject: false,
+            }
+        }
+    }
 
     #[async_trait]
     impl TargetActionSink<TestProfile> for NoopSink {
+        fn child_handling(&self) -> ChildHandling {
+            self.children
+                .as_ref()
+                .map_or(ChildHandling::Leaf, |(child_handling, _)| *child_handling)
+        }
+
+        async fn child_handlers(
+            &self,
+            _host_runtime_ctx: &(),
+            _host_ctx: Arc<()>,
+            actions: &[&()],
+        ) -> crate::prelude::Result<Vec<CountingHandler>> {
+            Ok(actions.iter().map(|_| self.child_handler()).collect())
+        }
+
         async fn apply(
             &self,
             _host_runtime_ctx: &(),
             _host_ctx: Arc<()>,
-            _actions: &[TargetActionWithChildSlot<TestProfile>],
+            actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
+            self.apply_calls.fetch_add(1, Ordering::SeqCst);
+            for slot in actions.iter().filter_map(|(_, slot)| slot.as_ref()) {
+                slot.fulfill(self.child_handler())?;
+            }
             Ok(())
         }
     }
@@ -1669,6 +2010,23 @@ mod tests {
         type TargetAction = ();
         type TargetActionSink = NoopSink;
         type TargetStateValue = ();
+
+        /// The test profile registers no kinds, so no record validates.
+        fn validate_data_deps(
+            _host_runtime_ctx: &(),
+            _path: &StablePath,
+            records: Vec<crate::engine::context::DataDepRecord>,
+        ) -> crate::prelude::Result<
+            impl Future<Output = crate::prelude::Result<DataDepsValidation>> + Send + 'static,
+        > {
+            Ok(async move {
+                Ok(DataDepsValidation {
+                    records,
+                    can_reuse: false,
+                    states_changed: false,
+                })
+            })
+        }
     }
 
     /// Optional processor body, given the component's processor context.
@@ -1688,6 +2046,8 @@ mod tests {
         advance_clock_in_state_handler: bool,
         /// What the memo state handler reports as `can_reuse` on a memo hit.
         memo_states_reusable: bool,
+        /// What the memo state handler reports as `states_changed`.
+        memo_states_changed: bool,
         on_process: Option<ProcessHook>,
     }
 
@@ -1704,12 +2064,21 @@ mod tests {
                 body_started,
                 advance_clock_in_state_handler,
                 memo_states_reusable: false,
+                memo_states_changed: false,
                 on_process: None,
             }
         }
 
         fn with_reusable_memo_states(mut self) -> Self {
             self.memo_states_reusable = true;
+            self
+        }
+
+        /// Reusable memo states that moved (e.g. an mtime): a memo hit
+        /// rewrites them in place.
+        fn with_reusable_changed_memo_states(mut self) -> Self {
+            self.memo_states_reusable = true;
+            self.memo_states_changed = true;
             self
         }
 
@@ -1765,17 +2134,26 @@ mod tests {
         > {
             let advance_clock = self.advance_clock_in_state_handler;
             let reusable = self.memo_states_reusable;
+            let changed = self.memo_states_changed;
             Ok(async move {
                 if advance_clock {
                     testing_advance_deadline_clock(Duration::from_secs(2));
                 }
+                // Moved states differ from every earlier report.
+                static MOVES: AtomicUsize = AtomicUsize::new(0);
+                let state = if changed {
+                    format!("state/{}", MOVES.fetch_add(1, Ordering::SeqCst)).into_bytes()
+                } else {
+                    b"state".to_vec()
+                };
                 Ok((
                     MemoStatesPayload {
-                        positional: vec![TestData(b"state".to_vec())],
+                        positional: vec![TestData(state)],
                         by_context_fp: Vec::new(),
+                        data_deps: Vec::new(),
                     },
                     reusable,
-                    false,
+                    changed,
                 ))
             })
         }
@@ -1800,14 +2178,7 @@ mod tests {
     }
 
     async fn test_app(name: &str) -> (App<TestProfile>, tempfile::TempDir) {
-        test_app_with_map_size(name, 1 << 24).await
-    }
-
-    async fn test_app_with_map_size(
-        name: &str,
-        lmdb_map_size: usize,
-    ) -> (App<TestProfile>, tempfile::TempDir) {
-        test_app_with_options(name, lmdb_map_size, None).await
+        test_app_with_options(name, 1 << 24, None).await
     }
 
     async fn test_app_with_options(
@@ -2505,25 +2876,271 @@ mod tests {
         );
     }
 
-    /// A write batch that hits `MDB_MAP_FULL` is re-run in full once the map
-    /// has grown, so a preview's precommit body can run more than once per
-    /// call. Queue it into one batch just ahead of a write that overflows the
-    /// map: every run re-plans the preview's actions, and each action must
-    /// still be collected once.
+    /// A root in the `mount_target` shape: a child component declares one
+    /// container target state, routed to `container_sink`, and the root then
+    /// declares `num_rows` target states under the container's child provider.
+    fn container_root(
+        container_sink: TargetActionSinkKeeper<TestProfile>,
+        num_rows: i64,
+    ) -> TestProcessor {
+        let new_processor = |name: &str| {
+            TestProcessor::new(
+                name,
+                Fingerprint::from(&format!("container_root/{name}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+        };
+        let table_processor = Mutex::new(Some({
+            let child_provider: Arc<Mutex<Option<TargetStateProvider<TestProfile>>>> =
+                Default::default();
+            let processor = new_processor("table").with_on_process(Arc::new({
+                let child_provider = child_provider.clone();
+                move |ctx| {
+                    let child_provider = child_provider.clone();
+                    let container_sink = container_sink.clone();
+                    Box::pin(async move {
+                        let tables = register_root_target_state_provider(
+                            &ctx,
+                            "tables".to_string(),
+                            CountingHandler {
+                                reconcile_calls: Arc::new(AtomicUsize::new(0)),
+                                sink: container_sink,
+                                reject: false,
+                            },
+                        )?;
+                        *child_provider.lock().unwrap() = Some(declare_target_state_with_child(
+                            &ctx,
+                            &FnCallContext::default(),
+                            tables,
+                            StableKey::Str(Arc::from("table")),
+                            (),
+                        )?);
+                        Ok(TestData(b"table".to_vec()))
+                    })
+                }
+            }));
+            (processor, child_provider)
+        }));
+        new_processor("root").with_on_process(Arc::new(move |ctx| {
+            let (table_processor, child_provider) = table_processor.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                let table = ctx.component().mount_child(
+                    &FnCallContext::new(true),
+                    key_path(ctx.component(), "table"),
+                )?;
+                table
+                    .use_mount(&ctx, table_processor, DeadlineContext::NONE)
+                    .await?
+                    .result(Some(&ctx))
+                    .await?;
+                let rows = child_provider.lock().unwrap().take().unwrap();
+                for i in 0..num_rows {
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        rows.clone(),
+                        StableKey::Int(i),
+                        (),
+                    )?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// Every key and value of the app's state store.
+    async fn app_store_contents(app: &App<TestProfile>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let app_store = app.app_ctx().persisting_app_store();
+        let read = app_store.read_txn().await.unwrap();
+        app_store
+            .db()
+            .raw()
+            .iter(read.committed())
+            .unwrap()
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                (key.to_vec(), value.to_vec())
+            })
+            .collect()
+    }
+
+    /// Preview readies a container's child provider from its sink's child
+    /// handler factory, without applying the container's action, so the
+    /// target states declared under it are previewed too — and writes nothing,
+    /// not even the id of the container's new child provider generation.
     #[tokio::test]
-    async fn preview_collects_actions_once_when_its_write_batch_reruns() {
-        const NUM_TARGET_STATES: usize = 3;
-        let (app, _dir) =
-            test_app_with_map_size("preview_batch_rerun", page_size::get() * 16).await;
-        let env = app.app_ctx().env().clone();
-        // Created before the batch below is held: `create_app_store` opens a
-        // write txn of its own, which would wait on that batch's writer lock.
-        let overflow_store = env.create_app_store("overflow").await.unwrap();
+    async fn preview_collects_actions_under_a_child_provider() {
+        const NUM_ROWS: i64 = 3;
+        let (app, _dir) = test_app("preview_child_provider").await;
+        let (container_sink, container_apply_calls, child_reconcile_calls) =
+            NoopSink::container(ChildHandling::Factory);
+        let container_sink = TargetActionSinkKeeper::new(container_sink);
 
-        let batch = hold_write_batch(env.storage()).await;
+        let contents_before = app_store_contents(&app).await;
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let (handle, _) = app
+            .update(
+                container_root(container_sink.clone(), NUM_ROWS),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(collector.clone()),
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(
+            collector.lock().unwrap().len(),
+            1 + NUM_ROWS as usize,
+            "the container's action and one per row"
+        );
+        assert_eq!(
+            child_reconcile_calls.load(Ordering::SeqCst),
+            NUM_ROWS as usize
+        );
+        assert_eq!(
+            container_apply_calls.load(Ordering::SeqCst),
+            0,
+            "preview must not apply the container's action"
+        );
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not write to the state store"
+        );
 
+        // A real update afterwards applies it, with the rows reconciled
+        // against the handlers from the same factory.
+        let (handle, _) = app
+            .update(
+                container_root(container_sink.clone(), NUM_ROWS),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            child_reconcile_calls.load(Ordering::SeqCst),
+            2 * NUM_ROWS as usize
+        );
+
+        // The container action is still listed: arbitrary tracking-record
+        // equality does not prove that an action has no external effect.
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let (handle, _) = app
+            .update(
+                container_root(container_sink, NUM_ROWS),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(collector.clone()),
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(collector.lock().unwrap().len(), 1 + NUM_ROWS as usize);
+        assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A preview that runs a live component writes nothing: not the marker
+    /// the component commits (which it still reads back), not the existence
+    /// rows and tombstone of the children it updates and deletes, and not
+    /// what its builds would commit.
+    #[tokio::test]
+    async fn preview_through_live_component_writes_nothing() {
+        let (app, _dir) = test_app("preview_live_component").await;
+        let contents_before = app_store_contents(&app).await;
         let collector = PreviewActionCollector::<TestProfile>::default();
         let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+            .new_processor_context_for_build(
+                None,
+                ProcessingStats::new(),
+                false,
+                false,
+                Some(collector),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let live_path = StablePath::root().concat_part(StableKey::Str(Arc::from("live")));
+        let MountLiveResult { controller, .. } =
+            mount_live_prepare(&ctx, &FnCallContext::default(), live_path.clone(), false)
+                .unwrap()
+                .complete()
+                .await
+                .unwrap();
+        let processor = |name: &str, body_started: &Arc<AtomicBool>| {
+            TestProcessor::new(
+                name,
+                Fingerprint::from(&name).unwrap(),
+                body_started.clone(),
+                false,
+            )
+            .with_reusable_memo_states()
+        };
+
+        let first_body_started = Arc::new(AtomicBool::new(false));
+        controller
+            .update_full(processor("live", &first_body_started), None)
+            .await
+            .unwrap();
+        assert!(first_body_started.load(Ordering::SeqCst));
+        // The runs of one preview share its handle: the memo the first run
+        // stored is the second run's hit.
+        let second_body_started = Arc::new(AtomicBool::new(false));
+        controller
+            .update_full(processor("live", &second_body_started), None)
+            .await
+            .unwrap();
+        assert!(
+            !second_body_started.load(Ordering::SeqCst),
+            "the second run must reuse the memo the first run stored in the preview"
+        );
+        let marker = StableKey::Str(Arc::from("bootstrapped"));
+        controller
+            .write_committed_state(&marker, b"yes".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            controller.read_committed_state(&marker).await.unwrap(),
+            Some(b"yes".to_vec()),
+            "the preview reads its own committed state back"
+        );
+        let child_path = live_path.concat_part(StableKey::Str(Arc::from("child")));
+        controller
+            .update(
+                child_path.clone(),
+                processor("child", &Arc::new(AtomicBool::new(false))),
+                None,
+            )
+            .await
+            .unwrap()
+            .ready()
+            .await
+            .unwrap();
+        controller
+            .delete(child_path, None)
+            .await
+            .unwrap()
+            .ready()
+            .await
+            .unwrap();
+
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not write to the state store"
+        );
+    }
+
+    /// Within one preview, a component declaring a target state that another
+    /// component of the run declared earlier plans to take it over, as an
+    /// update would: the earlier component committed into the run's handle,
+    /// so its tracking record is not left staged for the later one to wait on
+    /// until it gives up.
+    #[tokio::test]
+    async fn preview_takes_over_a_target_state_declared_earlier_in_the_run() {
+        let (app, _dir) = test_app("preview_takeover").await;
+        let contents_before = app_store_contents(&app).await;
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        let root = Component::new(app.app_ctx().clone(), StablePath::root(), None)
             .new_processor_context_for_build(
                 None,
                 ProcessingStats::new(),
@@ -2534,61 +3151,251 @@ mod tests {
                 None,
             )
             .unwrap();
-        let reconcile_calls = Arc::new(AtomicUsize::new(0));
         let provider = register_root_target_state_provider(
-            &ctx,
-            "preview_batch_rerun".to_string(),
+            &root,
+            "preview_takeover".to_string(),
             CountingHandler {
-                reconcile_calls: reconcile_calls.clone(),
-                sink: TargetActionSinkKeeper::new(NoopSink),
+                reconcile_calls: Arc::new(AtomicUsize::new(0)),
+                sink: TargetActionSinkKeeper::new(NoopSink::default()),
                 reject: false,
             },
         )
         .unwrap();
-        for i in 0..NUM_TARGET_STATES {
-            declare_target_state(
-                &ctx,
-                &FnCallContext::default(),
-                provider.clone(),
-                StableKey::Int(i as i64),
-                (),
-            )
-            .unwrap();
-        }
         let processor = TestProcessor::new(
-            "preview_batch_rerun",
-            Fingerprint::from(&"preview_batch_rerun").unwrap(),
+            "preview_takeover",
+            Fingerprint::from(&"preview_takeover").unwrap(),
             Arc::new(AtomicBool::new(false)),
             false,
         );
 
-        // Polling each future once runs it up to queuing its body: the
-        // preview's precommit first, then a write that overflows the map.
-        let mut preview = std::pin::pin!(submit(&ctx, Some(&processor), |_| {}));
-        assert!(futures::poll!(preview.as_mut()).is_pending());
-        let mut overflow = std::pin::pin!(env.run_txn(move |wtxn| {
-            let overflow_store = overflow_store.clone();
-            Box::pin(async move {
-                let value = vec![0u8; 16 * 1024];
-                for i in 0..64 {
-                    overflow_store
-                        .db()
-                        .put(wtxn, format!("key_{i:02}").as_bytes(), &value)?;
-                }
-                Ok(())
-            })
-        }));
-        assert!(futures::poll!(overflow.as_mut()).is_pending());
+        for name in ["a", "b"] {
+            let child = root
+                .component()
+                .get_child(StablePath::root().concat_part(StableKey::Str(Arc::from(name))));
+            let ctx = child
+                .new_processor_context_for_build(
+                    Some(&root),
+                    ProcessingStats::new(),
+                    false,
+                    false,
+                    Some(collector.clone()),
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            declare_target_state(
+                &ctx,
+                &FnCallContext::default(),
+                provider.clone(),
+                StableKey::Int(0),
+                (),
+            )
+            .unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                submit(&ctx, Some(&processor), |_| {}),
+            )
+            .await
+            .expect("the preview's submit must not hang")
+            .unwrap();
+        }
 
-        batch.release().await;
-        overflow.await.unwrap();
-        preview.await.unwrap();
-
-        assert!(
-            reconcile_calls.load(Ordering::SeqCst) >= 2 * NUM_TARGET_STATES,
-            "the overflowing write must make the batch re-run the preview's precommit"
+        assert_eq!(
+            collector.lock().unwrap().len(),
+            2,
+            "both components plan an action for the target state"
         );
-        assert_eq!(collector.lock().unwrap().len(), NUM_TARGET_STATES);
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not write to the state store"
+        );
+    }
+
+    /// A preview's stored memo is found only by that preview's runs, and does
+    /// not displace the persisted memo an update queued on the permit
+    /// re-checks.
+    #[tokio::test]
+    async fn a_previews_stored_memo_does_not_hide_the_persisted_one() {
+        let (app, _dir) = test_app("stored_memo_scopes").await;
+        let store = app.app_ctx().persisting_app_store();
+        let preview = store.discarding_writes();
+        let fp = |name: &str| Fingerprint::from(&name).unwrap();
+        let memo = |name: &str| super::StoredMemo {
+            operation_generation: 0,
+            memo_fp: fp(name),
+        };
+        let mut memos = super::LastStoredMemos::default();
+        memos.record(store.write_scope(), memo("update"));
+        memos.record(preview.write_scope(), memo("preview"));
+        let found = |reader: &crate::state_store::AppStore| {
+            memos.readable_by(reader).map(|memo| memo.memo_fp)
+        };
+        assert_eq!(found(store), Some(fp("update")));
+        assert_eq!(found(&preview), Some(fp("preview")));
+        assert_eq!(found(&store.discarding_writes()), Some(fp("update")));
+    }
+
+    /// A preview that finds the stored memo invalid (here: a changed memo key)
+    /// re-runs the component but leaves the memo in place, as everything else
+    /// it reads: it writes nothing.
+    #[tokio::test]
+    async fn preview_leaves_an_invalidated_memo_in_place() {
+        let (app, _dir) = test_app("preview_memo_invalidation").await;
+        let processor = |key: &str| {
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&key).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+        };
+        let (handle, _) = app
+            .update(
+                processor("v1"),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+
+        let contents_before = app_store_contents(&app).await;
+        let (handle, _) = app
+            .update(
+                processor("v2"),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(PreviewActionCollector::<TestProfile>::default()),
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not delete or store memos"
+        );
+    }
+
+    /// After a real update, a preview that meets a memo hit whose reusable
+    /// states moved leaves the stored memo states in place: it writes nothing.
+    #[tokio::test]
+    async fn preview_after_an_update_writes_nothing() {
+        let (app, _dir) = test_app("preview_after_update").await;
+        // The root re-runs every time (a new memo key per run) and mounts a
+        // memoized child whose memo hit reports moved states.
+        let root = |run: &str| {
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&format!("preview_after_update/{run}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .with_on_process(Arc::new(move |ctx| {
+                Box::pin(async move {
+                    let child_path =
+                        StablePath::root().concat_part(StableKey::Str(Arc::from("child")));
+                    let child = ctx
+                        .component()
+                        .mount_child(&FnCallContext::new(true), child_path)?;
+                    let child_processor = TestProcessor::new(
+                        "child",
+                        Fingerprint::from(&"preview_after_update/child").unwrap(),
+                        Arc::new(AtomicBool::new(false)),
+                        false,
+                    )
+                    .with_reusable_changed_memo_states();
+                    child
+                        .use_mount(&ctx, child_processor, DeadlineContext::NONE)
+                        .await?;
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            }))
+        };
+        let run = |run: &'static str, preview: bool| {
+            let app = &app;
+            async move {
+                let (handle, _) = app
+                    .update(
+                        root(run),
+                        AppUpdateOptions::default(),
+                        Arc::new(()),
+                        preview.then(PreviewActionCollector::<TestProfile>::default),
+                    )
+                    .unwrap();
+                handle.result().await.unwrap();
+            }
+        };
+
+        run("v1", false).await;
+        let contents_before = app_store_contents(&app).await;
+        run("v2", true).await;
+        assert!(
+            app_store_contents(&app).await == contents_before,
+            "preview must not rewrite memo states"
+        );
+    }
+
+    /// A deprecated slot-fulfilling sink still works for a real update, but
+    /// fails a preview with an error naming the unsupported case.
+    #[tokio::test]
+    async fn legacy_slot_sink_applies_but_fails_preview() {
+        let (app, _dir) = test_app("preview_child_provider_legacy").await;
+        let (container_sink, container_apply_calls, child_reconcile_calls) =
+            NoopSink::container(ChildHandling::LegacySlots);
+        let container_sink = TargetActionSinkKeeper::new(container_sink);
+
+        let (handle, _) = app
+            .update(
+                container_root(container_sink.clone(), 1),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(PreviewActionCollector::<TestProfile>::default()),
+            )
+            .unwrap();
+        let Err(err) = handle.result().await else {
+            panic!("preview must fail when the sink cannot preview child target states");
+        };
+        assert!(
+            err.to_string()
+                .contains("does not support preview of child target states"),
+            "unexpected error: {err}"
+        );
+
+        let (handle, _) = app
+            .update(
+                container_root(container_sink, 1),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(child_reconcile_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A target state declared with a child under a sink that builds no child
+    /// handlers fails its component before the sink is called.
+    #[tokio::test]
+    async fn child_declaration_under_a_leaf_sink_fails_before_apply() {
+        let (app, _dir) = test_app("child_under_leaf_sink").await;
+        let leaf_sink = NoopSink::default();
+        let apply_calls = leaf_sink.apply_calls.clone();
+        let (handle, _) = app
+            .update(
+                container_root(TargetActionSinkKeeper::new(leaf_sink), 1),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let Err(err) = handle.result().await else {
+            panic!("a child declared under a leaf sink must fail");
+        };
+        assert!(
+            err.to_string().contains("builds no child handlers"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 0);
     }
 
     /// Precommits that share a write batch fail independently, even across
@@ -2622,7 +3429,7 @@ mod tests {
                 "target".to_string(),
                 CountingHandler {
                     reconcile_calls: reconcile_calls.clone(),
-                    sink: TargetActionSinkKeeper::new(NoopSink),
+                    sink: TargetActionSinkKeeper::new(NoopSink::default()),
                     reject,
                 },
             )

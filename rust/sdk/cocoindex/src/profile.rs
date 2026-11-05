@@ -7,12 +7,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorInfo};
-use cocoindex_core::engine::context::{ComponentProcessorContext, MemoStatesPayload};
-use cocoindex_core::engine::profile::{EngineProfile, Persist};
-use cocoindex_core::engine::target_state::{
-    TargetActionSink, TargetActionWithChildSlot, TargetHandler, TargetReconcileOutput,
+use cocoindex_core::engine::context::{
+    ComponentProcessorContext, DataDepRecord, MemoStatesPayload,
 };
-use cocoindex_core::state::stable_path::StableKey;
+use cocoindex_core::engine::profile::{DataDepsValidation, EngineProfile, Persist};
+use cocoindex_core::engine::target_state::{
+    ChildHandling, TargetActionSink, TargetActionWithChildSlot, TargetHandler,
+    TargetReconcileOutput,
+};
+use cocoindex_core::state::stable_path::{StableKey, StablePath};
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +43,28 @@ impl EngineProfile for RustProfile {
     type TargetAction = Action;
     type TargetActionSink = BoxedSink;
     type TargetStateValue = Value;
+
+    /// The SDK records no data dependencies (`use_data_dep` has no Rust API
+    /// yet), so a row with records was written by another host and nothing
+    /// here can validate it: the ancestor's probe is a miss.
+    fn validate_data_deps(
+        _host_runtime_ctx: &(),
+        path: &StablePath,
+        records: Vec<DataDepRecord>,
+    ) -> cocoindex_utils::error::Result<
+        impl Future<Output = cocoindex_utils::error::Result<DataDepsValidation>> + Send + 'static,
+    > {
+        tracing::debug!(
+            "memo of {path} holds data dependencies, which the Rust SDK cannot validate"
+        );
+        Ok(async move {
+            Ok(DataDepsValidation {
+                records,
+                can_reuse: false,
+                states_changed: false,
+            })
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +225,9 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
                     MemoStatesPayload {
                         positional,
                         by_context_fp: validation.states,
+                        // The SDK records no data dependencies (`use_data_dep`
+                        // has no Rust API yet), so an entry it validates holds none.
+                        data_deps: Vec::new(),
                     },
                     positional_valid && validation.memo_valid,
                     positional_changed || validation.states_changed,
@@ -212,6 +240,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
                 MemoStatesPayload {
                     positional,
                     by_context_fp: initial_context_states,
+                    data_deps: Vec::new(),
                 },
                 true,
                 false,
@@ -326,9 +355,21 @@ type SinkFn = Arc<
         + Sync,
 >;
 
-#[derive(Clone)]
+// A container sink's child handler factory: the handler for the child target
+// states of one create/update action, built from the action alone.
+pub(crate) type ChildHandlerFn =
+    Arc<dyn Fn(&Action) -> cocoindex_utils::error::Result<BoxedHandler> + Send + Sync>;
+
+/// How a [`BoxedSink`] provides child handlers (see [`ChildHandling`]).
+pub(crate) enum SinkChildren {
+    Leaf,
+    LegacySlots,
+    Factory(ChildHandlerFn),
+}
+
 pub(crate) struct BoxedSink {
     apply_fn: SinkFn,
+    children: SinkChildren,
 }
 
 impl BoxedSink {
@@ -337,15 +378,37 @@ impl BoxedSink {
         + Send
         + Sync
         + 'static,
+        children: SinkChildren,
     ) -> Self {
         Self {
             apply_fn: Arc::new(f),
+            children,
         }
     }
 }
 
 #[async_trait]
 impl TargetActionSink<RustProfile> for BoxedSink {
+    fn child_handling(&self) -> ChildHandling {
+        match self.children {
+            SinkChildren::Leaf => ChildHandling::Leaf,
+            SinkChildren::LegacySlots => ChildHandling::LegacySlots,
+            SinkChildren::Factory(_) => ChildHandling::Factory,
+        }
+    }
+
+    async fn child_handlers(
+        &self,
+        _host_runtime_ctx: &(),
+        _host_ctx: Arc<ContextStore>,
+        actions: &[&Action],
+    ) -> cocoindex_utils::error::Result<Vec<BoxedHandler>> {
+        let SinkChildren::Factory(child_handler) = &self.children else {
+            cocoindex_utils::internal_bail!("target action sink has no child handler factory");
+        };
+        actions.iter().map(|action| child_handler(action)).collect()
+    }
+
     async fn apply(
         &self,
         _host_runtime_ctx: &(),

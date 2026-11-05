@@ -10,11 +10,11 @@ tags: [knowledge-graph, llm-extraction]
 
 Podcasts are one of the richest sources of expert knowledge on the internet. A single Lex Fridman or Dwarkesh Patel episode can contain dozens of substantive claims about people, technologies, and organizations — but it's all locked inside hours of audio. You can't query any of it, and you can't cross-reference what two different guests said about the same topic.
 
-In this tutorial, we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns YouTube podcast episodes into a queryable knowledge graph. It downloads audio, transcribes with speaker diarization, uses an LLM to extract structured statements and entities, resolves duplicates across episodes, and stores everything in [SurrealDB](https://github.com/surrealdb/surrealdb) as a graph.
+Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns YouTube podcast episodes into a queryable knowledge graph. It downloads audio, transcribes with speaker diarization, uses an LLM to extract structured statements and entities, resolves duplicates across episodes, and stores everything in [SurrealDB](https://github.com/surrealdb/surrealdb) as a graph.
 
-![Podcast episodes flowing through CocoIndex with typed LLM extraction into a SurrealDB knowledge graph](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/diagram.png)
+![Podcast episodes flowing through CocoIndex with typed LLM extraction into a SurrealDB knowledge graph](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/diagram-dark.svg)
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, managed graph targets — runs in a Rust engine underneath, so re-running only processes new or changed episodes.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and graph target management. As a result, re-running only processes new or changed episodes.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/conversation_to_knowledge)
 
@@ -22,7 +22,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 Here's the knowledge graph schema — five node types connected by four relationship types:
 
-![Knowledge graph schema: session, statement, person, tech, and org nodes joined by session_statement, person_session, person_statement, and statement_mentions](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/schema.png)
+![Knowledge graph schema: session, statement, person, tech, and org nodes joined by session_statement, person_session, person_statement, and statement_mentions](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/schema-dark.svg)
 
 A **session** is one podcast episode. A **statement** is a thematic claim extracted from the conversation — e.g. "Scaling laws suggest that larger models will continue to improve." Each statement is linked to who said it and what it mentions. **Person**, **tech**, and **org** are named entities.
 
@@ -32,19 +32,19 @@ The tricky part: the same entity appears under different names across episodes (
 
 The pipeline runs in three phases.
 
-![Three phases: per-session processing, entity resolution, knowledge base creation, landing in SurrealDB](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/pipeline-overview.png)
+![Three phases: per-session processing, entity resolution, knowledge base creation, landing in SurrealDB](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/pipeline-overview-dark.svg)
 
 1. **Per-session processing** — for each episode: download, transcribe, and extract metadata, speakers, and statements with an LLM. Sessions and statements are written immediately; they don't need cross-episode dedup.
 2. **Entity resolution** — collect every raw entity name across episodes and deduplicate them with embedding similarity + LLM confirmation.
 3. **Knowledge base creation** — write the canonical entities and all relationships.
 
-![Detailed pipeline: podcast URLs fetched, transcribed, extracted into raw entities and statements, then resolved into canonical Person, Tech, and Org nodes in SurrealDB](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/overview.png)
+![Detailed pipeline: podcast URLs fetched, transcribed, extracted into raw entities and statements, then resolved into canonical Person, Tech, and Org nodes in SurrealDB](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/overview-dark.svg)
 
-You [declare the transformation](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python; CocoIndex works out what to insert, update, and delete. Think: **target_state = transformation(source_state)**.
+You [declare the transformation](/docs/programming_guide/core_concepts/) with native Python; CocoIndex works out what to insert, update, and delete. Think: **target_state = transformation(source_state)**.
 
 ## Phase 1: per-session processing
 
-![Phase 1 — per-session: iterate podcast URLs, fetch audio, transcribe, and extract entities and statements](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/phase1.png)
+![Phase 1 — per-session: iterate podcast URLs, fetch audio, transcribe, and extract entities and statements](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/phase1-dark.svg)
 
 Each session goes through a multi-step pipeline, starting from a YouTube URL.
 
@@ -69,15 +69,15 @@ async def fetch_transcript(youtube_id: str) -> SessionTranscript:
     return SessionTranscript(utterances=utterances, yt_title=info["title"], ...)
 ```
 
-[`@coco.fn(memo=True)`](https://cocoindex.io/docs/advanced_topics/memoization_keys/) **memoizes** the function: if you've already fetched and transcribed a video, re-running skips it entirely — essential when you're iterating on downstream extraction and don't want to re-download hours of audio every time.
+[`@coco.fn(memo=True)`](/docs/advanced_topics/memoization_keys/) **memoizes** the function: if you've already fetched and transcribed a video, re-running skips it entirely — essential when you're iterating on downstream extraction and don't want to re-download hours of audio every time.
 
 ### Two-step LLM extraction
 
-![Incremental relationship extraction: episodes processed into persons, sessions, statements, techs, and orgs](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/relationship.png)
+![Incremental relationship extraction: episodes processed into persons, sessions, statements, techs, and orgs](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/relationship-dark.svg)
 
 There's a bootstrapping problem: to attribute statements correctly, the LLM needs to know who the speakers are — but the raw transcript only has generic labels like "Speaker A". So extraction runs in two passes, both using a shared `format_transcript()` that swaps diarization labels for names.
 
-**Step 1 — identify speakers and extract metadata.** Format the transcript with generic labels, give the LLM the YouTube metadata as context, and get back typed speaker identifications. The output is a Pydantic model, enforced by [instructor](https://github.com/instructor-ai/instructor) over [LiteLLM](https://cocoindex.io/docs/ops/litellm/):
+**Step 1 — identify speakers and extract metadata.** Format the transcript with generic labels, give the LLM the YouTube metadata as context, and get back typed speaker identifications. The output is a Pydantic model, enforced by [instructor](https://github.com/instructor-ai/instructor) over [LiteLLM](/docs/ops/litellm/):
 
 ```python title="conv_knowledge/extract.py"
 @coco.fn(memo=True)
@@ -113,11 +113,11 @@ class RawStatement(pydantic.BaseModel):
     mentioned_org: list[str]     # ["OpenAI"]
 ```
 
-Every name must be **self-contained** — the prompt forbids pronouns, speaker labels, or contextual references — because statements from different episodes get cross-referenced later, and a name like "he" or "the host" is meaningless outside its transcript.
+Every name must be **self-contained** (the prompt forbids pronouns, speaker labels, or contextual references) because statements from different episodes get cross-referenced later, and a name like "he" or "the host" is meaningless outside its transcript.
 
 ### Declare the session and statements
 
-After extraction we [declare](https://cocoindex.io/docs/programming_guide/target_state/) the session and its statements as records in SurrealDB. IDs come from CocoIndex's [`IdGenerator`](https://cocoindex.io/docs/common_resources/id_generation/), which is stable — the same inputs always yield the same ID, so re-running never duplicates. `next_id(content)` folds the content in, so an ID stays stable even if statement order changes.
+After extraction we [declare](/docs/programming_guide/target_state/) the session and its statements as records in SurrealDB. IDs come from CocoIndex's [`IdGenerator`](/docs/common_resources/id_generation/), which is stable — the same inputs always yield the same ID, so re-running never duplicates. `next_id(content)` folds the content in, so an ID stays stable even if statement order changes.
 
 ```python title="conv_knowledge/app.py"
 id_gen = IdGenerator(youtube_id)
@@ -130,7 +130,7 @@ for stmt in stmt_extraction.statements:
     session_statement_rel.declare_relation(from_id=session_id, to_id=stmt_id)
 ```
 
-Each session runs as an independent [processing component](https://cocoindex.io/docs/programming_guide/processing_component/) via [`coco.use_mount`](https://cocoindex.io/docs/programming_guide/app/), keyed by the YouTube ID — so adding an episode only processes that episode:
+Each session runs as an independent [processing component](/docs/programming_guide/processing_component/) via [`coco.use_mount`](/docs/programming_guide/app/), keyed by the YouTube ID — so adding an episode only processes that episode:
 
 ```python title="conv_knowledge/app.py"
 raw = await coco.use_mount(
@@ -144,9 +144,9 @@ raw = await coco.use_mount(
 
 ## Phase 2: entity resolution
 
-![Phase 2 — raw Tech, Person, and Org names deduplicated via embedding similarity and LLM confirmation into canonical entities](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/phase2.png)
+![Phase 2 — raw Tech, Person, and Org names deduplicated via embedding similarity and LLM confirmation into canonical entities](https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/phase2-dark.svg)
 
-Now we have a pile of raw names from every episode, with the same entity under many spellings ("GPT-4" vs "GPT4", "Sam Altman" vs "Samuel Altman"). CocoIndex ships an [`entity_resolution`](https://cocoindex.io/docs/ops/entity_resolution/) utility that collapses them: it embeds each name, finds near-matches by vector similarity, and asks an LLM to confirm only the close pairs — cheap embeddings filter the field, expensive LLM calls happen only where it's ambiguous.
+Now we have a pile of raw names from every episode, with the same entity under many spellings ("GPT-4" vs "GPT4", "Sam Altman" vs "Samuel Altman"). CocoIndex ships an [`entity_resolution`](/docs/ops/entity_resolution/) utility that collapses them: it embeds each name, finds near-matches by vector similarity, and asks an LLM to confirm only the close pairs — cheap embeddings filter the field, expensive LLM calls happen only where it's ambiguous.
 
 ```python title="conv_knowledge/app.py"
 @coco.fn(memo=True)
@@ -198,7 +198,7 @@ async def create_knowledge_base(all_session_raw, entity_dedup, entity_tables, ..
                         to_table=entity_tables[cfg.name])   # polymorphic target
 ```
 
-The `statement_mentions` relationship is **polymorphic** — its target can be a person, tech, or org table — and `to_table` tells CocoIndex which table the target ID belongs to. The targets themselves are mounted once in `app_main`:
+The `statement_mentions` relationship is **polymorphic** (its target can be a person, tech, or org table) and `to_table` tells CocoIndex which table the target ID belongs to. The targets themselves are mounted once in `app_main`:
 
 ```python title="conv_knowledge/app.py"
 statement_mentions_rel = await surrealdb.mount_relation_target(
@@ -224,7 +224,7 @@ This isn't a one-shot job — you'll add episodes over time and evolve the schem
 | Entity resolution (product) | **Runs fresh** | New type |
 | Knowledge base creation | **Re-declared** | New nodes + relationships |
 
-The expensive operations — download, transcription, speaker ID — are fully reused. Add one entity type across 50 episodes and you re-run only the statement-extraction calls plus resolution for the new type.
+The expensive operations (download, transcription, speaker ID) are fully reused. Add one entity type across 50 episodes and you re-run only the statement-extraction calls plus resolution for the new type.
 
 ## Run the pipeline
 
@@ -288,4 +288,4 @@ FROM statement;
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/conversation_to_knowledge](https://github.com/cocoindex-io/cocoindex/tree/main/examples/conversation_to_knowledge). Got a podcast, a meeting archive, or any other corpus you want to turn into a graph? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
+The full, runnable example is in the CocoIndex repo: [examples/conversation_to_knowledge](https://github.com/cocoindex-io/cocoindex/tree/main/examples/conversation_to_knowledge).

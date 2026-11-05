@@ -34,7 +34,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
     TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
     TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
@@ -928,8 +928,8 @@ impl TargetHandler<CollectionSpec> for CollectionHandler {
     ) -> Result<Option<TargetReconcileOutput<CollectionAction, Self::TrackingRecord>>> {
         let conn_key = CollectionKey::from_stable_key(&key)?.conn_key;
         match desired {
-            // Always emit when the collection is declared, so the sink runs and
-            // fulfills the point child provider.
+            // Always emit when the collection is declared, so the sink builds
+            // the point child handler.
             Some(spec) => {
                 let prev_is_empty = prev.is_empty();
                 let tracking_record = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
@@ -991,18 +991,13 @@ impl TargetHandler<CollectionSpec> for CollectionHandler {
 }
 
 fn collection_sink() -> TargetActionSink<CollectionAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<CollectionAction>, Option<ChildSlot>)>| async move {
-            for (action, child_slot) in actions {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<CollectionAction>>| async move {
+            for action in actions {
                 match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => {
                         let client = resolve_client(&host_ctx, &a.conn_key)?;
                         ensure_collection(&client, &a).await?;
-                        if let Some(slot) = child_slot {
-                            slot.fulfill(ChildTargetDef::new::<Point, _>(PointHandler::new(
-                                a.conn_key, a.name, a.schema,
-                            )))?;
-                        }
                     }
                     TargetAction::Delete(a) => {
                         let client = resolve_client(&host_ctx, &a.conn_key)?;
@@ -1011,6 +1006,13 @@ fn collection_sink() -> TargetActionSink<CollectionAction> {
                 }
             }
             Ok(())
+        },
+        |a: &CollectionAction| {
+            Ok(ChildTargetDef::new::<Point, _>(PointHandler::new(
+                a.conn_key.clone(),
+                a.name.clone(),
+                a.schema.clone(),
+            )))
         },
     )
 }

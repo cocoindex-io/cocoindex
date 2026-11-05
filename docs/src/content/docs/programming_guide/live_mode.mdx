@@ -7,9 +7,7 @@ description: >
 ---
 By default, calling `app.update()` runs in **catch-up mode**: it scans all sources, processes what changed since the last run (memoized components are skipped, so unchanged work is not redone), syncs target states, and returns. Targets are caught up to the moment the run started, and that's it — to pick up further changes, you call `update()` again.
 
-So catch-up mode is already incremental — but each call still has to scan sources to discover what changed, and changes are only picked up when you trigger a new run.
-
-**Live mode** keeps the app running after catch-up finishes and lets components stream changes continuously from their sources (e.g. a file system watcher or a database change feed), applying them to target states with very low latency. This is useful when:
+**Live mode** keeps the app running after catch-up finishes and lets components stream changes continuously from their sources (e.g. a file system watcher or a database change feed), applying them to target states with low latency. This is useful when:
 
 - You want near-real-time reactions to source changes, instead of waiting for the next `update()` call
 - Your sources can push changes more efficiently than a full rescan can discover them
@@ -67,7 +65,7 @@ Without live support on the source, `mount_each()` falls back to catch-up behavi
 
 ### Periodic refresh with `coco.auto_refresh`
 
-When the source isn't change-aware but you still want fresh data — say, polling a REST endpoint or re-reading a database table that doesn't emit change events — wrap your processor function in [`coco.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh). It runs your function once, signals readiness, then re-runs it on a fixed delay:
+When the source isn't change-aware but you still want fresh data (say, polling a REST endpoint or re-reading a database table that doesn't emit change events) wrap your processor function in [`coco.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh). It runs your function once, signals readiness, then re-runs it on a fixed delay:
 
 ```python
 import datetime
@@ -95,7 +93,7 @@ app.update_blocking(live=True)
 
 ### Decoupling stages with an in-memory `LiveMap`
 
-When one part of your pipeline produces keyed data and another consumes it — without going through an external system — put an in-memory [`LiveMap`](../common_resources/live_map) between them. Producers declare `(key, value)` entries; the consumer reads it as a `LiveMapView` via `mount_each`, reacting to adds, updates, and deletes just like a live source.
+When one part of your pipeline produces keyed data and another consumes it (without going through an external system) put an in-memory [`LiveMap`](../common_resources/live_map) between them. Producers declare `(key, value)` entries; the consumer reads it as a `LiveMapView` via `mount_each`, reacting to adds, updates, and deletes just like a live source.
 
 ## Examples
 
@@ -136,7 +134,7 @@ async def app_main() -> None:
         "group.id": "my-group",
         "enable.auto.commit": "false",
     })
-    items = kafka.topic_as_map(consumer, ["my-topic"])
+    items = kafka.topic_as_map(consumer, "my-topic")
     await coco.mount_each(process_message, items)
 
 app = coco.App(coco.AppConfig(name="KafkaConsumer"), app_main)

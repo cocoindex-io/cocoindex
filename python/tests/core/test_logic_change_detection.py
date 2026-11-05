@@ -1394,3 +1394,100 @@ def test_sync_fn_hit_still_reports_logic_dep_to_rebuilt_caller() -> None:
         ], f"leaf logic change not detected after hit-rebuild: {_hit_dep_runs}"
     finally:
         core.register_logic_fingerprint(leaf_fp)
+
+
+# ---------------------------------------------------------------------------
+# Fn-memo HIT must also re-offer what its entry recorded *beneath* the fn's own
+# fp — the callees it tracked under "full" — to a rebuilt caller. Regression:
+# the hit path carried the fn's own fp (above) and its target-provider deps,
+# but not the entry's transitive logic deps, so a caller re-stored while the
+# inner fn hit lost them, and a later change to a grand-callee went undetected
+# (the inner fn's own entry would miss, but a caller that hits never reaches it).
+# ---------------------------------------------------------------------------
+
+_hit_tr_runs: list[str] = []
+_hit_tr_n: dict[str, int] = {"n": 1}
+
+
+@coco.fn
+def _hit_tr_baz() -> int:
+    _hit_tr_runs.append("baz")
+    return 1
+
+
+@coco.fn(memo=True)
+def _hit_tr_leaf_sync() -> int:
+    _hit_tr_runs.append("leaf")
+    return _hit_tr_baz()
+
+
+@coco.fn(memo=True)
+async def _hit_tr_leaf_async() -> int:
+    _hit_tr_runs.append("leaf")
+    return _hit_tr_baz()
+
+
+@coco.fn(memo=True)
+async def _hit_tr_mid_sync_leaf(n: int) -> int:
+    _hit_tr_runs.append(f"mid{n}")
+    return _hit_tr_leaf_sync() + n
+
+
+@coco.fn(memo=True)
+async def _hit_tr_mid_async_leaf(n: int) -> int:
+    _hit_tr_runs.append(f"mid{n}")
+    return await _hit_tr_leaf_async() + n
+
+
+async def _hit_tr_main_sync_leaf() -> None:
+    await coco.use_mount(
+        coco.component_subpath("mid"), _hit_tr_mid_sync_leaf, _hit_tr_n["n"]
+    )
+
+
+async def _hit_tr_main_async_leaf() -> None:
+    await coco.use_mount(
+        coco.component_subpath("mid"), _hit_tr_mid_async_leaf, _hit_tr_n["n"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "main"),
+    [("sync", _hit_tr_main_sync_leaf), ("async", _hit_tr_main_async_leaf)],
+)
+def test_fn_hit_still_reports_transitive_logic_deps_to_rebuilt_caller(
+    name: str, main: Any
+) -> None:
+    _hit_tr_runs.clear()
+    _hit_tr_n["n"] = 1
+    app: coco.App[[], None] = coco.App(
+        coco.AppConfig(
+            name=f"test_fn_hit_transitive_logic_deps_{name}", environment=coco_env
+        ),
+        main,
+    )
+
+    # Run 1: everything executes; leaf's entry records baz, mid's records both.
+    app.update_blocking()
+    assert _hit_tr_runs == ["mid1", "leaf", "baz"]
+
+    # Run 2: mid's memo key changes -> mid re-executes, leaf HITS. Mid's
+    # rebuilt entry must still record baz, which only leaf's entry knew.
+    _hit_tr_runs.clear()
+    _hit_tr_n["n"] = 2
+    app.update_blocking()
+    assert _hit_tr_runs == ["mid2"]
+
+    # Run 3: simulate baz's code changing — its fp leaves the registry. Mid
+    # must miss (not only leaf, which mid would never reach on a hit).
+    baz_fp = _hit_tr_baz._logic_fp  # type: ignore[attr-defined]
+    assert baz_fp is not None
+    core.unregister_logic_fingerprint(baz_fp)
+    try:
+        _hit_tr_runs.clear()
+        app.update_blocking()
+        assert _hit_tr_runs == ["mid2", "leaf", "baz"], (
+            f"grand-callee logic change not detected after hit-rebuild: {_hit_tr_runs}"
+        )
+    finally:
+        core.register_logic_fingerprint(baz_fp)

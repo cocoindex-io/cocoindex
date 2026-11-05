@@ -154,6 +154,13 @@ mod live {
             watcher
                 .watch(&self.watch_root, mode)
                 .map_err(|e| Error::engine(format!("fs watch {:?}: {e}", self.watch_root)))?;
+            // The poller's baseline is the directory as of the `watch` call
+            // just above, while the framework's catch-up scan ran before this
+            // method was called. The poller reports only changes relative to
+            // its baseline, so a file created or deleted between the two
+            // snapshots would never produce an event: rescan once now that the
+            // watch is armed, as the Python localfs source does.
+            subscriber.update_all().await?;
             // Re-scan on each (coalesced) batch of filesystem events: the live
             // component's `update_all` re-runs `scan`, and `mount_each`
             // reconciles added/removed files. The watcher is kept alive for the

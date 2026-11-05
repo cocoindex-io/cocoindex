@@ -6,7 +6,7 @@ description: >
   and GPU-aware runners included.
 ---
 :::note[Prerequisite]
-This page builds on [Core Concepts](./core_concepts), which introduces change detection and function memoization **with diagrams**. If memoization feels abstract, start there.
+Read [Core Concepts](./core_concepts) for change detection and function memoization, with diagrams.
 :::
 
 It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
@@ -35,10 +35,10 @@ If you don't need any of the above for a helper, keep it as a plain Python funct
 
 ## Change detection and memoization
 
-Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates. For the big-picture view — how memoization skips unchanged work across both input and code changes — see the [Function memoization section in Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations).
+Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms (detecting changes and acting on them) work together to enable incremental updates. For the big-picture view (how memoization skips unchanged work across both input and code changes) see the [Function memoization section in Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations).
 
 :::tip[Mental model]
-A function's behavior is determined by its **logic** (source code, [`deps`](#deps), [`version`](#version)), its **inputs** (arguments), and the **context values** it reads via [`use_context()`](./context#retrieving-values). If none of those have changed, a memoized function returns its cached result without re-executing. You don't need to reason about *how* CocoIndex tracks any of this; just trust the contract.
+A function's behavior is determined by its **logic** (source code, [`deps`](#deps), [`version`](#version)), its **inputs** (arguments), and the **context values** it reads via [`use_context()`](./context#retrieving-values). If none of those have changed, a memoized function returns its cached result without re-executing.
 :::
 
 ### Change detection
@@ -111,13 +111,17 @@ If a memoized function raises, no cache entry is written for that call. The next
 - The computation is expensive
 - The function's caller is reprocessed frequently (due to logic or input changes)
 
-**Placement — one rule:** memoize at a boundary only if its key can hit while every *enclosing* memo boundary misses. Stacked levels pay off exactly when the outer boundary is keyed more coarsely than the inner one's inputs — a per-file component plus a per-chunk embedding memo composes well, because an edited file re-runs its component while its unchanged chunks still skip embedding. But if an enclosing *memoized* component's identity already commits to this function's inputs — say, the component path is keyed by a hash of the very content the function transforms — the inner memo can never hit on a *content-driven* rerun: the component memo shadows all of those. What remains is insurance against reruns of the enclosing component itself (its code edited, its `version` bumped): each entry permanently stores a value — often one your target also stores — that only such reruns can read. The arithmetic bites at scale: a 1536-dim float32 vector is ~6 KB, so an embedding memo under content-hash-keyed components costs ~600 MB per 100k chunks to insure against those rare reruns — usually a bad trade.
+**Placement:** memoize at a boundary only if its key can hit while every *enclosing* memo boundary misses. Stacked levels pay off exactly when the outer boundary is keyed more coarsely than the inner one's inputs. A per-file component plus a per-chunk embedding memo composes well: an edited file re-runs its component while its unchanged chunks still skip embedding.
+
+If an enclosing *memoized* component's identity already commits to this function's inputs (for example, the component path is keyed by a hash of the content the function transforms), the inner memo can never hit on a *content-driven* rerun. The component memo already covers those cases. The inner memo can still help when the enclosing component re-runs because its code changed or its `version` was bumped. Each entry permanently stores a value, often one the target also stores, for those reruns.
+
+A 1536-dim float32 vector is ~6 KB. An embedding memo under content-hash-keyed components therefore stores ~600 MB per 100k chunks to cover those rare reruns. Consider that storage cost when deciding whether to keep the inner memo.
 
 **Examples:**
 
 - ✅ **Embedding functions** — good to memoize when callers can re-run with the same text (e.g., per-file components re-running on edits). Computation is heavy; return value is fixed-size and not too large.
 - ❌ **Splitting text into fixed-size chunks** — usually not worth memoizing. Computation is light; return value can be large.
-- ✅ **Processing component for files that are mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
+- ✅ **Processing component for files that are mostly stable between runs** — memoization skips unchanged files, saving the cost of reading and processing their contents.
 - 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
 - ❌ **Chunk embedding inside a *memoized* component keyed by the chunk's content hash** — usually redundant by the placement rule: the component memo already commits to the text, so the inner memo serves only reruns caused by the component's own code or `version` changes — at the cost of storing every vector twice.
 
@@ -129,7 +133,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). A fourth tool, [`coco.logic_tracked`](#callbacks-logic_tracked), is for callbacks that cross a `"self"` boundary.
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)). Three more tools cover what a decorator parameter cannot: [`coco.LogicDep` / `coco.use_logic_dep`](#per-call-dependencies-logicdep-and-use_logic_dep) for a dependency decided per call, [`coco.DataDep` / `coco.use_data_dep`](#data-dependencies-datadep-and-use_data_dep) for data a body reads that is not among its arguments, and [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers) for callbacks that cross a `"self"` boundary.
 
 #### `logic_tracking`
 
@@ -140,6 +144,10 @@ The `logic_tracking` parameter controls whether and how logic changes are detect
 - **`None`:** Don't track logic through this function at all — neither its own logic nor its callees' reaches its callers.
 
 These settings govern nested *function calls*. A [mounted child component](./processing_component) is tracked through the component tree instead, so its logic reaches the parent regardless of the parent's `logic_tracking`.
+
+:::caution[Adopting tracking later does not re-store existing memo entries]
+A memo entry records only the logic fingerprints its writer offered when it was stored. Decorating a function with `@coco.fn` after memoized callers have stored entries that ran it, or raising its `logic_tracking` from `None`, leaves those entries valid: nothing in them can fail. Ship such a change together with a [`version`](#version) bump or a memoization-key change on the memoized callers, so their entries are stored again with the new fingerprints.
+:::
 
 #### `version`
 
@@ -184,18 +192,89 @@ def summarize(text: str) -> str:
 The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
 
 :::caution[Snapshotted at decoration time]
-`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values — instance attributes in a bound method, request-scoped config, anything that changes at runtime — pass them as regular function arguments instead, so the memoization layer observes each new value.
+`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values (instance attributes in a bound method, request-scoped config, anything that changes at runtime) pass them as regular function arguments instead, so the memoization layer observes each new value.
 :::
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
-#### Callbacks: `logic_tracked`
+#### Per-call dependencies: `LogicDep` and `use_logic_dep`
+
+`deps` describes the whole function: every call depends on the value. Some dependencies are decided per call. A tree walk's `visit_file` depends on the parser of *that file's* language, and a change to one parser should re-run the files it parsed, not every file the walk saw. `coco.LogicDep` declares such a value once, at module import; `coco.use_logic_dep` records it as part of the current call's logic:
+
+```python
+PARSER_DEPS = {
+    name: coco.LogicDep(("parser", name, version))
+    for name, version in PARSER_VERSIONS.items()
+}
+
+@coco.fn(logic_tracking="self", version=1)
+async def visit_file(file: File) -> None:
+    language = detect_language(file.path)
+    if (dep := PARSER_DEPS.get(language)) is not None:
+        coco.use_logic_dep(dep)  # this call's logic also depends on that parser
+    ...
+```
+
+A recorded dependency travels exactly like the function's own fingerprint: into the entry of a memoized caller, onward through `"full"` callers, hidden by a `"self"` caller above unless the call is carried by [`logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers), and from a [mounted component](./processing_component) into every ancestor component's entry. (A memoized callee that hits re-offers its stored entry to the caller whole, and that rides to the enclosing component regardless of modes, so a `"self"` caller may record more after a hit than after a miss, never less.) When a later release constructs the `LogicDep` with a new value, only the entries that recorded the old one are invalidated: in the example, a parser's new version re-runs its files and the directories above them, and every other subtree is reused. It is recorded whatever the function's own `logic_tracking` is: it describes the call, not the function's code.
+
+:::caution[Construct at import, never lazily]
+A memo entry is validated against the dependencies registered in the process at that moment. A `LogicDep` constructed on first use registers too late, so entries recorded with it are evicted when probed before that first use; one constructed per call is released too early, so they are evicted every pass. Neither is stale data, only memoization that silently stops working. Build every `LogicDep` before any component runs, at module import; constructing one inside a component context raises.
+:::
+
+Adopting `use_logic_dep` in a function that memoized callers already stored entries for does not re-store those entries (the caution under [`logic_tracking`](#logic_tracking) applies): ship the adoption with a `version` bump or a memoization-key change on those callers.
+
+#### Data dependencies: `DataDep` and `use_data_dep`
+
+:::caution[Experimental]
+`DataDep` and `use_data_dep` are experimental. Experimental APIs are outside CocoIndex's compatibility promise: a later release, including a minor one, may change their API or semantics, or remove them.
+:::
+
+Logic, arguments and context values are all known before a body runs. Some bodies read things decided only while they run: an agent session opens the files the model chose, a test runner touches the files the tests import. `coco.DataDep` declares a *kind* of such a read once, at module import, with a validator; `coco.use_data_dep` records one read into the current call, as a key and the state observed. The next probe validates each record from the stored key and state alone, through the kind's validator, so the entry can be reused even though nothing in its arguments covers the read.
+
+```python
+def _validate_file(key: str, prev: tuple[int, bytes]) -> coco.MemoStateOutcome:
+    try:
+        st = os.stat(key)
+    except FileNotFoundError:
+        return coco.MemoStateOutcome(state=prev)  # memo_valid defaults to False
+    if st.st_mtime_ns == prev[0]:
+        return coco.MemoStateOutcome(state=prev, memo_valid=True)
+    digest = hashlib.sha256(Path(key).read_bytes()).digest()
+    return coco.MemoStateOutcome(state=(st.st_mtime_ns, digest), memo_valid=digest == prev[1])
+
+
+# Module level, at import, after the validator it names.
+FILE = coco.DataDep("file", validate=_validate_file)
+
+
+@coco.fn(memo=True)
+async def session(task: Task) -> Outcome:
+    ...
+    # Stat *before* reading, so the recorded mtime is never newer than the bytes.
+    st = os.stat(path)
+    data = path.read_bytes()
+    coco.use_data_dep(FILE, key=str(path.resolve()), state=(st.st_mtime_ns, hashlib.sha256(data).digest()))
+    ...
+```
+
+The validator takes the recorded key and the stored state and returns a [`MemoStateOutcome`](../advanced_topics/memoization_keys#memo-state-validation), sync or awaitable; its parameter annotations drive typed deserialization of the stored key and state, so annotate both. It never receives `NON_EXISTENCE`. Renaming a kind invalidates every entry that recorded it, which doubles as its version bump.
+
+Key and state are any serializable values and are **snapshotted at the call**: identity and equality are fingerprints of the serialized bytes, and `__coco_memo_key__` is not consulted, so use plain values (the resolved path string, a tuple of mtime and digest). Recording the same kind and key again with an equal state records once; recording it with a **different** state makes the run store no entry, because output that used two states of one key has no single state to validate against. A body that writes what it then reads back should not record the read-back.
+
+The rules for an entry that recorded data dependencies:
+
+- The entry is reused only when its arguments, logic and context match **and** every record validates. A record whose kind is no longer registered, or whose stored key or state no longer deserializes, is a logged miss; a validator's exception propagates. A changed-but-valid state is refreshed without a run. On a miss the body's new records replace the stored set.
+- A record rides up through every enclosing function frame regardless of `logic_tracking`, into every enclosing memoized function's entry and the component's entry, where it stops. Records are **not** copied into ancestor components' entries. A component reports one bit upward instead, and its parent's entry lists the children that reported it: **a component is skipped only if its own entry validates and every descendant that recorded data dependencies validates too**, which the parent's probe checks from those descendants' own stored entries, by path, without mounting them. A changed-but-valid descendant record is refreshed in place. The probe stops, and the body re-runs, at a listed descendant with no entry (a non-memoized one, whose records are dropped, or one whose last run observed a key in two states), a record that no longer decodes, a kind no longer registered, or a validator answering invalid. Closed descendants are carried over by the reuse unvalidated, as they always were. A component that records nothing is unaffected.
+- Because a parent's probe may validate a record while the component that recorded it is not mounted, a validator runs with no component context and must depend on its key and stored state alone.
+- `use_data_dep` raises outside a component context, and when the current frame has already closed. The check covers the current frame only: a `@coco.fn` reader started as a task that outlives the decorated function which started it keeps its own open frame, so its records merge into an already-joined frame and are lost, as its logic deps are today. Await readers inside the function that started them.
+
+#### Callbacks: `logic_propagated_to_callers`
 
 `logic_tracking` is per function, so `"self"` hides the logic of *everything* a function calls — including callbacks it received as arguments. A library whose `accept` is `logic_tracking="self"` therefore hides the user's `visit_file`: an edit to `visit_file` invalidates nothing, even though it is the user's input, not the library's implementation detail.
 
-`coco.logic_tracked(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback.
+`coco.logic_propagated_to_callers(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback. It does not make `fn` tracked: `fn`'s own `@coco.fn` and `logic_tracking` decide what it offers, exactly as for any function. The wrapper only carries that up to the frame that called it, through layers that would otherwise drop it. (`coco.logic_tracked` is the former name; it still works and emits a `DeprecationWarning`.)
 
-Call it at the entry point that hands a callback down. The function that calls `logic_tracked` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame — the owner's own entry included — whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
+Call it at the entry point that hands a callback down. The function that calls `logic_propagated_to_callers` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame (the owner's own entry included) whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
 
 ```python
 # Library
@@ -206,7 +285,7 @@ async def accept(file: File, visit_file: Callable[[File], Awaitable[None]]) -> N
 
 @coco.fn
 async def walk(repo: Repo, visitor: RepoVisitor) -> None:
-    visit_file = coco.logic_tracked(visitor.visit_file)  # walk owns the callback
+    visit_file = coco.logic_propagated_to_callers(visitor.visit_file)  # walk owns the callback
     for file in repo.files():
         await coco.use_mount(coco.component_subpath(file.path), accept, file, visit_file)
 ```
@@ -224,31 +303,32 @@ async def app_main(repo: Repo) -> None:
     await walk(repo, MyVisitor())
 ```
 
-The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees `logic_tracked`. `accept` needs no code of its own: the wrapper it receives already carries its owner.
+The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees `logic_propagated_to_callers`. `accept` needs no code of its own: the wrapper it receives already carries its owner.
 
 **When a library does not do this**, wrap the callback in your own code. Your function becomes the owner:
 
 ```python
 @coco.fn(memo=True)
 def process(doc: str) -> str:
-    return third_party_transform(doc, coco.logic_tracked(summarize))
+    return third_party_transform(doc, coco.logic_propagated_to_callers(summarize))
 ```
 
-Rules, for whoever calls `logic_tracked`:
+Rules, for whoever calls `logic_propagated_to_callers`:
 
 - Decorate the callback with `@coco.fn` for its own code to be tracked. An undecorated callable contributes only the `@coco.fn` functions it calls, as always.
 - The wrapper is valid only while the owner's call is running. A call after the owner has returned raises `RuntimeError` instead of silently running untracked. Mount the components that call it with `use_mount`, or `await handle.ready()` inside the owner.
-- The wrapper is transparent for memoization keys: passing `logic_tracked(fn)` where `fn` was passed before keys the same callback (the key changes once, when the wrapper is adopted).
+- The wrapper keys by `fn`: two wrappers of the same `fn` key alike. It does not key as the bare `fn`, so passing `logic_propagated_to_callers(fn)` where `fn` was passed before moves that memo key once, when the wrapper is adopted.
+- Adopting the wrapper does not re-store existing memo entries (see the caution under [`logic_tracking`](#logic_tracking)): entries stored before the wrap recorded no callback logic and stay valid until their key or the memoized caller's `version` moves. Ship the adoption with one such change.
 
 #### Common patterns
 
 :::tip[`@coco.fn` on non-memoized helpers]
-You can — and often should — decorate helpers with `@coco.fn` even without `memo=True`. The decorator's job is to make the function's logic *visible* to the change detection system. A bare helper is invisible: editing it will not invalidate any memoized caller, leading to silently stale results. Add `@coco.fn` so its fingerprint propagates; only add `memo=True` if caching its return value is worth it.
+You can (and often should) decorate helpers with `@coco.fn` even without `memo=True`. The decorator's job is to make the function's logic *visible* to the change detection system. A bare helper is invisible: editing it will not invalidate any memoized caller, leading to silently stale results. Add `@coco.fn` so its fingerprint propagates; only add `memo=True` if caching its return value is worth it.
 :::
 
 These parameters can be set on any `@coco.fn` function — not just memoized ones.
 
-**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos. This always just works.
+**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos.
 
 ```python
 @coco.fn
@@ -297,13 +377,13 @@ Conversely, if a memo is hitting when you expect invalidation, common causes are
 - A logic change in a helper that is **not** decorated with `@coco.fn`. Add `@coco.fn` to it (no `memo=` needed) so its logic participates in propagation — see [Common patterns](#common-patterns).
 - A `deps` value that you changed at runtime: `deps` is [snapshotted at decoration time](#deps), so per-instance or per-request values must be passed as regular arguments instead.
 - The function uses [`logic_tracking=None`](#logic_tracking), which opts it out of code-change detection entirely.
-- The change is in a callback that passes through a `logic_tracking="self"` function and nobody wrapped it with [`coco.logic_tracked`](#callbacks-logic_tracked).
+- The change is in a callback that passes through a `logic_tracking="self"` function and nobody wrapped it with [`coco.logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers).
 
 ### Customizing data fingerprinting
 
 By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys).
 
-For per-function overrides — excluding an argument from the memo key, or transforming it just for this function — pass `memo_key={...}` on `@coco.fn` / `@coco.fn.as_async`; see [Override at the call site with `memo_key=`](../advanced_topics/memoization_keys#override-at-the-call-site-with-memo_key).
+For per-function overrides (excluding an argument from the memo key, or transforming it just for this function) pass `memo_key={...}` on `@coco.fn` / `@coco.fn.as_async`; see [Override at the call site with `memo_key=`](../advanced_topics/memoization_keys#override-at-the-call-site-with-memo_key).
 
 ## Execution capabilities
 
@@ -311,7 +391,7 @@ The following capabilities control *how* the function executes, independent of c
 
 ### Async adapter
 
-Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions. The decorator also accepts an `async def` body as-is, and [batching](#batching) and [runner](#runner) — which need an async interface — are always enabled through it.
+Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions. The decorator also accepts an `async def` body as-is, and [batching](#batching) and [runner](#runner) (which need an async interface) are always enabled through it.
 
 ```python
 @coco.fn.as_async
@@ -369,6 +449,36 @@ embeddings = await asyncio.gather(
 ```
 
 The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
+
+The `max_in_flight` parameter bounds how many batches run at once. By default (`None`), a full batch starts as soon as it fills, and the next partial batch starts only once every running batch has finished. With `max_in_flight=n`, at most `n` batches run concurrently, and whenever one finishes the next pending batch (full or partial) starts, so a slow batch no longer holds back the rest:
+
+```python
+@coco.fn.as_async(batching=True, max_batch_size=32, max_in_flight=4)
+async def embed(texts: list[str]) -> list[list[float]]:
+    return await client.embed(texts)
+```
+
+#### Pacing batches with a rate limiter
+
+When each batch is one request against a quota, pass the quota's [`RateLimiter`](../common_resources/rate_limiting) as `rate_limiter`. Every batch takes one token before it runs, so a token pays for one batch rather than one call, and the batch boundary becomes the moment a request can be sent:
+
+- No call runs on its own: calls join the open batch, and a pump runs the oldest pending batch once a `max_in_flight` slot and a token are available. Under a scarce quota, every call that arrives while the pump waits for the token rides the next batch.
+- With tokens to spare, a batch goes out at once and the next one fills during its round trip (under `max_in_flight`, when set). The burst allowance of the limiter is how many requests may go out unbatched after an idle stretch.
+- Requests the body makes beyond the batch's own — a retry, a per-item fallback — take their own tokens from the same limiter.
+
+For a method whose limiter lives on the instance, pass a callable that receives `self` and returns the limiter (or `None` for no pacing); it is resolved once per batcher, which is already keyed by `self`:
+
+```python
+class Client:
+    def __init__(self, limiter: RateLimiter) -> None:
+        self._limiter = limiter
+
+    @coco.fn.as_async(
+        batching=True, max_batch_size=100, rate_limiter=lambda self: self._limiter
+    )
+    async def fetch(self, ids: list[str]) -> list[Item]:
+        return await self._api.fetch_many(ids)  # one request, one token
+```
 
 #### Context values in a batched body
 

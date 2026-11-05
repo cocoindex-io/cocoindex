@@ -1,4 +1,3 @@
-import brandTokens from '@cocoindex/brand/tokens.json';
 export const SITE_URL = 'https://cocoindex.io';
 export const GITHUB_REPO = 'https://github.com/cocoindex-io/cocoindex';
 // Branded 1200×630 social cards. Hosted in the `blobs` image repo
@@ -19,7 +18,7 @@ export const SITE_BLOG = 'https://cocoindex.io/blogs';
 // DOCS_BASE and the URL builders below are the single source for the /docs base
 // and the trailingSlash: 'always' convention — don't rebuild them per file.
 export const DOCS_BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
-export const SITE_EXAMPLES = `${DOCS_BASE}/examples`;
+export const SITE_EXAMPLES = `${DOCS_BASE}/examples/`;
 export const pageUrl = (slug: string) => new URL(`${DOCS_BASE}/${slug}/`, SITE_URL).toString();
 export const pageMarkdownUrl = (slug: string) => new URL(`${DOCS_BASE}/${slug}.md`, SITE_URL).toString();
 export const LLMS_TXT_URL = new URL(`${DOCS_BASE}/llms.txt`, SITE_URL).toString();
@@ -60,4 +59,4 @@ export const SCARF_PIXEL_ID = (import.meta.env.COCOINDEX_DOCS_SCARF_PIXEL_ID ?? 
 export const SCARF_QUICKSTART_PIXEL_ID = (import.meta.env.COCOINDEX_DOCS_SCARF_QUICKSTART_PIXEL_ID ?? '') as string;
 
 // Brand paper as plain hex for <meta name="theme-color"> (CSS vars can't reach meta tags).
-export const THEME_COLOR = brandTokens.color['paper-hex'];
+export const THEME_COLOR = '#0A0A0A';

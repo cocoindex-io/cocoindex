@@ -25,10 +25,9 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
-    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
-    TargetState, TargetStateProvider, declare_target_state, declare_target_state_with_child,
-    mount_target,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 #[derive(Clone)]
@@ -624,7 +623,7 @@ impl TargetHandler<TableSpec> for TableHandler {
     ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
         let db_key = TableKey::from_stable_key(&key)?.db_key;
         match desired {
-            // Always emit when declared so the sink fulfills the row child.
+            // Always emit when declared so the sink builds the row child.
             Some(spec) => {
                 let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
                 // The previous system-managed spec (if any) drives the schema-
@@ -722,45 +721,47 @@ impl TargetHandler<TableSpec> for TableHandler {
 }
 
 fn table_sink() -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-            async move {
-                for (action, child_slot) in actions {
-                    match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) => {
-                            let db = resolve_db(&host_ctx, &a.db_key)?;
-                            let spec = a.spec.ok_or_else(|| {
-                                Error::engine("Postgres table action missing spec")
-                            })?;
-                            // A PK-signature change can't be applied in place;
-                            // drop and recreate the table (rows are replayed via
-                            // the Destructive child invalidation set at reconcile).
-                            if a.recreate && spec.managed_by.is_system() {
-                                drop_table(&db, spec.pg_schema_name.as_deref(), &spec.table_name)
-                                    .await?;
-                            }
-                            define_table(&db, &spec).await?;
-                            if !a.retype_cols.is_empty() {
-                                apply_retypes(&db, &spec, &a.retype_cols).await?;
-                            }
-                            if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                    sink: SinkCache::default(),
-                                    db_key: a.db_key,
-                                    spec,
-                                }))?;
-                            }
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        let spec = a
+                            .spec
+                            .ok_or_else(|| Error::engine("Postgres table action missing spec"))?;
+                        // A PK-signature change can't be applied in place;
+                        // drop and recreate the table (rows are replayed via
+                        // the Destructive child invalidation set at reconcile).
+                        if a.recreate && spec.managed_by.is_system() {
+                            drop_table(&db, spec.pg_schema_name.as_deref(), &spec.table_name)
+                                .await?;
                         }
-                        TargetAction::Delete(a) => {
-                            if let Some(d) = a.drop {
-                                let db = resolve_db(&host_ctx, &a.db_key)?;
-                                drop_table(&db, d.pg_schema_name.as_deref(), &d.table_name).await?;
-                            }
+                        define_table(&db, &spec).await?;
+                        if !a.retype_cols.is_empty() {
+                            apply_retypes(&db, &spec, &a.retype_cols).await?;
+                        }
+                    }
+                    TargetAction::Delete(a) => {
+                        if let Some(d) = a.drop {
+                            let db = resolve_db(&host_ctx, &a.db_key)?;
+                            drop_table(&db, d.pg_schema_name.as_deref(), &d.table_name).await?;
                         }
                     }
                 }
-                Ok(())
             }
+            Ok(())
+        },
+        |a: &TableAction| {
+            let spec = a
+                .spec
+                .clone()
+                .ok_or_else(|| Error::engine("Postgres table action missing spec"))?;
+            Ok(ChildTargetDef::new::<RowState, _>(RowHandler {
+                sink: SinkCache::default(),
+                db_key: a.db_key.clone(),
+                spec,
+            }))
         },
     )
 }

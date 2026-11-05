@@ -30,7 +30,6 @@ if DEPS_AVAILABLE:
     from cocoindex.connectorkits import target as connector_target
     from cocoindex.connectors import doris
     from cocoindex.connectors.doris import _target as doris_target
-    from tests.common.target_states import RecordingChildSlot
     from cocoindex.connectors.doris._target import (
         DorisConnectionConfig,
         TableSchema,
@@ -59,6 +58,27 @@ def _schema() -> "TableSchema[dict[str, object]]":
         },
         primary_key=["id"],
     )
+
+
+# ============================================================
+# DorisConnectionConfig repr
+# ============================================================
+
+
+def test_connection_config_repr_omits_password() -> None:
+    config = doris.DorisConnectionConfig(
+        fe_host="doris-test-host", database="testdb", password="secret-pw"
+    )
+    assert "secret-pw" not in repr(config)
+    assert "doris-test-host" in repr(config)
+    # ManagedConnection shows its config, so it must not show the password either.
+    assert "secret-pw" not in repr(doris.ManagedConnection(config=config))
+
+
+def test_connection_configs_with_different_passwords_are_unequal() -> None:
+    assert doris.DorisConnectionConfig(
+        fe_host="h", database="d", password="a"
+    ) != doris.DorisConnectionConfig(fe_host="h", database="d", password="b")
 
 
 # ============================================================
@@ -238,4 +258,4 @@ def test_end_to_end_genuine_ddl_failure_propagates_through_apply_table_actions(
     monkeypatch.setattr(doris_target, "_execute_ddl_sync", fake_execute)
 
     with pytest.raises(Exception, match="Access denied"):
-        _apply_table_actions(ctx, [action], {0: RecordingChildSlot()})
+        _apply_table_actions(ctx, [action])

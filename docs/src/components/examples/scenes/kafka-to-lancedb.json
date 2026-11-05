@@ -1,0 +1,12 @@
+{
+  "alt": "JSON messages on the Kafka topic cocoindex-csv-rows are dispatched by shape: messages with a sku go to the LanceDB table products and messages with an emp_id go to employees; consuming live, a new SKU003 message updates its products row in place, and reading the table back returns rows with price as a float.",
+  "needs": ["Docker (for a local Redpanda broker)", "Python 3.11+"],
+  "run": [
+    { "note": "Start a Kafka-compatible broker", "cmd": "docker run -d --name redpanda -p 9092:9092 redpandadata/redpanda:latest redpanda start --mode dev-container --smp 1 --kafka-addr PLAINTEXT://0.0.0.0:9092 --advertise-kafka-addr PLAINTEXT://localhost:9092" },
+    { "note": "Create the topic (CocoIndex never creates topics)", "cmd": "docker exec redpanda rpk topic create cocoindex-csv-rows" },
+    { "note": "Fill the topic: run the csv-to-kafka example once against the same broker", "cmd": "(cd ../csv_to_kafka && cp .env.example .env && pip install -e . && cocoindex update main.py)" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Consume into LanceDB, then keep consuming", "cmd": "cocoindex update -L main.py" },
+    { "note": "In another terminal, read the products table", "cmd": "python -c \"import lancedb; print(lancedb.connect('./lancedb_data').open_table('products').to_arrow().to_pylist())\"" }
+  ]
+}

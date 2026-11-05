@@ -40,10 +40,9 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
-    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
-    TargetState, TargetStateProvider, declare_target_state, declare_target_state_with_child,
-    mount_target,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -906,34 +905,34 @@ impl TargetHandler<TableSpec> for TableHandler {
 }
 
 fn table_sink() -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
-            for (action, child_slot) in actions {
-                let a = match action {
-                    TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => {
-                        a
-                    }
-                };
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                let (TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a)) =
+                    action;
                 let conn = resolve_conn(&host_ctx, &a.conn_key)?;
-                let child = apply_table_action(&conn, a).await?;
-                if let (Some(slot), Some(child)) = (child_slot, child) {
-                    slot.fulfill(child)?;
-                }
+                apply_table_action(&conn, a).await?;
             }
             Ok(())
+        },
+        |a: &TableAction| {
+            let spec = a
+                .spec
+                .clone()
+                .ok_or_else(|| Error::engine("Doris table action missing spec"))?;
+            Ok(ChildTargetDef::new::<RowState, _>(RowHandler {
+                sink: SinkCache::default(),
+                conn_key: a.conn_key.clone(),
+                spec,
+            }))
         },
     )
 }
 
-/// Apply one resolved table action and return the row child handler
-/// definition (`None` for a drop), which the sink uses to fulfill the
-/// action's child slot. Mirrors Python's `_apply_table_actions`.
-async fn apply_table_action(
-    conn: &DorisConnection,
-    action: TableAction,
-) -> Result<Option<ChildTargetDef>> {
+/// Apply one resolved table action. Mirrors Python's `_apply_table_actions`.
+async fn apply_table_action(conn: &DorisConnection, action: TableAction) -> Result<()> {
     let TableAction {
-        conn_key,
+        conn_key: _,
         spec,
         drop,
         main_action,
@@ -954,7 +953,7 @@ async fn apply_table_action(
     }
 
     let Some(spec) = spec else {
-        return Ok(None);
+        return Ok(());
     };
 
     if matches!(
@@ -969,12 +968,7 @@ async fn apply_table_action(
     if matches!(main_action, None | Some(DiffAction::Upsert)) && !column_actions.is_empty() {
         apply_column_actions(conn, &spec, &column_actions).await?;
     }
-
-    Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        sink: SinkCache::default(),
-        conn_key,
-        spec,
-    })))
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

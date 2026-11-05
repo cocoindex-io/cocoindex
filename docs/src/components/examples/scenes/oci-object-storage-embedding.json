@@ -1,0 +1,27 @@
+{
+  "alt": "Markdown objects under markdown_files/ in the OCI Object Storage bucket cocoindex-example-data are listed, chunked with RecursiveSplitter and embedded with all-MiniLM-L6-v2 into the Postgres table coco_examples.oci_object_storage_doc_embeddings; in live mode an event on the OCI Streaming topic cocoindex-example-data-events for rfc8259.md makes the connector re-read the object with head_object and update its rows, or delete them on a 404.",
+  "needs": [
+    "Docker (Postgres + pgvector)",
+    "OCI bucket and ~/.oci/config",
+    "OCI Streaming (live mode, optional)",
+    "Python 3.11+"
+  ],
+  "run": [
+    {
+      "note": "Start Postgres with pgvector",
+      "cmd": "docker compose -f ../../dev/postgres.yaml up -d"
+    },
+    {
+      "note": "Set OCI_NAMESPACE, OCI_BUCKET (and OCI_STREAMING_* for live) in .env",
+      "cmd": "cp .env.example .env && pip install -e ."
+    },
+    {
+      "note": "Catch up, then keep watching the stream (drop -L for one scan)",
+      "cmd": "cocoindex update -L main"
+    },
+    {
+      "note": "Search it",
+      "cmd": "python main.py \"what is self-attention?\""
+    }
+  ]
+}

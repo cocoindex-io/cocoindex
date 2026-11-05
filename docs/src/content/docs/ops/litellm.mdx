@@ -24,7 +24,7 @@ pip install cocoindex[litellm]
 
 The `LiteLLMEmbedder` class is a wrapper around LiteLLM's embedding API that:
 
-- Implements `VectorSchemaProvider` for seamless integration with CocoIndex connectors
+- Implements `VectorSchemaProvider` to supply vector schema information to CocoIndex connectors
 - Supports 100+ embedding providers (OpenAI, Azure, Vertex AI, Cohere, Bedrock, etc.) through a unified API
 - Provides a simple async `embed()` method
 - Passes through all additional arguments to the LiteLLM embedding API, except `timeout` and `max_inflight_requests`, which CocoIndex owns
@@ -67,6 +67,10 @@ embedding = await embedder.embed("Hello, world!")
 # Use the embedding in a dataclass row, store in a vector database, etc.
 table.declare_row(row=DocEmbedding(text="Hello, world!", embedding=embedding))
 ```
+
+#### Text that looks like a media reference
+
+litellm's Gemini embedding path reads a string that starts with `data:` and contains `;base64,`, or that starts with `gs://` or `files/`, as a file to embed rather than text — an inline file, a Cloud Storage object, or an uploaded file. Ordinary corpus text hits all three (a glTF file's buffer, an HTML page's inline image, a list of paths beginning `files/`), and the request would then fail before it is sent or silently embed an image. `LiteLLMEmbedder` sends such a text with one leading space, for every provider, so it embeds as text — litellm has no way to send such a string as text ([BerriAI/litellm#46719](https://github.com/BerriAI/litellm/issues/46719)). To embed media through Gemini, call `litellm.aembedding` directly.
 
 ### Limiting concurrent requests
 
@@ -183,7 +187,7 @@ See the [LiteLLM audio transcription docs](https://docs.litellm.ai/docs/audio_tr
 
 ### Timeout
 
-`timeout` bounds each request end to end; the default is 10 minutes. Transient failures — HTTP 429, 5xx, a dropped connection, and [others below](#retries) — are retried with backoff inside that window; a request that times out fails with `DeadlineExceededError` and is not retried. It takes a `timedelta`, or seconds as a number.
+`timeout` bounds each request end to end; the default is 10 minutes. Transient failures (HTTP 429, 5xx, a dropped connection, and [others below](#retries)) are retried with backoff inside that window; a request that times out fails with `DeadlineExceededError` and is not retried. It takes a `timedelta`, or seconds as a number.
 
 ```python
 embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=timedelta(minutes=30))
@@ -205,6 +209,7 @@ Within the `timeout` window a failed request is retried with exponential backoff
 | A refused, reset, or dropped connection | Yes |
 | A timeout — CocoIndex's, litellm's, or the HTTP client's | No — terminal |
 | Bad credentials, unknown model, permission denied | No — terminal |
+| A request litellm refuses to build — an input or argument its provider path rejects | No — terminal; in a batch, that input fails alone |
 
 The 408 row and the timeout row look contradictory and aren't: an HTTP 408 *response* arrives quickly, so nothing has spent the budget, while a timeout we observed ourselves has by definition already spent its duration. Retrying that inside the request's own bound just re-spends what is left, and against an overloaded backend it amplifies the load that caused it. The remedy for a genuine timeout is a longer `timeout`, not more requests.
 

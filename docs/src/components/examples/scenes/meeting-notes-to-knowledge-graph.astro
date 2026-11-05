@@ -1,0 +1,216 @@
+---
+// Meeting notes to a knowledge graph: a Google Drive note is split into
+// meetings, an LLM extracts organizer, participants and tasks, entity
+// resolution collapses "Alice" / "Alice Chen" / "alice c." into one Person,
+// and Neo4j holds Person, Meeting and Task nodes with ATTENDED (is_organizer),
+// DECIDED and ASSIGNED_TO edges. The example ships no sample notes, so the note
+// is captioned illustrative: the Alice spellings and the task come from the
+// README and walkthrough, the TeamA note name from the launch post's graph
+// figure. The Drive connector exports a Google Doc as Markdown (no file
+// extension in its path), which is what main.py splits at ## headings; models
+// come from .env.example and main.py.
+// The task line is the edit (Δ): only its Task node and two edges re-derive.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+
+type N = { id: string; x: number; y: number; kind: string; label: string; place?: 'c' | 'l' | 'r'; at?: number; max?: number; delta?: boolean; wrap?: boolean };
+type E = { from: string; to: string; rel: string; prop?: string; t?: number; delta?: boolean };
+const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
+  const at = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const pc = (v: number, total: number) => `${((v / total) * 100).toFixed(3)}%`;
+  return {
+    W, H,
+    nodes: nodes.map((n) => {
+      const place = n.place ?? 'c';
+      const pos = place === 'c' ? `left:${pc(n.x, W)};transform:translate(-50%,-50%)`
+        : place === 'l' ? `left:${pc(n.at ?? 0, W)};transform:translateY(-50%)`
+        : `right:${pc(W - (n.at ?? W), W)};transform:translateY(-50%)`;
+      return { ...n, style: `top:${pc(n.y, H)};${pos}`, lstyle: n.max ? `max-width:${n.max}px` : '' };
+    }),
+    edges: edges.map((e) => {
+      const a = at[e.from], b = at[e.to];
+      const t = e.t ?? 0.5;
+      const m = t <= 0.6 ? t + 0.2 : t - 0.24;
+      const p = (k: number) => [a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k];
+      const [mx, my] = p(m), [lx, ly] = p(t);
+      return { ...e, d: `M${a.x} ${a.y} L${mx.toFixed(1)} ${my.toFixed(1)} L${b.x} ${b.y}`, lstyle: `left:${pc(lx, W)};top:${pc(ly, H)}`, fromN: a, toN: b };
+    }),
+  };
+};
+
+const TASK = 'create an example for the graph DB feature';
+const hero = layout(632, 236, [
+  { id: 'alice', x: 96, y: 52, kind: 'Person', label: 'Alice Chen' },
+  { id: 'm', x: 318, y: 190, kind: 'Meeting', label: 'TeamA' },
+  { id: 't', x: 540, y: 52, kind: 'Task', label: TASK, place: 'r', at: 632, wrap: true, delta: true },
+], [
+  { from: 'alice', to: 'm', rel: 'ATTENDED', prop: 'is_organizer: true', t: 0.5 },
+  { from: 'alice', to: 't', rel: 'ASSIGNED_TO', t: 0.46, delta: true },
+  { from: 'm', to: 't', rel: 'DECIDED', t: 0.42, delta: true },
+]);
+
+const card = layout(230, 136, [
+  { id: 'alice', x: 44, y: 68, kind: '', label: 'Alice Chen' },
+  { id: 'm', x: 186, y: 22, kind: '', label: 'TeamA' },
+  { id: 't', x: 186, y: 114, kind: '', label: 'graph DB example', place: 'r', at: 230, max: 118 },
+], [
+  { from: 'alice', to: 'm', rel: 'ATTENDED', t: 0.5 },
+  { from: 'alice', to: 't', rel: 'ASSIGNED_TO', t: 0.5 },
+]);
+const g = size === 'hero' ? hero : card;
+const mk = `mn-${size}`;
+const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.edges.find((e) => e.from === id)!.fromN, edges: g.edges.filter((e) => e.from === id) }));
+---
+{size === 'hero' ? (
+  <div class="mn">
+    <div class="sc-row">
+      <div class="sc-col">
+        <span class="sc-cap">Google Doc, exported as Markdown <span class="mn-fine">· illustrative note</span></span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>TeamA</div>
+          <div class="sc-panel-b mn-note">
+            <span class="mn-h">## Team A sync</span>
+            <span><span class="sc-dim">Organizer:</span> Alice</span>
+            <span><span class="sc-dim">Attendees:</span> alice c.</span>
+            <span class="sc-li sc-delta mn-task"><span>- {TASK} (Alice Chen)</span><span class="sc-dmark">Δ</span></span>
+          </div>
+        </div>
+        <span class="sc-cap mn-fine">extract_meeting · instructor + LiteLLM, openai/gpt-5-mini</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col">
+        <span class="sc-cap">Resolve people</span>
+        <div class="sc-panel">
+          <div class="sc-panel-b mn-res">
+            <div class="mn-raw">
+              <span class="sc-chip">"Alice"</span>
+              <span class="sc-chip">"Alice Chen"</span>
+              <span class="sc-chip">"alice c."</span>
+            </div>
+            <span class="sc-to is-down mn-down"></span>
+            <span class="sc-node mn-canon"><span class="sc-kind">Person</span><span>Alice Chen</span></span>
+          </div>
+          <div class="sc-panel-b mn-how">
+            <span class="sc-li"><span class="sc-ico i-model"></span><span>resolve_entities</span></span>
+            <span class="sc-cap mn-fine">snowflake-arctic-embed-xs finds near names; LlmPairResolver confirms the pair</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mn-graphwrap">
+      <span class="sc-cap">Neo4j property graph</span>
+      <div class="mn-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+        <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+          <defs>
+            <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="mn-tip" /></marker>
+            <marker id={`${mk}-d`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="mn-tip is-delta" /></marker>
+          </defs>
+          {g.edges.map((e) => <path d={e.d} class:list={[{ 'is-delta': e.delta }]} marker-mid={`url(#${mk}-${e.delta ? 'd' : 'a'})`} />)}
+        </svg>
+        {g.edges.map((e) => (
+          <span class:list={['sc-edge mn-elabel', { 'sc-dtext': e.delta }]} style={e.lstyle}>{e.rel}{e.prop && <span class="mn-prop">{`{${e.prop}}`}</span>}</span>
+        ))}
+        {g.nodes.map((n) => (
+          <span class:list={['sc-node mn-node', { 'sc-delta': n.delta, 'is-doc': n.kind === 'Task', 'is-wrap': n.wrap }]} style={n.style}>
+            <span class="sc-kind">{n.kind}</span><span class="mn-nl">{n.label}</span>
+          </span>
+        ))}
+      </div>
+      <ul class="mn-list">
+        {groups.map((gr) => (
+          <li>
+            <span class="sc-node mn-node"><span class="sc-kind">{gr.node.kind}</span><span class="mn-nl">{gr.node.label}</span></span>
+            {gr.edges.map((e) => (
+              <span class="mn-sub">
+                <span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>{e.rel}{e.prop && ` {${e.prop}}`}</span>
+                <span class="mn-to"><span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>→</span><span class:list={['sc-node mn-node', { 'sc-delta': e.delta && e.toN.delta }]}><span class="mn-nl">{e.toN.label}</span></span></span>
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+
+    <div class="mn-ask">
+      <span class="sc-cap">Everything one person is on the hook for</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>MATCH (p:Person {'{'}name: "Alice Chen"{'}'})-[:ASSIGNED_TO]-&gt;(t:Task) RETURN t.description</span></div>
+      <div class="sc-panel">
+        <table class="sc-table">
+          <thead><tr><th>t.description</th></tr></thead>
+          <tbody><tr class="sc-delta"><td><span class="sc-dtext">{TASK}</span></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="mn-card">
+    <div class="mn-card-raw">
+      <span class="sc-chip">"Alice"</span>
+      <span class="sc-chip">"Alice Chen"</span>
+      <span class="sc-chip">"alice c."</span>
+    </div>
+    <span class="sc-to"></span>
+    <div class="mn-graph mn-card-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+      <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+        <defs>
+          <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="mn-tip" /></marker>
+        </defs>
+        {g.edges.map((e) => <path d={e.d} marker-mid={`url(#${mk}-a)`} />)}
+      </svg>
+      {g.edges.map((e) => <span class="sc-edge mn-elabel" style={e.lstyle}>{e.rel}</span>)}
+      {g.nodes.map((n) => (
+        <span class:list={['sc-node mn-node', { 'is-doc': n.id === 't' }]} style={n.style}><span class="mn-nl" style={n.lstyle}>{n.label}</span></span>
+      ))}
+    </div>
+  </div>
+)}
+
+<style>
+  .mn { display: flex; flex-direction: column; gap: 18px; }
+  .mn > .sc-row { gap: 10px; }
+  .mn-fine { font-weight: 400; }
+  .mn-note { font-family: var(--mono); font-size: 12.5px; gap: 3px; color: var(--sc-ink); }
+  .mn-note > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mn-h { color: var(--sc-muted); }
+  .mn-task { margin-top: 2px; align-items: flex-start; }
+  .mn-note > .mn-task { white-space: normal; overflow: visible; }
+  .mn-task > span:first-child { white-space: normal !important; line-height: 1.4; }
+  .mn-res { align-items: center; gap: 8px; padding-top: 12px; padding-bottom: 12px; }
+  .mn-raw { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+  .mn-down { margin: 0; }
+  .mn-how { border-top: 1px solid var(--sc-line); }
+
+  .mn-graphwrap { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .mn-graph { position: relative; width: 100%; }
+  .mn-tip { fill: rgba(255, 255, 255, 0.4); stroke: none !important; }
+  .mn-tip.is-delta { fill: var(--sc-delta); }
+  .mn-node { position: absolute; }
+  .mn-node.sc-delta { background: #1E1E29 !important; }
+  .mn-nl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mn-graph .mn-node.is-wrap { flex-direction: column; align-items: flex-start; gap: 1px; width: 196px; white-space: normal; }
+  .mn-graph .mn-node.is-wrap .mn-nl { white-space: normal; line-height: 1.35; }
+  .mn-elabel { position: absolute; transform: translate(-50%, -50%); display: inline-flex; flex-direction: column; align-items: center; padding: 1px 5px; background: #0C0C0C; border-radius: 4px; white-space: nowrap; line-height: 1.3; }
+  .mn-prop { color: var(--sc-muted); }
+
+  .mn-list { display: none; margin: 0; padding: 0; list-style: none; flex-direction: column; gap: 10px; }
+  .mn-list li { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+  .mn-list .mn-node { position: static; max-width: 100%; }
+  .mn-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; max-width: calc(100% - 12px); margin-left: 12px; padding-left: 10px; border-left: 1px solid var(--sc-line-2); }
+  .mn-to { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+  .mn-to > .sc-node { min-width: 0; }
+
+  .mn-ask { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+
+  @container (max-width: 560px) {
+    .mn-graph { display: none; }
+    .mn-list { display: flex; }
+    .mn .sc-table td { white-space: normal; overflow-wrap: anywhere; }
+    .mn-list .mn-nl { white-space: normal; overflow-wrap: anywhere; }
+    .mn-ask .sc-query > span:last-child { white-space: normal; overflow-wrap: anywhere; }
+  }
+
+  .mn-card { height: 100%; display: flex; align-items: center; gap: 10px; }
+  .mn-card-raw { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .mn-card-graph { flex: 1 1 auto; min-width: 0; }
+</style>

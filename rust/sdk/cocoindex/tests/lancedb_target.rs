@@ -9,7 +9,7 @@
 #![cfg(feature = "lancedb")]
 
 use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
-use cocoindex::{Environment, ManagedTargetOptions, Result, SchemaFields};
+use cocoindex::{Ctx, Environment, ManagedTargetOptions, PreviewAction, Result, SchemaFields};
 use serde::Serialize;
 
 cocoindex::context_key!(
@@ -387,6 +387,57 @@ async fn lancedb_undeclared_and_dropped_tables_are_removed() -> Result<()> {
     Ok(())
 }
 
+/// Declare the rows of [`lancedb_nullable_schema_only_add_does_not_upsert_rows`]
+/// under `schema_v2`, with the added nullable `summary` column null.
+async fn declare_v2_nullable_rows(ctx: Ctx) -> Result<()> {
+    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
+    for row in [
+        RowV2Nullable {
+            id: 1,
+            text: "alpha".to_string(),
+            summary: None,
+            embedding: vec![1.0, 0.0, 0.0],
+        },
+        RowV2Nullable {
+            id: 2,
+            text: "beta".to_string(),
+            summary: None,
+            embedding: vec![0.0, 1.0, 0.0],
+        },
+    ] {
+        table.declare_row(&ctx, &row)?;
+    }
+    Ok(())
+}
+
+/// Planned actions as sorted strings. The connector's actions encode as
+/// positional arrays: a table action is `[db_key, table_name, spec, recreate,
+/// null_backfilled_columns]`, a row action `[pk, state, track_only]`.
+fn describe(actions: &[PreviewAction]) -> Vec<String> {
+    let mut described: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            let value: serde_json::Value = value.decode().unwrap();
+            match value.as_array().map(Vec::as_slice) {
+                Some([_db_key, table, _spec, recreate, null_backfilled]) => format!(
+                    "{verb} table {table} recreate={recreate} null_backfilled={null_backfilled}"
+                ),
+                Some([pk, state, track_only]) => {
+                    format!("{verb} row {pk} state={state} track_only={track_only}")
+                }
+                _ => panic!("unexpected action payload {value}"),
+            }
+        })
+        .collect();
+    described.sort();
+    described
+}
+
 #[tokio::test]
 async fn lancedb_nullable_schema_only_add_does_not_upsert_rows() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
@@ -425,6 +476,8 @@ async fn lancedb_nullable_schema_only_add_does_not_upsert_rows() -> Result<()> {
 
     let initial_version = table_version(&db).await;
 
+    // Preview plans the column add the way the update below applies it: the
+    // rows, null in the added column, only advance their tracking.
     {
         let app = Environment::builder()
             .db_path(&coco_db_path)
@@ -433,27 +486,27 @@ async fn lancedb_nullable_schema_only_add_does_not_upsert_rows() -> Result<()> {
             .await?
             .app("LanceNullableSchemaOnlyTest")
             .await?;
-        app.run(move |ctx| async move {
-            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
-            for row in [
-                RowV2Nullable {
-                    id: 1,
-                    text: "alpha".to_string(),
-                    summary: None,
-                    embedding: vec![1.0, 0.0, 0.0],
-                },
-                RowV2Nullable {
-                    id: 2,
-                    text: "beta".to_string(),
-                    summary: None,
-                    embedding: vec![0.0, 1.0, 0.0],
-                },
-            ] {
-                table.declare_row(&ctx, &row)?;
-            }
-            Ok(())
-        })
-        .await?;
+        let actions = app.preview(declare_v2_nullable_rows).await?;
+        assert_eq!(
+            describe(&actions),
+            vec![
+                "update row [1] state=null track_only=true",
+                "update row [2] state=null track_only=true",
+                r#"update table "docs" recreate=false null_backfilled=["summary"]"#,
+            ]
+        );
+    }
+    assert_eq!(table_version(&db).await, initial_version);
+
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        app.run(declare_v2_nullable_rows).await?;
     }
 
     let table = db.connection().open_table(TABLE).execute().await.unwrap();
@@ -483,27 +536,7 @@ async fn lancedb_nullable_schema_only_add_does_not_upsert_rows() -> Result<()> {
             .await?
             .app("LanceNullableSchemaOnlyTest")
             .await?;
-        app.run(move |ctx| async move {
-            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
-            for row in [
-                RowV2Nullable {
-                    id: 1,
-                    text: "alpha".to_string(),
-                    summary: None,
-                    embedding: vec![1.0, 0.0, 0.0],
-                },
-                RowV2Nullable {
-                    id: 2,
-                    text: "beta".to_string(),
-                    summary: None,
-                    embedding: vec![0.0, 1.0, 0.0],
-                },
-            ] {
-                table.declare_row(&ctx, &row)?;
-            }
-            Ok(())
-        })
-        .await?;
+        app.run(declare_v2_nullable_rows).await?;
     }
     assert_eq!(table_version(&db).await, schema_only_version);
 

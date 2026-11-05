@@ -8,7 +8,7 @@ tags: [llm, custom-source]
 
 ![Trending Topics from HackerNews](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/cover.png)
 
-What is the tech community talking about right now? In this tutorial, we'll build a pipeline that scrapes recent HackerNews stories and their comment threads, uses an LLM to pull out the topics each message is about, and stores everything in Postgres so you can rank what's trending and search by topic.
+Build a pipeline that scrapes recent HackerNews stories and their comment threads, uses an LLM to pull out the topics each message is about, and stores everything in Postgres so you can rank what's trending and search by topic.
 
 The data source here isn't a folder of files — it's a public HTTP API. We fetch threads on the fly with the [Algolia HackerNews API](https://hn.algolia.com/api), so this example doubles as a recipe for plugging any custom source into a CocoIndex pipeline. Each run catches up on the latest stories, and because CocoIndex memoizes per-message work, re-running only does the new work.
 
@@ -16,7 +16,7 @@ The data source here isn't a folder of files — it's a public HTTP API. We fetc
 
 ## Flow overview
 
-![Flow](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/flow-v1.svg)
+![Flow](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/flow-v1-dark.svg)
 
 1. Fetch a list of recent thread IDs from the Algolia HackerNews API
 2. For each thread, fetch the story and all of its comments
@@ -28,7 +28,7 @@ You declare the transformation logic with native Python without worrying about c
 Think:
 **target_state = transformation(source_state)**
 
-When the HackerNews feed moves on, or your processing logic changes (for example, switching to a different model, or refining the topic-extraction prompt), CocoIndex performs smart incremental processing that only reprocesses the minimum, and keeps your `hn_messages` and `hn_topics` tables in sync.
+When the HackerNews feed moves on, or your processing logic changes (for example, switching to a different model, or refining the topic-extraction prompt), CocoIndex reprocesses affected items and updates the `hn_messages` and `hn_topics` tables.
 
 ## Define the data models
 
@@ -120,9 +120,9 @@ async def extract_topics(text: str | None) -> list[str]:
     return TopicsResponse.model_validate_json(content).topics
 ```
 
-The prompt in `TopicsResponse` does the heavy lifting: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
+The prompt in `TopicsResponse` defines topic normalization: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
 
-[→ Function](https://cocoindex.io/docs/programming_guide/function)
+[→ Function](/docs/programming_guide/function/)
 
 ## Fetch from the HackerNews API
 
@@ -190,7 +190,7 @@ These are ordinary `async def` functions — no special CocoIndex decorators. An
 
 Each thread is processed by its own component. `process_thread` fetches the thread, extracts topics for the story and every comment, and declares the resulting rows.
 
-![Process thread](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/stage-file-process.svg)
+![Process thread](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/stage-file-process-dark.svg)
 
 ```python title="main.py"
 @coco.fn
@@ -257,7 +257,7 @@ You *declare* what rows should exist — you don't write inserts or deletes. Whe
 
 **Why a component per thread?** A processing component groups one thread's work together with its target rows. Each one runs independently and in parallel, and its rows are committed to Postgres as soon as that thread is done — no waiting for the rest of the batch.
 
-[→ Processing Component](https://cocoindex.io/docs/programming_guide/processing_component)
+[→ Processing Component](/docs/programming_guide/processing_component/)
 
 ## Wire up the app
 
@@ -319,7 +319,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         yield
 ```
 
-[→ App](https://cocoindex.io/docs/programming_guide/app)
+[→ App](/docs/programming_guide/app/)
 
 ## Setup
 
@@ -395,5 +395,3 @@ Edit the topic-extraction prompt or switch `LLM_MODEL`, then run `cocoindex upda
 Full source on GitHub:
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/hn_trending_topics)
-
-If CocoIndex helps, give us a star ⭐ on [GitHub](https://github.com/cocoindex-io/cocoindex) and join the conversation on [Discord](https://discord.com/invite/zpA9S2DR7s) — we'd love to hear what you build.

@@ -5,7 +5,7 @@ import Topbar from '../components/Topbar.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
 import MobileSheet from '../components/MobileSheet.astro';
-import MermaidRenderer from '@cocoindex/brand/MermaidRenderer.astro';
+import MermaidRenderer from '../components/MermaidRenderer.astro';
 import Analytics from '../components/Analytics.astro';
 import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
@@ -147,7 +147,7 @@ const breadcrumbLd = {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content={THEME_COLOR} />
 
     <title>{fullTitle}</title>
@@ -182,6 +182,7 @@ const breadcrumbLd = {
          no Google CDN, identical rendering to home + blog. -->
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
     <MobileSheet currentSlug={slug} headings={headings} />
     <MermaidRenderer />
@@ -189,15 +190,15 @@ const breadcrumbLd = {
     <div class="layout">
       <Sidebar currentSlug={slug} />
 
-      <main class="content">
+      <main class="content" id="main-content" tabindex="-1">
         <div class="page-head">
         <nav class="breadcrumb" aria-label="Breadcrumb">
-          <a href={base || '/'}>Docs</a>
+          <a href={`${base}/`}>Docs</a>
           {crumbs.map((c, idx) => (
             <>
-              <span class="sep">/</span>
+              <span class="sep" aria-hidden="true">/</span>
               {idx === crumbs.length - 1 ? (
-                <span class="now">{c.label}</span>
+                <span class="now" aria-current="page">{c.label}</span>
               ) : c.href ? (
                 <a href={c.href}>{c.label}</a>
               ) : (
@@ -222,7 +223,7 @@ const breadcrumbLd = {
             </div>
 
             <div class="ai-panel" id="aiMenuPanel" role="menu" aria-label="Use this page with AI" hidden>
-              <button type="button" class="ai-item" role="menuitem" data-ai-copy data-md={mdHref}>
+              <button type="button" class="ai-item" role="menuitem" tabindex="-1" data-ai-copy data-md={mdHref}>
                 <span class="ai-ic">
                   <Fragment set:html={ICON_COPY} />
                 </span>
@@ -232,7 +233,7 @@ const breadcrumbLd = {
                 </span>
               </button>
 
-              <a class="ai-item" role="menuitem" href={mdHref} target="_blank" rel="noopener">
+              <a class="ai-item" role="menuitem" tabindex="-1" href={mdHref} target="_blank" rel="noopener">
                 <span class="ai-ic">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <polyline points="8 7 3 12 8 17" /><polyline points="16 7 21 12 16 17" />
@@ -244,7 +245,7 @@ const breadcrumbLd = {
                 </span>
               </a>
 
-              <a class="ai-item" role="menuitem" href={chatgptHref} target="_blank" rel="noopener">
+              <a class="ai-item" role="menuitem" tabindex="-1" href={chatgptHref} target="_blank" rel="noopener">
                 <span class="ai-ic">
                   <Fragment set:html={ICON_CHATGPT} />
                 </span>
@@ -254,7 +255,7 @@ const breadcrumbLd = {
                 </span>
               </a>
 
-              <a class="ai-item" role="menuitem" href={claudeHref} target="_blank" rel="noopener">
+              <a class="ai-item" role="menuitem" tabindex="-1" href={claudeHref} target="_blank" rel="noopener">
                 <span class="ai-ic">
                   <Fragment set:html={ICON_CLAUDE} />
                 </span>
@@ -264,7 +265,7 @@ const breadcrumbLd = {
                 </span>
               </a>
 
-              <button type="button" class="ai-item" role="menuitem" data-ai-copy-text={skillInstallCmd}>
+              <button type="button" class="ai-item" role="menuitem" tabindex="-1" data-ai-copy-text={skillInstallCmd}>
                 <span class="ai-ic">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <polyline points="5 8 9 12 5 16" /><line x1="12" y1="16" x2="18" y2="16" />
@@ -280,7 +281,9 @@ const breadcrumbLd = {
         </div>
         </div>
 
-        <article class="prose">
+        <span class="sr-only" role="status" data-copy-status></span>
+
+        <article class:list={["prose", { "programming-overview": slug === "programming_guide" }]}>
           <h1 set:html={renderedTitle} />
           {description && <p class="lede">{description}</p>}
           {introItems.length > 0 && (
@@ -291,7 +294,7 @@ const breadcrumbLd = {
                   <dd class="v">
                     {m.reviewed && (
                       <svg class="check" width="14" height="14" viewBox="0 0 16 16" aria-hidden>
-                        <circle cx="8" cy="8" r="7" fill="var(--palm)" />
+                        <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" />
                         <path d="M4.5 8.3l2.3 2.2L11.5 5.8"
                               fill="none" stroke="var(--maroon-ink)"
                               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -362,19 +365,21 @@ const breadcrumbLd = {
           const a = document.createElement('a');
           a.className = 'head-anchor';
           a.href = '#' + h.id;
-          a.setAttribute('aria-label', 'Copy link to this section');
+          a.setAttribute('aria-label', `Link to ${h.textContent?.trim() ?? 'this section'}`);
           a.innerHTML = LINK_ICON;
           h.prepend(a);
           let resetId: number | undefined;
-          a.addEventListener('click', (e) => {
-            const url = location.origin + location.pathname + '#' + h.id;
-            history.replaceState(null, '', '#' + h.id);
+          a.addEventListener('click', () => {
+            // Preserve native anchor navigation even when clipboard access fails.
+            const url = new URL(a.href).href;
             if (navigator.clipboard) {
-              e.preventDefault();
               navigator.clipboard.writeText(url).then(() => {
                 a.classList.add('copied');
+                document.querySelector('[data-copy-status]')!.textContent = 'Section link copied';
                 window.clearTimeout(resetId);
                 resetId = window.setTimeout(() => a.classList.remove('copied'), 1500);
+              }).catch(() => {
+                document.querySelector('[data-copy-status]')!.textContent = 'Copy failed. Copy the URL from your address bar.';
               });
             }
           });
@@ -439,15 +444,21 @@ const breadcrumbLd = {
             list[list.length - 1]?.focus();
           }
         });
-        // Link items open a new tab — close the menu so it isn't left hanging.
+        menu.addEventListener('focusout', () => {
+          queueMicrotask(() => {
+            if (!menu.contains(document.activeElement)) setOpen(false);
+          });
+        });
+        // Link items open a new tab — restore focus to the visible trigger.
         menu.querySelectorAll('a.ai-item').forEach((a) =>
-          a.addEventListener('click', () => setOpen(false)),
+          a.addEventListener('click', () => setOpen(false, 'toggle')),
         );
 
         // Brief "Copied" feedback on the clicked control (primary button label
         // or a menu item's description line), then revert.
         const timers = new WeakMap<HTMLElement, number>();
         const flash = (el: HTMLElement, msg: string) => {
+          document.querySelector('[data-copy-status]')!.textContent = msg;
           const node = (el.querySelector('.ai-primary-label') ??
             el.querySelector('.ai-d')) as HTMLElement | null;
           if (node) {

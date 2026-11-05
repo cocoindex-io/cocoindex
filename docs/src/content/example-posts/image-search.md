@@ -10,21 +10,21 @@ tags: [multimodal, image-search]
 
 We'll take a folder of images and make it searchable in plain English — type *"long neck"* and get the giraffe back, with no tags, no captions, no manual labeling. The trick is [CLIP](https://openai.com/research/clip): it embeds images **and** text into the *same* vector space, so a text query and a matching picture land near each other. We store the image vectors in [Qdrant](https://qdrant.tech/) and serve search through a small FastAPI + React app.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, the managed Qdrant collection — runs in a Rust engine underneath, and the flow runs in [live mode](https://cocoindex.io/docs/programming_guide/live_mode/) inside the API server, so dropping a new photo into the folder updates the index within a second.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and the Qdrant collection. The flow runs in [live mode](/docs/programming_guide/live_mode/) inside the API server, so adding a photo to the folder triggers an index update.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search)
 
 ## Flow overview
 
-![CocoIndex image search indexing flow: walk a folder of images, embed each with the CLIP image encoder, and declare a point into a Qdrant collection](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/flow-v1.svg)
+![CocoIndex image search indexing flow: walk a folder of images, embed each with the CLIP image encoder, and declare a point into a Qdrant collection](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/flow-v1-dark.svg)
 
 The indexing path is short — there's no text to chunk, just one embedding per image:
 
 1. Read image files from a local directory (live).
 2. Embed each image with the [CLIP](https://huggingface.co/openai/clip-vit-large-patch14) image encoder.
-3. Store the vector in Qdrant (as a [point](https://cocoindex.io/docs/connectors/qdrant/), keyed by a stable id, with the filename in the payload).
+3. Store the vector in Qdrant (as a [point](/docs/connectors/qdrant/), keyed by a stable id, with the filename in the payload).
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
 ## One embedding space for images and text
 
@@ -76,7 +76,7 @@ Both produce a 768-d vector in the same space, so a cosine search with a text ve
 
 ## Shared resources: the Qdrant client
 
-The [lifespan](https://cocoindex.io/docs/programming_guide/context/) provides the Qdrant client once at startup, via a [context key](https://cocoindex.io/docs/programming_guide/context/):
+The [lifespan](/docs/programming_guide/context/) provides the Qdrant client once at startup, via a [context key](/docs/programming_guide/context/):
 
 ```python title="pipeline.py"
 QDRANT_DB = coco.ContextKey[QdrantClient]("image_search_qdrant")
@@ -91,7 +91,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process an image
 
-![One process_file component per image, fanned out with mount_each: each image is CLIP-embedded and declared as a Qdrant point](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/stage-file-process.svg)
+![One process_file component per image, fanned out with mount_each: each image is CLIP-embedded and declared as a Qdrant point](https://cocoindex.io/blobs/docs-v1/img/examples/image-search/stage-file-process-dark.svg)
 
 `process_file` runs once per image: read the bytes, embed with CLIP, and declare a Qdrant point keyed by a stable id derived from the path, with the filename in the payload.
 
@@ -108,11 +108,11 @@ async def process_file(file: FileLike, target: qdrant.CollectionTarget) -> None:
     target.declare_point(point)
 ```
 
-[`@coco.fn(memo=True)`](https://cocoindex.io/docs/programming_guide/function/) makes it [incremental](https://cocoindex.io/docs/advanced_topics/memoization_keys/): an unchanged image is never re-embedded. Each image runs as its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/), so the engine tracks them independently — delete an image and its point is removed from Qdrant automatically. `declare_point` declares the point as a [target state](https://cocoindex.io/docs/programming_guide/target_state/); CocoIndex upserts or deletes to match.
+[`@coco.fn(memo=True)`](/docs/programming_guide/function/) makes it [incremental](/docs/advanced_topics/memoization_keys/): an unchanged image is never re-embedded. Each image runs as its own [processing component](/docs/programming_guide/processing_component/), so the engine tracks them independently — delete an image and its point is removed from Qdrant automatically. `declare_point` declares the point as a [target state](/docs/programming_guide/target_state/); CocoIndex upserts or deletes to match.
 
 ## Define the main function
 
-`app_main` mounts the Qdrant collection — sizing the vector to CLIP's projection dimension and using cosine distance — then walks the image folder and mounts one component per file:
+`app_main` mounts the Qdrant collection (sizing the vector to CLIP's projection dimension and using cosine distance) then walks the image folder and mounts one component per file:
 
 ```python title="pipeline.py"
 @coco.fn
@@ -149,7 +149,7 @@ app = coco.App(
 )
 ```
 
-`mount_collection_target` creates and manages the Qdrant collection for you — schema, idempotent upserts, and cleanup when an image disappears. The vector size comes straight from the model, so swapping CLIP variants just works.
+`mount_collection_target` creates and manages the Qdrant collection for you — schema, idempotent upserts, and cleanup when an image disappears. The collection schema takes its vector size from the selected model.
 
 ## Run it as a service
 
@@ -200,7 +200,7 @@ That's the whole point of a shared image-text space: the match is by *meaning*, 
 
 Because the flow runs live inside the server, the index tracks the folder with no extra work from you:
 
-- **Add an image** — `process_file` runs once for it, embeds it, and upserts one Qdrant point. It's searchable within a second.
+- **Add an image** — `process_file` runs once for it, embeds it, and upserts one Qdrant point. It becomes searchable after the update completes.
 - **Replace an image** — same id (derived from the path), new vector; the point is updated in place.
 - **Delete an image** — its component disappears and the point is removed from Qdrant.
 - **Restart the server** — the initial sweep reconciles against what's already in Qdrant and re-embeds nothing that's unchanged.
@@ -209,6 +209,4 @@ Swap the CLIP model and CocoIndex re-embeds everything against the new space; le
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/image_search](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search). For higher-fidelity retrieval, [image_search_colpali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali) swaps CLIP for the multi-vector ColPali model with Qdrant MaxSim; for the text equivalent, see [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/).
-
-Got a photo library, a product catalog, or a screenshot pile you want to search by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
+The full, runnable example is in the CocoIndex repo: [examples/image_search](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search). For higher-fidelity retrieval, [image_search_colpali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali) swaps CLIP for the multi-vector ColPali model with Qdrant MaxSim; for the text equivalent, see [Semantic Search 101](/docs/examples/text-embedding/).

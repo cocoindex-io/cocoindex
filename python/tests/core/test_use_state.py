@@ -524,7 +524,7 @@ def test_use_state_raises_on_duplicate_key() -> None:
         try:
             coco.use_state("counter", 0)  # same key — must raise
             _raised[item] = False
-        except RuntimeError:
+        except coco.AlreadyDeclaredError:
             _raised[item] = True
 
     @coco.fn

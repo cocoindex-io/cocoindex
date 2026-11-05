@@ -45,6 +45,14 @@ from .component_ctx import (
     _enter_component_context,
 )
 from .context_keys import resolve_awaitables_sync
+from .data_dep import (
+    DataDepValidation,
+    RefreshedDataDep,
+    StoredDataDep,
+    decode_stored_data_deps,
+    validate_data_deps_async,
+    validate_data_deps_sync,
+)
 from .deadline import (
     DeadlineContext,
     check_cancellation as _deadline_checkpoint,
@@ -81,6 +89,12 @@ AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
 AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 
 LogicTracking: TypeAlias = Literal["full", "self"] | None
+# A batched function's rate limiter: the limiter itself, or — for a method whose
+# limiter lives on the instance — a callable that receives ``self`` (``None``
+# for a free function) and returns the limiter, or ``None`` for no gate.
+RateLimiterSpec: TypeAlias = (
+    core.RateLimiter | Callable[[Any], core.RateLimiter | None] | None
+)
 MemoKeyTransform: TypeAlias = Callable[[Any], Any]
 MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
 
@@ -173,6 +187,9 @@ class StateMethodsResult(NamedTuple):
     new_context_states: dict[core.Fingerprint, list[Any]]
     can_reuse: bool
     states_changed: bool
+    # Data dependencies after validation (`data_dep.DataDepValidation.refreshed`).
+    # Index 4: the Rust bridge reads the handler's result positionally.
+    new_data_deps: tuple[RefreshedDataDep, ...] = ()
     # Indices into `new_states` whose state function asked to be called again
     # after the function body (`MemoStateOutcome.recollect_after_run`).
     recollect: tuple[int, ...] = ()
@@ -400,6 +417,180 @@ async def _recollect_states_async(
     return states
 
 
+_SYNC_RUNNING_LOOP_ERROR_MSG = (
+    "Memo state function returned an awaitable from a sync context "
+    "with a running event loop. Use @coco.fn.as_async for the "
+    "decorated function instead."
+)
+
+
+def _data_deps_decode_failed() -> DataDepValidation:
+    return DataDepValidation(refreshed=[], can_reuse=False, states_changed=False)
+
+
+def _probe_data_deps_sync(
+    guard: core.FnCallMemoGuard, *, where: str
+) -> DataDepValidation | None:
+    """Decode and validate a hit entry's stored data dependencies.
+
+    ``None`` when the entry recorded none. A decode failure (kind gone, stored
+    key or state no longer deserializes) is a logged miss and calls no
+    validator; a validator's exception propagates.
+    """
+    stored = guard.cached_data_deps
+    if not stored:
+        return None
+    decoded = decode_stored_data_deps(stored, where=where)
+    if decoded is None:
+        return _data_deps_decode_failed()
+    return validate_data_deps_sync(
+        decoded, running_loop_error_msg=_SYNC_RUNNING_LOOP_ERROR_MSG
+    )
+
+
+async def _probe_data_deps_async(
+    guard: core.FnCallMemoGuard, *, where: str
+) -> DataDepValidation | None:
+    """Async variant of :func:`_probe_data_deps_sync`."""
+    stored = guard.cached_data_deps
+    if not stored:
+        return None
+    decoded = decode_stored_data_deps(stored, where=where)
+    if decoded is None:
+        return _data_deps_decode_failed()
+    return await validate_data_deps_async(decoded)
+
+
+async def _validate_component_data_deps(
+    validated: StateMethodsResult,
+    data_deps_stored: list[StoredDataDep] | None,
+    *,
+    where: str,
+) -> StateMethodsResult:
+    """Fold a component entry's stored data dependencies into the state
+    validation result: decode phase, then validators (see ``data_dep``)."""
+    if not data_deps_stored:
+        return validated
+    decoded = decode_stored_data_deps(data_deps_stored, where=where)
+    if decoded is None:
+        return validated._replace(can_reuse=False)
+    dd = await validate_data_deps_async(decoded)
+    return validated._replace(
+        can_reuse=validated.can_reuse and dd.can_reuse,
+        states_changed=validated.states_changed or dd.states_changed,
+        new_data_deps=tuple(dd.refreshed),
+    )
+
+
+def _refresh_hit_entry(
+    guard: core.FnCallMemoGuard,
+    state_result: StateMethodsResult | None,
+    data_deps: DataDepValidation | None,
+) -> None:
+    """Refresh a hit entry whose states or data dependencies moved while
+    staying valid. Unchanged parts are handed back as their stored values, so
+    their bytes and fingerprints stay exactly what was stored."""
+    guard.update_memo_states(
+        state_result.new_states
+        if state_result is not None
+        else guard.cached_memo_states,
+        state_result.new_context_states
+        if state_result is not None
+        else guard.cached_context_memo_states,
+        data_deps.refreshed if data_deps is not None else None,
+    )
+
+
+def _data_dep_where(fn: Any) -> str:
+    return f"memoized function {getattr(fn, '__qualname__', repr(fn))}"
+
+
+class _ComponentStateHandling(NamedTuple):
+    """What a memoized component hands the core for memo-state handling."""
+
+    handler: Callable[..., Coroutine[Any, Any, Any]]
+    # Whether the handler has initial states to collect after a miss (argument
+    # state methods, or change-detected context values with state functions).
+    # When false the core skips the miss-path callback: the handler is then
+    # attached only to validate stored data dependencies on a hit.
+    collects_initial_states: bool
+
+
+def _make_component_state_handling(
+    env: Environment, path: core.StablePath, state_methods: list[StateFnEntry]
+) -> _ComponentStateHandling:
+    """The state handler of a memoized component (sync or async).
+
+    On a hit it validates the stored argument states, context states and data
+    dependencies; on a miss it collects the initial argument and context
+    states (the core calls it then only when ``collects_initial_states``).
+
+    TODO(future simplification): make the handler hit-only by pre-computing
+    the initial states at construction; see "Future simplification" in the
+    memo-validation spec.
+    """
+
+    async def _state_handler(
+        comp_ctx: core.ComponentProcessorContext,
+        positional_stored: list[Any] | None,
+        context_stored: dict[core.Fingerprint, list[Any]] | None,
+        data_deps_stored: list[StoredDataDep] | None,
+    ) -> StateMethodsResult:
+        # Note: `_enter_component_context` creates a fresh FnCallContext and
+        # joins it into comp_ctx on exit. If state functions call
+        # `use_context(...)`, their observed fps flow into comp_ctx.logic_deps
+        # — on cache-miss write that's correctly persisted as part of the new
+        # entry's logic_deps.
+        with _enter_component_context(env, path, comp_ctx):
+            if context_stored is not None:
+                # Cache hit: validate stored context states by calling the
+                # registered state functions with their stored prev.
+                context_entries = _collect_context_entries_from_stored(
+                    env, context_stored
+                )
+                validated = await _call_state_methods_async(
+                    state_methods,
+                    positional_stored,
+                    context_entries=context_entries,
+                    context_stored=context_stored,
+                )
+                if validated.recollect and not validated.can_reuse:
+                    raise ValueError(
+                        "MemoStateOutcome.recollect_after_run is supported "
+                        "for memoized functions, not for memoized components"
+                    )
+                if not validated.can_reuse:
+                    return validated
+                return await _validate_component_data_deps(
+                    validated,
+                    data_deps_stored,
+                    where=f"component {path.to_string()}",
+                )
+            # Cache miss: look up the eager initial states for the context fps
+            # observed during function execution, in a single Rust call — no
+            # Python-side iteration over the logic deps set.
+            new_context = comp_ctx.initial_context_memo_states()
+            if state_methods:
+                positional_result = await _call_state_methods_async(state_methods, None)
+                new_positional = positional_result.new_states
+            else:
+                new_positional = []
+            # can_reuse / states_changed are unread by the core on the
+            # cache-miss path, so their values are conventional.
+            return StateMethodsResult(
+                new_states=new_positional,
+                new_context_states=new_context,
+                can_reuse=True,
+                states_changed=False,
+            )
+
+    return _ComponentStateHandling(
+        handler=_state_handler,
+        collects_initial_states=bool(state_methods)
+        or env.context_provider.has_any_context_state_fns(),
+    )
+
+
 def _collect_context_entries_from_stored(
     env: Environment,
     stored: dict[core.Fingerprint, list[Any]] | None,
@@ -596,7 +787,7 @@ def _build_sync_core_processor(
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
     logic_fp: core.Fingerprint | None = None,
-    state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+    state_handling: _ComponentStateHandling | None = None,
     propagate_children_fn_logic: bool = True,
     deadline_context: DeadlineContext | None = None,
 ) -> core.ComponentProcessor[R_co]:
@@ -616,7 +807,9 @@ def _build_sync_core_processor(
         _build,
         processor_info,
         memo_fp,
-        state_handler,
+        state_handling.handler if state_handling is not None else None,
+        collects_initial_states=state_handling is None
+        or state_handling.collects_initial_states,
     )
 
 
@@ -858,6 +1051,7 @@ class SyncFunction(Function[P, R_co]):
                         context_entries = _collect_context_entries_from_stored(
                             env, stored_context_states
                         )
+                        state_result: StateMethodsResult | None = None
                         if state_methods or context_entries:
                             state_result = _call_state_methods_sync(
                                 state_methods,
@@ -876,11 +1070,22 @@ class SyncFunction(Function[P, R_co]):
                                 # below — re-execution may observe a different set
                                 # of change-detection context fps than the stored entry,
                                 # and validation only covers the stored set.
-                            elif state_result.states_changed:
-                                guard.update_memo_states(
-                                    state_result.new_states,
-                                    state_result.new_context_states,
-                                )
+                        # Data dependencies the entry recorded (`use_data_dep`):
+                        # validated only when the states still allow a reuse.
+                        data_deps = (
+                            _probe_data_deps_sync(
+                                guard, where=_data_dep_where(self._fn)
+                            )
+                            if use_cache
+                            else None
+                        )
+                        if data_deps is not None and not data_deps.can_reuse:
+                            use_cache = False
+                        if use_cache and (
+                            (state_result is not None and state_result.states_changed)
+                            or (data_deps is not None and data_deps.states_changed)
+                        ):
+                            _refresh_hit_entry(guard, state_result, data_deps)
 
                     if use_cache:
                         _deadline_checkpoint()
@@ -891,6 +1096,13 @@ class SyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
+                        guard.join_cached_data_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -970,83 +1182,14 @@ class SyncFunction(Function[P, R_co]):
                 memo_kwargs,
                 state_methods=state_methods,
             )
-        # Attach the component-level state handler only if there's something
-        # for it to do. Two triggers:
-        # 1. Positional state methods collected from argument canonicalization.
-        # 2. The env has at least one change-detected context value with registered
-        #    state functions — any of them *might* be observed during the
-        #    function body and need validation at memo-hit time.
-        # If neither is true, we can skip the Rust↔Python round-trip that the
-        # state handler would otherwise incur on every cache miss.
-        #
-        # TODO(future simplification): make this handler cache-hit-only.
-        # The cache-miss branch below is pure data collection (look up eager
-        # initial states for context, call positional state fns with
-        # NON_EXISTENCE). Both could be pre-computed at _core_processor time
-        # and passed into the Rust processor as new fields, letting
-        # execute_once's cache-miss path skip the Rust→Python callback
-        # entirely. Not urgent; see "Future simplification" in
-        # specs/memo_validation/spec.md and specs/core/internal_states.md.
-        state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
-        if memo_fp is not None and (
-            state_methods or env.context_provider.has_any_context_state_fns()
-        ):
-            captured = state_methods
-
-            async def _state_handler(
-                comp_ctx: core.ComponentProcessorContext,
-                positional_stored: list[Any] | None,
-                context_stored: dict[core.Fingerprint, list[Any]] | None,
-            ) -> StateMethodsResult:
-                # Note: `_enter_component_context` creates a fresh FnCallContext
-                # and joins it into comp_ctx on exit. If state functions call
-                # `use_context(...)`, their observed fps flow into
-                # comp_ctx.logic_deps — on cache-miss write that's correctly
-                # persisted as part of the new entry's logic_deps.
-                with _enter_component_context(env, path, comp_ctx):
-                    if context_stored is not None:
-                        # Cache hit: validate stored context states by calling
-                        # the registered state functions with their stored prev.
-                        context_entries = _collect_context_entries_from_stored(
-                            env, context_stored
-                        )
-                        validated = await _call_state_methods_async(
-                            captured,
-                            positional_stored,
-                            context_entries=context_entries,
-                            context_stored=context_stored,
-                        )
-                        if validated.recollect and not validated.can_reuse:
-                            raise ValueError(
-                                "MemoStateOutcome.recollect_after_run is supported "
-                                "for memoized functions, not for memoized components"
-                            )
-                        return validated
-                    # Cache miss: look up the eager initial states for the
-                    # context fps observed during function execution, in a
-                    # single Rust call — no Python-side iteration over the
-                    # logic deps set.
-                    # TODO(future simplification): this branch is pure data
-                    # collection and should be moved out of the handler so
-                    # Rust's execute_once can skip the callback on cache miss.
-                    new_context = comp_ctx.initial_context_memo_states()
-                    if captured:
-                        positional_result = await _call_state_methods_async(
-                            captured, None
-                        )
-                        new_positional = positional_result.new_states
-                    else:
-                        new_positional = []
-                    # can_reuse / states_changed are unread by the core on the
-                    # cache-miss path, so their values are conventional.
-                    return StateMethodsResult(
-                        new_states=new_positional,
-                        new_context_states=new_context,
-                        can_reuse=True,
-                        states_changed=False,
-                    )
-
-            state_handler = _state_handler
+        # Attached for every memoized component: a stored entry may carry data
+        # dependencies (`use_data_dep`) with no argument or context states, and
+        # only the handler can validate them on a hit.
+        state_handling = (
+            _make_component_state_handling(env, path, state_methods)
+            if memo_fp is not None
+            else None
+        )
 
         return _build_sync_core_processor(
             self._fn,
@@ -1057,7 +1200,7 @@ class SyncFunction(Function[P, R_co]):
             self._processor_info,
             memo_fp,
             self._logic_fp,
-            state_handler,
+            state_handling,
             propagate_children_fn_logic=self._logic_tracking == "full",
             deadline_context=deadline_context,
         )
@@ -1118,7 +1261,7 @@ def _build_async_core_processor(
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
     logic_fp: core.Fingerprint | None = None,
-    state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+    state_handling: _ComponentStateHandling | None = None,
     propagate_children_fn_logic: bool = True,
     deadline_context: DeadlineContext | None = None,
 ) -> core.ComponentProcessor[R_co]:
@@ -1138,7 +1281,9 @@ def _build_async_core_processor(
         _build,
         processor_info,
         memo_fp,
-        state_handler,
+        state_handling.handler if state_handling is not None else None,
+        collects_initial_states=state_handling is None
+        or state_handling.collects_initial_states,
     )
 
 
@@ -1243,6 +1388,8 @@ class AsyncFunction(Function[P, R_co]):
         "_logic_tracking",
         "_batching",
         "_max_batch_size",
+        "_max_in_flight",
+        "_rate_limiter",
         "_runner",
         "_has_self",
         "_batchers",
@@ -1260,6 +1407,8 @@ class AsyncFunction(Function[P, R_co]):
     _logic_tracking: LogicTracking
     _batching: bool
     _max_batch_size: int | None
+    _max_in_flight: int | None
+    _rate_limiter: RateLimiterSpec
     _runner: Runner | None
     _has_self: bool
     _return_deserializer: DeserializeFn | None
@@ -1277,6 +1426,8 @@ class AsyncFunction(Function[P, R_co]):
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -1285,6 +1436,23 @@ class AsyncFunction(Function[P, R_co]):
         fn = async_fn or sync_fn
         if fn is None:
             raise ValueError("Either async_fn or sync_fn must be provided")
+        if max_in_flight is not None:
+            if not batching:
+                raise ValueError("max_in_flight requires batching=True")
+            if max_in_flight < 1:
+                raise ValueError(
+                    f"max_in_flight must be a positive integer, got {max_in_flight}"
+                )
+        if rate_limiter is not None:
+            if not batching:
+                raise ValueError("rate_limiter requires batching=True")
+            if not isinstance(rate_limiter, core.RateLimiter) and not callable(
+                rate_limiter
+            ):
+                raise TypeError(
+                    "rate_limiter must be a RateLimiter or a callable returning "
+                    f"one, got {type(rate_limiter).__name__}"
+                )
         if logic_tracking is None and deps is not None:
             raise ValueError(
                 "deps= requires logic_tracking to be enabled; with "
@@ -1307,6 +1475,8 @@ class AsyncFunction(Function[P, R_co]):
             self._logic_fp = None
         self._batching = batching
         self._max_batch_size = max_batch_size
+        self._max_in_flight = max_in_flight
+        self._rate_limiter = rate_limiter
         self._runner = runner
         self._has_self = _has_self_parameter(fn) if (batching or runner) else False
         self._batchers = {}
@@ -1432,6 +1602,7 @@ class AsyncFunction(Function[P, R_co]):
                     context_entries = _collect_context_entries_from_stored(
                         env, stored_context_states
                     )
+                    state_result: StateMethodsResult | None = None
                     if state_methods or context_entries:
                         state_result = await _call_state_methods_async(
                             state_methods,
@@ -1448,11 +1619,22 @@ class AsyncFunction(Function[P, R_co]):
                             # Context states are re-collected fresh from fn_ctx
                             # below: re-execution may observe a different set
                             # of change-detection context fps than the stored entry.
-                        elif state_result.states_changed:
-                            guard.update_memo_states(
-                                state_result.new_states,
-                                state_result.new_context_states,
-                            )
+                    # Data dependencies the entry recorded (`use_data_dep`):
+                    # validated only when the states still allow a reuse.
+                    data_deps = (
+                        await _probe_data_deps_async(
+                            guard, where=_data_dep_where(self._any_fn)
+                        )
+                        if use_cache
+                        else None
+                    )
+                    if data_deps is not None and not data_deps.can_reuse:
+                        use_cache = False
+                    if use_cache and (
+                        (state_result is not None and state_result.states_changed)
+                        or (data_deps is not None and data_deps.states_changed)
+                    ):
+                        _refresh_hit_entry(guard, state_result, data_deps)
                     if use_cache:
                         _deadline_checkpoint()
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
@@ -1462,6 +1644,13 @@ class AsyncFunction(Function[P, R_co]):
                         guard.join_cached_target_provider_deps(
                             parent_ctx._core_fn_call_ctx
                         )
+                        # The hit skips the body, so the frame joined into the
+                        # caller below would carry only this function's own fp:
+                        # re-offer what the entry recorded beneath it (it rides
+                        # to the component entry regardless of modes — see the
+                        # core method).
+                        guard.join_cached_logic_deps(fn_ctx)
+                        guard.join_cached_data_deps(fn_ctx)
                         assert guard.cached_value is not None
                         return cast(
                             R_co,
@@ -1699,6 +1888,22 @@ class AsyncFunction(Function[P, R_co]):
             if slot.in_flight == 0:
                 del self._batchers[batcher_key]
 
+    def _resolve_rate_limiter(self, self_obj: Any) -> core.RateLimiter | None:
+        """The limiter this batcher's batches take a token from: the one given
+        at decoration, or the one its callable form returns for ``self_obj``
+        (the bound ``self`` for a method, ``None`` for a free function)."""
+        if self._rate_limiter is None:
+            return None
+        if isinstance(self._rate_limiter, core.RateLimiter):
+            return self._rate_limiter
+        limiter = self._rate_limiter(self_obj)
+        if limiter is not None and not isinstance(limiter, core.RateLimiter):
+            raise TypeError(
+                "rate_limiter callable must return a RateLimiter or None, "
+                f"got {type(limiter).__name__}"
+            )
+        return limiter
+
     def _create_batcher(
         self,
         async_ctx: core.AsyncContext,
@@ -1728,7 +1933,9 @@ class AsyncFunction(Function[P, R_co]):
         # When runner is specified without batching, use max_batch_size=1
         # to process items individually.
         options = core.BatchingOptions(
-            max_batch_size=self._max_batch_size if self._batching else 1
+            max_batch_size=self._max_batch_size if self._batching else 1,
+            max_in_flight=self._max_in_flight if self._batching else None,
+            rate_limiter=self._resolve_rate_limiter(self_obj),
         )
         # Honor RetryWithSmallerBatch raised by the batch body: split the
         # batch and retry the halves. Only meaningful in batching mode
@@ -1782,61 +1989,12 @@ class AsyncFunction(Function[P, R_co]):
                 prefix_args=(path,),
             )
 
-        # See SyncFunction._core_processor for rationale on the attachment
-        # condition — avoids a Python callback round-trip on every cache miss
-        # when neither positional nor context state validation is needed.
-        #
-        # TODO(future simplification): same as SyncFunction — make this
-        # handler cache-hit-only by pre-computing initial states at
-        # _core_processor time. See specs/memo_validation/spec.md.
-        state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
-        if memo_fp is not None and (
-            state_methods or env.context_provider.has_any_context_state_fns()
-        ):
-            captured = state_methods
-
-            async def _state_handler(
-                comp_ctx: core.ComponentProcessorContext,
-                positional_stored: list[Any] | None,
-                context_stored: dict[core.Fingerprint, list[Any]] | None,
-            ) -> StateMethodsResult:
-                # See SyncFunction._core_processor for the rationale on the
-                # cache-hit vs cache-miss split.
-                with _enter_component_context(env, path, comp_ctx):
-                    if context_stored is not None:
-                        context_entries = _collect_context_entries_from_stored(
-                            env, context_stored
-                        )
-                        validated = await _call_state_methods_async(
-                            captured,
-                            positional_stored,
-                            context_entries=context_entries,
-                            context_stored=context_stored,
-                        )
-                        if validated.recollect and not validated.can_reuse:
-                            raise ValueError(
-                                "MemoStateOutcome.recollect_after_run is supported "
-                                "for memoized functions, not for memoized components"
-                            )
-                        return validated
-                    # TODO(future simplification): this branch is pure data
-                    # collection; should move out of the handler.
-                    new_context = comp_ctx.initial_context_memo_states()
-                    if captured:
-                        positional_result = await _call_state_methods_async(
-                            captured, None
-                        )
-                        new_positional = positional_result.new_states
-                    else:
-                        new_positional = []
-                    return StateMethodsResult(
-                        new_states=new_positional,
-                        new_context_states=new_context,
-                        can_reuse=True,
-                        states_changed=False,
-                    )
-
-            state_handler = _state_handler
+        # See SyncFunction._core_processor: attached for every memoized component.
+        state_handling = (
+            _make_component_state_handling(env, path, state_methods)
+            if memo_fp is not None
+            else None
+        )
 
         propagate = self._logic_tracking == "full"
         if self._is_scheduled:
@@ -1850,7 +2008,7 @@ class AsyncFunction(Function[P, R_co]):
                 self._processor_info,
                 memo_fp,
                 self._logic_fp,
-                state_handler,
+                state_handling,
                 propagate_children_fn_logic=propagate,
                 deadline_context=deadline_context,
             )
@@ -1866,7 +2024,7 @@ class AsyncFunction(Function[P, R_co]):
                 self._processor_info,
                 memo_fp,
                 self._logic_fp,
-                state_handler,
+                state_handling,
                 propagate_children_fn_logic=propagate,
                 deadline_context=deadline_context,
             )
@@ -1881,7 +2039,7 @@ class AsyncFunction(Function[P, R_co]):
             self._processor_info,
             memo_fp,
             self._logic_fp,
-            state_handler,
+            state_handling,
             propagate_children_fn_logic=propagate,
             deadline_context=deadline_context,
         )
@@ -1900,6 +2058,8 @@ class _GenericFunctionBuilder:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -1909,6 +2069,8 @@ class _GenericFunctionBuilder:
         self._memo_key = memo_key
         self._batching = batching
         self._max_batch_size = max_batch_size
+        self._max_in_flight = max_in_flight
+        self._rate_limiter = rate_limiter
         self._runner = runner
         self._version = version
         self._logic_tracking = logic_tracking
@@ -1941,6 +2103,8 @@ class _GenericFunctionBuilder:
             memo_key=self._memo_key,
             batching=self._batching,
             max_batch_size=self._max_batch_size,
+            max_in_flight=self._max_in_flight,
+            rate_limiter=self._rate_limiter,
             runner=self._runner,
             version=self._version,
             logic_tracking=self._logic_tracking,
@@ -2036,6 +2200,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2056,6 +2222,10 @@ class _FunctionDecorator:
                 should be fingerprinted for memoization.
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
+            max_in_flight: Maximum number of batches running at once (only with
+                batching=True); see :func:`fn.as_async`.
+            rate_limiter: Limiter each batch takes one token from before it runs
+                (only with batching=True); see :func:`fn.as_async`.
             runner: Runner to execute the function (e.g., GPU for subprocess)
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
@@ -2064,6 +2234,12 @@ class _FunctionDecorator:
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
                 None: No function logic tracking (incompatible with ``deps``).
+                Adopting tracking later — decorating a function that memoized
+                callers already stored entries for, or raising its mode from
+                ``None`` — does not invalidate those entries: an entry records
+                only the fingerprints its writer offered when it was stored.
+                Ship such a change with a ``version`` bump or a memo-key change
+                on the memoized callers, so their entries are stored again.
             deps: External value(s) the function logic depends on but which
                 aren't visible in its body — for example a module-level prompt
                 string or model identifier. The value is canonicalized via the
@@ -2094,10 +2270,17 @@ class _FunctionDecorator:
         Memoization requires a ComponentContext: the call must happen inside a
         processing component.
         """
-        if batching or max_batch_size is not None or runner is not None:
+        if (
+            batching
+            or max_batch_size is not None
+            or max_in_flight is not None
+            or rate_limiter is not None
+            or runner is not None
+        ):
             raise ValueError(
-                "@coco.fn does not support batching, max_batch_size or runner: "
-                "they require an async interface. Use @coco.fn.as_async instead."
+                "@coco.fn does not support batching, max_batch_size, max_in_flight, "
+                "rate_limiter or runner: they require an async interface. "
+                "Use @coco.fn.as_async instead."
             )
         builder = _AutoFunctionBuilder(
             memo=memo,
@@ -2122,6 +2305,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: Literal[True],
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2136,6 +2321,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: Literal[False] = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2163,6 +2350,8 @@ class _FunctionDecorator:
         memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: RateLimiterSpec = None,
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
@@ -2178,6 +2367,21 @@ class _FunctionDecorator:
             memo: Enable memoization (skip execution when inputs unchanged)
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
+            max_in_flight: Maximum number of batches running at once (only with
+                batching=True; must be positive). ``None`` (the default) starts
+                a full batch as soon as it fills and the next partial batch only
+                once every running batch has finished; ``n`` bounds the
+                concurrently running batches to ``n`` and starts the next
+                pending batch, full or partial, whenever any batch finishes.
+            rate_limiter: A ``RateLimiter`` each batch takes one token from
+                before it runs (only with batching=True), so a token pays for
+                one batch rather than one call. With it no call runs inline:
+                calls join the open batch, and a pump runs the oldest pending
+                batch once a ``max_in_flight`` slot and a token are available,
+                so every call that arrives during the wait rides the next
+                token. For a method whose limiter lives on the instance, pass
+                a callable that receives ``self`` and returns the limiter (or
+                ``None`` for no gate); it is resolved once per batcher.
             runner: Runner to execute the function (e.g., GPU for subprocess)
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
@@ -2186,6 +2390,12 @@ class _FunctionDecorator:
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
                 None: No function logic tracking (incompatible with ``deps``).
+                Adopting tracking later — decorating a function that memoized
+                callers already stored entries for, or raising its mode from
+                ``None`` — does not invalidate those entries: an entry records
+                only the fingerprints its writer offered when it was stored.
+                Ship such a change with a ``version`` bump or a memo-key change
+                on the memoized callers, so their entries are stored again.
             deps: Additional value(s) the function logic depends on but that
                 aren't visible in its body. See :func:`fn` for the full
                 contract — the value is canonicalized through the memoization
@@ -2202,6 +2412,8 @@ class _FunctionDecorator:
             memo_key=memo_key,
             batching=batching,
             max_batch_size=max_batch_size,
+            max_in_flight=max_in_flight,
+            rate_limiter=rate_limiter,
             runner=runner,
             version=version,
             logic_tracking=logic_tracking,

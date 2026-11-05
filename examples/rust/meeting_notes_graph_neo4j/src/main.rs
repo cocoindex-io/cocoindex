@@ -295,7 +295,8 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| format!("{}/input", env!("CARGO_MANIFEST_DIR")));
     let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
-    let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "cocoindex".to_string());
+    let password = std::env::var("NEO4J_PASSWORD")
+        .map_err(|_| Error::engine("NEO4J_PASSWORD is not set"))?;
     let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());
     let graph = neo4j::Graph::connect(&uri, &user, &password, &database).await?;
     let app = Environment::builder()

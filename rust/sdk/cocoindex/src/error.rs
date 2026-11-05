@@ -21,9 +21,16 @@ pub enum Error {
     #[error("serde decode: {0}")]
     SerdeDecode(#[from] rmp_serde::decode::Error),
 
-    /// Engine invariant violated (component path conflict, cycle, etc).
+    /// Engine invariant violated (cycle, contract violation, etc).
     #[error("{0}")]
     Engine(String),
+
+    /// Something was declared a second time within one run, where one
+    /// declaration is final: a target state key, a target state provider
+    /// path, a user-state key, a child component path, an app name. The
+    /// first declaration stands.
+    #[error("{0}")]
+    AlreadyDeclared(String),
 
     /// The active CocoIndex deadline has expired.
     #[error("CocoIndex timeout deadline exceeded")]
@@ -107,7 +114,12 @@ impl From<cocoindex_utils::error::Error> for Error {
                     Err(_) => Error::Engine(message),
                 }
             }
-            other => Error::Engine(format!("{other}")),
+            other => match other.client_kind() {
+                Some(cocoindex_utils::error::ClientErrorKind::AlreadyDeclared) => {
+                    Error::AlreadyDeclared(format!("{other}"))
+                }
+                _ => Error::Engine(format!("{other}")),
+            },
         }
     }
 }

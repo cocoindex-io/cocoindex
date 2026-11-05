@@ -14,7 +14,7 @@ use std::time::Duration;
 use cocoindex::{
     App, Ctx, Error, LiveComponent, LiveComponentOperator, LiveMapFeed, LiveMapSubscriber,
     LiveMapView, MountKind, Result, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, UpdateOptions, async_trait, declare_target_state,
+    TargetReconcileOutput, TargetStateProvider, UpdateOptions, async_trait, declare_target_state,
     register_root_target_states_provider,
 };
 use tokio::sync::Notify;
@@ -260,7 +260,9 @@ impl LiveComponent for DirectDelete {
         operator.mark_ready().await;
         // Directly delete the child mounted for key "a"; its target state is GC'd.
         operator.delete("a").await?;
-        self.done.notify_waiters();
+        // `notify_one` keeps a permit: the test may start waiting only after
+        // this runs (the engine drives the live component on its own threads).
+        self.done.notify_one();
         Ok(())
     }
 }
@@ -316,6 +318,106 @@ async fn mount_live_incremental_delete_removes_child_state() {
 
     let _ = app.drop_state().await;
     let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
+}
+
+/// One child per source row. With `delete_a`, `process_live` deletes the
+/// child for key "a" before marking ready, so the delete also runs in
+/// catch-up mode, where `mark_ready` ends `process_live`.
+struct Rows {
+    provider: TargetStateProvider<String>,
+    source: Vec<(&'static str, &'static str)>,
+    delete_a: bool,
+}
+
+#[async_trait]
+impl LiveComponent for Rows {
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        let provider = self.provider.clone();
+        ctx.mount_each(
+            self.source.clone(),
+            |(k, _v): &(&'static str, &'static str)| (*k).to_string(),
+            move |child, (k, v)| {
+                let provider = provider.clone();
+                async move {
+                    declare_target_state(&child, provider.target_state(k, v.to_string()))?;
+                    Ok::<(), Error>(())
+                }
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn process_live(&self, operator: LiveComponentOperator) -> Result<()> {
+        operator.update_full().await?;
+        if self.delete_a {
+            operator.delete("a").await?;
+        }
+        operator.mark_ready().await;
+        Ok(())
+    }
+}
+
+/// A preview through a live component applies nothing and persists nothing:
+/// the update after it finds no tracking of the rows the preview planned, so
+/// it creates them rather than finding them in place.
+#[tokio::test]
+async fn preview_through_live_component_persists_nothing() {
+    let (app, _dir) = temp_app("live_preview_persists_nothing").await;
+    let log = new_log();
+    let source = vec![("a", "va"), ("b", "vb")];
+
+    let preview_log = log.clone();
+    let preview_source = source.clone();
+    let actions = app
+        .preview(move |ctx| {
+            let sink = recording_sink(preview_log.clone());
+            let source = preview_source.clone();
+            async move {
+                let provider =
+                    register_root_target_states_provider(&ctx, "live/items", RowHandler { sink })?;
+                ctx.mount_live(
+                    &"comp",
+                    Rows {
+                        provider,
+                        source,
+                        delete_a: true,
+                    },
+                )
+                .await
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(actions.len(), 2, "the preview plans a create per row");
+    assert!(
+        drain_sorted(&log).is_empty(),
+        "the preview applied an action"
+    );
+
+    let update_log = log.clone();
+    app.update(move |ctx| {
+        let sink = recording_sink(update_log.clone());
+        let source = source.clone();
+        async move {
+            let provider =
+                register_root_target_states_provider(&ctx, "live/items", RowHandler { sink })?;
+            ctx.mount_live(
+                &"comp",
+                Rows {
+                    provider,
+                    source,
+                    delete_a: false,
+                },
+            )
+            .await
+        }
+    })
+    .await
+    .unwrap();
+    // Had the preview persisted the rows' tracking records, the update would
+    // find them unchanged and log nothing.
+    assert_eq!(drain_sorted(&log), vec!["create a=va", "create b=vb"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +624,8 @@ impl LiveComponent for AutoRefreshFailingCycle {
                     return Err(Error::engine("cycle failed"));
                 }
                 if call >= 3 {
-                    third_call.notify_waiters();
+                    // Keeps a permit if the test is not waiting yet.
+                    third_call.notify_one();
                 }
                 Ok(())
             }
@@ -678,7 +781,8 @@ impl LiveMapFeed<String, i64> for StreamFeed {
         for (k, v) in &self.items {
             subscriber.update(k.clone(), *v).await?;
         }
-        self.done.notify_waiters();
+        // Keeps a permit if the test is not waiting yet.
+        self.done.notify_one();
         Ok(())
     }
 }

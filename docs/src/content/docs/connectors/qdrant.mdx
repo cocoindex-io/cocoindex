@@ -202,11 +202,11 @@ import numpy as np
 schema = await qdrant.CollectionSchema.create(
     vectors={
         "text_embedding": qdrant.QdrantVectorDef(
-            schema=VectorSchema(dtype=np.float32, size=384),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
             distance="cosine",
         ),
         "image_embedding": qdrant.QdrantVectorDef(
-            schema=VectorSchema(dtype=np.float32, size=512),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=512),
             distance="dot",
         ),
     }
@@ -238,7 +238,7 @@ import numpy as np
 schema = await qdrant.CollectionSchema.create(
     vectors={
         "dense": qdrant.QdrantVectorDef(
-            schema=VectorSchema(dtype=np.float32, size=384),
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
             distance="cosine",
         ),
         "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
@@ -278,7 +278,7 @@ import numpy as np
 schema = await qdrant.CollectionSchema.create(
     vectors=qdrant.QdrantVectorDef(
         schema=MultiVectorSchema(
-            vector_schema=VectorSchema(dtype=np.float32, size=384)
+            vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=384)
         ),
         multivector_comparator="max_sim",
     )
@@ -368,7 +368,7 @@ async def app_main() -> None:
                     distance="cosine",
                 ),
                 "image": qdrant.QdrantVectorDef(
-                    schema=VectorSchema(dtype=np.float32, size=512),
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=512),
                     distance="dot",
                 ),
             }
@@ -403,7 +403,7 @@ async def app_main() -> None:
         await qdrant.CollectionSchema.create(
             vectors={
                 "dense": qdrant.QdrantVectorDef(
-                    schema=VectorSchema(dtype=np.float32, size=384),
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=384),
                     distance="cosine",
                 ),
                 "sparse": qdrant.QdrantSparseVectorDef(modifier="idf"),
@@ -434,6 +434,8 @@ Qdrant only accepts two point ID types — this is enforced by the Qdrant server
 - `str` — UUID strings, in any standard textual form (hyphenated, 32-character hex, or URN)
 
 `uuid.UUID` instances are also accepted and converted to strings. `declare_point` validates the ID eagerly and raises `ValueError` for anything else, rather than letting the write fail later at the Qdrant server.
+
+Qdrant stores every textual form of one UUID as the same point. CocoIndex therefore tracks a UUID point ID in its canonical form (hyphenated, lower case). If you declare two forms of one UUID in the same run, the second declaration fails as a duplicate.
 
 To derive a stable point ID from an arbitrary string key (e.g. a document path or chunk key), use a deterministic UUID:
 

@@ -1,0 +1,10 @@
+{
+  "alt": "The first page of manuals/copy.pdf (copy, copy.deepcopy, copy.replace and copy.Error) is converted to Markdown with docling on a GPU runner, then gpt-4o through instructor and LiteLLM fills a nested ModuleInfo with the Error class and the copy, deepcopy and replace functions; each manual becomes one row in coco_examples.modules_info, where array.pdf has 1 class, base64.pdf has 22 functions and copy.pdf has 1 class and 3 functions; editing copy.pdf updates only its row.",
+  "needs": ["Docker (for Postgres)", "Python 3.11+", "OPENAI_API_KEY (or LLM_MODEL with its provider key)"],
+  "run": [
+    { "note": "Start Postgres", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Parse and extract the PDFs in manuals/", "cmd": "cocoindex update main" },
+    { "note": "See one row per manual", "cmd": "psql postgres://cocoindex:cocoindex@localhost/cocoindex -c \"SELECT filename, title, num_classes, num_methods FROM coco_examples.modules_info;\"" }
+  ]
+}

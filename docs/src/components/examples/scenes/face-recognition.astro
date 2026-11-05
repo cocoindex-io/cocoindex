@@ -1,0 +1,165 @@
+---
+// Face search: the four photos the example ships in images/, the image → N
+// faces fan-out with face_recognition (dlib; CNN detector, 128-d encodings),
+// the Qdrant collection face_embeddings (one point per face, filename + box
+// payload, Euclidean), and the README's query: einplanck3.jpg finds Einstein's
+// face in the 1927 Solvay photo at a distance around 0.46. Counts (36 faces,
+// 29 from Solvay) and the distance are the README's. Carter_welcomes_Reagan.jpg
+// is the added photo (Δ); only its faces are detected and embedded.
+// Small tiles carry no name chip (too narrow); the added file is named
+// under the grid and in the Qdrant list.
+// The box on the Solvay photo is drawn by hand over Einstein's face.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/scene';
+---
+{size === 'hero' ? (
+  <div class="fr">
+    <div class="sc-row fr-top">
+      <div class="sc-col fr-src">
+        <span class="sc-cap">Photos in images/</span>
+        <div class="fr-grid">
+          <div class="fr-tile fr-wide">
+            <img src={`${B}/solvay-conference-1927.webp`} width="640" height="463" alt="" loading="lazy" decoding="async" />
+            <span class="fr-name"><span>Solvay_<wbr />conference_<wbr />1927.jpg</span></span>
+          </div>
+          <div class="fr-tile">
+            <img src={`${B}/einplanck3.webp`} width="240" height="349" alt="" loading="lazy" decoding="async" />
+          </div>
+          <div class="fr-tile">
+            <img src={`${B}/jobs-gates.webp`} width="320" height="228" alt="" loading="lazy" decoding="async" />
+          </div>
+          <div class="fr-tile sc-delta">
+            <img src={`${B}/carter-reagan.webp`} width="320" height="214" alt="" loading="lazy" decoding="async" />
+            <span class="sc-dmark fr-mark">Δ</span>
+          </div>
+        </div>
+        <span class="fr-added"><span class="sc-dim">added</span> <span class="sc-mono sc-dtext">Carter_welcomes_Reagan.jpg</span></span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col fr-mid">
+        <span class="sc-cap">face_recognition (dlib)</span>
+        <div class="sc-panel"><div class="sc-panel-b">
+          <span class="sc-li"><span class="sc-ico i-search"></span><span>face_locations</span></span>
+          <span class="fr-sub">CNN detector, crop each face</span>
+          <span class="sc-li"><span class="sc-ico i-model"></span><span>face_encodings</span></span>
+          <span class="fr-sub">one 128-d vector per face</span>
+        </div></div>
+        <span class="sc-cap fr-fine">One photo fans out to many faces with coco.map</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col fr-tgt">
+        <span class="sc-cap">Qdrant</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-db"></span>face_embeddings</div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-person"></span><span class="fr-pt"><span class="sc-dim fr-dir">images/</span>Solvay_<wbr />conference_<wbr />1927.jpg</span></div>
+            <div class="sc-li"><span class="sc-ico i-person"></span><span class="fr-pt"><span class="sc-dim fr-dir">images/</span>einplanck3.jpg</span></div>
+            <div class="sc-li"><span class="sc-ico i-person"></span><span class="fr-pt"><span class="sc-dim fr-dir">images/</span>Steve_<wbr />Jobs_<wbr />and_<wbr />Bill_<wbr />Gates_<wbr />(522695099).jpg</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-person"></span><span class="sc-dtext fr-pt"><span class="fr-dir">images/</span>Carter_<wbr />welcomes_<wbr />Reagan.jpg</span></div>
+          </div>
+        </div>
+        <span class="sc-cap fr-fine">36 faces on the sample set, 29 from Solvay alone. Each point carries filename and min_x, min_y, max_x, max_y.</span>
+      </div>
+    </div>
+
+    <div class="fr-search">
+      <span class="sc-cap">Search by face</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py query images/einplanck3.jpg</span></div>
+      <div class="sc-row fr-match">
+        <div class="sc-row sc-keep fr-pair">
+        <div class="fr-face">
+          <img src={`${B}/einplanck3-face.webp`} width="64" height="72" alt="" loading="lazy" decoding="async" />
+          <span class="sc-cap">query face</span>
+        </div>
+        <span class="sc-to"></span>
+        <div class="fr-face">
+          <img src={`${B}/solvay-face.webp`} width="120" height="120" alt="" loading="lazy" decoding="async" />
+          <span class="sc-cap">nearest face</span>
+        </div>
+        </div>
+        <div class="fr-where">
+          <div class="fr-photo">
+            <img src={`${B}/solvay-front-row.webp`} width="560" height="336" alt="" loading="lazy" decoding="async" />
+            <span class="fr-box"></span>
+          </div>
+          <span class="sc-mono fr-file">Solvay_conference_1927.jpg</span>
+          <p class="sc-quote">Distance around <b>0.46</b>, under dlib's ~0.6 same-person rule. The box comes back in the payload.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="fr-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-col fr-cq">
+        <img class="fr-cface" src={`${B}/einplanck3-face.webp`} width="64" height="72" alt="" loading="lazy" decoding="async" />
+        <span class="sc-mono">einplanck3.jpg</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col fr-ch">
+        <div class="fr-photo">
+          <img src={`${B}/solvay-front-row.webp`} width="560" height="336" alt="" loading="lazy" decoding="async" />
+          <span class="fr-box"></span>
+        </div>
+        <span class="sc-mono fr-file">Solvay_conference_1927.jpg</span>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .fr { display: flex; flex-direction: column; gap: 18px; }
+  .fr-top { gap: 10px; }
+  .fr-src { flex: 1.05 1 0; }
+  .fr-mid { flex: 0.95 1 0; }
+  .fr-tgt { flex: 1.3 1 0; }
+  .fr-tgt .sc-li { font-size: 12px; align-items: flex-start; }
+  .fr .fr-tgt .sc-li > span.fr-pt.fr-pt { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .fr-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .fr-tile { position: relative; border: 1px solid var(--sc-line); border-radius: 7px; overflow: hidden; background: var(--sc-panel); min-width: 0; }
+  .fr-tile.sc-delta { border-color: var(--sc-delta) !important; }
+  .fr-tile img { display: block; width: 100%; height: 52px; object-fit: cover; object-position: center 30%; filter: grayscale(1); }
+  .fr-wide { grid-column: 1 / -1; }
+  .fr-wide img { height: 92px; object-position: center 62%; }
+  .fr-name { display: flex; padding: 3px 6px; font-family: var(--mono); font-size: 11.5px; color: var(--sc-muted); min-width: 0; }
+  .fr-name span { min-width: 0; overflow-wrap: anywhere; }
+  .sc-delta .fr-name { color: var(--sc-delta-text); }
+  .fr-added { font-size: 12px; overflow-wrap: anywhere; }
+  .fr-added .sc-mono { font-size: 12px; }
+  .fr-dir { display: block; }
+  .fr-mark { position: absolute; top: 5px; right: 5px; }
+  .fr-mid .sc-li { font-size: 12px; }
+  .fr-sub { font-size: 12px; color: var(--sc-dim); padding-left: 22px; margin-top: -3px; }
+  .fr-fine { font-weight: 400; }
+  .fr-search { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .fr-match { align-items: center; gap: 12px; }
+  .fr-pair { flex: none; align-items: center; gap: 12px; }
+  .fr-face { flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .fr-face img { display: block; width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--sc-line-2); filter: grayscale(1); }
+  .fr-where { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; margin-left: 6px; }
+  .fr-where .sc-quote { margin: 0; }
+  .fr-photo { position: relative; border: 1px solid var(--sc-line-2); border-radius: 7px; overflow: hidden; }
+  .fr-photo img { display: block; width: 100%; height: auto; aspect-ratio: 560 / 336; filter: grayscale(1); }
+  /* solvay-front-row.webp is x 900-1900, y 650-1250 of the 2560x1853 original;
+     Einstein's face sits at about x 240-310, y 155-235 of its 560x336 */
+  .fr-box { position: absolute; left: 42.5%; top: 45%; width: 13%; height: 25%; border: 1.5px solid #FFFFFF; border-radius: 3px; }
+  .fr-where { display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr); column-gap: 14px; row-gap: 6px; align-items: start; }
+  .fr-where .fr-photo, .fr-where .fr-file { grid-column: 1; }
+  .fr-where .sc-quote { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+  .fr-file { display: block; color: var(--sc-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @container (max-width: 560px) {
+    .fr-match { align-items: stretch; }
+    .fr-pair { justify-content: center; }
+    .fr-where { margin-left: 0; grid-template-columns: minmax(0, 1fr); }
+    .fr-where .sc-quote { grid-column: 1; grid-row: auto; }
+  }
+
+  .fr-card { height: 100%; display: flex; align-items: center; }
+  .fr-card > .sc-row { width: 100%; align-items: center; }
+  .fr-cq { flex: 0 0 96px; align-items: center; gap: 6px; }
+  .fr-cface { display: block; width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--sc-line-2); filter: grayscale(1); }
+  .fr-cq .sc-mono { color: var(--sc-muted); }
+  .fr-ch { flex: 0 1 200px; gap: 5px; }
+  .fr-card > .sc-row { justify-content: center; gap: 16px; }
+</style>

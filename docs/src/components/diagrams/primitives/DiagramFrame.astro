@@ -16,23 +16,36 @@ const {
   maxWidth,
 } = Astro.props;
 
-const wrapperStyle = maxWidth ? `max-width: ${maxWidth}px;` : '';
+// SVG IDs belong to the document. Scope them when one page contains several diagrams.
+const scope = `dg-${crypto.randomUUID().slice(0, 8)}`;
+const content = (await Astro.slots.render('default')).replaceAll('url(#dg-arrow', `url(#${scope}-arrow`);
+// Every current consumer composes fixed SVG coordinates; labels cannot reflow the diagram.
+const intrinsicWidth = Number(viewBox.trim().split(/[\s,]+/)[2]);
+const wrapperStyle = `--dg-max-width: ${maxWidth ?? 720}px; --diagram-readable-width: ${intrinsicWidth}px;`;
 ---
 
+<figure class="dg-figure" style={wrapperStyle}>
+<div
+  class="diagram-scroll"
+  role="region"
+  aria-label={title ? `${title} diagram` : 'Diagram'}
+  aria-describedby={`${scope}-scroll-hint`}
+  tabindex="0"
+  data-diagram-scroll
+>
 <svg
   class={`dg-root ${extraClass}`.trim()}
   viewBox={viewBox}
   xmlns="http://www.w3.org/2000/svg"
   role="img"
-  aria-labelledby={title ? 'dg-title' : undefined}
-  aria-describedby={desc ? 'dg-desc' : undefined}
-  style={wrapperStyle}
+  aria-labelledby={title ? `${scope}-title` : undefined}
+  aria-describedby={desc ? `${scope}-desc` : undefined}
 >
-  {title && <title id="dg-title">{title}</title>}
-  {desc && <desc id="dg-desc">{desc}</desc>}
+  {title && <title id={`${scope}-title`}>{title}</title>}
+  {desc && <desc id={`${scope}-desc`}>{desc}</desc>}
   <defs>
     <marker
-      id="dg-arrow"
+      id={`${scope}-arrow`}
       viewBox="0 0 10 10"
       refX="9"
       refY="5"
@@ -43,7 +56,7 @@ const wrapperStyle = maxWidth ? `max-width: ${maxWidth}px;` : '';
       <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
     </marker>
     <marker
-      id="dg-arrow-coral"
+      id={`${scope}-arrow-coral`}
       viewBox="0 0 10 10"
       refX="9"
       refY="5"
@@ -51,10 +64,10 @@ const wrapperStyle = maxWidth ? `max-width: ${maxWidth}px;` : '';
       markerHeight="5"
       orient="auto-start-reverse"
     >
-      <path d="M0,0 L10,5 L0,10 z" fill="var(--coral)" />
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)" />
     </marker>
     <marker
-      id="dg-arrow-palm"
+      id={`${scope}-arrow-palm`}
       viewBox="0 0 10 10"
       refX="9"
       refY="5"
@@ -65,7 +78,7 @@ const wrapperStyle = maxWidth ? `max-width: ${maxWidth}px;` : '';
       <path d="M0,0 L10,5 L0,10 z" fill="var(--palm)" />
     </marker>
     <marker
-      id="dg-arrow-muted"
+      id={`${scope}-arrow-muted`}
       viewBox="0 0 10 10"
       refX="9"
       refY="5"
@@ -76,5 +89,20 @@ const wrapperStyle = maxWidth ? `max-width: ${maxWidth}px;` : '';
       <path d="M0,0 L10,5 L0,10 z" fill="var(--rule-strong, rgba(42,18,27,0.35))" />
     </marker>
   </defs>
-  <slot />
+  <Fragment set:html={content} />
 </svg>
+
+</div>
+<figcaption class="diagram-scroll-hint" id={`${scope}-scroll-hint`}>
+  Scroll horizontally to explore the diagram. Use arrow keys when focused.
+</figcaption>
+</figure>
+
+<script>
+  import { makeDiagramScrollable } from '../../../lib/readable-diagrams';
+
+  document.querySelectorAll<HTMLElement>('[data-diagram-scroll]').forEach((region) => {
+    const hint = document.getElementById(region.getAttribute('aria-describedby')!);
+    if (hint) makeDiagramScrollable(region, hint);
+  });
+</script>

@@ -23,30 +23,30 @@ pip install cocoindex[surrealdb]
 
 ## Connection setup
 
-Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connection parameters and opens one authenticated connection per event loop, shared by all tables and batches. Call `await factory.close()` at shutdown to close it.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connection parameters and opens one authenticated connection per event loop, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
 ```python
+from collections.abc import AsyncIterator
 from cocoindex.connectors import surrealdb
 import cocoindex as coco
 
 SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db")
 
 @coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.provide(
-        SURREAL_DB,
-        surrealdb.ConnectionFactory(
-            url="ws://localhost:8000/rpc",
-            namespace="test",
-            database="test",
-            credentials={"username": "root", "password": "root"},
-        ),
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    factory = surrealdb.ConnectionFactory(
+        url="ws://localhost:8000/rpc",
+        namespace="test",
+        database="test",
+        credentials={"username": "root", "password": "root"},
     )
+    builder.provide(SURREAL_DB, factory)
     yield
+    await factory.close()
 ```
 
 ## As target
@@ -165,7 +165,7 @@ def RelationTarget.declare_relation(
 
 - `from_id` — ID of the source record.
 - `to_id` — ID of the target record.
-- `record` — Optional data fields for the relation. The `id` field is optional: when absent, the record id is auto-derived from the endpoints as `"{from_table}_{from_id}_{to_table}_{to_id}"`.
+- `record` — Optional data fields for the relation. The `id` field is optional: when absent, the record id is a string derived from the two endpoint tables and IDs. Each part is length-prefixed and each endpoint ID carries its type, so distinct endpoints always give distinct ids (`doc:'chunk_1'` and `doc_chunk:'1'` differ, as do `1` and `'1'`). Treat the derived id as opaque. Pass an explicit `id` if other code needs to know it.
 - `from_table` / `to_table` — Required when the relation was declared with multiple (polymorphic) source/target tables.
 
 #### Vector indexes (attachment)
@@ -312,17 +312,16 @@ class Product:
     embedding: Annotated[NDArray, embedder]
 
 @coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.provide(
-        SURREAL_DB,
-        surrealdb.ConnectionFactory(
-            url="ws://localhost:8000/rpc",
-            namespace="test",
-            database="test",
-            credentials={"username": "root", "password": "root"},
-        ),
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    factory = surrealdb.ConnectionFactory(
+        url="ws://localhost:8000/rpc",
+        namespace="test",
+        database="test",
+        credentials={"username": "root", "password": "root"},
     )
+    builder.provide(SURREAL_DB, factory)
     yield
+    await factory.close()
 
 @coco.fn
 async def app_main() -> None:

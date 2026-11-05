@@ -29,10 +29,9 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider,
-    TargetAction, TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput,
-    TargetState, TargetStateProvider, declare_target_state, declare_target_state_with_child,
-    mount_target,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -568,7 +567,7 @@ impl TargetHandler<TableSpec> for TableHandler {
     ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
         let TableKey { db_key, table_name } = TableKey::from_stable_key(&key)?;
         match desired {
-            // Always emit when declared so the sink fulfills the row child.
+            // Always emit when declared so the sink builds the row child.
             Some(spec) => {
                 let tracking =
                     MutualTrackingRecord::new(table_composite_record(&spec), spec.managed_by);
@@ -641,21 +640,26 @@ impl TargetHandler<TableSpec> for TableHandler {
 }
 
 fn table_sink() -> TargetActionSink<TableAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| async move {
-            for (action, child_slot) in actions {
-                let a = match action {
-                    TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => {
-                        a
-                    }
-                };
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                let (TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a)) =
+                    action;
                 let db = resolve_db(&host_ctx, &a.db_key)?;
-                let child = apply_table_action(&db, a).await?;
-                if let (Some(slot), Some(child)) = (child_slot, child) {
-                    slot.fulfill(child)?;
-                }
+                apply_table_action(&db, a).await?;
             }
             Ok(())
+        },
+        |a: &TableAction| {
+            let spec = a
+                .spec
+                .clone()
+                .ok_or_else(|| Error::engine("SQLite table action missing spec"))?;
+            Ok(ChildTargetDef::new::<RowState, _>(RowHandler {
+                sink: SinkCache::default(),
+                db_key: a.db_key.clone(),
+                spec,
+            }))
         },
     )
 }
@@ -674,12 +678,11 @@ fn resolve_db(
     })
 }
 
-/// Apply one resolved table action and return the row child handler
-/// definition (`None` for a drop), which the sink uses to fulfill the
-/// action's child slot. Mirrors Python's `_apply_table_actions` decision tree.
-async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option<ChildTargetDef>> {
+/// Apply one resolved table action. Mirrors Python's `_apply_table_actions`
+/// decision tree.
+async fn apply_table_action(db: &Database, action: TableAction) -> Result<()> {
     let TableAction {
-        db_key,
+        db_key: _,
         table_name,
         spec,
         mut main_action,
@@ -706,8 +709,8 @@ async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option
     }
 
     let Some(spec) = spec else {
-        // Pure drop — no row child to provide.
-        return Ok(None);
+        // Pure drop.
+        return Ok(());
     };
 
     if matches!(
@@ -725,12 +728,7 @@ async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option
         // (Virtual tables never reach here — upgraded to Replace above.)
         apply_column_actions(db, &spec, &column_actions).await?;
     }
-
-    Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        sink: SinkCache::default(),
-        db_key,
-        spec,
-    })))
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

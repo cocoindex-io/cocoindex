@@ -2,7 +2,8 @@
 # Patterns to exclude from link checking to avoid false positives
 
 # internal doc links (root-absolute /docs/... resolve to file:// under
-# --root-dir) - remark-link-checker validates these during the Astro build
+# --root-dir) - docs/scripts/check-agent-output.mjs validates these against
+# the Astro build output
 ^file://
 
 # internal example-walkthrough self-links - validated at build time; a newly

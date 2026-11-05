@@ -1,0 +1,10 @@
+{
+  "alt": "Emily Carter's three-page synthetic intake PDF is rendered page by page to PNG images with PyMuPDF at 2x scale; a DSPy ChainOfThought module over the PatientExtractionSignature reasons on gemini-2.5-flash and fills a typed Patient, saved as output_patients/Patient_Intake_Form_Emily_Artificial.json with her name, date of birth as 1992-07-22, city, allergies, surgeries and occupation; editing that form re-extracts only its JSON.",
+  "needs": ["Python 3.11+", "GEMINI_API_KEY"],
+  "run": [
+    { "note": "Install DSPy, PyMuPDF and the example", "cmd": "pip install -e ." },
+    { "note": "Configure", "cmd": "cp .env.example .env" },
+    { "note": "Extract one JSON record per form", "cmd": "cocoindex update main.py" },
+    { "note": "See the records", "cmd": "ls output_patients/" }
+  ]
+}

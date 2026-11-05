@@ -29,7 +29,7 @@ pub use db_schema::StablePathNodeType;
 pub async fn iter_stable_paths<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static + use<Prof> {
-    let app_store = app.app_ctx().app_store().clone();
+    let app_store = app.app_ctx().persisting_app_store().clone();
     let rx = app_store.spawn_stable_path_iter().await;
     receiver_to_stable_path_info_stream(rx)
 }
@@ -452,10 +452,12 @@ pub async fn get_stable_path_detail_from_store(
     provider_keys: std::collections::HashMap<TargetStatePath, StableKey>,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
-    let db = store.db();
-    let txn = store.read_txn().await?;
+    // Inspection reads the committed store.
+    let db = store.db().raw();
+    let read = store.read_txn().await?;
+    let txn = read.committed();
     let mut resolver = TargetKeyResolver::new(provider_keys);
-    Ok(Some(read_detail_in_txn(&db, &*txn, &mut resolver, path)?))
+    Ok(Some(read_detail_in_txn(&db, txn, &mut resolver, path)?))
 }
 
 /// Get detailed information about a single stable path from LMDB
@@ -464,7 +466,7 @@ pub async fn get_stable_path_detail<Prof: EngineProfile>(
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
     let seed = provider_key_seed(app.app_ctx().env());
-    get_stable_path_detail_from_store(app.app_ctx().app_store(), seed, path).await
+    get_stable_path_detail_from_store(app.app_ctx().persisting_app_store(), seed, path).await
 }
 
 pub async fn get_stable_path_detail_by_name<Prof: EngineProfile>(
@@ -508,7 +510,7 @@ pub async fn iter_stable_path_details<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathDetail>> + Send + 'static + use<Prof> {
     let seed = provider_key_seed(app.app_ctx().env());
-    spawn_stable_path_detail_iter(app.app_ctx().app_store().clone(), seed).await
+    spawn_stable_path_detail_iter(app.app_ctx().persisting_app_store().clone(), seed).await
 }
 
 /// Like [`iter_stable_path_details`], but takes an environment and an app
@@ -590,22 +592,24 @@ pub async fn query_stable_path_details_from_store(
     recursive: bool,
     include_parents: bool,
 ) -> Result<Vec<StablePathDetail>> {
-    let db = store.db();
-    let txn = store.read_txn().await?;
+    // Inspection reads the committed store.
+    let db = store.db().raw();
+    let read = store.read_txn().await?;
+    let txn = read.committed();
     let mut resolver = TargetKeyResolver::new(provider_keys);
 
     let mut results = Vec::new();
 
     if include_parents {
-        results.extend(list_parents_in_txn(&db, &*txn, &mut resolver, path)?);
+        results.extend(list_parents_in_txn(&db, txn, &mut resolver, path)?);
     }
 
-    results.push(read_detail_in_txn(&db, &*txn, &mut resolver, path)?);
+    results.push(read_detail_in_txn(&db, txn, &mut resolver, path)?);
 
     if include_children {
         results.extend(list_children_in_txn(
             &db,
-            &*txn,
+            txn,
             &mut resolver,
             path,
             recursive,
@@ -624,7 +628,7 @@ pub async fn query_stable_path_details<Prof: EngineProfile>(
     include_parents: bool,
 ) -> Result<Vec<StablePathDetail>> {
     query_stable_path_details_from_store(
-        app.app_ctx().app_store(),
+        app.app_ctx().persisting_app_store(),
         provider_key_seed(app.app_ctx().env()),
         path,
         include_children,
@@ -744,7 +748,7 @@ pub async fn iter_target_states<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<TargetStateEntry>> + Send + 'static + use<Prof> {
     let seed = provider_key_seed(app.app_ctx().env());
-    spawn_target_state_iter(app.app_ctx().app_store().clone(), seed).await
+    spawn_target_state_iter(app.app_ctx().persisting_app_store().clone(), seed).await
 }
 
 /// Like [`iter_target_states`], but takes an environment and an app name.
@@ -804,7 +808,6 @@ mod tests {
     ) {
         let store2 = store.clone();
         store
-            .storage
             .run_txn(move |wtxn| {
                 let store = store2.clone();
                 let tracking = tracking.clone();
@@ -828,7 +831,6 @@ mod tests {
     async fn commit_segment_names(store: &AppStore, names: Vec<(Fingerprint, StableKey)>) {
         let store2 = store.clone();
         store
-            .storage
             .run_txn(move |wtxn| {
                 let store = store2.clone();
                 let names = names.clone();
@@ -903,10 +905,11 @@ mod tests {
         let path = TargetStatePath::new(Fingerprint::from(&"root_target").unwrap(), None)
             .concat(&StableKey::Str(Arc::from("file.md")));
 
-        let db = store.db();
-        let txn = store.read_txn().await.unwrap();
+        let db = store.db().raw();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
+        let rendered = resolver.render_path(&db, txn, &path, None).unwrap();
 
         // Nothing is resolvable in an empty store: both segments stay fingerprints.
         assert_eq!(rendered, path.to_string());
@@ -930,8 +933,9 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
-        let txn = store.read_txn().await.unwrap();
+        let db = store.db().raw();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
         // Seed the root provider's key, as provider_key_seed does from the
         // live registry (root providers are never persisted).
         let seed = std::collections::HashMap::from([(
@@ -939,7 +943,7 @@ mod tests {
             StableKey::Symbol(Arc::from("my_root")),
         )]);
         let mut resolver = TargetKeyResolver::new(seed);
-        let rendered = resolver.render_path(&db, &txn, &path, None).unwrap();
+        let rendered = resolver.render_path(&db, txn, &path, None).unwrap();
         assert_eq!(rendered, "/@my_root/\"file.md\"");
     }
 
@@ -1055,10 +1059,11 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
-        let txn = store.read_txn().await.unwrap();
+        let db = store.db().raw();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let rendered = resolver.render_path(&db, &txn, &idx_path, None).unwrap();
+        let rendered = resolver.render_path(&db, txn, &idx_path, None).unwrap();
         assert_eq!(rendered, "/@my_root/\"table\"/@vector_index/\"idx\"");
     }
 
@@ -1090,10 +1095,11 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
-        let txn = store.read_txn().await.unwrap();
+        let db = store.db().raw();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let entries = collect_target_states(&db, &txn, &mut resolver);
+        let entries = collect_target_states(&db, txn, &mut resolver);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].dangling);
         assert_eq!(entries[0].readable_path, "/@root/\"gone\"");
@@ -1121,10 +1127,11 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
-        let txn = store.read_txn().await.unwrap();
+        let db = store.db().raw();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let entries = collect_target_states(&db, &txn, &mut resolver);
+        let entries = collect_target_states(&db, txn, &mut resolver);
         assert_eq!(entries.len(), 2);
         let good = entries
             .iter()
@@ -1173,17 +1180,18 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
-        let txn = store.read_txn().await.unwrap();
+        let db = store.db().raw();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
 
         let root_seg = root_path.to_string();
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let rendered = resolver.render_path(&db, &txn, &row_path, None).unwrap();
+        let rendered = resolver.render_path(&db, txn, &row_path, None).unwrap();
         assert_eq!(rendered, format!("{root_seg}/\"table\"/13"));
 
         // Detail summary renders readable paths (with provider_id suffix).
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let detail = read_detail_in_txn(&db, &txn, &mut resolver, &comp_d).unwrap();
+        let detail = read_detail_in_txn(&db, txn, &mut resolver, &comp_d).unwrap();
         assert_eq!(detail.target_state_items.len(), 1);
         assert_eq!(
             detail.target_state_items[0].target_state_path,
@@ -1197,7 +1205,7 @@ mod tests {
 
         // Listing returns every owner-index entry with both path forms.
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let entries = collect_target_states(&db, &txn, &mut resolver);
+        let entries = collect_target_states(&db, txn, &mut resolver);
         assert_eq!(entries.len(), 2);
         // Stored (bytewise) order places a parent before its children.
         assert_eq!(entries[0].fingerprint_path, table_path.to_string());
@@ -1266,10 +1274,11 @@ mod tests {
         )
         .await;
 
-        let db = store.db();
-        let txn = store.read_txn().await.unwrap();
+        let db = store.db().raw();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
         let mut resolver = TargetKeyResolver::new(Default::default());
-        let entries = collect_target_states(&db, &txn, &mut resolver);
+        let entries = collect_target_states(&db, txn, &mut resolver);
         assert_eq!(entries.len(), 2);
 
         for (path, expected_suffix) in [
@@ -1305,7 +1314,8 @@ mod tests {
             ],
         )
         .await;
-        let txn = store.read_txn().await.unwrap();
+        let read = store.read_txn().await.unwrap();
+        let txn = read.committed();
         for (key, expected) in [
             (&name_only_tuple, "/@root/[7]"),
             (&name_only_bytes, "/@root/b\"xyz\""),
@@ -1313,7 +1323,7 @@ mod tests {
             let path = root_path.concat(key);
             let mut resolver = TargetKeyResolver::new(Default::default());
             assert_eq!(
-                resolver.render_path(&db, &txn, &path, None).unwrap(),
+                resolver.render_path(&db, txn, &path, None).unwrap(),
                 expected
             );
         }

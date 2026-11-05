@@ -20,7 +20,7 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
     TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
     TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
@@ -818,7 +818,7 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
     ) -> Result<Option<TargetReconcileOutput<NamespaceAction, Self::TrackingRecord>>> {
         let conn_key = NamespaceKey::from_stable_key(&key)?.conn_key;
         match desired {
-            // Always emit when declared, so the sink fulfills the row child.
+            // Always emit when declared, so the sink builds the row child.
             Some(spec) => {
                 let prev_is_empty = prev.is_empty();
                 let tracking_record = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
@@ -878,36 +878,34 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
 }
 
 fn namespace_sink() -> TargetActionSink<NamespaceAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<NamespaceAction>, Option<ChildSlot>)>| {
-            async move {
-                for (action, child_slot) in actions {
-                    match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) => {
-                            let conn = resolve_conn(&host_ctx, &a.conn_key)?;
-                            // Namespaces are created implicitly on write; clear on
-                            // schema change.
-                            if a.clear && a.managed_by.is_system() {
-                                conn.delete_namespace(&a.namespace).await?;
-                            }
-                            if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<Row, _>(RowHandler::new(
-                                    a.conn_key,
-                                    a.namespace,
-                                    a.schema,
-                                )))?;
-                            }
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<NamespaceAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let conn = resolve_conn(&host_ctx, &a.conn_key)?;
+                        // Namespaces are created implicitly on write; clear on
+                        // schema change.
+                        if a.clear && a.managed_by.is_system() {
+                            conn.delete_namespace(&a.namespace).await?;
                         }
-                        TargetAction::Delete(a) => {
-                            if a.managed_by.is_system() {
-                                let conn = resolve_conn(&host_ctx, &a.conn_key)?;
-                                conn.delete_namespace(&a.namespace).await?;
-                            }
+                    }
+                    TargetAction::Delete(a) => {
+                        if a.managed_by.is_system() {
+                            let conn = resolve_conn(&host_ctx, &a.conn_key)?;
+                            conn.delete_namespace(&a.namespace).await?;
                         }
                     }
                 }
-                Ok(())
             }
+            Ok(())
+        },
+        |a: &NamespaceAction| {
+            Ok(ChildTargetDef::new::<Row, _>(RowHandler::new(
+                a.conn_key.clone(),
+                a.namespace.clone(),
+                a.schema.clone(),
+            )))
         },
     )
 }

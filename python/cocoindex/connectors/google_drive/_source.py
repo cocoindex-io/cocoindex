@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import io
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import PurePath
 from typing import Any, AsyncIterator, Iterator, Sequence, Self
+
+from cocoindex._internal.extras import install_hint
 
 try:
     import httplib2  # type: ignore
@@ -22,7 +25,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "google-auth and google-api-python-client are required to use the Google Drive source. "
-        "Please install cocoindex[google_drive]."
+        + install_hint("google_drive")
     ) from e
 
 from cocoindex.resources import file
@@ -59,6 +62,22 @@ class DriveFilePath(file.FilePath[str]):
         """Create a new DriveFilePath with the given path."""
         return type(self)(path, file_id=self._file_id)  # type: ignore[return-value]
 
+    def __coco_memo_key__(self) -> object:
+        return (self._file_id, self._path)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DriveFilePath):
+            return False
+        return (self._file_id, self._path) == (other._file_id, other._path)
+
+    def __hash__(self) -> int:
+        return hash((self._file_id, self._path))
+
+    def __lt__(self, other: Self) -> bool:
+        if not isinstance(other, DriveFilePath):
+            return NotImplemented
+        return (self._path, self._file_id) < (other._path, other._file_id)
+
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -80,6 +99,8 @@ class DriveFileInfo:
     mime_type: str
     size: int
     modified_time: datetime
+    path: str | None = None
+    md5_checksum: str | None = None
 
 
 class DriveFile(file.FileLike[str]):
@@ -90,8 +111,14 @@ class DriveFile(file.FileLike[str]):
     _file_id: str
 
     def __init__(self, service: Any, info: DriveFileInfo) -> None:
-        file_path = DriveFilePath(info.name, file_id=info.file_id)
-        metadata = file.FileMetadata(size=info.size, modified_time=info.modified_time)
+        file_path = DriveFilePath(
+            info.path if info.path is not None else info.name, file_id=info.file_id
+        )
+        metadata = file.FileMetadata(
+            size=info.size,
+            modified_time=info.modified_time,
+            content_fingerprint=_md5_to_fingerprint(info.md5_checksum),
+        )
         super().__init__(file_path, _metadata=metadata)
         self._service = service
         self._mime_type = info.mime_type
@@ -105,7 +132,7 @@ class DriveFile(file.FileLike[str]):
                 self._service.files()
                 .get(
                     fileId=self._file_id,
-                    fields="size, modifiedTime",
+                    fields="size, modifiedTime, md5Checksum",
                 )
                 .execute()
             )
@@ -114,6 +141,7 @@ class DriveFile(file.FileLike[str]):
             return file.FileMetadata(
                 size=size,
                 modified_time=_parse_modified_time(response.get("modifiedTime")),
+                content_fingerprint=_md5_to_fingerprint(response.get("md5Checksum")),
             )
 
         return await asyncio.to_thread(_fetch)
@@ -181,6 +209,11 @@ def _parse_modified_time(value: str | None) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _md5_to_fingerprint(md5_checksum: str | None) -> bytes | None:
+    """Drive gives an MD5 for binary files only, not for Google Docs, Sheets or Slides."""
+    return md5_checksum.encode("utf-8") if md5_checksum else None
+
+
 def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
     query = f"'{folder_id}' in parents and trashed = false"
     page_token = None
@@ -190,7 +223,10 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
             service.files()
             .list(
                 q=query,
-                fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+                fields=(
+                    "nextPageToken,"
+                    " files(id, name, mimeType, size, modifiedTime, md5Checksum)"
+                ),
                 pageToken=page_token,
             )
             .execute()
@@ -205,6 +241,7 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
                     mime_type=f["mimeType"],
                     size=size,
                     modified_time=_parse_modified_time(f.get("modifiedTime")),
+                    md5_checksum=f.get("md5Checksum"),
                 )
             )
         page_token = response.get("nextPageToken")
@@ -216,17 +253,32 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
 def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]:
     """List files under the given root folders (recursively)."""
     service = _build_service(spec.service_account_credential_path)
-    folders = list(spec.root_folder_ids)
+    folders = deque((folder_id, "") for folder_id in spec.root_folder_ids)
+    seen_folders: set[str] = set()
+    seen_files: set[str] = set()
 
     while folders:
-        folder_id = folders.pop(0)
-        for info in _list_children(service, folder_id):
+        folder_id, prefix = folders.popleft()
+        if folder_id in seen_folders:
+            continue
+        seen_folders.add(folder_id)
+        # Drive lists children in no set order. Sorting them makes the path kept
+        # for a file with several parents (the first one seen) the same every run.
+        children = sorted(
+            _list_children(service, folder_id),
+            key=lambda info: (info.name, info.file_id),
+        )
+        for info in children:
+            path = f"{prefix}/{info.name}" if prefix else info.name
             if info.mime_type == _FOLDER_MIME:
-                folders.append(info.file_id)
+                folders.append((info.file_id, path))
                 continue
             if spec.mime_types and info.mime_type not in spec.mime_types:
                 continue
-            yield DriveFile(service, info)
+            if info.file_id in seen_files:
+                continue
+            seen_files.add(info.file_id)
+            yield DriveFile(service, replace(info, path=path))
 
 
 class GoogleDriveSource:
@@ -255,10 +307,10 @@ class GoogleDriveSource:
     async def items(self) -> AsyncIterator[tuple[str, DriveFile]]:
         """Async iterate as (key, file) pairs for use with mount_each().
 
-        The key is the file's name path.
+        The key is the file's stable Google Drive ID, since names are not unique.
         """
         async for f in self.files():
-            yield (f.file_path.path.as_posix(), f)
+            yield (f.file_path.resolve(), f)
 
 
 __all__ = [

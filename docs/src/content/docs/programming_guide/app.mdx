@@ -6,7 +6,7 @@ description: >
   resources.
 ---
 :::note[Prerequisite]
-This page builds on [Core Concepts](./core_concepts), which introduces the App and the source → transform → target-state model **with diagrams**. If the App model feels abstract, start there.
+Read [Core Concepts](./core_concepts) for the App and source → transform → target-state model, with diagrams.
 :::
 
 An **App** is the top-level runnable unit in CocoIndex.
@@ -88,8 +88,7 @@ For example, an app that processes files might mount one component per file — 
 
 ```text
 (root)                         ← app_main component
-├── "setup"                    ← declare_dir_target component
-└── "process"
+└── process_file
     ├── "hello.md"             ← process_file component
     └── "world.md"             ← process_file component
 ```
@@ -166,7 +165,7 @@ You can also use the lifespan to provide resources (like database connections) t
 
 The lifespan runs automatically the first time any App updates — most users don't need to do anything beyond defining the lifespan and calling `app.update()`.
 
-If you need more explicit control — for example, to know when startup completes for health checks, or to explicitly trigger shutdown — you can manage the lifecycle directly:
+If you need more explicit control (for example, to know when startup completes for health checks, or to explicitly trigger shutdown) you can manage the lifecycle directly:
 
 ```python
 # Async API
@@ -195,6 +194,21 @@ async with coco.runtime():
 with coco.runtime():
     app.update_blocking()
 ```
+
+The same App can be retained and reused across sequential runtime lifecycles. After
+`stop()` returns (or a `runtime()` block exits), its next update or drop starts a new
+lifespan and uses freshly initialized resources. Persisted memoization and target-state
+tracking in the internal database remain available across these cycles.
+
+This restart guarantee applies to Apps using the default lazy environment (the default
+when `AppConfig.environment` is omitted). An App explicitly bound to the concrete
+Environment returned by `await coco.default_env()` stays bound to it, and `stop()` closes
+that Environment, so the App's later updates and drops fail, even after a restart. Apps
+using a separate explicit Environment are unaffected by starting or stopping the default
+runtime.
+
+Finish update and drop operations before stopping the runtime. Shutdown concurrent with
+in-flight operations is not supported.
 
 ## Managing apps with CLI
 

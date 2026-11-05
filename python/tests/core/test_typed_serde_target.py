@@ -21,7 +21,6 @@ from cocoindex import (
 
 from tests import common
 from tests.common.target_states import (
-    DictDataWithPrev,
     Metrics,
 )
 

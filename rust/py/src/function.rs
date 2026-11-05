@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use cocoindex_core::engine::context::MemoStatesPayload;
+use cocoindex_core::engine::context::{DataDepRecord, MemoStatesPayload};
 use cocoindex_core::engine::function::FnCallMemoGuard;
+use cocoindex_core::engine::profile::Persist;
 use cocoindex_core::engine::runtime::get_runtime;
 use cocoindex_utils::fingerprint::Fingerprint;
 use pyo3::types::{PyDict, PyList};
@@ -16,14 +17,63 @@ use crate::value::PyStoredValue;
 ///
 /// `context_entries` is a Python `dict[Fingerprint, list[Any]]` extracted by
 /// pyo3 directly into a `HashMap` — no intermediate list-of-tuples.
+/// A data dependency as the Python probe hands it back after validation:
+/// `(kind_fp, key_fp, key, state)`, where `key` is the stored `StoredValue`
+/// and `state` is either the stored `StoredValue` (unchanged) or the
+/// validator's new state object.
+pub(crate) type PyRefreshedDataDep = (PyFingerprint, PyFingerprint, Py<PyAny>, Py<PyAny>);
+
+/// Wrap a Python object as a stored value. A `StoredValue` handed back from a
+/// probe (an unchanged state) is used as is, so its bytes and fingerprint
+/// stay exactly those that were stored; anything else is a fresh object.
+fn to_stored_value(py: Python<'_>, obj: Py<PyAny>) -> PyStoredValue {
+    match obj.bind(py).cast::<PyStoredValue>() {
+        Ok(stored) => stored.borrow().clone(),
+        Err(_) => PyStoredValue::new(obj),
+    }
+}
+
+/// The serialized bytes of a data-dependency key or state handed back from a
+/// probe: the stored bytes for a `StoredValue`, a fresh serialization
+/// otherwise.
+fn data_dep_bytes(py: Python<'_>, obj: Py<PyAny>) -> PyResult<bytes::Bytes> {
+    to_stored_value(py, obj).to_bytes().into_py_result()
+}
+
+pub(crate) fn build_data_dep_records(
+    py: Python<'_>,
+    records: Vec<PyRefreshedDataDep>,
+) -> PyResult<Vec<DataDepRecord>> {
+    records
+        .into_iter()
+        .map(|(kind_fp, key_fp, key, state)| {
+            let key = data_dep_bytes(py, key)?;
+            let state = data_dep_bytes(py, state)?;
+            Ok(DataDepRecord {
+                kind_fp: kind_fp.0,
+                key_fp: key_fp.0,
+                state_fp: Fingerprint::from_bytes(&state),
+                key,
+                state,
+            })
+        })
+        .collect()
+}
+
+/// Build a `MemoStatesPayload<PyEngineProfile>` from the Python-side inputs.
+///
+/// `context_entries` is a Python `dict[Fingerprint, list[Any]]` extracted by
+/// pyo3 directly into a `HashMap` — no intermediate list-of-tuples.
 pub(crate) fn build_memo_states_payload(
+    py: Python<'_>,
     positional: Option<Vec<Py<PyAny>>>,
     context_entries: Option<HashMap<PyFingerprint, Vec<Py<PyAny>>>>,
-) -> MemoStatesPayload<PyEngineProfile> {
+    data_deps: Option<Vec<PyRefreshedDataDep>>,
+) -> PyResult<MemoStatesPayload<PyEngineProfile>> {
     let positional = positional
         .unwrap_or_default()
         .into_iter()
-        .map(PyStoredValue::new)
+        .map(|obj| to_stored_value(py, obj))
         .collect();
     let by_context_fp = context_entries
         .unwrap_or_default()
@@ -33,15 +83,41 @@ pub(crate) fn build_memo_states_payload(
                 fp.0,
                 values
                     .into_iter()
-                    .map(PyStoredValue::new)
+                    .map(|obj| to_stored_value(py, obj))
                     .collect::<Vec<_>>(),
             )
         })
         .collect();
-    MemoStatesPayload {
+    let data_deps = build_data_dep_records(py, data_deps.unwrap_or_default())?;
+    Ok(MemoStatesPayload {
         positional,
         by_context_fp,
-    }
+        data_deps,
+    })
+}
+
+/// Convert stored data-dependency records into a Python list of
+/// `(kind_fp, key_fp, key, state)` tuples (the same shape as
+/// [`PyRefreshedDataDep`]), key and state as `StoredValue`s the probe decodes
+/// through the kind's deserializers.
+pub(crate) fn data_deps_to_pylist<'py>(
+    py: Python<'py>,
+    records: &[DataDepRecord],
+) -> PyResult<Bound<'py, PyList>> {
+    let items = records
+        .iter()
+        .map(|r| {
+            let key = Py::new(py, PyStoredValue::from_bytes(&r.key).into_py_result()?)?;
+            let state = Py::new(py, PyStoredValue::from_bytes(&r.state).into_py_result()?)?;
+            Ok((
+                Py::new(py, PyFingerprint(r.kind_fp))?,
+                Py::new(py, PyFingerprint(r.key_fp))?,
+                key,
+                state,
+            ))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    PyList::new(py, items)
 }
 
 /// Convert the stored context-borne memo states into a Python `dict`
@@ -121,6 +197,7 @@ pub struct PyFnCallMemoGuard {
     cached_value: Option<Py<PyAny>>,
     cached_memo_states: Option<Py<PyAny>>, // Python list
     cached_context_memo_states: Option<Py<PyAny>>, // Python dict[Fingerprint, list]
+    cached_data_deps: Option<Py<PyAny>>,   // Python list of 5-tuples, see `data_deps_to_pylist`
 }
 
 #[pymethods]
@@ -154,16 +231,25 @@ impl PyFnCallMemoGuard {
             .map(|s| s.clone_ref(py))
     }
 
+    /// The stored data dependencies on a cache hit, as
+    /// `list[tuple[Fingerprint, Fingerprint, StoredValue, StoredValue]]`.
+    #[getter]
+    pub fn cached_data_deps(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        self.cached_data_deps.as_ref().map(|s| s.clone_ref(py))
+    }
+
     /// Update memo states on a cache hit without re-execution.
     ///
     /// Used when the state function says `can_reuse=True` but the state value has changed.
-    #[pyo3(signature = (memo_states=None, context_memo_states=None))]
+    #[pyo3(signature = (memo_states=None, context_memo_states=None, data_deps=None))]
     pub fn update_memo_states(
         &mut self,
+        py: Python<'_>,
         memo_states: Option<Vec<Py<PyAny>>>,
         context_memo_states: Option<HashMap<PyFingerprint, Vec<Py<PyAny>>>>,
+        data_deps: Option<Vec<PyRefreshedDataDep>>,
     ) -> PyResult<()> {
-        let payload = build_memo_states_payload(memo_states, context_memo_states);
+        let payload = build_memo_states_payload(py, memo_states, context_memo_states, data_deps)?;
         if let Some(ref mut guard) = self.guard {
             guard.update_memo_states(payload);
         }
@@ -173,12 +259,14 @@ impl PyFnCallMemoGuard {
     #[pyo3(signature = (fn_ctx, ret, memo_states=None, context_memo_states=None))]
     pub fn resolve(
         &mut self,
+        py: Python<'_>,
         fn_ctx: &PyFnCallContext,
         ret: Py<PyAny>,
         memo_states: Option<Vec<Py<PyAny>>>,
         context_memo_states: Option<HashMap<PyFingerprint, Vec<Py<PyAny>>>>,
     ) -> PyResult<bool> {
-        let payload = build_memo_states_payload(memo_states, context_memo_states);
+        // Data dependencies of a miss come from the frame, never from here.
+        let payload = build_memo_states_payload(py, memo_states, context_memo_states, None)?;
         let resolved = if let Some(guard) = self.guard.take() {
             guard
                 .resolve(&fn_ctx.0, || PyStoredValue::new(ret), payload)
@@ -195,6 +283,24 @@ impl PyFnCallMemoGuard {
     pub fn join_cached_target_provider_deps(&self, parent_fn_ctx: &PyFnCallContext) {
         if let Some(guard) = &self.guard {
             guard.join_cached_target_provider_deps(&parent_fn_ctx.0);
+        }
+    }
+
+    /// On a cache hit, re-offer the stored entry's logic deps through the
+    /// callee's own frame (`fn_ctx`, the context created for this call). Call
+    /// next to `join_cached_target_provider_deps` — see the core method.
+    pub fn join_cached_logic_deps(&self, fn_ctx: &PyFnCallContext) {
+        if let Some(guard) = &self.guard {
+            guard.join_cached_logic_deps(&fn_ctx.0);
+        }
+    }
+
+    /// On a cache hit, re-offer the stored entry's data dependencies through
+    /// the callee's own frame. Call after `update_memo_states`, next to
+    /// `join_cached_logic_deps` — see the core method.
+    pub fn join_cached_data_deps(&self, fn_ctx: &PyFnCallContext) {
+        if let Some(guard) = &self.guard {
+            guard.join_cached_data_deps(&fn_ctx.0);
         }
     }
 
@@ -215,9 +321,13 @@ async fn reserve_memoization_inner(
 
     Python::attach(|py| {
         // Extract cached data (if cache hit) as PyStoredValue objects (not inner Python objects).
-        let (is_cached, cached_value, cached_memo_states, cached_context_memo_states) = match guard
-            .cached()
-        {
+        let (
+            is_cached,
+            cached_value,
+            cached_memo_states,
+            cached_context_memo_states,
+            cached_data_deps,
+        ) = match guard.cached() {
             Some(cached) => {
                 let value = Py::new(py, cached.ret.clone())?.into_any();
                 let states_list = PyList::new(
@@ -228,14 +338,16 @@ async fn reserve_memoization_inner(
                         .map(|s| Py::new(py, s.clone()).unwrap()),
                 )?;
                 let context_dict = context_memo_states_to_pydict(py, cached.context_memo_states)?;
+                let data_deps = data_deps_to_pylist(py, cached.data_deps)?;
                 (
                     true,
                     Some(value),
                     Some(states_list.unbind().into_any()),
                     Some(context_dict.unbind().into_any()),
+                    Some(data_deps.unbind().into_any()),
                 )
             }
-            None => (false, None, None, None),
+            None => (false, None, None, None, None),
         };
 
         let py_guard = PyFnCallMemoGuard {
@@ -244,6 +356,7 @@ async fn reserve_memoization_inner(
             cached_value,
             cached_memo_states,
             cached_context_memo_states,
+            cached_data_deps,
         };
 
         Ok(Py::new(py, py_guard)?.into_any())

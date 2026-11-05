@@ -1,0 +1,80 @@
+name: Rust SDK (INTERNAL)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The Rust SDK's hooks: its tests under the optional features that need no
+  # external server, its clippy, and the `cargo check` of the external example
+  # and benchmark workspaces that build on it. CI.yml runs them for a change
+  # to the SDK or to those workspaces, and rust_sdk_daily.yml on main every
+  # day. The SDK doesn't depend on pyo3, so no leg needs Python.
+  #
+  # Clippy and the external-workspace check run on Linux x86_64 only. The
+  # lints are the same on every platform bar a few `cfg(not(unix))` lines,
+  # and the external check costs 13-28 min on a cold Rust cache (every leg
+  # is cold after a rustc release), which pushed the macOS Intel and Windows
+  # legs past `timeout-minutes` when it ran there. The SDK tests skip macOS
+  # Intel, the slowest runner: x86_64 is covered by Linux and Darwin by the
+  # arm64 leg.
+  rust-sdk:
+    # The default name would list the matrix's hook list.
+    name: rust-sdk (${{ matrix.platform.runner }})
+    strategy:
+      # A failing leg cancels the rest on a PR or in the merge queue, to stop
+      # a broken change early. A scheduled run reports every leg.
+      fail-fast: ${{ contains(fromJSON('["pull_request", "merge_group"]'), github.event_name) }}
+      matrix:
+        platform:
+          - runner: ubuntu-latest
+            hooks: cargo-test-sdk cargo-clippy-sdk cargo-test-rust-externs
+          - runner: ubuntu-24.04-arm
+            hooks: cargo-test-sdk
+          - runner: macos-latest
+            extra_rustflags: "-C split-debuginfo=off"
+            hooks: cargo-test-sdk
+          - runner: windows-latest
+            hooks: cargo-test-sdk
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 60
+    env:
+      RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: "sccache"
+
+    steps:
+      # Before checkout, which writes the files with the line endings this sets.
+      - name: Disable Git autocrlf on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: ./.github/actions/setup-ci
+        with:
+          rust-cache-key: rust-sdk-${{ matrix.platform.runner }}
+          # Peak use on a 14 GiB runner, measured when these hooks ran in
+          # `_test.yml` together with the workspace's clippy: about 18 GiB
+          # (`target/` is 16 GiB), plus 2.7 GiB when it saves a missed Rust
+          # cache.
+          min-free-disk-gib: 30
+          clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy-sdk') }}
+
+      - name: Run Rust SDK hooks
+        uses: ./.github/actions/run-prek
+        with:
+          hooks: ${{ matrix.platform.hooks }}
+
+      # Last, so it sees every object the job's hooks compiled.
+      - name: Save sccache's local cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-sccache

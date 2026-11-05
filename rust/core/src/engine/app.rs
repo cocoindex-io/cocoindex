@@ -114,6 +114,7 @@ impl<Prof: EngineProfile> App<Prof> {
     /// - `changed()` for awaiting stats version changes
     /// - `result()` for awaiting the final result
     #[instrument(name = "app.update", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
+    #[allow(clippy::type_complexity)]
     pub fn update(
         &self,
         root_processor: Prof::ComponentProc,
@@ -262,10 +263,8 @@ impl<Prof: EngineProfile> App<Prof> {
                 // Wait for the drop operation to complete
                 handle.ready().await?;
 
-                // Drop the per-app state-store data. Clears the per-app
-                // sub-database (heed 0.22 doesn't expose `mdb_drop`).
-                // Subsumes the previous `clear_all` step — `drop_app`
-                // wipes everything `clear_all` would have emptied.
+                // Drop the per-app state-store data. Clears (rather than
+                // removes) the per-app sub-database; see `Storage::drop_app`.
                 let app_name = root_component.app_ctx().app_reg().name().to_owned();
                 root_component
                     .app_ctx()

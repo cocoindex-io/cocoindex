@@ -68,7 +68,7 @@ Signals to the parent that the live component has caught up. The parent's `await
 
 ### `report_exception()`
 
-Routes an exception raised somewhere in `process_live`'s body — but **outside** an `update_full` / `update` / `delete` call — through the parent's [exception handler chain](./exception_handlers#exception-handlers). Use it for failures the framework can't see on its own, such as an external watcher emitting a malformed event:
+Routes an exception raised somewhere in `process_live`'s body (but **outside** an `update_full` / `update` / `delete` call) through the parent's [exception handler chain](./exception_handlers#exception-handlers). Use it for failures the framework can't see on its own, such as an external watcher emitting a malformed event:
 
 ```python
 async def process_live(self, operator):
@@ -202,7 +202,7 @@ The returned class's `__init__` accepts the same positional and keyword argument
 
 ## LiveMapFeed and LiveMapView
 :::tip
-For a user-facing introduction to live mode and when to use it, see [Live Mode](../programming_guide/live_mode). This section covers the protocol details for connector authors and advanced use cases.
+For an introduction to live mode, see [Live Mode](../programming_guide/live_mode). Connector authors can implement the protocols below to supply live collections.
 :::
 
 Two protocols represent live keyed collections that `mount_each()` can consume. Choose based on whether your source can enumerate its current state:
@@ -248,11 +248,11 @@ async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None:
 To add live support to a source connector, make your source return an object that implements `LiveMapView` (if the source has scannable state) or `LiveMapFeed` (if it only streams changes):
 
 - **`LiveMapView` example**: The [`localfs`](../connectors/localfs) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
-- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
+- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from a Kafka topic.
 
 ### Single-subscriber contract
 
-A live feed — `LiveMapView`, `LiveMapFeed`, or `LiveStream` — is **single-subscriber**. Its `watch()` typically owns an exclusive underlying resource (a consumer subscription, an OS file watch, a single in-memory change channel) that can't be fanned out to two concurrent callers — e.g. two subscriptions would race one consumer's offset commits. So a given feed instance supports **one active `watch()` (one `mount_each`) at a time**; consuming it from two places concurrently is unsupported. Fan-out to multiple subscribers, if ever needed, belongs in a layer above the feed.
+A live feed (`LiveMapView`, `LiveMapFeed`, or `LiveStream`) is **single-subscriber**. Its `watch()` typically owns an exclusive underlying resource (a consumer subscription, an OS file watch, a single in-memory change channel) that can't be fanned out to two concurrent callers — e.g. two subscriptions would race one consumer's offset commits. So a given feed instance supports **one active `watch()` (one `mount_each`) at a time**; consuming it from two places concurrently is unsupported. Fan-out to multiple subscribers, if ever needed, belongs in a layer above the feed.
 
 Enforce this in your `watch()` with `cocoindex.connectorkits.SingleWatcherGuard`, which raises `RuntimeError` on a second concurrent call:
 
@@ -311,14 +311,14 @@ This lets you use the same `LiveComponent` class in both modes without code chan
 
 ### No `use_mount()` inside `process()`
 
-`process()` may only call `coco.mount()` (background child mounts). Any setup that requires `use_mount()` — such as declaring target tables — must be done in the **parent** component before mounting the LiveComponent. This keeps the controller's provider set stable across full and incremental updates.
+`process()` may only call `coco.mount()` (background child mounts). Any setup that requires `use_mount()` (such as declaring target tables) must be done in the **parent** component before mounting the LiveComponent. This keeps the controller's provider set stable across full and incremental updates.
 
 ### Not allowed in `use_mount()`
 
 LiveComponent classes can only be used with `coco.mount()` and `operator.update()`. Passing a LiveComponent class to `coco.use_mount()` raises a `TypeError`.
 
 :::tip
-While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveMapFeed` or `LiveMapView`](#livemapfeed-and-livemapview) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
+While LiveComponent classes cannot be passed to `mount_each()`, use a [`LiveMapFeed` or `LiveMapView`](#livemapfeed-and-livemapview) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
 :::
 
 ## Readiness

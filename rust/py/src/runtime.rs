@@ -18,8 +18,15 @@ pub struct PythonObjects {
     pub serialize_fn: Py<PyAny>,
     /// `ChildSlot(core_slot)`: wraps a `ChildTargetSlot` for a container sink.
     pub child_slot_wrapper_fn: Py<PyAny>,
+    /// `_TypedTargetHandlerWrapper(handler)`: what a child handler is held as,
+    /// whether a slot or a `child_handler=` factory provided it.
+    pub typed_target_handler_wrapper_fn: Py<PyAny>,
     pub non_existence: Py<PyAny>,
     pub target_state_codec: crate::target_state_codec::TargetStateCodec,
+    /// `data_dep.validate_stored_data_deps`: validates a stored memo's
+    /// data-dependency records with no processor (see
+    /// `EngineProfile::validate_data_deps`).
+    pub validate_data_deps_fn: PyCallback,
 }
 
 impl PythonObjects {
@@ -40,17 +47,22 @@ impl PythonObjects {
 
 static PY_OBJECTS: OnceLock<std::mem::ManuallyDrop<PythonObjects>> = OnceLock::new();
 
+// One call at import, with keyword arguments from Python; a struct for them
+// would be a pyclass with a single use.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 pub fn init_runtime(
     package_id: String,
     lang: String,
     serialize_fn: Py<PyAny>,
     child_slot_wrapper_fn: Py<PyAny>,
+    typed_target_handler_wrapper_fn: Py<PyAny>,
     non_existence: Py<PyAny>,
     target_state_codec: Bound<'_, PyAny>,
+    validate_data_deps_fn: Py<PyAny>,
 ) -> PyResult<()> {
     let target_state_codec = crate::target_state_codec::TargetStateCodec::new(&target_state_codec)?;
-    if let Err(_) = pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()) {
+    if pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).is_err() {
         return Err(PyException::new_err(
             "Failed to initialize Tokio runtime: already initialized",
         ));
@@ -60,8 +72,10 @@ pub fn init_runtime(
         .set(std::mem::ManuallyDrop::new(PythonObjects {
             serialize_fn,
             child_slot_wrapper_fn,
+            typed_target_handler_wrapper_fn,
             non_existence,
             target_state_codec,
+            validate_data_deps_fn: PyCallback::Async(Arc::new(validate_data_deps_fn)),
         }))
         .map_err(|_| PyException::new_err("Failed to set Python objects: already initialized"))?;
     Ok(())
@@ -89,8 +103,8 @@ pub fn py_reset_global_cancellation() {
 }
 
 pub fn python_objects() -> &'static PythonObjects {
-    // ManuallyDrop<T> implements Deref<Target = T>, so &**x coerces to &T.
-    &**PY_OBJECTS.get().expect("Python objects not initialized")
+    // ManuallyDrop<T> implements Deref<Target = T>, so &ManuallyDrop<T> coerces to &T.
+    PY_OBJECTS.get().expect("Python objects not initialized")
 }
 
 #[pyclass(name = "AsyncContext", from_py_object)]

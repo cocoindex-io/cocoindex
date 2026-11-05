@@ -12,6 +12,7 @@ import datetime
 import decimal
 import ipaddress
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -48,6 +49,8 @@ except ImportError:
 
 _PG_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_postgres_target_pg_db")
 
+_PG_IMAGE = "pgvector/pgvector:pg16"
+
 pytestmark = [
     pytest.mark.skipif(
         not DEPS_AVAILABLE, reason="postgres dependencies not installed"
@@ -55,7 +58,7 @@ pytestmark = [
     pytest.mark.skipif(
         not TESTCONTAINERS_AVAILABLE, reason="testcontainers not installed"
     ),
-    pytest.mark.requires_docker,
+    pytest.mark.requires_docker(_PG_IMAGE),
     pytest.mark.timeout(120),
 ]
 
@@ -143,7 +146,7 @@ async def _drop_index(pool: "asyncpg.Pool", index_name: str) -> None:
 def pg_dsn() -> Any:
     from testcontainers.community.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-    with PostgresContainer("pgvector/pgvector:pg16") as pg:
+    with PostgresContainer(_PG_IMAGE) as pg:
         dsn = pg.get_connection_url()
         # testcontainers may return a SQLAlchemy-style URL; normalize for asyncpg.
         dsn = dsn.replace("postgresql+psycopg2://", "postgresql://")
@@ -195,6 +198,17 @@ class HalfVectorRow:
     content: str
     embedding: Annotated[
         NDArray[np.float16], VectorSchema(dtype=np.dtype(np.float16), size=4)
+    ]
+
+
+@dataclass
+class TwoVectorRow:
+    id: str
+    title_embedding: Annotated[
+        NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=4)
+    ]
+    body_embedding: Annotated[
+        NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=4)
     ]
 
 
@@ -480,6 +494,147 @@ async def test_postgres_declare_halfvec_vector_index_uses_halfvec_opclass(
         assert info["amname"] == "ivfflat"
         assert await _index_opclass_names(pool, pg_index_name) == ["halfvec_cosine_ops"]
 
+    finally:
+        await _drop_table(pool, table_name)
+
+
+def _truncated(name: str) -> str:
+    """The name PostgreSQL keeps for an identifier: its first 63 bytes."""
+    return name.encode()[:63].decode(errors="ignore")
+
+
+def _long_table_name(length: int) -> str:
+    table_name = _unique_name("t" * (length - 9))
+    assert len(table_name) == length
+    return table_name
+
+
+@pytest.mark.asyncio
+async def test_postgres_vector_indexes_with_one_truncated_name_raise(
+    pg_env: _PgEnv,
+) -> None:
+    """Two vector indexes whose PostgreSQL names truncate to one name are rejected."""
+    # The index name prefix `<table>__vector__` takes 51 bytes, so only the first
+    # 12 bytes of each vector index name survive truncation.
+    table_name = _long_table_name(41)
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(TwoVectorRow, primary_key=["id"]),
+            )
+            table.declare_vector_index(
+                name="embeddings_for_title", column="title_embedding"
+            )
+            table.declare_vector_index(
+                name="embeddings_for_body", column="body_embedding"
+            )
+
+        app = coco.App(
+            coco.AppConfig(
+                name=f"test_vec_idx_truncated_{table_name}",
+                environment=pg_env.coco_env,
+            ),
+            declare_fn,
+        )
+        with pytest.raises(Exception, match="both get the PostgreSQL index name"):
+            await app.update()
+    finally:
+        await _drop_table(pg_env.pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_vector_indexes_with_long_names(pg_env: _PgEnv) -> None:
+    """Long vector index names keep working: distinct after truncation, or renamed."""
+    pool = pg_env.pool
+    # The index name prefix `<table>__vector__` takes 58 bytes, so the first 5
+    # bytes of each vector index name survive truncation.
+    table_name = _long_table_name(48)
+    title_index_name = "title_embedding"
+
+    async def declare_fn() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            postgres.declare_table_target,
+            _PG_DB_KEY,
+            table_name,
+            await postgres.TableSchema.from_class(TwoVectorRow, primary_key=["id"]),
+        )
+        table.declare_vector_index(name=title_index_name, column="title_embedding")
+        table.declare_vector_index(name="body_embedding", column="body_embedding")
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_vec_idx_long_names_{table_name}",
+            environment=pg_env.coco_env,
+        ),
+        declare_fn,
+    )
+    title_pg_name = _truncated(f"{table_name}__vector__title_embedding")
+    body_pg_name = _truncated(f"{table_name}__vector__body_embedding")
+    assert title_pg_name != body_pg_name
+    try:
+        await app.update()
+        assert await _index_info(pool, title_pg_name) is not None
+        assert await _index_info(pool, body_pg_name) is not None
+
+        # A new name that truncates to the old one replaces it: the drop of the
+        # old index must not remove the new one.
+        title_index_name = "title_embedding_v2"
+        await app.update()
+        assert await _index_info(pool, title_pg_name) is not None
+        assert await _index_info(pool, body_pg_name) is not None
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("form", ["three_arguments", "positional", "keyword"])
+async def test_postgres_table_target_constructor_forms(
+    pg_env: _PgEnv, form: str
+) -> None:
+    """TableTarget(provider, table_schema) still works, with a DeprecationWarning."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_tt_forms")
+    schema = await postgres.TableSchema.from_class(VectorRow, primary_key=["id"])
+    caught: list[warnings.WarningMessage] = []
+
+    async def declare_fn() -> None:
+        provider = await coco.mount_target(
+            postgres.table_target(_PG_DB_KEY, table_name, schema)
+        )
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            if form == "three_arguments":
+                table = postgres.TableTarget(provider, table_name, schema)
+            elif form == "positional":
+                table = postgres.TableTarget(provider, schema)
+            else:
+                table = postgres.TableTarget(provider, table_schema=schema)
+        caught.extend(recorded)
+        table.declare_row(
+            row=VectorRow(
+                id="1",
+                content="hello",
+                embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            )
+        )
+        table.declare_vector_index(column="embedding")
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_tt_forms_{table_name}", environment=pg_env.coco_env),
+        declare_fn,
+    )
+    try:
+        await app.update()
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == (0 if form == "three_arguments" else 1)
+        assert await _row_count(pool, table_name) == 1
+        assert await _index_info(pool, f"{table_name}__vector__embedding") is not None
     finally:
         await _drop_table(pool, table_name)
 
@@ -1157,6 +1312,76 @@ async def test_postgres_delete_rows_with_composite_key(pg_env: _PgEnv) -> None:
             (r["repo"], r["sha"], tuple(r["path"])) for r in kept_rows
         }
 
+    finally:
+        await _drop_table(pool, table_name)
+
+
+def _planned_actions(actions: list[Any] | None) -> dict[Any, Any]:
+    """Planned preview actions: ``("table", name) -> main action`` and
+    ``("row", key) -> value`` (``None``: delete)."""
+    assert actions is not None
+    plan: dict[Any, Any] = {}
+    for action in actions:
+        if isinstance(action, postgres._target._TableAction):
+            plan[("table", action.key.table_name)] = action.main_action
+        else:
+            assert isinstance(action, postgres._target._RowAction)
+            plan[("row", action.key)] = action.value
+    assert len(plan) == len(actions)
+    return plan
+
+
+@pytest.mark.asyncio
+async def test_postgres_preview_rows(pg_env: _PgEnv) -> None:
+    """Preview plans the table and its rows without creating either."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_preview")
+    schema = await postgres.TableSchema.from_class(TextRow, primary_key=["id"])
+    rows = [TextRow(id="1", content="one"), TextRow(id="2", content="two")]
+
+    async def declare_fn() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            postgres.declare_table_target,
+            _PG_DB_KEY,
+            table_name,
+            schema,
+        )
+        for row in rows:
+            table.declare_row(row=row)
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_preview_{table_name}", environment=pg_env.coco_env),
+        declare_fn,
+    )
+    try:
+        # The table's action and one per row; nothing is created.
+        actions = await app.update(preview=True)
+        assert _planned_actions(actions) == {
+            ("table", table_name): "insert",
+            ("row", ("1",)): {"id": "1", "content": "one"},
+            ("row", ("2",)): {"id": "2", "content": "two"},
+        }
+        assert not await _table_exists(pool, table_name)
+
+        await app.update()
+        assert await _row_count(pool, table_name) == 2
+
+        # Against the applied state: row 2 changed and row 3 added; row 1 is
+        # unchanged, so not planned; the container action is still listed.
+        # Nothing is applied.
+        rows = [
+            TextRow(id="1", content="one"),
+            TextRow(id="2", content="two-updated"),
+            TextRow(id="3", content="three"),
+        ]
+        actions = await app.update(preview=True)
+        assert _planned_actions(actions) == {
+            ("table", table_name): None,
+            ("row", ("2",)): {"id": "2", "content": "two-updated"},
+            ("row", ("3",)): {"id": "3", "content": "three"},
+        }
+        assert await _row_count(pool, table_name) == 2
     finally:
         await _drop_table(pool, table_name)
 

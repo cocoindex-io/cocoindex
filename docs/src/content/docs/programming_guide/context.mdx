@@ -29,7 +29,7 @@ The type parameter (`asyncpg.Pool`, `SentenceTransformerEmbedder`) enables type 
 
 By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, [context changes](./function#change-detection) are their own category — tracked by `use_context()` at the call site, independent of `@coco.fn`. When a fingerprint changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
 
-Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results — database connections, loggers, debug flags, monitoring clients — can use the default (`detect_change=False`).
+Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results (database connections, loggers, debug flags, monitoring clients) can use the default (`detect_change=False`).
 
 :::tip
 Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a change-detected key, then `foo`'s memo is also invalidated when the context value changes.
@@ -37,13 +37,15 @@ Change detection is transitive: if function `foo` (memoized) calls function `bar
 
 ## ContextKey as stable identity
 
-Beyond sharing resources, a `ContextKey` also serves as the **stable identity** of the resource it points to. When you anchor sources or targets to a `ContextKey`, CocoIndex treats *the key itself* — not the underlying value — as the identifier across runs.
+Beyond sharing resources, a `ContextKey` also serves as the **stable identity** of the resource it points to. When you anchor sources or targets to a `ContextKey`, CocoIndex treats *the key itself* (not the underlying value) as the identifier across runs.
 
 This has two consequences:
 
-1. **The underlying value can change without losing tracked state.** Rotating credentials, moving a database, or relocating a directory won't invalidate memoization or managed state, as long as the same `ContextKey` is used.
+1. **The underlying value can change without losing tracked state.** Rotating credentials, moving a database, or relocating a directory won't invalidate memoization or managed state, as long as the same `ContextKey` is used. A key names a *logical* location: when you point it at a new physical location, CocoIndex assumes the data moved with it. It doesn't recreate target states that are unchanged, and it doesn't clean up the old location. If the data doesn't move with the key, [drop the app](./app#drop-an-app) before you point the key elsewhere.
 
 2. **Renaming a `ContextKey` is a breaking change.** Two different keys are two different resources, even if they point to the same physical backend. Existing tracked state will be treated as orphaned. When migrating code, reuse the previous key name to preserve continuity.
+
+   The same holds within one run: CocoIndex doesn't detect two keys that reach one backend. If two keys point at the same database and you declare the same table through both, CocoIndex tracks two tables, and syncing one can overwrite or delete the other. Keeping the locations behind different keys apart is your responsibility.
 
 :::tip[Naming convention]
 Pick a `ContextKey` name that reflects the *logical* role of the resource, not its current address. The name is what CocoIndex persists.
@@ -202,17 +204,14 @@ app = coco.App(
 
 ## Accessing context outside processing components
 
-If you need to access context values outside of CocoIndex processing components — for example, in query/serving logic that shares resources with your indexing pipeline — use `env.get_context()`:
+If you need to access context values outside of CocoIndex processing components (for example, in query/serving logic that shares resources with your indexing pipeline) use `env.get_context()`:
 
 ```python
-# Sync API
-db = coco.default_env().get_context(PG_DB)
+env = await coco.default_env()
+db = env.get_context(PG_DB)
 ```
 
-```python
-# Async API
-db = (await coco.default_env()).get_context(PG_DB)
-```
+`default_env()` is async. From synchronous code, start the environment with `coco.start_blocking()` and then read the value with `asyncio.run(coco.default_env()).get_context(PG_DB)`, or keep the pool yourself outside the lifespan (see the query section of `examples/text_embedding/main.py`).
 
 This is useful when your application runs both indexing and serving in the same process and you want to initialize shared resources (like database connection pools or configuration) once in the lifespan.
 
