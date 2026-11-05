@@ -34,6 +34,7 @@ from typing import cast
 
 import cocoindex as coco
 
+from ..documents import Documents
 from ..errors import ToolError
 from ..handles import HandleTable
 from ..spec import InputCard, Json, RoleSpec, SessionInput, SessionSpec, ToolSpec
@@ -65,7 +66,9 @@ class SessionContext:
 
     ``trace`` collects what the session's tools report for its trace (reads,
     declared files, contained failures); ``action`` is this call's own sink,
-    where a tool that mounts a child leaves the child's trace.
+    where a tool that mounts a child leaves the child's trace. ``documents``
+    holds the documents the session's tools attached this run, for the
+    client to render beside the results that refer to them (``documents.py``).
     """
 
     spec: SessionSpec
@@ -75,6 +78,7 @@ class SessionContext:
     used_slots: set[str] = field(default_factory=set)
     trace: TraceSink = field(default_factory=TraceSink)
     action: ActionSink = field(default_factory=ActionSink)
+    documents: Documents = field(default_factory=Documents)
 
     def claim_slot(self, key: str) -> None:
         """Reserve a child key for this session; a repeat is the model's error."""
@@ -225,7 +229,7 @@ class AgentsConfig:
     roles: dict[str, RoleSpec]
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     default_model: str = "unspecified"
-    version: int = 2
+    version: int = 3
 
     def __coco_memo_key__(self) -> object:
         return (

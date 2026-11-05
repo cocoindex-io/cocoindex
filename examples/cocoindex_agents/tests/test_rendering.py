@@ -168,3 +168,74 @@ def test_a_parallel_step_renders_one_tool_message_per_call_in_call_order() -> No
     ]
     assert messages[5] == {"role": "assistant", "content": "done"}
     assert len(messages) == 6
+
+
+def test_documents_render_after_every_tool_message_of_their_step() -> None:
+    """The provider wants every tool message right after the assistant turn, so a
+    document a result refers to follows the whole batch; a failed result's value
+    is never a reference, and the debug description hides the data URL."""
+    from cocoindex_agents.documents import Document, Documents
+    from cocoindex_agents.litellm_client import _describe_message
+
+    spec = _spec().spec("worker", "t")
+    documents = Documents()
+    ref = documents.attach(Document.of("a.pdf", "application/pdf", b"%PDF-1.4 a"))
+    batch = ModelOutput(
+        calls=(ToolCall("read_input", {}), ToolCall("probe", {"name": "b"}))
+    )
+    prefix = Transcript(
+        (
+            Step(
+                batch,
+                (
+                    ToolResult("read_input", True, ref),
+                    ToolResult("probe", False, dict(ref, key="b.pdf")),
+                ),
+            ),
+        )
+    )
+    messages = render_messages(spec, prefix, RunHints(documents=documents))
+    assert [m["role"] for m in messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "user",
+    ]
+    attached = messages[5]["content"]
+    assert attached[0]["text"].startswith(
+        "The document a.pdf (application/pdf, 10 bytes)"
+    )
+    assert attached[1]["file"] == {
+        "filename": "a.pdf",
+        "file_data": "data:application/pdf;base64,JVBERi0xLjQgYQ==",
+    }
+    assert _describe_message(messages[5]) == (
+        "--- user\nThe document a.pdf (application/pdf, 10 bytes) that the read_input "
+        "result above refers to:\n<file a.pdf: 44 chars>"
+    )
+
+
+def test_two_documents_with_the_same_bytes_keep_their_own_names() -> None:
+    from cocoindex_agents.documents import Document, Documents
+
+    spec = _spec().spec("worker", "t")
+    documents = Documents()
+    refs = [
+        documents.attach(Document.of(key, "application/pdf", b"%PDF-1.4 same"))
+        for key in ("sub/a.pdf", "b.pdf")
+    ]
+    assert refs[0]["digest"] == refs[1]["digest"]
+    prefix = Transcript(
+        (
+            Step(
+                ModelOutput(calls=(ToolCall("read_input", {}),)),
+                (ToolResult("read_input", True, refs[0]),),
+            ),
+        )
+    )
+    messages = render_messages(spec, prefix, RunHints(documents=documents))
+    text, part = messages[4]["content"]
+    assert text["text"].startswith("The document sub/a.pdf ")
+    assert part["file"]["filename"] == "a.pdf"

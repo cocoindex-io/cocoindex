@@ -16,12 +16,17 @@ about *this* run without changing a turn's identity:
   loop — did inference happen, was a step picked, which notes were shown. It
   is how the loop knows a hit from a miss without reading engine internals,
   and it never reaches storage because it travels only inside ``hints``.
+- ``Documents``: the documents the session's tools attached this run
+  (``documents.py``), which the client renders beside the results that
+  refer to them. Bytes never enter a key or a memo value because they travel
+  only here.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from .documents import Documents
 from .spec import Json, ToolSpec
 from .transcript import ModelOutput, ToolCall
 
@@ -86,6 +91,7 @@ class RunHints:
     notes: tuple[Note, ...] = ()
     replay: Replay | None = None
     scratch: TurnScratch = field(default_factory=TurnScratch)
+    documents: Documents = field(default_factory=Documents)
 
     def add_diff(self, diff: Diff) -> RunHints:
         return replace(self, diffs=(*self.diffs, diff))

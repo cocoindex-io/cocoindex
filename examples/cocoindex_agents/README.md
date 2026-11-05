@@ -22,10 +22,11 @@ input.
 - `cocoindex_agents/` — the package (see DESIGN.md §9 for the module map, §8 for
   what is implemented and tested)
 - `tests/` — scripted-model tests; no API keys needed
-- `flows/` — three sample flows with their data and a runner, one per shape
-  of DESIGN.md §2; see [`flows/README.md`](flows/README.md) for how to run
-  them and the measured model calls (`--stats` for cache usage, `--plan` for
-  the plan it chose and what it reused)
+- `flows/` — four sample flows with their data and a runner: one per shape
+  of DESIGN.md §2, and one over PDFs the model reads natively; see
+  [`flows/README.md`](flows/README.md) for how to run them and the measured
+  model calls (`--stats` for cache usage, `--plan` for the plan it chose and
+  what it reused)
 
 ## Running the tests
 
