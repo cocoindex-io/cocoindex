@@ -1,0 +1,10 @@
+{
+  "alt": "The sample file rfc8259.md is split by RecursiveSplitter and embedded with all-MiniLM-L6-v2, and each chunk becomes a point in the Qdrant collection TextEmbedding with filename, chunk_start, chunk_end and text in its payload; editing one section upserts only that point, and the query \"how is a JSON object written?\" returns the chunk on JSON objects.",
+  "needs": ["Docker (for Qdrant)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Qdrant (HTTP 6333, gRPC 6334)", "cmd": "docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Build the collection from markdown_files/", "cmd": "cocoindex update main" },
+    { "note": "Search it, or browse localhost:6333/dashboard", "cmd": "python main.py \"how is a JSON object written?\"" }
+  ]
+}

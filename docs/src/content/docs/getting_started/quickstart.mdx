@@ -1,7 +1,7 @@
 ---
 title: CocoIndex *quickstart*
 description: >
-  Build your first CocoIndex pipeline in 5 minutes: convert PDFs to Markdown
+  Build your first CocoIndex pipeline: convert PDFs to Markdown
   and watch incremental processing only reprocess files that actually changed.
 ---
 import AppExample from '/src/components/diagrams/concepts/AppExample.astro';
@@ -11,7 +11,7 @@ import AppDef from '/src/components/diagrams/concepts/AppDef.astro';
 import ScarfPixel from '/src/components/ScarfPixel.astro';
 import { SCARF_QUICKSTART_PIXEL_ID } from '/src/consts';
 
-In this tutorial, we'll build a simple app that converts PDF files to Markdown and saves them to a local directory.
+Build an app that converts PDF files to Markdown and saves them to a local directory.
 
 
 
@@ -27,7 +27,7 @@ You declare the transformation logic with native Python without worrying about c
 
 Think: **target_state = transformation(source_state)**
 
-When your source data is updated, or your processing logic is changed (for example, switching parsers or tweaking conversion settings), CocoIndex performs smart incremental processing that only reprocesses the minimum. And it keeps your Markdown files always up to date.
+When your source data is updated, or your processing logic is changed (for example, switching parsers or tweaking conversion settings), CocoIndex reprocesses the affected files and updates their Markdown output.
 
 ## Setup
 
@@ -207,7 +207,7 @@ The corresponding Markdown file is automatically removed.
 ## Next steps
 
 - Read [Core Concepts](../programming_guide/core_concepts) to understand the mental model — state-driven programming, processing components, and memoization
-- Dive into the [Programming Guide](../programming_guide/app), starting with Apps, to learn how to build more complex pipelines
+- Read the [Programming Guide](../programming_guide/app), starting with Apps, to learn how to build more complex pipelines
 - Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples) for real-world patterns (text embedding, RAG, knowledge graphs)
 
 <ScarfPixel pxid={SCARF_QUICKSTART_PIXEL_ID} />

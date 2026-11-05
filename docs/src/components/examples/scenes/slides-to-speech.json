@@ -1,0 +1,9 @@
+{
+  "alt": "The three slides of slides/quarterly_review.pdf each get speaker notes from a vision LLM, an MP3 narration from Pocket TTS on the CPU and an all-MiniLM-L6-v2 embedding, stored as one row per slide in the LanceDB table slides_to_speech; editing slide 3 reruns only its row, and the query \"reducing latency and reliability\" returns the Engineering Priorities slide with its narration.",
+  "needs": ["GEMINI_API_KEY (or another LLM_MODEL)", "ffmpeg (for MP3 export)", "Python 3.11+"],
+  "run": [
+    { "note": "Configure (set GEMINI_API_KEY) and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Narrate and index every deck in slides/", "cmd": "cocoindex update main" },
+    { "note": "Search the deck", "cmd": "python main.py \"reducing latency and reliability\"" }
+  ]
+}

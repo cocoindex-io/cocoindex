@@ -2,7 +2,7 @@
 title: "*FalkorDB* connector"
 toc_max_heading_level: 4
 description: >
-  Write to FalkorDB — a Redis-backed graph database — with support for node
+  Write to FalkorDB (a Redis-backed graph database) with support for node
   tables, relationship tables (edges), per-graph multitenancy, and vector
   indexes with cosine / euclidean / inner-product distances.
 ---
@@ -310,7 +310,7 @@ A system-managed table owns its label or relationship type, the way a Postgres t
 
 The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Its vector indexes are dropped and created again. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
 
-When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the index and constraint — and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
+When `managed_by="user"` is set, the connector skips DDL entirely (you're responsible for creating and dropping the index and constraint) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
 
 ### Example: Node tables
 

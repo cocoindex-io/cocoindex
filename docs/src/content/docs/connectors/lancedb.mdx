@@ -6,7 +6,7 @@ description: >
   Python classes, vector columns via VectorSchemaProvider, and both
   system-managed and user-managed table lifecycles.
 ---
-The `lancedb` connector provides utilities for writing rows to LanceDB tables, with automatic schema inference from Python classes and support for declaring vector and full-text search (FTS) indexes. CocoIndex manages the table lifecycle — creating, dropping, and evolving the schema — and keeps rows in sync via incremental upserts and deletions.
+The `lancedb` connector provides utilities for writing rows to LanceDB tables, with automatic schema inference from Python classes and support for declaring vector and full-text search (FTS) indexes. CocoIndex manages the table lifecycle (creating, dropping, and evolving the schema) and keeps rows in sync via incremental upserts and deletions.
 
 ```python
 from cocoindex.connectors import lancedb

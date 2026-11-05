@@ -1,0 +1,237 @@
+---
+// Podcasts to a knowledge graph: YouTube URLs in input/sample.txt are fetched
+// with yt-dlp, transcribed with AssemblyAI speaker diarization, and read by a
+// two-step LLM extraction (who is speaking, then statements and the people,
+// tech and orgs they mention). Entity resolution collapses spellings, and
+// SurrealDB holds the graph. Content is the example's own: the sample video
+// ids, "(Speaker A)" labels, the statement / speaker / mention example and
+// the GPT-4 spellings from the walkthrough (the result row is captioned
+// illustrative), the table and edge names from
+// conv_knowledge/app.py, and a SurrealQL query from the walkthrough. The
+// added URL is the change (Δ): only that episode is processed, so its session
+// node (labelled with the video id, Session.youtube_id) and its edges re-derive.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+
+type N = { id: string; x: number; y: number; kind: string; label: string; place?: 'c' | 'l' | 'r'; at?: number; max?: number; wrap?: boolean; sans?: boolean; delta?: boolean };
+type E = { from: string; to: string; rel: string; t?: number; delta?: boolean };
+const layout = (W: number, H: number, nodes: N[], edges: E[]) => {
+  const at = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const pc = (v: number, total: number) => `${((v / total) * 100).toFixed(3)}%`;
+  return {
+    W, H,
+    nodes: nodes.map((n) => {
+      const place = n.place ?? 'c';
+      const pos = place === 'c' ? `left:${pc(n.x, W)};transform:translate(-50%,-50%)`
+        : place === 'l' ? `left:${pc(n.at ?? 0, W)};transform:translateY(-50%)`
+        : `right:${pc(W - (n.at ?? W), W)};transform:translateY(-50%)`;
+      return { ...n, style: `top:${pc(n.y, H)};${pos}`, lstyle: n.max ? `max-width:${n.max}px` : '' };
+    }),
+    edges: edges.map((e) => {
+      const a = at[e.from], b = at[e.to];
+      const t = e.t ?? 0.5;
+      const m = t <= 0.6 ? t + 0.2 : t - 0.24;
+      const p = (k: number) => [a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k];
+      const [mx, my] = p(m), [lx, ly] = p(t);
+      return { ...e, d: `M${a.x} ${a.y} L${mx.toFixed(1)} ${my.toFixed(1)} L${b.x} ${b.y}`, lstyle: `left:${pc(lx, W)};top:${pc(ly, H)}`, fromN: a, toN: b };
+    }),
+  };
+};
+
+const STMT = 'Scaling laws suggest that larger models will continue to improve.';
+const hero = layout(632, 268, [
+  { id: 'lex', x: 92, y: 40, kind: 'person', label: 'Lex Fridman' },
+  { id: 'ses', x: 92, y: 226, kind: 'session', label: 'hmtuvNfytjM', delta: true },
+  { id: 'st', x: 300, y: 120, kind: 'statement', label: STMT, wrap: true },
+  { id: 'ilya', x: 552, y: 40, kind: 'person', label: 'Ilya Sutskever' },
+], [
+  { from: 'lex', to: 'ses', rel: 'person_session', t: 0.5, delta: true },
+  { from: 'lex', to: 'st', rel: 'person_statement', t: 0.44 },
+  { from: 'ses', to: 'st', rel: 'session_statement', t: 0.44, delta: true },
+  { from: 'st', to: 'ilya', rel: 'statement_mentions', t: 0.6 },
+]);
+
+const card = layout(260, 140, [
+  { id: 'lex', x: 52, y: 22, kind: '', label: 'Lex Fridman' },
+  { id: 'st', x: 132, y: 72, kind: '', label: STMT, wrap: true },
+  { id: 'ilya', x: 206, y: 122, kind: '', label: 'Ilya Sutskever' },
+], [
+  { from: 'lex', to: 'st', rel: '' },
+  { from: 'st', to: 'ilya', rel: '' },
+]);
+const g = size === 'hero' ? hero : card;
+const mk = `pc-${size}`;
+const groups = [...new Set(g.edges.map((e) => e.from))].map((id) => ({ node: g.edges.find((e) => e.from === id)!.fromN, edges: g.edges.filter((e) => e.from === id) }));
+---
+{size === 'hero' ? (
+  <div class="pc">
+    <div class="sc-row">
+      <div class="sc-col pc-in">
+        <span class="sc-cap">YouTube episodes</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-file"></span>input/sample.txt</div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-video"></span><span>…watch?v=BlVnGXEzFow</span></div>
+            <div class="sc-li"><span class="sc-ico i-video"></span><span>…watch?v=_tM_0wAbKlc</span></div>
+            <div class="sc-li"><span class="sc-ico i-video"></span><span>…watch?v=giT0ytynSqg</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-video"></span><span>…watch?v=hmtuvNfytjM</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <p class="sc-quote pc-note">Add a URL and only that episode is fetched, transcribed and extracted.</p>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col pc-wide">
+        <span class="sc-cap">Transcribe, then two LLM passes</span>
+        <div class="sc-panel">
+          <div class="sc-panel-b">
+            <span class="sc-li"><span class="sc-ico i-audio"></span><span>fetch_transcript</span><span class="sc-meta">yt-dlp + AssemblyAI</span></span>
+            <div class="sc-row sc-keep pc-swap">
+              <span class="sc-chip">(Speaker A)</span>
+              <span class="sc-to"></span>
+              <span class="sc-chip is-strong">Lex Fridman</span>
+              <span class="sc-cap pc-fine">extract_metadata</span>
+            </div>
+          </div>
+          <div class="sc-panel-b pc-step">
+            <span class="sc-li"><span class="sc-ico i-model"></span><span>extract_statements</span><span class="sc-meta">openai/gpt-5-mini</span></span>
+            <p class="sc-quote pc-stmt">“<b>{STMT}</b>”</p>
+            <div class="pc-fields">
+              <span class="sc-chip">speakers: Lex Fridman</span>
+              <span class="sc-chip">mentioned_person: Ilya Sutskever</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pc-graphwrap">
+      <span class="sc-cap">SurrealDB graph</span>
+      <div class="pc-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+        <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+          <defs>
+            <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pc-tip" /></marker>
+            <marker id={`${mk}-d`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pc-tip is-delta" /></marker>
+          </defs>
+          {g.edges.map((e) => <path d={e.d} class:list={[{ 'is-delta': e.delta }]} marker-mid={`url(#${mk}-${e.delta ? 'd' : 'a'})`} />)}
+        </svg>
+        {g.edges.map((e) => <span class:list={['sc-edge pc-elabel', { 'sc-dtext': e.delta }]} style={e.lstyle}>{e.rel}</span>)}
+        {g.nodes.map((n) => (
+          <span class:list={['sc-node pc-node', { 'is-doc': n.wrap, 'is-wrap': n.wrap, 'sc-delta': n.delta }]} style={n.style}>
+            <span class="sc-kind">{n.kind}</span><span class:list={['pc-nl', { 'pc-sans': n.sans }]}>{n.label}</span>
+          </span>
+        ))}
+      </div>
+      <ul class="pc-list">
+        {groups.map((gr) => (
+          <li>
+            <span class:list={['sc-node pc-node', { 'sc-delta': gr.node.delta }]}><span class="sc-kind">{gr.node.kind}</span><span class:list={['pc-nl', { 'pc-sans': gr.node.sans }]}>{gr.node.label}</span></span>
+            {gr.edges.map((e) => (
+              <span class="pc-sub">
+                <span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>{e.rel}</span>
+                <span class="pc-to"><span class:list={['sc-edge', { 'sc-dtext': e.delta }]}>→</span><span class:list={['sc-node pc-node', { 'sc-delta': e.toN.delta }]}><span class="sc-kind">{e.toN.kind}</span><span class="pc-nl">{e.toN.label}</span></span></span>
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+      <div class="pc-res">
+        <div class="pc-raw">
+          <span class="sc-chip">"GPT-4"</span>
+          <span class="sc-chip">"GPT4"</span>
+          <span class="sc-chip">"OpenAI's GPT-4"</span>
+        </div>
+        <span class="sc-to is-down"></span>
+        <span class="sc-node"><span class="sc-kind">tech</span><span>GPT-4</span></span>
+        <span class="sc-cap pc-fine pc-res-cap">resolve_entities: embeddings + LlmPairResolver</span>
+      </div>
+    </div>
+
+    <div class="pc-foot">
+      <span class="sc-cap">All statements a person made</span>
+<pre class="sc-code"><span class="k">SELECT</span> &lt;-<span class="n">person_statement</span>&lt;-<span class="f">person</span>.name <span class="k">AS</span> speaker, statement <span class="k">FROM</span> <span class="f">statement</span>;</pre>
+      <div class="sc-panel">
+        <table class="sc-table">
+          <thead><tr><th class="pc-sp">speaker</th><th>statement</th></tr></thead>
+          <tbody><tr><td class="pc-sp">["Lex Fridman"]</td><td>{STMT}</td></tr></tbody>
+        </table>
+      </div>
+      <span class="sc-cap pc-fine">Illustrative row from the walkthrough's example statement</span>
+    </div>
+  </div>
+) : (
+  <div class="pc-card">
+    <div class="pc-card-l">
+      <span class="sc-chip">(Speaker A)</span>
+      <span class="sc-to is-down"></span>
+      <span class="sc-chip is-strong">Lex Fridman</span>
+    </div>
+    <span class="sc-to"></span>
+    <div class="pc-graph pc-card-graph" style={`aspect-ratio:${g.W}/${g.H}`}>
+      <svg class="sc-wires" viewBox={`0 0 ${g.W} ${g.H}`} aria-hidden="true">
+        <defs>
+          <marker id={`${mk}-a`} viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L6 3L0 6z" class="pc-tip" /></marker>
+        </defs>
+        {g.edges.map((e) => <path d={e.d} marker-mid={`url(#${mk}-a)`} />)}
+      </svg>
+      {g.nodes.map((n) => (
+        <span class:list={['sc-node pc-node', { 'is-doc': n.wrap, 'is-wrap': n.wrap }]} style={n.style}><span class="pc-nl">{n.label}</span></span>
+      ))}
+    </div>
+  </div>
+)}
+
+<style>
+  .pc { display: flex; flex-direction: column; gap: 18px; }
+  .pc > .sc-row { gap: 10px; }
+  .pc-in { flex: 0.8 1 0; }
+  .pc-wide { flex: 1.25 1 0; }
+  .pc-fine { font-weight: 400; }
+  .pc-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+  .pc-swap { align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pc-swap .sc-to { width: 14px; height: 14px; }
+  .pc-step { border-top: 1px solid var(--sc-line); }
+  .pc-stmt { margin: 2px 0; }
+  .pc-fields { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pc-fields .sc-chip { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+  .pc-graphwrap { position: relative; display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pc-graph { position: relative; width: 100%; }
+  .pc-tip { fill: rgba(255, 255, 255, 0.4); stroke: none !important; }
+  .pc-tip.is-delta { fill: var(--sc-delta); }
+  /* opaque Δ fill (10% periwinkle over the panel) so wires stay under the node */
+  .pc-node.sc-delta { background: #1E1E29 !important; }
+  .pc-node { position: absolute; }
+  .pc-nl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-sans { font-family: var(--sans); color: var(--sc-muted); }
+  .pc-graph .pc-node.is-wrap { flex-direction: column; align-items: flex-start; gap: 1px; width: 210px; }
+  .pc-graph .pc-node.is-wrap .pc-nl { white-space: normal; line-height: 1.35; }
+  .pc-elabel { position: absolute; transform: translate(-50%, -50%); padding: 1px 5px; background: #0C0C0C; border-radius: 4px; white-space: nowrap; }
+
+  .pc-list { display: none; margin: 0; padding: 0; list-style: none; flex-direction: column; gap: 10px; }
+  .pc-list li { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+  .pc-list .pc-node { position: static; max-width: 100%; }
+  .pc-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; max-width: calc(100% - 12px); margin-left: 12px; padding-left: 10px; border-left: 1px solid var(--sc-line-2); }
+  .pc-to { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+  .pc-to > .sc-node { min-width: 0; }
+
+  .pc-foot { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pc-res { position: absolute; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 216px; padding: 10px 12px; border: 1px dashed var(--sc-line-2); border-radius: 8px; }
+  .pc-raw { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+  .pc-res .sc-chip { padding: 3px 6px; }
+  .pc-res-cap { text-align: center; }
+  .pc-sp { width: 26%; }
+
+  @container (max-width: 560px) {
+    .pc-graph { display: none; }
+    .pc-list { display: flex; }
+    .pc .sc-table td { white-space: normal; overflow-wrap: anywhere; }
+    .pc-list .pc-nl { white-space: normal; overflow-wrap: anywhere; }
+    .pc-res { position: static; align-self: flex-start; }
+  }
+
+  .pc-card { height: 100%; display: flex; align-items: center; gap: 10px; }
+  .pc-card-l { flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .pc-card-graph { flex: 1 1 auto; min-width: 0; }
+  .pc-card .pc-node.is-wrap { flex-direction: column; align-items: flex-start; width: 132px; }
+  .pc-card .pc-node.is-wrap .pc-nl { white-space: normal; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+</style>

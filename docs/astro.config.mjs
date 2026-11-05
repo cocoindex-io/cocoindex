@@ -2,15 +2,18 @@
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
+import { unified } from '@astrojs/markdown-remark';
+import bamlGrammar from './scripts/vendor/baml.tmLanguage.json' with { type: 'json' };
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkCodeTitles from './scripts/remark-code-titles.mjs';
+import remarkExampleImages from './scripts/remark-example-images.mjs';
 import remarkMermaid from '@cocoindex/brand/remark-mermaid';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/redirects.ts';
 // One shared Shiki theme (the readability-tuned --code-* palette) so docs and
 // blog highlight code identically — single source of truth (GUIDELINE §5.5).
-import { cocoindexCodeTheme } from '@cocoindex/brand/code-theme';
+import { docsCodeTheme } from './scripts/code-theme.mjs';
 
 // V1 docs are served from https://cocoindex.io/docs/, matching the
 // Docusaurus URLs on the v1 branch (`baseUrl: '/docs/'` in
@@ -29,6 +32,7 @@ const remarkPlugins = [
   remarkAdmonitions,
   remarkMermaid,
   remarkCodeTitles,
+  remarkExampleImages,
   [remarkLinkChecker, { base: BASE }],
 ];
 
@@ -46,17 +50,13 @@ export default defineConfig({
   // Pages's own 301 redirect, so this doesn't break inbound traffic.
   trailingSlash: 'always',
   integrations: [
-    mdx({
-      // MDX's own remark pipeline doesn't inherit `markdown.remarkPlugins`
-      // reliably across Astro versions — wire admonitions + code titles
-      // explicitly so .mdx content collection pages get them for sure.
-      remarkPlugins,
-    }),
+    mdx(),
     sitemap(),
   ],
   markdown: {
-    remarkPlugins,
-    shikiConfig: { theme: cocoindexCodeTheme, wrap: false },
+    // Astro 7 and MDX share this processor and its plugin pipeline.
+    processor: unified({ remarkPlugins }),
+    shikiConfig: { theme: docsCodeTheme, wrap: false, langs: [bamlGrammar] },
   },
   redirects,
   // Vite's default envPrefix is `VITE_`; Astro adds `PUBLIC_`. We also

@@ -1,0 +1,37 @@
+---
+// The visual for one example. Looks for ./scenes/<slug>.astro (the picture)
+// and ./scenes/<slug>.json (its alt text and run steps). Without a scene the
+// example falls back to its pipeline drawn from tags.
+//   size="hero": the walkthrough's head picture, announced by its alt text.
+//   size="card": the catalog thumbnail, decorative (the card link names it).
+import './scene/scene.css';
+import Pipeline from './Pipeline.astro';
+import { findExample } from '../../data/examples';
+import { sceneMeta } from './scenes/meta';
+
+interface Props {
+  slug: string;
+  size?: 'hero' | 'card';
+}
+const { slug, size = 'hero' } = Astro.props;
+const mods = import.meta.glob<{ default: any }>('./scenes/*.astro', { eager: true });
+const Comp = mods[`./scenes/${slug}.astro`]?.default;
+const meta = sceneMeta(slug);
+const ex = findExample(slug);
+const alt = meta?.alt ?? (ex ? `Pipeline for ${ex.title}` : '');
+---
+{Comp ? (
+  <figure
+    class={`sc sc-${size}`}
+    role={size === 'hero' ? 'img' : undefined}
+    aria-label={size === 'hero' ? alt : undefined}
+    aria-hidden={size === 'card' ? 'true' : undefined}
+    data-scene={slug}
+  >
+    <Comp size={size} />
+  </figure>
+) : (
+  <figure class={`sc sc-${size} sc-fallback`} aria-hidden={size === 'card' ? 'true' : undefined}>
+    {ex && <Pipeline ex={ex} size={size === 'hero' ? 'lg' : 'sm'} />}
+  </figure>
+)}

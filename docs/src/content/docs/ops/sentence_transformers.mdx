@@ -24,10 +24,10 @@ pip install cocoindex[sentence_transformers]
 
 The `SentenceTransformerEmbedder` class is a wrapper around SentenceTransformer models that:
 
-- Implements `VectorSchemaProvider` for seamless integration with CocoIndex connectors
+- Implements `VectorSchemaProvider` to supply vector schema information to CocoIndex connectors
 - Handles model caching and thread-safe GPU access automatically
-- Provides a simple `embed()` method
-- Returns properly typed numpy arrays
+- Provides an `embed()` method
+- Returns typed NumPy arrays
 
 ## Basic usage
 

@@ -8,15 +8,15 @@ tags: [vector-index, ai-sessions]
 
 ![Search your AI coding sessions with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/cover.png)
 
-[Entire](https://entire.io) captures every AI coding session you run — the full conversation transcript, the prompt you started from, an AI-written context summary, and metadata like token counts and files touched — as checkpoints on disk. We'll take that folder of checkpoints and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English: "how did I fix the auth bug" finds the right session even when it shares no keywords with what you typed.
+[Entire](https://entire.io) captures every AI coding session you run (the full conversation transcript, the prompt you started from, an AI-written context summary, and metadata like token counts and files touched) as checkpoints on disk. We'll take that folder of checkpoints and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English: "how did I fix the auth bug" finds the right session even when it shares no keywords with what you typed.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so each new session you capture only embeds what changed, and every kind of checkpoint file is parsed by the same `process_file` component.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, each new session you capture only embeds what changed, and every kind of checkpoint file is parsed by the same `process_file` component.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/entire_session_search)
 
 ## Flow overview
 
-![CocoIndex Entire session search flow: walk a folder of checkpoints, route each file by name through process_file, embed transcripts, prompts, and context summaries, and store the vectors in Postgres with pgvector alongside a metadata table](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/flow-v1.svg)
+![CocoIndex Entire session search flow: walk a folder of checkpoints, route each file by name through process_file, embed transcripts, prompts, and context summaries, and store the vectors in Postgres with pgvector alongside a metadata table](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -53,7 +53,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-Each row of the embeddings table is one searchable piece of text — a transcript turn, a prompt, or a context chunk — tagged with its `content_type`, `role`, and the session it came from. The metadata table keeps one row per session for the structured fields. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+Each row of the embeddings table is one searchable piece of text (a transcript turn, a prompt, or a context chunk) tagged with its `content_type`, `role`, and the session it came from. The metadata table keeps one row per session for the structured fields. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -96,7 +96,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process a file
 
-![One processing component per checkpoint file: process_file routes by filename, embeds transcript, prompt, and context text into the embeddings table, and writes one metadata row](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-file-process.svg)
+![One processing component per checkpoint file: process_file routes by filename, embeds transcript, prompt, and context text into the embeddings table, and writes one metadata row](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-file-process-dark.svg)
 
 `process_file` runs once per checkpoint file and routes on its name. The checkpoint id and session index come straight from the file's path, and a fresh `IdGenerator` numbers the rows this file produces.
 
@@ -202,7 +202,7 @@ We use [`SentenceTransformerEmbedder`](/docs/ops/sentence_transformers/) with `a
 
 ## Define the main function
 
-![mount_each fans out one process_file component per checkpoint file, from the Entire filesystem source to the two Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-main-function.svg)
+![mount_each fans out one process_file component per checkpoint file, from the Entire filesystem source to the two Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/stage-main-function-dark.svg)
 
 `app_main` wires the source to the targets. It mounts both Postgres tables, walks the checkpoint directory for the four file types, and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
@@ -311,5 +311,3 @@ The same machinery covers **logic** changes too: tune the chunk size or swap the
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/entire_session_search](https://github.com/cocoindex-io/cocoindex/tree/main/examples/entire_session_search). If your inputs are plain text or Markdown rather than session checkpoints, [Semantic Search 101](/docs/examples/text-embedding/) is the same flow without the per-file routing; to search a folder of PDFs, see [Semantic Search over PDFs](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding).
-
-Want to search your own AI coding history by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

@@ -3,7 +3,7 @@ title: Building a *custom target connector*
 description: >
   Connect CocoIndex's declarative target-state system to external systems.
   Covers TargetHandler, tracking records, actions, sinks, root vs container
-  targets, attachment providers, and idempotency best practices.
+  targets, attachment providers, and idempotent operations.
 toc_max_heading_level: 4
 ---
 A **custom target connector** is the mechanism that connects CocoIndex's declarative target state system to external systems. When you call methods like `dir_target.declare_file()` or `table_target.declare_row()`, a target connector handles the actual synchronization — determining what changed and applying those changes to the external system.
@@ -22,7 +22,7 @@ For simple use cases where you just need to write data to an external system wit
 
 ## Key data types
 
-This section introduces the key data types. Each is marked as either **you implement** or **CocoIndex provides** to clarify responsibilities.
+The labels distinguish types you implement from types CocoIndex provides.
 
 ### TargetHandler *(you implement)*
 
@@ -72,7 +72,7 @@ Annotate the `prev_possible_records` parameter with `Collection[YourTrackingReco
 :::
 
 :::info[Values and actions are equal copies]
-CocoIndex holds every declared target state until its processing component commits, and every action until its sink has applied it. To keep that cheap, a value made of plain data — builtin containers and scalars, date and time types, `Decimal`, `UUID`, `ipaddress` and `pathlib` objects, numpy arrays and scalars, enum members, and NamedTuples — is held in a compact encoded form from the moment it's declared. `reconcile()` then receives an equal copy of the value, with the same types (a tuple stays a tuple), rather than the declared object itself, and the sink receives equal copies of the actions `reconcile()` returned. A value holding anything else, such as a dataclass, a pydantic model, or a client handle, reaches `reconcile()` as the declared object.
+CocoIndex holds every declared target state until its processing component commits, and every action until its sink has applied it. To keep that cheap, a value made of plain data (builtin containers and scalars, date and time types, `Decimal`, `UUID`, `ipaddress` and `pathlib` objects, numpy arrays and scalars, enum members, and NamedTuples) is held in a compact encoded form from the moment it's declared. `reconcile()` then receives an equal copy of the value, with the same types (a tuple stays a tuple), rather than the declared object itself, and the sink receives equal copies of the actions `reconcile()` returned. A value holding anything else, such as a dataclass, a pydantic model, or a client handle, reaches `reconcile()` as the declared object.
 
 So don't rely on the identity of a declared value or an action, or pass mutable state through them; and since the copy is taken at declaration, changes made to a value after it was declared are not seen.
 :::
@@ -194,7 +194,7 @@ coco.declare_target_state(target_state)
 
 ## Implementing root target states
 
-This section covers root target states — those not nested inside another target.
+Root target states are not nested inside another target.
 
 ### Life of a root target state
 
@@ -332,7 +332,7 @@ class TableTarget:
 
 ## Implementing container targets
 
-Container targets (directories, tables) have children (files, rows). This section covers how non-root target states work and how to implement them.
+Container targets (directories, tables) have children (files, rows). A child is a non-root target state.
 
 ### Non-root target states
 
@@ -383,7 +383,7 @@ When a container target state is no longer declared, CocoIndex runs the containe
 - **Destroy** — for a container CocoIndex owns, remove it together with its contents (`DROP TABLE`, `shutil.rmtree`, `drop_table`, …). The `_apply_dir_actions` sink in Step 2 below does this.
 - **Abandon** — for a user-managed container (a message topic, a table the user created), leave the contents untouched. Once the container is no longer declared, CocoIndex has released its claim on it and must not write to it again: another writer may now own those keys, writing to a topic the user has since deleted would recreate it on brokers that auto-create topics, and the deletion policy captured from the old declaration (such as a `deletion_value_fn` closure) no longer exists.
 
-The zvec connector (`python/cocoindex/connectors/zvec/_target.py`, `_apply_collection_actions`) implements both: it destroys system-managed collections and leaves user-managed ones alone. `App.drop()` applies the same shapes to every root container — it drops tables and abandons topics without visiting rows or messages — so document on your connector page which shape it uses. The user-facing contract is in [How CocoIndex syncs target states](../programming_guide/target_state#how-cocoindex-syncs-target-states).
+The zvec connector (`python/cocoindex/connectors/zvec/_target.py`, `_apply_collection_actions`) implements both: it destroys system-managed collections and leaves user-managed ones alone. `App.drop()` applies the same shapes to every root container (it drops tables and abandons topics without visiting rows or messages) so document on your connector page which shape it uses. The user-facing contract is in [How CocoIndex syncs target states](../programming_guide/target_state#how-cocoindex-syncs-target-states).
 
 ### Step 1: Define parent and child handlers
 
@@ -434,7 +434,7 @@ _dir_sink = coco.TargetActionSink.from_fn(
 )
 ```
 
-CocoIndex calls the factory once per action whose target state was declared with a child — a created or updated container, never a delete — before the callback applies the batch, and in a preview in place of the callback. So the factory is sync, free of side effects, and builds the handler from the action alone (plus connections looked up through `context_provider`). Actions without a child provider — orphan deletes, or leaf actions when one sink is shared between a container and its children — don't reach the factory.
+CocoIndex calls the factory once per action whose target state was declared with a child (a created or updated container, never a delete) before the callback applies the batch, and in a preview in place of the callback. So the factory is sync, free of side effects, and builds the handler from the action alone (plus connections looked up through `context_provider`). Actions without a child provider (orphan deletes, or leaf actions when one sink is shared between a container and its children) don't reach the factory.
 
 The container handler's `reconcile()` returns an action on every run while the container is declared, even when nothing about it changed: the factory builds the child handler from that action. Preview lists this action too: equality of arbitrary tracking records does not guarantee that applying the action has no external effect.
 
@@ -644,7 +644,7 @@ class TableTarget:
 When an attachment has a teardown step (like `DROP INDEX`), store the full spec as the tracking record instead of a fingerprint. This lets you recover the teardown information from `prev_possible_records` when the attachment is deleted or changed. See the `_SqlCommandHandler` in the PostgreSQL connector for an example.
 :::
 
-## Best practices
+## Connector implementation guidelines
 
 ### Use `ContextKey` for external resource identity
 
@@ -737,7 +737,7 @@ class RowHandler(coco.TargetHandler[dict[str, Any], bytes]):
         )
 ```
 
-CocoIndex then doesn't call `reconcile()` for a declared value that is unchanged — one that `reconcile()` above would return `None` for — so an update where most values are unchanged costs almost nothing per value. `reconcile()` is still called for new, changed, and removed target states, and whenever `prev_may_be_missing` is `True`.
+CocoIndex then doesn't call `reconcile()` for a declared value that is unchanged (one that `reconcile()` above would return `None` for) so an update where most values are unchanged costs almost nothing per value. `reconcile()` is still called for new, changed, and removed target states, and whenever `prev_may_be_missing` is `True`.
 
 Only set it when both hold:
 

@@ -24,7 +24,7 @@ pip install cocoindex[litellm]
 
 The `LiteLLMEmbedder` class is a wrapper around LiteLLM's embedding API that:
 
-- Implements `VectorSchemaProvider` for seamless integration with CocoIndex connectors
+- Implements `VectorSchemaProvider` to supply vector schema information to CocoIndex connectors
 - Supports 100+ embedding providers (OpenAI, Azure, Vertex AI, Cohere, Bedrock, etc.) through a unified API
 - Provides a simple async `embed()` method
 - Passes through all additional arguments to the LiteLLM embedding API, except `timeout` and `max_inflight_requests`, which CocoIndex owns
@@ -187,7 +187,7 @@ See the [LiteLLM audio transcription docs](https://docs.litellm.ai/docs/audio_tr
 
 ### Timeout
 
-`timeout` bounds each request end to end; the default is 10 minutes. Transient failures — HTTP 429, 5xx, a dropped connection, and [others below](#retries) — are retried with backoff inside that window; a request that times out fails with `DeadlineExceededError` and is not retried. It takes a `timedelta`, or seconds as a number.
+`timeout` bounds each request end to end; the default is 10 minutes. Transient failures (HTTP 429, 5xx, a dropped connection, and [others below](#retries)) are retried with backoff inside that window; a request that times out fails with `DeadlineExceededError` and is not retried. It takes a `timedelta`, or seconds as a number.
 
 ```python
 embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=timedelta(minutes=30))

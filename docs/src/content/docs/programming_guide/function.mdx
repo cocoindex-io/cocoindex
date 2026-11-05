@@ -6,7 +6,7 @@ description: >
   and GPU-aware runners included.
 ---
 :::note[Prerequisite]
-This page builds on [Core Concepts](./core_concepts), which introduces change detection and function memoization **with diagrams**. If memoization feels abstract, start there.
+Read [Core Concepts](./core_concepts) for change detection and function memoization, with diagrams.
 :::
 
 It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
@@ -35,10 +35,10 @@ If you don't need any of the above for a helper, keep it as a plain Python funct
 
 ## Change detection and memoization
 
-Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates. For the big-picture view — how memoization skips unchanged work across both input and code changes — see the [Function memoization section in Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations).
+Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms (detecting changes and acting on them) work together to enable incremental updates. For the big-picture view (how memoization skips unchanged work across both input and code changes) see the [Function memoization section in Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations).
 
 :::tip[Mental model]
-A function's behavior is determined by its **logic** (source code, [`deps`](#deps), [`version`](#version)), its **inputs** (arguments), and the **context values** it reads via [`use_context()`](./context#retrieving-values). If none of those have changed, a memoized function returns its cached result without re-executing. You don't need to reason about *how* CocoIndex tracks any of this; just trust the contract.
+A function's behavior is determined by its **logic** (source code, [`deps`](#deps), [`version`](#version)), its **inputs** (arguments), and the **context values** it reads via [`use_context()`](./context#retrieving-values). If none of those have changed, a memoized function returns its cached result without re-executing.
 :::
 
 ### Change detection
@@ -111,13 +111,17 @@ If a memoized function raises, no cache entry is written for that call. The next
 - The computation is expensive
 - The function's caller is reprocessed frequently (due to logic or input changes)
 
-**Placement — one rule:** memoize at a boundary only if its key can hit while every *enclosing* memo boundary misses. Stacked levels pay off exactly when the outer boundary is keyed more coarsely than the inner one's inputs — a per-file component plus a per-chunk embedding memo composes well, because an edited file re-runs its component while its unchanged chunks still skip embedding. But if an enclosing *memoized* component's identity already commits to this function's inputs — say, the component path is keyed by a hash of the very content the function transforms — the inner memo can never hit on a *content-driven* rerun: the component memo shadows all of those. What remains is insurance against reruns of the enclosing component itself (its code edited, its `version` bumped): each entry permanently stores a value — often one your target also stores — that only such reruns can read. The arithmetic bites at scale: a 1536-dim float32 vector is ~6 KB, so an embedding memo under content-hash-keyed components costs ~600 MB per 100k chunks to insure against those rare reruns — usually a bad trade.
+**Placement:** memoize at a boundary only if its key can hit while every *enclosing* memo boundary misses. Stacked levels pay off exactly when the outer boundary is keyed more coarsely than the inner one's inputs. A per-file component plus a per-chunk embedding memo composes well: an edited file re-runs its component while its unchanged chunks still skip embedding.
+
+If an enclosing *memoized* component's identity already commits to this function's inputs (for example, the component path is keyed by a hash of the content the function transforms), the inner memo can never hit on a *content-driven* rerun. The component memo already covers those cases. The inner memo can still help when the enclosing component re-runs because its code changed or its `version` was bumped. Each entry permanently stores a value, often one the target also stores, for those reruns.
+
+A 1536-dim float32 vector is ~6 KB. An embedding memo under content-hash-keyed components therefore stores ~600 MB per 100k chunks to cover those rare reruns. Consider that storage cost when deciding whether to keep the inner memo.
 
 **Examples:**
 
 - ✅ **Embedding functions** — good to memoize when callers can re-run with the same text (e.g., per-file components re-running on edits). Computation is heavy; return value is fixed-size and not too large.
 - ❌ **Splitting text into fixed-size chunks** — usually not worth memoizing. Computation is light; return value can be large.
-- ✅ **Processing component for files that are mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
+- ✅ **Processing component for files that are mostly stable between runs** — memoization skips unchanged files, saving the cost of reading and processing their contents.
 - 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
 - ❌ **Chunk embedding inside a *memoized* component keyed by the chunk's content hash** — usually redundant by the placement rule: the component memo already commits to the text, so the inner memo serves only reruns caused by the component's own code or `version` changes — at the cost of storing every vector twice.
 
@@ -188,7 +192,7 @@ def summarize(text: str) -> str:
 The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
 
 :::caution[Snapshotted at decoration time]
-`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values — instance attributes in a bound method, request-scoped config, anything that changes at runtime — pass them as regular function arguments instead, so the memoization layer observes each new value.
+`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values (instance attributes in a bound method, request-scoped config, anything that changes at runtime) pass them as regular function arguments instead, so the memoization layer observes each new value.
 :::
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
@@ -225,7 +229,7 @@ Adopting `use_logic_dep` in a function that memoized callers already stored entr
 
 `coco.logic_propagated_to_callers(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback. It does not make `fn` tracked: `fn`'s own `@coco.fn` and `logic_tracking` decide what it offers, exactly as for any function. The wrapper only carries that up to the frame that called it, through layers that would otherwise drop it. (`coco.logic_tracked` is the former name; it still works and emits a `DeprecationWarning`.)
 
-Call it at the entry point that hands a callback down. The function that calls `logic_propagated_to_callers` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame — the owner's own entry included — whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
+Call it at the entry point that hands a callback down. The function that calls `logic_propagated_to_callers` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame (the owner's own entry included) whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
 
 ```python
 # Library
@@ -274,12 +278,12 @@ Rules, for whoever calls `logic_propagated_to_callers`:
 #### Common patterns
 
 :::tip[`@coco.fn` on non-memoized helpers]
-You can — and often should — decorate helpers with `@coco.fn` even without `memo=True`. The decorator's job is to make the function's logic *visible* to the change detection system. A bare helper is invisible: editing it will not invalidate any memoized caller, leading to silently stale results. Add `@coco.fn` so its fingerprint propagates; only add `memo=True` if caching its return value is worth it.
+You can (and often should) decorate helpers with `@coco.fn` even without `memo=True`. The decorator's job is to make the function's logic *visible* to the change detection system. A bare helper is invisible: editing it will not invalidate any memoized caller, leading to silently stale results. Add `@coco.fn` so its fingerprint propagates; only add `memo=True` if caching its return value is worth it.
 :::
 
 These parameters can be set on any `@coco.fn` function — not just memoized ones.
 
-**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos. This always just works.
+**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos.
 
 ```python
 @coco.fn
@@ -334,7 +338,7 @@ Conversely, if a memo is hitting when you expect invalidation, common causes are
 
 By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys).
 
-For per-function overrides — excluding an argument from the memo key, or transforming it just for this function — pass `memo_key={...}` on `@coco.fn` / `@coco.fn.as_async`; see [Override at the call site with `memo_key=`](../advanced_topics/memoization_keys#override-at-the-call-site-with-memo_key).
+For per-function overrides (excluding an argument from the memo key, or transforming it just for this function) pass `memo_key={...}` on `@coco.fn` / `@coco.fn.as_async`; see [Override at the call site with `memo_key=`](../advanced_topics/memoization_keys#override-at-the-call-site-with-memo_key).
 
 ## Execution capabilities
 
@@ -342,7 +346,7 @@ The following capabilities control *how* the function executes, independent of c
 
 ### Async adapter
 
-Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions. The decorator also accepts an `async def` body as-is, and [batching](#batching) and [runner](#runner) — which need an async interface — are always enabled through it.
+Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions. The decorator also accepts an `async def` body as-is, and [batching](#batching) and [runner](#runner) (which need an async interface) are always enabled through it.
 
 ```python
 @coco.fn.as_async
@@ -401,7 +405,7 @@ embeddings = await asyncio.gather(
 
 The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
 
-The `max_in_flight` parameter bounds how many batches run at once. By default (`None`), a full batch starts as soon as it fills, and the next partial batch starts only once every running batch has finished. With `max_in_flight=n`, at most `n` batches run concurrently, and whenever one finishes the next pending batch — full or partial — starts, so a slow batch no longer holds back the rest:
+The `max_in_flight` parameter bounds how many batches run at once. By default (`None`), a full batch starts as soon as it fills, and the next partial batch starts only once every running batch has finished. With `max_in_flight=n`, at most `n` batches run concurrently, and whenever one finishes the next pending batch (full or partial) starts, so a slow batch no longer holds back the rest:
 
 ```python
 @coco.fn.as_async(batching=True, max_batch_size=32, max_in_flight=4)
