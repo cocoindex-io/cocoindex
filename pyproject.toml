@@ -61,7 +61,12 @@ bindings = "pyo3"
 python-source = "python"
 module-name = "cocoindex._internal.core"
 features = ["pyo3/extension-module"]
-include = ["THIRD_PARTY_NOTICES.html"]
+# Both are written by the release workflow, not kept in git. The client file
+# is git-ignored, which maturin honors unless a path is listed here.
+include = [
+    "THIRD_PARTY_NOTICES.html",
+    "python/cocoindex/connectors/google_drive/_builtin_client.json",
+]
 # Point to the crate within the workspace
 manifest-path = "rust/py/Cargo.toml"
 

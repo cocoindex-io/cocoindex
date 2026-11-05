@@ -183,6 +183,10 @@ class Flow:
         threading.Thread(target=lambda: httpx.get(landing), daemon=True).start()
 
     def sign_in(self, **overrides: object) -> str:
+        return self.sign_in_with(self.client_secrets, **overrides)
+
+    def sign_in_with(self, client: pathlib.Path | None, **overrides: object) -> str:
+        """The interactive sign-in against the fake; ``None`` takes the built-in client."""
         kwargs: dict[str, object] = dict(
             http_client=self.http,
             open_browser=self.browser,
@@ -192,7 +196,7 @@ class Flow:
             timeout=10,
         )
         kwargs.update(overrides)
-        return _oauth.run_sign_in(self.client_secrets, self.token_path, **kwargs)  # type: ignore[arg-type]
+        return _oauth.run_sign_in(client, self.token_path, **kwargs)  # type: ignore[arg-type]
 
     def account(self) -> UserAccount:
         return UserAccount(self.token_path)
@@ -583,12 +587,11 @@ def test_the_service_builds_on_user_credentials(
 # --- the CLI ------------------------------------------------------------------
 
 
-def test_cli_sign_in_and_sign_out(flow: Flow, monkeypatch: pytest.MonkeyPatch) -> None:
-    from cocoindex.cli import cli
-
+def _script_sign_in(flow: Flow, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every interactive sign-in, the CLI's included, run against the fake."""
     interactive = _oauth.run_sign_in
 
-    def scripted(client: pathlib.Path, token: pathlib.Path, **kw: object) -> str:
+    def scripted(client: pathlib.Path | None, token: pathlib.Path, **kw: object) -> str:
         return interactive(
             client,
             token,
@@ -601,6 +604,12 @@ def test_cli_sign_in_and_sign_out(flow: Flow, monkeypatch: pytest.MonkeyPatch) -
         )
 
     monkeypatch.setattr(_oauth, "run_sign_in", scripted)
+
+
+def test_cli_sign_in_and_sign_out(flow: Flow, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cocoindex.cli import cli
+
+    _script_sign_in(flow, monkeypatch)
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -635,3 +644,54 @@ def test_a_refused_client_is_named_at_refresh_and_at_sign_in(flow: Flow) -> None
         flow.account()._credentials().refresh(None)
     with pytest.raises(SignInError, match="Download the current JSON"):
         flow.sign_in()
+
+
+# --- CocoIndex's built-in client ---------------------------------------------
+
+
+def test_without_a_client_file_the_built_in_client_signs_in(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cocoindex.cli import cli
+
+    # The release workflow writes the built-in client in the downloaded-JSON shape.
+    monkeypatch.setattr(_oauth, "BUILTIN_CLIENT_PATH", flow.client_secrets)
+    assert flow.sign_in_with(None) == EMAIL
+    assert flow.stored()["client_id"] == CLIENT_ID
+
+    _script_sign_in(flow, monkeypatch)
+    flow.token_path.unlink()
+    result = CliRunner().invoke(
+        cli, ["google-drive", "sign-in", "--token-path", str(flow.token_path)]
+    )
+    assert result.exit_code == 0, result.output
+    assert f"Signed in as {EMAIL}." in result.output
+    assert flow.account().email == EMAIL
+
+
+def test_a_build_without_the_built_in_client_asks_for_a_client_file(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    from cocoindex.cli import cli
+
+    monkeypatch.setattr(_oauth, "BUILTIN_CLIENT_PATH", tmp_path / "absent.json")
+    with pytest.raises(SignInError, match="no built-in OAuth client"):
+        flow.sign_in_with(None)
+    assert not flow.opened and not flow.token_path.exists()
+
+    result = CliRunner().invoke(
+        cli, ["google-drive", "sign-in", "--token-path", str(flow.token_path)]
+    )
+    assert result.exit_code == 1
+    assert "no built-in OAuth client" in result.output
+    assert _oauth.OWN_CLIENT_DOCS in result.output
+
+
+def test_a_refused_built_in_client_says_to_upgrade_or_bring_your_own(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_oauth, "BUILTIN_CLIENT_PATH", flow.client_secrets)
+    flow.google.client_refused = True
+    with pytest.raises(SignInError, match="built-in OAuth client: invalid_client"):
+        flow.sign_in_with(None)
+    assert not flow.token_path.exists()

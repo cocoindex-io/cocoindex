@@ -146,7 +146,9 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 `UserAccount` and the `cocoindex google-drive` commands are experimental. Experimental APIs are outside CocoIndex's compatibility promise: a later release, including a minor one, may change their API or semantics, or remove them.
 :::
 
-A service account only sees folders shared with it. To read your own Drive, sign in with your Google account instead. The sign-in is a one-time interactive step, run from the shell, outside any CocoIndex run; it uses the OAuth flow Google recommends for command-line applications (an authorization code with PKCE, redirected to a listener on this machine's loopback interface), from an OAuth client you create in your own Google Cloud project. CocoIndex asks for read-only access to Drive (`drive.readonly`) and nothing else.
+A service account only sees folders shared with it. To read your own Drive, sign in with your Google account instead. The sign-in is a one-time interactive step, run from the shell, outside any CocoIndex run; it uses the OAuth flow Google recommends for command-line applications (an authorization code with PKCE, redirected to a listener on this machine's loopback interface), from a Desktop app OAuth client. CocoIndex asks for read-only access to Drive (`drive.readonly`) and nothing else.
+
+CocoIndex's own OAuth client is not in a release yet: Google has to verify it first. Until a release includes it, sign in with an OAuth client you create in your own Google Cloud project, as below. A release that includes it needs nothing but your Google account: `cocoindex google-drive sign-in` without a client file.
 
 ### Setting up the OAuth client
 
@@ -168,6 +170,8 @@ What to expect from a client you own, as Google documents it:
 cocoindex google-drive sign-in ~/Downloads/client_secret_XXXX.json
 ```
 
+Without the file argument, the command uses CocoIndex's own OAuth client, and a release that doesn't include one says so.
+
 The command opens the consent page in your browser. Approve the request, including the Google Drive permission; the browser lands on a page that says the sign-in completed, and the terminal prints the signed-in address.
 
 On a machine with no browser (over SSH, or with no display), the command prints the link instead. Open it in a browser on another machine and sign in; the browser then lands on `http://127.0.0.1:<port>/?code=...&state=...` and fails to load, since that address is the other machine. Copy the whole address from the address bar and paste it into the terminal. (If you forward the port with `ssh -L <port>:127.0.0.1:<port> <host>` in a second session, the page loads instead and nothing is left to paste.)
@@ -178,7 +182,7 @@ The tokens are stored in a file readable by your user only (`0600`), at `~/.conf
 cocoindex google-drive sign-out      # revokes the sign-in at Google and deletes the token file
 ```
 
-The same two steps are available in Python as `UserAccount().sign_in(client_secrets_path)` and `UserAccount().sign_out()`.
+The same two steps are available in Python as `UserAccount().sign_in(client_secrets_path)` (with no argument for CocoIndex's own client) and `UserAccount().sign_out()`.
 
 ### UserAccount
 

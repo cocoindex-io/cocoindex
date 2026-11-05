@@ -1260,7 +1260,9 @@ def google_drive_group() -> None:
 
 @google_drive_group.command("sign-in")
 @click.argument(
-    "client_secrets", type=click.Path(exists=True, dir_okay=False, resolve_path=True)
+    "client_secrets",
+    required=False,
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
 )
 @click.option(
     "--token-path",
@@ -1269,8 +1271,12 @@ def google_drive_group() -> None:
     help="Where to keep the sign-in; default: cocoindex/google_drive_token.json "
     "under the user's config directory.",
 )
-def google_drive_sign_in(client_secrets: str, token_path: str | None) -> None:
-    """Sign in with the Desktop-app OAuth client at CLIENT_SECRETS (its downloaded JSON).
+def google_drive_sign_in(client_secrets: str | None, token_path: str | None) -> None:
+    """Sign in with a Google account to read its Google Drive.
+
+    Uses CocoIndex's own OAuth client when this release includes one. To use a
+    Desktop-app OAuth client of your own, pass CLIENT_SECRETS, the JSON file you
+    downloaded for it.
 
     Opens the consent page in the browser, or prints the link when this host has
     none, and keeps the tokens in a file readable by this user only.

@@ -3,11 +3,11 @@
 A ``UserAccount`` is a token file. ``sign_in`` fills it through the flow Google
 recommends for command-line applications: the authorization code grant with
 PKCE, redirected to a listener on the loopback interface, from a Desktop-app
-OAuth client the user created in their own Google Cloud project. A host with
-no browser prints the authorization link instead and accepts the address the
-browser lands on, pasted back. ``GoogleDriveSource`` then signs its requests
-with the stored access token and refreshes it with the refresh token as it
-expires.
+OAuth client: CocoIndex's own when the release carries one, or one the user
+created in their own Google Cloud project. A host with no browser prints the
+authorization link instead and accepts the address the browser lands on,
+pasted back. ``GoogleDriveSource`` then signs its requests with the stored
+access token and refreshes it with the refresh token as it expires.
 
 What the file holds is a credential, so this module keeps it out of
 everything that persists or prints: the file is created ``0600`` and refused
@@ -36,7 +36,7 @@ import time
 import urllib.parse
 import webbrowser
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,6 +64,17 @@ TOKEN_FILE_VERSION = 1
 # The whole interactive sign-in, including the person at the browser.
 SIGN_IN_TIMEOUT_SECONDS = 300.0
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+
+# CocoIndex's own Desktop-app OAuth client, so that a sign-in needs no client
+# file. The release workflow writes it from Actions secrets
+# (.github/scripts/write_google_oauth_client.py) and it is not in git, so a
+# build from source has none: its sign-in takes the user's own client.
+BUILTIN_CLIENT_PATH = Path(__file__).with_name("_builtin_client.json")
+
+# How to create a client of one's own, for a build without the built-in one.
+OWN_CLIENT_DOCS = (
+    "https://cocoindex.io/docs/connectors/google_drive#setting-up-the-oauth-client"
+)
 
 
 class SignInError(Exception):
@@ -115,6 +126,8 @@ class _Client:
 
     client_id: str
     client_secret: str
+    # CocoIndex's own client (``BUILTIN_CLIENT_PATH``), not one the user created.
+    builtin: bool = False
 
     def __repr__(self) -> str:
         return f"_Client(client_id={self.client_id!r})"
@@ -146,6 +159,19 @@ def _load_client(path: Path) -> _Client:
     if not isinstance(client_id, str) or not isinstance(client_secret, str):
         raise SignInError(f"{path} has no client_id and client_secret.")
     return _Client(client_id=client_id, client_secret=client_secret)
+
+
+def _resolve_client(path: Path | None) -> _Client:
+    """The client a sign-in uses: the file at ``path``, or the built-in one for ``None``."""
+    if path is not None:
+        return _load_client(path)
+    if not BUILTIN_CLIENT_PATH.is_file():
+        raise SignInError(
+            "This build of CocoIndex has no built-in OAuth client. Sign in with "
+            "a Desktop app OAuth client of your own: pass the JSON file you "
+            f"downloaded for it (see {OWN_CLIENT_DOCS})."
+        )
+    return replace(_load_client(BUILTIN_CLIENT_PATH), builtin=True)
 
 
 # --- the token file ---------------------------------------------------------
@@ -329,7 +355,9 @@ def _refresh(client: httpx.Client, tokens: _Tokens) -> _Tokens:
             raise SignInRequiredError(
                 f"Google no longer accepts the OAuth client this sign-in used: "
                 f"{refusal.code}{detail}. It was deleted or disabled, or its secret "
-                "changed. Sign in again with a working Desktop app client."
+                "changed. Sign in again: with an up-to-date CocoIndex if the "
+                "sign-in used its built-in client, or with a working Desktop app "
+                "client of your own."
             ) from None
         raise
     now = time.time()
@@ -607,6 +635,12 @@ def _run_consent(
     except _Refusal as refusal:
         if refusal.code not in _CLIENT_REFUSALS:
             raise
+        if client_cfg.builtin:
+            raise SignInError(
+                f"Google refused CocoIndex's built-in OAuth client: {refusal.code}. "
+                "Upgrade CocoIndex and sign in again, or sign in with a Desktop app "
+                f"OAuth client of your own (see {OWN_CLIENT_DOCS})."
+            ) from None
         raise SignInError(
             f"Google refused the OAuth client in the client file: {refusal.code}. "
             "Download the current JSON of the Desktop app client (its secret may "
@@ -615,7 +649,7 @@ def _run_consent(
 
 
 def run_sign_in(
-    client_secrets_path: Path,
+    client_secrets_path: Path | None,
     token_path: Path,
     *,
     http_client: httpx.Client | None = None,
@@ -627,12 +661,16 @@ def run_sign_in(
 ) -> str:
     """Sign in and store the tokens at ``token_path``; the account's address.
 
+    ``client_secrets_path`` is the downloaded JSON of the user's own Desktop app
+    client; ``None`` takes the client built into this release, and fails when
+    the build has none.
+
     Everything the flow touches outside this process is a parameter, so a
     test can drive it against fake endpoints: ``http_client`` for Google, ``open_browser``
     for the browser, ``read_line`` for the pasted redirect, ``say`` for what
     the person reads, and ``browser_available`` to force the no-browser path.
     """
-    client_cfg = _load_client(client_secrets_path)
+    client_cfg = _resolve_client(client_secrets_path)
     if browser_available is None:
         browser_available = has_browser()
     owned = http_client is None
@@ -704,13 +742,21 @@ class UserAccount:
     def token_path(self) -> Path:
         return self._token_path
 
-    def sign_in(self, client_secrets_path: str | os.PathLike[str]) -> str:
+    def sign_in(self, client_secrets_path: str | os.PathLike[str] | None = None) -> str:
         """Sign in interactively with a Desktop-app OAuth client; the account's address.
 
-        Opens the consent page in the browser, or prints the link when this host
-        has none, and stores the tokens readable by this user only.
+        ``client_secrets_path`` is the JSON downloaded for a client of your own;
+        without it the sign-in uses the client built into this CocoIndex
+        release, and raises ``SignInError`` when the build has none. Opens the
+        consent page in the browser, or prints the link when this host has
+        none, and stores the tokens readable by this user only.
         """
-        return run_sign_in(Path(client_secrets_path).expanduser(), self._token_path)
+        path = (
+            Path(client_secrets_path).expanduser()
+            if client_secrets_path is not None
+            else None
+        )
+        return run_sign_in(path, self._token_path)
 
     def sign_out(self) -> bool:
         """Revoke the stored sign-in at Google and delete the token file; whether one existed.

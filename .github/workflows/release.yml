@@ -123,6 +123,13 @@ jobs:
           python-version: ${{ matrix.platform.python-version }}
           freethreaded: ${{ matrix.platform.free-threaded }}
       - run: python ./.github/scripts/update_version.py
+      - name: Write the built-in Google OAuth client
+        # Writes nothing while the two secrets are unset (Google has not
+        # verified the client yet); see the script for why it is not in git.
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: python ./.github/scripts/write_google_oauth_client.py
       - name: Verify free-threaded interpreter
         if: matrix.platform.free-threaded
         run: |
@@ -188,6 +195,13 @@ jobs:
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
+      - name: Write the built-in Google OAuth client
+        # Writes nothing while the two secrets are unset (Google has not
+        # verified the client yet); see the script for why it is not in git.
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: python ./.github/scripts/write_google_oauth_client.py
       - uses: actions/download-artifact@v8
         with:
           name: THIRD_PARTY_NOTICES.html
