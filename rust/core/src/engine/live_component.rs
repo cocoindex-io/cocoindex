@@ -123,6 +123,37 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             }
         }
 
+        // 2b. Write the live component's own `ChildExistence` row (and any
+        // missing ancestor rows) before any of its children can run.
+        //
+        // A regular mounted child gets this from `eager_existence_upsert`
+        // at the start of its Build; a live component has no Build of its
+        // own at mount time, so without this write its row would only
+        // appear at the parent's commit. In the gap, the first
+        // `operator.update()` child's eager upsert finds no row for this
+        // path and fills it in as `Directory`. The parent's commit then
+        // sees `Directory` → `Component` and reconciles the subtree with
+        // no `child_path_set`, tombstoning every child mounted so far —
+        // silently deleting their target states on a first run that calls
+        // `update()` before `update_full()` (e.g. a watch-only feed).
+        //
+        // Writing the row here means both installer paths (`coco.mount`
+        // from `process()` and `operator.update` from `process_live`)
+        // produce the same on-disk state at mount, and the parent's
+        // commit sees `Component` → `Component` (a no-op). It comes
+        // before the readiness guard (step 3) on purpose: a parent waits
+        // for its children's readiness even when its own `process()`
+        // failed, so a failed write must leave no guard outstanding.
+        // Failing here returns with nothing installed.
+        // A preview writes no state, so it skips this as submit/commit does.
+        if !parent_ctx.preview() {
+            parent_ctx
+                .app_ctx()
+                .app_store()
+                .ensure_existence_chain(child.stable_path(), parent_ctx.stable_path())
+                .await?;
+        }
+
         // 3. Create readiness guard from parent's components_readiness.
         let readiness_guard = parent_ctx.components_readiness().clone().add_child();
 
@@ -139,13 +170,9 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         //    (i)   app_store the new state in `child.live_state` (strong-ref anchor)
         //    (ii)  register Weak in `app_ctx.live_components` (compaction-on-push)
         //
-        // The DB `ChildExistence` row is written separately:
-        //   - For `coco.mount(LiveCompClass)` from inside `process()`: by
-        //     submit/commit, via `update_building_state`'s `child_path_set`.
-        //   - For `operator.update(LiveCompClass)` from `process_live`: by
-        //     `mount_inner_live` directly via `Storage::run_txn`, just below this
-        //     `complete()` call. (See `LiveComponentController::mount_inner_live`.)
-        // Both paths produce the same on-disk state.
+        // The DB `ChildExistence` row was written in step 2b above; the
+        // parent's submit/commit (for `coco.mount` from `process()`) later
+        // sees it already as `Component` and leaves it alone.
         //
         // (i) → (ii) order is required: a Weak registered before its strong
         // owner exists would die on `upgrade()`. With the strong owner held
@@ -953,43 +980,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         );
         let fn_ctx = FnCallContext::default();
 
-        let pending = mount_live_prepare(&parent_ctx, &fn_ctx, child_path.clone(), self.live)?;
+        // `complete()` writes the child's `ChildExistence` DB row, so the
+        // next `update_full`'s tombstone scan can see this child and
+        // reconcile its target states on parent re-runs that don't
+        // re-issue this `operator.update` call.
+        let pending = mount_live_prepare(&parent_ctx, &fn_ctx, child_path, self.live)?;
         let result = pending.complete().await?;
-
-        // Polish 4: write the `ChildExistence` DB row symmetric with the
-        // through-`process()` install path (where it's written via
-        // submit/commit). Without this row, the next `update_full`'s
-        // tombstone scan can't see this child and won't reconcile its
-        // target states on parent re-runs that DON'T re-issue this
-        // operator.update call. With this row, the install/tombstone
-        // state machine is symmetric across both installer paths. A preview
-        // writes no state, so it skips this as submit/commit does.
-        if self.preview_collector.is_none()
-            && let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent()
-        {
-            let app_store = self.component.app_ctx().app_store().clone();
-            let parent_path: StablePath = parent_path_ref.into();
-            let child_key = child_key.clone();
-            self.component
-                .app_ctx()
-                .env()
-                .run_txn(move |wtxn| {
-                    let app_store = app_store.clone();
-                    let parent_path = parent_path.clone();
-                    let child_key = child_key.clone();
-                    Box::pin(async move {
-                        crate::engine::execution::ensure_path_node_type(
-                            &app_store,
-                            wtxn,
-                            parent_path.as_ref(),
-                            &child_key,
-                            crate::state::db_schema::StablePathNodeType::Component,
-                        )
-                        .await
-                    })
-                })
-                .await?;
-        }
 
         Ok(result)
         // _full_guard drops here, releasing update_full_lock.
