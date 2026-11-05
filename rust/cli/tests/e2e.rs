@@ -386,9 +386,11 @@ fn a_binary_without_the_protocol_is_refused() {
 fn env_file_is_loaded() {
     let sb = Sandbox::new(&[("a.txt", "alpha")]);
     let env_file = sb.path("custom.env");
+    // Single quotes keep the value literal: a Windows path has backslashes,
+    // which an unquoted value reads as escapes.
     std::fs::write(
         &env_file,
-        format!("FIXTURE_OUT={}\n", sb.path("elsewhere").display()),
+        format!("FIXTURE_OUT='{}'\n", sb.path("elsewhere").display()),
     )
     .unwrap();
     // FIXTURE_OUT is already set by the sandbox: .env values never override.
