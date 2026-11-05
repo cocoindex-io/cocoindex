@@ -18,6 +18,7 @@ from cocoindex.connectors import localfs
 from ..errors import ToolError
 from ..handles import MethodSpec, ResultValue, Volatility, is_handle
 from ..spec import Json
+from ..transcript import digest_json
 from . import SessionContext, tool
 
 
@@ -115,4 +116,6 @@ async def declare(ctx: SessionContext, args: dict[str, Json]) -> Json:
         if not isinstance(res, ResultValue):
             raise ToolError(f"{value!r} is a {res.kind} handle, not a result")
         value = res.text
-    return await obj.call("declare_file", {"filename": args["key"], "content": value})
+    result = await obj.call("declare_file", {"filename": args["key"], "content": value})
+    ctx.action.declared = ctx.trace.note_declared(args["key"], digest_json(value))
+    return result

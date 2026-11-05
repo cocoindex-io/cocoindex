@@ -28,6 +28,7 @@ import json
 import os
 import pathlib
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import cocoindex as coco
 from cocoindex.connectors import localfs
@@ -36,7 +37,7 @@ from cocoindex.resources.file import PatternFilePathMatcher
 from ..errors import ToolError
 from ..handles import MethodSpec, Volatility, int_arg
 from ..spec import Item, Json
-from ..transcript import canonical_json
+from ..transcript import canonical_json, digest_json, normalize_json
 from . import SessionContext, tool
 from .stats import bottom_k, format_range, widen_count
 
@@ -110,6 +111,11 @@ def _mtime_ns(path: pathlib.Path) -> int | None:
         return None
 
 
+class Listing(NamedTuple):
+    items: dict[str, Item]
+    digest: str  # of the walk, for the session's trace
+
+
 class LocalDirSource:
     """A ``src:`` handle over ``localfs.walk_dir``.
 
@@ -178,11 +184,13 @@ class LocalDirSource:
             raise ToolError(f"unknown method {method!r} on a localfs source")
         return await self._observe_recorded(method, args)
 
-    async def listing(self) -> dict[str, Item]:
+    async def listing(self) -> Listing:
         """Every file as a ``for_each`` item, recorded as one observation of the walk."""
         files = await self.files()
-        await self._observe_recorded(_LISTING, {}, files)
-        return {key: Item(key, file) for key, file in files.items()}
+        walk = await self._observe_recorded(_LISTING, {}, files)
+        return Listing(
+            {key: Item(key, file) for key, file in files.items()}, digest_json(walk)
+        )
 
     async def _observe_recorded(
         self,
@@ -302,6 +310,7 @@ async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
     src = LocalDirSource(pathlib.Path(args["path"]), tuple(args.get("patterns", ())))
     handle = ctx.handles.register("src", args["name"], src)
     stats = await src.call("stats", {})
+    ctx.trace.note_read(f"stats of {handle}", digest_json(stats))
     return ctx.handles.card(
         handle, root=str(src.root), patterns=list(src.patterns), **stats
     )
@@ -345,7 +354,16 @@ async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
             f"{method} does not take {unknown}; it takes "
             f"{list(spec.args) if spec.args else 'no arguments'}"
         )
-    return await obj.call(method, call_args)
+    result = await obj.call(method, call_args)
+    if not obj.closed_input_ok:
+        # A read beyond the session's arguments: noted so the next run can
+        # name it when it is the read that changed.
+        key = call_args.get("key")
+        what = f"{method} of {args['handle']}" + (
+            f" {key}" if isinstance(key, str) else ""
+        )
+        ctx.trace.note_read(what, digest_json(normalize_json(result)))
+    return result
 
 
 @tool(

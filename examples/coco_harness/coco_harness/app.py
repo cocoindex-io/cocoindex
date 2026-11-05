@@ -19,6 +19,7 @@ from .model import MODEL_CLIENT
 from .roles import default_roles
 from .session import run_open_session
 from .tools import HARNESS, HarnessConfig, Tool, ToolRegistry, agents, sources, targets
+from .trace import SessionScratch
 
 # The LiteLLM model id used when ``$LLM_MODEL`` is unset. The sample flows
 # were measured with it (flows/README.md).
@@ -56,10 +57,20 @@ def build_app(
     *,
     env: coco.Environment,
     config: HarnessConfig,
+    scratch: SessionScratch | None = None,
 ) -> coco.App[..., object]:
-    """One app per flow. The orchestrator is an open session: skipped while what it read is unchanged."""
+    """One app per flow. The orchestrator is an open session: skipped while what it read is unchanged.
+
+    ``scratch`` is marked when the orchestrator's body runs; left untouched,
+    the whole run was served from the store (``report.RunReport``).
+    """
     spec = config.spec("orchestrator", flow_prompt)
-    return coco.App(coco.AppConfig(name=name, environment=env), run_open_session, spec)
+    return coco.App(
+        coco.AppConfig(name=name, environment=env),
+        run_open_session,
+        spec,
+        scratch=scratch,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

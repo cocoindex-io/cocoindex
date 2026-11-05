@@ -22,7 +22,8 @@ input.
 - `tests/` — scripted-model tests; no API keys needed
 - `flows/` — three sample flows with their data and a runner, one per shape
   of DESIGN.md §2; see [`flows/README.md`](flows/README.md) for how to run
-  them and the measured model calls
+  them and the measured model calls (`--stats` for cache usage, `--plan` for
+  the plan the harness chose and what it reused)
 
 ## Running the tests
 

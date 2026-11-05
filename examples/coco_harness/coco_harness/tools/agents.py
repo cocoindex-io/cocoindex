@@ -1,5 +1,9 @@
 """Subagent tools: call_agent, start_agent, for_each, observe, reduce.
 
+Each mounts its child with a ``SessionScratch`` (excluded from the child's
+memo key) and leaves the child's trace in ``ctx.action``: untouched scratch
+means the engine skipped the child, and its stored trace is marked reused.
+
 Each maps to one CocoIndex primitive (DESIGN.md §3). Every model-named child
 lives under ``child/<key>`` (items and reduce groups nest below that), so a
 key used once per session means one engine path per child and distinct keys
@@ -30,6 +34,7 @@ from ..session import (
 )
 from ..spec import InputCard, Item, Json, SessionSpec
 from ..stable_hash import stable_hash64
+from ..trace import ChildTrace, Member, SessionScratch, child_members, child_session
 from ..transcript import canonical_json
 from . import SessionContext, tool
 from .reduce import Group, GroupItem, ReduceError, hierarchical_reduce, leaf_item
@@ -137,14 +142,20 @@ def _result(ctx: SessionContext, name: str, text: str, **fields: Json) -> Json:
     return {"result": handle, "chars": format_range(widen_count(len(text))), **fields}
 
 
-def _contain_child_failure(key: str, exc: BaseException) -> ToolError:
+def _contain_child_failure(
+    ctx: SessionContext, key: str, exc: BaseException
+) -> ToolError:
     """A child's environment failure, as the parent model sees it.
 
     Recorded in the parent, so the parent re-runs and the child runs again
     next run (DESIGN.md §7).
     """
-    record_contained_failure(f"child:{key}", exc)
+    record_contained_failure(ctx.trace, f"child:{key}", exc)
     return ToolError(f"child {key!r} failed: {type(exc).__name__}: {exc}")
+
+
+_OPEN_SKIPPED = "nothing it read changed"
+_CLOSED_SKIPPED = "input unchanged"
 
 
 @tool(
@@ -170,14 +181,22 @@ async def call_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
     handles, cards = _child_inputs(ctx, args, closed=False)
     child = ctx.config.spec(args.get("role", "worker"), args["task"], inputs=cards)
     ctx.claim_slot(key)  # after validation: a rejected call does not consume its key
+    scratch = SessionScratch()
     try:
         result = await coco.use_mount(
-            coco.component_subpath("child", key), run_open_session, child, handles
+            coco.component_subpath("child", key),
+            run_open_session,
+            child,
+            handles,
+            scratch,
         )
     except Exception as exc:
         if not is_environment_error(exc):
             raise
-        raise _contain_child_failure(key, exc) from exc
+        raise _contain_child_failure(ctx, key, exc) from exc
+    ctx.action.child = child_session(
+        key, result.trace, ran=scratch.ran, skipped_reason=_OPEN_SKIPPED
+    )
     return _result(ctx, key, result.answer)
 
 
@@ -205,6 +224,7 @@ async def start_agent(ctx: SessionContext, args: dict[str, Json]) -> Json:
     await coco.mount(
         coco.component_subpath("child", key), run_open_session, child, handles
     )
+    ctx.action.child = ChildTrace("background", key, child.role.name)
     return {"job": f"job:{key}"}
 
 
@@ -232,14 +252,26 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
     handles, cards = _child_inputs(ctx, args, closed=False)
     child = ctx.config.spec(args.get("role", "planner"), args["question"], inputs=cards)
     ctx.claim_slot(key)
+    scratch = SessionScratch()
     try:
         result = await coco.use_mount(
-            coco.component_subpath("child", key), run_open_session, child, handles
+            coco.component_subpath("child", key),
+            run_open_session,
+            child,
+            handles,
+            scratch,
         )
     except Exception as exc:
         if not is_environment_error(exc):
             raise
-        raise _contain_child_failure(key, exc) from exc
+        raise _contain_child_failure(ctx, key, exc) from exc
+    ctx.action.child = child_session(
+        key,
+        result.trace,
+        ran=scratch.ran,
+        skipped_reason=_OPEN_SKIPPED,
+        plan=result.answer,
+    )
     return {"plan": result.answer}
 
 
@@ -275,7 +307,9 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
     child = _closed_spec(ctx, args.get("role", "worker"), args["task"], cards)
     # The walk is this session's read of the source: recorded, so a changed
     # file re-runs the session and the workers are probed (DESIGN.md §7).
-    items = await src.listing()
+    listing = await src.listing()
+    ctx.trace.note_read(f"walk of {args['source']}", listing.digest)
+    items = listing.items
 
     ctx.claim_slot(key)
     if not args.get("collect", True):
@@ -286,12 +320,15 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
             child,
             handles,
         )
+        ctx.action.child = ChildTrace("background", key, child.role.name)
         return {"mounted": key}
 
     failed: dict[str, str] = {}
+    members: list[Member] = []
 
     async def one(kv: tuple[str, Item]) -> tuple[str, str | None]:
         item_key, item = kv
+        scratch = SessionScratch()
         try:
             result = await coco.use_mount(
                 coco.component_subpath("child", key, item_key),
@@ -299,20 +336,30 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
                 item,
                 child,
                 handles,
+                scratch,
             )
         except Exception as exc:
             if not is_environment_error(exc):
                 raise
             # The worker committed nothing and runs again next run; the parent
             # model sees the failure in the collection, not as a crash.
-            record_contained_failure(f"child:{key}/{item_key}", exc)
+            record_contained_failure(ctx.trace, f"child:{key}/{item_key}", exc)
             failed[item_key] = f"{type(exc).__name__}: {exc}"
             return item_key, None
+        members.append(Member(item_key, result.trace, scratch.ran))
         return item_key, result.answer
 
     results = await coco.map(one, items.items())
     coll = Collection([(k, a) for k, a in results if a is not None], failed)
     handle = ctx.handles.register("coll", key, coll)
+    ctx.action.child = child_members(
+        "fan_out",
+        key,
+        child.role.name,
+        members,
+        failed=len(failed),
+        skipped_reason=_CLOSED_SKIPPED,
+    )
     return ctx.handles.card(handle, **coll.card_fields())
 
 
@@ -350,18 +397,24 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
         for item_key, text in coll.entries
     ]
 
+    groups: list[Member] = []
+
     async def reduce_group(group: Group[str]) -> str:
         # Slot: the group's prefix (unique across levels, DESIGN §6) plus the
         # attempt. Reuse needs the same slot and the same members (§7).
         members = tuple(m.payload for m in group.members)
         spec = child
         for attempt in range(_REDUCE_ATTEMPTS):
+            slot = group.prefix or "root"
+            scratch = SessionScratch()
             result = await coco.use_mount(
-                coco.component_subpath("child", key, group.prefix or "root", attempt),
+                coco.component_subpath("child", key, slot, attempt),
                 run_reduce_session,
                 members,
                 spec,
+                scratch,
             )
+            groups.append(Member(f"{slot}/{attempt}", result.trace, scratch.ran))
             if _estimate_tokens(result.answer) <= half:
                 return result.answer
             spec = replace(
@@ -383,7 +436,15 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
     except Exception as exc:
         if not is_environment_error(exc):
             raise
-        raise _contain_child_failure(key, exc) from exc
+        raise _contain_child_failure(ctx, key, exc) from exc
+    ctx.action.child = child_members(
+        "reduce",
+        key,
+        child.role.name,
+        groups,
+        failed=0,
+        skipped_reason="members unchanged",
+    )
     return _result(ctx, key, answer, omitted=len(coll.failed))
 
 
