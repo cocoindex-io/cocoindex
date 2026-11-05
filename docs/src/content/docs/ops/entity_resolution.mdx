@@ -162,6 +162,10 @@ from cocoindex.ops.entity_resolution.llm_resolver import LlmPairResolver
 
 resolver = LlmPairResolver(model="openai/gpt-4o-mini")
 
+# Omit model to use MiniMax M3.1-Flash, with MiniMax M3 as a
+# model-unavailable fallback.
+# resolver = LlmPairResolver()
+
 result = await resolve_entities(
     entities={"Barack Obama", "Barack H. Obama", "OpenAI"},
     embedder=embedder,
@@ -179,6 +183,7 @@ Uses the same litellm model-string format as [`LiteLLMEmbedder`](./litellm):
 | Anthropic | `anthropic/claude-haiku-4-5` |
 | Google (Gemini) | `gemini/gemini-2.0-flash` |
 | Groq | `groq/llama-3.3-70b-versatile` |
+| MiniMax | `minimax/MiniMax-M3.1-Flash` |
 
 See the [LiteLLM docs](https://docs.litellm.ai/docs/providers) for the full list of 100+ supported providers.
 
@@ -217,7 +222,7 @@ After each LLM call, the response is validated:
 1. **Structural**: the JSON response must parse into the expected schema
 2. **Semantic**: `matched` (if non-null) must be in the supplied `candidates`. If not, the LLM is re-prompted with explicit feedback and the conversation continues
 
-The default retry budget is 2. If exhausted, no match is returned.
+The default retry budget is 2. If exhausted, no match is returned. When `model` is omitted, the first ordinary text request uses `minimax/MiniMax-M3.1-Flash`; only a model-unavailable response tries `minimax/MiniMax-M3`. Explicit model strings never use this fallback.
 
 ```python
 resolver = LlmPairResolver(model="openai/gpt-4o-mini", retries=3)  # more retries
@@ -232,7 +237,7 @@ Each unique `(entity, candidates)` pair's decision is persisted across runs via 
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | `str` | *(required)* | Litellm model string (e.g. `"openai/gpt-4o-mini"`). |
+| `model` | `str \| None` | `None` | LiteLLM model string (e.g. `"openai/gpt-4o-mini"`). `None` selects the MiniMax M3.1-Flash/M3 default pair. |
 | `entity_type` | `str \| None` | `None` | Entity type hint woven into the prompt. |
 | `extra_guidance` | `str \| None` | `None` | Domain rules appended to the default prompt. |
 | `retries` | `int` | `2` | Max retries on invalid `matched` output. |
