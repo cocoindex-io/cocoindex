@@ -16,6 +16,8 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use cocoindex_core::engine::stats::TERMINATED_VERSION;
+
 use crate::app::{Environment, Progress, UpdateOptions};
 use crate::error::{Error, Result};
 use crate::registry::{self, AppEntry};
@@ -260,6 +262,15 @@ async fn open_environment() -> std::result::Result<Environment, Failure> {
 
 async fn run_ls(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
     let env = open_environment().await?;
+    let outcome = list_apps(emitter, &env).await;
+    env.shutdown().await;
+    outcome
+}
+
+async fn list_apps(
+    emitter: &mut Emitter<'_>,
+    env: &Environment,
+) -> std::result::Result<u8, Failure> {
     let persisted = env.persisted_app_names().await?;
     let mut apps: Vec<AppInfo> = registry::apps()
         .iter()
@@ -283,7 +294,6 @@ async fn run_ls(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
         apps,
         db_path: env.db_path().display().to_string(),
     });
-    env.shutdown().await;
     Ok(EXIT_OK)
 }
 
@@ -457,9 +467,9 @@ async fn update_app(
     while let Ok(Progress::Changed(version)) = handle.changed().await {
         emitter.emit(&Event::progress(version, &handle.detailed_stats_snapshot()));
     }
-    // Final counters; `u64::MAX` is the engine's "terminated" version.
+    // Final counters, at the engine's "terminated" version.
     let final_stats = handle.detailed_stats_snapshot();
-    emitter.emit(&Event::progress(u64::MAX, &final_stats));
+    emitter.emit(&Event::progress(TERMINATED_VERSION, &final_stats));
 
     if args.preview {
         for action in &handle.preview_actions().await? {
